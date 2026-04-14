@@ -13,6 +13,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Expose as env var so it can be used in step `if:` conditions
+      # (secrets context is not allowed directly in if expressions)
+      HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' }}
 
     steps:
       # ── Checkout ────────────────────────────────────────────────────────────
@@ -72,9 +76,7 @@ jobs:
       #
       # Setup guide: https://learn.microsoft.com/azure/trusted-signing/quickstart
       - name: Sign executable (Azure Trusted Signing)
-        if: |
-          startsWith(github.ref, 'refs/tags/v') &&
-          secrets.AZURE_TENANT_ID != ''
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNING == 'true'
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -104,9 +106,7 @@ jobs:
 
       # ── Sign MSI (Azure Trusted Signing) ─────────────────────────────────────
       - name: Sign MSI (Azure Trusted Signing)
-        if: |
-          startsWith(github.ref, 'refs/tags/v') &&
-          secrets.AZURE_TENANT_ID != ''
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNING == 'true'
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
