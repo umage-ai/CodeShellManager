@@ -56,12 +56,12 @@ jobs:
             -o publish
 
       # ── Install WiX v4 ───────────────────────────────────────────────────────
-      - name: Install WiX toolset
+      - name: Install WiX toolset v4 (last open-source release)
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          dotnet tool install --global wix
-          wix extension add --global WixToolset.UI.wixext
+          dotnet tool install --global wix --version "4.0.5"
+          wix extension add --global WixToolset.UI.wixext/4.0.5
 
       # ── Build MSI ────────────────────────────────────────────────────────────
       - name: Build MSI installer
