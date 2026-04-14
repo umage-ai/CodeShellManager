@@ -173,12 +173,20 @@ public partial class MainWindow : Window
         var alertDetector = new AlertDetector(session.Id, vm.DisplayName);
         vm.AlertDetector = alertDetector;
 
-        // Create WebView2
+        // Create WebView2 — each instance needs its own user data folder;
+        // WebView2 locks the folder exclusively and throws E_ACCESSDENIED otherwise.
+        string wv2DataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "CodeShellManager", "webview2", session.Id);
         var webView = new WebView2
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
-            DefaultBackgroundColor = System.Drawing.Color.FromArgb(30, 30, 46)
+            DefaultBackgroundColor = System.Drawing.Color.FromArgb(30, 30, 46),
+            CreationProperties = new Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
+            {
+                UserDataFolder = wv2DataDir
+            }
         };
 
         // Build the persistent wrapper NOW (webView has no parent yet — this is safe).
