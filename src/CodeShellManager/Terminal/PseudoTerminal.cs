@@ -93,6 +93,9 @@ public sealed class PseudoTerminal : IDisposable
     private FileStream? _stdin, _stdout;
     private CancellationTokenSource _cts = new();
     private bool _disposed;
+    // Stateful UTF-8 decoder — preserves state across reads so multi-byte sequences
+    // (box-drawing chars, emoji, etc.) split at buffer boundaries decode correctly.
+    private readonly Decoder _utf8 = Encoding.UTF8.GetDecoder();
 
     public event Action<string>? DataReceived;
     public event Action? Exited;
@@ -228,7 +231,11 @@ public sealed class PseudoTerminal : IDisposable
 
                 if (read == 0) break;
                 // Send raw bytes as Latin-1 so xterm.js can interpret VT sequences correctly
-                string text = Encoding.Latin1.GetString(buffer, 0, read);
+                // Decoder.GetString handles multi-byte sequences split across reads
+                int charCount = _utf8.GetCharCount(buffer, 0, read);
+                char[] chars = new char[charCount];
+                _utf8.GetChars(buffer, 0, read, chars, 0);
+                string text = new string(chars);
                 DataReceived?.Invoke(text);
             }
         }
