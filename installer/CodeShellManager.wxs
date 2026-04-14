@@ -14,6 +14,7 @@
 
     <ui:WixUI Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
+    <WixVariable Id="WixUIBannerBmp"  Value="installer\banner.bmp" />
 
     <Feature Id="ProductFeature" Title="CodeShellManager" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
@@ -45,6 +46,11 @@
       <!-- Main executable -->
       <Component Directory="INSTALLFOLDER" Guid="*">
         <File Source="$(var.PublishDir)\CodeShellManager.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- App icon (for Add/Remove Programs entry) -->
+      <Component Directory="AssetsFolder" Guid="*">
+        <File Source="$(var.PublishDir)\Assets\app.ico" KeyPath="yes" />
       </Component>
 
       <!-- Assets — one component per file so auto-GUID works -->

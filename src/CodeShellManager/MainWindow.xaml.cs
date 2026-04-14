@@ -231,18 +231,27 @@ public partial class MainWindow : Window
             ? session.WorkingFolder
             : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        // Auto-resume Claude Code sessions when restoring
+        // Auto-resume Claude Code sessions when restoring — only if a prior session JSONL exists.
+        // If no session ID is found we start fresh (no --continue fallback which exits immediately
+        // when there are no sessions to resume).
         string effectiveArgs = session.Args;
         if (restoring && ClaudeSessionService.IsClaudeCommand(session.Command)
             && !effectiveArgs.Contains("--resume")
             && !effectiveArgs.Contains("--continue"))
         {
             string? sessionId = ClaudeSessionService.GetLastSessionId(session.WorkingFolder);
-            string resumeFlag = sessionId != null ? $"--resume {sessionId}" : "--continue";
-            effectiveArgs = string.IsNullOrEmpty(effectiveArgs)
-                ? resumeFlag
-                : $"{resumeFlag} {effectiveArgs}";
-            Log($"Auto-resume: using '{resumeFlag}' for claude session in '{session.WorkingFolder}'");
+            if (sessionId != null)
+            {
+                string resumeFlag = $"--resume {sessionId}";
+                effectiveArgs = string.IsNullOrEmpty(effectiveArgs)
+                    ? resumeFlag
+                    : $"{resumeFlag} {effectiveArgs}";
+                Log($"Auto-resume: using '{resumeFlag}' for claude session in '{session.WorkingFolder}'");
+            }
+            else
+            {
+                Log($"Auto-resume: no prior session found for '{session.WorkingFolder}', starting fresh");
+            }
         }
 
         Log($"Starting PTY: workDir='{workDir}'");

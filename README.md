@@ -1,7 +1,7 @@
 # CodeShellManager
 
 [![Build](https://github.com/umage-ai/CodeShellManager/actions/workflows/build.yml/badge.svg)](https://github.com/umage-ai/CodeShellManager/actions/workflows/build.yml)
-[![Latest Release](https://img.shields.io/github/v/release/umage-ai/CodeShellManager?label=download)](https://github.com/umage-ai/CodeShellManager/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/umage-ai/CodeShellManager?label=download&cacheSeconds=3600)](https://github.com/umage-ai/CodeShellManager/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A Windows desktop app for running **multiple AI coding agents side-by-side** — Claude Code, Codex, GitHub Copilot, or any CLI tool — in a tabbed and grid-layout terminal host.
