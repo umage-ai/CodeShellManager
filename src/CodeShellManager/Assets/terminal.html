@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #1e1e1e; overflow: hidden; }
+  #terminal { width: 100%; height: 100%; }
+
+  /* Drag-over overlay */
+  #dropOverlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(137, 180, 250, 0.15);
+    border: 2px dashed #89b4fa;
+    z-index: 100;
+    pointer-events: none;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 16px;
+    color: #89b4fa;
+  }
+  #dropOverlay.active { display: flex; }
+</style>
+<link rel="stylesheet" href="xterm.css" />
+</head>
+<body>
+<div id="terminal"></div>
+<div id="dropOverlay">Drop files to insert path(s)</div>
+
+<script src="xterm.js"></script>
+<script src="xterm-addon-fit.js"></script>
+<script>
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace",
+    theme: {
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      cursor: '#d4d4d4',
+      selectionBackground: '#264f78',
+      black: '#1e1e1e',   brightBlack: '#808080',
+      red: '#f44747',     brightRed: '#f44747',
+      green: '#608b4e',   brightGreen: '#608b4e',
+      yellow: '#dcdcaa',  brightYellow: '#dcdcaa',
+      blue: '#569cd6',    brightBlue: '#569cd6',
+      magenta: '#c678dd', brightMagenta: '#c678dd',
+      cyan: '#4ec9b0',    brightCyan: '#4ec9b0',
+      white: '#d4d4d4',   brightWhite: '#ffffff'
+    },
+    scrollback: 5000,
+    allowProposedApi: true,
+    // Let xterm handle Ctrl+C/Ctrl+V as terminal sequences, not browser shortcuts
+    // Paste is handled via right-click context menu and Ctrl+Shift+V
+    macOptionIsMeta: false,
+    windowsMode: true,   // correct line ending handling on Windows
+  });
+
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('terminal'));
+  fitAddon.fit();
+
+  // ── Input → PTY ────────────────────────────────────────────────────────────
+  function sendInput(data) {
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data }));
+  }
+
+  term.onData(data => sendInput(data));
+
+  // ── Resize notification ────────────────────────────────────────────────────
+  term.onResize(({ cols, rows }) => {
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'resize', cols, rows }));
+  });
+
+  // ── Messages from WPF ──────────────────────────────────────────────────────
+  window.chrome.webview.addEventListener('message', e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if      (msg.type === 'output')         term.write(msg.data);
+      else if (msg.type === 'clear')          term.clear();
+      else if (msg.type === 'focus')          { term.focus(); fitAddon.fit(); }
+      else if (msg.type === 'fit')            { fitAddon.fit(); term.focus(); }
+      else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
+    } catch {}
+  });
+
+  // ── Right-click: paste from clipboard ─────────────────────────────────────
+  document.getElementById('terminal').addEventListener('contextmenu', async e => {
+    e.preventDefault();
+    try {
+      // Ask WPF host for clipboard text (avoids browser clipboard permission prompt)
+      window.chrome.webview.postMessage(JSON.stringify({ type: 'getClipboard' }));
+    } catch {}
+  });
+
+  // ── Ctrl+Shift+V: paste ────────────────────────────────────────────────────
+  // xterm.js intercepts Ctrl+Shift+V natively for paste — this is the default.
+  // We override to route through WPF's clipboard (avoids WebView2 permission issues).
+  document.addEventListener('keydown', e => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+      e.preventDefault();
+      window.chrome.webview.postMessage(JSON.stringify({ type: 'getClipboard' }));
+    }
+    // Ctrl+Shift+C: copy selected text
+    if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+      e.preventDefault();
+      const sel = term.getSelection();
+      if (sel) {
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'setClipboard', text: sel }));
+      }
+    }
+  });
+
+  // ── File drag-and-drop ─────────────────────────────────────────────────────
+  // WebView2 exposes dropped files via the DataTransfer API.
+  // We send the file paths to WPF which resolves them to Windows paths.
+  const overlay = document.getElementById('dropOverlay');
+
+  document.addEventListener('dragenter', e => {
+    if (e.dataTransfer.types.includes('Files')) {
+      overlay.classList.add('active');
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  document.addEventListener('dragleave', e => {
+    // Only hide if leaving the window entirely
+    if (!e.relatedTarget) overlay.classList.remove('active');
+  });
+
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    overlay.classList.remove('active');
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // For each dropped file, send its name to WPF for path resolution
+    // (DataTransfer.files only gives File objects with name, not full path —
+    //  WPF side needs to resolve via the DragDrop OLE mechanism instead,
+    //  so we signal WPF and let it handle the OLE drop event)
+    window.chrome.webview.postMessage(JSON.stringify({
+      type: 'filesDropped',
+      names: files.map(f => f.name)
+    }));
+  });
+
+  // ── Fit on resize ──────────────────────────────────────────────────────────
+  const resizeObserver = new ResizeObserver(() => {
+    try { fitAddon.fit(); } catch {}
+  });
+  resizeObserver.observe(document.getElementById('terminal'));
+
+  // Initial fit may have run while the WebView2 container was Collapsed (0×0).
+  // Re-fit after a short delay so xterm picks up the real dimensions once visible.
+  setTimeout(() => { try { fitAddon.fit(); term.focus(); } catch {} }, 50);
+  setTimeout(() => { try { fitAddon.fit(); } catch {} }, 250);
+
+  term.focus();
+</script>
+</body>
+</html>

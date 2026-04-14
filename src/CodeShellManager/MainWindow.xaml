@@ -1,0 +1,161 @@
+<Window x:Class="CodeShellManager.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="CodeShellManager" Height="800" Width="1280" MinWidth="800" MinHeight="500"
+        Background="#1e1e2e" Foreground="#cdd6f4"
+        FontFamily="Segoe UI"
+        WindowState="Maximized">
+
+    <Window.Resources>
+        <Style x:Key="ToolBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#a6adc8"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#313244"/>
+                                <Setter Property="Foreground" Value="#cdd6f4"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#45475a"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- ── Top toolbar ─────────────────────────────────────────────── -->
+        <Border DockPanel.Dock="Top" Background="#181825" BorderThickness="0,0,0,1"
+                BorderBrush="#313244" Padding="8,5">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Left" Text="⬛ CodeShellManager" FontSize="13"
+                           FontWeight="SemiBold" Foreground="#89b4fa" VerticalAlignment="Center"
+                           Margin="4,0,16,0"/>
+
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border x:Name="AlertBadge" Background="#f38ba8" CornerRadius="10"
+                            Padding="7,2" Margin="0,0,8,0" VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="AlertCountText" Text="!" Foreground="#1e1e2e"
+                                   FontSize="11" FontWeight="Bold"/>
+                    </Border>
+                    <Button x:Name="SearchBtn" Content="⌕ Search" Style="{StaticResource ToolBtn}"
+                            Click="ToggleSearch_Click" Margin="0,0,2,0"/>
+                    <Button x:Name="CmdHelperBtn" Content="⚡ Commands" Style="{StaticResource ToolBtn}"
+                            Click="ToggleCommandHelper_Click" Margin="0,0,8,0"/>
+                    <Button Content="▣" Style="{StaticResource ToolBtn}" ToolTip="Single pane"
+                            Click="Layout_Single_Click" Width="26"/>
+                    <Button Content="▥" Style="{StaticResource ToolBtn}" ToolTip="2 columns"
+                            Click="Layout_Two_Click" Width="26"/>
+                    <Button Content="▦" Style="{StaticResource ToolBtn}" ToolTip="3 columns"
+                            Click="Layout_Three_Click" Width="26"/>
+                    <Button Content="⊞" Style="{StaticResource ToolBtn}" ToolTip="2×2 grid"
+                            Click="Layout_Grid_Click" Width="26"/>
+                </StackPanel>
+
+                <Button DockPanel.Dock="Left" Content="＋ New Session" Style="{StaticResource ToolBtn}"
+                        Foreground="#a6e3a1" Click="NewSession_Click" Margin="0,0,4,0"/>
+            </DockPanel>
+        </Border>
+
+        <!-- ── Command helper panel ─────────────────────────────────────── -->
+        <Border x:Name="CommandHelperPanel" DockPanel.Dock="Top" Background="#11111b"
+                BorderThickness="0,0,0,1" BorderBrush="#313244"
+                Padding="10,8" Visibility="Collapsed">
+            <StackPanel>
+                <TextBlock Text="Click to send to active terminal" Foreground="#6c7086"
+                           FontSize="10" Margin="0,0,0,6"/>
+                <WrapPanel x:Name="ShortcutPanel"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ── Search panel ─────────────────────────────────────────────── -->
+        <Border x:Name="SearchPanelHost" DockPanel.Dock="Top" Background="#11111b"
+                BorderThickness="0,0,0,1" BorderBrush="#313244"
+                Padding="10,8" MaxHeight="240" Visibility="Collapsed">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Left" Width="280" Margin="0,0,12,0">
+                    <TextBlock Text="Search all session output" Foreground="#6c7086"
+                               FontSize="10" Margin="0,0,0,6"/>
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="Go" Margin="6,0,0,0"
+                                Background="#89b4fa" Foreground="#1e1e2e"
+                                BorderThickness="0" Padding="10,5" Cursor="Hand"
+                                Click="Search_Click"/>
+                        <TextBox x:Name="SearchBox" Background="#313244" Foreground="#cdd6f4"
+                                 BorderBrush="#45475a" Padding="6,5" FontSize="13"
+                                 KeyDown="SearchBox_KeyDown"/>
+                    </DockPanel>
+                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl x:Name="SearchResults">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="0,2" Padding="6,4" Background="#1e1e2e"
+                                        CornerRadius="4">
+                                    <StackPanel>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding SessionName}"
+                                                       Foreground="#89b4fa" FontSize="11"
+                                                       FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding Timestamp, StringFormat='{}{0:HH:mm:ss}'}"
+                                                       Foreground="#6c7086" FontSize="10"
+                                                       HorizontalAlignment="Right"/>
+                                        </DockPanel>
+                                        <TextBlock Text="{Binding Snippet}" Foreground="#cdd6f4"
+                                                   FontSize="12" FontFamily="Consolas"
+                                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+        <!-- ── Sidebar ──────────────────────────────────────────────────── -->
+        <Border DockPanel.Dock="Left" Width="230" Background="#181825"
+                BorderThickness="0,0,1,0" BorderBrush="#313244">
+            <DockPanel>
+                <Border DockPanel.Dock="Top" Padding="12,8,8,8" BorderThickness="0,0,0,1"
+                        BorderBrush="#313244">
+                    <DockPanel>
+                        <TextBlock Text="SESSIONS" Foreground="#6c7086" FontSize="10"
+                                   FontWeight="Bold" VerticalAlignment="Center"/>
+                        <Button DockPanel.Dock="Right" Content="+" Style="{StaticResource ToolBtn}"
+                                ToolTip="New Session (Ctrl+T)" Click="NewSession_Click"
+                                Width="24" Height="24" FontSize="16" Foreground="#a6e3a1"/>
+                    </DockPanel>
+                </Border>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="SidebarSessionList" Margin="6,6"/>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+        <!-- ── Terminal grid ────────────────────────────────────────────── -->
+        <Grid x:Name="TerminalGrid" Background="#1e1e2e">
+            <TextBlock x:Name="EmptyState"
+                       Text="No sessions open.&#x0a;Press Ctrl+T or click ＋ New Session to get started."
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="#45475a" FontSize="15" TextAlignment="Center"
+                       LineHeight="24"/>
+        </Grid>
+    </DockPanel>
+</Window>
