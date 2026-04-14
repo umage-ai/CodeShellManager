@@ -8,6 +8,8 @@ A Windows desktop app for running **multiple AI coding agents side-by-side** —
 
 Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseudo-terminal fidelity.
 
+![CodeShellManager screenshot showing four Claude Code sessions in a 2×2 grid layout](docs/screenshot.png)
+
 ---
 
 ## Features
