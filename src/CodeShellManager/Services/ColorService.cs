@@ -4,11 +4,22 @@ namespace CodeShellManager.Services;
 
 public static class ColorService
 {
+    // 12 colours spaced ~30° apart on the HSL wheel, all at similar saturation/lightness
+    // so every project folder gets a clearly distinct accent colour.
     private static readonly string[] Palette =
     [
-        "#E57373", "#64B5F6", "#81C784", "#BA68C8",
-        "#FFB74D", "#4DB6AC", "#F06292", "#A1887F",
-        "#90A4AE", "#DCE775", "#FF8A65", "#4FC3F7",
+        "#FF6B6B",  // red
+        "#FF9E42",  // orange
+        "#FFD166",  // yellow
+        "#AEDE68",  // lime
+        "#51CF66",  // green
+        "#38D9A9",  // emerald
+        "#66D9E8",  // cyan
+        "#4DABF7",  // blue
+        "#748FFC",  // indigo
+        "#9775FA",  // violet
+        "#F783AC",  // pink
+        "#FF6B95",  // rose
     ];
 
     public static string GetHexColor(string folderPath)

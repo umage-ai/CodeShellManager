@@ -295,7 +295,7 @@ public partial class MainWindow : Window
         };
 
         var inner = new Grid();
-        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(4) });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // status dot
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // buttons
@@ -304,8 +304,8 @@ public partial class MainWindow : Window
         var stripe = new Border
         {
             Background = accentBrush,
-            CornerRadius = new CornerRadius(3, 0, 0, 3),
-            Width = 4
+            CornerRadius = new CornerRadius(4, 0, 0, 4),
+            Width = 6
         };
         Grid.SetColumn(stripe, 0);
 
@@ -725,7 +725,7 @@ public partial class MainWindow : Window
 
         var wrapper = new Border
         {
-            BorderThickness = new Thickness(0, 2, 0, 0),
+            BorderThickness = new Thickness(0, 3, 0, 0),
             BorderBrush = new SolidColorBrush(accentColor),
             Background = new SolidColorBrush(Color.FromRgb(30, 30, 46))
         };

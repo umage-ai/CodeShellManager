@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v4 installer for CodeShellManager.
+  Build with:
+    wix build installer/CodeShellManager.wxs \
+      -d Version=1.0.0 \
+      -d PublishDir=publish \
+      -ext WixToolset.UI.wixext \
+      -arch x64 \
+      -o dist/CodeShellManager-1.0.0-Setup.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="CodeShellManager"
+           Manufacturer="umage.ai"
+           Version="$(var.Version)"
+           UpgradeCode="3F7A9B1C-2D5E-4F8A-B0C3-6E1D9A4F2B7E"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of CodeShellManager is already installed. Please uninstall it first." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Minimal UI: license agreement then install -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
+
+    <Feature Id="ProductFeature" Title="CodeShellManager" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+  </Package>
+
+  <!-- ── Directory layout ──────────────────────────────────────────────────── -->
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="ManufacturerFolder" Name="umage">
+          <Directory Id="INSTALLFOLDER" Name="CodeShellManager">
+            <Directory Id="AssetsFolder" Name="Assets" />
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppMenuFolder" Name="CodeShellManager" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+  </Fragment>
+
+  <!-- ── Files and shortcuts ───────────────────────────────────────────────── -->
+  <Fragment>
+    <ComponentGroup Id="ProductComponents">
+
+      <!-- Main executable -->
+      <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="*">
+        <File Id="CodeShellManagerExe"
+              Source="$(var.PublishDir)\CodeShellManager.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- xterm.js Assets (required at runtime — loaded by WebView2) -->
+      <Component Id="AssetFiles" Directory="AssetsFolder" Guid="*">
+        <File Source="$(var.PublishDir)\Assets\terminal.html" KeyPath="yes" />
+        <File Source="$(var.PublishDir)\Assets\xterm.js" />
+        <File Source="$(var.PublishDir)\Assets\xterm.css" />
+        <File Source="$(var.PublishDir)\Assets\xterm-addon-fit.js" />
+      </Component>
+
+      <!-- Start Menu shortcuts -->
+      <Component Id="StartMenuShortcuts" Directory="AppMenuFolder" Guid="*">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="CodeShellManager"
+                  Description="Multi-terminal host for Claude Code"
+                  Target="[INSTALLFOLDER]CodeShellManager.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="UninstallShortcut"
+                  Name="Uninstall CodeShellManager"
+                  Target="[SystemFolder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
+        <RemoveFolder Id="AppMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\umage\CodeShellManager"
+                       Name="StartMenu"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <!-- Desktop shortcut -->
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="*">
+        <Shortcut Id="DesktopShortcutLink"
+                  Name="CodeShellManager"
+                  Description="Multi-terminal host for Claude Code"
+                  Target="[INSTALLFOLDER]CodeShellManager.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\umage\CodeShellManager"
+                       Name="Desktop"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>
