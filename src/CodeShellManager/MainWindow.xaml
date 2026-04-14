@@ -76,6 +76,23 @@
                            Margin="4,0,16,0"/>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Update-available badge (shown when a new GitHub release exists) -->
+                    <Border x:Name="UpdateBadge" Background="#a6e3a1" CornerRadius="10"
+                            Margin="0,0,8,0" VerticalAlignment="Center" Visibility="Collapsed">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="✕"
+                                    Background="Transparent" BorderThickness="0"
+                                    Foreground="#1e1e2e" FontSize="9" Padding="5,2,5,2"
+                                    Cursor="Hand" ToolTip="Dismiss"
+                                    Click="UpdateBadgeDismiss_Click"/>
+                            <TextBlock x:Name="UpdateBadgeText" Text="↑ update"
+                                       Foreground="#1e1e2e" FontSize="11" FontWeight="Bold"
+                                       Padding="8,2,2,2" Cursor="Hand" VerticalAlignment="Center"
+                                       MouseLeftButtonDown="UpdateBadge_Click"
+                                       ToolTip="Click to open release page"/>
+                        </DockPanel>
+                    </Border>
+
                     <Border x:Name="AlertBadge" Background="#f38ba8" CornerRadius="10"
                             Padding="7,2" Margin="0,0,8,0" VerticalAlignment="Center"
                             Visibility="Collapsed">

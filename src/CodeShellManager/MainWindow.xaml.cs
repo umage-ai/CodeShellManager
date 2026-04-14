@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     private readonly SessionManager _sessionManager = new();
     private readonly StateService _stateService = new();
     private readonly MainViewModel _vm;
+    private string? _updateReleaseUrl;
     // Per-session UI: the WebView2, its persistent wrapper Border (built once, reused across layouts),
     // and its sidebar item.
     private readonly Dictionary<string, (WebView2 webView, Border terminalWrapper, Border sidebarItem)> _sessionUi = [];
@@ -75,6 +76,7 @@ public partial class MainWindow : Window
     {
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
+        _ = CheckForUpdatesAsync();   // fire-and-forget; never blocks startup
 
         var saved = _sessionManager.Sessions.ToList();
         Log($"OnLoaded: {saved.Count} saved sessions, AutoRestore={_vm.Settings.AutoRestoreSessions}");
@@ -1094,6 +1096,43 @@ public partial class MainWindow : Window
             };
             ShortcutPanel.Children.Add(btn);
         }
+    }
+
+    // ── Update check ─────────────────────────────────────────────────────────
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            // Small delay so the window finishes rendering before we hit the network
+            await Task.Delay(4000);
+            var result = await UpdateService.CheckAsync();
+            if (result == null) return;
+
+            Dispatcher.Invoke(() =>
+            {
+                _updateReleaseUrl = result.ReleaseUrl;
+                UpdateBadgeText.Text = $"↑ v{result.LatestVersion} available";
+                UpdateBadge.Visibility = Visibility.Visible;
+
+                if (_vm.Settings.ShowToastNotifications)
+                    ToastHelper.Show("Update available",
+                        $"CodeShellManager v{result.LatestVersion} is ready to download.");
+            });
+        }
+        catch { /* never surface update errors to the user */ }
+    }
+
+    private void UpdateBadge_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_updateReleaseUrl == null) return;
+        System.Diagnostics.Process.Start(
+            new System.Diagnostics.ProcessStartInfo(_updateReleaseUrl) { UseShellExecute = true });
+    }
+
+    private void UpdateBadgeDismiss_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateBadge.Visibility = Visibility.Collapsed;
     }
 
     // ── PowerShell quick-launch ───────────────────────────────────────────────
