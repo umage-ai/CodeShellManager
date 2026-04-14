@@ -15,6 +15,12 @@ public partial class OutputIndexer : IDisposable
     private readonly Task _worker;
     private bool _disposed;
 
+    /// <summary>
+    /// When set, output arriving before this time is not indexed.
+    /// Use for --continue / --resume sessions to skip the conversation replay.
+    /// </summary>
+    public DateTime SkipUntil { get; set; } = DateTime.MinValue;
+
     public OutputIndexer(SqliteConnection db, string sessionId, string sessionName)
     {
         _db = db;
@@ -27,6 +33,7 @@ public partial class OutputIndexer : IDisposable
 
     public void Feed(string rawOutput)
     {
+        if (DateTime.UtcNow < SkipUntil) return;
         string clean = AnsiPattern().Replace(rawOutput, "");
         var lines = clean.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         foreach (var line in lines)

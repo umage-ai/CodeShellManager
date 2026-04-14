@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using CodeShellManager.Models;
 
 namespace CodeShellManager.Views;
 
@@ -20,8 +19,7 @@ public partial class NewSessionDialog : Window
     public string SessionName { get; private set; } = "";
     public string SelectedGroupId { get; private set; } = "";
 
-    public NewSessionDialog(IEnumerable<SessionGroup> groups, string defaultFolder = "",
-        IEnumerable<string>? launchCommands = null)
+    public NewSessionDialog(string defaultFolder = "", IEnumerable<string>? launchCommands = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
@@ -33,13 +31,6 @@ public partial class NewSessionDialog : Window
             CommandCombo.Items.Add(new ComboBoxItem { Content = cmd, Tag = cmd });
         CommandCombo.Items.Add(customItem);
         CommandCombo.SelectedIndex = 0;
-
-        foreach (var g in groups)
-        {
-            GroupCombo.Items.Add(new ComboBoxItem { Content = g.Name, Tag = g.Id });
-        }
-        if (GroupCombo.Items.Count > 0)
-            GroupCombo.SelectedIndex = 0;
 
         FolderBox.TextChanged += (_, _) => AutoFillName();
     }
@@ -93,8 +84,6 @@ public partial class NewSessionDialog : Window
             SelectedCommand = parts.Length > 0 ? parts[0] : "claude";
             SelectedArgs = parts.Length > 1 ? parts[1] : "";
         }
-
-        SelectedGroupId = (GroupCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
 
         DialogResult = true;
         Close();

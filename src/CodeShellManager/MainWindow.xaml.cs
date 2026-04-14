@@ -68,6 +68,7 @@ public partial class MainWindow : Window
         KeyDown += OnKeyDown;
 
         BuildShortcutPanel();
+        SetupSidebarDrop();
     }
 
     // ── Startup ───────────────────────────────────────────────────────────────
@@ -135,7 +136,6 @@ public partial class MainWindow : Window
     private void OpenNewSessionDialog(string defaultFolder = "")
     {
         var dialog = new NewSessionDialog(
-            _sessionManager.Groups,
             string.IsNullOrEmpty(defaultFolder) ? _vm.Settings.DefaultWorkingFolder : defaultFolder,
             _vm.Settings.LaunchCommands)
         {
@@ -260,6 +260,13 @@ public partial class MainWindow : Window
             {
                 Log($"Auto-resume: no prior session found for '{session.WorkingFolder}', starting fresh");
             }
+        }
+
+        // If resuming a previous session, skip indexing startup replay to avoid duplicate search entries
+        if (vm.OutputIndexer != null &&
+            (effectiveArgs.Contains("--continue") || effectiveArgs.Contains("--resume")))
+        {
+            vm.OutputIndexer.SkipUntil = DateTime.UtcNow.AddSeconds(20);
         }
 
         Log($"Starting PTY: workDir='{workDir}'");
@@ -515,6 +522,28 @@ public partial class MainWindow : Window
 
         container.Child = inner;
 
+        // ── Drag-and-drop reorder ─────────────────────────────────────────────
+        System.Windows.Point dragStartPos = default;
+        bool dragPending = false;
+
+        container.PreviewMouseLeftButtonDown += (_, me) =>
+        {
+            dragStartPos = me.GetPosition(null);
+            dragPending = true;
+        };
+        container.PreviewMouseLeftButtonUp += (_, _) => dragPending = false;
+        container.PreviewMouseMove += (_, me) =>
+        {
+            if (!dragPending || me.LeftButton != MouseButtonState.Pressed) return;
+            var diff = me.GetPosition(null) - dragStartPos;
+            if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
+                Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
+            {
+                dragPending = false;
+                System.Windows.DragDrop.DoDragDrop(container, vm.Id, System.Windows.DragDropEffects.Move);
+            }
+        };
+
         // Click to activate
         container.MouseLeftButtonDown += (_, _) =>
         {
@@ -611,6 +640,52 @@ public partial class MainWindow : Window
                 ? new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44))
                 : Brushes.Transparent;
         }
+    }
+
+    // ── Sidebar drag-and-drop ─────────────────────────────────────────────────
+
+    // Called once from constructor after SidebarSessionList is accessible.
+    private void SetupSidebarDrop()
+    {
+        SidebarSessionList.AllowDrop = true;
+        SidebarSessionList.DragOver += (_, e) =>
+        {
+            e.Effects = e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat)
+                ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+            e.Handled = true;
+        };
+        SidebarSessionList.Drop += (_, e) =>
+        {
+            if (!e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat)) return;
+            string draggedId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+            int targetIndex = GetSidebarDropIndex(e.GetPosition(SidebarSessionList));
+            _vm.MoveSession(draggedId, targetIndex);
+            RebuildSidebarOrder();
+        };
+    }
+
+    private int GetSidebarDropIndex(System.Windows.Point pos)
+    {
+        var children = SidebarSessionList.Children.OfType<Border>().ToList();
+        for (int i = 0; i < children.Count; i++)
+        {
+            var itemPos = children[i].TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
+            double midY = itemPos.Y + children[i].ActualHeight / 2;
+            if (pos.Y < midY) return i;
+        }
+        return children.Count;
+    }
+
+    private void RebuildSidebarOrder()
+    {
+        SidebarSessionList.Children.Clear();
+        foreach (var vm in _vm.Sessions)
+        {
+            if (_sessionUi.TryGetValue(vm.Id, out var ui))
+                SidebarSessionList.Children.Add(ui.sidebarItem);
+        }
+        UpdateSidebarActiveState();
+        RefreshTerminalLayout();
     }
 
     private void RefreshSidebarItem(string sessionId) => UpdateAlertBadge();

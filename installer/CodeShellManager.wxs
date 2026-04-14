@@ -12,9 +12,10 @@
 
     <MediaTemplate EmbedCab="yes" />
 
-    <ui:WixUI Id="WixUI_Minimal" />
-    <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
-    <WixVariable Id="WixUIBannerBmp"  Value="installer\banner.bmp" />
+    <ui:WixUI Id="WixUI_InstallDir" />
+    <WixVariable Id="WixUILicenseRtf"  Value="installer\License.rtf" />
+    <WixVariable Id="WixUIBannerBmp"   Value="installer\banner.bmp" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
     <Feature Id="ProductFeature" Title="CodeShellManager" Level="1">
       <ComponentGroupRef Id="ProductComponents" />

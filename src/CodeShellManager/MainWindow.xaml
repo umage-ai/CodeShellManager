@@ -71,9 +71,15 @@
         <Border DockPanel.Dock="Top" Background="#181825" BorderThickness="0,0,0,1"
                 BorderBrush="#313244" Padding="8,5">
             <DockPanel>
-                <TextBlock DockPanel.Dock="Left" Text="⬛ CodeShellManager" FontSize="13"
-                           FontWeight="SemiBold" Foreground="#89b4fa" VerticalAlignment="Center"
-                           Margin="4,0,16,0"/>
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center"
+                            Margin="4,0,16,0">
+                    <TextBlock Text="CodeShellManager" FontSize="13"
+                               FontWeight="SemiBold" Foreground="#cdd6f4" VerticalAlignment="Center"/>
+                    <TextBlock Text=" by " FontSize="11" Foreground="#6c7086" VerticalAlignment="Center"/>
+                    <TextBlock Text="umage.ai" FontSize="11" FontWeight="SemiBold"
+                               Foreground="#89b4fa" VerticalAlignment="Center"
+                               Cursor="Hand" ToolTip="https://umage.ai"/>
+                </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- Update-available badge (shown when a new GitHub release exists) -->

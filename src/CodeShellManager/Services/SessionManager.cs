@@ -60,6 +60,18 @@ public class SessionManager
         SessionsChanged?.Invoke();
     }
 
+    public void MoveSession(string sessionId, int newIndex)
+    {
+        var session = _sessions.FirstOrDefault(s => s.Id == sessionId);
+        if (session == null) return;
+        int cur = _sessions.IndexOf(session);
+        newIndex = Math.Clamp(newIndex, 0, _sessions.Count - 1);
+        if (cur == newIndex) return;
+        _sessions.RemoveAt(cur);
+        _sessions.Insert(newIndex, session);
+        SessionsChanged?.Invoke();
+    }
+
     public void UpdateStatus(string sessionId, SessionStatus status)
     {
         var session = _sessions.FirstOrDefault(s => s.Id == sessionId);

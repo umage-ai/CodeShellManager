@@ -131,4 +131,15 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Returns sessions assigned to layout slots 0..3</summary>
     public SessionViewModel? GetSlotSession(int slot) =>
         slot < Sessions.Count ? Sessions[slot] : null;
+
+    public void MoveSession(string sessionId, int newIndex)
+    {
+        _sessionManager.MoveSession(sessionId, newIndex);
+        var vm = Sessions.FirstOrDefault(s => s.Id == sessionId);
+        if (vm == null) return;
+        int cur = Sessions.IndexOf(vm);
+        newIndex = Math.Clamp(newIndex, 0, Sessions.Count - 1);
+        if (cur != newIndex) Sessions.Move(cur, newIndex);
+        _ = SaveStateAsync();
+    }
 }

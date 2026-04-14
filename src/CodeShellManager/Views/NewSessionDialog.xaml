@@ -1,7 +1,7 @@
 <Window x:Class="CodeShellManager.Views.NewSessionDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="New Session" Height="370" Width="480"
+        Title="New Session" Height="310" Width="480"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#1e1e2e" Foreground="#cdd6f4"
         FontFamily="Segoe UI">
@@ -181,12 +181,6 @@
         <StackPanel Grid.Row="3" Margin="0,0,0,12">
             <TextBlock Text="Session Name (optional)" Style="{StaticResource Label}"/>
             <TextBox x:Name="NameBox"/>
-        </StackPanel>
-
-        <!-- Group -->
-        <StackPanel Grid.Row="4" Margin="0,0,0,12">
-            <TextBlock Text="Group" Style="{StaticResource Label}"/>
-            <ComboBox x:Name="GroupCombo"/>
         </StackPanel>
 
         <!-- Buttons -->
