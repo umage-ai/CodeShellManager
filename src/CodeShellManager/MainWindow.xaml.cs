@@ -478,10 +478,12 @@ public partial class MainWindow : Window
         };
 
         var exploreBtn = MakeMiniButton("📁", "Open in Explorer", () => vm.OpenInExplorerCommand.Execute(null));
-        var renameBtn = MakeMiniButton("✏", "Rename session", StartRename);
-        var closeBtn = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
+        var psBtn      = MakeMiniButton(">_", "Open PowerShell here", () => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId));
+        var renameBtn  = MakeMiniButton("✏", "Rename session", StartRename);
+        var closeBtn   = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
 
         btnPanel.Children.Add(exploreBtn);
+        btnPanel.Children.Add(psBtn);
         btnPanel.Children.Add(renameBtn);
         btnPanel.Children.Add(closeBtn);
 
@@ -804,6 +806,22 @@ public partial class MainWindow : Window
         };
         explorerBtn.Click += (_, _) => vm.OpenInExplorerCommand.Execute(null);
 
+        // PowerShell quick-launch button
+        var toolbarPsBtn = new WpfButton
+        {
+            Content = ">_",
+            ToolTip = "Open PowerShell in this folder",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 11,
+            FontFamily = new FontFamily("Consolas"),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(5, 2, 5, 2),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+        toolbarPsBtn.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
+
         // Notes button
         var notesBtn = new WpfButton
         {
@@ -820,11 +838,13 @@ public partial class MainWindow : Window
 
         DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
+        DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
         toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
+        toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
@@ -1074,6 +1094,38 @@ public partial class MainWindow : Window
             };
             ShortcutPanel.Children.Add(btn);
         }
+    }
+
+    // ── PowerShell quick-launch ───────────────────────────────────────────────
+
+    private void LaunchPowerShellInFolder(string workingFolder, string groupId)
+    {
+        // Prefer PowerShell 7+ (pwsh); fall back to Windows PowerShell 5.1
+        string cmd = ExistsOnPath("pwsh") ? "pwsh" : "powershell";
+        string folderName = string.IsNullOrEmpty(workingFolder)
+            ? "PS"
+            : System.IO.Path.GetFileName(workingFolder.TrimEnd('/', '\\')) + " (PS)";
+
+        var session = _sessionManager.CreateSession(folderName, workingFolder, cmd, "", groupId);
+        _ = LaunchSessionAsync(session);
+    }
+
+    private static bool ExistsOnPath(string executable)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "where.exe",
+                Arguments = executable,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            p?.WaitForExit(2000);
+            return p?.ExitCode == 0;
+        }
+        catch { return false; }
     }
 
     // ── Settings ──────────────────────────────────────────────────────────────
