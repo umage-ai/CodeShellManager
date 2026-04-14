@@ -58,6 +58,9 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:Version=${{ steps.ver.outputs.version }} `
             -o publish
+          # Ensure Assets are always present as loose files alongside the exe
+          # (ExcludeFromSingleFile handles this, but belt-and-suspenders for SDK quirks)
+          Copy-Item -Path src/CodeShellManager/Assets -Destination publish/Assets -Recurse -Force
 
       # ── Install WiX v4 ───────────────────────────────────────────────────────
       - name: Install WiX toolset v4 (last open-source release)
