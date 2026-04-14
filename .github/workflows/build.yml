@@ -63,6 +63,32 @@ jobs:
           dotnet tool install --global wix --version "4.0.5"
           wix extension add --global WixToolset.UI.wixext/4.0.5
 
+      # ── Sign exe (Azure Trusted Signing) ────────────────────────────────────
+      # Requires these GitHub secrets to be set on the repo:
+      #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+      #   AZURE_SIGNING_ENDPOINT  (e.g. https://eus.codesigning.azure.net/)
+      #   AZURE_SIGNING_ACCOUNT   (your Trusted Signing account name)
+      #   AZURE_SIGNING_PROFILE   (your certificate profile name)
+      #
+      # Setup guide: https://learn.microsoft.com/azure/trusted-signing/quickstart
+      - name: Sign executable (Azure Trusted Signing)
+        if: |
+          startsWith(github.ref, 'refs/tags/v') &&
+          secrets.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: publish
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       # ── Build MSI ────────────────────────────────────────────────────────────
       - name: Build MSI installer
         if: startsWith(github.ref, 'refs/tags/v')
@@ -76,12 +102,30 @@ jobs:
             -arch x64 `
             -o "dist/CodeShellManager-${{ steps.ver.outputs.version }}-Setup.msi"
 
+      # ── Sign MSI (Azure Trusted Signing) ─────────────────────────────────────
+      - name: Sign MSI (Azure Trusted Signing)
+        if: |
+          startsWith(github.ref, 'refs/tags/v') &&
+          secrets.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       # ── Create portable ZIP ──────────────────────────────────────────────────
       - name: Create portable ZIP
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          # Remove PDB from the portable zip
           Remove-Item publish\*.pdb -ErrorAction SilentlyContinue
           Compress-Archive -Path publish\* `
             -DestinationPath "dist/CodeShellManager-${{ steps.ver.outputs.version }}-win-x64.zip"
