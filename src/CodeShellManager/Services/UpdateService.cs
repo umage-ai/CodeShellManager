@@ -52,7 +52,14 @@ public static class UpdateService
     /// <summary>Returns the running assembly version as "Major.Minor.Build".</summary>
     public static string GetCurrentVersion()
     {
-        var v = Assembly.GetEntryAssembly()?.GetName().Version;
+        // AssemblyInformationalVersion is set by -p:Version=x.y.z at publish time.
+        // AssemblyVersion stays hardcoded in the csproj and is NOT updated per release.
+        var asm = Assembly.GetEntryAssembly();
+        var infoAttr = asm?.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>();
+        if (infoAttr?.InformationalVersion is { Length: > 0 } iv)
+            return iv.Split('+')[0]; // strip git-hash suffix added by the SDK
+
+        var v = asm?.GetName().Version;
         if (v == null) return "0.0.0";
         return $"{v.Major}.{v.Minor}.{v.Build}";
     }
