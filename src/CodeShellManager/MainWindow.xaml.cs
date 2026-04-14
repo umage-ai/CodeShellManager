@@ -29,6 +29,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Ellipse = System.Windows.Shapes.Ellipse;
+using WpfTextBox = System.Windows.Controls.TextBox;
 
 namespace CodeShellManager;
 
@@ -93,10 +95,6 @@ public partial class MainWindow : Window
 
         if (doRestore)
         {
-            // Sessions are already in _sessionManager from LoadFromState.
-            // LaunchSessionAsync will create VMs + PTYs; it must NOT call
-            // _sessionManager.CreateSession again (which would duplicate them).
-            // We pass the existing ShellSession objects directly.
             foreach (var s in saved)
             {
                 try { await LaunchSessionAsync(s, restoring: true); }
@@ -134,8 +132,10 @@ public partial class MainWindow : Window
 
     private void OpenNewSessionDialog(string defaultFolder = "")
     {
-        var dialog = new NewSessionDialog(_sessionManager.Groups,
-            string.IsNullOrEmpty(defaultFolder) ? _vm.Settings.DefaultWorkingFolder : defaultFolder)
+        var dialog = new NewSessionDialog(
+            _sessionManager.Groups,
+            string.IsNullOrEmpty(defaultFolder) ? _vm.Settings.DefaultWorkingFolder : defaultFolder,
+            _vm.Settings.LaunchCommands)
         {
             Owner = this
         };
@@ -180,13 +180,11 @@ public partial class MainWindow : Window
         };
 
         // Build the persistent wrapper NOW (webView has no parent yet — this is safe).
-        // The wrapper owns the webView in its visual tree.
-        // We keep it hidden and add it to TerminalGrid so WebView2 can initialize.
         var terminalWrapper = BuildTerminalWrapper(vm, webView);
         terminalWrapper.Visibility = Visibility.Collapsed;
         TerminalGrid.Children.Add(terminalWrapper);   // in tree → WebView2 can init
 
-        // Create bridge and initialize (EnsureCoreWebView2Async + Navigate)
+        // Create bridge and initialize
         var bridge = new TerminalBridge(webView);
         vm.Bridge = bridge;
 
@@ -214,21 +212,42 @@ public partial class MainWindow : Window
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
         vm.Pty = pty;
-        pty.Exited += () => Dispatcher.Invoke(() =>
+        pty.Exited += () =>
         {
-            _sessionManager.UpdateStatus(session.Id, SessionStatus.Exited);
-            RefreshSidebarItem(session.Id);
-        });
+            if (_searchService != null)
+                _ = _searchService.RecordSessionHistoryAsync(
+                    session.Id, session.Name, session.WorkingFolder,
+                    session.Command, session.Args, session.GroupId);
+            Dispatcher.Invoke(() =>
+            {
+                _sessionManager.UpdateStatus(session.Id, SessionStatus.Exited);
+                RefreshSidebarItem(session.Id);
+            });
+        };
 
         string workDir = Directory.Exists(session.WorkingFolder)
             ? session.WorkingFolder
             : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+        // Auto-resume Claude Code sessions when restoring
+        string effectiveArgs = session.Args;
+        if (restoring && ClaudeSessionService.IsClaudeCommand(session.Command)
+            && !effectiveArgs.Contains("--resume")
+            && !effectiveArgs.Contains("--continue"))
+        {
+            string? sessionId = ClaudeSessionService.GetLastSessionId(session.WorkingFolder);
+            string resumeFlag = sessionId != null ? $"--resume {sessionId}" : "--continue";
+            effectiveArgs = string.IsNullOrEmpty(effectiveArgs)
+                ? resumeFlag
+                : $"{resumeFlag} {effectiveArgs}";
+            Log($"Auto-resume: using '{resumeFlag}' for claude session in '{session.WorkingFolder}'");
+        }
+
         Log($"Starting PTY: workDir='{workDir}'");
         try
         {
             var (cols, rows) = bridge.TerminalSize;
-            pty.Start(session.Command, session.Args, workDir, cols, rows);
+            pty.Start(session.Command, effectiveArgs, workDir, cols, rows);
             Log("PTY started OK");
             bridge.AttachPty(pty);
             _sessionManager.UpdateStatus(session.Id, SessionStatus.Running);
@@ -254,7 +273,7 @@ public partial class MainWindow : Window
 
         _vm.RegisterSession(vm);
         RefreshTerminalLayout();
-        bridge.FitTerminal();   // force xterm.js to resize after becoming visible
+        bridge.FitTerminal();
         UpdateAlertBadge();
         EmptyState.Visibility = Visibility.Collapsed;
     }
@@ -278,7 +297,8 @@ public partial class MainWindow : Window
         var inner = new Grid();
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(4) });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // status dot
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // buttons
 
         // Accent stripe
         var stripe = new Border
@@ -298,7 +318,58 @@ public partial class MainWindow : Window
             Foreground = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
             FontSize = 13,
             FontWeight = FontWeights.Medium,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            ToolTip = "Double-click to rename"
+        };
+
+        var renameBox = new WpfTextBox
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa)),
+            CaretBrush = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 2, 4, 2),
+            FontSize = 13,
+            Visibility = Visibility.Collapsed
+        };
+
+        void CommitRename()
+        {
+            string newName = renameBox.Text.Trim();
+            if (!string.IsNullOrEmpty(newName))
+            {
+                vm.Rename(newName);
+                nameText.Text = vm.DisplayName;
+            }
+            renameBox.Visibility = Visibility.Collapsed;
+            nameText.Visibility = Visibility.Visible;
+            _ = _vm.SaveStateAsync();
+        }
+
+        void StartRename()
+        {
+            renameBox.Text = vm.DisplayName;
+            nameText.Visibility = Visibility.Collapsed;
+            renameBox.Visibility = Visibility.Visible;
+            renameBox.SelectAll();
+            renameBox.Focus();
+        }
+
+        renameBox.LostFocus += (_, _) => CommitRename();
+        renameBox.KeyDown += (_, ke) =>
+        {
+            if (ke.Key == Key.Enter) { CommitRename(); ke.Handled = true; }
+            else if (ke.Key == Key.Escape)
+            {
+                renameBox.Visibility = Visibility.Collapsed;
+                nameText.Visibility = Visibility.Visible;
+                ke.Handled = true;
+            }
+        };
+        nameText.MouseLeftButtonDown += (_, me) =>
+        {
+            if (me.ClickCount == 2) { StartRename(); me.Handled = true; }
         };
 
         var folderText = new TextBlock
@@ -309,6 +380,58 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, 1, 0, 0),
             TextTrimming = TextTrimming.CharacterEllipsis
         };
+
+        // Git branch indicator
+        var gitText = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            FontSize = 10,
+            Margin = new Thickness(0, 2, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed
+        };
+
+        static void UpdateGitText(TextBlock tb, SessionViewModel svm)
+        {
+            if (!svm.GitInfoLoaded || string.IsNullOrEmpty(svm.GitBranch))
+            {
+                tb.Visibility = Visibility.Collapsed;
+                return;
+            }
+            tb.Inlines.Clear();
+            if (svm.GitIsDirty)
+            {
+                tb.Inlines.Add(new System.Windows.Documents.Run("● ")
+                    { Foreground = new SolidColorBrush(Color.FromRgb(0xfe, 0xb3, 0x86)) });
+            }
+            tb.Inlines.Add(new System.Windows.Documents.Run($"\u2387 {svm.GitBranch}"));
+            tb.Visibility = Visibility.Visible;
+        }
+
+        UpdateGitText(gitText, vm);
+
+        // Claude session tag (sidebar)
+        if (ClaudeSessionService.IsClaudeCommand(vm.Command))
+        {
+            var sidebarClaudeBadge = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0x28, 0x89, 0xb4, 0xfa)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0x89, 0xb4, 0xfa)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(4, 1, 4, 1),
+                Margin = new Thickness(0, 2, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+            sidebarClaudeBadge.Child = new TextBlock
+            {
+                Text = "claude",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa)),
+                FontSize = 9,
+                FontWeight = FontWeights.SemiBold
+            };
+            textPanel.Children.Add(sidebarClaudeBadge);
+        }
 
         // Alert badge
         var alertBadge = new Border
@@ -329,8 +452,22 @@ public partial class MainWindow : Window
         };
 
         textPanel.Children.Add(nameText);
+        textPanel.Children.Add(renameBox);
         textPanel.Children.Add(folderText);
+        textPanel.Children.Add(gitText);
         textPanel.Children.Add(alertBadge);
+
+        // Status dot (waiting indicator)
+        var statusDot = new Ellipse
+        {
+            Width = 8,
+            Height = 8,
+            Fill = Brushes.Transparent,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+            Visibility = Visibility.Collapsed
+        };
+        Grid.SetColumn(statusDot, 2);
 
         // Action buttons
         var btnPanel = new StackPanel
@@ -341,15 +478,18 @@ public partial class MainWindow : Window
         };
 
         var exploreBtn = MakeMiniButton("📁", "Open in Explorer", () => vm.OpenInExplorerCommand.Execute(null));
+        var renameBtn = MakeMiniButton("✏", "Rename session", StartRename);
         var closeBtn = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
 
         btnPanel.Children.Add(exploreBtn);
+        btnPanel.Children.Add(renameBtn);
         btnPanel.Children.Add(closeBtn);
 
         Grid.SetColumn(textPanel, 1);
-        Grid.SetColumn(btnPanel, 2);
+        Grid.SetColumn(btnPanel, 3);
         inner.Children.Add(stripe);
         inner.Children.Add(textPanel);
+        inner.Children.Add(statusDot);
         inner.Children.Add(btnPanel);
 
         container.Child = inner;
@@ -373,17 +513,49 @@ public partial class MainWindow : Window
                 container.Background = Brushes.Transparent;
         };
 
-        // Subscribe to alert changes
+        // Subscribe to property changes
         vm.PropertyChanged += (_, args) =>
         {
-            if (args.PropertyName == nameof(SessionViewModel.NeedsAttention))
+            Dispatcher.Invoke(() =>
             {
-                Dispatcher.Invoke(() =>
+                switch (args.PropertyName)
                 {
-                    alertBadge.Visibility = vm.NeedsAttention ? Visibility.Visible : Visibility.Collapsed;
-                    UpdateAlertBadge();
-                });
-            }
+                    case nameof(SessionViewModel.DisplayName):
+                        nameText.Text = vm.DisplayName;
+                        break;
+
+                    case nameof(SessionViewModel.NeedsAttention):
+                        alertBadge.Visibility = vm.NeedsAttention ? Visibility.Visible : Visibility.Collapsed;
+                        UpdateAlertBadge();
+                        break;
+
+                    case nameof(SessionViewModel.IsWaitingForInput):
+                    case nameof(SessionViewModel.IsWaitingForApproval):
+                        if (vm.IsWaitingForInput)
+                        {
+                            statusDot.Fill = new SolidColorBrush(Color.FromRgb(0xa6, 0xe3, 0xa1)); // green
+                            statusDot.ToolTip = "Waiting for input";
+                            statusDot.Visibility = Visibility.Visible;
+                        }
+                        else if (vm.IsWaitingForApproval)
+                        {
+                            statusDot.Fill = new SolidColorBrush(Color.FromRgb(0xff, 0xb7, 0x4d)); // orange
+                            statusDot.ToolTip = "Tool approval needed";
+                            statusDot.Visibility = Visibility.Visible;
+                        }
+                        else
+                        {
+                            statusDot.Visibility = Visibility.Collapsed;
+                        }
+                        break;
+
+                    case nameof(SessionViewModel.GitBranch):
+                    case nameof(SessionViewModel.GitIsDirty):
+                    case nameof(SessionViewModel.GitInfoLoaded):
+                        UpdateGitText(gitText, vm);
+                        break;
+                }
+            });
         };
 
         return container;
@@ -435,6 +607,11 @@ public partial class MainWindow : Window
     private void Layout_Two_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.TwoColumn);
     private void Layout_Three_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.ThreeColumn);
     private void Layout_Grid_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.TwoByTwo);
+    private void Layout_TwoRow_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.TwoRow);
+    private void Layout_Four_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.FourColumn);
+    private void Layout_Six_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixColumn);
+    private void Layout_SixTwo_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixByTwo);
+    private void Layout_SixThree_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixByThree);
 
     private void SetLayout(LayoutMode mode)
     {
@@ -486,6 +663,37 @@ public partial class MainWindow : Window
                 PlaceTerminal(sessions, 3, 1, 1);
                 break;
 
+            case LayoutMode.TwoRow:
+                TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                PlaceTerminal(sessions, 0, 0, 0);
+                PlaceTerminal(sessions, 1, 1, 0);
+                break;
+
+            case LayoutMode.FourColumn:
+                for (int i = 0; i < 4; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                for (int i = 0; i < 4; i++) PlaceTerminal(sessions, i, 0, i);
+                break;
+
+            case LayoutMode.SixColumn:
+                for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                for (int i = 0; i < 6; i++) PlaceTerminal(sessions, i, 0, i);
+                break;
+
+            case LayoutMode.SixByTwo:
+                for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                for (int i = 0; i < 12; i++) PlaceTerminal(sessions, i, i / 6, i % 6);
+                break;
+
+            case LayoutMode.SixByThree:
+                for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                for (int r = 0; r < 3; r++) TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                for (int i = 0; i < 18; i++) PlaceTerminal(sessions, i, i / 6, i % 6);
+                break;
+
             default: // Single
             {
                 var target = _vm.ActiveSession ?? sessions.FirstOrDefault();
@@ -532,6 +740,27 @@ public partial class MainWindow : Window
         };
         var toolbarContent = new DockPanel();
 
+        // Claude badge — visible only for claude sessions
+        var claudeBadge = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0x28, 0x89, 0xb4, 0xfa)), // subtle blue tint
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0x89, 0xb4, 0xfa)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(4, 1, 4, 1),
+            Margin = new Thickness(0, 0, 6, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = ClaudeSessionService.IsClaudeCommand(vm.Command)
+                ? Visibility.Visible : Visibility.Collapsed
+        };
+        claudeBadge.Child = new TextBlock
+        {
+            Text = "claude",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa)),
+            FontSize = 9,
+            FontWeight = FontWeights.SemiBold
+        };
+
         var titleBlock = new TextBlock
         {
             Text = vm.DisplayName,
@@ -550,6 +779,17 @@ public partial class MainWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis
         };
 
+        // Status dot for terminal toolbar
+        var termStatusDot = new Ellipse
+        {
+            Width = 8,
+            Height = 8,
+            Fill = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)), // gray = running
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0),
+            ToolTip = "Running"
+        };
+
         var explorerBtn = new WpfButton
         {
             Content = "📁",
@@ -564,18 +804,125 @@ public partial class MainWindow : Window
         };
         explorerBtn.Click += (_, _) => vm.OpenInExplorerCommand.Execute(null);
 
+        // Notes button
+        var notesBtn = new WpfButton
+        {
+            Content = "📝",
+            ToolTip = "Project notes",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+
+        DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
+        DockPanel.SetDock(notesBtn, Dock.Right);
+        DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
+        toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
+        toolbarContent.Children.Add(notesBtn);
+        toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
         toolbarContent.Children.Add(folderBlock);
         toolbar.Child = toolbarContent;
 
-        DockPanel.SetDock(toolbar, Dock.Top);
-        outer.Children.Add(toolbar);
-        outer.Children.Add(webView);
+        // Notes panel (collapsible, docked between toolbar and terminal)
+        var notesBox = new WpfTextBox
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
+            BorderThickness = new Thickness(0),
+            AcceptsReturn = true,
+            AcceptsTab = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            Padding = new Thickness(12, 8, 12, 8),
+            TextWrapping = TextWrapping.Wrap,
+            CaretBrush = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4))
+        };
+        var notesPanel = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Height = 160,
+            Visibility = Visibility.Collapsed
+        };
+        notesPanel.Child = notesBox;
 
+        bool notesLoaded = false;
+        notesBtn.Click += async (_, _) =>
+        {
+            if (notesPanel.Visibility == Visibility.Collapsed)
+            {
+                if (!notesLoaded && _searchService != null && !string.IsNullOrEmpty(vm.WorkingFolder))
+                {
+                    notesBox.Text = await _searchService.GetNoteAsync(vm.WorkingFolder) ?? "";
+                    notesLoaded = true;
+                }
+                notesPanel.Visibility = Visibility.Visible;
+                notesBox.Focus();
+            }
+            else
+            {
+                notesPanel.Visibility = Visibility.Collapsed;
+            }
+        };
+
+        // Debounce save on each keystroke
+        System.Threading.Timer? noteDebounce = null;
+        notesBox.TextChanged += (_, _) =>
+        {
+            noteDebounce?.Dispose();
+            noteDebounce = new System.Threading.Timer(_ =>
+                Dispatcher.Invoke(() =>
+                {
+                    if (_searchService != null && !string.IsNullOrEmpty(vm.WorkingFolder))
+                        _ = _searchService.SaveNoteAsync(vm.WorkingFolder, notesBox.Text);
+                }),
+                null, 1000, System.Threading.Timeout.Infinite);
+        };
+
+        DockPanel.SetDock(toolbar, Dock.Top);
+        DockPanel.SetDock(notesPanel, Dock.Top);
+        outer.Children.Add(toolbar);
+        outer.Children.Add(notesPanel);
+        outer.Children.Add(webView);
         wrapper.Child = outer;
+
+        // Subscribe to waiting state changes for the status dot
+        vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(SessionViewModel.IsWaitingForInput)
+                                  or nameof(SessionViewModel.IsWaitingForApproval))
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (vm.IsWaitingForInput)
+                    {
+                        termStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xa6, 0xe3, 0xa1));
+                        termStatusDot.ToolTip = "Waiting for input";
+                    }
+                    else if (vm.IsWaitingForApproval)
+                    {
+                        termStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xff, 0xb7, 0x4d));
+                        termStatusDot.ToolTip = "Tool approval needed";
+                    }
+                    else
+                    {
+                        termStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86));
+                        termStatusDot.ToolTip = "Running";
+                    }
+                });
+            }
+        };
+
         return wrapper;
     }
 
@@ -602,12 +949,22 @@ public partial class MainWindow : Window
     {
         bool show = SearchPanelHost.Visibility != Visibility.Visible;
         SearchPanelHost.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        _vm.ShowSearch = show;
         if (show) SearchBox.Focus();
+    }
+
+    private void CloseSearchButton_Click(object s, RoutedEventArgs e)
+    {
+        SearchPanelHost.Visibility = Visibility.Collapsed;
+        _vm.ShowSearch = false;
     }
 
     private void SearchBox_KeyDown(object s, WpfKeyEventArgs e)
     {
-        if (e.Key == Key.Enter) DoSearch();
+        if (e.Key == Key.Enter)
+            DoSearch();
+        else if (e.Key == Key.Escape)
+            CloseSearchButton_Click(s, new RoutedEventArgs());
     }
 
     private void Search_Click(object s, RoutedEventArgs e) => DoSearch();
@@ -615,8 +972,74 @@ public partial class MainWindow : Window
     private async void DoSearch()
     {
         if (_searchService == null) return;
-        var results = await _searchService.SearchAsync(SearchBox.Text);
+        var results = await _searchService.SearchAsync(SearchBox.Text, _vm.Settings.MaxSearchResults);
         SearchResults.ItemsSource = results;
+    }
+
+    private async void SearchResult_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not SearchResult result)
+            return;
+
+        // Note results: open folder in Explorer
+        if (result.IsNote)
+        {
+            if (!string.IsNullOrEmpty(result.FolderPath) && Directory.Exists(result.FolderPath))
+                System.Diagnostics.Process.Start("explorer.exe", result.FolderPath);
+            return;
+        }
+
+        // Try to find matching live session
+        var session = _vm.Sessions.FirstOrDefault(s => s.Id == result.SessionId);
+        if (session == null)
+        {
+            await TryRelaunchFromHistoryAsync(result.SessionId, null, result.SessionName);
+            return;
+        }
+
+        _vm.FocusSessionCommand.Execute(session);
+        UpdateSidebarActiveState();
+        RefreshTerminalLayout();
+
+        if (_vm.Settings.SearchCollapseAfterNavigate)
+        {
+            SearchPanelHost.Visibility = Visibility.Collapsed;
+            _vm.ShowSearch = false;
+        }
+    }
+
+    private async Task TryRelaunchFromHistoryAsync(string? sessionId, string? folderPath, string? sessionName)
+    {
+        if (_searchService == null) return;
+
+        SessionHistoryEntry? entry = null;
+        if (!string.IsNullOrEmpty(sessionId))
+            entry = await _searchService.GetSessionHistoryAsync(sessionId);
+        if (entry == null && !string.IsNullOrEmpty(folderPath))
+            entry = await _searchService.GetLatestSessionHistoryForFolderAsync(folderPath);
+
+        if (entry == null)
+        {
+            string folder = folderPath ?? "";
+            if (!string.IsNullOrEmpty(folder))
+            {
+                var r = MessageBox.Show(
+                    $"Session '{sessionName}' is no longer open.\nOpen a new session in that folder?",
+                    "Session Not Found", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (r == MessageBoxResult.Yes)
+                    OpenNewSessionDialog(folder);
+            }
+            return;
+        }
+
+        var answer = MessageBox.Show(
+            $"Session '{entry.SessionName}' ({entry.WorkingFolder}) is not currently open.\nRelaunch it?",
+            "Relaunch Session?", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return;
+
+        var newSession = _sessionManager.CreateSession(
+            entry.SessionName, entry.WorkingFolder, entry.Command, entry.Args, entry.GroupId);
+        await LaunchSessionAsync(newSession);
     }
 
     // ── Command helper ────────────────────────────────────────────────────────
@@ -651,6 +1074,33 @@ public partial class MainWindow : Window
             };
             ShortcutPanel.Children.Add(btn);
         }
+    }
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new SettingsWindow(_vm.Settings) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            var edited = dialog.EditedSettings;
+            _vm.Settings.AutoRestoreSessions = edited.AutoRestoreSessions;
+            _vm.Settings.ShowToastNotifications = edited.ShowToastNotifications;
+            _vm.Settings.AnthropicApiKey = edited.AnthropicApiKey;
+            _vm.Settings.DefaultCommand = edited.DefaultCommand;
+            _vm.Settings.DefaultWorkingFolder = edited.DefaultWorkingFolder;
+            _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
+            _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
+            _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
+            _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
+            _vm.Settings.LaunchCommands = edited.LaunchCommands;
+            _ = _vm.SaveStateAsync();
+        }
+    }
+
+    private void AboutButton_Click(object sender, RoutedEventArgs e)
+    {
+        new AboutDialog { Owner = this }.ShowDialog();
     }
 
     // ── Keyboard shortcuts ────────────────────────────────────────────────────

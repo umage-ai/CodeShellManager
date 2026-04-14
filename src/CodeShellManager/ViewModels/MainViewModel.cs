@@ -10,7 +10,7 @@ using CodeShellManager.Services;
 
 namespace CodeShellManager.ViewModels;
 
-public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo }
+public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo, TwoRow, FourColumn, SixColumn, SixByTwo, SixByThree }
 
 public partial class MainViewModel : ObservableObject
 {
@@ -63,7 +63,7 @@ public partial class MainViewModel : ObservableObject
             {
                 App.Current.Dispatcher.Invoke(() =>
                 {
-                    vm.RaiseAlert(alert.Message);
+                    vm.RaiseAlert(alert.Message, alert.Type);
                     OnPropertyChanged(nameof(AlertCount));
                     if (Settings.ShowToastNotifications)
                         ToastHelper.Show(vm.DisplayName, alert.Message);

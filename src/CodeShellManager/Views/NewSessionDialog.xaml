@@ -27,6 +27,33 @@
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="FontSize" Value="13"/>
         </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="Background" Value="#313244"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#45475a"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#585b70"/>
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#45475a"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="Btn" TargetType="Button">
             <Setter Property="Background" Value="#45475a"/>
             <Setter Property="Foreground" Value="#cdd6f4"/>
@@ -80,14 +107,7 @@
         <StackPanel Grid.Row="1" Margin="0,0,0,12">
             <TextBlock Text="Command" Style="{StaticResource Label}"/>
             <ComboBox x:Name="CommandCombo" SelectionChanged="CommandCombo_SelectionChanged">
-                <ComboBoxItem Content="claude" Tag="claude"/>
-                <ComboBoxItem Content="claude --continue" Tag="claude --continue"/>
-                <ComboBoxItem Content="claude --model claude-opus-4-6" Tag="claude --model claude-opus-4-6"/>
-                <ComboBoxItem Content="claude --dangerously-skip-permissions" Tag="claude --dangerously-skip-permissions"/>
-                <ComboBoxItem Content="codex" Tag="codex"/>
-                <ComboBoxItem Content="gh copilot suggest" Tag="gh copilot suggest"/>
-                <ComboBoxItem Content="pwsh" Tag="pwsh"/>
-                <ComboBoxItem Content="cmd" Tag="cmd"/>
+                <!-- Items populated from settings in code-behind -->
                 <ComboBoxItem Content="[custom]" Tag="custom"/>
             </ComboBox>
         </StackPanel>

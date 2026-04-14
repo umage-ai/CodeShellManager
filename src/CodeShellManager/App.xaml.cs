@@ -36,7 +36,7 @@ public partial class App : System.Windows.Application
 
         TrayIcon = new System.Windows.Forms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = CreateTrayIcon(),
             Visible = true,
             Text = "CodeShellManager"
         };
@@ -46,6 +46,34 @@ public partial class App : System.Windows.Application
             MainWindow?.Show();
             MainWindow?.Activate();
         };
+    }
+
+    private static System.Drawing.Icon CreateTrayIcon()
+    {
+        try
+        {
+            var drawing = (System.Windows.Media.DrawingImage)Current.Resources["AppIconImage"];
+            var visual = new System.Windows.Media.DrawingVisual();
+            using (var ctx = visual.RenderOpen())
+                ctx.DrawImage(drawing, new System.Windows.Rect(0, 0, 32, 32));
+
+            var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                32, 32, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            rtb.Render(visual);
+
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+
+            using var ms = new System.IO.MemoryStream();
+            encoder.Save(ms);
+            ms.Seek(0, System.IO.SeekOrigin.Begin);
+            using var bmp = new System.Drawing.Bitmap(ms);
+            return System.Drawing.Icon.FromHandle(bmp.GetHicon());
+        }
+        catch
+        {
+            return System.Drawing.SystemIcons.Application;
+        }
     }
 
     protected override void OnExit(System.Windows.ExitEventArgs e)

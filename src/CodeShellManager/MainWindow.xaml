@@ -4,7 +4,8 @@
         Title="CodeShellManager" Height="800" Width="1280" MinWidth="800" MinHeight="500"
         Background="#1e1e2e" Foreground="#cdd6f4"
         FontFamily="Segoe UI"
-        WindowState="Maximized">
+        WindowState="Maximized"
+        Icon="{StaticResource AppIconImage}">
 
     <Window.Resources>
         <Style x:Key="ToolBtn" TargetType="Button">
@@ -36,6 +37,33 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Clickable search result item style -->
+        <Style x:Key="SearchResultBtn" TargetType="Button">
+            <Setter Property="Background" Value="#1e1e2e"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Margin="0,2" Padding="6,4" CornerRadius="4">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#313244"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#45475a"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -57,7 +85,11 @@
                     <Button x:Name="SearchBtn" Content="⌕ Search" Style="{StaticResource ToolBtn}"
                             Click="ToggleSearch_Click" Margin="0,0,2,0"/>
                     <Button x:Name="CmdHelperBtn" Content="⚡ Commands" Style="{StaticResource ToolBtn}"
-                            Click="ToggleCommandHelper_Click" Margin="0,0,8,0"/>
+                            Click="ToggleCommandHelper_Click" Margin="0,0,4,0"/>
+                    <Button x:Name="SettingsButton" Content="⚙ Settings" Style="{StaticResource ToolBtn}"
+                            Click="SettingsButton_Click" Margin="0,0,2,0"/>
+                    <Button Content="?" Style="{StaticResource ToolBtn}" ToolTip="About CodeShellManager"
+                            Click="AboutButton_Click" Margin="0,0,8,0" Width="26"/>
                     <Button Content="▣" Style="{StaticResource ToolBtn}" ToolTip="Single pane"
                             Click="Layout_Single_Click" Width="26"/>
                     <Button Content="▥" Style="{StaticResource ToolBtn}" ToolTip="2 columns"
@@ -66,6 +98,16 @@
                             Click="Layout_Three_Click" Width="26"/>
                     <Button Content="⊞" Style="{StaticResource ToolBtn}" ToolTip="2×2 grid"
                             Click="Layout_Grid_Click" Width="26"/>
+                    <Button Content="⇔" Style="{StaticResource ToolBtn}" ToolTip="2 rows (horizontal split)"
+                            Click="Layout_TwoRow_Click" Width="26"/>
+                    <Button Content="4" Style="{StaticResource ToolBtn}" ToolTip="4 columns"
+                            Click="Layout_Four_Click" Width="26" FontSize="10"/>
+                    <Button Content="6" Style="{StaticResource ToolBtn}" ToolTip="6 columns"
+                            Click="Layout_Six_Click" Width="26" FontSize="10"/>
+                    <Button Content="6×2" Style="{StaticResource ToolBtn}" ToolTip="6×2 grid (12 panes)"
+                            Click="Layout_SixTwo_Click" FontSize="9" Padding="4,4"/>
+                    <Button Content="6×3" Style="{StaticResource ToolBtn}" ToolTip="6×3 grid (18 panes)"
+                            Click="Layout_SixThree_Click" FontSize="9" Padding="4,4"/>
                 </StackPanel>
 
                 <Button DockPanel.Dock="Left" Content="＋ New Session" Style="{StaticResource ToolBtn}"
@@ -87,11 +129,19 @@
         <!-- ── Search panel ─────────────────────────────────────────────── -->
         <Border x:Name="SearchPanelHost" DockPanel.Dock="Top" Background="#11111b"
                 BorderThickness="0,0,0,1" BorderBrush="#313244"
-                Padding="10,8" MaxHeight="240" Visibility="Collapsed">
+                Padding="10,8" MaxHeight="260" Visibility="Collapsed">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left" Width="280" Margin="0,0,12,0">
-                    <TextBlock Text="Search all session output" Foreground="#6c7086"
-                               FontSize="10" Margin="0,0,0,6"/>
+                    <!-- Header with label and close button -->
+                    <DockPanel Margin="0,0,0,6">
+                        <Button DockPanel.Dock="Right" Content="✕" x:Name="CloseSearchButton"
+                                Background="Transparent" BorderThickness="0"
+                                Foreground="#6c7086" FontSize="11" Padding="4,1"
+                                Cursor="Hand" ToolTip="Close search (Esc)"
+                                Click="CloseSearchButton_Click"/>
+                        <TextBlock Text="Search all session output" Foreground="#6c7086"
+                                   FontSize="10" VerticalAlignment="Center"/>
+                    </DockPanel>
                     <DockPanel>
                         <Button DockPanel.Dock="Right" Content="Go" Margin="6,0,0,0"
                                 Background="#89b4fa" Foreground="#1e1e2e"
@@ -106,13 +156,22 @@
                     <ItemsControl x:Name="SearchResults">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border Margin="0,2" Padding="6,4" Background="#1e1e2e"
-                                        CornerRadius="4">
+                                <Button Style="{StaticResource SearchResultBtn}"
+                                        Click="SearchResult_Click">
                                     <StackPanel>
                                         <DockPanel>
                                             <TextBlock Text="{Binding SessionName}"
                                                        Foreground="#89b4fa" FontSize="11"
                                                        FontWeight="SemiBold"/>
+                                            <!-- Note badge — shown only for note results -->
+                                            <Border x:Name="NoteBadge" Background="#313244"
+                                                    BorderBrush="#a6e3a1" BorderThickness="1"
+                                                    CornerRadius="3" Padding="4,1,4,1"
+                                                    Margin="5,0,4,0" VerticalAlignment="Center"
+                                                    Visibility="Collapsed">
+                                                <TextBlock Text="note" Foreground="#a6e3a1" FontSize="9"
+                                                           FontWeight="SemiBold"/>
+                                            </Border>
                                             <TextBlock Text="{Binding Timestamp, StringFormat='{}{0:HH:mm:ss}'}"
                                                        Foreground="#6c7086" FontSize="10"
                                                        HorizontalAlignment="Right"/>
@@ -121,7 +180,12 @@
                                                    FontSize="12" FontFamily="Consolas"
                                                    TextWrapping="Wrap" Margin="0,2,0,0"/>
                                     </StackPanel>
-                                </Border>
+                                </Button>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsNote}" Value="True">
+                                        <Setter TargetName="NoteBadge" Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

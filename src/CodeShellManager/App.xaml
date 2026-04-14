@@ -4,6 +4,34 @@
              xmlns:local="clr-namespace:CodeShellManager"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-         
+        <!-- App icon: dark rounded square with ">_" terminal prompt design -->
+        <DrawingImage x:Key="AppIconImage">
+            <DrawingImage.Drawing>
+                <DrawingGroup>
+                    <!-- Dark background -->
+                    <GeometryDrawing Brush="#1e1e2e">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="0,0,32,32" RadiusX="5" RadiusY="5"/>
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <!-- ">" chevron in blue -->
+                    <GeometryDrawing>
+                        <GeometryDrawing.Pen>
+                            <Pen Brush="#89b4fa" Thickness="2.5" LineJoin="Round"
+                                 StartLineCap="Round" EndLineCap="Round"/>
+                        </GeometryDrawing.Pen>
+                        <GeometryDrawing.Geometry>
+                            <PathGeometry Figures="M 6,9 L 14,16 L 6,23"/>
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <!-- "_" cursor in green -->
+                    <GeometryDrawing Brush="#a6e3a1">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="16,22,12,2.5"/>
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                </DrawingGroup>
+            </DrawingImage.Drawing>
+        </DrawingImage>
     </Application.Resources>
 </Application>

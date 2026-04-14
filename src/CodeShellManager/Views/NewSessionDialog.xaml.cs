@@ -8,17 +8,30 @@ namespace CodeShellManager.Views;
 
 public partial class NewSessionDialog : Window
 {
+    private static readonly string[] DefaultCommands =
+    [
+        "claude", "claude --continue", "claude --model claude-opus-4-6",
+        "claude --dangerously-skip-permissions", "codex", "gh copilot suggest", "pwsh", "cmd"
+    ];
+
     public string SelectedFolder { get; private set; } = "";
     public string SelectedCommand { get; private set; } = "claude";
     public string SelectedArgs { get; private set; } = "";
     public string SessionName { get; private set; } = "";
     public string SelectedGroupId { get; private set; } = "";
 
-    public NewSessionDialog(IEnumerable<SessionGroup> groups, string defaultFolder = "")
+    public NewSessionDialog(IEnumerable<SessionGroup> groups, string defaultFolder = "",
+        IEnumerable<string>? launchCommands = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
 
+        // Populate command list from settings (insert before the [custom] item)
+        var customItem = CommandCombo.Items[0]; // [custom] placeholder
+        CommandCombo.Items.Clear();
+        foreach (var cmd in launchCommands ?? DefaultCommands)
+            CommandCombo.Items.Add(new ComboBoxItem { Content = cmd, Tag = cmd });
+        CommandCombo.Items.Add(customItem);
         CommandCombo.SelectedIndex = 0;
 
         foreach (var g in groups)

@@ -1,0 +1,142 @@
+<Window x:Class="CodeShellManager.Views.AboutDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="About CodeShellManager" Height="290" Width="400"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+
+    <!-- Outer rounded card -->
+    <Border Background="#1e1e2e" BorderBrush="#45475a" BorderThickness="1"
+            CornerRadius="10" Effect="{x:Null}">
+        <DockPanel>
+
+            <!-- ── Custom title bar ── -->
+            <Border DockPanel.Dock="Top" Background="#181825" CornerRadius="10,10,0,0"
+                    Padding="14,8,10,8" MouseLeftButtonDown="TitleBar_Drag">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="✕" Width="24" Height="24"
+                            Background="Transparent" BorderThickness="0"
+                            Foreground="#6c7086" FontSize="12" Cursor="Hand"
+                            Click="Close_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="Transparent" CornerRadius="4"
+                                        Width="24" Height="24">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#f38ba820"/>
+                                        <Setter Property="Foreground" Value="#f38ba8"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                    <TextBlock Text="About" Foreground="#6c7086" FontSize="11"
+                               VerticalAlignment="Center" FontFamily="Segoe UI"/>
+                </DockPanel>
+            </Border>
+
+            <!-- ── Content ── -->
+            <StackPanel Margin="0,20,0,24" HorizontalAlignment="Center">
+
+                <!-- Terminal >_ icon -->
+                <Border Width="48" Height="48" CornerRadius="10" HorizontalAlignment="Center"
+                        Background="#11111b" BorderBrush="#313244" BorderThickness="1"
+                        Margin="0,0,0,14">
+                    <Canvas Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Canvas.Left="0" Canvas.Top="0"
+                              Data="M 6,9 L 14,16 L 6,23"
+                              Stroke="#89b4fa" StrokeThickness="2.5"
+                              StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                        <Rectangle Canvas.Left="16" Canvas.Top="21.75" Width="12" Height="2.5" Fill="#a6e3a1"/>
+                    </Canvas>
+                </Border>
+
+                <!-- App name -->
+                <TextBlock Text="CodeShellManager" FontSize="20" FontWeight="Bold"
+                           Foreground="#cdd6f4" HorizontalAlignment="Center" FontFamily="Segoe UI"
+                           Margin="0,0,0,4"/>
+                <TextBlock Text="Multi-terminal host for Claude Code &amp; friends"
+                           FontSize="11" Foreground="#6c7086" HorizontalAlignment="Center"
+                           FontFamily="Segoe UI" Margin="0,0,0,2"/>
+                <TextBlock Text="Version 1.0.0" FontSize="10" Foreground="#45475a"
+                           HorizontalAlignment="Center" FontFamily="Segoe UI" Margin="0,0,0,16"/>
+
+                <!-- Separator -->
+                <Border Height="1" Background="#313244" Width="260" Margin="0,0,0,14"/>
+
+                <!-- umage.ai logo — "umage." in muted, ".ai" in brand gold -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4">
+                    <TextBlock Text="By " FontSize="11" Foreground="#6c7086"
+                               VerticalAlignment="Center" FontFamily="Segoe UI"/>
+                    <!-- umage.ai wordmark via SVG paths scaled via Viewbox -->
+                    <Viewbox Width="62" Height="20" VerticalAlignment="Center">
+                        <Canvas Width="160.477" Height="57.08">
+                            <!-- "umage." — light foreground -->
+                            <Path Fill="#a6adc8">
+                                <Path.RenderTransform>
+                                    <TranslateTransform X="-28.797913" Y="-73.041197"/>
+                                </Path.RenderTransform>
+                                <Path.Data>M38.653114 99.508q-2.8956.0-5.1308-1.2192-2.2352-1.27-3.5052-3.4544-1.2192-2.2352-1.2192-5.1816V73.5492h3.7084v15.3416q0 3.4036 1.9304 5.3848 1.9304 1.9304 5.1816 1.9304 4.6228.0 7.0104-3.9624V73.5492h3.759199V99h-3.759199v-2.9464q-2.9972 3.4544-7.9756 3.4544zM56.788703 99V73.5492h3.7592v2.794q2.895599-3.302 7.467599-3.302 2.6924.0 4.7752 1.27 2.0828 1.2192 3.2512 3.3528 3.0988-4.6228 8.7376-4.6228 2.794.0 4.8768 1.27 2.0828 1.2192 3.2512 3.4544 1.2192 2.1844 1.2192 5.1308V99h-3.7084V83.6584q0-3.4036-1.778-5.334-1.778-1.9812-4.826-1.9812-4.2672.0-6.7564 4.1656.1016.5588.1524 1.1684.1016.5588.1016 1.2192V99h-3.7084V83.6584q0-3.4036-1.778-5.334-1.778-1.9812-4.7752-1.9812-4.1148.0-6.502399 3.7084V99zm51.663567.4572q-4.1656.0-6.8072-2.1336-2.590804-2.1336-2.590804-5.5372.0-3.6068 2.743204-5.6896 2.7432-2.0828 7.4168-2.0828 4.1148.0 7.4676 1.7272v-3.3528q0-6.1468-6.7564-6.1468-1.8796.0-3.81.5588-1.8796.508-4.1656 1.6764l-1.4224-2.8956q2.7432-1.3208 5.08-1.9304t4.6736-.6096q4.826.0 7.4168 2.286 2.6416 2.286 2.6416 6.5532V99h-3.6576v-2.4892q-3.4036 2.9464-8.2296 2.9464zm-5.7912-7.7724q0 2.1336 1.778 3.5052 1.8288 1.3208 4.6736 1.3208 4.6228.0 7.5692-2.9464v-4.7752q-2.9972-2.032-7.366-2.032-3.048.0-4.8768 1.3716-1.778 1.3208-1.778 3.556zm36.37283 18.1864q-2.6416.0-5.2324-.7112-2.5908-.6604-4.7244-1.9304l1.6256-2.9464q4.3688 2.3368 8.1788 2.3368 7.366.0 7.366-6.8072v-3.556q-3.5052 2.9464-8.0772 2.9464-3.5052.0-6.4008-1.7272t-4.6228-4.6736q-1.6764-2.9972-1.6764-6.6548.0-3.6576 1.6764-6.604 1.7272-2.9972 4.6228-4.7244t6.5024-1.7272q4.4196.0 8.0264 2.9972v-2.54h3.7084V99.762q0 4.8768-2.8448 7.4676-2.8448 2.6416-8.128 2.6416zm-.5588-13.97q5.08.0 7.7724-3.5052V79.8992q-1.27-1.6256-3.3528-2.54-2.032-.9144-4.4196-.9144-2.6416.0-4.7752 1.27-2.0828 1.27-3.302 3.5052-1.2192 2.1844-1.2192 4.9276t1.2192 4.9784q1.27 2.1844 3.3528 3.5052 2.1336 1.27 4.7244 1.27zm29.87042 3.556q-3.6576.0-6.6548-1.7272-2.9464-1.778-4.7244-4.7752-1.7272-2.9972-1.7272-6.7056.0-3.6576 1.6764-6.604 1.6764-2.9972 4.5212-4.7244 2.8448-1.778 6.35-1.778 3.4036.0 6.096 1.778 2.7432 1.7272 4.318 4.7244 1.6256 2.9464 1.6256 6.604v1.1684h-20.8788q.3048 2.4892 1.5748 4.4704 1.3208 1.9812 3.4036 3.1496 2.0828 1.1176 4.572 1.1176 1.9812.0 3.8608-.6096t3.1496-1.7272l2.3368 2.4892q-4.2164 3.1496-9.4996 3.1496zm-9.2964-15.0368h17.018q-.3048-2.286-1.524-4.064-1.1684-1.8288-2.9464-2.8448-1.778-1.0668-3.9116-1.0668-3.302.0-5.6896 2.2352-2.3876 2.2352-2.9464 5.7404zm27.63513 14.8844q-1.0668.0-1.8288-.762t-.762-1.8288.762-1.8288 1.8288-.762 1.8288.762.762 1.8288-.762 1.8288-1.8288.762z</Path.Data>
+                            </Path>
+                            <!-- "ai" — brand gold -->
+                            <Path Fill="#b8966a">
+                                <Path.RenderTransform>
+                                    <TranslateTransform X="-28.797913" Y="-73.041197"/>
+                                </Path.RenderTransform>
+                                <Path.Data>M166.58964 130.12094c-2.77707.0-5.04613-.7112-6.8072-2.1336-1.7272-1.4224-2.5908-3.26813-2.5908-5.5372.0-2.40453.9144-4.30107 2.7432-5.6896s4.30107-2.0828 7.4168-2.0828c2.7432.0 5.2324.57573 7.4676 1.7272v-3.3528c0-4.09787-2.25213-6.1468-6.7564-6.1468-1.25307.0-2.52307.18627-3.81.5588-1.25307.33867-2.6416.89747-4.1656 1.6764l-1.4224-2.8956c1.8288-.88053 3.52213-1.524 5.08-1.9304s3.11573-.6096 4.6736-.6096c3.21733.0 5.6896.762 7.4168 2.286 1.76107 1.524 2.6416 3.7084 2.6416 6.5532v17.1196h-3.6576v-2.4892c-2.26907 1.96427-5.01227 2.9464-8.2296 2.9464zm-5.7912-7.7724c0 1.4224.59267 2.5908 1.778 3.5052 1.2192.88053 2.77707 1.3208 4.6736 1.3208 3.08187.0 5.60493-.98213 7.5692-2.9464v-4.7752c-1.99813-1.35467-4.45347-2.032-7.366-2.032-2.032.0-3.6576.4572-4.8768 1.3716-1.18533.88053-1.778 2.06587-1.778 3.556zm23.97764 7.3152v-25.4508h3.7592v25.4508z</Path.Data>
+                            </Path>
+                        </Canvas>
+                    </Viewbox>
+                </StackPanel>
+
+                <!-- Links -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBlock FontSize="11" FontFamily="Segoe UI">
+                        <Hyperlink NavigateUri="https://umage.ai"
+                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                   Foreground="#585b70" TextDecorations="None">
+                            umage.ai
+                        </Hyperlink>
+                    </TextBlock>
+                    <TextBlock Text=" · " Foreground="#45475a" FontSize="11" FontFamily="Segoe UI"
+                               VerticalAlignment="Center"/>
+                    <TextBlock FontSize="11" FontFamily="Segoe UI">
+                        <Hyperlink NavigateUri="https://github.com/umage-ai/CodeShellManager"
+                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                   Foreground="#585b70" TextDecorations="None">
+                            GitHub
+                        </Hyperlink>
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Close button -->
+                <Button Content="Close" HorizontalAlignment="Center"
+                        Margin="0,18,0,0" Padding="28,7" FontSize="12" Cursor="Hand"
+                        FontFamily="Segoe UI" Foreground="#cdd6f4"
+                        Click="Close_Click">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="#313244" BorderBrush="#45475a"
+                                    BorderThickness="1" CornerRadius="5"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#45475a"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#585b70"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>

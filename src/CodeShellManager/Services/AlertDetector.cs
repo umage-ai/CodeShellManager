@@ -80,8 +80,9 @@ public partial class AlertDetector : IDisposable
     private static readonly Regex s_ansi =
         new(@"\x1B\[[0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?\x07|\x1B[=>]", RegexOptions.Compiled);
 
+    // Matches Claude's "❯" prompt (U+276F), generic y/n prompts, and "?" questions
     private static readonly Regex s_prompt =
-        new(@"(\[y/N\]|\[Y/n\]|\[yes/no\]|\(y/n\)|\(yes/no\)|>\s*$|\?\s*›)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        new(@"(\[y/N\]|\[Y/n\]|\[yes/no\]|\(y/n\)|\(yes/no\)|>\s*$|\u276f\s*$|\?\s*›|\?\s*$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex s_claudeApproval =
         new(@"(Do you want to|Allow|Approve|Bash command|Continue\?|Proceed\?|tool_use|permission)", RegexOptions.IgnoreCase | RegexOptions.Compiled);

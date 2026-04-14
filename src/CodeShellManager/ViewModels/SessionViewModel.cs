@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CodeShellManager.Models;
@@ -14,6 +15,11 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _needsAttention;
     [ObservableProperty] private string _alertMessage = "";
     [ObservableProperty] private bool _isActive;
+    [ObservableProperty] private bool _isWaitingForInput;
+    [ObservableProperty] private bool _isWaitingForApproval;
+    [ObservableProperty] private string? _gitBranch;
+    [ObservableProperty] private bool _gitIsDirty;
+    [ObservableProperty] private bool _gitInfoLoaded;
 
     public PseudoTerminal? Pty { get; set; }
     public TerminalBridge? Bridge { get; set; }
@@ -49,6 +55,15 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     public SessionViewModel(ShellSession session)
     {
         Session = session;
+        _ = RefreshGitInfoAsync();
+    }
+
+    public async Task RefreshGitInfoAsync()
+    {
+        var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
+        GitBranch = branch;
+        GitIsDirty = isDirty;
+        GitInfoLoaded = true;
     }
 
     [RelayCommand]
@@ -61,16 +76,27 @@ public partial class SessionViewModel : ObservableObject, IDisposable
             System.Diagnostics.Process.Start("explorer.exe", Session.WorkingFolder);
     }
 
-    public void RaiseAlert(string message)
+    public void RaiseAlert(string message, AlertType alertType = AlertType.InputRequired)
     {
         NeedsAttention = true;
         AlertMessage = message;
+        IsWaitingForInput = alertType == AlertType.InputRequired;
+        IsWaitingForApproval = alertType == AlertType.ToolApproval;
+    }
+
+    public void Rename(string newName)
+    {
+        Session.Name = newName;
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(DisplayName));
     }
 
     public void ClearAlert()
     {
         NeedsAttention = false;
         AlertMessage = "";
+        IsWaitingForInput = false;
+        IsWaitingForApproval = false;
     }
 
     public void Dispose()
