@@ -1522,10 +1522,7 @@ public partial class MainWindow : Window
             "Import Complete", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    private static string GetStatePath() =>
-        System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "CodeShellManager", "state.json");
+    private static string GetStatePath() => StateService.GetPath();
 
     // ── Keyboard shortcuts ────────────────────────────────────────────────────
 

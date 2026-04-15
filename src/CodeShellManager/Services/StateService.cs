@@ -21,12 +21,16 @@ public class StateService
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    /// <summary>Returns the resolved state file path (respects CSM_STATE_PATH env var).</summary>
+    public static string GetPath() => StatePath;
+
     public async Task<AppState> LoadAsync()
     {
         try
         {
-            if (!File.Exists(StatePath)) return new AppState();
-            string json = await File.ReadAllTextAsync(StatePath);
+            var path = StatePath;
+            if (!File.Exists(path)) return new AppState();
+            string json = await File.ReadAllTextAsync(path);
             return JsonSerializer.Deserialize<AppState>(json, Options) ?? new AppState();
         }
         catch
@@ -39,9 +43,10 @@ public class StateService
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
+            var path = StatePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string json = JsonSerializer.Serialize(state, Options);
-            await File.WriteAllTextAsync(StatePath, json);
+            await File.WriteAllTextAsync(path, json);
         }
         catch { /* non-critical */ }
     }
