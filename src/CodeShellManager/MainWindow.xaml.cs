@@ -134,6 +134,15 @@ public partial class MainWindow : Window
 
     private void NewSession_Click(object sender, RoutedEventArgs e) => OpenNewSessionDialog();
 
+    private void BroadcastRemoteControl_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var session in _vm.Sessions)
+        {
+            session.Bridge?.SendToTerminal("/remote-control\r");
+            session.AlertDetector?.NotifyUserInteracted();
+        }
+    }
+
     private void OpenNewSessionDialog(string defaultFolder = "")
     {
         var dialog = new NewSessionDialog(

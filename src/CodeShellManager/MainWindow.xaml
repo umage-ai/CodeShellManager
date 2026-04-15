@@ -135,6 +135,9 @@
 
                 <Button DockPanel.Dock="Left" Content="＋ New Session" Style="{StaticResource ToolBtn}"
                         Foreground="#a6e3a1" Click="NewSession_Click" Margin="0,0,4,0"/>
+                <Button DockPanel.Dock="Left" Content="⊕ RC All" Style="{StaticResource ToolBtn}"
+                        Foreground="#89b4fa" Click="BroadcastRemoteControl_Click" Margin="0,0,4,0"
+                        ToolTip="Send /remote-control to all sessions"/>
             </DockPanel>
         </Border>
 
