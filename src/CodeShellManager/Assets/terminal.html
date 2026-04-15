@@ -36,6 +36,7 @@
     cursorBlink: true,
     fontSize: 14,
     fontFamily: "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace",
+    fontLigatures: true,
     theme: {
       background: '#1e1e1e',
       foreground: '#d4d4d4',
@@ -83,6 +84,16 @@
       else if (msg.type === 'clear')          term.clear();
       else if (msg.type === 'focus')          { term.focus(); fitAddon.fit(); }
       else if (msg.type === 'fit')            { fitAddon.fit(); term.focus(); }
+      else if (msg.type === 'setOptions')     {
+        const opts = msg.options;
+        if (opts.fontFamily    !== undefined) term.options.fontFamily    = opts.fontFamily;
+        if (opts.fontSize      !== undefined) term.options.fontSize      = opts.fontSize;
+        if (opts.fontLigatures !== undefined) term.options.fontLigatures = opts.fontLigatures;
+        if (opts.fontWeight    !== undefined) term.options.fontWeight    = opts.fontWeight;
+        if (opts.letterSpacing !== undefined) term.options.letterSpacing = opts.letterSpacing;
+        if (opts.lineHeight    !== undefined) term.options.lineHeight    = opts.lineHeight;
+        fitAddon.fit();
+      }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
     } catch {}
   });

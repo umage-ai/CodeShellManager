@@ -218,6 +218,7 @@ public partial class MainWindow : Window
         string htmlPath = new Uri(Path.Combine(assetsDir, "terminal.html")).AbsoluteUri;
 
         await bridge.InitializeAsync(htmlPath);
+        bridge.ApplyFontSettings(_vm.Settings);
 
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
@@ -1277,7 +1278,17 @@ public partial class MainWindow : Window
             _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
             _vm.Settings.LaunchCommands = edited.LaunchCommands;
+            _vm.Settings.TerminalFontFamily = edited.TerminalFontFamily;
+            _vm.Settings.TerminalFontSize = edited.TerminalFontSize;
+            _vm.Settings.TerminalFontLigatures = edited.TerminalFontLigatures;
+            _vm.Settings.TerminalFontWeight = edited.TerminalFontWeight;
+            _vm.Settings.TerminalLetterSpacing = edited.TerminalLetterSpacing;
+            _vm.Settings.TerminalLineHeight = edited.TerminalLineHeight;
             _ = _vm.SaveStateAsync();
+
+            // Push font settings to all active terminal sessions
+            foreach (var vm in _vm.Sessions)
+                vm.Bridge?.ApplyFontSettings(_vm.Settings);
         }
     }
 

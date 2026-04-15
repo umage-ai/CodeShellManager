@@ -29,6 +29,12 @@ public partial class SettingsWindow : Window
             Theme = current.Theme,
             MaxSearchResults = current.MaxSearchResults,
             ShowTerminalStatusDot = current.ShowTerminalStatusDot,
+            TerminalFontFamily = current.TerminalFontFamily,
+            TerminalFontSize = current.TerminalFontSize,
+            TerminalFontLigatures = current.TerminalFontLigatures,
+            TerminalFontWeight = current.TerminalFontWeight,
+            TerminalLetterSpacing = current.TerminalLetterSpacing,
+            TerminalLineHeight = current.TerminalLineHeight,
         };
 
         // Populate controls
@@ -41,6 +47,24 @@ public partial class SettingsWindow : Window
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
         ApiKeyBox.Password = _edited.AnthropicApiKey;
         LaunchCommandsBox.Text = string.Join("\r\n", _edited.LaunchCommands);
+
+        // Terminal font controls
+        FontFamilyBox.Text = _edited.TerminalFontFamily;
+        FontSizeBox.Text = _edited.TerminalFontSize.ToString();
+        FontLigaturesCheck.IsChecked = _edited.TerminalFontLigatures;
+        LetterSpacingBox.Text = _edited.TerminalLetterSpacing.ToString("G");
+        LineHeightBox.Text = _edited.TerminalLineHeight.ToString("G");
+
+        foreach (ComboBoxItem item in FontWeightCombo.Items)
+        {
+            if (item.Tag?.ToString() == _edited.TerminalFontWeight)
+            {
+                FontWeightCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (FontWeightCombo.SelectedIndex < 0)
+            FontWeightCombo.SelectedIndex = 0;
 
         // Select matching command in ComboBox
         foreach (ComboBoxItem item in DefaultCommandCombo.Items)
@@ -91,6 +115,19 @@ public partial class SettingsWindow : Window
         var selectedTag = (DefaultCommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
         if (!string.IsNullOrEmpty(selectedTag))
             _edited.DefaultCommand = selectedTag;
+
+        // Terminal font settings
+        _edited.TerminalFontFamily = FontFamilyBox.Text.Trim();
+        _edited.TerminalFontLigatures = FontLigaturesCheck.IsChecked == true;
+        if (int.TryParse(FontSizeBox.Text, out int fontSize) && fontSize >= 6 && fontSize <= 72)
+            _edited.TerminalFontSize = fontSize;
+        if (double.TryParse(LetterSpacingBox.Text, out double letterSpacing))
+            _edited.TerminalLetterSpacing = letterSpacing;
+        if (double.TryParse(LineHeightBox.Text, out double lineHeight) && lineHeight >= 0.5 && lineHeight <= 3.0)
+            _edited.TerminalLineHeight = lineHeight;
+        var weightTag = (FontWeightCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        if (!string.IsNullOrEmpty(weightTag))
+            _edited.TerminalFontWeight = weightTag;
 
         DialogResult = true;
         Close();

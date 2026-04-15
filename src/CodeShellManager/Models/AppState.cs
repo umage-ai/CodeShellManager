@@ -15,6 +15,14 @@ public class AppSettings
     public int MaxSearchResults { get; set; } = 100;
     public bool ShowTerminalStatusDot { get; set; } = true;
 
+    // Terminal font settings
+    public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";
+    public int TerminalFontSize { get; set; } = 14;
+    public bool TerminalFontLigatures { get; set; } = true;
+    public string TerminalFontWeight { get; set; } = "normal";
+    public double TerminalLetterSpacing { get; set; } = 0;
+    public double TerminalLineHeight { get; set; } = 1.0;
+
     public List<string> LaunchCommands { get; set; } =
     [
         "claude",

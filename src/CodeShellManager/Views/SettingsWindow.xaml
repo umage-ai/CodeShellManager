@@ -1,7 +1,7 @@
 <Window x:Class="CodeShellManager.Views.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Height="560" Width="600"
+        Title="Settings" Height="700" Width="600"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#1e1e2e" Foreground="#cdd6f4"
         FontFamily="Segoe UI">
@@ -156,6 +156,60 @@
                 <StackPanel Margin="0,8,0,0">
                     <CheckBox x:Name="ShowGitBranchCheck" Content="Show git branch in sidebar"/>
                     <CheckBox x:Name="ShowTerminalStatusDotCheck" Content="Show terminal status indicator"/>
+                </StackPanel>
+
+                <!-- Terminal -->
+                <TextBlock Text="TERMINAL" Style="{StaticResource SectionHeader}"/>
+                <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
+
+                <StackPanel Margin="0,8,0,0">
+                    <TextBlock Text="Font Family" Style="{StaticResource Label}"/>
+                    <TextBox x:Name="FontFamilyBox"/>
+
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="16"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Font Size" Style="{StaticResource Label}"/>
+                            <TextBox x:Name="FontSizeBox"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Font Weight" Style="{StaticResource Label}"/>
+                            <ComboBox x:Name="FontWeightCombo">
+                                <ComboBoxItem Content="normal" Tag="normal"/>
+                                <ComboBoxItem Content="bold" Tag="bold"/>
+                                <ComboBoxItem Content="100" Tag="100"/>
+                                <ComboBoxItem Content="200" Tag="200"/>
+                                <ComboBoxItem Content="300" Tag="300"/>
+                                <ComboBoxItem Content="400" Tag="400"/>
+                                <ComboBoxItem Content="500" Tag="500"/>
+                                <ComboBoxItem Content="600" Tag="600"/>
+                                <ComboBoxItem Content="700" Tag="700"/>
+                            </ComboBox>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="16"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Letter Spacing (px)" Style="{StaticResource Label}"/>
+                            <TextBox x:Name="LetterSpacingBox"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Line Height" Style="{StaticResource Label}"/>
+                            <TextBox x:Name="LineHeightBox"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <CheckBox x:Name="FontLigaturesCheck" Content="Enable font ligatures"
+                              Margin="0,10,0,0"/>
                 </StackPanel>
 
                 <!-- Notifications -->

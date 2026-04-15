@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using CodeShellManager.Models;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using WpfApplication    = System.Windows.Application;
@@ -56,7 +57,15 @@ public sealed class TerminalBridge : IDisposable
     public async Task InitializeAsync(string htmlPath)
     {
         Log($"InitializeAsync: htmlPath={htmlPath}");
-        await _webView.EnsureCoreWebView2Async();
+
+        // Use AppData for the WebView2 user-data folder so the app works when
+        // installed under Program Files (which is not writable by the user process).
+        string wv2DataDir = System.IO.Path.Combine(
+            System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
+            "CodeShellManager", "WebView2");
+        System.IO.Directory.CreateDirectory(wv2DataDir);
+        var env = await CoreWebView2Environment.CreateAsync(null, wv2DataDir);
+        await _webView.EnsureCoreWebView2Async(env);
         Log("EnsureCoreWebView2Async done");
 
         var settings = _webView.CoreWebView2.Settings;
@@ -238,6 +247,26 @@ public sealed class TerminalBridge : IDisposable
     }
 
     // ── Utilities ─────────────────────────────────────────────────────────────
+
+    public void ApplyFontSettings(AppSettings settings)
+    {
+        if (!_ready) return;
+        var opts = new
+        {
+            fontFamily    = settings.TerminalFontFamily,
+            fontSize      = settings.TerminalFontSize,
+            fontLigatures = settings.TerminalFontLigatures,
+            fontWeight    = settings.TerminalFontWeight,
+            letterSpacing = settings.TerminalLetterSpacing,
+            lineHeight    = settings.TerminalLineHeight,
+        };
+        string json = JsonSerializer.Serialize(new { type = "setOptions", options = opts });
+        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
+            catch { }
+        });
+    }
 
     public void SendToTerminal(string text) => _pty?.Write(text);
 
