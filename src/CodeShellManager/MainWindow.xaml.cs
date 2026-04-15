@@ -47,6 +47,7 @@ public partial class MainWindow : Window
     private SqliteConnection? _db;
     private SearchService? _searchService;
     private LayoutMode _currentLayout = LayoutMode.Single;
+    private int _layoutViewportOffset = 0;
 
     public MainWindow()
     {
@@ -714,6 +715,7 @@ public partial class MainWindow : Window
     {
         _currentLayout = mode;
         _vm.Layout = mode;
+        _layoutViewportOffset = 0;
         RefreshTerminalLayout();
     }
 
@@ -734,62 +736,86 @@ public partial class MainWindow : Window
         switch (_currentLayout)
         {
             case LayoutMode.TwoColumn:
+            {
+                var view = GetViewportSessions(sessions, 2);
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
-                PlaceTerminal(sessions, 0, 0, 0);
-                PlaceTerminal(sessions, 1, 0, 1);
+                PlaceTerminal(view, 0, 0, 0);
+                PlaceTerminal(view, 1, 0, 1);
                 break;
+            }
 
             case LayoutMode.ThreeColumn:
+            {
+                var view = GetViewportSessions(sessions, 3);
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
-                PlaceTerminal(sessions, 0, 0, 0);
-                PlaceTerminal(sessions, 1, 0, 1);
-                PlaceTerminal(sessions, 2, 0, 2);
+                PlaceTerminal(view, 0, 0, 0);
+                PlaceTerminal(view, 1, 0, 1);
+                PlaceTerminal(view, 2, 0, 2);
                 break;
+            }
 
             case LayoutMode.TwoByTwo:
+            {
+                var view = GetViewportSessions(sessions, 4);
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 TerminalGrid.RowDefinitions.Add(new RowDefinition());
                 TerminalGrid.RowDefinitions.Add(new RowDefinition());
-                PlaceTerminal(sessions, 0, 0, 0);
-                PlaceTerminal(sessions, 1, 0, 1);
-                PlaceTerminal(sessions, 2, 1, 0);
-                PlaceTerminal(sessions, 3, 1, 1);
+                PlaceTerminal(view, 0, 0, 0);
+                PlaceTerminal(view, 1, 0, 1);
+                PlaceTerminal(view, 2, 1, 0);
+                PlaceTerminal(view, 3, 1, 1);
                 break;
+            }
 
             case LayoutMode.TwoRow:
+            {
+                var view = GetViewportSessions(sessions, 2);
                 TerminalGrid.RowDefinitions.Add(new RowDefinition());
                 TerminalGrid.RowDefinitions.Add(new RowDefinition());
                 TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
-                PlaceTerminal(sessions, 0, 0, 0);
-                PlaceTerminal(sessions, 1, 1, 0);
+                PlaceTerminal(view, 0, 0, 0);
+                PlaceTerminal(view, 1, 1, 0);
                 break;
+            }
 
             case LayoutMode.FourColumn:
+            {
+                var view = GetViewportSessions(sessions, 4);
                 for (int i = 0; i < 4; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
-                for (int i = 0; i < 4; i++) PlaceTerminal(sessions, i, 0, i);
+                for (int i = 0; i < 4; i++) PlaceTerminal(view, i, 0, i);
                 break;
+            }
 
             case LayoutMode.SixColumn:
+            {
+                var view = GetViewportSessions(sessions, 6);
                 for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
-                for (int i = 0; i < 6; i++) PlaceTerminal(sessions, i, 0, i);
+                for (int i = 0; i < 6; i++) PlaceTerminal(view, i, 0, i);
                 break;
+            }
 
             case LayoutMode.SixByTwo:
+            {
+                var view = GetViewportSessions(sessions, 12);
                 for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 TerminalGrid.RowDefinitions.Add(new RowDefinition());
                 TerminalGrid.RowDefinitions.Add(new RowDefinition());
-                for (int i = 0; i < 12; i++) PlaceTerminal(sessions, i, i / 6, i % 6);
+                for (int i = 0; i < 12; i++) PlaceTerminal(view, i, i / 6, i % 6);
                 break;
+            }
 
             case LayoutMode.SixByThree:
+            {
+                var view = GetViewportSessions(sessions, 18);
                 for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 for (int r = 0; r < 3; r++) TerminalGrid.RowDefinitions.Add(new RowDefinition());
-                for (int i = 0; i < 18; i++) PlaceTerminal(sessions, i, i / 6, i % 6);
+                for (int i = 0; i < 18; i++) PlaceTerminal(view, i, i / 6, i % 6);
                 break;
+            }
 
             default: // Single
             {
@@ -802,6 +828,37 @@ public partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Returns a sublist of sessions sized to <paramref name="slotCount"/>, sliding the viewport
+    /// so the active session is always visible. The viewport offset is persisted across calls
+    /// and only moves minimally to bring the active session into view.
+    /// </summary>
+    private List<SessionViewModel> GetViewportSessions(List<SessionViewModel> sessions, int slotCount)
+    {
+        if (sessions.Count <= slotCount)
+        {
+            _layoutViewportOffset = 0;
+            return sessions;
+        }
+
+        if (_vm.ActiveSession != null)
+        {
+            int activeIdx = sessions.IndexOf(_vm.ActiveSession);
+            if (activeIdx >= 0)
+            {
+                // Scroll left if active session is before the current viewport
+                if (activeIdx < _layoutViewportOffset)
+                    _layoutViewportOffset = activeIdx;
+                // Scroll right if active session is past the current viewport
+                else if (activeIdx >= _layoutViewportOffset + slotCount)
+                    _layoutViewportOffset = activeIdx - slotCount + 1;
+            }
+        }
+
+        _layoutViewportOffset = Math.Clamp(_layoutViewportOffset, 0, sessions.Count - slotCount);
+        return sessions.Skip(_layoutViewportOffset).Take(slotCount).ToList();
     }
 
     private void PlaceTerminal(List<SessionViewModel> sessions, int index, int row, int col)
