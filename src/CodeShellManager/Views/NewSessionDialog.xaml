@@ -156,7 +156,7 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBox x:Name="FolderBox" Grid.Column="0" Margin="0,0,6,0"/>
+                <TextBox x:Name="FolderBox" AutomationProperties.AutomationId="NewSessionFolderBox" Grid.Column="0" Margin="0,0,6,0"/>
                 <Button Grid.Column="1" Content="Browse…" Style="{StaticResource Btn}"
                         Click="BrowseFolder_Click"/>
             </Grid>
@@ -165,7 +165,7 @@
         <!-- Command -->
         <StackPanel Grid.Row="1" Margin="0,0,0,12">
             <TextBlock Text="Command" Style="{StaticResource Label}"/>
-            <ComboBox x:Name="CommandCombo" SelectionChanged="CommandCombo_SelectionChanged">
+            <ComboBox x:Name="CommandCombo" AutomationProperties.AutomationId="NewSessionCommandCombo" SelectionChanged="CommandCombo_SelectionChanged">
                 <!-- Items populated from settings in code-behind -->
                 <ComboBoxItem Content="[custom]" Tag="custom"/>
             </ComboBox>
@@ -180,13 +180,13 @@
         <!-- Session Name -->
         <StackPanel Grid.Row="3" Margin="0,0,0,12">
             <TextBlock Text="Session Name (optional)" Style="{StaticResource Label}"/>
-            <TextBox x:Name="NameBox"/>
+            <TextBox x:Name="NameBox" AutomationProperties.AutomationId="NewSessionNameBox"/>
         </StackPanel>
 
         <!-- Buttons -->
         <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Cancel_Click"/>
-            <Button Content="Start Session" Style="{StaticResource PrimaryBtn}" Click="Start_Click"
+            <Button Content="Start Session" AutomationProperties.AutomationId="NewSessionOkBtn" Style="{StaticResource PrimaryBtn}" Click="Start_Click"
                     IsDefault="True"/>
         </StackPanel>
     </Grid>
