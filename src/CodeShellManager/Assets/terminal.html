@@ -53,8 +53,7 @@
     },
     scrollback: 5000,
     allowProposedApi: true,
-    // Ctrl+C copies selection when text is selected (via customKeyEventHandler below),
-    // otherwise passes ^C through to the PTY. Paste via right-click or Ctrl+Shift+V.
+    // Ctrl+C/V handled via customKeyEventHandler below. Ctrl+Shift+C/V also work.
     macOptionIsMeta: false,
     windowsMode: true,   // correct line ending handling on Windows
   });
@@ -98,14 +97,20 @@
     } catch {}
   });
 
-  // ── Ctrl+C: copy if text is selected, otherwise send ^C to PTY ───────────
+  // ── Ctrl+C / Ctrl+V: copy/paste via WPF clipboard ─────────────────────────
   term.attachCustomKeyEventHandler(e => {
-    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && e.key === 'c') {
-      const sel = term.getSelection();
-      if (sel) {
-        window.chrome.webview.postMessage(JSON.stringify({ type: 'setClipboard', text: sel }));
-        term.clearSelection();
-        return false; // swallow — don't send ^C to PTY
+    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey) {
+      if (e.key === 'c') {
+        const sel = term.getSelection();
+        if (sel) {
+          window.chrome.webview.postMessage(JSON.stringify({ type: 'setClipboard', text: sel }));
+          term.clearSelection();
+          return false; // swallow — don't send ^C to PTY
+        }
+      }
+      if (e.key === 'v') {
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'getClipboard' }));
+        return false; // swallow — don't send ^V to PTY
       }
     }
     return true; // let xterm handle everything else normally
