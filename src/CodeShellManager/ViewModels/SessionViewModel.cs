@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -52,10 +53,13 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public event Action<SessionViewModel>? CloseRequested;
 
+    private readonly CancellationTokenSource _gitPollCts = new();
+
     public SessionViewModel(ShellSession session)
     {
         Session = session;
         _ = RefreshGitInfoAsync();
+        _ = PollGitInfoAsync(_gitPollCts.Token);
     }
 
     public async Task RefreshGitInfoAsync()
@@ -64,6 +68,17 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         GitBranch = branch;
         GitIsDirty = isDirty;
         GitInfoLoaded = true;
+    }
+
+    private async Task PollGitInfoAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+                await RefreshGitInfoAsync();
+        }
+        catch (OperationCanceledException) { }
     }
 
     [RelayCommand]
@@ -101,6 +116,8 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _gitPollCts.Cancel();
+        _gitPollCts.Dispose();
         AlertDetector?.Dispose();
         OutputIndexer?.Dispose();
         Bridge?.Dispose();
