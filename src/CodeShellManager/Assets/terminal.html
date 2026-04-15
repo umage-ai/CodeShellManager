@@ -53,8 +53,8 @@
     },
     scrollback: 5000,
     allowProposedApi: true,
-    // Let xterm handle Ctrl+C/Ctrl+V as terminal sequences, not browser shortcuts
-    // Paste is handled via right-click context menu and Ctrl+Shift+V
+    // Ctrl+C copies selection when text is selected (via customKeyEventHandler below),
+    // otherwise passes ^C through to the PTY. Paste via right-click or Ctrl+Shift+V.
     macOptionIsMeta: false,
     windowsMode: true,   // correct line ending handling on Windows
   });
@@ -96,6 +96,19 @@
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
     } catch {}
+  });
+
+  // ── Ctrl+C: copy if text is selected, otherwise send ^C to PTY ───────────
+  term.attachCustomKeyEventHandler(e => {
+    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && e.key === 'c') {
+      const sel = term.getSelection();
+      if (sel) {
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'setClipboard', text: sel }));
+        term.clearSelection();
+        return false; // swallow — don't send ^C to PTY
+      }
+    }
+    return true; // let xterm handle everything else normally
   });
 
   // ── Right-click: paste from clipboard ─────────────────────────────────────
