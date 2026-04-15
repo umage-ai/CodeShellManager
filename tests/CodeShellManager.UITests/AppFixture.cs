@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -8,7 +9,8 @@ namespace CodeShellManager.UITests;
 
 /// <summary>
 /// Launches and tears down the CodeShellManager process once per test class.
-/// Sets CSM_STATE_PATH to a temp file so tests never read the developer's real sessions.
+/// Sets CSM_STATE_PATH on the child process's environment directly (via ProcessStartInfo)
+/// so the env var is scoped to that process only — no test-runner-level mutation.
 /// </summary>
 public sealed class AppFixture : IDisposable
 {
@@ -21,11 +23,13 @@ public sealed class AppFixture : IDisposable
     {
         _statePath = Path.GetTempFileName();
 
-        // Child process inherits this env var — StateService uses it instead of %AppData%
-        Environment.SetEnvironmentVariable("CSM_STATE_PATH", _statePath);
+        // Scope CSM_STATE_PATH to the child process only — avoids env var races when
+        // xUnit constructs multiple AppFixture instances concurrently.
+        var psi = new ProcessStartInfo(GetExePath());
+        psi.EnvironmentVariables["CSM_STATE_PATH"] = _statePath;
 
         Automation = new UIA3Automation();
-        App = Application.Launch(GetExePath());
+        App = Application.Launch(psi);
         MainWindow = App.GetMainWindow(Automation, TimeSpan.FromSeconds(15));
     }
 
@@ -34,7 +38,6 @@ public sealed class AppFixture : IDisposable
         try { App.Close(); } catch { /* ignore if already closed */ }
         Automation.Dispose();
         try { File.Delete(_statePath); } catch { }
-        Environment.SetEnvironmentVariable("CSM_STATE_PATH", null);
     }
 
     private static string GetExePath()
