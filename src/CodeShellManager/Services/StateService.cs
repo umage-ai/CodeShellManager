@@ -9,9 +9,11 @@ namespace CodeShellManager.Services;
 
 public class StateService
 {
-    private static readonly string StatePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "CodeShellManager", "state.json");
+    private static string StatePath =>
+        Environment.GetEnvironmentVariable("CSM_STATE_PATH")
+        ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "CodeShellManager", "state.json");
 
     private static readonly JsonSerializerOptions Options = new()
     {
