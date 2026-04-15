@@ -284,7 +284,8 @@
 
                 <StackPanel Margin="0,8,0,0">
                     <TextBlock Text="Max Search Results" Style="{StaticResource Label}"/>
-                    <TextBox x:Name="MaxSearchResultsBox" Width="100" HorizontalAlignment="Left"/>
+                    <TextBox x:Name="MaxSearchResultsBox" Width="100" HorizontalAlignment="Left"
+                             AutomationProperties.AutomationId="MaxSearchResultsBox"/>
                     <CheckBox x:Name="SearchCollapseAfterNavigateCheck"
                               Content="Auto-close search after navigating to result"
                               Margin="0,10,0,0"/>
@@ -325,7 +326,7 @@
                 <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0"
                         Click="Cancel_Click"/>
                 <Button Content="Save" Style="{StaticResource PrimaryBtn}" Click="Save_Click"
-                        IsDefault="True"/>
+                        AutomationProperties.AutomationId="SettingsSaveBtn" IsDefault="True"/>
             </StackPanel>
         </Border>
     </Grid>
