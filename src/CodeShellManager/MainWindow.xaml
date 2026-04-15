@@ -107,27 +107,27 @@
                         </DockPanel>
                     </Border>
 
-                    <Border x:Name="AlertBadge" Background="#f38ba8" CornerRadius="10"
+                    <Border x:Name="AlertBadge" AutomationProperties.AutomationId="AlertBadge" Background="#f38ba8" CornerRadius="10"
                             Padding="7,2" Margin="0,0,8,0" VerticalAlignment="Center"
                             Visibility="Collapsed">
                         <TextBlock x:Name="AlertCountText" Text="!" Foreground="#1e1e2e"
                                    FontSize="11" FontWeight="Bold"/>
                     </Border>
-                    <Button x:Name="SearchBtn" Content="⌕ Search" Style="{StaticResource ToolBtn}"
+                    <Button x:Name="SearchBtn" AutomationProperties.AutomationId="SearchBtn" Content="⌕ Search" Style="{StaticResource ToolBtn}"
                             Click="ToggleSearch_Click" Margin="0,0,2,0"/>
                     <Button x:Name="CmdHelperBtn" Content="⚡ Commands" Style="{StaticResource ToolBtn}"
                             Click="ToggleCommandHelper_Click" Margin="0,0,4,0"/>
-                    <Button x:Name="SettingsButton" Content="⚙ Settings" Style="{StaticResource ToolBtn}"
+                    <Button x:Name="SettingsButton" AutomationProperties.AutomationId="SettingsBtn" Content="⚙ Settings" Style="{StaticResource ToolBtn}"
                             Click="SettingsButton_Click" Margin="0,0,2,0"/>
                     <Button Content="?" Style="{StaticResource ToolBtn}" ToolTip="About CodeShellManager"
                             Click="AboutButton_Click" Margin="0,0,8,0" Width="26"/>
-                    <Button Content="▣" Style="{StaticResource ToolBtn}" ToolTip="Single pane"
+                    <Button AutomationProperties.AutomationId="Layout_Single" Content="▣" Style="{StaticResource ToolBtn}" ToolTip="Single pane"
                             Click="Layout_Single_Click" Width="26"/>
-                    <Button Content="▥" Style="{StaticResource ToolBtn}" ToolTip="2 columns"
+                    <Button AutomationProperties.AutomationId="Layout_Two" Content="▥" Style="{StaticResource ToolBtn}" ToolTip="2 columns"
                             Click="Layout_Two_Click" Width="26"/>
                     <Button Content="▦" Style="{StaticResource ToolBtn}" ToolTip="3 columns"
                             Click="Layout_Three_Click" Width="26"/>
-                    <Button Content="⊞" Style="{StaticResource ToolBtn}" ToolTip="2×2 grid"
+                    <Button AutomationProperties.AutomationId="Layout_Grid" Content="⊞" Style="{StaticResource ToolBtn}" ToolTip="2×2 grid"
                             Click="Layout_Grid_Click" Width="26"/>
                     <Button Content="⇔" Style="{StaticResource ToolBtn}" ToolTip="2 rows (horizontal split)"
                             Click="Layout_TwoRow_Click" Width="26"/>
@@ -141,9 +141,9 @@
                             Click="Layout_SixThree_Click" FontSize="9" Padding="4,4"/>
                 </StackPanel>
 
-                <Button DockPanel.Dock="Left" Content="＋ New Session" Style="{StaticResource ToolBtn}"
+                <Button DockPanel.Dock="Left" AutomationProperties.AutomationId="NewSessionBtn" Content="＋ New Session" Style="{StaticResource ToolBtn}"
                         Foreground="#a6e3a1" Click="NewSession_Click" Margin="0,0,4,0"/>
-                <Button DockPanel.Dock="Left" Content="⊕ RC All" Style="{StaticResource ToolBtn}"
+                <Button DockPanel.Dock="Left" AutomationProperties.AutomationId="BroadcastBtn" Content="⊕ RC All" Style="{StaticResource ToolBtn}"
                         Foreground="#89b4fa" Click="BroadcastRemoteControl_Click" Margin="0,0,4,0"
                         ToolTip="Send /remote-control to all sessions"/>
             </DockPanel>
@@ -242,13 +242,13 @@
                     </DockPanel>
                 </Border>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="SidebarSessionList" Margin="6,6"/>
+                    <StackPanel x:Name="SidebarSessionList" AutomationProperties.AutomationId="SidebarSessionList" Margin="6,6"/>
                 </ScrollViewer>
             </DockPanel>
         </Border>
 
         <!-- ── Terminal grid ────────────────────────────────────────────── -->
-        <Grid x:Name="TerminalGrid" Background="#1e1e2e">
+        <Grid x:Name="TerminalGrid" AutomationProperties.AutomationId="TerminalGrid" Background="#1e1e2e">
             <TextBlock x:Name="EmptyState"
                        Text="No sessions open.&#x0a;Press Ctrl+T or click ＋ New Session to get started."
                        HorizontalAlignment="Center" VerticalAlignment="Center"
