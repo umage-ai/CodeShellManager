@@ -43,7 +43,9 @@ public partial class SessionViewModel : ObservableObject, IDisposable
                 : Session.WorkingFolder);
 
     public string DisplayName => string.IsNullOrWhiteSpace(Session.Name)
-        ? System.IO.Path.GetFileName(Session.WorkingFolder.TrimEnd('/', '\\')) ?? Session.Command
+        ? (Session.IsRemote
+            ? (string.IsNullOrWhiteSpace(Session.SshHost) ? Session.Command : Session.SshHost)
+            : System.IO.Path.GetFileName(Session.WorkingFolder.TrimEnd('/', '\\')) ?? Session.Command)
         : Session.Name;
 
     public string FolderShort

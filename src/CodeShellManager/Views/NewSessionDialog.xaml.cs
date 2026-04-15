@@ -108,6 +108,15 @@ public partial class NewSessionDialog : Window
 
         if (IsRemote)
         {
+            if (string.IsNullOrWhiteSpace(SshHostBox.Text))
+            {
+                System.Windows.MessageBox.Show(
+                    "Please enter a host (e.g. user@hostname).",
+                    "Host required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                SshHostBox.Focus();
+                return;
+            }
+
             var hostRaw = SshHostBox.Text.Trim();
             var atIdx = hostRaw.IndexOf('@');
             if (atIdx > 0)

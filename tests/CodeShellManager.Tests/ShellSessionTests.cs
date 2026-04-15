@@ -79,4 +79,15 @@ public class ShellSessionTests
         var s = new ShellSession { Command = "claude", Args = "--continue" };
         Assert.Equal("claude --continue", s.FullCommandLine);
     }
+
+    [Fact]
+    public void BuildSshArgs_EmptyHost_ThrowsInvalidOperationException()
+    {
+        var s = new ShellSession
+        {
+            IsRemote = true, SshUser = "alice", SshHost = "",
+            SshPort = 22, Command = "bash"
+        };
+        Assert.Throws<InvalidOperationException>(() => s.BuildSshArgs());
+    }
 }
