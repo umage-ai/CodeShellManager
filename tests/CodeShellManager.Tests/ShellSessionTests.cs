@@ -13,7 +13,7 @@ public class ShellSessionTests
             IsRemote = true, SshUser = "alice", SshHost = "dev.example.com",
             SshPort = 22, SshRemoteFolder = "/home/alice/project", Command = "bash"
         };
-        Assert.Equal("-t alice@dev.example.com \"cd \\\"/home/alice/project\\\" && bash\"",
+        Assert.Equal("-t alice@dev.example.com \"cd '/home/alice/project' && bash\"",
             s.BuildSshArgs());
     }
 
@@ -47,8 +47,7 @@ public class ShellSessionTests
             IsRemote = true, SshUser = "ci", SshHost = "build-server",
             SshPort = 22, SshRemoteFolder = "", Command = "bash"
         };
-        string args = s.BuildSshArgs();
-        Assert.DoesNotContain("cd", args);
+        Assert.Equal("-t ci@build-server \"bash\"", s.BuildSshArgs());
     }
 
     [Fact]
@@ -60,6 +59,18 @@ public class ShellSessionTests
             SshPort = 22, SshRemoteFolder = "/proj", Command = "bash"
         };
         Assert.StartsWith("ssh ", s.FullCommandLine);
+    }
+
+    [Fact]
+    public void BuildSshArgs_FolderWithSpaces_ProducesValidCommand()
+    {
+        var s = new ShellSession
+        {
+            IsRemote = true, SshUser = "alice", SshHost = "dev.example.com",
+            SshPort = 22, SshRemoteFolder = "/home/alice/my project", Command = "bash"
+        };
+        Assert.Equal("-t alice@dev.example.com \"cd '/home/alice/my project' && bash\"",
+            s.BuildSshArgs());
     }
 
     [Fact]

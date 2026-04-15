@@ -18,7 +18,7 @@ public class ShellSession
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     // SSH / remote session fields
-    public bool IsRemote { get; set; } = false;
+    public bool IsRemote { get; set; }
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
@@ -33,10 +33,12 @@ public class ShellSession
 
     /// <summary>
     /// Builds the argument string passed to the ssh executable.
-    /// Example: "-t alice@dev.example.com \"cd \"/proj\" && bash\""
+    /// Example: "-t alice@dev.example.com \"cd '/proj' && bash\""
     /// </summary>
-    public string BuildSshArgs()
+    internal string BuildSshArgs()
     {
+        if (string.IsNullOrWhiteSpace(SshHost))
+            throw new InvalidOperationException("SshHost must be set for remote sessions.");
         var sb = new StringBuilder();
         if (SshPort != 22)
             sb.Append($"-p {SshPort} ");
@@ -45,7 +47,7 @@ public class ShellSession
         sb.Append(userAtHost);
         sb.Append(" \"");
         if (!string.IsNullOrWhiteSpace(SshRemoteFolder))
-            sb.Append($"cd \\\"{SshRemoteFolder}\\\" && ");
+            sb.Append($"cd '{SshRemoteFolder}' && ");
         var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
         sb.Append(shell);
         if (!string.IsNullOrWhiteSpace(Args))
