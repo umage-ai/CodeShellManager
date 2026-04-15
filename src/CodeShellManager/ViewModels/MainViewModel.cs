@@ -89,7 +89,7 @@ public partial class MainViewModel : ObservableObject
                     vm.RaiseAlert(alert.Message, alert.Type);
                     OnPropertyChanged(nameof(AlertCount));
                     if (Settings.ShowToastNotifications)
-                        ToastHelper.Show(vm.DisplayName, alert.Message);
+                        ToastHelper.Show(vm.DisplayName, alert.Message, Settings.ShowNotificationSound);
                 });
             };
             vm.AlertDetector.AlertCleared += _ =>

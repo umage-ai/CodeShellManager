@@ -274,7 +274,8 @@
                 <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
 
                 <StackPanel Margin="0,8,0,0">
-                    <CheckBox x:Name="ShowToastCheck" Content="Show toast notifications"/>
+                    <CheckBox x:Name="ShowToastCheck" Content="Show banner notification (system tray)"/>
+                    <CheckBox x:Name="ShowNotificationSoundCheck" Content="Play notification sound"/>
                 </StackPanel>
 
                 <!-- Search -->

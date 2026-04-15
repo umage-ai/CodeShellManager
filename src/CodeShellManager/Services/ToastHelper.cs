@@ -10,15 +10,18 @@ namespace CodeShellManager.Services;
 /// </summary>
 public static class ToastHelper
 {
-    public static void Show(string title, string message)
+    public static void Show(string title, string message, bool playSound = false)
     {
         try
         {
-            // Use the taskbar notify icon if available (set up in App.xaml.cs)
             if (App.TrayIcon != null)
             {
+                // ToolTipIcon.None avoids Windows auto-playing a sound with the balloon.
+                // We play the sound ourselves so it's independently controllable.
+                if (playSound)
+                    System.Media.SystemSounds.Asterisk.Play();
                 App.TrayIcon.ShowBalloonTip(4000, $"CodeShellManager — {title}", message,
-                    System.Windows.Forms.ToolTipIcon.Info);
+                    System.Windows.Forms.ToolTipIcon.None);
             }
         }
         catch { /* non-critical */ }

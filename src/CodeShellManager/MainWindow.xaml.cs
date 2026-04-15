@@ -1335,7 +1335,8 @@ public partial class MainWindow : Window
 
                 if (_vm.Settings.ShowToastNotifications)
                     ToastHelper.Show("Update available",
-                        $"CodeShellManager v{result.LatestVersion} is ready to download.");
+                        $"CodeShellManager v{result.LatestVersion} is ready to download.",
+                        _vm.Settings.ShowNotificationSound);
             });
         }
         catch { /* never surface update errors to the user */ }
@@ -1395,6 +1396,7 @@ public partial class MainWindow : Window
             var edited = dialog.EditedSettings;
             _vm.Settings.AutoRestoreSessions = edited.AutoRestoreSessions;
             _vm.Settings.ShowToastNotifications = edited.ShowToastNotifications;
+            _vm.Settings.ShowNotificationSound = edited.ShowNotificationSound;
             _vm.Settings.AnthropicApiKey = edited.AnthropicApiKey;
             _vm.Settings.DefaultCommand = edited.DefaultCommand;
             _vm.Settings.DefaultWorkingFolder = edited.DefaultWorkingFolder;
@@ -1495,6 +1497,7 @@ public partial class MainWindow : Window
         var s = imported.Settings;
         _vm.Settings.AutoRestoreSessions = s.AutoRestoreSessions;
         _vm.Settings.ShowToastNotifications = s.ShowToastNotifications;
+        _vm.Settings.ShowNotificationSound = s.ShowNotificationSound;
         _vm.Settings.AnthropicApiKey = s.AnthropicApiKey;
         _vm.Settings.DefaultCommand = s.DefaultCommand;
         _vm.Settings.DefaultWorkingFolder = s.DefaultWorkingFolder;
