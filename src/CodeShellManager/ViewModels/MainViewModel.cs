@@ -52,6 +52,29 @@ public partial class MainViewModel : ObservableObject
 
     public AppSettings Settings => _appState.Settings;
 
+    /// <summary>Returns the current app state (after SaveStateAsync has been called to flush session data).</summary>
+    public AppState CurrentState => _appState;
+
+    /// <summary>Saves window position/size. Only updates NormalBounds when not maximized.</summary>
+    public void UpdateWindowState(System.Windows.WindowState windowState, double left, double top, double width, double height)
+    {
+        _appState.WindowMaximized = windowState == System.Windows.WindowState.Maximized;
+        if (windowState == System.Windows.WindowState.Normal)
+        {
+            _appState.LastNormalBounds = new Models.WindowBounds
+            {
+                Left = left,
+                Top = top,
+                Width = width,
+                Height = height
+            };
+        }
+    }
+
+    public Models.WindowBounds? GetSavedWindowBounds() => _appState.LastNormalBounds;
+
+    public bool IsWindowMaximized() => _appState.WindowMaximized;
+
     // Called by the View after it has set up the WebView2 + bridge for a session
     public void RegisterSession(SessionViewModel vm)
     {

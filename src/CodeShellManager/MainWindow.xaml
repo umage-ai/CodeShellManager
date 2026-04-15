@@ -79,6 +79,14 @@
                     <TextBlock Text="umage.ai" FontSize="11" FontWeight="SemiBold"
                                Foreground="#89b4fa" VerticalAlignment="Center"
                                Cursor="Hand" ToolTip="https://umage.ai"/>
+                    <Button Content="⬆ Export" Style="{StaticResource ToolBtn}"
+                            Foreground="#a6adc8" Margin="12,0,2,0"
+                            ToolTip="Export current setup to a .csm backup file"
+                            Click="Export_Click"/>
+                    <Button Content="⬇ Import" Style="{StaticResource ToolBtn}"
+                            Foreground="#a6adc8" Margin="2,0,0,0"
+                            ToolTip="Import a .csm backup file to restore a setup"
+                            Click="Import_Click"/>
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">

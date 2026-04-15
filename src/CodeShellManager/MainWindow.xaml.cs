@@ -49,6 +49,10 @@ public partial class MainWindow : Window
     private LayoutMode _currentLayout = LayoutMode.Single;
     private int _layoutViewportOffset = 0;
 
+    // Window state debounce
+    private readonly System.Windows.Threading.DispatcherTimer _windowStateTimer;
+    private bool _windowStateReady = false; // don't save before state is loaded
+
     public MainWindow()
     {
         InitializeComponent();
@@ -68,8 +72,35 @@ public partial class MainWindow : Window
         Loaded += OnLoaded;
         KeyDown += OnKeyDown;
 
+        // Window state persistence: debounce position/size changes
+        _windowStateTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1)
+        };
+        _windowStateTimer.Tick += (_, _) =>
+        {
+            _windowStateTimer.Stop();
+            SaveWindowBounds();
+        };
+        SizeChanged += (_, _) => OnWindowBoundsChanged();
+        LocationChanged += (_, _) => OnWindowBoundsChanged();
+
         BuildShortcutPanel();
         SetupSidebarDrop();
+    }
+
+    private void OnWindowBoundsChanged()
+    {
+        if (!_windowStateReady) return;
+        _windowStateTimer.Stop();
+        _windowStateTimer.Start();
+    }
+
+    private void SaveWindowBounds()
+    {
+        if (!_windowStateReady) return;
+        _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
+        _ = _vm.SaveStateAsync();
     }
 
     // ── Startup ───────────────────────────────────────────────────────────────
@@ -78,6 +109,8 @@ public partial class MainWindow : Window
     {
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
+        RestoreWindowState();
+        _windowStateReady = true;
         _ = CheckForUpdatesAsync();   // fire-and-forget; never blocks startup
 
         var saved = _sessionManager.Sessions.ToList();
@@ -116,6 +149,32 @@ public partial class MainWindow : Window
                 _sessionManager.RemoveSession(s.Id);
             await _vm.SaveStateAsync();
         }
+    }
+
+    private void RestoreWindowState()
+    {
+        var bounds = _vm.GetSavedWindowBounds();
+        if (bounds != null)
+        {
+            // Validate bounds are at least partially on-screen
+            var screenWidth = SystemParameters.VirtualScreenWidth;
+            var screenHeight = SystemParameters.VirtualScreenHeight;
+            var screenLeft = SystemParameters.VirtualScreenLeft;
+            var screenTop = SystemParameters.VirtualScreenTop;
+
+            double left = Math.Max(screenLeft, Math.Min(bounds.Left, screenLeft + screenWidth - 100));
+            double top = Math.Max(screenTop, Math.Min(bounds.Top, screenTop + screenHeight - 100));
+            double width = Math.Max(400, Math.Min(bounds.Width, screenWidth));
+            double height = Math.Max(300, Math.Min(bounds.Height, screenHeight));
+
+            Left = left;
+            Top = top;
+            Width = width;
+            Height = height;
+        }
+
+        if (_vm.IsWindowMaximized())
+            WindowState = WindowState.Maximized;
     }
 
     private async Task InitDatabaseAsync()
@@ -1363,6 +1422,108 @@ public partial class MainWindow : Window
         new AboutDialog { Owner = this }.ShowDialog();
     }
 
+    private async void Export_Click(object sender, RoutedEventArgs e)
+    {
+        await _vm.SaveStateAsync();
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Export CodeShellManager Setup",
+            Filter = "CodeShellManager backup (*.csm)|*.csm",
+            DefaultExt = ".csm",
+            FileName = $"CodeShellManager-backup-{DateTime.Now:yyyy-MM-dd}"
+        };
+
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            await ImportExportService.ExportAsync(_vm.CurrentState, dlg.FileName);
+            MessageBox.Show(
+                $"Setup exported successfully to:\n{dlg.FileName}",
+                "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Export failed: {ex.Message}",
+                "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void Import_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import CodeShellManager Setup",
+            Filter = "CodeShellManager backup (*.csm)|*.csm",
+            DefaultExt = ".csm"
+        };
+
+        if (dlg.ShowDialog(this) != true) return;
+
+        var confirm = MessageBox.Show(
+            "Importing will replace your current settings and session list.\n\n" +
+            "The app will need to restart to apply the imported sessions.\n\n" +
+            "Continue?",
+            "Import Setup", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.Yes) return;
+
+        AppState? imported;
+        try
+        {
+            imported = await ImportExportService.ImportAsync(dlg.FileName);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Import failed: {ex.Message}",
+                "Import Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (imported == null)
+        {
+            MessageBox.Show(
+                "The selected file could not be read as a valid CodeShellManager backup.",
+                "Import Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        // Apply settings immediately
+        var s = imported.Settings;
+        _vm.Settings.AutoRestoreSessions = s.AutoRestoreSessions;
+        _vm.Settings.ShowToastNotifications = s.ShowToastNotifications;
+        _vm.Settings.AnthropicApiKey = s.AnthropicApiKey;
+        _vm.Settings.DefaultCommand = s.DefaultCommand;
+        _vm.Settings.DefaultWorkingFolder = s.DefaultWorkingFolder;
+        _vm.Settings.ShowGitBranch = s.ShowGitBranch;
+        _vm.Settings.SearchCollapseAfterNavigate = s.SearchCollapseAfterNavigate;
+        _vm.Settings.MaxSearchResults = s.MaxSearchResults;
+        _vm.Settings.ShowTerminalStatusDot = s.ShowTerminalStatusDot;
+        _vm.Settings.LaunchCommands = s.LaunchCommands;
+        _vm.Settings.TerminalFontFamily = s.TerminalFontFamily;
+        _vm.Settings.TerminalFontSize = s.TerminalFontSize;
+        _vm.Settings.TerminalFontLigatures = s.TerminalFontLigatures;
+        _vm.Settings.TerminalFontWeight = s.TerminalFontWeight;
+        _vm.Settings.TerminalLetterSpacing = s.TerminalLetterSpacing;
+        _vm.Settings.TerminalLineHeight = s.TerminalLineHeight;
+
+        // Replace session and group lists in the imported state and save
+        imported.Settings = _vm.Settings;
+        await ImportExportService.ExportAsync(imported, GetStatePath());
+
+        MessageBox.Show(
+            "Setup imported successfully.\n\nPlease restart CodeShellManager to apply the imported sessions and groups.",
+            "Import Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private static string GetStatePath() =>
+        System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "CodeShellManager", "state.json");
+
     // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
     private void OnKeyDown(object s, WpfKeyEventArgs e)
@@ -1406,6 +1567,9 @@ public partial class MainWindow : Window
 
     protected override async void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        _windowStateTimer.Stop();
+        if (_windowStateReady)
+            _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
         await _vm.SaveStateAsync();
         foreach (var vm in _vm.Sessions.ToList())
             vm.Dispose();

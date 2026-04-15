@@ -36,10 +36,22 @@ public class AppSettings
     ];
 }
 
+public class WindowBounds
+{
+    public double Left { get; set; }
+    public double Top { get; set; }
+    public double Width { get; set; }
+    public double Height { get; set; }
+}
+
 public class AppState
 {
     public List<ShellSession> Sessions { get; set; } = [];
     public List<SessionGroup> Groups { get; set; } = [new SessionGroup { Name = "Default" }];
     public string LastLayout { get; set; } = "Single";
     public AppSettings Settings { get; set; } = new();
+
+    // Window state persistence
+    public WindowBounds? LastNormalBounds { get; set; }
+    public bool WindowMaximized { get; set; } = false;
 }
