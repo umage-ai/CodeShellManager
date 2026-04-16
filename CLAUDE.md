@@ -55,7 +55,7 @@ src/CodeShellManager/
 ├── MainWindow.xaml / .cs           # Main UI (toolbar, sidebar, terminal grid)
 ├── Models/
 │   ├── AppState.cs                 # AppSettings + AppState (JSON root)
-│   ├── ShellSession.cs             # Session data model
+│   ├── ShellSession.cs             # Session data model (incl. SSH fields + BuildSshArgs)
 │   ├── SessionGroup.cs             # Group model
 │   └── AlertEvent.cs               # Alert types: InputRequired, ToolApproval
 ├── Services/
@@ -81,6 +81,10 @@ src/CodeShellManager/
     ├── terminal.html               # xterm.js host page
     ├── xterm.js / xterm.css
     └── xterm-addon-fit.js
+
+tests/
+├── CodeShellManager.Tests/         # xunit unit tests (model logic, headless)
+└── CodeShellManager.UITests/       # FlaUI UI tests (requires live desktop)
 ```
 
 ## Color / Theme
@@ -91,15 +95,27 @@ src/CodeShellManager/
 - Accent blue: `#89b4fa`, Green: `#a6e3a1`, Alert pink: `#f38ba8`
 - Hover: `#45475a`, Selected: `#585b70`
 
-**Session accent colors** — `ColorService.GetHexColor(folderPath)` uses FNV-1a hash to deterministically assign one of 12 colors. Used as sidebar stripe + terminal toolbar top border.
+**Session accent colors** — `ColorService.GetHexColor(key)` uses FNV-1a hash to deterministically assign one of 12 colors. For local sessions the key is `WorkingFolder`; for SSH sessions it is `user@host`. Used as sidebar stripe + terminal toolbar top border.
 
 ## Session Lifecycle
 
-1. User clicks **＋ New Session** → `NewSessionDialog` modal
-2. `SessionManager.CreateSession()` creates `ShellSession` model
+1. User clicks **＋ New Session** → `NewSessionDialog` modal (Local or Remote SSH)
+2. `SessionManager.CreateSession()` creates `ShellSession` model; caller copies SSH fields if remote
 3. `LaunchSessionAsync()` creates: `SessionViewModel` → `WebView2` → `TerminalBridge` → `PseudoTerminal`
 4. `OutputIndexer` indexes all output to SQLite; `AlertDetector` watches for prompts
 5. On close: `Dispose()` chain cleans up PTY, bridge, indexer, detector
+
+## SSH Remote Sessions
+
+Remote sessions use the system `ssh` client as the PTY command — no extra library.
+
+- `ShellSession.IsRemote` flag distinguishes remote from local sessions
+- SSH config fields on `ShellSession`: `SshUser`, `SshHost`, `SshPort` (default 22), `SshRemoteFolder`
+- `ShellSession.BuildSshArgs()` (internal) produces: `-t [–p PORT] user@host "cd 'folder' && shell"`
+- `LaunchSessionAsync()` branches on `IsRemote`: uses `ssh` + `BuildSshArgs()`, skips Claude auto-resume
+- `PseudoTerminal.BuildCmdLine` passes `ssh` through directly (same as `cmd`/`pwsh`) — not wrapped in PowerShell
+- `SessionViewModel.RefreshGitInfoAsync()` early-returns for remote sessions (no local working folder)
+- SSH fields serialize to `state.json` automatically — sessions restore and relaunch on next startup
 
 ## Alert / Waiting State
 
@@ -140,6 +156,28 @@ Persisted in `state.json`. Key settings:
 | `Ctrl+Tab` | Cycle sessions |
 | `Escape` (in search) | Close search panel |
 | `Enter` (in search) | Execute search |
+
+## Testing
+
+| Project | Type | Command |
+|---|---|---|
+| `tests/CodeShellManager.Tests/` | Unit tests (xunit) | `dotnet test tests/CodeShellManager.Tests/` |
+| `tests/CodeShellManager.UITests/` | FlaUI UI tests | `dotnet test tests/CodeShellManager.UITests/` |
+
+Unit tests cover model logic (`ShellSession`, etc.) and run headless. UI tests require the app running on a live Windows desktop.
+
+`ShellSession.BuildSshArgs()` is `internal` — accessible from tests via `[assembly: InternalsVisibleTo("CodeShellManager.Tests")]` in `AssemblyInfo.cs`.
+
+## Releases
+
+CI/CD is in `.github/workflows/build.yml`. Releases are triggered by pushing a `v*.*.*` tag:
+
+```bash
+git tag v1.2.3 -m "v1.2.3 - description"
+git push origin v1.2.3
+```
+
+The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` flag). **Do not rely on the csproj version number** — bump it for local build clarity only. CI produces a signed exe, MSI installer, and portable ZIP, then creates a GitHub Release automatically.
 
 ## Known Conventions
 
