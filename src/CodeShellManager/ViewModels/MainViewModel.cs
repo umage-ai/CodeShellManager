@@ -80,6 +80,15 @@ public partial class MainViewModel : ObservableObject
     {
         vm.CloseRequested += OnSessionCloseRequested;
 
+        if (vm.Bridge != null)
+        {
+            vm.Bridge.UserInput += () =>
+            {
+                vm.AlertDetector?.NotifyUserInteracted();
+                App.Current.Dispatcher.Invoke(() => OnPropertyChanged(nameof(AlertCount)));
+            };
+        }
+
         if (vm.AlertDetector != null)
         {
             vm.AlertDetector.AlertRaised += alert =>

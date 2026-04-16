@@ -97,9 +97,14 @@
     } catch {}
   });
 
-  // ── Ctrl+C / Ctrl+V: copy/paste via WPF clipboard ─────────────────────────
+  // ── Clipboard: all copy/paste routes through WPF ──────────────────────────
+  // customKeyEventHandler returning false stops xterm's own key handling but
+  // does NOT call preventDefault() on the DOM event, so Chromium can still fire
+  // a native 'paste' event that xterm catches via its internal textarea listener.
+  // We block that at the capture phase below.
   term.attachCustomKeyEventHandler(e => {
-    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey) {
+    if (e.type !== 'keydown' || !e.ctrlKey) return true;
+    if (!e.shiftKey) {
       if (e.key === 'c') {
         const sel = term.getSelection();
         if (sel) {
@@ -112,28 +117,32 @@
         window.chrome.webview.postMessage(JSON.stringify({ type: 'getClipboard' }));
         return false; // swallow — don't send ^V to PTY
       }
+    } else {
+      // Ctrl+Shift+V/C: document keydown listener handles sending the message;
+      // return false here so xterm doesn't also paste/copy natively.
+      if (e.key === 'V' || e.key === 'C') return false;
     }
-    return true; // let xterm handle everything else normally
+    return true;
   });
+
+  // Block native paste events (capture phase, before xterm's textarea listener).
+  // All pasting is handled by our getClipboard → WPF → PTY path.
+  document.addEventListener('paste', e => e.preventDefault(), { capture: true });
 
   // ── Right-click: paste from clipboard ─────────────────────────────────────
   document.getElementById('terminal').addEventListener('contextmenu', async e => {
     e.preventDefault();
     try {
-      // Ask WPF host for clipboard text (avoids browser clipboard permission prompt)
       window.chrome.webview.postMessage(JSON.stringify({ type: 'getClipboard' }));
     } catch {}
   });
 
-  // ── Ctrl+Shift+V: paste ────────────────────────────────────────────────────
-  // xterm.js intercepts Ctrl+Shift+V natively for paste — this is the default.
-  // We override to route through WPF's clipboard (avoids WebView2 permission issues).
+  // ── Ctrl+Shift+V / Ctrl+Shift+C ───────────────────────────────────────────
   document.addEventListener('keydown', e => {
     if (e.ctrlKey && e.shiftKey && e.key === 'V') {
       e.preventDefault();
       window.chrome.webview.postMessage(JSON.stringify({ type: 'getClipboard' }));
     }
-    // Ctrl+Shift+C: copy selected text
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
       e.preventDefault();
       const sel = term.getSelection();
@@ -169,17 +178,36 @@
     e.preventDefault();
     overlay.classList.remove('active');
 
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length === 0) return;
+    // text/uri-list contains full file:// URIs when dragging from Explorer
+    const uriList = e.dataTransfer.getData('text/uri-list');
+    if (uriList) {
+      const paths = uriList.split(/\r?\n/)
+        .filter(line => !line.startsWith('#') && line.trim())
+        .map(uri => {
+          try {
+            const url = new URL(uri.trim());
+            if (url.protocol === 'file:') {
+              // file:///C:/path/to/file → C:\path\to\file
+              return decodeURIComponent(url.pathname.replace(/^\//, '').replace(/\//g, '\\'));
+            }
+          } catch {}
+          return null;
+        })
+        .filter(Boolean);
+      if (paths.length > 0) {
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'filesDropped', paths }));
+        return;
+      }
+    }
 
-    // For each dropped file, send its name to WPF for path resolution
-    // (DataTransfer.files only gives File objects with name, not full path —
-    //  WPF side needs to resolve via the DragDrop OLE mechanism instead,
-    //  so we signal WPF and let it handle the OLE drop event)
-    window.chrome.webview.postMessage(JSON.stringify({
-      type: 'filesDropped',
-      names: files.map(f => f.name)
-    }));
+    // Fallback: send names only (WPF OLE handler may resolve paths)
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'filesDropped',
+        names: files.map(f => f.name)
+      }));
+    }
   });
 
   // ── Fit on resize ──────────────────────────────────────────────────────────

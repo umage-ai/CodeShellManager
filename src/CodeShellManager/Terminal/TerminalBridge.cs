@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using CodeShellManager.Models;
@@ -7,9 +6,6 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using WpfApplication    = System.Windows.Application;
 using WpfClipboard      = System.Windows.Clipboard;
-using WpfDataFormats    = System.Windows.DataFormats;
-using WpfDragDropFx     = System.Windows.DragDropEffects;
-using WpfDragEventArgs  = System.Windows.DragEventArgs;
 
 namespace CodeShellManager.Terminal;
 
@@ -31,6 +27,7 @@ public sealed class TerminalBridge : IDisposable
     private readonly System.Text.StringBuilder _outputBuffer = new();
 
     public event Action<string>? RawOutputReceived;
+    public event Action? UserInput;
 
     private static void Log(string msg)
     {
@@ -80,10 +77,9 @@ public sealed class TerminalBridge : IDisposable
             Log($"WebView2 ProcessFailed: {e.ProcessFailedKind}");
         // Note: ConsoleMessageReceived needs AllowedOrigins — use WebResourceRequested for JS errors
 
-        // Wire drag-and-drop (OLE level, before WebView2 intercepts)
-        _webView.AllowDrop = true;
-        _webView.DragOver  += OnDragOver;
-        _webView.Drop      += OnFileDrop;
+        // Drag-and-drop is handled entirely in JS (terminal.html) via text/uri-list.
+        // WPF OLE Drop events don't fire for WebView2 content — WebView2 registers its
+        // own IDropTarget for its HWND and handles OLE drops before WPF sees them.
 
         // Navigate and WAIT for the page to finish loading
         var navDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -168,6 +164,7 @@ public sealed class TerminalBridge : IDisposable
             {
                 case "input":
                     _pty?.Write(root.GetProperty("data").GetString() ?? "");
+                    UserInput?.Invoke();
                     break;
 
                 case "resize":
@@ -200,50 +197,23 @@ public sealed class TerminalBridge : IDisposable
                     break;
 
                 case "filesDropped":
-                    // Fallback: JS sent filenames but not paths (web security limitation).
-                    // The real paths come from OnFileDrop via WPF's OLE drag-drop.
-                    // Nothing to do here — OnFileDrop handles it.
+                    // JS sends full paths via text/uri-list (file:// URIs from Explorer)
+                    if (root.TryGetProperty("paths", out var pathsEl))
+                    {
+                        var pathsList = new System.Collections.Generic.List<string>();
+                        foreach (var p in pathsEl.EnumerateArray())
+                        {
+                            string fp = p.GetString() ?? "";
+                            if (!string.IsNullOrEmpty(fp))
+                                pathsList.Add(fp.Contains(' ') ? $"\"{fp}\"" : fp);
+                        }
+                        if (pathsList.Count > 0)
+                            _pty?.Write(string.Join(" ", pathsList));
+                    }
                     break;
             }
         }
         catch { }
-    }
-
-    // ── File drag-and-drop (WPF OLE) ─────────────────────────────────────────
-
-    private void OnDragOver(object sender, WpfDragEventArgs e)
-    {
-        if (e.Data.GetDataPresent(WpfDataFormats.FileDrop))
-        {
-            e.Effects = WpfDragDropFx.Copy;
-            e.Handled = true;
-        }
-    }
-
-    private void OnFileDrop(object sender, WpfDragEventArgs e)
-    {
-        if (!e.Data.GetDataPresent(WpfDataFormats.FileDrop)) return;
-
-        var files = (string[])e.Data.GetData(WpfDataFormats.FileDrop);
-        if (files == null || files.Length == 0) return;
-
-        // Quote paths that contain spaces; join multiple paths with spaces
-        var quoted = files.Select(f => f.Contains(' ') ? $"\"{f}\"" : f);
-        string text = string.Join(" ", quoted);
-
-        _pty?.Write(text);
-        e.Handled = true;
-
-        // Hide the JS drop overlay
-        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            try
-            {
-                _webView.CoreWebView2?.PostWebMessageAsString(
-                    "{\"type\":\"dropOverlayClear\"}");
-            }
-            catch { }
-        });
     }
 
     // ── Utilities ─────────────────────────────────────────────────────────────
@@ -297,8 +267,6 @@ public sealed class TerminalBridge : IDisposable
     public void Dispose()
     {
         if (_pty != null) _pty.DataReceived -= OnPtyData;
-        _webView.DragOver -= OnDragOver;
-        _webView.Drop     -= OnFileDrop;
         if (_webView.CoreWebView2 != null)
         {
             _webView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
