@@ -35,10 +35,17 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     public string GroupId => Session.GroupId;
 
     public string AccentColor => Session.ColorOverride
-        ?? ColorService.GetHexColor(Session.WorkingFolder);
+        ?? ColorService.GetHexColor(
+            Session.IsRemote
+                ? (string.IsNullOrWhiteSpace(Session.SshUser)
+                    ? Session.SshHost
+                    : $"{Session.SshUser}@{Session.SshHost}")
+                : Session.WorkingFolder);
 
     public string DisplayName => string.IsNullOrWhiteSpace(Session.Name)
-        ? System.IO.Path.GetFileName(Session.WorkingFolder.TrimEnd('/', '\\')) ?? Session.Command
+        ? (Session.IsRemote
+            ? (string.IsNullOrWhiteSpace(Session.SshHost) ? Session.Command : Session.SshHost)
+            : System.IO.Path.GetFileName(Session.WorkingFolder.TrimEnd('/', '\\')) ?? Session.Command)
         : Session.Name;
 
     public string FolderShort
@@ -64,6 +71,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public async Task RefreshGitInfoAsync()
     {
+        if (Session.IsRemote) return;
         var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
         GitBranch = branch;
         GitIsDirty = isDirty;

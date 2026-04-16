@@ -70,4 +70,20 @@ public sealed class SessionTests : IClassFixture<AppFixture>
             cf => cf.ByName("No sessions open."));
         Assert.NotNull(emptyState);
     }
+
+    [Fact]
+    public void CreateSshSession_AddsSidebarItem()
+    {
+        int before = AppActions.GetSidebarSessionCount(_f.MainWindow);
+
+        AppActions.CreateSshSession(_f.App, _f.MainWindow, _f.Automation,
+            host: "user@test-host", name: "SSH Test");
+
+        // Allow time for session launch attempt (ssh will fail — host doesn't exist — but the
+        // sidebar item is created before the PTY exits)
+        System.Threading.Thread.Sleep(1000);
+
+        int after = AppActions.GetSidebarSessionCount(_f.MainWindow);
+        Assert.Equal(before + 1, after);
+    }
 }

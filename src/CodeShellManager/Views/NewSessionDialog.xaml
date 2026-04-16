@@ -1,7 +1,7 @@
 <Window x:Class="CodeShellManager.Views.NewSessionDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="New Session" Height="310" Width="480"
+        Title="New Session" Height="380" Width="480"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#1e1e2e" Foreground="#cdd6f4"
         FontFamily="Segoe UI">
@@ -113,6 +113,12 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Margin" Value="0,0,16,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
         <Style x:Key="Btn" TargetType="Button">
             <Setter Property="Background" Value="#45475a"/>
             <Setter Property="Foreground" Value="#cdd6f4"/>
@@ -144,50 +150,90 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Working Folder -->
+        <!-- Session Type -->
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="Session Type" Style="{StaticResource Label}"/>
+            <StackPanel Orientation="Horizontal">
+                <RadioButton x:Name="LocalRadio"
+                             AutomationProperties.AutomationId="NewSessionLocalRadio"
+                             Content="Local" IsChecked="True"
+                             Checked="SessionType_Changed"/>
+                <RadioButton x:Name="RemoteRadio"
+                             AutomationProperties.AutomationId="NewSessionRemoteRadio"
+                             Content="Remote (SSH)"
+                             Checked="SessionType_Changed"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Local: Working Folder -->
+        <StackPanel Grid.Row="1" x:Name="LocalPanel" Margin="0,0,0,12">
             <TextBlock Text="Working Folder" Style="{StaticResource Label}"/>
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBox x:Name="FolderBox" AutomationProperties.AutomationId="NewSessionFolderBox" Grid.Column="0" Margin="0,0,6,0"/>
+                <TextBox x:Name="FolderBox" AutomationProperties.AutomationId="NewSessionFolderBox"
+                         Grid.Column="0" Margin="0,0,6,0"/>
                 <Button Grid.Column="1" Content="Browse…" Style="{StaticResource Btn}"
                         Click="BrowseFolder_Click"/>
             </Grid>
         </StackPanel>
 
+        <!-- Remote: SSH fields -->
+        <StackPanel Grid.Row="2" x:Name="SshPanel" Visibility="Collapsed" Margin="0,0,0,12">
+            <TextBlock Text="Host (user@hostname)" Style="{StaticResource Label}"/>
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="80"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SshHostBox"
+                         AutomationProperties.AutomationId="NewSessionSshHostBox"
+                         Grid.Column="0" Margin="0,0,6,0"
+                         ToolTip="e.g. alice@dev.example.com or just dev.example.com"/>
+                <TextBox x:Name="SshPortBox"
+                         AutomationProperties.AutomationId="NewSessionSshPortBox"
+                         Grid.Column="1" Text="22"
+                         ToolTip="SSH port (default 22)"/>
+            </Grid>
+            <TextBlock Text="Remote Working Folder (optional)" Style="{StaticResource Label}"/>
+            <TextBox x:Name="SshRemoteFolderBox"
+                     AutomationProperties.AutomationId="NewSessionSshRemoteFolderBox"
+                     ToolTip="e.g. /home/alice/project — leave blank for home directory"/>
+        </StackPanel>
+
         <!-- Command -->
-        <StackPanel Grid.Row="1" Margin="0,0,0,12">
-            <TextBlock Text="Command" Style="{StaticResource Label}"/>
-            <ComboBox x:Name="CommandCombo" AutomationProperties.AutomationId="NewSessionCommandCombo" SelectionChanged="CommandCombo_SelectionChanged">
-                <!-- Items populated from settings in code-behind -->
+        <StackPanel Grid.Row="3" Margin="0,0,0,12">
+            <TextBlock x:Name="CommandLabel" Text="Command" Style="{StaticResource Label}"/>
+            <ComboBox x:Name="CommandCombo" AutomationProperties.AutomationId="NewSessionCommandCombo"
+                      SelectionChanged="CommandCombo_SelectionChanged">
                 <ComboBoxItem Content="[custom]" Tag="custom"/>
             </ComboBox>
         </StackPanel>
 
         <!-- Custom args (shown when custom selected) -->
-        <StackPanel Grid.Row="2" x:Name="CustomArgsPanel" Visibility="Collapsed" Margin="0,0,0,12">
+        <StackPanel Grid.Row="4" x:Name="CustomArgsPanel" Visibility="Collapsed" Margin="0,0,0,12">
             <TextBlock Text="Custom Command + Args" Style="{StaticResource Label}"/>
             <TextBox x:Name="CustomArgsBox" Tag="e.g. claude --model claude-haiku-4-5"/>
         </StackPanel>
 
         <!-- Session Name -->
-        <StackPanel Grid.Row="3" Margin="0,0,0,12">
+        <StackPanel Grid.Row="5" Margin="0,0,0,12">
             <TextBlock Text="Session Name (optional)" Style="{StaticResource Label}"/>
             <TextBox x:Name="NameBox" AutomationProperties.AutomationId="NewSessionNameBox"/>
         </StackPanel>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Cancel_Click"/>
-            <Button Content="Start Session" AutomationProperties.AutomationId="NewSessionOkBtn" Style="{StaticResource PrimaryBtn}" Click="Start_Click"
-                    IsDefault="True"/>
+            <Button Content="Start Session" AutomationProperties.AutomationId="NewSessionOkBtn"
+                    Style="{StaticResource PrimaryBtn}" Click="Start_Click" IsDefault="True"/>
         </StackPanel>
     </Grid>
 </Window>

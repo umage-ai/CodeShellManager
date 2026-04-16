@@ -220,6 +220,15 @@ public partial class MainWindow : Window
             dialog.SelectedArgs,
             dialog.SelectedGroupId);
 
+        if (dialog.IsRemote)
+        {
+            session.IsRemote = true;
+            session.SshUser = dialog.SshUser;
+            session.SshHost = dialog.SshHost;
+            session.SshPort = dialog.SshPort;
+            session.SshRemoteFolder = dialog.SshRemoteFolder;
+        }
+
         _ = LaunchSessionAsync(session);
     }
 
@@ -305,45 +314,56 @@ public partial class MainWindow : Window
             });
         };
 
-        string workDir = Directory.Exists(session.WorkingFolder)
-            ? session.WorkingFolder
-            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string effectiveCommand;
+        string effectiveArgs;
+        string workDir;
 
-        // Auto-resume Claude Code sessions when restoring — only if a prior session JSONL exists.
-        // If no session ID is found we start fresh (no --continue fallback which exits immediately
-        // when there are no sessions to resume).
-        string effectiveArgs = session.Args;
-        if (restoring && ClaudeSessionService.IsClaudeCommand(session.Command)
-            && !effectiveArgs.Contains("--resume")
-            && !effectiveArgs.Contains("--continue"))
+        if (session.IsRemote)
         {
-            string? sessionId = ClaudeSessionService.GetLastSessionId(session.WorkingFolder);
-            if (sessionId != null)
-            {
-                string resumeFlag = $"--resume {sessionId}";
-                effectiveArgs = string.IsNullOrEmpty(effectiveArgs)
-                    ? resumeFlag
-                    : $"{resumeFlag} {effectiveArgs}";
-                Log($"Auto-resume: using '{resumeFlag}' for claude session in '{session.WorkingFolder}'");
-            }
-            else
-            {
-                Log($"Auto-resume: no prior session found for '{session.WorkingFolder}', starting fresh");
-            }
+            effectiveCommand = "ssh";
+            effectiveArgs = session.BuildSshArgs();
+            workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
-
-        // If resuming a previous session, skip indexing startup replay to avoid duplicate search entries
-        if (vm.OutputIndexer != null &&
-            (effectiveArgs.Contains("--continue") || effectiveArgs.Contains("--resume")))
+        else
         {
-            vm.OutputIndexer.SkipUntil = DateTime.UtcNow.AddSeconds(20);
+            workDir = Directory.Exists(session.WorkingFolder)
+                ? session.WorkingFolder
+                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            effectiveArgs = session.Args;
+            if (restoring && ClaudeSessionService.IsClaudeCommand(session.Command)
+                && !effectiveArgs.Contains("--resume")
+                && !effectiveArgs.Contains("--continue"))
+            {
+                string? sessionId = ClaudeSessionService.GetLastSessionId(session.WorkingFolder);
+                if (sessionId != null)
+                {
+                    string resumeFlag = $"--resume {sessionId}";
+                    effectiveArgs = string.IsNullOrEmpty(effectiveArgs)
+                        ? resumeFlag
+                        : $"{resumeFlag} {effectiveArgs}";
+                    Log($"Auto-resume: using '{resumeFlag}' for claude session in '{session.WorkingFolder}'");
+                }
+                else
+                {
+                    Log($"Auto-resume: no prior session found for '{session.WorkingFolder}', starting fresh");
+                }
+            }
+
+            if (vm.OutputIndexer != null &&
+                (effectiveArgs.Contains("--continue") || effectiveArgs.Contains("--resume")))
+            {
+                vm.OutputIndexer.SkipUntil = DateTime.UtcNow.AddSeconds(20);
+            }
+
+            effectiveCommand = session.Command;
         }
 
         Log($"Starting PTY: workDir='{workDir}'");
         try
         {
             var (cols, rows) = bridge.TerminalSize;
-            pty.Start(session.Command, effectiveArgs, workDir, cols, rows);
+            pty.Start(effectiveCommand, effectiveArgs, workDir, cols, rows);
             Log("PTY started OK");
             bridge.AttachPty(pty);
             _sessionManager.UpdateStatus(session.Id, SessionStatus.Running);

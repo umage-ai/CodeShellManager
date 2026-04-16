@@ -108,7 +108,7 @@ public sealed class PseudoTerminal : IDisposable
     {
         // Shells are passed through as-is (they initialize the console themselves).
         string exe = System.IO.Path.GetFileNameWithoutExtension(command).ToLowerInvariant();
-        if (exe is "cmd" or "powershell" or "pwsh" or "wsl" or "bash" or "zsh" or "sh")
+        if (exe is "cmd" or "powershell" or "pwsh" or "wsl" or "bash" or "zsh" or "sh" or "ssh")
             return fullUserCmd;
 
         // Wrap in PowerShell so the shell sets up the Win32 console environment

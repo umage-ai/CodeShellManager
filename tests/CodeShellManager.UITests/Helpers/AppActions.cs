@@ -89,4 +89,48 @@ public static class AppActions
         WaitForElement(window, layoutAutomationId).AsButton().Click();
         System.Threading.Thread.Sleep(300); // let layout refresh
     }
+
+    /// <summary>
+    /// Opens the New Session dialog, switches to Remote (SSH) mode,
+    /// fills in host and name, and clicks Start Session.
+    /// Waits for the dialog to close before returning.
+    /// </summary>
+    public static void CreateSshSession(Application app, Window window, UIA3Automation automation,
+        string host = "user@test-host", string name = "SSH Test")
+    {
+        WaitForElement(window, "NewSessionBtn").AsButton().Click();
+
+        var dialogResult = Retry.WhileNull(
+            () => app.GetAllTopLevelWindows(automation)
+                     .FirstOrDefault(w => w.Title == "New Session"),
+            DefaultTimeout);
+
+        if (!dialogResult.Success)
+            throw new TimeoutException("New Session dialog did not open.");
+
+        var dialog = dialogResult.Result!;
+
+        // Switch to Remote mode
+        dialog.FindFirstDescendant(
+            cf => cf.ByAutomationId("NewSessionRemoteRadio")).AsRadioButton().Click();
+
+        // Fill SSH host
+        var hostBox = dialog.FindFirstDescendant(
+            cf => cf.ByAutomationId("NewSessionSshHostBox")).AsTextBox();
+        hostBox.Text = host;
+
+        // Fill session name
+        var nameBox = dialog.FindFirstDescendant(
+            cf => cf.ByAutomationId("NewSessionNameBox")).AsTextBox();
+        nameBox.Text = name;
+
+        // Click Start Session
+        dialog.FindFirstDescendant(
+            cf => cf.ByAutomationId("NewSessionOkBtn")).AsButton().Click();
+
+        Retry.WhileFalse(
+            () => app.GetAllTopLevelWindows(automation)
+                     .All(w => w.Title != "New Session"),
+            DefaultTimeout);
+    }
 }
