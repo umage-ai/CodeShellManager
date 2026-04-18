@@ -111,6 +111,13 @@ public partial class MainWindow : Window
         await _vm.LoadStateAsync();
         RestoreWindowState();
         _windowStateReady = true;
+
+        // Prune indexed output per retention policy (runs once at startup, after settings load)
+        if (_searchService != null)
+        {
+            try { await _searchService.PruneOldOutputAsync(_vm.Settings.OutputRetentionDays); }
+            catch { /* non-critical */ }
+        }
         _ = CheckForUpdatesAsync();   // fire-and-forget; never blocks startup
 
         var saved = _sessionManager.Sessions.ToList();
@@ -279,7 +286,7 @@ public partial class MainWindow : Window
         // Wire output indexer and alert detector
         if (_db != null)
         {
-            var indexer = new OutputIndexer(_db, session.Id, vm.DisplayName);
+            var indexer = new OutputIndexer(_db, session.Id, vm.DisplayName, _vm.Settings);
             vm.OutputIndexer = indexer;
             bridge.RawOutputReceived += raw =>
             {
@@ -1410,7 +1417,7 @@ public partial class MainWindow : Window
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new SettingsWindow(_vm.Settings) { Owner = this };
+        var dialog = new SettingsWindow(_vm.Settings, _searchService) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             var edited = dialog.EditedSettings;

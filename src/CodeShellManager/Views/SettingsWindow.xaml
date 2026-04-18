@@ -305,6 +305,34 @@
                              FontFamily="Consolas" FontSize="12"/>
                 </StackPanel>
 
+                <!-- Storage -->
+                <TextBlock Text="STORAGE" Style="{StaticResource SectionHeader}"/>
+                <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
+
+                <StackPanel Margin="0,8,0,0">
+                    <CheckBox x:Name="IndexTerminalOutputCheck"
+                              Content="Index terminal output for search"/>
+                    <TextBlock Text="When disabled, new terminal output is not saved and won't appear in search. Existing data is kept."
+                               Foreground="#6c7086" FontSize="10" Margin="22,0,0,10" TextWrapping="Wrap"/>
+
+                    <TextBlock Text="Delete output older than (days, 0 = keep forever)"
+                               Style="{StaticResource Label}" Margin="0,4,0,3"/>
+                    <TextBox x:Name="OutputRetentionDaysBox" Width="100" HorizontalAlignment="Left"/>
+
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" x:Name="ClearStorageBtn"
+                                Content="Clear terminal history"
+                                Style="{StaticResource Btn}" Click="ClearStorage_Click"/>
+                        <TextBlock Grid.Column="1" x:Name="DatabaseSizeLabel"
+                                   Text="" Foreground="#6c7086" FontSize="11"
+                                   VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </Grid>
+                </StackPanel>
+
                 <!-- API -->
                 <TextBlock Text="API" Style="{StaticResource SectionHeader}"/>
                 <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>

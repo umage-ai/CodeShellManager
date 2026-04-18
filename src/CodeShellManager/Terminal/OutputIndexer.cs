@@ -2,6 +2,7 @@ using System;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using CodeShellManager.Models;
 using Microsoft.Data.Sqlite;
 
 namespace CodeShellManager.Terminal;
@@ -11,6 +12,7 @@ public partial class OutputIndexer : IDisposable
     private readonly string _sessionId;
     private readonly string _sessionName;
     private readonly SqliteConnection _db;
+    private readonly AppSettings _settings;
     private readonly Channel<(string sessionId, string sessionName, string line)> _queue;
     private readonly Task _worker;
     private bool _disposed;
@@ -21,11 +23,12 @@ public partial class OutputIndexer : IDisposable
     /// </summary>
     public DateTime SkipUntil { get; set; } = DateTime.MinValue;
 
-    public OutputIndexer(SqliteConnection db, string sessionId, string sessionName)
+    public OutputIndexer(SqliteConnection db, string sessionId, string sessionName, AppSettings settings)
     {
         _db = db;
         _sessionId = sessionId;
         _sessionName = sessionName;
+        _settings = settings;
         _queue = Channel.CreateUnbounded<(string, string, string)>(
             new UnboundedChannelOptions { SingleReader = true });
         _worker = Task.Run(WriteLoopAsync);
@@ -33,6 +36,7 @@ public partial class OutputIndexer : IDisposable
 
     public void Feed(string rawOutput)
     {
+        if (!_settings.IndexTerminalOutput) return;
         if (DateTime.UtcNow < SkipUntil) return;
         string clean = AnsiPattern().Replace(rawOutput, "");
         var lines = clean.Split('\n', StringSplitOptions.RemoveEmptyEntries);

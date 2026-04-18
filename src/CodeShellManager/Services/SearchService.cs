@@ -58,6 +58,18 @@ public class SearchService
                 INSERT INTO output_fts(rowid, line, session_name)
                 VALUES (new.id, new.line, new.session_name);
             END;
+            CREATE TRIGGER IF NOT EXISTS output_fts_delete
+            AFTER DELETE ON session_output BEGIN
+                INSERT INTO output_fts(output_fts, rowid, line, session_name)
+                VALUES ('delete', old.id, old.line, old.session_name);
+            END;
+            CREATE TRIGGER IF NOT EXISTS output_fts_update
+            AFTER UPDATE ON session_output BEGIN
+                INSERT INTO output_fts(output_fts, rowid, line, session_name)
+                VALUES ('delete', old.id, old.line, old.session_name);
+                INSERT INTO output_fts(rowid, line, session_name)
+                VALUES (new.id, new.line, new.session_name);
+            END;
             CREATE TABLE IF NOT EXISTS project_notes (
                 folder_path TEXT PRIMARY KEY,
                 content     TEXT NOT NULL DEFAULT '',
@@ -253,5 +265,42 @@ public class SearchService
         cmd.CommandText = "DELETE FROM session_output WHERE session_id = $sid";
         cmd.Parameters.AddWithValue("$sid", sessionId);
         await cmd.ExecuteNonQueryAsync();
+    }
+
+    // ── Storage management ───────────────────────────────────────────────────
+
+    /// <summary>Deletes output rows older than the retention cutoff. No-op if retentionDays &lt;= 0.</summary>
+    public async Task<int> PruneOldOutputAsync(int retentionDays)
+    {
+        if (retentionDays <= 0) return 0;
+        long cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays).ToUnixTimeMilliseconds();
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = "DELETE FROM session_output WHERE ts < $cutoff";
+        cmd.Parameters.AddWithValue("$cutoff", cutoff);
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Wipes all indexed terminal output and reclaims disk space via VACUUM.</summary>
+    public async Task ClearAllOutputAsync()
+    {
+        await using (var del = _db.CreateCommand())
+        {
+            del.CommandText = "DELETE FROM session_output";
+            await del.ExecuteNonQueryAsync();
+        }
+        await using (var vac = _db.CreateCommand())
+        {
+            vac.CommandText = "VACUUM";
+            await vac.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>Returns the SQLite database file size in bytes (page_count * page_size).</summary>
+    public async Task<long> GetDatabaseSizeBytesAsync()
+    {
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()";
+        var result = await cmd.ExecuteScalarAsync();
+        return result is long l ? l : Convert.ToInt64(result ?? 0);
     }
 }

@@ -3,17 +3,20 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using CodeShellManager.Models;
+using CodeShellManager.Services;
 
 namespace CodeShellManager.Views;
 
 public partial class SettingsWindow : Window
 {
     private readonly AppSettings _edited;
+    private readonly SearchService? _searchService;
 
     public AppSettings EditedSettings => _edited;
 
-    public SettingsWindow(AppSettings current)
+    public SettingsWindow(AppSettings current, SearchService? searchService = null)
     {
+        _searchService = searchService;
         InitializeComponent();
 
         // Clone the settings so we edit a copy
@@ -36,6 +39,8 @@ public partial class SettingsWindow : Window
             TerminalFontWeight = current.TerminalFontWeight,
             TerminalLetterSpacing = current.TerminalLetterSpacing,
             TerminalLineHeight = current.TerminalLineHeight,
+            IndexTerminalOutput = current.IndexTerminalOutput,
+            OutputRetentionDays = current.OutputRetentionDays,
         };
 
         // Populate controls
@@ -47,6 +52,9 @@ public partial class SettingsWindow : Window
         ShowTerminalStatusDotCheck.IsChecked = _edited.ShowTerminalStatusDot;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
+        IndexTerminalOutputCheck.IsChecked = _edited.IndexTerminalOutput;
+        OutputRetentionDaysBox.Text = _edited.OutputRetentionDays.ToString();
+        _ = UpdateDatabaseSizeLabelAsync();
         ApiKeyBox.Password = _edited.AnthropicApiKey;
         LaunchCommandsBox.Text = string.Join("\r\n", _edited.LaunchCommands);
 
@@ -107,6 +115,10 @@ public partial class SettingsWindow : Window
         if (int.TryParse(MaxSearchResultsBox.Text, out int maxResults) && maxResults > 0)
             _edited.MaxSearchResults = maxResults;
 
+        _edited.IndexTerminalOutput = IndexTerminalOutputCheck.IsChecked == true;
+        if (int.TryParse(OutputRetentionDaysBox.Text, out int retentionDays) && retentionDays >= 0)
+            _edited.OutputRetentionDays = retentionDays;
+
         var commands = LaunchCommandsBox.Text
             .Split('\n', System.StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim().TrimEnd('\r'))
@@ -140,5 +152,51 @@ public partial class SettingsWindow : Window
     {
         DialogResult = false;
         Close();
+    }
+
+    private async void ClearStorage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_searchService == null) return;
+
+        var result = System.Windows.MessageBox.Show(
+            this,
+            "Delete all indexed terminal output? This cannot be undone.\n\n" +
+            "Session history and project notes will be kept.",
+            "Clear terminal history",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning,
+            MessageBoxResult.Cancel);
+        if (result != MessageBoxResult.OK) return;
+
+        ClearStorageBtn.IsEnabled = false;
+        try
+        {
+            await _searchService.ClearAllOutputAsync();
+            await UpdateDatabaseSizeLabelAsync();
+        }
+        finally { ClearStorageBtn.IsEnabled = true; }
+    }
+
+    private async System.Threading.Tasks.Task UpdateDatabaseSizeLabelAsync()
+    {
+        if (_searchService == null)
+        {
+            DatabaseSizeLabel.Text = "";
+            return;
+        }
+        try
+        {
+            long bytes = await _searchService.GetDatabaseSizeBytesAsync();
+            DatabaseSizeLabel.Text = $"Database size: {FormatBytes(bytes)}";
+        }
+        catch { DatabaseSizeLabel.Text = ""; }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
 }

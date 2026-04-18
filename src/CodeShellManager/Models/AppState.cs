@@ -16,6 +16,10 @@ public class AppSettings
     public int MaxSearchResults { get; set; } = 100;
     public bool ShowTerminalStatusDot { get; set; } = true;
 
+    // Storage
+    public bool IndexTerminalOutput { get; set; } = true;
+    public int OutputRetentionDays { get; set; } = 30;  // 0 = keep forever
+
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";
     public int TerminalFontSize { get; set; } = 14;
