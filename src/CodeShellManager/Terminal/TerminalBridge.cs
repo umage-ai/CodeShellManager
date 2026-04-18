@@ -77,9 +77,19 @@ public sealed class TerminalBridge : IDisposable
             Log($"WebView2 ProcessFailed: {e.ProcessFailedKind}");
         // Note: ConsoleMessageReceived needs AllowedOrigins — use WebResourceRequested for JS errors
 
-        // Drag-and-drop is handled entirely in JS (terminal.html) via text/uri-list.
-        // WPF OLE Drop events don't fire for WebView2 content — WebView2 registers its
-        // own IDropTarget for its HWND and handles OLE drops before WPF sees them.
+        // Prevent WebView2 from navigating to dropped files.
+        // When image/media files are dragged from Explorer, WebView2 intercepts the drop
+        // at the browser level and navigates to the file:// URL before JS sees the drop
+        // event — opening the file in the OS default viewer and leaving the drag overlay
+        // stuck. Cancelling these navigations lets JS handle the drop normally.
+        _webView.CoreWebView2.NavigationStarting += (_, args) =>
+        {
+            if (args.Uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
+                !args.Uri.EndsWith("terminal.html", StringComparison.OrdinalIgnoreCase))
+            {
+                args.Cancel = true;
+            }
+        };
 
         // Navigate and WAIT for the page to finish loading
         var navDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
