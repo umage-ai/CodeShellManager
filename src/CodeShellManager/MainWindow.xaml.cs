@@ -308,12 +308,21 @@ public partial class MainWindow : Window
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
         vm.Pty = pty;
+        string usageCommandKey = "";
+        DateTime sessionStartUtc = DateTime.MinValue;
         pty.Exited += () =>
         {
             if (_searchService != null)
+            {
                 _ = _searchService.RecordSessionHistoryAsync(
                     session.Id, session.Name, session.WorkingFolder,
                     session.Command, session.Args, session.GroupId);
+                if (sessionStartUtc != DateTime.MinValue && !string.IsNullOrEmpty(usageCommandKey))
+                {
+                    long secs = (long)(DateTime.UtcNow - sessionStartUtc).TotalSeconds;
+                    _ = _searchService.RecordSessionDurationAsync(usageCommandKey, secs);
+                }
+            }
             Dispatcher.Invoke(() =>
             {
                 _sessionManager.UpdateStatus(session.Id, SessionStatus.Exited);
@@ -374,6 +383,11 @@ public partial class MainWindow : Window
             Log("PTY started OK");
             bridge.AttachPty(pty);
             _sessionManager.UpdateStatus(session.Id, SessionStatus.Running);
+
+            usageCommandKey = effectiveCommand;
+            sessionStartUtc = DateTime.UtcNow;
+            if (_searchService != null)
+                _ = _searchService.RecordSessionStartAsync(effectiveCommand);
         }
         catch (Exception ex)
         {
@@ -498,7 +512,7 @@ public partial class MainWindow : Window
         var folderText = new TextBlock
         {
             Text = vm.FolderShort,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x93, 0x99, 0xb2)),
             FontSize = 10,
             Margin = new Thickness(0, 1, 0, 0),
             TextTrimming = TextTrimming.CharacterEllipsis
@@ -507,7 +521,7 @@ public partial class MainWindow : Window
         // Git branch indicator
         var gitText = new TextBlock
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x93, 0x99, 0xb2)),
             FontSize = 10,
             Margin = new Thickness(0, 2, 0, 0),
             TextTrimming = TextTrimming.CharacterEllipsis,

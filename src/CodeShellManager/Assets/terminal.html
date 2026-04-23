@@ -125,9 +125,16 @@
     return true;
   });
 
-  // Block native paste events (capture phase, before xterm's textarea listener).
-  // All pasting is handled by our getClipboard → WPF → PTY path.
-  document.addEventListener('paste', e => e.preventDefault(), { capture: true });
+  // Block native paste events before xterm's own paste listeners (registered on
+  // both the hidden textarea AND the terminal element) can read clipboardData
+  // and send it as input. preventDefault alone cancels the browser's default
+  // text insertion but doesn't stop those listeners — stopImmediatePropagation
+  // during capture phase prevents the event from reaching them at all.
+  // All pasting is routed through our getClipboard → WPF → PTY path.
+  document.addEventListener('paste', e => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, { capture: true });
 
   // ── Right-click: paste from clipboard ─────────────────────────────────────
   document.getElementById('terminal').addEventListener('contextmenu', async e => {

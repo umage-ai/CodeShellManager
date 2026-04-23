@@ -28,6 +28,12 @@ public record SessionHistoryEntry(
     string GroupId,
     DateTime ExitedAt);
 
+public record UsageStat(
+    string Command,
+    long Sessions,
+    long TotalSeconds,
+    DateTime LastUsed);
+
 public class SearchService
 {
     private readonly SqliteConnection _db;
@@ -87,6 +93,14 @@ public class SearchService
             );
             CREATE INDEX IF NOT EXISTS ix_session_history_sid ON session_history(session_id);
             CREATE INDEX IF NOT EXISTS ix_session_history_folder ON session_history(working_folder);
+            CREATE TABLE IF NOT EXISTS usage_stats (
+                id            INTEGER PRIMARY KEY,
+                command       TEXT    NOT NULL,
+                date          TEXT    NOT NULL,
+                session_count INTEGER NOT NULL DEFAULT 0,
+                total_seconds INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(command, date)
+            );
             """;
         await cmd.ExecuteNonQueryAsync();
     }
@@ -302,5 +316,76 @@ public class SearchService
         cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()";
         var result = await cmd.ExecuteScalarAsync();
         return result is long l ? l : Convert.ToInt64(result ?? 0);
+    }
+
+    // ── Usage stats ───────────────────────────────────────────────────────────
+
+    /// <summary>Normalizes a launch command (e.g. "claude --continue" → "claude") for usage-stats grouping.</summary>
+    public static string NormalizeCommandName(string? command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return "(unknown)";
+        int space = command.IndexOf(' ');
+        string head = space < 0 ? command : command[..space];
+        return head.Trim().ToLowerInvariant();
+    }
+
+    public async Task RecordSessionStartAsync(string command)
+    {
+        string key = NormalizeCommandName(command);
+        string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO usage_stats (command, date, session_count, total_seconds)
+            VALUES ($cmd, $date, 1, 0)
+            ON CONFLICT(command, date) DO UPDATE SET
+                session_count = session_count + 1
+            """;
+        cmd.Parameters.AddWithValue("$cmd", key);
+        cmd.Parameters.AddWithValue("$date", date);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task RecordSessionDurationAsync(string command, long seconds)
+    {
+        if (seconds <= 0) return;
+        string key = NormalizeCommandName(command);
+        string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO usage_stats (command, date, session_count, total_seconds)
+            VALUES ($cmd, $date, 0, $sec)
+            ON CONFLICT(command, date) DO UPDATE SET
+                total_seconds = total_seconds + $sec
+            """;
+        cmd.Parameters.AddWithValue("$cmd", key);
+        cmd.Parameters.AddWithValue("$date", date);
+        cmd.Parameters.AddWithValue("$sec", seconds);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<List<UsageStat>> GetUsageStatsAsync()
+    {
+        var list = new List<UsageStat>();
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            SELECT command,
+                   SUM(session_count) AS sessions,
+                   SUM(total_seconds) AS total,
+                   MAX(date)          AS last_used
+            FROM usage_stats
+            GROUP BY command
+            ORDER BY sessions DESC, command ASC
+            """;
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            string cmdName = r.GetString(0);
+            long sessions = r.IsDBNull(1) ? 0 : r.GetInt64(1);
+            long total    = r.IsDBNull(2) ? 0 : r.GetInt64(2);
+            string dateStr = r.IsDBNull(3) ? "" : r.GetString(3);
+            DateTime lastUsed = DateTime.TryParse(dateStr, out var d) ? d : DateTime.MinValue;
+            list.Add(new UsageStat(cmdName, sessions, total, lastUsed));
+        }
+        return list;
     }
 }

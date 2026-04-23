@@ -55,6 +55,7 @@ public partial class SettingsWindow : Window
         IndexTerminalOutputCheck.IsChecked = _edited.IndexTerminalOutput;
         OutputRetentionDaysBox.Text = _edited.OutputRetentionDays.ToString();
         _ = UpdateDatabaseSizeLabelAsync();
+        _ = LoadUsageStatsAsync();
         ApiKeyBox.Password = _edited.AnthropicApiKey;
         LaunchCommandsBox.Text = string.Join("\r\n", _edited.LaunchCommands);
 
@@ -199,4 +200,43 @@ public partial class SettingsWindow : Window
         if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
         return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
+
+    private async System.Threading.Tasks.Task LoadUsageStatsAsync()
+    {
+        if (_searchService == null)
+        {
+            UsageStatsList.ItemsSource = System.Array.Empty<UsageRow>();
+            UsageEmptyLabel.Visibility = Visibility.Visible;
+            return;
+        }
+        try
+        {
+            var stats = await _searchService.GetUsageStatsAsync();
+            var rows = stats.Select(s => new UsageRow(
+                s.Command,
+                s.Sessions.ToString("N0"),
+                FormatDuration(s.TotalSeconds),
+                s.LastUsed == System.DateTime.MinValue ? "—" : s.LastUsed.ToString("yyyy-MM-dd")
+            )).ToList();
+            UsageStatsList.ItemsSource = rows;
+            UsageEmptyLabel.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch
+        {
+            UsageStatsList.ItemsSource = System.Array.Empty<UsageRow>();
+            UsageEmptyLabel.Visibility = Visibility.Visible;
+        }
+    }
+
+    private static string FormatDuration(long seconds)
+    {
+        if (seconds < 60) return $"{seconds}s";
+        if (seconds < 3600) return $"{seconds / 60}m";
+        if (seconds < 86400) return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
+        long days = seconds / 86400;
+        long hours = (seconds % 86400) / 3600;
+        return $"{days}d {hours}h";
+    }
+
+    private record UsageRow(string Command, string SessionsText, string TotalTimeText, string LastUsedText);
 }

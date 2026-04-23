@@ -59,9 +59,9 @@
                            Foreground="#cdd6f4" HorizontalAlignment="Center" FontFamily="Segoe UI"
                            Margin="0,0,0,4"/>
                 <TextBlock Text="Multi-terminal host for Claude Code &amp; friends"
-                           FontSize="11" Foreground="#6c7086" HorizontalAlignment="Center"
+                           FontSize="11" Foreground="#9399b2" HorizontalAlignment="Center"
                            FontFamily="Segoe UI" Margin="0,0,0,2"/>
-                <TextBlock Text="Version 1.0.0" FontSize="10" Foreground="#45475a"
+                <TextBlock x:Name="VersionText" FontSize="10" Foreground="#9399b2"
                            HorizontalAlignment="Center" FontFamily="Segoe UI" Margin="0,0,0,16"/>
 
                 <!-- Separator -->
@@ -69,7 +69,7 @@
 
                 <!-- umage.ai logo — "umage." in muted, ".ai" in brand gold -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4">
-                    <TextBlock Text="By " FontSize="11" Foreground="#6c7086"
+                    <TextBlock Text="By " FontSize="11" Foreground="#9399b2"
                                VerticalAlignment="Center" FontFamily="Segoe UI"/>
                     <!-- umage.ai wordmark via SVG paths scaled via Viewbox -->
                     <Viewbox Width="62" Height="20" VerticalAlignment="Center">
@@ -97,16 +97,16 @@
                     <TextBlock FontSize="11" FontFamily="Segoe UI">
                         <Hyperlink NavigateUri="https://umage.ai"
                                    RequestNavigate="Hyperlink_RequestNavigate"
-                                   Foreground="#585b70" TextDecorations="None">
+                                   Foreground="#bac2de" TextDecorations="None">
                             umage.ai
                         </Hyperlink>
                     </TextBlock>
-                    <TextBlock Text=" · " Foreground="#45475a" FontSize="11" FontFamily="Segoe UI"
+                    <TextBlock Text=" · " Foreground="#6c7086" FontSize="11" FontFamily="Segoe UI"
                                VerticalAlignment="Center"/>
                     <TextBlock FontSize="11" FontFamily="Segoe UI">
                         <Hyperlink NavigateUri="https://github.com/umage-ai/CodeShellManager"
                                    RequestNavigate="Hyperlink_RequestNavigate"
-                                   Foreground="#585b70" TextDecorations="None">
+                                   Foreground="#bac2de" TextDecorations="None">
                             GitHub
                         </Hyperlink>
                     </TextBlock>

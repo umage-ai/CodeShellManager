@@ -333,6 +333,53 @@
                     </Grid>
                 </StackPanel>
 
+                <!-- Usage -->
+                <TextBlock Text="USAGE" Style="{StaticResource SectionHeader}"/>
+                <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
+
+                <StackPanel Margin="0,8,0,0">
+                    <TextBlock Text="Sessions launched per command (counted locally — no telemetry)."
+                               Foreground="#6c7086" FontSize="10" Margin="0,0,0,6" TextWrapping="Wrap"/>
+
+                    <!-- Header row -->
+                    <Grid Margin="0,4,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="90"/>
+                            <ColumnDefinition Width="110"/>
+                            <ColumnDefinition Width="110"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Command"    Foreground="#6c7086" FontSize="11" FontWeight="Bold"/>
+                        <TextBlock Grid.Column="1" Text="Sessions"   Foreground="#6c7086" FontSize="11" FontWeight="Bold" HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="2" Text="Total Time" Foreground="#6c7086" FontSize="11" FontWeight="Bold" HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="3" Text="Last Used"  Foreground="#6c7086" FontSize="11" FontWeight="Bold" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,0,0,4"/>
+
+                    <ItemsControl x:Name="UsageStatsList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,3,0,3">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="90"/>
+                                        <ColumnDefinition Width="110"/>
+                                        <ColumnDefinition Width="110"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding Command}"           Foreground="#cdd6f4" FontSize="12" FontFamily="Consolas"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding SessionsText}"      Foreground="#cdd6f4" FontSize="12" HorizontalAlignment="Right"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding TotalTimeText}"     Foreground="#cdd6f4" FontSize="12" HorizontalAlignment="Right"/>
+                                    <TextBlock Grid.Column="3" Text="{Binding LastUsedText}"      Foreground="#a6adc8" FontSize="12" HorizontalAlignment="Right"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock x:Name="UsageEmptyLabel" Text="No sessions recorded yet."
+                               Foreground="#6c7086" FontSize="11" FontStyle="Italic" Margin="0,4,0,0"
+                               Visibility="Collapsed"/>
+                </StackPanel>
+
                 <!-- API -->
                 <TextBlock Text="API" Style="{StaticResource SectionHeader}"/>
                 <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
