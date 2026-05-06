@@ -6,6 +6,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using WpfApplication    = System.Windows.Application;
 using WpfClipboard      = System.Windows.Clipboard;
+using WpfKeyEventArgs   = System.Windows.Input.KeyEventArgs;
 
 namespace CodeShellManager.Terminal;
 
@@ -28,6 +29,14 @@ public sealed class TerminalBridge : IDisposable
 
     public event Action<string>? RawOutputReceived;
     public event Action? UserInput;
+
+    /// <summary>
+    /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
+    /// while the WebView2 has focus. Subscribers set <c>e.Handled = true</c> to prevent
+    /// the key from also reaching xterm.js. The WPF WebView2 wrapper forwards
+    /// accelerator keys through standard WPF PreviewKeyDown events.
+    /// </summary>
+    public event EventHandler<WpfKeyEventArgs>? AcceleratorKeyPressed;
 
     private static void Log(string msg)
     {
@@ -71,6 +80,11 @@ public sealed class TerminalBridge : IDisposable
         settings.IsStatusBarEnabled = false;
 
         _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+
+        // Surface accelerator keys (Ctrl-combos, etc.) to WPF so global shortcuts
+        // still work when a terminal has focus. The WPF WebView2 wrapper forwards
+        // accelerator presses through standard PreviewKeyDown events.
+        _webView.PreviewKeyDown += OnAcceleratorKeyPressed;
 
         // Log JS console messages and process failures
         _webView.CoreWebView2.ProcessFailed += (_, e) =>
@@ -159,6 +173,11 @@ public sealed class TerminalBridge : IDisposable
         });
     }
 
+    private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
+    {
+        AcceleratorKeyPressed?.Invoke(this, e);
+    }
+
     // ── xterm.js messages → PTY / clipboard ─────────────────────────────────
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -187,14 +206,18 @@ public sealed class TerminalBridge : IDisposable
                 }
 
                 case "getClipboard":
-                    // xterm.js wants to paste — return clipboard text on UI thread
+                    // xterm.js wants to paste — round-trip the text through term.paste() so
+                    // bracketed paste mode (CSI ?2004h) is honored. Apps like Claude Code
+                    // require the \e[200~ ... \e[201~ markers to treat multi-line input as
+                    // a single paste rather than submitting on the first newline.
                     WpfApplication.Current?.Dispatcher.Invoke(() =>
                     {
-                        string text = WpfClipboard.ContainsText()
-                            ? WpfClipboard.GetText()
-                            : "";
-                        if (!string.IsNullOrEmpty(text))
-                            _pty?.Write(text);
+                        if (!WpfClipboard.ContainsText()) return;
+                        string text = WpfClipboard.GetText();
+                        if (string.IsNullOrEmpty(text)) return;
+                        string pasteJson = JsonSerializer.Serialize(new { type = "paste", data = text });
+                        try { _webView.CoreWebView2?.PostWebMessageAsString(pasteJson); }
+                        catch { }
                     });
                     break;
 
@@ -280,6 +303,8 @@ public sealed class TerminalBridge : IDisposable
         if (_webView.CoreWebView2 != null)
         {
             _webView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
+            try { _webView.PreviewKeyDown -= OnAcceleratorKeyPressed; }
+            catch { }
             // NavigationCompleted is a local handler that unsubscribes itself — no need to remove here
         }
     }

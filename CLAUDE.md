@@ -14,6 +14,12 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 
 **Requirements:** .NET 10 SDK, Windows 10/11 (uses ConPTY + WebView2)
 
+### Command-line flags
+
+| Flag | Effect |
+|---|---|
+| `--clean` | Start with no preloaded sessions and **discard all state changes for this run** (`SaveStateAsync` no-ops). Use when debugging — the user's `state.json` is left untouched. |
+
 ## Architecture
 
 ### Key layers
@@ -117,6 +123,17 @@ Remote sessions use the system `ssh` client as the PTY command — no extra libr
 - `SessionViewModel.RefreshGitInfoAsync()` early-returns for remote sessions (no local working folder)
 - SSH fields serialize to `state.json` automatically — sessions restore and relaunch on next startup
 
+## Sleep / Wake (Dormant Sessions)
+
+Sessions can be put to sleep instead of closed — the PTY is torn down but the session definition is kept in `state.json` (`ShellSession.IsDormant = true`) so it can be relaunched later from the sidebar.
+
+- **Sleep button (💤)** appears in both the sidebar action panel and the terminal toolbar. Triggers `SleepSession(vm)` in `MainWindow.xaml.cs`, which disposes the live PTY/Bridge/Indexer/AlertDetector and replaces the active sidebar item with a muted "dormant" entry rendered at the bottom of the list.
+- **Wake**: clicking anywhere on a dormant entry calls `WakeSessionAsync(session)` which re-runs `LaunchSessionAsync(session, restoring: true)` — the same code path used for restore-on-startup, so Claude `--resume` semantics apply.
+- **Permanent delete**: dormant entries have a small `✕` button that fully removes the session from `SessionManager` (with a confirmation dialog).
+- **State**: dormant entries are tracked in `_dormantSidebarItems: Dictionary<string, Border>`. `RebuildSidebarOrder` re-appends them at the bottom after laying out active items.
+- **Startup**: in `OnLoaded`, dormant sessions skip the launch step and go straight to `AddDormantSidebarItem`.
+- **Active terminal highlight**: the active session's terminal pane gets a 2px accent ring (`UpdateActiveTerminalHighlight` in `MainWindow.xaml.cs`), so it's easy to spot in multi-pane layouts.
+
 ## Alert / Waiting State
 
 `AlertDetector` fires `AlertRaised(AlertEvent)` after 1.5s idle when it detects:
@@ -140,6 +157,7 @@ Remote sessions use the system `ssh` client as the PTY command — no extra libr
 
 Persisted in `state.json`. Key settings:
 - `AutoRestoreSessions` — restore open sessions on next launch
+- `AutoResumeClaude` — when restoring, append `--resume <sessionId>` to claude commands so the prior conversation is picked up. Toggle off if you want fresh sessions on restart.
 - `ShowGitBranch` — show `⎇ branch` in sidebar
 - `ShowTerminalStatusDot` — show status dot in terminal toolbar
 - `SearchCollapseAfterNavigate` — auto-close search after clicking result

@@ -45,6 +45,11 @@ public partial class MainViewModel : ObservableObject
 
     public async Task SaveStateAsync()
     {
+        // In --clean mode, never write state.json so the user's prior session list
+        // survives the debug run untouched. Settings/window/layout changes from a
+        // clean run are also discarded — that's the point of "clean".
+        if (App.CleanStart) return;
+
         _sessionManager.PopulateState(_appState);
         _appState.LastLayout = Layout.ToString();
         await _stateService.SaveAsync(_appState);

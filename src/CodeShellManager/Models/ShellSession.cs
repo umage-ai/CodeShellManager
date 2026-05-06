@@ -17,6 +17,12 @@ public class ShellSession
     public SessionStatus Status { get; set; } = SessionStatus.Idle;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>
+    /// When true, the session has no live PTY/terminal — it is a placeholder
+    /// in the sidebar that can be "woken" later. Persisted to state.json.
+    /// </summary>
+    public bool IsDormant { get; set; }
+
     // SSH / remote session fields
     public bool IsRemote { get; set; }
     public string SshUser { get; set; } = "";

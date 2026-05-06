@@ -23,6 +23,7 @@ public partial class SettingsWindow : Window
         _edited = new AppSettings
         {
             AutoRestoreSessions = current.AutoRestoreSessions,
+            AutoResumeClaude = current.AutoResumeClaude,
             ShowToastNotifications = current.ShowToastNotifications,
             ShowNotificationSound = current.ShowNotificationSound,
             AnthropicApiKey = current.AnthropicApiKey,
@@ -46,6 +47,7 @@ public partial class SettingsWindow : Window
         // Populate controls
         DefaultFolderBox.Text = _edited.DefaultWorkingFolder;
         AutoRestoreCheck.IsChecked = _edited.AutoRestoreSessions;
+        AutoResumeClaudeCheck.IsChecked = _edited.AutoResumeClaude;
         ShowToastCheck.IsChecked = _edited.ShowToastNotifications;
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
         ShowGitBranchCheck.IsChecked = _edited.ShowGitBranch;
@@ -106,6 +108,7 @@ public partial class SettingsWindow : Window
     {
         _edited.DefaultWorkingFolder = DefaultFolderBox.Text.Trim();
         _edited.AutoRestoreSessions = AutoRestoreCheck.IsChecked == true;
+        _edited.AutoResumeClaude = AutoResumeClaudeCheck.IsChecked == true;
         _edited.ShowToastNotifications = ShowToastCheck.IsChecked == true;
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
         _edited.ShowGitBranch = ShowGitBranchCheck.IsChecked == true;

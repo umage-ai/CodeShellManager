@@ -43,6 +43,9 @@ public partial class MainWindow : Window
     // Per-session UI: the WebView2, its persistent wrapper Border (built once, reused across layouts),
     // and its sidebar item.
     private readonly Dictionary<string, (WebView2 webView, Border terminalWrapper, Border sidebarItem)> _sessionUi = [];
+    // Sidebar items for dormant (asleep) sessions — kept here so RebuildSidebarOrder
+    // can re-append them to the bottom of the list after rebuilding active items.
+    private readonly Dictionary<string, Border> _dormantSidebarItems = [];
 
     private SqliteConnection? _db;
     private SearchService? _searchService;
@@ -67,10 +70,19 @@ public partial class MainWindow : Window
                 RefreshTerminalLayout();
                 UpdateSidebarActiveState();
             }
+            else if (args.PropertyName == nameof(MainViewModel.Layout))
+            {
+                // Sync local layout field (used by RefreshTerminalLayout) with VM-driven changes
+                // — fires both for state-restore at startup and any future programmatic changes.
+                _currentLayout = _vm.Layout;
+                _layoutViewportOffset = 0;
+                RefreshTerminalLayout();
+            }
         };
 
         Loaded += OnLoaded;
         KeyDown += OnKeyDown;
+        Activated += OnWindowActivated;
 
         // Window state persistence: debounce position/size changes
         _windowStateTimer = new System.Windows.Threading.DispatcherTimer
@@ -121,7 +133,16 @@ public partial class MainWindow : Window
         _ = CheckForUpdatesAsync();   // fire-and-forget; never blocks startup
 
         var saved = _sessionManager.Sessions.ToList();
-        Log($"OnLoaded: {saved.Count} saved sessions, AutoRestore={_vm.Settings.AutoRestoreSessions}");
+        Log($"OnLoaded: {saved.Count} saved sessions, AutoRestore={_vm.Settings.AutoRestoreSessions}, CleanStart={App.CleanStart}");
+        if (App.CleanStart)
+        {
+            // --clean: skip restore and leave state.json untouched. Drop the
+            // saved-session list from the in-memory SessionManager so any new
+            // work this run doesn't co-mingle with the persisted set.
+            foreach (var s in saved)
+                _sessionManager.RemoveSession(s.Id);
+            return;
+        }
         if (saved.Count == 0) return;
 
         bool doRestore;
@@ -141,6 +162,11 @@ public partial class MainWindow : Window
         {
             foreach (var s in saved)
             {
+                if (s.IsDormant)
+                {
+                    AddDormantSidebarItem(s);
+                    continue;
+                }
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -282,6 +308,7 @@ public partial class MainWindow : Window
         // Create bridge and initialize
         var bridge = new TerminalBridge(webView);
         vm.Bridge = bridge;
+        bridge.AcceleratorKeyPressed += OnBridgeAcceleratorKey;
 
         // Wire output indexer and alert detector
         if (_db != null)
@@ -347,7 +374,8 @@ public partial class MainWindow : Window
                 : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
             effectiveArgs = session.Args;
-            if (restoring && ClaudeSessionService.IsClaudeCommand(session.Command)
+            if (restoring && _vm.Settings.AutoResumeClaude
+                && ClaudeSessionService.IsClaudeCommand(session.Command)
                 && !effectiveArgs.Contains("--resume")
                 && !effectiveArgs.Contains("--continue"))
             {
@@ -617,11 +645,13 @@ public partial class MainWindow : Window
         var exploreBtn = MakeMiniButton("📁", "Open in Explorer", () => vm.OpenInExplorerCommand.Execute(null));
         var psBtn      = MakeMiniButton(">_", "Open PowerShell here", () => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId));
         var renameBtn  = MakeMiniButton("✏", "Rename session", StartRename);
+        var sleepBtn   = MakeMiniButton("💤", "Sleep session (keep it but stop the terminal)", () => SleepSession(vm));
         var closeBtn   = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
 
         btnPanel.Children.Add(exploreBtn);
         btnPanel.Children.Add(psBtn);
         btnPanel.Children.Add(renameBtn);
+        btnPanel.Children.Add(sleepBtn);
         btnPanel.Children.Add(closeBtn);
 
         Grid.SetColumn(textPanel, 1);
@@ -751,6 +781,25 @@ public partial class MainWindow : Window
                 ? new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44))
                 : Brushes.Transparent;
         }
+        UpdateActiveTerminalHighlight();
+    }
+
+    private void UpdateActiveTerminalHighlight()
+    {
+        string? activeId = _vm.ActiveSession?.Id;
+        foreach (var (id, ui) in _sessionUi)
+        {
+            if (ui.terminalWrapper.Tag is not string accentHex) continue;
+            if (id == activeId)
+            {
+                var accent = (Color)ColorConverter.ConvertFromString(accentHex);
+                ui.terminalWrapper.BorderBrush = new SolidColorBrush(accent);
+            }
+            else
+            {
+                ui.terminalWrapper.BorderBrush = Brushes.Transparent;
+            }
+        }
     }
 
     // ── Sidebar drag-and-drop ─────────────────────────────────────────────────
@@ -795,6 +844,9 @@ public partial class MainWindow : Window
             if (_sessionUi.TryGetValue(vm.Id, out var ui))
                 SidebarSessionList.Children.Add(ui.sidebarItem);
         }
+        // Dormant entries always render at the bottom of the sidebar.
+        foreach (var item in _dormantSidebarItems.Values)
+            SidebarSessionList.Children.Add(item);
         UpdateSidebarActiveState();
         RefreshTerminalLayout();
     }
@@ -993,6 +1045,15 @@ public partial class MainWindow : Window
             Background = new SolidColorBrush(Color.FromRgb(30, 30, 46))
         };
 
+        // Outer "active ring" — constant 2px frame; transparent unless this session is active
+        // (constant thickness avoids layout shift when activating/deactivating)
+        var activeRing = new Border
+        {
+            BorderThickness = new Thickness(2),
+            BorderBrush = Brushes.Transparent,
+            Tag = accent
+        };
+
         var outer = new DockPanel();
 
         // Terminal toolbar
@@ -1097,16 +1158,33 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, 0, 4, 0)
         };
 
+        // Sleep (dormant) button — keeps the session in the sidebar but stops the PTY
+        var sleepBtn = new WpfButton
+        {
+            Content = "💤",
+            ToolTip = "Sleep session (keep it but stop the terminal)",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+        sleepBtn.Click += (_, _) => SleepSession(vm);
+
         DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
+        DockPanel.SetDock(sleepBtn, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
         toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
+        toolbarContent.Children.Add(sleepBtn);
         toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
         toolbarContent.Children.Add(folderBlock);
@@ -1176,6 +1254,7 @@ public partial class MainWindow : Window
         outer.Children.Add(notesPanel);
         outer.Children.Add(webView);
         wrapper.Child = outer;
+        activeRing.Child = wrapper;
 
         // Subscribe to waiting state changes for the status dot
         vm.PropertyChanged += (_, args) =>
@@ -1204,7 +1283,7 @@ public partial class MainWindow : Window
             }
         };
 
-        return wrapper;
+        return activeRing;
     }
 
     // ── Session close ─────────────────────────────────────────────────────────
@@ -1220,9 +1299,227 @@ public partial class MainWindow : Window
         RefreshTerminalLayout();
         UpdateAlertBadge();
 
-        if (_vm.Sessions.Count == 0)
+        if (_vm.Sessions.Count == 0 && _dormantSidebarItems.Count == 0)
             EmptyState.Visibility = Visibility.Visible;
     }
+
+    // ── Sleep / wake (dormant sessions) ───────────────────────────────────────
+
+    /// <summary>
+    /// Sleeps a session: tears down the live PTY/terminal but keeps the session
+    /// definition in state so it can be woken later. Replaces the active sidebar
+    /// item with a muted "dormant" entry at the bottom of the list.
+    /// </summary>
+    private void SleepSession(SessionViewModel vm)
+    {
+        var session = vm.Session;
+        session.IsDormant = true;
+
+        if (_sessionUi.TryGetValue(vm.Id, out var ui))
+        {
+            if (TerminalGrid.Children.Contains(ui.terminalWrapper))
+                TerminalGrid.Children.Remove(ui.terminalWrapper);
+            SidebarSessionList.Children.Remove(ui.sidebarItem);
+            _sessionUi.Remove(vm.Id);
+        }
+
+        // Remove the VM directly — bypass CloseRequested so the ShellSession is
+        // NOT removed from the SessionManager (we want to keep it for wake-up).
+        _vm.Sessions.Remove(vm);
+        if (_vm.ActiveSession == vm)
+            _vm.ActiveSession = _vm.Sessions.LastOrDefault();
+        vm.Dispose();
+
+        AddDormantSidebarItem(session);
+
+        RefreshTerminalLayout();
+        UpdateAlertBadge();
+        EmptyState.Visibility = _vm.Sessions.Count == 0 && _dormantSidebarItems.Count == 0
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        _ = _vm.SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Wakes a dormant session: removes the dormant sidebar entry and relaunches
+    /// the session via LaunchSessionAsync (same path as restore-on-startup).
+    /// </summary>
+    private async Task WakeSessionAsync(ShellSession session)
+    {
+        session.IsDormant = false;
+        if (_dormantSidebarItems.TryGetValue(session.Id, out var dormantItem))
+        {
+            SidebarSessionList.Children.Remove(dormantItem);
+            _dormantSidebarItems.Remove(session.Id);
+        }
+
+        try
+        {
+            await LaunchSessionAsync(session, restoring: true);
+        }
+        catch (Exception ex)
+        {
+            Log($"Wake FAILED for '{session.Name}': {ex}");
+            // Restore the dormant entry so the user doesn't lose access to the session
+            session.IsDormant = true;
+            AddDormantSidebarItem(session);
+            MessageBox.Show($"Failed to wake '{session.Name}': {ex.Message}",
+                "Wake Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        _ = _vm.SaveStateAsync();
+    }
+
+    private void AddDormantSidebarItem(ShellSession session)
+    {
+        var item = BuildDormantSidebarItem(session);
+        _dormantSidebarItems[session.Id] = item;
+        SidebarSessionList.Children.Add(item);
+        EmptyState.Visibility = Visibility.Collapsed;
+    }
+
+    private Border BuildDormantSidebarItem(ShellSession session)
+    {
+        string accentHex = GetAccentForSession(session);
+        var accentColor = (Color)ColorConverter.ConvertFromString(accentHex);
+
+        var container = new Border
+        {
+            Margin = new Thickness(0, 2, 0, 2),
+            Background = Brushes.Transparent,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            CornerRadius = new CornerRadius(6),
+            Tag = "dormant:" + session.Id,
+            Opacity = 0.55,
+            ToolTip = "Click to wake this session"
+        };
+
+        var inner = new Grid();
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var stripe = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0x60, accentColor.R, accentColor.G, accentColor.B)),
+            CornerRadius = new CornerRadius(4, 0, 0, 4),
+            Width = 6
+        };
+        Grid.SetColumn(stripe, 0);
+
+        var textPanel = new StackPanel { Margin = new Thickness(8, 6, 4, 6) };
+
+        string displayName = string.IsNullOrWhiteSpace(session.Name)
+            ? (session.IsRemote
+                ? (string.IsNullOrWhiteSpace(session.SshHost) ? session.Command : session.SshHost)
+                : System.IO.Path.GetFileName(session.WorkingFolder.TrimEnd('/', '\\')) ?? session.Command)
+            : session.Name;
+
+        var nameText = new TextBlock
+        {
+            Text = displayName,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x93, 0x99, 0xb2)),
+            FontSize = 13,
+            FontStyle = FontStyles.Italic,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        string folderShort = session.IsRemote
+            ? (string.IsNullOrWhiteSpace(session.SshHost) ? "" : session.SshHost)
+            : (string.IsNullOrEmpty(session.WorkingFolder)
+                ? ""
+                : new System.IO.DirectoryInfo(session.WorkingFolder).Name);
+
+        var folderText = new TextBlock
+        {
+            Text = folderShort,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            FontSize = 10,
+            Margin = new Thickness(0, 1, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        textPanel.Children.Add(nameText);
+        textPanel.Children.Add(folderText);
+        Grid.SetColumn(textPanel, 1);
+
+        // Sleep icon
+        var sleepIcon = new TextBlock
+        {
+            Text = "💤",
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86))
+        };
+        Grid.SetColumn(sleepIcon, 2);
+
+        // Permanent-delete button — only way to fully remove a dormant session
+        var deleteBtn = MakeMiniButton("✕", "Delete this dormant session", () =>
+        {
+            var result = MessageBox.Show(
+                $"Permanently delete dormant session '{displayName}'?",
+                "Delete session", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (result != MessageBoxResult.Yes) return;
+            SidebarSessionList.Children.Remove(container);
+            _dormantSidebarItems.Remove(session.Id);
+            _sessionManager.RemoveSession(session.Id);
+            if (_vm.Sessions.Count == 0 && _dormantSidebarItems.Count == 0)
+                EmptyState.Visibility = Visibility.Visible;
+            _ = _vm.SaveStateAsync();
+        });
+        var btnPanel = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness(0, 4, 4, 4),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        btnPanel.Children.Add(deleteBtn);
+        Grid.SetColumn(btnPanel, 3);
+
+        inner.Children.Add(stripe);
+        inner.Children.Add(textPanel);
+        inner.Children.Add(sleepIcon);
+        inner.Children.Add(btnPanel);
+        container.Child = inner;
+
+        // Hover effect
+        container.MouseEnter += (_, _) =>
+        {
+            container.Opacity = 0.85;
+            container.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
+        };
+        container.MouseLeave += (_, _) =>
+        {
+            container.Opacity = 0.55;
+            container.Background = Brushes.Transparent;
+        };
+
+        // Click anywhere on the row → wake
+        container.MouseLeftButtonDown += async (_, e) =>
+        {
+            // Don't trigger wake when clicking the delete button
+            if (e.OriginalSource is System.Windows.DependencyObject dep
+                && IsDescendantOf(dep, btnPanel)) return;
+            await WakeSessionAsync(session);
+        };
+
+        return container;
+    }
+
+    private static bool IsDescendantOf(System.Windows.DependencyObject node, System.Windows.DependencyObject ancestor)
+    {
+        for (var n = node; n != null; n = System.Windows.Media.VisualTreeHelper.GetParent(n))
+            if (n == ancestor) return true;
+        return false;
+    }
+
+    private static string GetAccentForSession(ShellSession s) =>
+        s.ColorOverride ?? ColorService.GetHexColor(
+            s.IsRemote
+                ? (string.IsNullOrWhiteSpace(s.SshUser) ? s.SshHost : $"{s.SshUser}@{s.SshHost}")
+                : s.WorkingFolder);
 
     // ── Search ────────────────────────────────────────────────────────────────
 
@@ -1436,6 +1733,7 @@ public partial class MainWindow : Window
         {
             var edited = dialog.EditedSettings;
             _vm.Settings.AutoRestoreSessions = edited.AutoRestoreSessions;
+            _vm.Settings.AutoResumeClaude = edited.AutoResumeClaude;
             _vm.Settings.ShowToastNotifications = edited.ShowToastNotifications;
             _vm.Settings.ShowNotificationSound = edited.ShowNotificationSound;
             _vm.Settings.AnthropicApiKey = edited.AnthropicApiKey;
@@ -1537,6 +1835,7 @@ public partial class MainWindow : Window
         // Apply settings immediately
         var s = imported.Settings;
         _vm.Settings.AutoRestoreSessions = s.AutoRestoreSessions;
+        _vm.Settings.AutoResumeClaude = s.AutoResumeClaude;
         _vm.Settings.ShowToastNotifications = s.ShowToastNotifications;
         _vm.Settings.ShowNotificationSound = s.ShowNotificationSound;
         _vm.Settings.AnthropicApiKey = s.AnthropicApiKey;
@@ -1569,26 +1868,35 @@ public partial class MainWindow : Window
 
     private void OnKeyDown(object s, WpfKeyEventArgs e)
     {
-        if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
-        {
-            OpenNewSessionDialog();
+        if (TryHandleGlobalShortcut(e.Key, Keyboard.Modifiers))
             e.Handled = true;
-        }
-        else if (e.Key == Key.W && Keyboard.Modifiers == ModifierKeys.Control)
-        {
-            _vm.ActiveSession?.CloseCommand.Execute(null);
+    }
+
+    // Invoked by TerminalBridge when a WebView2 accelerator key fires — routes
+    // the same shortcuts that OnKeyDown handles, so they work even when a
+    // terminal has focus (WebView2 otherwise swallows its own keys).
+    private void OnBridgeAcceleratorKey(object? sender, WpfKeyEventArgs e)
+    {
+        if (TryHandleGlobalShortcut(e.Key, Keyboard.Modifiers))
             e.Handled = true;
-        }
-        else if (e.Key == Key.F && Keyboard.Modifiers == ModifierKeys.Control)
-        {
-            ToggleSearch_Click(s, new RoutedEventArgs());
-            e.Handled = true;
-        }
-        else if (e.Key == Key.Tab && Keyboard.Modifiers == ModifierKeys.Control)
-        {
-            CycleSession(forward: true);
-            e.Handled = true;
-        }
+    }
+
+    private bool TryHandleGlobalShortcut(Key key, ModifierKeys mods)
+    {
+        if (key == Key.T && mods == ModifierKeys.Control) { OpenNewSessionDialog(); return true; }
+        if (key == Key.W && mods == ModifierKeys.Control) { _vm.ActiveSession?.CloseCommand.Execute(null); return true; }
+        if (key == Key.F && mods == ModifierKeys.Control) { ToggleSearch_Click(this, new RoutedEventArgs()); return true; }
+        if (key == Key.Tab && mods == ModifierKeys.Control) { CycleSession(forward: true); return true; }
+        if (key == Key.Tab && mods == (ModifierKeys.Control | ModifierKeys.Shift)) { CycleSession(forward: false); return true; }
+        return false;
+    }
+
+    // Refocus the last-active terminal when the window regains focus (e.g. Alt+Tab).
+    // Without this, focus lands on whichever WPF control happened to hold it last —
+    // typically not the WebView2, so keystrokes go nowhere.
+    private void OnWindowActivated(object? sender, EventArgs e)
+    {
+        _vm.ActiveSession?.Bridge?.FocusTerminal();
     }
 
     private void CycleSession(bool forward)
