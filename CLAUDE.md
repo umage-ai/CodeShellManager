@@ -18,7 +18,12 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 
 | Flag | Effect |
 |---|---|
-| `--clean` | Start with no preloaded sessions and **discard all state changes for this run** (`SaveStateAsync` no-ops). Use when debugging — the user's `state.json` is left untouched. |
+| `--clean` | Debug isolation mode — see below. |
+
+**`--clean`** (parsed in `App.OnStartup`, exposed as `App.CleanStart`):
+- `MainWindow.OnLoaded` skips the restore loop and clears the in-memory `SessionManager` so any new sessions in the run don't co-mingle with the persisted set.
+- `MainViewModel.SaveStateAsync` short-circuits — **nothing is written to `state.json`** for the entire run. Window bounds, layout changes, settings tweaks, and any sessions created during the clean run are all discarded on exit.
+- The user's prior `state.json` survives the run untouched, so this is the safe way to test from a blank slate.
 
 ## Architecture
 
@@ -32,7 +37,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 ```
 
 - **PseudoTerminal** (`Terminal/PseudoTerminal.cs`): Windows ConPTY wrapper, P/Invoke only
-- **TerminalBridge** (`Terminal/TerminalBridge.cs`): Routes bytes between PTY and xterm.js via WebView2 messages
+- **TerminalBridge** (`Terminal/TerminalBridge.cs`): Routes bytes between PTY and xterm.js via WebView2 messages. Surfaces accelerator keys (Ctrl-combos, F-keys, Esc) via `_webView.PreviewKeyDown` — the newer WPF WebView2 wrapper forwards accelerators through standard key events rather than a separate `CoreWebView2Controller.AcceleratorKeyPressed`. Bridge re-raises them as `AcceleratorKeyPressed` so `MainWindow.OnBridgeAcceleratorKey` can run global shortcuts even when the terminal has focus.
 - **OutputIndexer** (`Terminal/OutputIndexer.cs`): Async channels → SQLite, strips ANSI
 - **AlertDetector** (`Services/AlertDetector.cs`): Regex on raw PTY output, fires after 1.5s idle
 
@@ -61,7 +66,7 @@ src/CodeShellManager/
 ├── MainWindow.xaml / .cs           # Main UI (toolbar, sidebar, terminal grid)
 ├── Models/
 │   ├── AppState.cs                 # AppSettings + AppState (JSON root)
-│   ├── ShellSession.cs             # Session data model (incl. SSH fields + BuildSshArgs)
+│   ├── ShellSession.cs             # Session data model (SSH fields, BuildSshArgs, IsDormant)
 │   ├── SessionGroup.cs             # Group model
 │   └── AlertEvent.cs               # Alert types: InputRequired, ToolApproval
 ├── Services/
@@ -103,13 +108,19 @@ tests/
 
 **Session accent colors** — `ColorService.GetHexColor(key)` uses FNV-1a hash to deterministically assign one of 12 colors. For local sessions the key is `WorkingFolder`; for SSH sessions it is `user@host`. Used as sidebar stripe + terminal toolbar top border.
 
+**Active-terminal highlight** — every terminal pane is wrapped in an outer "active ring" Border (constant 2px thickness, transparent by default) so toggling it doesn't shift content. `UpdateActiveTerminalHighlight` (called from `UpdateSidebarActiveState`, which fires on every `MainViewModel.ActiveSession` change) paints the ring of the active session's pane in its accent color and clears all others. The ring's accent hex is stashed on `Border.Tag` at build time so the highlight method doesn't need to look up the VM.
+
 ## Session Lifecycle
 
 1. User clicks **＋ New Session** → `NewSessionDialog` modal (Local or Remote SSH)
 2. `SessionManager.CreateSession()` creates `ShellSession` model; caller copies SSH fields if remote
 3. `LaunchSessionAsync()` creates: `SessionViewModel` → `WebView2` → `TerminalBridge` → `PseudoTerminal`
 4. `OutputIndexer` indexes all output to SQLite; `AlertDetector` watches for prompts
-5. On close: `Dispose()` chain cleans up PTY, bridge, indexer, detector
+5. Termination paths:
+   - **Close** (`vm.CloseCommand`) → `MainViewModel.OnSessionCloseRequested` → `vm.Dispose()` + remove from `Sessions` + `SessionManager.RemoveSession()`. Session is gone from `state.json`.
+   - **Sleep** (`SleepSession(vm)`) → `vm.Dispose()` + remove from `Sessions` but **keep** the `ShellSession` in `SessionManager` with `IsDormant = true`. A muted dormant sidebar entry replaces the active one.
+   - **Wake** (`WakeSessionAsync(session)`) → re-runs `LaunchSessionAsync(session, restoring: true)` — same path as restore-on-startup.
+6. On app close: `_vm.SaveStateAsync()` flushes `_sessionManager.Sessions` (live + dormant) to `state.json` (unless `--clean`).
 
 ## SSH Remote Sessions
 
@@ -125,14 +136,19 @@ Remote sessions use the system `ssh` client as the PTY command — no extra libr
 
 ## Sleep / Wake (Dormant Sessions)
 
-Sessions can be put to sleep instead of closed — the PTY is torn down but the session definition is kept in `state.json` (`ShellSession.IsDormant = true`) so it can be relaunched later from the sidebar.
+Sessions can be put to sleep instead of closed — the PTY is torn down but the `ShellSession` is kept in `state.json` (`IsDormant = true`) so it can be relaunched from the sidebar later. Useful when you have many long-running projects but only need a few live at once.
 
-- **Sleep button (💤)** appears in both the sidebar action panel and the terminal toolbar. Triggers `SleepSession(vm)` in `MainWindow.xaml.cs`, which disposes the live PTY/Bridge/Indexer/AlertDetector and replaces the active sidebar item with a muted "dormant" entry rendered at the bottom of the list.
-- **Wake**: clicking anywhere on a dormant entry calls `WakeSessionAsync(session)` which re-runs `LaunchSessionAsync(session, restoring: true)` — the same code path used for restore-on-startup, so Claude `--resume` semantics apply.
-- **Permanent delete**: dormant entries have a small `✕` button that fully removes the session from `SessionManager` (with a confirmation dialog).
-- **State**: dormant entries are tracked in `_dormantSidebarItems: Dictionary<string, Border>`. `RebuildSidebarOrder` re-appends them at the bottom after laying out active items.
-- **Startup**: in `OnLoaded`, dormant sessions skip the launch step and go straight to `AddDormantSidebarItem`.
-- **Active terminal highlight**: the active session's terminal pane gets a 2px accent ring (`UpdateActiveTerminalHighlight` in `MainWindow.xaml.cs`), so it's easy to spot in multi-pane layouts.
+**UI:**
+- 💤 button appears in both the sidebar action panel (next to ✕) and the terminal toolbar.
+- Dormant entries render at the bottom of the sidebar with a muted (55% opacity) appearance. Clicking anywhere on a dormant entry wakes it; the small ✕ on a dormant entry permanently deletes (with confirmation).
+
+**Implementation (`MainWindow.xaml.cs`):**
+- `SleepSession(vm)` — sets `session.IsDormant = true`, removes from `_vm.Sessions` directly (bypassing `CloseCommand` so the `ShellSession` is **not** removed from `SessionManager`), disposes the VM, and calls `AddDormantSidebarItem(session)`.
+- `WakeSessionAsync(session)` — clears `IsDormant`, removes the dormant sidebar entry, then `await LaunchSessionAsync(session, restoring: true)`. On launch failure it restores the dormant entry.
+- `BuildDormantSidebarItem(ShellSession)` — builds a static (no-VM) sidebar Border with muted accent stripe + 💤 icon. Click handler resolves to `WakeSessionAsync`.
+- Dormant entries are tracked in `_dormantSidebarItems: Dictionary<string, Border>` so `RebuildSidebarOrder` (called after drag-reorder) can re-append them at the bottom.
+- `OnLoaded` partitions saved sessions: dormant ones go through `AddDormantSidebarItem`; live ones through `LaunchSessionAsync`.
+- The empty-state placeholder hides whenever `_vm.Sessions.Count > 0` **or** `_dormantSidebarItems.Count > 0`.
 
 ## Alert / Waiting State
 
@@ -163,6 +179,8 @@ Persisted in `state.json`. Key settings:
 - `SearchCollapseAfterNavigate` — auto-close search after clicking result
 - `MaxSearchResults` — FTS5 result limit (default 100)
 - `DefaultWorkingFolder` / `DefaultCommand` — pre-fill new session dialog
+
+**Layout persistence**: `AppState.LastLayout` (string, e.g. `"TwoByTwo"`) persists the active grid layout. On startup, `MainViewModel.LoadStateAsync` parses it into `Layout`, which fires `MainViewModel.PropertyChanged`; the `MainWindow` constructor subscribes and syncs `_currentLayout` + calls `RefreshTerminalLayout`, so the saved layout is what the user sees on relaunch.
 
 ## Keyboard Shortcuts
 
@@ -200,7 +218,9 @@ The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` fl
 ## Known Conventions
 
 - All WPF color literals use Catppuccin Mocha hex values — do not introduce system colors
-- Sidebar items and terminal wrappers are built entirely in code-behind (`BuildSidebarItem`, `BuildTerminalWrapper`) — not in XAML templates, to keep imperative logic centralized
-- `_sessionUi` dictionary maps `sessionId → (webView, terminalWrapper, sidebarItem)` — the source of truth for all session UI references
+- Sidebar items and terminal wrappers are built entirely in code-behind (`BuildSidebarItem`, `BuildTerminalWrapper`, `BuildDormantSidebarItem`) — not in XAML templates, to keep imperative logic centralized
+- `_sessionUi` dictionary maps `sessionId → (webView, terminalWrapper, sidebarItem)` — the source of truth for live session UI. `_dormantSidebarItems` (`sessionId → Border`) tracks the parallel set for sleeping sessions.
+- The `terminalWrapper` returned by `BuildTerminalWrapper` is actually the **outer active-ring Border**, with the original accent-stripe wrapper nested inside. `_sessionUi[id].terminalWrapper` therefore points at the ring; the highlight method toggles its `BorderBrush`.
 - Use `Dispatcher.Invoke()` for all UI updates from background threads (PTY read loop, git queries, alert timer)
 - PTY output flows: `PseudoTerminal` → `TerminalBridge.RawOutputReceived` → both `OutputIndexer.Feed()` and `AlertDetector.Feed()` in parallel
+- `MainViewModel.SaveStateAsync` is a no-op when `App.CleanStart` is true; any code path that needs to "remember" something across runs must go through this method, so honoring `--clean` is automatic.

@@ -14,13 +14,15 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 
 ## Features
 
-- **Multi-terminal grid** — run up to 18 sessions simultaneously in configurable layouts (1, 2, 3, 4, 6 columns; 2×2, 6×2, 6×3 grids)
+- **Multi-terminal grid** — run up to 18 sessions simultaneously in configurable layouts (1, 2, 3, 4, 6 columns; 2×2, 6×2, 6×3 grids); the active pane is highlighted with a 2px accent ring so it's easy to spot
+- **Sleep & wake** — 💤 button parks a session: PTY torn down, but the session (and its notes) stays in the sidebar so you can wake it later from where you left off. Great when you have many long-running projects but only need a few live at once.
 - **Full-text search** — all terminal output indexed to SQLite FTS5; instant search across every session, ever
 - **Per-project notepad** — collapsible 📝 notes panel on every terminal, auto-saved and searchable
 - **Alert detection** — detects when Claude is waiting for input or tool approval; green/orange dot indicators
 - **Git status** — shows branch and dirty state in the sidebar per session
 - **Session rename** — double-click any session name or click ✏ to rename inline
-- **Auto-resume** — automatically resumes the last Claude Code session when restoring on startup (`--resume <id>`)
+- **Auto-resume** — automatically resumes the last Claude Code session when restoring on startup (`--resume <id>`); toggleable in Settings
+- **SSH remote sessions** — connect to remote hosts using your existing SSH config; sessions persist across restarts
 - **Session history** — clicking a search result from a closed session offers to relaunch it
 - **Configurable launch commands** — customise the commands available in the New Session dialog
 - **Claude badge** — sessions running `claude` commands get a visual indicator
@@ -52,6 +54,12 @@ git clone https://github.com/umage-ai/CodeShellManager.git
 cd CodeShellManager
 dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 ```
+
+### Command-line flags
+
+| Flag | Effect |
+|------|--------|
+| `--clean` | Start with no preloaded sessions and skip writing `state.json` for the run. Useful when developing — your saved sessions/settings are left untouched. |
 
 ## Keyboard Shortcuts
 
