@@ -83,6 +83,7 @@
       else if (msg.type === 'clear')          term.clear();
       else if (msg.type === 'focus')          { term.focus(); fitAddon.fit(); }
       else if (msg.type === 'fit')            { fitAddon.fit(); term.focus(); }
+      else if (msg.type === 'paste')          term.paste(msg.data);
       else if (msg.type === 'setOptions')     {
         const opts = msg.options;
         if (opts.fontFamily    !== undefined) term.options.fontFamily    = opts.fontFamily;

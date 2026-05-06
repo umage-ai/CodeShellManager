@@ -1,8 +1,17 @@
+using System.Linq;
+
 namespace CodeShellManager;
 
 public partial class App : System.Windows.Application
 {
     public static System.Windows.Forms.NotifyIcon? TrayIcon { get; private set; }
+
+    /// <summary>
+    /// When true (set by passing <c>--clean</c> on the command line), the app starts
+    /// with no preloaded sessions and persists no state changes for this run. Useful
+    /// for debugging: prior <c>state.json</c> contents are left untouched.
+    /// </summary>
+    public static bool CleanStart { get; private set; }
 
     public static string LogPath { get; } = System.IO.Path.Combine(
         System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
@@ -11,6 +20,9 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        CleanStart = e.Args.Any(a =>
+            string.Equals(a, "--clean", System.StringComparison.OrdinalIgnoreCase));
 
         // Catch unhandled exceptions and write to log
         DispatcherUnhandledException += (_, ex) =>
