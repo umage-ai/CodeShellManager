@@ -1763,6 +1763,7 @@ public partial class MainWindow : Window
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
             _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
+            _vm.Settings.ImportWindowsTerminalProfiles = edited.ImportWindowsTerminalProfiles;
             _vm.Settings.LaunchCommands = edited.LaunchCommands;
             _vm.Settings.TerminalFontFamily = edited.TerminalFontFamily;
             _vm.Settings.TerminalFontSize = edited.TerminalFontSize;
