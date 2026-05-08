@@ -63,6 +63,7 @@ public static class BuiltInTerminalSchemes
     {
         if (string.IsNullOrEmpty(name)) return null;
         if (!Schemes.TryGetValue(name, out var json)) return null;
-        return JsonDocument.Parse(json).RootElement.Clone();
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.Clone();
     }
 }

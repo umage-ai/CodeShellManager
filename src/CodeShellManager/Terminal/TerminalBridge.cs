@@ -98,10 +98,11 @@ public sealed class TerminalBridge : IDisposable
         // stuck. Cancelling these navigations lets JS handle the drop normally.
         _webView.CoreWebView2.NavigationStarting += (_, args) =>
         {
-            if (args.Uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
-                !args.Uri.EndsWith("terminal.html", StringComparison.OrdinalIgnoreCase))
+            if (args.Uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
-                args.Cancel = true;
+                bool allowed = args.Uri.EndsWith("terminal.html", StringComparison.OrdinalIgnoreCase)
+                    || args.Uri.EndsWith("terminal-transparent.html", StringComparison.OrdinalIgnoreCase);
+                if (!allowed) args.Cancel = true;
             }
         };
 
