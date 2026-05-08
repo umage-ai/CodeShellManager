@@ -134,6 +134,27 @@ Remote sessions use the system `ssh` client as the PTY command — no extra libr
 - `SessionViewModel.RefreshGitInfoAsync()` early-returns for remote sessions (no local working folder)
 - SSH fields serialize to `state.json` automatically — sessions restore and relaunch on next startup
 
+## Windows Terminal Profile Import (opt-in)
+
+When `AppSettings.ImportWindowsTerminalProfiles` is on, the New Session dialog reads the user's Windows Terminal `settings.json` and offers each profile in a "Profile (optional)" combobox.
+
+**Service:** `WindowsTerminalProfileService.GetProfiles()` probes Stable / Preview / Unpackaged install paths, parses each `settings.json`, flattens `profiles.defaults`, filters hidden profiles, and emits `WindowsTerminalProfile` POCOs with appearance fields already mapped to xterm equivalents.
+
+**Per-session overrides** (all on `ShellSession`, all nullable, all persisted to `state.json`):
+
+- `ProfileFontFamily`, `ProfileFontSize`, `ProfileFontWeight`, `ProfileFontLigatures`
+- `ProfileCursorShape` (`"block" | "underline" | "bar"`), `ProfileCursorBlink`
+- `ProfilePadding` (CSS shorthand)
+- `ProfileBackgroundOpacity` (0.0–1.0; 1.0 = opaque)
+- `ProfileRetroEffect` (CSS scanlines overlay only — not a real CRT shader)
+- `ProfileColorSchemeJson` (pre-baked xterm theme)
+
+When any override is set, `LaunchSessionAsync` calls `bridge.ApplyProfileOverrides(session)` after `ApplyFontSettings`, posting a `setOptions` message that wins over the global font.
+
+**Transparency:** xterm.js requires `allowTransparency` in the constructor, so transparent sessions navigate to `Assets/terminal-transparent.html` instead of `terminal.html`. Both files share `Assets/terminal-init.js`. (Acrylic blur is not reachable from WebView2 — we get flat alpha over the WPF chrome instead.)
+
+**Once stamped, profile overrides are independent.** A session keeps its appearance even if the user later edits or deletes the source profile in Windows Terminal.
+
 ## Sleep / Wake (Dormant Sessions)
 
 Sessions can be put to sleep instead of closed — the PTY is torn down but the `ShellSession` is kept in `state.json` (`IsDormant = true`) so it can be relaunched from the sidebar later. Useful when you have many long-running projects but only need a few live at once.
