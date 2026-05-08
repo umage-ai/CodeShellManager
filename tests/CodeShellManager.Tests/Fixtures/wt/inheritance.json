@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "defaults": {
+      "commandline": "pwsh.exe",
+      "font": { "face": "Cascadia Mono", "size": 11 },
+      "padding": "4"
+    },
+    "list": [
+      { "guid": "{x}", "name": "Inherits" },
+      { "guid": "{y}", "name": "Overrides", "commandline": "cmd.exe", "padding": "12" }
+    ]
+  }
+}
