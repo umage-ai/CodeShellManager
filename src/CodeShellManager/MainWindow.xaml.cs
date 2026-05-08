@@ -237,9 +237,14 @@ public partial class MainWindow : Window
 
     private void OpenNewSessionDialog(string defaultFolder = "")
     {
+        var profiles = _vm.Settings.ImportWindowsTerminalProfiles
+            ? Services.WindowsTerminalProfileService.GetProfiles()
+            : null;
+
         var dialog = new NewSessionDialog(
             string.IsNullOrEmpty(defaultFolder) ? _vm.Settings.DefaultWorkingFolder : defaultFolder,
-            _vm.Settings.LaunchCommands)
+            _vm.Settings.LaunchCommands,
+            profiles)
         {
             Owner = this
         };
@@ -261,6 +266,18 @@ public partial class MainWindow : Window
             session.SshPort = dialog.SshPort;
             session.SshRemoteFolder = dialog.SshRemoteFolder;
         }
+
+        // Copy any profile-driven overrides onto the session so they persist + apply on launch
+        session.ProfileFontFamily = dialog.ProfileFontFamily;
+        session.ProfileFontSize = dialog.ProfileFontSize;
+        session.ProfileFontWeight = dialog.ProfileFontWeight;
+        session.ProfileFontLigatures = dialog.ProfileFontLigatures;
+        session.ProfileCursorShape = dialog.ProfileCursorShape;
+        session.ProfileCursorBlink = dialog.ProfileCursorBlink;
+        session.ProfilePadding = dialog.ProfilePadding;
+        session.ProfileBackgroundOpacity = dialog.ProfileBackgroundOpacity;
+        session.ProfileRetroEffect = dialog.ProfileRetroEffect;
+        session.ProfileColorSchemeJson = dialog.ProfileColorSchemeJson;
 
         _ = LaunchSessionAsync(session);
     }
