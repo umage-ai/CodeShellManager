@@ -16,6 +16,7 @@ public class AppSettings
     public string Theme { get; set; } = "dark";
     public int MaxSearchResults { get; set; } = 100;
     public bool ShowTerminalStatusDot { get; set; } = true;
+    public bool ImportWindowsTerminalProfiles { get; set; } = false;
 
     // Storage
     public bool IndexTerminalOutput { get; set; } = true;

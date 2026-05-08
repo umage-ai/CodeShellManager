@@ -30,6 +30,22 @@ public class ShellSession
     public int SshPort { get; set; } = 22;
     public string SshRemoteFolder { get; set; } = "";
 
+    // Per-session appearance overrides (typically populated from a Windows
+    // Terminal profile via NewSessionDialog). All nullable — null means "use the
+    // global terminal settings". Persisted to state.json so a session relaunches
+    // with the same look.
+    public string? ProfileFontFamily { get; set; }
+    public int? ProfileFontSize { get; set; }
+    public string? ProfileFontWeight { get; set; }
+    public bool? ProfileFontLigatures { get; set; }
+    public string? ProfileCursorShape { get; set; }
+    public bool? ProfileCursorBlink { get; set; }
+    public string? ProfilePadding { get; set; }
+    public double? ProfileBackgroundOpacity { get; set; }
+    public bool? ProfileRetroEffect { get; set; }
+    /// <summary>Pre-baked xterm theme object (JSON), or null for xterm default.</summary>
+    public string? ProfileColorSchemeJson { get; set; }
+
     // Full command line for display and passthrough.
     // For remote sessions: "ssh <BuildSshArgs()>"
     // For local sessions: "Command [Args]"

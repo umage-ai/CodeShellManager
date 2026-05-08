@@ -34,6 +34,7 @@ public partial class SettingsWindow : Window
             Theme = current.Theme,
             MaxSearchResults = current.MaxSearchResults,
             ShowTerminalStatusDot = current.ShowTerminalStatusDot,
+            ImportWindowsTerminalProfiles = current.ImportWindowsTerminalProfiles,
             TerminalFontFamily = current.TerminalFontFamily,
             TerminalFontSize = current.TerminalFontSize,
             TerminalFontLigatures = current.TerminalFontLigatures,
