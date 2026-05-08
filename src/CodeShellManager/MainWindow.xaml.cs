@@ -344,10 +344,13 @@ public partial class MainWindow : Window
         }
 
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
-        string htmlPath = new Uri(Path.Combine(assetsDir, "terminal.html")).AbsoluteUri;
+        bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
+        string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
+        string htmlPath = new Uri(Path.Combine(assetsDir, htmlFile)).AbsoluteUri;
 
         await bridge.InitializeAsync(htmlPath);
         bridge.ApplyFontSettings(_vm.Settings);
+        bridge.ApplyProfileOverrides(session);
 
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
