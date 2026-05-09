@@ -1,9 +1,25 @@
 using System.Linq;
+using System.Runtime.InteropServices;
 
 namespace CodeShellManager;
 
 public partial class App : System.Windows.Application
 {
+    // When the WPF app is launched from a parent that hands us redirected std
+    // handles (dotnet run, bash, cmd with redirection), ConPTY children inherit
+    // those handles and bleed their output to the parent — bypassing the PTY
+    // entirely and leaving xterm.js with no output. Detaching the console and
+    // clearing std handles at startup prevents the leak.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetStdHandle(int nStdHandle, System.IntPtr handle);
+
+    private const int STD_INPUT_HANDLE = -10;
+    private const int STD_OUTPUT_HANDLE = -11;
+    private const int STD_ERROR_HANDLE = -12;
+
     public static System.Windows.Forms.NotifyIcon? TrayIcon { get; private set; }
 
     /// <summary>
@@ -20,6 +36,13 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Detach from any inherited parent console / std handles so ConPTY
+        // children can't bleed their output back to the launching shell.
+        FreeConsole();
+        SetStdHandle(STD_INPUT_HANDLE,  System.IntPtr.Zero);
+        SetStdHandle(STD_OUTPUT_HANDLE, System.IntPtr.Zero);
+        SetStdHandle(STD_ERROR_HANDLE,  System.IntPtr.Zero);
 
         CleanStart = e.Args.Any(a =>
             string.Equals(a, "--clean", System.StringComparison.OrdinalIgnoreCase));
