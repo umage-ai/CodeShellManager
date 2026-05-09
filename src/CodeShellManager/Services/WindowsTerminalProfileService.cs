@@ -196,7 +196,8 @@ public static class WindowsTerminalProfileService
             return null;
         }
 
-        string? face = Pick("font", "face") is { ValueKind: JsonValueKind.String } f ? f.GetString() : null;
+        string? face = Pick("font", "face") is { ValueKind: JsonValueKind.String } f
+            ? QuoteFontFace(f.GetString()) : null;
         int? size = Pick("font", "size") is { ValueKind: JsonValueKind.Number } s && s.TryGetInt32(out var iv) ? iv : null;
         string? weight = Pick("font", "weight") switch
         {
@@ -220,5 +221,17 @@ public static class WindowsTerminalProfileService
         if (string.IsNullOrEmpty(dir)) return "";
         if (dir.StartsWith("~")) dir = "%USERPROFILE%" + dir[1..];
         return Environment.ExpandEnvironmentVariables(dir);
+    }
+
+    // WT stores font face as a bare name ("0xProto Nerd Font"). xterm drops it
+    // straight into CSS font-family, where unquoted names containing spaces fail
+    // to resolve. Quote and append a monospace fallback so missing fonts still
+    // render legibly.
+    private static string? QuoteFontFace(string? face)
+    {
+        if (string.IsNullOrWhiteSpace(face)) return null;
+        face = face.Trim();
+        if (face.StartsWith('\'') || face.StartsWith('"')) return face;
+        return $"'{face}', monospace";
     }
 }

@@ -278,7 +278,7 @@ public sealed class TerminalBridge : IDisposable
         if (!HasAnyOverride(session)) return;
 
         var opts = new System.Collections.Generic.Dictionary<string, object?>();
-        if (session.ProfileFontFamily    != null) opts["fontFamily"]    = session.ProfileFontFamily;
+        if (session.ProfileFontFamily    != null) opts["fontFamily"]    = QuoteFontFamily(session.ProfileFontFamily);
         if (session.ProfileFontSize      != null) opts["fontSize"]      = session.ProfileFontSize;
         if (session.ProfileFontWeight    != null) opts["fontWeight"]    = session.ProfileFontWeight;
         if (session.ProfileFontLigatures != null) opts["fontLigatures"] = session.ProfileFontLigatures;
@@ -295,6 +295,18 @@ public sealed class TerminalBridge : IDisposable
             try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
             catch { }
         });
+    }
+
+    // Older state.json entries may store an unquoted face like "0xProto Nerd Font".
+    // CSS needs spaces-in-names quoted; quote + add a monospace fallback at apply
+    // time so existing saved sessions render correctly without a re-import.
+    private static string QuoteFontFamily(string face)
+    {
+        face = face.Trim();
+        if (face.Length == 0) return face;
+        if (face.StartsWith('\'') || face.StartsWith('"') || face.Contains(','))
+            return face;
+        return $"'{face}', monospace";
     }
 
     private static bool HasAnyOverride(ShellSession s) =>
