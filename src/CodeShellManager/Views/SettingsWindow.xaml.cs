@@ -24,6 +24,7 @@ public partial class SettingsWindow : Window
         {
             AutoRestoreSessions = current.AutoRestoreSessions,
             AutoResumeClaude = current.AutoResumeClaude,
+            AutoFocusTerminalOnSelect = current.AutoFocusTerminalOnSelect,
             ShowToastNotifications = current.ShowToastNotifications,
             ShowNotificationSound = current.ShowNotificationSound,
             AnthropicApiKey = current.AnthropicApiKey,
@@ -48,6 +49,7 @@ public partial class SettingsWindow : Window
         DefaultFolderBox.Text = _edited.DefaultWorkingFolder;
         AutoRestoreCheck.IsChecked = _edited.AutoRestoreSessions;
         AutoResumeClaudeCheck.IsChecked = _edited.AutoResumeClaude;
+        AutoFocusTerminalOnSelectCheck.IsChecked = _edited.AutoFocusTerminalOnSelect;
         ShowToastCheck.IsChecked = _edited.ShowToastNotifications;
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
         ShowGitBranchCheck.IsChecked = _edited.ShowGitBranch;
@@ -109,6 +111,7 @@ public partial class SettingsWindow : Window
         _edited.DefaultWorkingFolder = DefaultFolderBox.Text.Trim();
         _edited.AutoRestoreSessions = AutoRestoreCheck.IsChecked == true;
         _edited.AutoResumeClaude = AutoResumeClaudeCheck.IsChecked == true;
+        _edited.AutoFocusTerminalOnSelect = AutoFocusTerminalOnSelectCheck.IsChecked == true;
         _edited.ShowToastNotifications = ShowToastCheck.IsChecked == true;
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
         _edited.ShowGitBranch = ShowGitBranchCheck.IsChecked == true;
