@@ -325,7 +325,15 @@ public sealed class TerminalBridge : IDisposable
         if (!_ready) return;
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
         {
-            try { _webView.CoreWebView2?.PostWebMessageAsString("{\"type\":\"focus\"}"); }
+            try
+            {
+                // Move WPF keyboard focus onto the WebView2 host. Without this, focus
+                // can stay on whichever WPF control was last clicked (e.g. a sidebar
+                // item Border), so the JS term.focus() below has no effect at the
+                // WPF level and typing goes nowhere.
+                _webView.Focus();
+                _webView.CoreWebView2?.PostWebMessageAsString("{\"type\":\"focus\"}");
+            }
             catch { }
         });
     }

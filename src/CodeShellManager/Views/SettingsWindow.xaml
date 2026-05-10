@@ -208,6 +208,9 @@
                 <CheckBox x:Name="AutoResumeClaudeCheck" Content="Auto-resume Claude sessions on restore"
                           Margin="0,4,0,0"
                           ToolTip="When restoring sessions, append --resume &lt;sessionId&gt; to claude commands so Claude picks up the previous conversation."/>
+                <CheckBox x:Name="AutoFocusTerminalOnSelectCheck" Content="Auto-focus terminal when selecting a session"
+                          Margin="0,4,0,0"
+                          ToolTip="When clicking a session in the sidebar (or cycling with Ctrl+Tab), move keyboard focus into the terminal so you can start typing immediately."/>
 
                 <!-- Appearance -->
                 <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>

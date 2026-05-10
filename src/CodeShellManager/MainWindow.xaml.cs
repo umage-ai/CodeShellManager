@@ -1757,6 +1757,7 @@ public partial class MainWindow : Window
             var edited = dialog.EditedSettings;
             _vm.Settings.AutoRestoreSessions = edited.AutoRestoreSessions;
             _vm.Settings.AutoResumeClaude = edited.AutoResumeClaude;
+            _vm.Settings.AutoFocusTerminalOnSelect = edited.AutoFocusTerminalOnSelect;
             _vm.Settings.ShowToastNotifications = edited.ShowToastNotifications;
             _vm.Settings.ShowNotificationSound = edited.ShowNotificationSound;
             _vm.Settings.AnthropicApiKey = edited.AnthropicApiKey;

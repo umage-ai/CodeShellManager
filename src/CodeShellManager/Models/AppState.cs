@@ -6,6 +6,7 @@ public class AppSettings
 {
     public bool AutoRestoreSessions { get; set; } = true;
     public bool AutoResumeClaude { get; set; } = true;
+    public bool AutoFocusTerminalOnSelect { get; set; } = true;
     public bool ShowToastNotifications { get; set; } = false;
     public bool ShowNotificationSound { get; set; } = false;
     public string AnthropicApiKey { get; set; } = "";

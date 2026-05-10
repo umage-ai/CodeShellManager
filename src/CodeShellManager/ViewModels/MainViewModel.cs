@@ -153,7 +153,8 @@ public partial class MainViewModel : ObservableObject
     {
         ActiveSession = vm;
         vm.ClearAlert();
-        vm.Bridge?.FocusTerminal();
+        if (Settings.AutoFocusTerminalOnSelect)
+            vm.Bridge?.FocusTerminal();
         vm.AlertDetector?.NotifyUserInteracted();
         OnPropertyChanged(nameof(AlertCount));
     }
