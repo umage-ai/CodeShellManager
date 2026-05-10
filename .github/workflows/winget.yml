@@ -1,0 +1,34 @@
+name: Publish to WinGet
+
+# Submits the signed MSI from a GitHub Release to microsoft/winget-pkgs.
+# - `release` event fires automatically when CI / Release publishes the GitHub Release.
+# - `workflow_dispatch` lets us re-publish a past version (used for the very first
+#   submission once this workflow exists on main).
+#
+# Requires repo secret WINGET_TOKEN: a classic PAT with `public_repo` scope.
+# (winget-releaser does not yet support fine-grained tokens.)
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.4.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: UmageAI.CodeShellManager
+          installers-regex: '\.msi$'
+          release-tag: ${{ inputs.tag || github.event.release.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
