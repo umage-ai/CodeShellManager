@@ -462,6 +462,7 @@ public partial class MainWindow : Window
         _vm.RegisterSession(vm);
         RefreshTerminalLayout();
         bridge.FitTerminal();
+        bridge.FocusTerminal();
         UpdateAlertBadge();
         EmptyState.Visibility = Visibility.Collapsed;
     }
