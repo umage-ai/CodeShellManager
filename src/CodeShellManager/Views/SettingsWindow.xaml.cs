@@ -43,6 +43,7 @@ public partial class SettingsWindow : Window
             TerminalLineHeight = current.TerminalLineHeight,
             IndexTerminalOutput = current.IndexTerminalOutput,
             OutputRetentionDays = current.OutputRetentionDays,
+            LaunchCommands = current.LaunchCommands.ToList(),
         };
 
         // Populate controls
