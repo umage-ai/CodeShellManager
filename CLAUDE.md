@@ -159,6 +159,8 @@ When any override is set, `LaunchSessionAsync` calls `bridge.ApplyProfileOverrid
 
 Programs running inside a terminal can push session state up to CSM by emitting a custom OSC sequence — useful for SSH overlays (e.g. `nexus`) where CSM cannot inspect the remote repo locally.
 
+> **Integrator-facing reference:** [`docs/shell-integration.md`](docs/shell-integration.md) (wire format + bash/PowerShell/Python/Node/Rust/Go snippets). The notes below are CSM-internal.
+
 **Wire format:** `ESC ] 9001 ; key=value ; key=value … ST`
 
 ST may be `BEL` (`\x07`) or `ESC \\` — xterm.js accepts both.
