@@ -346,6 +346,14 @@ public partial class MainWindow : Window
             bridge.RawOutputReceived += alertDetector.Feed;
         }
 
+        // Shell programs (e.g. nexus over SSH) push session state via OSC 9001;
+        // forward those payloads to the VM, then save so accent/title persist.
+        bridge.ShellIntegrationReceived += fields =>
+        {
+            Dispatcher.Invoke(() => vm.ApplyShellIntegration(fields));
+            _ = _vm.SaveStateAsync();
+        };
+
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
         bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
@@ -767,6 +775,15 @@ public partial class MainWindow : Window
                     case nameof(SessionViewModel.GitIsDirty):
                     case nameof(SessionViewModel.GitInfoLoaded):
                         UpdateGitText(gitText, vm);
+                        break;
+
+                    case nameof(SessionViewModel.AccentColor):
+                        try
+                        {
+                            stripe.Background = new SolidColorBrush(
+                                (Color)ColorConverter.ConvertFromString(vm.AccentColor));
+                        }
+                        catch { }
                         break;
                 }
             });
@@ -1302,6 +1319,21 @@ public partial class MainWindow : Window
                         termStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86));
                         termStatusDot.ToolTip = "Running";
                     }
+                });
+            }
+            else if (args.PropertyName == nameof(SessionViewModel.AccentColor))
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    try
+                    {
+                        var c = (Color)ColorConverter.ConvertFromString(vm.AccentColor);
+                        wrapper.BorderBrush = new SolidColorBrush(c);
+                        activeRing.Tag = vm.AccentColor;
+                        // If this session is active, re-apply the ring brush immediately
+                        if (vm.IsActive) activeRing.BorderBrush = new SolidColorBrush(c);
+                    }
+                    catch { }
                 });
             }
         };
