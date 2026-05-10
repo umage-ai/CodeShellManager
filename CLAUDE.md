@@ -236,6 +236,8 @@ git push origin v1.2.3
 
 The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` flag). **Do not rely on the csproj version number** — bump it for local build clarity only. CI produces a signed exe, MSI installer, and portable ZIP, then creates a GitHub Release automatically.
 
+A second workflow, `.github/workflows/winget.yml`, fires on the `release: released` event and submits the signed MSI to microsoft/winget-pkgs as `UmageAI.CodeShellManager` via [vedantmgoyal9/winget-releaser](https://github.com/vedantmgoyal9/winget-releaser). It needs the repo secret `WINGET_TOKEN` (classic PAT, `public_repo` scope). The same workflow is `workflow_dispatch`-able with a `tag` input to backfill or retry a release.
+
 ## Known Conventions
 
 - All WPF color literals use Catppuccin Mocha hex values — do not introduce system colors
