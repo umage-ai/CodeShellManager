@@ -99,6 +99,42 @@ public partial class SessionViewModel : ObservableObject, IDisposable
             System.Diagnostics.Process.Start("explorer.exe", Session.WorkingFolder);
     }
 
+    /// <summary>
+    /// Applies a CSM shell-integration payload (OSC 9001) emitted by the running program.
+    /// Recognised keys: <c>color</c> (#rrggbb), <c>git-branch</c>, <c>git-dirty</c> (0/1),
+    /// <c>title</c>. Unknown keys are ignored. Useful for SSH overlays whose remote
+    /// state CSM cannot inspect locally.
+    /// </summary>
+    public void ApplyShellIntegration(System.Collections.Generic.IReadOnlyDictionary<string, string> fields)
+    {
+        if (fields.TryGetValue("color", out var color) && IsValidHexColor(color))
+        {
+            Session.ColorOverride = color;
+            OnPropertyChanged(nameof(AccentColor));
+        }
+
+        if (fields.TryGetValue("git-branch", out var branch))
+        {
+            GitBranch = string.IsNullOrWhiteSpace(branch) ? null : branch;
+            GitInfoLoaded = true;
+        }
+
+        if (fields.TryGetValue("git-dirty", out var dirty))
+            GitIsDirty = dirty == "1" || string.Equals(dirty, "true", StringComparison.OrdinalIgnoreCase);
+
+        if (fields.TryGetValue("title", out var title) && !string.IsNullOrWhiteSpace(title))
+            Rename(title.Trim());
+    }
+
+    private static bool IsValidHexColor(string s)
+    {
+        if (string.IsNullOrEmpty(s) || s[0] != '#') return false;
+        if (s.Length != 4 && s.Length != 7 && s.Length != 9) return false;
+        for (int i = 1; i < s.Length; i++)
+            if (!Uri.IsHexDigit(s[i])) return false;
+        return true;
+    }
+
     public void RaiseAlert(string message, AlertType alertType = AlertType.InputRequired)
     {
         NeedsAttention = true;

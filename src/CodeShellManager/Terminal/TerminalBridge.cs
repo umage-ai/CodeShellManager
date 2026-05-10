@@ -31,6 +31,12 @@ public sealed class TerminalBridge : IDisposable
     public event Action? UserInput;
 
     /// <summary>
+    /// Fires when the running shell program emits OSC 9001 (CSM shell integration).
+    /// Carries the parsed key=value fields it included (color, git-branch, git-dirty, title, …).
+    /// </summary>
+    public event Action<System.Collections.Generic.IReadOnlyDictionary<string, string>>? ShellIntegrationReceived;
+
+    /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
     /// while the WebView2 has focus. Subscribers set <c>e.Handled = true</c> to prevent
     /// the key from also reaching xterm.js. The WPF WebView2 wrapper forwards
@@ -228,6 +234,21 @@ public sealed class TerminalBridge : IDisposable
                     if (!string.IsNullOrEmpty(copy))
                         WpfApplication.Current?.Dispatcher.Invoke(() =>
                             WpfClipboard.SetText(copy));
+                    break;
+
+                case "shellIntegration":
+                    if (root.TryGetProperty("fields", out var fieldsEl)
+                        && fieldsEl.ValueKind == JsonValueKind.Object)
+                    {
+                        var dict = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var prop in fieldsEl.EnumerateObject())
+                        {
+                            if (prop.Value.ValueKind == JsonValueKind.String)
+                                dict[prop.Name] = prop.Value.GetString() ?? "";
+                        }
+                        if (dict.Count > 0)
+                            ShellIntegrationReceived?.Invoke(dict);
+                    }
                     break;
 
                 case "filesDropped":
