@@ -43,6 +43,7 @@ public partial class SettingsWindow : Window
             TerminalLineHeight = current.TerminalLineHeight,
             IndexTerminalOutput = current.IndexTerminalOutput,
             OutputRetentionDays = current.OutputRetentionDays,
+            LaunchCommands = new System.Collections.Generic.List<string>(current.LaunchCommands),
         };
 
         // Populate controls
@@ -81,7 +82,10 @@ public partial class SettingsWindow : Window
         if (FontWeightCombo.SelectedIndex < 0)
             FontWeightCombo.SelectedIndex = 0;
 
-        // Select matching command in ComboBox
+        // Populate combo from the editable launch-command list so additions show up.
+        DefaultCommandCombo.Items.Clear();
+        foreach (var cmd in _edited.LaunchCommands)
+            DefaultCommandCombo.Items.Add(new ComboBoxItem { Content = cmd, Tag = cmd });
         foreach (ComboBoxItem item in DefaultCommandCombo.Items)
         {
             if (item.Tag?.ToString() == _edited.DefaultCommand)
@@ -90,7 +94,7 @@ public partial class SettingsWindow : Window
                 break;
             }
         }
-        if (DefaultCommandCombo.SelectedIndex < 0)
+        if (DefaultCommandCombo.SelectedIndex < 0 && DefaultCommandCombo.Items.Count > 0)
             DefaultCommandCombo.SelectedIndex = 0;
     }
 
