@@ -106,7 +106,10 @@ public static class WindowsTerminalProfileService
         string name = GetString(profile, "name") ?? "";
         if (string.IsNullOrEmpty(name)) return null;
 
-        string commandline = GetMerged(profile, defaults, "commandline") ?? "cmd.exe";
+        // Expand env vars (e.g. %SystemRoot%) — Win32 CreateProcess does not, so an
+        // unexpanded path lands as ERROR_FILE_NOT_FOUND when we hit PseudoTerminal.
+        string commandline = Environment.ExpandEnvironmentVariables(
+            GetMerged(profile, defaults, "commandline") ?? "cmd.exe");
         string startingDirectory = ExpandStartingDirectory(GetMerged(profile, defaults, "startingDirectory") ?? "");
 
         var (cursorStyle, forcedBlink) = CursorShapeMapper.Map(GetMerged(profile, defaults, "cursorShape"));
