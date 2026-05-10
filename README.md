@@ -2,6 +2,7 @@
 
 [![Build](https://github.com/umage-ai/CodeShellManager/actions/workflows/build.yml/badge.svg)](https://github.com/umage-ai/CodeShellManager/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/umage-ai/CodeShellManager?label=download&cacheSeconds=3600)](https://github.com/umage-ai/CodeShellManager/releases/latest)
+[![winget](https://img.shields.io/winget/v/UmageAI.CodeShellManager?label=winget)](https://winstall.app/apps/UmageAI.CodeShellManager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A Windows desktop app for running **multiple AI coding agents side-by-side** — Claude Code, Codex, GitHub Copilot, or any CLI tool — in a tabbed and grid-layout terminal host.
@@ -38,7 +39,15 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 
 ## Installation
 
-### Download (recommended)
+### winget (recommended)
+
+```powershell
+winget install UmageAI.CodeShellManager
+```
+
+Future updates pick up automatically with `winget upgrade UmageAI.CodeShellManager` (or `winget upgrade --all`).
+
+### Download from Releases
 
 1. Go to [**Releases**](https://github.com/umage-ai/CodeShellManager/releases/latest)
 2. Download either:
