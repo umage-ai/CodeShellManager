@@ -20,7 +20,7 @@ public class WindowsTerminalProfileServiceTests
 
         var ps = profiles.Single(p => p.Name == "PowerShell");
         Assert.Equal("pwsh.exe -NoLogo", ps.Commandline);
-        Assert.Equal("Cascadia Code", ps.FontFamily);
+        Assert.Equal("'Cascadia Code', monospace", ps.FontFamily);
         Assert.Equal(12, ps.FontSize);
         Assert.Equal("normal", ps.FontWeight);
         Assert.Equal("bar", ps.CursorShape);
@@ -51,13 +51,13 @@ public class WindowsTerminalProfileServiceTests
 
         var inherits = profiles.Single(p => p.Name == "Inherits");
         Assert.Equal("pwsh.exe", inherits.Commandline);
-        Assert.Equal("Cascadia Mono", inherits.FontFamily);
+        Assert.Equal("'Cascadia Mono', monospace", inherits.FontFamily);
         Assert.Equal(11, inherits.FontSize);
         Assert.Equal("4px", inherits.Padding);
 
         var overrides = profiles.Single(p => p.Name == "Overrides");
         Assert.Equal("cmd.exe", overrides.Commandline);
-        Assert.Equal("Cascadia Mono", overrides.FontFamily);
+        Assert.Equal("'Cascadia Mono', monospace", overrides.FontFamily);
         Assert.Equal("12px", overrides.Padding);
     }
 

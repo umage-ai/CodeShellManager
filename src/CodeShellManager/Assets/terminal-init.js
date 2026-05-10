@@ -19,6 +19,9 @@
     },
     scrollback: 5000,
     allowProposedApi: true,
+    // Render box-drawing and block characters with built-in glyphs so they
+    // tile flush across cells — the font's own glyphs leave thin seams.
+    customGlyphs: true,
     // Ctrl+C/V handled via customKeyEventHandler below. Ctrl+Shift+C/V also work.
     macOptionIsMeta: false,
     windowsMode: true,   // correct line ending handling on Windows
