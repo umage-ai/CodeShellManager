@@ -160,13 +160,12 @@ public partial class MainWindow : Window
 
         if (doRestore)
         {
+            // Launch live sessions first, then append dormant entries — keeps the
+            // "dormant always at the bottom" invariant that SleepSession and
+            // RebuildSidebarOrder enforce at runtime.
             foreach (var s in saved)
             {
-                if (s.IsDormant)
-                {
-                    AddDormantSidebarItem(s);
-                    continue;
-                }
+                if (s.IsDormant) continue;
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -174,6 +173,10 @@ public partial class MainWindow : Window
                     MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                         "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+            }
+            foreach (var s in saved)
+            {
+                if (s.IsDormant) AddDormantSidebarItem(s);
             }
         }
         else
