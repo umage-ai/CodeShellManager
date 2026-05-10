@@ -161,20 +161,16 @@ public partial class NewSessionDialog : Window
         if (string.IsNullOrWhiteSpace(NameBox.Text))
             NameBox.Text = profile.Name;
 
-        // Add the profile's commandline as a transient entry in CommandCombo and select it
+        // Make the profile's commandline available as a Command option, but
+        // don't overwrite an explicit user selection — Profile contributes
+        // appearance overrides; Command is what actually runs.
         var cmdString = profile.Commandline;
-        var existing = CommandCombo.Items.OfType<ComboBoxItem>()
-            .FirstOrDefault(it => it.Tag?.ToString() == cmdString);
-        if (existing != null)
-        {
-            CommandCombo.SelectedItem = existing;
-        }
-        else
+        if (!string.IsNullOrWhiteSpace(cmdString)
+            && !CommandCombo.Items.OfType<ComboBoxItem>().Any(it => it.Tag?.ToString() == cmdString))
         {
             // Insert just before the [custom] item (which is always last)
-            var item = new ComboBoxItem { Content = cmdString, Tag = cmdString };
-            CommandCombo.Items.Insert(CommandCombo.Items.Count - 1, item);
-            CommandCombo.SelectedItem = item;
+            CommandCombo.Items.Insert(CommandCombo.Items.Count - 1,
+                new ComboBoxItem { Content = cmdString, Tag = cmdString });
         }
 
         // Stash overrides
