@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using CodeShellManager.Models;
+using CodeShellManager.Services;
 
 namespace CodeShellManager.Views;
 
@@ -28,10 +31,28 @@ public partial class NewSessionDialog : Window
     public string SshUser { get; private set; } = "";
     public string SshRemoteFolder { get; private set; } = "";
 
-    public NewSessionDialog(string defaultFolder = "", IEnumerable<string>? launchCommands = null)
+    // Profile-driven appearance overrides (null when no profile picked)
+    public string? ProfileFontFamily { get; private set; }
+    public int? ProfileFontSize { get; private set; }
+    public string? ProfileFontWeight { get; private set; }
+    public bool? ProfileFontLigatures { get; private set; }
+    public string? ProfileCursorShape { get; private set; }
+    public bool? ProfileCursorBlink { get; private set; }
+    public string? ProfilePadding { get; private set; }
+    public double? ProfileBackgroundOpacity { get; private set; }
+    public bool? ProfileRetroEffect { get; private set; }
+    public string? ProfileColorSchemeJson { get; private set; }
+
+    private readonly IReadOnlyList<WindowsTerminalProfile> _profiles;
+
+    public NewSessionDialog(
+        string defaultFolder = "",
+        IEnumerable<string>? launchCommands = null,
+        IReadOnlyList<WindowsTerminalProfile>? profiles = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
+        _profiles = profiles ?? Array.Empty<WindowsTerminalProfile>();
 
         var customItem = CommandCombo.Items[0];
         CommandCombo.Items.Clear();
@@ -39,6 +60,15 @@ public partial class NewSessionDialog : Window
             CommandCombo.Items.Add(new ComboBoxItem { Content = cmd, Tag = cmd });
         CommandCombo.Items.Add(customItem);
         CommandCombo.SelectedIndex = 0;
+
+        if (_profiles.Count > 0)
+        {
+            ProfilePanel.Visibility = Visibility.Visible;
+            ProfileCombo.Items.Add(new ComboBoxItem { Content = "— none —", Tag = null });
+            foreach (var p in _profiles)
+                ProfileCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
+            ProfileCombo.SelectedIndex = 0;
+        }
 
         FolderBox.TextChanged += (_, _) => AutoFillName();
         SshHostBox.TextChanged += (_, _) => AutoFillName();
@@ -74,6 +104,9 @@ public partial class NewSessionDialog : Window
         if (LocalPanel == null) return;
         LocalPanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         SshPanel.Visibility = IsRemoteMode ? Visibility.Visible : Visibility.Collapsed;
+        // Profile combobox is local-only
+        if (ProfilePanel != null && _profiles.Count > 0)
+            ProfilePanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         CommandLabel.Text = IsRemoteMode ? "Remote Shell" : "Command";
         NameBox.Text = "";
         AutoFillName();
@@ -99,6 +132,62 @@ public partial class NewSessionDialog : Window
         if (CustomArgsPanel == null) return;
         var selected = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
         CustomArgsPanel.Visibility = selected == "custom" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var profile = (ProfileCombo.SelectedItem as ComboBoxItem)?.Tag as WindowsTerminalProfile;
+
+        if (profile == null)
+        {
+            // — none — clears all overrides; folder/name/command stay as the user left them.
+            ProfileFontFamily = null;
+            ProfileFontSize = null;
+            ProfileFontWeight = null;
+            ProfileFontLigatures = null;
+            ProfileCursorShape = null;
+            ProfileCursorBlink = null;
+            ProfilePadding = null;
+            ProfileBackgroundOpacity = null;
+            ProfileRetroEffect = null;
+            ProfileColorSchemeJson = null;
+            return;
+        }
+
+        // Pre-fill empty fields only — preserve any user edits.
+        if (string.IsNullOrWhiteSpace(FolderBox.Text) && !string.IsNullOrEmpty(profile.StartingDirectory))
+            FolderBox.Text = profile.StartingDirectory;
+
+        if (string.IsNullOrWhiteSpace(NameBox.Text))
+            NameBox.Text = profile.Name;
+
+        // Add the profile's commandline as a transient entry in CommandCombo and select it
+        var cmdString = profile.Commandline;
+        var existing = CommandCombo.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(it => it.Tag?.ToString() == cmdString);
+        if (existing != null)
+        {
+            CommandCombo.SelectedItem = existing;
+        }
+        else
+        {
+            // Insert just before the [custom] item (which is always last)
+            var item = new ComboBoxItem { Content = cmdString, Tag = cmdString };
+            CommandCombo.Items.Insert(CommandCombo.Items.Count - 1, item);
+            CommandCombo.SelectedItem = item;
+        }
+
+        // Stash overrides
+        ProfileFontFamily = profile.FontFamily;
+        ProfileFontSize = profile.FontSize;
+        ProfileFontWeight = profile.FontWeight;
+        ProfileFontLigatures = profile.FontLigatures;
+        ProfileCursorShape = profile.CursorShape;
+        ProfileCursorBlink = profile.CursorBlink;
+        ProfilePadding = profile.Padding;
+        ProfileBackgroundOpacity = profile.BackgroundOpacity;
+        ProfileRetroEffect = profile.RetroEffect;
+        ProfileColorSchemeJson = profile.ColorSchemeJson;
     }
 
     private void Start_Click(object sender, RoutedEventArgs e)
@@ -138,15 +227,15 @@ public partial class NewSessionDialog : Window
             var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
             if (selectedTag == "custom")
             {
-                var parts = CustomArgsBox.Text.Trim().Split(' ', 2);
-                SelectedCommand = parts.Length > 0 ? parts[0] : "bash";
-                SelectedArgs = parts.Length > 1 ? parts[1] : "";
+                var (exe, args) = CommandLineSplitter.Split(CustomArgsBox.Text.Trim());
+                SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+                SelectedArgs = args;
             }
             else
             {
-                var parts = selectedTag.Split(' ', 2);
-                SelectedCommand = parts.Length > 0 ? parts[0] : "bash";
-                SelectedArgs = parts.Length > 1 ? parts[1] : "";
+                var (exe, args) = CommandLineSplitter.Split(selectedTag);
+                SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+                SelectedArgs = args;
             }
 
             SelectedFolder = "";
@@ -158,15 +247,15 @@ public partial class NewSessionDialog : Window
             var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "claude";
             if (selectedTag == "custom")
             {
-                var parts = CustomArgsBox.Text.Trim().Split(' ', 2);
-                SelectedCommand = parts.Length > 0 ? parts[0] : "claude";
-                SelectedArgs = parts.Length > 1 ? parts[1] : "";
+                var (exe, args) = CommandLineSplitter.Split(CustomArgsBox.Text.Trim());
+                SelectedCommand = string.IsNullOrEmpty(exe) ? "claude" : exe;
+                SelectedArgs = args;
             }
             else
             {
-                var parts = selectedTag.Split(' ', 2);
-                SelectedCommand = parts.Length > 0 ? parts[0] : "claude";
-                SelectedArgs = parts.Length > 1 ? parts[1] : "";
+                var (exe, args) = CommandLineSplitter.Split(selectedTag);
+                SelectedCommand = string.IsNullOrEmpty(exe) ? "claude" : exe;
+                SelectedArgs = args;
             }
         }
 

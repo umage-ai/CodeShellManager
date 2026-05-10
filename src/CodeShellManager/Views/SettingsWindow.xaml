@@ -216,6 +216,10 @@
                 <StackPanel Margin="0,8,0,0">
                     <CheckBox x:Name="ShowGitBranchCheck" Content="Show git branch in sidebar"/>
                     <CheckBox x:Name="ShowTerminalStatusDotCheck" Content="Show terminal status indicator"/>
+                    <CheckBox x:Name="ImportWindowsTerminalProfilesCheck"
+                              AutomationProperties.AutomationId="ImportWindowsTerminalProfilesCheck"
+                              Content="Show Windows Terminal profiles when creating sessions"
+                              ToolTip="Reads %LOCALAPPDATA%\…\settings.json. Read-only — profiles can't be edited from CodeShellManager."/>
                 </StackPanel>
 
                 <!-- Terminal -->

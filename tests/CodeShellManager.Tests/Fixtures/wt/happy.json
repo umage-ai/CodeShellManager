@@ -1,0 +1,39 @@
+{
+  "profiles": {
+    "defaults": {},
+    "list": [
+      {
+        "guid": "{aaa}",
+        "name": "PowerShell",
+        "commandline": "pwsh.exe -NoLogo",
+        "startingDirectory": "%USERPROFILE%",
+        "colorScheme": "Demo",
+        "font": { "face": "Cascadia Code", "size": 12, "weight": "normal" },
+        "cursorShape": "bar",
+        "padding": "8, 8, 8, 8",
+        "useAcrylic": false,
+        "opacity": 1.0
+      },
+      {
+        "guid": "{bbb}",
+        "name": "Ubuntu",
+        "commandline": "wsl.exe -d Ubuntu",
+        "startingDirectory": "~",
+        "colorScheme": "One Half Dark",
+        "cursorShape": "underscore",
+        "experimental.retroTerminalEffect": true
+      }
+    ]
+  },
+  "schemes": [
+    { "name": "Demo", "background": "#0C0C0C", "foreground": "#CCCCCC",
+      "cursorColor": "#FFFFFF", "selectionBackground": "#264F78",
+      "black": "#000000", "red": "#C50F1F", "green": "#13A10E",
+      "yellow": "#C19C00", "blue": "#0037DA", "purple": "#881798",
+      "cyan": "#3A96DD", "white": "#CCCCCC",
+      "brightBlack": "#767676", "brightRed": "#E74856",
+      "brightGreen": "#16C60C", "brightYellow": "#F9F1A5",
+      "brightBlue": "#3B78FF", "brightPurple": "#B4009E",
+      "brightCyan": "#61D6D6", "brightWhite": "#F2F2F2" }
+  ]
+}

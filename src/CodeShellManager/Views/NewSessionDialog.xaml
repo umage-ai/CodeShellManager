@@ -151,6 +151,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -170,8 +171,16 @@
             </StackPanel>
         </StackPanel>
 
+        <!-- Profile (local-only, hidden when empty) -->
+        <StackPanel Grid.Row="1" x:Name="ProfilePanel" Visibility="Collapsed" Margin="0,0,0,12">
+            <TextBlock Text="Windows Terminal Profile (optional)" Style="{StaticResource Label}"/>
+            <ComboBox x:Name="ProfileCombo"
+                      AutomationProperties.AutomationId="NewSessionProfileCombo"
+                      SelectionChanged="ProfileCombo_SelectionChanged"/>
+        </StackPanel>
+
         <!-- Local: Working Folder -->
-        <StackPanel Grid.Row="1" x:Name="LocalPanel" Margin="0,0,0,12">
+        <StackPanel Grid.Row="2" x:Name="LocalPanel" Margin="0,0,0,12">
             <TextBlock Text="Working Folder" Style="{StaticResource Label}"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -186,7 +195,7 @@
         </StackPanel>
 
         <!-- Remote: SSH fields -->
-        <StackPanel Grid.Row="2" x:Name="SshPanel" Visibility="Collapsed" Margin="0,0,0,12">
+        <StackPanel Grid.Row="3" x:Name="SshPanel" Visibility="Collapsed" Margin="0,0,0,12">
             <TextBlock Text="Host (user@hostname)" Style="{StaticResource Label}"/>
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
@@ -209,7 +218,7 @@
         </StackPanel>
 
         <!-- Command -->
-        <StackPanel Grid.Row="3" Margin="0,0,0,12">
+        <StackPanel Grid.Row="4" Margin="0,0,0,12">
             <TextBlock x:Name="CommandLabel" Text="Command" Style="{StaticResource Label}"/>
             <ComboBox x:Name="CommandCombo" AutomationProperties.AutomationId="NewSessionCommandCombo"
                       SelectionChanged="CommandCombo_SelectionChanged">
@@ -218,19 +227,19 @@
         </StackPanel>
 
         <!-- Custom args (shown when custom selected) -->
-        <StackPanel Grid.Row="4" x:Name="CustomArgsPanel" Visibility="Collapsed" Margin="0,0,0,12">
+        <StackPanel Grid.Row="5" x:Name="CustomArgsPanel" Visibility="Collapsed" Margin="0,0,0,12">
             <TextBlock Text="Custom Command + Args" Style="{StaticResource Label}"/>
             <TextBox x:Name="CustomArgsBox" Tag="e.g. claude --model claude-haiku-4-5"/>
         </StackPanel>
 
         <!-- Session Name -->
-        <StackPanel Grid.Row="5" Margin="0,0,0,12">
+        <StackPanel Grid.Row="6" Margin="0,0,0,12">
             <TextBlock Text="Session Name (optional)" Style="{StaticResource Label}"/>
             <TextBox x:Name="NameBox" AutomationProperties.AutomationId="NewSessionNameBox"/>
         </StackPanel>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Cancel_Click"/>
             <Button Content="Start Session" AutomationProperties.AutomationId="NewSessionOkBtn"
                     Style="{StaticResource PrimaryBtn}" Click="Start_Click" IsDefault="True"/>

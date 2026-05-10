@@ -16,4 +16,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodeShellManager\CodeShellManager.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="Fixtures\wt\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

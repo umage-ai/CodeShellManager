@@ -160,13 +160,12 @@ public partial class MainWindow : Window
 
         if (doRestore)
         {
+            // Launch live sessions first, then append dormant entries — keeps the
+            // "dormant always at the bottom" invariant that SleepSession and
+            // RebuildSidebarOrder enforce at runtime.
             foreach (var s in saved)
             {
-                if (s.IsDormant)
-                {
-                    AddDormantSidebarItem(s);
-                    continue;
-                }
+                if (s.IsDormant) continue;
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -174,6 +173,10 @@ public partial class MainWindow : Window
                     MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                         "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+            }
+            foreach (var s in saved)
+            {
+                if (s.IsDormant) AddDormantSidebarItem(s);
             }
         }
         else
@@ -237,9 +240,14 @@ public partial class MainWindow : Window
 
     private void OpenNewSessionDialog(string defaultFolder = "")
     {
+        var profiles = _vm.Settings.ImportWindowsTerminalProfiles
+            ? Services.WindowsTerminalProfileService.GetProfiles()
+            : null;
+
         var dialog = new NewSessionDialog(
             string.IsNullOrEmpty(defaultFolder) ? _vm.Settings.DefaultWorkingFolder : defaultFolder,
-            _vm.Settings.LaunchCommands)
+            _vm.Settings.LaunchCommands,
+            profiles)
         {
             Owner = this
         };
@@ -261,6 +269,18 @@ public partial class MainWindow : Window
             session.SshPort = dialog.SshPort;
             session.SshRemoteFolder = dialog.SshRemoteFolder;
         }
+
+        // Copy any profile-driven overrides onto the session so they persist + apply on launch
+        session.ProfileFontFamily = dialog.ProfileFontFamily;
+        session.ProfileFontSize = dialog.ProfileFontSize;
+        session.ProfileFontWeight = dialog.ProfileFontWeight;
+        session.ProfileFontLigatures = dialog.ProfileFontLigatures;
+        session.ProfileCursorShape = dialog.ProfileCursorShape;
+        session.ProfileCursorBlink = dialog.ProfileCursorBlink;
+        session.ProfilePadding = dialog.ProfilePadding;
+        session.ProfileBackgroundOpacity = dialog.ProfileBackgroundOpacity;
+        session.ProfileRetroEffect = dialog.ProfileRetroEffect;
+        session.ProfileColorSchemeJson = dialog.ProfileColorSchemeJson;
 
         _ = LaunchSessionAsync(session);
     }
@@ -327,10 +347,13 @@ public partial class MainWindow : Window
         }
 
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
-        string htmlPath = new Uri(Path.Combine(assetsDir, "terminal.html")).AbsoluteUri;
+        bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
+        string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
+        string htmlPath = new Uri(Path.Combine(assetsDir, htmlFile)).AbsoluteUri;
 
         await bridge.InitializeAsync(htmlPath);
         bridge.ApplyFontSettings(_vm.Settings);
+        bridge.ApplyProfileOverrides(session);
 
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
@@ -1743,6 +1766,7 @@ public partial class MainWindow : Window
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
             _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
+            _vm.Settings.ImportWindowsTerminalProfiles = edited.ImportWindowsTerminalProfiles;
             _vm.Settings.LaunchCommands = edited.LaunchCommands;
             _vm.Settings.TerminalFontFamily = edited.TerminalFontFamily;
             _vm.Settings.TerminalFontSize = edited.TerminalFontSize;

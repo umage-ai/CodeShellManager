@@ -98,10 +98,11 @@ public sealed class TerminalBridge : IDisposable
         // stuck. Cancelling these navigations lets JS handle the drop normally.
         _webView.CoreWebView2.NavigationStarting += (_, args) =>
         {
-            if (args.Uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
-                !args.Uri.EndsWith("terminal.html", StringComparison.OrdinalIgnoreCase))
+            if (args.Uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
-                args.Cancel = true;
+                bool allowed = args.Uri.EndsWith("terminal.html", StringComparison.OrdinalIgnoreCase)
+                    || args.Uri.EndsWith("terminal-transparent.html", StringComparison.OrdinalIgnoreCase);
+                if (!allowed) args.Cancel = true;
             }
         };
 
@@ -270,6 +271,38 @@ public sealed class TerminalBridge : IDisposable
             catch { }
         });
     }
+
+    public void ApplyProfileOverrides(ShellSession session)
+    {
+        if (!_ready) return;
+        if (!HasAnyOverride(session)) return;
+
+        var opts = new System.Collections.Generic.Dictionary<string, object?>();
+        if (session.ProfileFontFamily    != null) opts["fontFamily"]    = session.ProfileFontFamily;
+        if (session.ProfileFontSize      != null) opts["fontSize"]      = session.ProfileFontSize;
+        if (session.ProfileFontWeight    != null) opts["fontWeight"]    = session.ProfileFontWeight;
+        if (session.ProfileFontLigatures != null) opts["fontLigatures"] = session.ProfileFontLigatures;
+        if (session.ProfileCursorShape   != null) opts["cursorStyle"]   = session.ProfileCursorShape;
+        if (session.ProfileCursorBlink   != null) opts["cursorBlink"]   = session.ProfileCursorBlink;
+        if (session.ProfilePadding       != null) opts["padding"]       = session.ProfilePadding;
+        if (session.ProfileRetroEffect   != null) opts["retro"]         = session.ProfileRetroEffect;
+        if (!string.IsNullOrEmpty(session.ProfileColorSchemeJson))
+            opts["theme"] = JsonSerializer.Deserialize<JsonElement>(session.ProfileColorSchemeJson);
+
+        string json = JsonSerializer.Serialize(new { type = "setOptions", options = opts });
+        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
+            catch { }
+        });
+    }
+
+    private static bool HasAnyOverride(ShellSession s) =>
+        s.ProfileFontFamily != null || s.ProfileFontSize != null
+        || s.ProfileFontWeight != null || s.ProfileFontLigatures != null
+        || s.ProfileCursorShape != null || s.ProfileCursorBlink != null
+        || s.ProfilePadding != null || s.ProfileRetroEffect != null
+        || !string.IsNullOrEmpty(s.ProfileColorSchemeJson);
 
     public void SendToTerminal(string text) => _pty?.Write(text);
 
