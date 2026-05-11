@@ -28,6 +28,27 @@ jobs:
         with:
           dotnet-version: '10.x'
 
+      # ── Guard: WiX must reference every file in src/CodeShellManager/Assets.
+      # Portable ZIP ships the whole publish output, so this only bites MSI users
+      # (e.g. v0.4.1 silently dropped terminal-init.js → blank terminals).
+      - name: Verify WiX manifest covers all Assets files
+        shell: pwsh
+        run: |
+          $assetFiles = (Get-ChildItem 'src/CodeShellManager/Assets' -File).Name | Sort-Object
+          $wxs = Get-Content 'installer/CodeShellManager.wxs' -Raw
+          $matches = [regex]::Matches($wxs, '\$\(var\.PublishDir\)\\Assets\\([^"]+)')
+          $wxsRefs = ($matches | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+          $diff = Compare-Object $assetFiles $wxsRefs
+          if ($diff) {
+            Write-Host "::error::installer/CodeShellManager.wxs is out of sync with src/CodeShellManager/Assets/"
+            $diff | ForEach-Object {
+              $side = if ($_.SideIndicator -eq '<=') { 'missing from WiX' } else { 'not present in Assets/' }
+              Write-Host "  $($_.InputObject) — $side"
+            }
+            exit 1
+          }
+          Write-Host "WiX/Assets in sync ($($assetFiles.Count) files)"
+
       # ── Build (every push / PR) ──────────────────────────────────────────────
       - name: Restore & Build
         run: dotnet build src/CodeShellManager/CodeShellManager.csproj -c Release
