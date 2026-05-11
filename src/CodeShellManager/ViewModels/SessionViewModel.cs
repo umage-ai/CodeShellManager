@@ -71,6 +71,15 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     private readonly CancellationTokenSource _gitPollCts = new();
 
+    // Set by ApplyShellIntegration when the running program pushes git-branch
+    // or git-dirty via OSC 9001. Tells the local poller to stand down: the
+    // program is sourcing its own git state (e.g. `nexus ssh` into a container
+    // whose /workspace branch is unrelated to the host CWD) and the local
+    // poll would otherwise clobber the OSC value every 10s. Sticky for the
+    // lifetime of the session — once a program declares itself the source of
+    // truth, we trust it.
+    private bool _gitOverriddenByOsc;
+
     public SessionViewModel(ShellSession session)
     {
         Session = session;
@@ -81,7 +90,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public async Task RefreshGitInfoAsync()
     {
-        if (Session.IsRemote) return;
+        if (Session.IsRemote || _gitOverriddenByOsc) return;
         var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
         GitBranch = branch;
         GitIsDirty = isDirty;
@@ -147,10 +156,14 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         {
             GitBranch = string.IsNullOrWhiteSpace(branch) ? null : branch;
             GitInfoLoaded = true;
+            _gitOverriddenByOsc = true;
         }
 
         if (fields.TryGetValue("git-dirty", out var dirty))
+        {
             GitIsDirty = dirty == "1" || string.Equals(dirty, "true", StringComparison.OrdinalIgnoreCase);
+            _gitOverriddenByOsc = true;
+        }
 
         if (fields.TryGetValue("title", out var title) && !string.IsNullOrWhiteSpace(title))
             Rename(title.Trim());
