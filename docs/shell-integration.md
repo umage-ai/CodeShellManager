@@ -20,7 +20,7 @@ ESC ] 9001 ; key=value ; key=value … ST
 
 | Key          | Value format            | Effect |
 |--------------|-------------------------|--------|
-| `color`      | `#rgb`, `#rrggbb`, `#rrggbbaa` | Override the session accent. Repaints the sidebar stripe and the active-pane ring immediately. |
+| `color`      | `#rgb`, `#rrggbb`, `#rrggbbaa` | Override the session accent. Repaints the sidebar stripe and the active-pane ring immediately. 8-digit values use **alpha-last** (`#rrggbbaa`) — CSM converts them internally to WPF's `#aarrggbb` format. |
 | `git-branch` | string                  | Set the branch label shown in the sidebar. Bypasses CSM's local `git` polling — useful for SSH/remote sessions. |
 | `git-dirty`  | `0`/`1` (or `false`/`true`) | Toggle the dirty marker (`*`) shown next to the branch. |
 | `title`      | string                  | Rename the session (same as double-clicking the sidebar entry). Persisted to `state.json`. |
