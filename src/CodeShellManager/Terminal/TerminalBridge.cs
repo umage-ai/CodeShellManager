@@ -325,6 +325,10 @@ public sealed class TerminalBridge : IDisposable
         if (!_ready) return;
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
         {
+            // Move WPF keyboard focus onto the WebView2 first — without this,
+            // posting "focus" to xterm has no effect because keystrokes never
+            // reach the webview at all (sidebar/toolbar swallows them).
+            try { _webView.Focus(); } catch { }
             try { _webView.CoreWebView2?.PostWebMessageAsString("{\"type\":\"focus\"}"); }
             catch { }
         });
