@@ -44,9 +44,11 @@ public class StateService : IDisposable
 
     public async Task SaveAsync(AppState state)
     {
-        await _writeLock.WaitAsync();
+        bool acquired = false;
         try
         {
+            await _writeLock.WaitAsync();
+            acquired = true;
             var path = StatePath;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string json = JsonSerializer.Serialize(state, Options);
@@ -55,7 +57,7 @@ public class StateService : IDisposable
         catch { /* non-critical: disk full, permissions, or serialization errors */ }
         finally
         {
-            _writeLock.Release();
+            if (acquired) _writeLock.Release();
         }
     }
 
