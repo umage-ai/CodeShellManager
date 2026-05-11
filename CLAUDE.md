@@ -169,7 +169,7 @@ ST may be `BEL` (`\x07`) or `ESC \\` — xterm.js accepts both.
 
 | Key | Effect |
 |---|---|
-| `color` | Override the session accent (`#rrggbb` / `#rgb` / `#rrggbbaa`). Repaints sidebar stripe + active ring. |
+| `color` | Override the session accent (`#rrggbb` / `#rgb` / `#rrggbbaa`). Repaints sidebar stripe + active ring. 8-digit values use alpha-last (`#rrggbbaa`); CSM converts to WPF's `#aarrggbb` internally. |
 | `git-branch` | Set `SessionViewModel.GitBranch` directly, bypassing `GitService`. |
 | `git-dirty` | `1`/`true` → dirty-marker shown; `0`/anything else → clean. |
 | `title` | Renames the session (calls `vm.Rename`). |

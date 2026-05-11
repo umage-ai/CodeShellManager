@@ -110,7 +110,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// Applies a CSM shell-integration payload (OSC 9001) emitted by the running program.
-    /// Recognised keys: <c>color</c> (#rrggbb), <c>git-branch</c>, <c>git-dirty</c> (0/1),
+    /// Recognised keys: <c>color</c> (#rrggbb / #aarrggbb), <c>git-branch</c>, <c>git-dirty</c> (0/1),
     /// <c>title</c>. Unknown keys are ignored. Useful for SSH overlays whose remote
     /// state CSM cannot inspect locally.
     /// </summary>
@@ -118,7 +118,9 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     {
         if (fields.TryGetValue("color", out var color) && IsValidHexColor(color))
         {
-            Session.ColorOverride = color;
+            // WPF ColorConverter.ConvertFromString interprets 8-digit hex as #AARRGGBB.
+            // Integrators emit #rrggbbaa (alpha last), so we reorder before storing.
+            Session.ColorOverride = ToWpfHexColor(color);
             OnPropertyChanged(nameof(AccentColor));
         }
 
@@ -146,6 +148,23 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         for (int i = 1; i < s.Length; i++)
             if (!Uri.IsHexDigit(s[i])) return false;
         return true;
+    }
+
+    /// <summary>
+    /// Converts an integrator-supplied hex color to WPF format.
+    /// <para>
+    /// 6-digit (<c>#rrggbb</c>) and 3-digit (<c>#rgb</c>) values are stored as-is.
+    /// 8-digit values use the integrator convention <c>#rrggbbaa</c> (alpha last),
+    /// but WPF's <see cref="System.Windows.Media.ColorConverter"/> expects <c>#AARRGGBB</c>
+    /// (alpha first), so we reorder to <c>#aarrggbb</c>.
+    /// </para>
+    /// </summary>
+    private static string ToWpfHexColor(string s)
+    {
+        // Only 8-digit (#rrggbbaa) needs reordering; 3- and 6-digit are fine as-is.
+        if (s.Length == 9)
+            return "#" + s[7..9] + s[1..7];
+        return s;
     }
 
     public void RaiseAlert(string message, AlertType alertType = AlertType.InputRequired)
