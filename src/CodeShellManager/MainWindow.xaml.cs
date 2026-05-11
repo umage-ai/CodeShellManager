@@ -347,11 +347,11 @@ public partial class MainWindow : Window
         }
 
         // Shell programs (e.g. nexus over SSH) push session state via OSC 9001;
-        // forward those payloads to the VM, then save so accent/title persist.
+        // forward those payloads to the VM, then debounce-save so accent/title persist.
         bridge.ShellIntegrationReceived += fields =>
         {
             Dispatcher.Invoke(() => vm.ApplyShellIntegration(fields));
-            _ = _vm.SaveStateAsync();
+            _vm.SaveStateDebounced();
         };
 
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
