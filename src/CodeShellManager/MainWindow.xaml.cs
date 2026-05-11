@@ -163,9 +163,16 @@ public partial class MainWindow : Window
             // Launch live sessions first, then append dormant entries — keeps the
             // "dormant always at the bottom" invariant that SleepSession and
             // RebuildSidebarOrder enforce at runtime.
+            // Stagger consecutive claude launches: claude's CLI does an unlocked
+            // read-modify-write on ~/.claude.json at startup, so simultaneous
+            // boots can corrupt the user's profile.
+            bool lastWasClaude = false;
             foreach (var s in saved)
             {
                 if (s.IsDormant) continue;
+                bool isClaude = ClaudeSessionService.IsClaudeCommand(s.Command);
+                if (isClaude && lastWasClaude)
+                    await Task.Delay(2000);
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -173,6 +180,7 @@ public partial class MainWindow : Window
                     MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                         "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+                lastWasClaude = isClaude;
             }
             foreach (var s in saved)
             {
