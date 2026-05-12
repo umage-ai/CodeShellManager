@@ -1784,9 +1784,12 @@ public partial class MainWindow : Window
         // Compute the desired order: stable group-by RepoRoot, anchored at first occurrence.
         var desired = new List<SessionViewModel>(_vm.Sessions.Count);
         var anchorIdx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        static string ClusterKey(SessionViewModel s) =>
+            s.RepoRoot is { Length: > 0 } root ? root : "__solo:" + s.Id;
+
         foreach (var s in _vm.Sessions)
         {
-            string key = !string.IsNullOrEmpty(s.RepoRoot) ? s.RepoRoot : "__solo:" + s.Id;
+            string key = ClusterKey(s);
             if (!anchorIdx.TryGetValue(key, out _))
             {
                 anchorIdx[key] = desired.Count;
@@ -1798,10 +1801,7 @@ public partial class MainWindow : Window
                 int insertAt = anchorIdx[key];
                 for (int i = anchorIdx[key]; i < desired.Count; i++)
                 {
-                    string k = !string.IsNullOrEmpty(desired[i].RepoRoot)
-                        ? desired[i].RepoRoot
-                        : "__solo:" + desired[i].Id;
-                    if (k == key) insertAt = i + 1;
+                    if (ClusterKey(desired[i]) == key) insertAt = i + 1;
                 }
                 desired.Insert(insertAt, s);
             }
