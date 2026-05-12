@@ -105,10 +105,16 @@ public partial class MainWindow : Window
             RebuildSidebarOrder();
             UpdateGroupTabIndicators();
         });
-        _vm.Sessions.CollectionChanged += (_, _) =>
+        _vm.Sessions.CollectionChanged += (_, e) =>
         {
-            RecomputeWorktreeSiblings();
-            UpdateGroupTabIndicators();
+            // Skip on Move so the in-place reordering done by RecomputeWorktreeSiblings
+            // (and user drag-to-reorder) doesn't recurse back into itself or fight the user.
+            // Add/Remove/Reset are the cases that genuinely shift the sibling landscape.
+            if (e.Action != System.Collections.Specialized.NotifyCollectionChangedAction.Move)
+            {
+                RecomputeWorktreeSiblings();
+                UpdateGroupTabIndicators();
+            }
         };
 
         Loaded += OnLoaded;
@@ -315,10 +321,19 @@ public partial class MainWindow : Window
 
         if (dialog.ShowDialog() != true) return;
 
-        // Inherit group from parent when present so siblings stay clustered.
+        // Group resolution priority:
+        //   1. Explicit selection from the dialog (currently unused — no group picker there)
+        //   2. Inherited from a parent session (spawn-near-parent flows)
+        //   3. The active group filter, when the user is currently looking at a real group
+        //      (not All / not Ungrouped) — new sessions land where the user expects them
+        //   4. Ungrouped
         string? groupId = !string.IsNullOrEmpty(dialog.SelectedGroupId)
             ? dialog.SelectedGroupId
-            : (!string.IsNullOrEmpty(parent?.Session.GroupId) ? parent!.Session.GroupId : null);
+            : !string.IsNullOrEmpty(parent?.Session.GroupId)
+                ? parent!.Session.GroupId
+                : (_vm.ActiveGroupId != null && _vm.ActiveGroupId != GroupFilter.Ungrouped
+                    ? _vm.ActiveGroupId
+                    : null);
 
         var session = _sessionManager.CreateSession(
             dialog.SessionName,
@@ -1467,11 +1482,72 @@ public partial class MainWindow : Window
                 anyChanged = true;
             }
         }
-        // When the cluster wrapper is enabled, sibling-state transitions need a sidebar
-        // rebuild so headers form/dissolve. The shared accent stripe + subtitle update
-        // independently via their own PropertyChanged subscriptions.
-        if (anyChanged && _vm.Settings.ShowWorktreeClusters)
+
+        // Auto-cluster: pull every session in a multi-sibling repo next to its anchor so
+        // siblings always group up, even when added/removed out of order or imported from
+        // a non-worktree creation path. This runs on Add/Remove/Reset and on RepoRoot
+        // resolve — but NOT on Move (the CollectionChanged filter skips it) so user
+        // drag-reorder is preserved.
+        bool reordered = ApplyClusteredOrder();
+
+        if ((anyChanged || reordered) && _vm.Settings.ShowWorktreeClusters)
             RebuildSidebarOrder();
+        if (reordered)
+            _ = _vm.SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Reorders <see cref="MainViewModel.Sessions"/> (and the underlying SessionManager
+    /// list) so every session sharing a RepoRoot sits adjacent to its first-seen anchor.
+    /// First-occurrence order is preserved between clusters and for solo sessions, so a
+    /// non-worktree session never gets shuffled past unrelated ones. Returns true when
+    /// at least one Move happened.
+    /// </summary>
+    private bool ApplyClusteredOrder()
+    {
+        if (_vm.Sessions.Count < 2) return false;
+
+        // Compute the desired order: stable group-by RepoRoot, anchored at first occurrence.
+        var desired = new List<SessionViewModel>(_vm.Sessions.Count);
+        var anchorIdx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in _vm.Sessions)
+        {
+            string key = !string.IsNullOrEmpty(s.RepoRoot) ? s.RepoRoot : "__solo:" + s.Id;
+            if (!anchorIdx.TryGetValue(key, out _))
+            {
+                anchorIdx[key] = desired.Count;
+                desired.Add(s);
+            }
+            else
+            {
+                // Insert immediately after the last existing member of this cluster.
+                int insertAt = anchorIdx[key];
+                for (int i = anchorIdx[key]; i < desired.Count; i++)
+                {
+                    string k = !string.IsNullOrEmpty(desired[i].RepoRoot)
+                        ? desired[i].RepoRoot
+                        : "__solo:" + desired[i].Id;
+                    if (k == key) insertAt = i + 1;
+                }
+                desired.Insert(insertAt, s);
+            }
+        }
+
+        // Apply minimal Move operations to align current order with desired.
+        bool moved = false;
+        for (int i = 0; i < desired.Count; i++)
+        {
+            if (_vm.Sessions[i].Id == desired[i].Id) continue;
+            int j = -1;
+            for (int k = i + 1; k < _vm.Sessions.Count; k++)
+                if (_vm.Sessions[k].Id == desired[i].Id) { j = k; break; }
+            if (j <= i) continue;
+            // Mirror in the SessionManager model so state.json persists the new order.
+            _sessionManager.MoveSession(_vm.Sessions[j].Id, i);
+            _vm.Sessions.Move(j, i);
+            moved = true;
+        }
+        return moved;
     }
 
     // ── Per-session context menu ──────────────────────────────────────────────
