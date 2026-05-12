@@ -1,0 +1,65 @@
+<Window x:Class="CodeShellManager.Views.SessionRunCommandsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Run commands"
+        Width="640" Height="460"
+        WindowStartupLocation="CenterOwner"
+        Background="#1e1e2e"
+        Foreground="#cdd6f4"
+        ResizeMode="CanResizeWithGrip">
+    <DockPanel Margin="14">
+        <TextBlock x:Name="TitleText" DockPanel.Dock="Top" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
+        <TextBlock DockPanel.Dock="Top" FontSize="11" Foreground="#6c7086" Margin="0,0,0,10"
+                   Text="Commands run in this session's folder. Use &amp;&amp; / | / &gt; as in any shell. Select the radio to set the default (F5 / toolbar ▶)."
+                   TextWrapping="Wrap"/>
+
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button x:Name="CancelBtn" Content="Cancel" Width="80" Margin="0,0,8,0" Click="Cancel_Click"/>
+            <Button x:Name="SaveBtn"   Content="Save"   Width="80" IsDefault="True" Click="Save_Click"
+                    Background="#89b4fa" Foreground="#1e1e2e" BorderThickness="0"/>
+        </StackPanel>
+
+        <Button x:Name="AddBtn" DockPanel.Dock="Bottom" Content="+ Add command" HorizontalAlignment="Left"
+                Background="Transparent" BorderBrush="#45475a" BorderThickness="1" Padding="10,4"
+                Foreground="#cdd6f4" Margin="0,8,0,0" Click="Add_Click"/>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="RowsList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Padding="0,6,0,6">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="2*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <RadioButton Grid.Column="0" GroupName="DefaultGroup" Margin="0,0,8,0"
+                                             IsChecked="{Binding IsDefault, Mode=TwoWay}"
+                                             VerticalAlignment="Center" Foreground="#cdd6f4"
+                                             ToolTip="Set as default (toolbar ▶ / F5)"/>
+                                <TextBox Grid.Column="1" Text="{Binding Label, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
+                                         CaretBrush="#cdd6f4" Padding="4,2" Margin="0,0,6,0"/>
+                                <TextBox Grid.Column="2" Text="{Binding CommandLine, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
+                                         CaretBrush="#cdd6f4" Padding="4,2" Margin="0,0,6,0"
+                                         FontFamily="Consolas"/>
+                                <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                    <Button Content="▲" Tag="{Binding}" Click="MoveUp_Click" Width="24"
+                                            Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"/>
+                                    <Button Content="▼" Tag="{Binding}" Click="MoveDown_Click" Width="24"
+                                            Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"/>
+                                    <Button Content="🗑" Tag="{Binding}" Click="Delete_Click" Width="24"
+                                            Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"
+                                            ToolTip="Delete"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

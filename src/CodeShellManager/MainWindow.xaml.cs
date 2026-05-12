@@ -735,8 +735,18 @@ public partial class MainWindow : Window
 
     private void OpenRunCommandsEditor(SessionViewModel vm)
     {
-        // Implemented in Task 9.
-        System.Windows.MessageBox.Show("Editor coming in Task 9", "TODO");
+        var dlg = new Views.SessionRunCommandsDialog(vm.DisplayName, vm.Session.RunCommands)
+        {
+            Owner = this,
+        };
+        if (dlg.ShowDialog() == true && dlg.Result != null)
+        {
+            vm.Session.RunCommands.Clear();
+            foreach (var item in dlg.Result)
+                vm.Session.RunCommands.Add(item);
+            _ = _vm.SaveStateAsync();
+            RefreshTerminalRunControls(vm.Id);
+        }
     }
 
     private void SendRunOutputToTerminal(SessionViewModel vm, WpfTextBox drawerText)
