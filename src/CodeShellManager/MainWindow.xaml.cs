@@ -329,15 +329,20 @@ public partial class MainWindow : Window
         //   1. Explicit selection from the dialog (currently unused — no group picker there)
         //   2. Inherited from a parent session (spawn-near-parent flows)
         //   3. The active group filter, when the user is currently looking at a real group
-        //      (not All / not Ungrouped) — new sessions land where the user expects them
-        //   4. Ungrouped
+        //      (not All / not Ungrouped) — FilterStrip mode lands new sessions where the
+        //      user is currently filtered.
+        //   4. The active session's group — InlineHeaders/None mode has no filter concept,
+        //      so fall back to the group of the session the user was just working in.
+        //   5. Ungrouped
         string? groupId = !string.IsNullOrEmpty(dialog.SelectedGroupId)
             ? dialog.SelectedGroupId
             : !string.IsNullOrEmpty(parent?.Session.GroupId)
                 ? parent!.Session.GroupId
                 : (_vm.ActiveGroupId != null && _vm.ActiveGroupId != GroupFilter.Ungrouped
                     ? _vm.ActiveGroupId
-                    : null);
+                    : !string.IsNullOrEmpty(_vm.ActiveSession?.GroupId)
+                        ? _vm.ActiveSession!.GroupId
+                        : null);
 
         var session = _sessionManager.CreateSession(
             dialog.SessionName,
