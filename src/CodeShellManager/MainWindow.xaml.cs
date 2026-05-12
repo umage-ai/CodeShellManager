@@ -94,6 +94,9 @@ public partial class MainWindow : Window
             RebuildSidebarOrder();
         });
         _vm.SelectionChanged += () => Dispatcher.Invoke(UpdateSidebarActiveState);
+        // Re-filter the sidebar when a session's GroupId changes — otherwise the current
+        // filter view stays stale until the user clicks a different tab.
+        _vm.SessionMembershipChanged += () => Dispatcher.Invoke(RebuildSidebarOrder);
         _vm.Sessions.CollectionChanged += (_, _) => RecomputeWorktreeSiblings();
 
         Loaded += OnLoaded;
@@ -954,15 +957,21 @@ public partial class MainWindow : Window
         };
 
         // Hover effect
+        // Hover effect — must not clobber multi-select tint. Selected-but-not-active items
+        // keep their blue background on hover and on mouse leave; only plain, unselected,
+        // non-active items show the muted hover background and clear to transparent.
         container.MouseEnter += (_, _) =>
         {
-            if (vm.Id != _vm.ActiveSession?.Id)
-                container.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
+            if (vm.Id == _vm.ActiveSession?.Id) return;
+            if (_vm.IsSelected(vm.Id)) return;
+            container.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
         };
         container.MouseLeave += (_, _) =>
         {
-            if (vm.Id != _vm.ActiveSession?.Id)
-                container.Background = Brushes.Transparent;
+            if (vm.Id == _vm.ActiveSession?.Id) return;
+            container.Background = _vm.IsSelected(vm.Id)
+                ? new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa))
+                : Brushes.Transparent;
         };
 
         // Subscribe to property changes

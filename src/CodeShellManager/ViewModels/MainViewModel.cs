@@ -46,6 +46,8 @@ public partial class MainViewModel : ObservableObject
     public event Action<SessionViewModel>? SessionClosed;
     public event Action? GroupsChanged;
     public event Action? SelectionChanged;
+    /// <summary>Fired when one or more sessions' GroupId changes — sidebar should re-filter.</summary>
+    public event Action? SessionMembershipChanged;
 
     public SessionManager SessionManager => _sessionManager;
 
@@ -136,6 +138,7 @@ public partial class MainViewModel : ObservableObject
     {
         foreach (var id in sessionIds)
             _sessionManager.SetSessionGroup(id, groupId);
+        SessionMembershipChanged?.Invoke();
         _ = SaveStateAsync();
     }
 
