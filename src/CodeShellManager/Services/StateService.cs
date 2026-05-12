@@ -2,12 +2,13 @@ using System;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using CodeShellManager.Models;
 
 namespace CodeShellManager.Services;
 
-public class StateService
+public class StateService : IDisposable
 {
     private static string StatePath =>
         Environment.GetEnvironmentVariable("CSM_STATE_PATH")
@@ -20,6 +21,8 @@ public class StateService
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     /// <summary>Returns the resolved state file path (respects CSM_STATE_PATH env var).</summary>
     public static string GetPath() => StatePath;
@@ -41,13 +44,25 @@ public class StateService
 
     public async Task SaveAsync(AppState state)
     {
+        bool acquired = false;
         try
         {
+            await _writeLock.WaitAsync();
+            acquired = true;
             var path = StatePath;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string json = JsonSerializer.Serialize(state, Options);
             await File.WriteAllTextAsync(path, json);
         }
-        catch { /* non-critical */ }
+        catch { /* non-critical: disk full, permissions, or serialization errors */ }
+        finally
+        {
+            if (acquired) _writeLock.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        _writeLock.Dispose();
     }
 }

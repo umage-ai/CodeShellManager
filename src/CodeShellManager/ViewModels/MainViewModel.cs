@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -12,11 +13,13 @@ namespace CodeShellManager.ViewModels;
 
 public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo, TwoRow, FourColumn, SixColumn, SixByTwo, SixByThree }
 
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly SessionManager _sessionManager;
     private readonly StateService _stateService;
     private AppState _appState = new();
+    private System.Threading.Timer? _saveDebounceTimer;
+    private readonly object _timerLock = new();
 
     public ObservableCollection<SessionViewModel> Sessions { get; } = [];
 
@@ -53,6 +56,28 @@ public partial class MainViewModel : ObservableObject
         _sessionManager.PopulateState(_appState);
         _appState.LastLayout = Layout.ToString();
         await _stateService.SaveAsync(_appState);
+    }
+
+    /// <summary>
+    /// Debounced save for high-frequency events (e.g., OSC 9001 shell integration).
+    /// Coalesces multiple rapid calls into a single write after 500ms of idle.
+    /// Thread-safe: uses lock to prevent race conditions on timer replacement.
+    /// </summary>
+    public void SaveStateDebounced()
+    {
+        lock (_timerLock)
+        {
+            _saveDebounceTimer?.Dispose();
+            _saveDebounceTimer = new System.Threading.Timer(
+                _ => App.Current.Dispatcher.InvokeAsync(async () =>
+                {
+                    try { await SaveStateAsync(); }
+                    catch { /* non-critical: state persistence failures (disk full, permissions) */ }
+                }),
+                null,
+                500,
+                Timeout.Infinite);
+        }
     }
 
     public AppSettings Settings => _appState.Settings;
@@ -179,5 +204,14 @@ public partial class MainViewModel : ObservableObject
         newIndex = Math.Clamp(newIndex, 0, Sessions.Count - 1);
         if (cur != newIndex) Sessions.Move(cur, newIndex);
         _ = SaveStateAsync();
+    }
+
+    public void Dispose()
+    {
+        lock (_timerLock)
+        {
+            _saveDebounceTimer?.Dispose();
+            _saveDebounceTimer = null;
+        }
     }
 }

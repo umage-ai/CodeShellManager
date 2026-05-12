@@ -21,6 +21,7 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 - **Alert detection** — detects when Claude is waiting for input or tool approval; green/orange dot indicators
 - **Git status** — shows branch and dirty state in the sidebar per session
 - **Session rename** — double-click any session name or click ✏ to rename inline
+- **Shell integration** — programs running in a session can push their accent color, git branch / dirty state, and tab title to CSM via OSC 9001 (handy for SSH overlays). See [`docs/shell-integration.md`](docs/shell-integration.md).
 - **Auto-resume** — automatically resumes the last Claude Code session when restoring on startup (`--resume <id>`); toggleable in Settings
 - **SSH remote sessions** — connect to remote hosts using your existing SSH config; sessions persist across restarts
 - **Session history** — clicking a search result from a closed session offers to relaunch it

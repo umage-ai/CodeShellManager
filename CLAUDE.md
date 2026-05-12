@@ -155,6 +155,31 @@ When any override is set, `LaunchSessionAsync` calls `bridge.ApplyProfileOverrid
 
 **Once stamped, profile overrides are independent.** A session keeps its appearance even if the user later edits or deletes the source profile in Windows Terminal.
 
+## Shell Integration (OSC 9001)
+
+Programs running inside a terminal can push session state up to CSM by emitting a custom OSC sequence — useful for SSH overlays (e.g. `nexus`) where CSM cannot inspect the remote repo locally.
+
+> **Integrator-facing reference:** [`docs/shell-integration.md`](docs/shell-integration.md) (wire format + bash/PowerShell/Python/Node/Rust/Go snippets). The notes below are CSM-internal.
+
+**Wire format:** `ESC ] 9001 ; key=value ; key=value … ST`
+
+ST may be `BEL` (`\x07`) or `ESC \\` — xterm.js accepts both.
+
+**Recognised keys:**
+
+| Key | Effect |
+|---|---|
+| `color` | Override the session accent (`#rrggbb` / `#rgb` / `#rrggbbaa`). Repaints sidebar stripe + active ring. 8-digit values use alpha-last (`#rrggbbaa`); CSM converts to WPF's `#aarrggbb` internally. |
+| `git-branch` | Set `SessionViewModel.GitBranch` directly, bypassing `GitService`. |
+| `git-dirty` | `1`/`true` → dirty-marker shown; `0`/anything else → clean. |
+| `title` | Renames the session (calls `vm.Rename`). |
+
+Unknown keys are ignored. Multiple keys can be sent in a single sequence.
+
+**Pipeline:** `terminal-init.js` registers an OSC handler via `term.parser.registerOscHandler(9001, …)` (requires `allowProposedApi: true`, already set). It posts `{type: "shellIntegration", fields: {…}}` to WPF. `TerminalBridge` parses it and raises `ShellIntegrationReceived`. `MainWindow.LaunchSessionAsync` subscribes and calls `vm.ApplyShellIntegration(fields)` on the dispatcher, then `SaveStateAsync` so changes persist.
+
+The OSC handler returns `true` so xterm consumes the sequence and it doesn't render.
+
 ## Sleep / Wake (Dormant Sessions)
 
 Sessions can be put to sleep instead of closed — the PTY is torn down but the `ShellSession` is kept in `state.json` (`IsDormant = true`) so it can be relaunched from the sidebar later. Useful when you have many long-running projects but only need a few live at once.
