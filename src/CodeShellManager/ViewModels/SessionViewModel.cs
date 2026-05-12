@@ -21,6 +21,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string? _gitBranch;
     [ObservableProperty] private bool _gitIsDirty;
     [ObservableProperty] private bool _gitInfoLoaded;
+    /// <summary>Absolute path to the session's repo top-level, or null if the working folder is not in a git repo.</summary>
+    [ObservableProperty] private string? _repoRoot;
+    /// <summary>Set by MainWindow whenever another live session shares this session's RepoRoot.</summary>
+    [ObservableProperty] private bool _hasWorktreeSiblings;
 
     public PseudoTerminal? Pty { get; set; }
     public TerminalBridge? Bridge { get; set; }
@@ -76,6 +80,22 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         GitBranch = branch;
         GitIsDirty = isDirty;
         GitInfoLoaded = true;
+
+        // RepoRoot is stable for the life of the session — resolve it once.
+        if (RepoRoot == null && !string.IsNullOrEmpty(branch))
+            RepoRoot = await GitService.GetRepoRootAsync(Session.WorkingFolder);
+    }
+
+    /// <summary>Short repo + branch label shown beneath the session name when sibling worktrees are open.</summary>
+    public string WorktreeSubtitle
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(RepoRoot)) return "";
+            string repoName = System.IO.Path.GetFileName(RepoRoot.TrimEnd('/', '\\')) ?? "";
+            string branch = string.IsNullOrEmpty(GitBranch) ? "—" : GitBranch;
+            return $"\U0001F4C1 {repoName} ⎇ {branch}";
+        }
     }
 
     private async Task PollGitInfoAsync(CancellationToken ct)

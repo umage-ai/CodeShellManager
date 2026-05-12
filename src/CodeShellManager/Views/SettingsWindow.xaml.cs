@@ -31,6 +31,7 @@ public partial class SettingsWindow : Window
             DefaultCommand = current.DefaultCommand,
             DefaultWorkingFolder = current.DefaultWorkingFolder,
             ShowGitBranch = current.ShowGitBranch,
+            ShowGroupsTab = current.ShowGroupsTab,
             SearchCollapseAfterNavigate = current.SearchCollapseAfterNavigate,
             Theme = current.Theme,
             MaxSearchResults = current.MaxSearchResults,
@@ -56,6 +57,7 @@ public partial class SettingsWindow : Window
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
         ShowGitBranchCheck.IsChecked = _edited.ShowGitBranch;
         ShowTerminalStatusDotCheck.IsChecked = _edited.ShowTerminalStatusDot;
+        ShowGroupsTabCheck.IsChecked = _edited.ShowGroupsTab;
         ImportWindowsTerminalProfilesCheck.IsChecked = _edited.ImportWindowsTerminalProfiles;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
@@ -119,6 +121,7 @@ public partial class SettingsWindow : Window
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
         _edited.ShowGitBranch = ShowGitBranchCheck.IsChecked == true;
         _edited.ShowTerminalStatusDot = ShowTerminalStatusDotCheck.IsChecked == true;
+        _edited.ShowGroupsTab = ShowGroupsTabCheck.IsChecked == true;
         _edited.ImportWindowsTerminalProfiles = ImportWindowsTerminalProfilesCheck.IsChecked == true;
         _edited.SearchCollapseAfterNavigate = SearchCollapseAfterNavigateCheck.IsChecked == true;
         _edited.AnthropicApiKey = ApiKeyBox.Password;

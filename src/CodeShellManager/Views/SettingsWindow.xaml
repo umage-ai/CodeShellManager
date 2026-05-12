@@ -219,6 +219,8 @@
                 <StackPanel Margin="0,8,0,0">
                     <CheckBox x:Name="ShowGitBranchCheck" Content="Show git branch in sidebar"/>
                     <CheckBox x:Name="ShowTerminalStatusDotCheck" Content="Show terminal status indicator"/>
+                    <CheckBox x:Name="ShowGroupsTabCheck" Content="Show group tabs in sidebar"
+                              ToolTip="The vertical strip on the left of the sidebar that lets you filter sessions by category. Auto-hidden when you have no groups."/>
                     <CheckBox x:Name="ImportWindowsTerminalProfilesCheck"
                               AutomationProperties.AutomationId="ImportWindowsTerminalProfilesCheck"
                               Content="Show Windows Terminal profiles when creating sessions"

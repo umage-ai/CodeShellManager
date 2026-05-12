@@ -16,11 +16,7 @@ public class SessionManager
     public event Action<ShellSession>? SessionAdded;
     public event Action<ShellSession>? SessionRemoved;
     public event Action? SessionsChanged;
-
-    public SessionManager()
-    {
-        _groups.Add(new SessionGroup { Name = "Default", SortOrder = 0 });
-    }
+    public event Action? GroupsChanged;
 
     public ShellSession CreateSession(string name, string folder, string command, string args,
         string? groupId = null, string? colorOverride = null)
@@ -33,7 +29,7 @@ public class SessionManager
             WorkingFolder = folder,
             Command = command,
             Args = args,
-            GroupId = groupId ?? _groups.FirstOrDefault()?.Id ?? "",
+            GroupId = groupId ?? "",
             ColorOverride = colorOverride,
             Status = SessionStatus.Running
         };
@@ -83,23 +79,66 @@ public class SessionManager
     {
         var group = new SessionGroup { Name = name, SortOrder = _groups.Count };
         _groups.Add(group);
-        SessionsChanged?.Invoke();
+        GroupsChanged?.Invoke();
         return group;
+    }
+
+    public void RenameGroup(string groupId, string newName)
+    {
+        var group = _groups.FirstOrDefault(g => g.Id == groupId);
+        if (group == null || string.IsNullOrWhiteSpace(newName)) return;
+        group.Name = newName.Trim();
+        GroupsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Removes a group. Any sessions assigned to it are moved to "ungrouped"
+    /// (GroupId cleared). Sessions themselves are not deleted.
+    /// </summary>
+    public void RemoveGroup(string groupId)
+    {
+        var group = _groups.FirstOrDefault(g => g.Id == groupId);
+        if (group == null) return;
+        foreach (var s in _sessions)
+        {
+            if (s.GroupId == groupId) s.GroupId = "";
+        }
+        _groups.Remove(group);
+        GroupsChanged?.Invoke();
+        SessionsChanged?.Invoke();
+    }
+
+    /// <summary>Assigns a session to a group (empty/null groupId = ungrouped).</summary>
+    public void SetSessionGroup(string sessionId, string? groupId)
+    {
+        var session = _sessions.FirstOrDefault(s => s.Id == sessionId);
+        if (session == null) return;
+        session.GroupId = groupId ?? "";
+        SessionsChanged?.Invoke();
     }
 
     public void LoadFromState(AppState state)
     {
         _sessions.Clear();
         _groups.Clear();
-
-        if (state.Groups.Count > 0)
-            _groups.AddRange(state.Groups);
-        else
-            _groups.Add(new SessionGroup { Name = "Default" });
+        _groups.AddRange(state.Groups);
 
         // Sessions from state are configs only — they get relaunched fresh
         foreach (var s in state.Sessions)
             _sessions.Add(s);
+
+        // Legacy migration: previous versions auto-created a single "Default" group
+        // (SortOrder 0) and put every session in it. Drop it so existing users see
+        // an empty group strip until they create real categories themselves.
+        if (_groups.Count == 1 && _groups[0].Name == "Default" && _groups[0].SortOrder == 0)
+        {
+            string legacyId = _groups[0].Id;
+            foreach (var s in _sessions)
+            {
+                if (s.GroupId == legacyId) s.GroupId = "";
+            }
+            _groups.Clear();
+        }
     }
 
     public void PopulateState(AppState state)

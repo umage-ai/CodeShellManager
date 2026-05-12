@@ -13,6 +13,7 @@ public class AppSettings
     public string DefaultCommand { get; set; } = "claude";
     public string DefaultWorkingFolder { get; set; } = "";
     public bool ShowGitBranch { get; set; } = true;
+    public bool ShowGroupsTab { get; set; } = true;
     public bool SearchCollapseAfterNavigate { get; set; } = true;
     public string Theme { get; set; } = "dark";
     public int MaxSearchResults { get; set; } = 100;
@@ -55,7 +56,7 @@ public class WindowBounds
 public class AppState
 {
     public List<ShellSession> Sessions { get; set; } = [];
-    public List<SessionGroup> Groups { get; set; } = [new SessionGroup { Name = "Default" }];
+    public List<SessionGroup> Groups { get; set; } = [];
     public string LastLayout { get; set; } = "Single";
     public AppSettings Settings { get; set; } = new();
 

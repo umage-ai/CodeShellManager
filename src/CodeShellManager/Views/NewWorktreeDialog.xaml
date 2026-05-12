@@ -1,0 +1,122 @@
+<Window x:Class="CodeShellManager.Views.NewWorktreeDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New Worktree" Height="430" Width="500"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#1e1e2e" Foreground="#cdd6f4"
+        FontFamily="Segoe UI"
+        ShowInTaskbar="False">
+    <Window.Resources>
+        <Style x:Key="Label" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#a6adc8"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="0,0,0,3"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#313244"/>
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="BorderBrush" Value="#45475a"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="CaretBrush" Value="#cdd6f4"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#313244"/>
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="BorderBrush" Value="#45475a"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="Background" Value="#313244"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Margin" Value="0,0,16,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style x:Key="Btn" TargetType="Button">
+            <Setter Property="Background" Value="#45475a"/>
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style x:Key="PrimaryBtn" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Background" Value="#89b4fa"/>
+            <Setter Property="Foreground" Value="#1e1e2e"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Repo -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="Repo" Style="{StaticResource Label}"/>
+            <TextBlock x:Name="RepoLabel" Foreground="#cdd6f4" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+
+        <!-- Branch mode -->
+        <StackPanel Grid.Row="1" Margin="0,0,0,8">
+            <TextBlock Text="Branch" Style="{StaticResource Label}"/>
+            <StackPanel Orientation="Horizontal">
+                <RadioButton x:Name="NewBranchRadio" Content="Create new branch from current" IsChecked="True" Checked="BranchMode_Changed"/>
+                <RadioButton x:Name="ExistingBranchRadio" Content="Use existing branch" Checked="BranchMode_Changed"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- New branch input -->
+        <StackPanel Grid.Row="2" x:Name="NewBranchPanel" Margin="0,0,0,12">
+            <TextBlock Text="New branch name" Style="{StaticResource Label}"/>
+            <TextBox x:Name="NewBranchBox"/>
+            <TextBlock x:Name="BaseBranchHint" Foreground="#6c7086" FontSize="10" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Existing branch input -->
+        <StackPanel Grid.Row="3" x:Name="ExistingBranchPanel" Visibility="Collapsed" Margin="0,0,0,12">
+            <TextBlock Text="Existing branch" Style="{StaticResource Label}"/>
+            <ComboBox x:Name="ExistingBranchCombo"/>
+        </StackPanel>
+
+        <!-- Worktree path -->
+        <StackPanel Grid.Row="4" Margin="0,0,0,12">
+            <TextBlock Text="Worktree folder" Style="{StaticResource Label}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="TargetPathBox" Grid.Column="0" Margin="0,0,6,0"/>
+                <Button Grid.Column="1" Content="Browse…" Style="{StaticResource Btn}" Click="Browse_Click"/>
+            </Grid>
+        </StackPanel>
+
+        <!-- Session name -->
+        <StackPanel Grid.Row="5" Margin="0,0,0,12" VerticalAlignment="Top">
+            <TextBlock Text="Session name (optional)" Style="{StaticResource Label}"/>
+            <TextBox x:Name="SessionNameBox"/>
+        </StackPanel>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Cancel_Click"/>
+            <Button Content="Create Worktree" Style="{StaticResource PrimaryBtn}" Click="Ok_Click" IsDefault="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

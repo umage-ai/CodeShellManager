@@ -46,6 +46,8 @@ public partial class MainWindow : Window
     // Sidebar items for dormant (asleep) sessions — kept here so RebuildSidebarOrder
     // can re-append them to the bottom of the list after rebuilding active items.
     private readonly Dictionary<string, Border> _dormantSidebarItems = [];
+    // Anchor for shift-click range selection in the sidebar.
+    private string? _selectionAnchorId;
 
     private SqliteConnection? _db;
     private SearchService? _searchService;
@@ -78,7 +80,21 @@ public partial class MainWindow : Window
                 _layoutViewportOffset = 0;
                 RefreshTerminalLayout();
             }
+            else if (args.PropertyName == nameof(MainViewModel.ActiveGroupId))
+            {
+                RebuildSidebarOrder();
+                UpdateGroupStripActiveState();
+            }
         };
+
+        _vm.GroupsChanged += () => Dispatcher.Invoke(() =>
+        {
+            RebuildGroupStrip();
+            UpdateGroupStripVisibility();
+            RebuildSidebarOrder();
+        });
+        _vm.SelectionChanged += () => Dispatcher.Invoke(UpdateSidebarActiveState);
+        _vm.Sessions.CollectionChanged += (_, _) => RecomputeWorktreeSiblings();
 
         Loaded += OnLoaded;
         KeyDown += OnKeyDown;
@@ -123,6 +139,10 @@ public partial class MainWindow : Window
         await _vm.LoadStateAsync();
         RestoreWindowState();
         _windowStateReady = true;
+
+        // Build the group strip (it'll only show once there are groups + the setting is on).
+        RebuildGroupStrip();
+        UpdateGroupStripVisibility();
 
         // Prune indexed output per retention policy (runs once at startup, after settings load)
         if (_searchService != null)
@@ -464,10 +484,12 @@ public partial class MainWindow : Window
 
         // Build sidebar entry
         var sidebarItem = BuildSidebarItem(vm);
-        SidebarSessionList.Children.Add(sidebarItem);
         _sessionUi[session.Id] = (webView, terminalWrapper, sidebarItem);
 
         _vm.RegisterSession(vm);
+        // RebuildSidebarOrder applies the active group filter; the explicit call here ensures
+        // a newly-launched session that doesn't match the filter is correctly hidden.
+        RebuildSidebarOrder();
         RefreshTerminalLayout();
         bridge.FitTerminal();
         UpdateAlertBadge();
@@ -587,6 +609,32 @@ public partial class MainWindow : Window
             Visibility = Visibility.Collapsed
         };
 
+        // Worktree-siblings subtitle — appears when 2+ live sessions share the same repo root.
+        var worktreeText = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0x93, 0x99, 0xb2)),
+            FontSize = 10,
+            FontStyle = FontStyles.Italic,
+            Margin = new Thickness(0, 1, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed,
+            ToolTip = "This session shares a git repo with other open sessions."
+        };
+
+        void UpdateWorktreeText()
+        {
+            if (vm.HasWorktreeSiblings && !string.IsNullOrEmpty(vm.RepoRoot))
+            {
+                worktreeText.Text = vm.WorktreeSubtitle;
+                worktreeText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                worktreeText.Visibility = Visibility.Collapsed;
+            }
+        }
+        UpdateWorktreeText();
+
         static void UpdateGitText(TextBlock tb, SessionViewModel svm)
         {
             if (!svm.GitInfoLoaded || string.IsNullOrEmpty(svm.GitBranch))
@@ -651,6 +699,7 @@ public partial class MainWindow : Window
         textPanel.Children.Add(renameBox);
         textPanel.Children.Add(folderText);
         textPanel.Children.Add(gitText);
+        textPanel.Children.Add(worktreeText);
         textPanel.Children.Add(alertBadge);
 
         // Status dot (waiting indicator)
@@ -716,11 +765,39 @@ public partial class MainWindow : Window
             }
         };
 
-        // Click to activate
-        container.MouseLeftButtonDown += (_, _) =>
+        // Click to activate. Ctrl/Shift modifiers drive multi-select instead of activation.
+        container.MouseLeftButtonDown += (_, me) =>
         {
+            var mods = Keyboard.Modifiers;
+            if ((mods & ModifierKeys.Shift) != 0)
+            {
+                var visibleIds = SidebarSessionList.Children.OfType<Border>()
+                    .Select(b => b.Tag as string)
+                    .Where(t => t != null && !t.StartsWith("dormant:"))
+                    .Select(t => t!)
+                    .ToList();
+                _vm.SetRangeSelection(visibleIds, _selectionAnchorId, vm.Id);
+                me.Handled = true;
+                return;
+            }
+            if ((mods & ModifierKeys.Control) != 0)
+            {
+                _vm.ToggleSelection(vm.Id);
+                _selectionAnchorId = vm.Id;
+                me.Handled = true;
+                return;
+            }
+            _vm.ClearSelection();
+            _selectionAnchorId = vm.Id;
             _vm.FocusSessionCommand.Execute(vm);
             UpdateSidebarActiveState();
+        };
+
+        // Right-click context menu — supports multi-target actions when 2+ sessions are selected.
+        container.ContextMenu = BuildSessionContextMenu(vm);
+        container.ContextMenuOpening += (_, _) =>
+        {
+            container.ContextMenu = BuildSessionContextMenu(vm);
         };
 
         // Hover effect
@@ -775,6 +852,16 @@ public partial class MainWindow : Window
                     case nameof(SessionViewModel.GitIsDirty):
                     case nameof(SessionViewModel.GitInfoLoaded):
                         UpdateGitText(gitText, vm);
+                        UpdateWorktreeText();
+                        break;
+
+                    case nameof(SessionViewModel.RepoRoot):
+                        RecomputeWorktreeSiblings();
+                        UpdateWorktreeText();
+                        break;
+
+                    case nameof(SessionViewModel.HasWorktreeSiblings):
+                        UpdateWorktreeText();
                         break;
                 }
             });
@@ -807,10 +894,15 @@ public partial class MainWindow : Window
         foreach (Border item in SidebarSessionList.Children)
         {
             string? id = item.Tag as string;
+            if (id == null || id.StartsWith("dormant:")) continue;
             bool isActive = id == _vm.ActiveSession?.Id;
-            item.Background = isActive
-                ? new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44))
-                : Brushes.Transparent;
+            bool isSelected = _vm.IsSelected(id);
+            if (isActive)
+                item.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
+            else if (isSelected)
+                item.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa));
+            else
+                item.Background = Brushes.Transparent;
         }
         UpdateActiveTerminalHighlight();
     }
@@ -831,6 +923,285 @@ public partial class MainWindow : Window
                 ui.terminalWrapper.BorderBrush = Brushes.Transparent;
             }
         }
+    }
+
+    // ── Group strip (categories) ──────────────────────────────────────────────
+
+    private void UpdateGroupStripVisibility()
+    {
+        bool show = _vm.Settings.ShowGroupsTab && _sessionManager.Groups.Count > 0;
+        GroupStripBorder.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        GroupStripCol.Width = new GridLength(show ? 44 : 0);
+    }
+
+    private void RebuildGroupStrip()
+    {
+        GroupStripPanel.Children.Clear();
+        if (_sessionManager.Groups.Count == 0) return;
+
+        GroupStripPanel.Children.Add(BuildGroupTab(null, "All", "▦"));
+        GroupStripPanel.Children.Add(BuildGroupTab(GroupFilter.Ungrouped, "Ungrouped", "·"));
+        foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
+            GroupStripPanel.Children.Add(BuildGroupTab(g.Id, g.Name, GroupInitials(g.Name)));
+
+        // Footer "+" tab to add a new group inline.
+        var addBtn = new Border
+        {
+            Margin = new Thickness(4, 8, 4, 4),
+            Background = Brushes.Transparent,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x45, 0x47, 0x5a)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            ToolTip = "New group"
+        };
+        addBtn.Child = new TextBlock
+        {
+            Text = "+",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xe3, 0xa1)),
+            FontSize = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 4)
+        };
+        addBtn.MouseEnter += (_, _) =>
+            addBtn.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
+        addBtn.MouseLeave += (_, _) => addBtn.Background = Brushes.Transparent;
+        addBtn.MouseLeftButtonDown += (_, _) => PromptCreateGroup();
+        GroupStripPanel.Children.Add(addBtn);
+
+        UpdateGroupStripActiveState();
+    }
+
+    private static string GroupInitials(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return name[..1].ToUpperInvariant();
+        if (parts.Length == 1) return parts[0][..1].ToUpperInvariant();
+        return (parts[0][0].ToString() + parts[^1][0]).ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// Builds one tab in the group strip. <paramref name="groupId"/> can be:
+    /// null (the "All" / no-filter tab), <see cref="GroupFilter.Ungrouped"/>, or a real Id.
+    /// </summary>
+    private Border BuildGroupTab(string? groupId, string fullName, string label)
+    {
+        var border = new Border
+        {
+            Margin = new Thickness(4, 2, 4, 2),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0, 0, 2, 0),
+            BorderBrush = Brushes.Transparent,
+            CornerRadius = new CornerRadius(4, 0, 0, 4),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            ToolTip = fullName,
+            Tag = "group:" + (groupId ?? "__ALL__"),
+            Height = 36
+        };
+        border.Child = new TextBlock
+        {
+            Text = label,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        border.MouseLeftButtonDown += (_, _) =>
+        {
+            _vm.ActiveGroupId = groupId;
+        };
+
+        // Real groups get a right-click rename/delete menu (the All/Ungrouped pseudo-tabs don't).
+        if (groupId != null && groupId != GroupFilter.Ungrouped)
+        {
+            var menu = new System.Windows.Controls.ContextMenu();
+            var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
+            rename.Click += (_, _) => PromptRenameGroup(groupId, fullName);
+            menu.Items.Add(rename);
+            var delete = new System.Windows.Controls.MenuItem { Header = "Delete group" };
+            delete.Click += (_, _) =>
+            {
+                var r = MessageBox.Show(
+                    $"Delete group '{fullName}'? Sessions in this group will revert to Ungrouped.",
+                    "Delete group", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+                if (r == MessageBoxResult.Yes) _vm.RemoveGroup(groupId);
+            };
+            menu.Items.Add(delete);
+            border.ContextMenu = menu;
+        }
+
+        return border;
+    }
+
+    private void UpdateGroupStripActiveState()
+    {
+        string activeKey = "group:" + (_vm.ActiveGroupId ?? "__ALL__");
+        foreach (Border tab in GroupStripPanel.Children.OfType<Border>())
+        {
+            if (tab.Tag is not string key || !key.StartsWith("group:")) continue;
+            bool isActive = key == activeKey;
+            tab.Background = isActive
+                ? new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44))
+                : Brushes.Transparent;
+            tab.BorderBrush = isActive
+                ? new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa))
+                : Brushes.Transparent;
+        }
+    }
+
+    private void PromptCreateGroup()
+    {
+        string? name = InputBoxDialog.Prompt(this, "New group", "Group name:", "");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        _vm.CreateGroup(name.Trim());
+    }
+
+    private void PromptRenameGroup(string groupId, string currentName)
+    {
+        string? name = InputBoxDialog.Prompt(this, "Rename group", "Group name:", currentName);
+        if (string.IsNullOrWhiteSpace(name) || name.Trim() == currentName) return;
+        _vm.RenameGroup(groupId, name.Trim());
+    }
+
+    // ── Worktree siblings ─────────────────────────────────────────────────────
+
+    /// <summary>Sets HasWorktreeSiblings = true on every live session that shares its RepoRoot with another.</summary>
+    private void RecomputeWorktreeSiblings()
+    {
+        var byRoot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in _vm.Sessions)
+        {
+            if (string.IsNullOrEmpty(s.RepoRoot)) continue;
+            byRoot[s.RepoRoot] = byRoot.GetValueOrDefault(s.RepoRoot) + 1;
+        }
+        foreach (var s in _vm.Sessions)
+        {
+            bool siblings = !string.IsNullOrEmpty(s.RepoRoot) && byRoot[s.RepoRoot] > 1;
+            if (s.HasWorktreeSiblings != siblings)
+                s.HasWorktreeSiblings = siblings;
+        }
+    }
+
+    // ── Per-session context menu ──────────────────────────────────────────────
+
+    private System.Windows.Controls.ContextMenu BuildSessionContextMenu(SessionViewModel vm)
+    {
+        var menu = new System.Windows.Controls.ContextMenu();
+        var targetIds = _vm.ResolveActionTargets(vm.Id);
+        bool isMulti = targetIds.Count > 1;
+        string countSuffix = isMulti ? $" ({targetIds.Count})" : "";
+
+        // Worktree action — single-target only, local git session
+        if (!isMulti && !vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
+        {
+            var wtItem = new System.Windows.Controls.MenuItem { Header = "New worktree from this branch…" };
+            wtItem.Click += async (_, _) => await OpenNewWorktreeDialogAsync(vm);
+            menu.Items.Add(wtItem);
+            menu.Items.Add(new System.Windows.Controls.Separator());
+        }
+
+        // Add to group submenu — always available
+        var addTo = new System.Windows.Controls.MenuItem { Header = $"Add to group{countSuffix}" };
+        foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
+        {
+            var gid = g.Id; // capture
+            var item = new System.Windows.Controls.MenuItem { Header = g.Name };
+            item.Click += (_, _) => _vm.AssignSessionsToGroup(targetIds, gid);
+            addTo.Items.Add(item);
+        }
+        if (_sessionManager.Groups.Count > 0)
+            addTo.Items.Add(new System.Windows.Controls.Separator());
+        var newGroup = new System.Windows.Controls.MenuItem { Header = "New group…" };
+        newGroup.Click += (_, _) =>
+        {
+            string? name = InputBoxDialog.Prompt(this, "New group", "Group name:", "");
+            if (string.IsNullOrWhiteSpace(name)) return;
+            var g = _vm.CreateGroup(name.Trim());
+            _vm.AssignSessionsToGroup(targetIds, g.Id);
+        };
+        addTo.Items.Add(newGroup);
+        menu.Items.Add(addTo);
+
+        var removeFrom = new System.Windows.Controls.MenuItem { Header = $"Remove from group{countSuffix}" };
+        removeFrom.Click += (_, _) => _vm.AssignSessionsToGroup(targetIds, null);
+        menu.Items.Add(removeFrom);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+        var sleepItem = new System.Windows.Controls.MenuItem { Header = $"Sleep{countSuffix}" };
+        sleepItem.Click += (_, _) =>
+        {
+            foreach (var id in targetIds)
+            {
+                var target = _vm.Sessions.FirstOrDefault(s => s.Id == id);
+                if (target != null) SleepSession(target);
+            }
+        };
+        menu.Items.Add(sleepItem);
+        var closeItem = new System.Windows.Controls.MenuItem { Header = $"Close{countSuffix}" };
+        closeItem.Click += (_, _) =>
+        {
+            foreach (var id in targetIds.ToArray())
+            {
+                var target = _vm.Sessions.FirstOrDefault(s => s.Id == id);
+                target?.CloseCommand.Execute(null);
+            }
+        };
+        menu.Items.Add(closeItem);
+
+        return menu;
+    }
+
+    // ── Worktree creation ─────────────────────────────────────────────────────
+
+    private async Task OpenNewWorktreeDialogAsync(SessionViewModel source)
+    {
+        string? repoRoot = source.RepoRoot
+            ?? await GitService.GetRepoRootAsync(source.Session.WorkingFolder);
+        if (string.IsNullOrEmpty(repoRoot))
+        {
+            MessageBox.Show(this,
+                $"'{source.Session.WorkingFolder}' is not inside a git repository.",
+                "Not a git repo", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var branches = await GitService.ListBranchesAsync(repoRoot);
+        string currentBranch = source.GitBranch ?? "";
+        var dlg = new NewWorktreeDialog(repoRoot, currentBranch, branches) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+
+        var (ok, err) = await GitService.CreateWorktreeAsync(
+            repoRoot, dlg.TargetPath, dlg.BranchOrRef, dlg.CreateBranch);
+        if (!ok)
+        {
+            MessageBox.Show(this, "git worktree add failed:\n\n" + err,
+                "Worktree error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        // Clone the source session config into a new session pointing at the worktree.
+        var newSession = _sessionManager.CreateSession(
+            dlg.SessionName,
+            dlg.TargetPath,
+            source.Session.Command,
+            source.Session.Args,
+            string.IsNullOrEmpty(source.Session.GroupId) ? null : source.Session.GroupId,
+            source.Session.ColorOverride);
+        newSession.ProfileFontFamily = source.Session.ProfileFontFamily;
+        newSession.ProfileFontSize = source.Session.ProfileFontSize;
+        newSession.ProfileFontWeight = source.Session.ProfileFontWeight;
+        newSession.ProfileFontLigatures = source.Session.ProfileFontLigatures;
+        newSession.ProfileCursorShape = source.Session.ProfileCursorShape;
+        newSession.ProfileCursorBlink = source.Session.ProfileCursorBlink;
+        newSession.ProfilePadding = source.Session.ProfilePadding;
+        newSession.ProfileBackgroundOpacity = source.Session.ProfileBackgroundOpacity;
+        newSession.ProfileRetroEffect = source.Session.ProfileRetroEffect;
+        newSession.ProfileColorSchemeJson = source.Session.ProfileColorSchemeJson;
+
+        await LaunchSessionAsync(newSession);
     }
 
     // ── Sidebar drag-and-drop ─────────────────────────────────────────────────
@@ -872,10 +1243,13 @@ public partial class MainWindow : Window
         SidebarSessionList.Children.Clear();
         foreach (var vm in _vm.Sessions)
         {
+            if (!_vm.SessionMatchesActiveGroup(vm)) continue;
             if (_sessionUi.TryGetValue(vm.Id, out var ui))
                 SidebarSessionList.Children.Add(ui.sidebarItem);
         }
-        // Dormant entries always render at the bottom of the sidebar.
+        // Dormant entries always render at the bottom of the sidebar regardless of filter
+        // so they remain reachable (and a user filtering by category isn't surprised by
+        // missing entries).
         foreach (var item in _dormantSidebarItems.Values)
             SidebarSessionList.Children.Add(item);
         UpdateSidebarActiveState();
@@ -1772,6 +2146,7 @@ public partial class MainWindow : Window
             _vm.Settings.DefaultCommand = edited.DefaultCommand;
             _vm.Settings.DefaultWorkingFolder = edited.DefaultWorkingFolder;
             _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
+            _vm.Settings.ShowGroupsTab = edited.ShowGroupsTab;
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
             _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
@@ -1788,6 +2163,8 @@ public partial class MainWindow : Window
             // Push font settings to all active terminal sessions
             foreach (var vm in _vm.Sessions)
                 vm.Bridge?.ApplyFontSettings(_vm.Settings);
+
+            UpdateGroupStripVisibility();
         }
     }
 
