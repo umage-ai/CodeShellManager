@@ -46,23 +46,6 @@ public partial class MainWindow : Window
     // Sidebar items for dormant (asleep) sessions — kept here so RebuildSidebarOrder
     // can re-append them to the bottom of the list after rebuilding active items.
     private readonly Dictionary<string, Border> _dormantSidebarItems = [];
-    /// <summary>
-    /// Per-session references to the run-related controls inside the terminal wrapper.
-    /// Used by RefreshTerminalRunControls() to update the play button / chips strip
-    /// when the session's RunCommands list or its RunInstances change.
-    /// </summary>
-    private readonly Dictionary<string, (
-        WpfButton playBtn,
-        WpfButton chevronBtn,
-        Border chipsStrip,
-        StackPanel chipsPanel,
-        Border drawer,
-        WpfTextBox drawerText,
-        TextBlock drawerHeader,
-        WpfButton drawerStopBtn,
-        WpfButton drawerCopyBtn,
-        WpfButton drawerSendBtn)> _runControls = new();
-    private readonly Dictionary<string, string> _drawerItemBySession = new();
     // Anchor for shift-click range selection in the sidebar.
     private string? _selectionAnchorId;
     // Group-tab notification indicators (badge + text), keyed by group id (or "__ALL__"
@@ -397,7 +380,6 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task LaunchAndFollowUpWorktreesAsync(ShellSession primary, IReadOnlyList<string> additionalPaths)
     {
-        SeedRunCommandsAsync(primary);
         await LaunchSessionAsync(primary);
         if (additionalPaths.Count == 0) return;
 
@@ -430,7 +412,6 @@ public partial class MainWindow : Window
             sibling.ProfileBackgroundOpacity = primary.ProfileBackgroundOpacity;
             sibling.ProfileRetroEffect = primary.ProfileRetroEffect;
             sibling.ProfileColorSchemeJson = primary.ProfileColorSchemeJson;
-            SeedRunCommandsAsync(sibling);
             await LaunchSessionAsync(sibling);
             anchorId = sibling.Id;
             lastWasClaude = isClaude;
@@ -471,19 +452,6 @@ public partial class MainWindow : Window
         clone.ProfileBackgroundOpacity = p.ProfileBackgroundOpacity;
         clone.ProfileRetroEffect = p.ProfileRetroEffect;
         clone.ProfileColorSchemeJson = p.ProfileColorSchemeJson;
-        // Copy parent's run commands with fresh Ids so the duplicate has its own list.
-        foreach (var item in p.RunCommands)
-        {
-            clone.RunCommands.Add(new Models.RunCommandItem
-            {
-                Id = System.Guid.NewGuid().ToString(),
-                Label = item.Label,
-                CommandLine = item.CommandLine,
-                IsDefault = item.IsDefault,
-            });
-        }
-        // If the parent had no commands, fall back to detection.
-        if (clone.RunCommands.Count == 0) SeedRunCommandsAsync(clone);
         await LaunchSessionAsync(clone);
     }
 
@@ -534,247 +502,7 @@ public partial class MainWindow : Window
         sibling.ProfileBackgroundOpacity = p.ProfileBackgroundOpacity;
         sibling.ProfileRetroEffect = p.ProfileRetroEffect;
         sibling.ProfileColorSchemeJson = p.ProfileColorSchemeJson;
-        SeedRunCommandsAsync(sibling);
         await LaunchSessionAsync(sibling);
-    }
-
-    /// <summary>
-    /// Stamps the session's RunCommands list from the matching project-type template,
-    /// if the list is currently empty AND the session is local (not SSH). Runs on a
-    /// background task so the UI doesn't block on folder enumeration. No-op if the
-    /// folder doesn't match any template.
-    /// </summary>
-    private void SeedRunCommandsAsync(Models.ShellSession session)
-    {
-        if (session.IsRemote) return;
-        if (session.RunCommands.Count > 0) return;
-        if (string.IsNullOrWhiteSpace(session.WorkingFolder)) return;
-
-        string folder = session.WorkingFolder;
-        _ = System.Threading.Tasks.Task.Run(() =>
-        {
-            var template = Services.RunCommandTemplatesService.SeedFor(folder);
-            if (template == null) return;
-            Dispatcher.Invoke(() =>
-            {
-                // Re-check on UI thread — the user may have edited the list manually
-                // while we were scanning (race with the editor dialog).
-                if (session.RunCommands.Count == 0)
-                {
-                    foreach (var item in template.Items)
-                        session.RunCommands.Add(item);
-                    _ = _vm.SaveStateAsync();
-                    RefreshTerminalRunControls(session.Id);
-                }
-            });
-        });
-    }
-
-    private static WpfButton MakeDrawerActionButton(string label) => new()
-    {
-        Content = label,
-        Background = Brushes.Transparent,
-        BorderThickness = new Thickness(0),
-        Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
-        FontSize = 11,
-        Cursor = System.Windows.Input.Cursors.Hand,
-        Padding = new Thickness(8, 4, 8, 4),
-    };
-
-    /// <summary>
-    /// Rebuilds chips + play-button visibility + drawer content for one session.
-    /// Idempotent — safe to call from every InstancesChanged event.
-    /// </summary>
-    private void RefreshTerminalRunControls(string sessionId)
-    {
-        if (!_runControls.TryGetValue(sessionId, out var c)) return;
-        var vm = _vm.Sessions.FirstOrDefault(s => s.Id == sessionId);
-        if (vm == null) return;
-
-        // Play / chevron visibility — driven by whether the list has anything to run.
-        var vis = vm.Session.RunCommands.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        c.playBtn.Visibility = vis;
-        c.chevronBtn.Visibility = vis;
-
-        // Rebuild chips strip.
-        c.chipsPanel.Children.Clear();
-        var instances = vm.Runner.Instances;
-        foreach (var (_, inst) in instances)
-        {
-            var chip = BuildRunChip(vm, inst);
-            c.chipsPanel.Children.Add(chip);
-        }
-        c.chipsStrip.Visibility = instances.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-
-        // Update drawer if a viewed item exists.
-        if (_drawerItemBySession.TryGetValue(sessionId, out var viewedItemId) &&
-            vm.Runner.GetInstance(viewedItemId) is { } viewedInst)
-        {
-            c.drawerHeader.Text = $"{viewedInst.Label} — {DescribeState(viewedInst)}";
-            c.drawerText.Text = viewedInst.SnapshotOutput();
-            // Auto-scroll to the end while the run is active.
-            if (viewedInst.State == RunState.Running)
-                c.drawerText.ScrollToEnd();
-            c.drawerStopBtn.IsEnabled = viewedInst.State == RunState.Running;
-        }
-        else
-        {
-            // Viewed item disappeared (was dismissed). Hide the drawer.
-            c.drawer.Visibility = Visibility.Collapsed;
-            _drawerItemBySession.Remove(sessionId);
-        }
-    }
-
-    private static string DescribeState(RunInstance inst) => inst.State switch
-    {
-        RunState.Idle => "idle",
-        RunState.Running => "running…",
-        RunState.ExitedOk => $"finished (exit 0, {inst.Duration?.TotalSeconds:F1}s)",
-        RunState.ExitedFailed => $"failed (exit {inst.ExitCode?.ToString() ?? "?"})",
-        _ => "?",
-    };
-
-    private Border BuildRunChip(SessionViewModel vm, RunInstance inst)
-    {
-        (Color fill, Color text) ColorsFor(RunState s) => s switch
-        {
-            RunState.Running       => (Color.FromRgb(0x89, 0xb4, 0xfa), Color.FromRgb(0x18, 0x18, 0x25)),
-            RunState.ExitedOk      => (Color.FromRgb(0xa6, 0xe3, 0xa1), Color.FromRgb(0x18, 0x18, 0x25)),
-            RunState.ExitedFailed  => (Color.FromRgb(0xf3, 0x8b, 0xa8), Color.FromRgb(0x18, 0x18, 0x25)),
-            _                      => (Color.FromRgb(0x45, 0x47, 0x5a), Color.FromRgb(0xcd, 0xd6, 0xf4)),
-        };
-        string Icon(RunState s) => s switch
-        {
-            RunState.Running => "●",
-            RunState.ExitedOk => "✓",
-            RunState.ExitedFailed => "✗",
-            _ => "▶",
-        };
-        var (fillC, textC) = ColorsFor(inst.State);
-
-        var chip = new Border
-        {
-            Background = new SolidColorBrush(fillC),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(8, 2, 4, 2),
-            Margin = new Thickness(0, 0, 6, 0),
-            Cursor = System.Windows.Input.Cursors.Hand,
-        };
-        var sp = new StackPanel { Orientation = Orientation.Horizontal };
-        sp.Children.Add(new TextBlock
-        {
-            Text = $"{Icon(inst.State)} {inst.Label}",
-            Foreground = new SolidColorBrush(textC),
-            FontSize = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 4, 0),
-        });
-        var dismiss = new WpfButton
-        {
-            Content = "✕",
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Foreground = new SolidColorBrush(textC),
-            FontSize = 9,
-            Padding = new Thickness(2, 0, 2, 0),
-            Cursor = System.Windows.Input.Cursors.Hand,
-            ToolTip = "Dismiss",
-        };
-        dismiss.Click += (_, _) => vm.Runner.Dismiss(inst.ItemId);
-        sp.Children.Add(dismiss);
-        chip.Child = sp;
-
-        chip.MouseLeftButtonUp += (_, _) => ToggleDrawer(vm, inst.ItemId);
-        return chip;
-    }
-
-    private void ToggleDrawer(SessionViewModel vm, string itemId)
-    {
-        if (!_runControls.TryGetValue(vm.Id, out var c)) return;
-        if (_drawerItemBySession.TryGetValue(vm.Id, out var current) && current == itemId
-            && c.drawer.Visibility == Visibility.Visible)
-        {
-            c.drawer.Visibility = Visibility.Collapsed;
-            _drawerItemBySession.Remove(vm.Id);
-        }
-        else
-        {
-            _drawerItemBySession[vm.Id] = itemId;
-            c.drawer.Visibility = Visibility.Visible;
-            RefreshTerminalRunControls(vm.Id);
-        }
-    }
-
-    private void RunDefaultCommand(SessionViewModel vm)
-    {
-        var def = vm.Session.RunCommands.FirstOrDefault(i => i.IsDefault);
-        if (def == null) return;
-        vm.Runner.Run(def);
-    }
-
-    private void ShowRunCommandsDropdown(SessionViewModel vm, WpfButton anchor)
-    {
-        var menu = new System.Windows.Controls.ContextMenu
-        {
-            PlacementTarget = anchor,
-            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
-        };
-        foreach (var item in vm.Session.RunCommands)
-        {
-            var label = item.IsDefault ? $"▶ {item.Label} (default)" : $"▶ {item.Label}";
-            var mi = new System.Windows.Controls.MenuItem { Header = label };
-            mi.Click += (_, _) => vm.Runner.Run(item);
-            menu.Items.Add(mi);
-        }
-        menu.Items.Add(new System.Windows.Controls.Separator());
-        var edit = new System.Windows.Controls.MenuItem { Header = "Edit commands…" };
-        edit.Click += (_, _) => OpenRunCommandsEditor(vm);
-        menu.Items.Add(edit);
-        menu.IsOpen = true;
-    }
-
-    private void OpenRunCommandsEditor(SessionViewModel vm)
-    {
-        var dlg = new Views.SessionRunCommandsDialog(vm.DisplayName, vm.Session.RunCommands)
-        {
-            Owner = this,
-        };
-        if (dlg.ShowDialog() == true && dlg.Result != null)
-        {
-            vm.Session.RunCommands.Clear();
-            foreach (var item in dlg.Result)
-                vm.Session.RunCommands.Add(item);
-            _ = _vm.SaveStateAsync();
-            RefreshTerminalRunControls(vm.Id);
-        }
-    }
-
-    private void SendRunOutputToTerminal(SessionViewModel vm, WpfTextBox drawerText)
-    {
-        if (!_drawerItemBySession.TryGetValue(vm.Id, out var itemId)) return;
-        var inst = vm.Runner.GetInstance(itemId);
-        if (inst == null) return;
-
-        string text = !string.IsNullOrEmpty(drawerText.SelectedText)
-            ? drawerText.SelectedText
-            : inst.SnapshotOutput();
-        if (string.IsNullOrWhiteSpace(text)) return;
-
-        bool isClaude = ClaudeSessionService.IsClaudeCommand(vm.Session.Command);
-        if (isClaude && vm.Bridge != null)
-        {
-            string exit = inst.ExitCode is { } code ? $" (exit code {code})" : "";
-            // No trailing \r — leave it in Claude's input box for the user to submit.
-            string wrapped = $"\nOutput of `{inst.CommandLine}`{exit}:\n```\n{text}\n```\n";
-            vm.Bridge.SendToTerminal(wrapped);
-            ToastHelper.Show("Sent to Claude", $"{text.Length} chars wrapped in fence");
-        }
-        else
-        {
-            // Non-Claude shell: clipboard fallback to avoid auto-execution.
-            try { System.Windows.Clipboard.SetText(text); } catch { }
-            ToastHelper.Show("Sent to clipboard", "Paste with Ctrl+V to be safe");
-        }
     }
 
     private static void Log(string msg)
@@ -2175,33 +1903,6 @@ public partial class MainWindow : Window
                 };
                 menu.Items.Add(siblingMenu);
             }
-
-            // Session commands submenu — only for single targets.
-            var runMenu = new System.Windows.Controls.MenuItem { Header = "Session commands" };
-            if (vm.Session.RunCommands.Count == 0)
-            {
-                runMenu.Items.Add(new System.Windows.Controls.MenuItem
-                {
-                    Header = "(none configured)",
-                    IsEnabled = false,
-                });
-            }
-            else
-            {
-                foreach (var item in vm.Session.RunCommands)
-                {
-                    string lbl = item.IsDefault ? $"▶ {item.Label} (default)" : $"▶ {item.Label}";
-                    var mi = new System.Windows.Controls.MenuItem { Header = lbl };
-                    mi.Click += (_, _) => vm.Runner.Run(item);
-                    runMenu.Items.Add(mi);
-                }
-            }
-            runMenu.Items.Add(new System.Windows.Controls.Separator());
-            var editMi = new System.Windows.Controls.MenuItem { Header = "Edit commands…" };
-            editMi.Click += (_, _) => OpenRunCommandsEditor(vm);
-            runMenu.Items.Add(editMi);
-            menu.Items.Add(runMenu);
-
             menu.Items.Add(new System.Windows.Controls.Separator());
         }
 
@@ -2310,7 +2011,6 @@ public partial class MainWindow : Window
         newSession.ProfileRetroEffect = source.Session.ProfileRetroEffect;
         newSession.ProfileColorSchemeJson = source.Session.ProfileColorSchemeJson;
 
-        SeedRunCommandsAsync(newSession);
         await LaunchSessionAsync(newSession);
     }
 
@@ -2995,38 +2695,6 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, 0, 4, 0)
         };
 
-        // ── Play (run) button + chevron ──────────────────────────────────────────
-        var playBtn = new WpfButton
-        {
-            Content = "▶",
-            ToolTip = "Run the default command (F5)",
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xe3, 0xa1)),  // green ▶
-            FontSize = 12,
-            Cursor = System.Windows.Input.Cursors.Hand,
-            Padding = new Thickness(4, 2, 2, 2),
-            Margin = new Thickness(0, 0, 0, 0),
-            Visibility = vm.Session.RunCommands.Count == 0 ? Visibility.Collapsed : Visibility.Visible,
-        };
-        playBtn.Click += (_, _) => RunDefaultCommand(vm);
-        playBtn.MouseRightButtonUp += (_, e) => { OpenRunCommandsEditor(vm); e.Handled = true; };
-
-        var chevronBtn = new WpfButton
-        {
-            Content = "▼",
-            ToolTip = "Run commands…",
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
-            FontSize = 9,
-            Cursor = System.Windows.Input.Cursors.Hand,
-            Padding = new Thickness(2, 2, 4, 2),
-            Margin = new Thickness(0, 0, 4, 0),
-            Visibility = playBtn.Visibility,
-        };
-        chevronBtn.Click += (_, _) => ShowRunCommandsDropdown(vm, chevronBtn);
-
         // Sleep (dormant) button — keeps the session in the sidebar but stops the PTY
         var sleepBtn = new WpfButton
         {
@@ -3047,8 +2715,6 @@ public partial class MainWindow : Window
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
-        DockPanel.SetDock(chevronBtn, Dock.Right);
-        DockPanel.SetDock(playBtn, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
         toolbarContent.Children.Add(termStatusDot);
@@ -3056,8 +2722,6 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
-        toolbarContent.Children.Add(chevronBtn);
-        toolbarContent.Children.Add(playBtn);
         toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
         toolbarContent.Children.Add(folderBlock);
@@ -3121,103 +2785,9 @@ public partial class MainWindow : Window
                 null, 1000, System.Threading.Timeout.Infinite);
         };
 
-        // ── Chips strip ──────────────────────────────────────────────────────────
-        var chipsPanel = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-        };
-        var chipsStrip = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(8, 2, 8, 2),
-            Visibility = Visibility.Collapsed,  // shown only when at least one RunInstance exists
-            Child = new ScrollViewer
-            {
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                Content = chipsPanel,
-            },
-        };
-
-        // ── Drawer ──────────────────────────────────────────────────────────────
-        var drawerHeader = new TextBlock
-        {
-            Foreground = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
-            FontSize = 11,
-            FontWeight = FontWeights.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0),
-        };
-        var drawerStopBtn = MakeDrawerActionButton("⏹ Stop");
-        var drawerCopyBtn = MakeDrawerActionButton("📋 Copy");
-        var drawerSendBtn = MakeDrawerActionButton("↗ Send to terminal");
-
-        var drawerActions = new DockPanel { LastChildFill = false };
-        DockPanel.SetDock(drawerHeader, Dock.Left);
-        DockPanel.SetDock(drawerStopBtn, Dock.Right);
-        DockPanel.SetDock(drawerCopyBtn, Dock.Right);
-        DockPanel.SetDock(drawerSendBtn, Dock.Right);
-        drawerActions.Children.Add(drawerHeader);
-        drawerActions.Children.Add(drawerSendBtn);
-        drawerActions.Children.Add(drawerCopyBtn);
-        drawerActions.Children.Add(drawerStopBtn);
-
-        var drawerText = new WpfTextBox
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
-            BorderThickness = new Thickness(0),
-            IsReadOnly = true,
-            AcceptsReturn = true,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 12,
-            Padding = new Thickness(8, 6, 8, 6),
-            TextWrapping = TextWrapping.NoWrap,
-        };
-
-        var drawerInner = new DockPanel();
-        DockPanel.SetDock(drawerActions, Dock.Top);
-        drawerInner.Children.Add(drawerActions);
-        drawerInner.Children.Add(drawerText);
-
-        var drawer = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x11, 0x11, 0x1b)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Height = 200,
-            Visibility = Visibility.Collapsed,
-            Child = drawerInner,
-        };
-
-        drawerStopBtn.Click += (_, _) =>
-        {
-            if (_drawerItemBySession.TryGetValue(vm.Id, out var itemId))
-                vm.Runner.Stop(itemId);
-        };
-        drawerCopyBtn.Click += (_, _) =>
-        {
-            if (_drawerItemBySession.TryGetValue(vm.Id, out var itemId) &&
-                vm.Runner.GetInstance(itemId) is { } inst)
-            {
-                string text = !string.IsNullOrEmpty(drawerText.SelectedText)
-                    ? drawerText.SelectedText
-                    : inst.SnapshotOutput();
-                try { System.Windows.Clipboard.SetText(text); } catch { }
-            }
-        };
-        drawerSendBtn.Click += (_, _) => SendRunOutputToTerminal(vm, drawerText);
-
         DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(chipsStrip, Dock.Top);
-        DockPanel.SetDock(drawer, Dock.Top);
         DockPanel.SetDock(notesPanel, Dock.Top);
         outer.Children.Add(toolbar);
-        outer.Children.Add(chipsStrip);
-        outer.Children.Add(drawer);
         outer.Children.Add(notesPanel);
         outer.Children.Add(webView);
         wrapper.Child = outer;
@@ -3250,11 +2820,6 @@ public partial class MainWindow : Window
             }
         };
 
-        _runControls[vm.Id] = (playBtn, chevronBtn, chipsStrip, chipsPanel, drawer,
-            drawerText, drawerHeader, drawerStopBtn, drawerCopyBtn, drawerSendBtn);
-
-        vm.Runner.InstancesChanged += () => Dispatcher.Invoke(() => RefreshTerminalRunControls(vm.Id));
-
         return activeRing;
     }
 
@@ -3267,8 +2832,6 @@ public partial class MainWindow : Window
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
         }
-        _runControls.Remove(vm.Id);
-        _drawerItemBySession.Remove(vm.Id);
         if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
         _sessionManager.RemoveSession(vm.Id);
         RefreshTerminalLayout();
@@ -3287,11 +2850,6 @@ public partial class MainWindow : Window
     /// </summary>
     private void SleepSession(SessionViewModel vm)
     {
-        // Defensive — vm.Dispose() at the bottom of this method also kills runs via
-        // Runner.Dispose, but stopping them explicitly here ensures child processes
-        // die BEFORE UI teardown, avoiding any chance of an orphan output event
-        // racing the disposing UI controls.
-        vm.Runner.StopAll();
         var session = vm.Session;
         session.IsDormant = true;
 
@@ -3303,8 +2861,6 @@ public partial class MainWindow : Window
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
         }
-        _runControls.Remove(vm.Id);
-        _drawerItemBySession.Remove(vm.Id);
 
         // Remove the VM directly — bypass CloseRequested so the ShellSession is
         // NOT removed from the SessionManager (we want to keep it for wake-up).
@@ -3600,7 +3156,6 @@ public partial class MainWindow : Window
 
         var newSession = _sessionManager.CreateSession(
             entry.SessionName, entry.WorkingFolder, entry.Command, entry.Args, entry.GroupId);
-        SeedRunCommandsAsync(newSession);
         await LaunchSessionAsync(newSession);
     }
 
@@ -3687,7 +3242,6 @@ public partial class MainWindow : Window
             : System.IO.Path.GetFileName(workingFolder.TrimEnd('/', '\\')) + " (PS)";
 
         var session = _sessionManager.CreateSession(folderName, workingFolder, cmd, "", groupId);
-        SeedRunCommandsAsync(session);
         _ = LaunchSessionAsync(session);
     }
 
@@ -3891,20 +3445,6 @@ public partial class MainWindow : Window
         if (key == Key.F && mods == ModifierKeys.Control) { ToggleSearch_Click(this, new RoutedEventArgs()); return true; }
         if (key == Key.Tab && mods == ModifierKeys.Control) { CycleSession(forward: true); return true; }
         if (key == Key.Tab && mods == (ModifierKeys.Control | ModifierKeys.Shift)) { CycleSession(forward: false); return true; }
-        if (key == Key.F5 && mods == ModifierKeys.None)
-        {
-            if (_vm.ActiveSession != null) RunDefaultCommand(_vm.ActiveSession);
-            return true;
-        }
-        if (key == Key.F5 && mods == ModifierKeys.Shift)
-        {
-            if (_vm.ActiveSession is { } vm)
-            {
-                var def = vm.Session.RunCommands.FirstOrDefault(i => i.IsDefault);
-                if (def != null) vm.Runner.Stop(def.Id);
-            }
-            return true;
-        }
         return false;
     }
 

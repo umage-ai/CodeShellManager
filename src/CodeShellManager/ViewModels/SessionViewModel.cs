@@ -30,7 +30,6 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     public TerminalBridge? Bridge { get; set; }
     public AlertDetector? AlertDetector { get; set; }
     public OutputIndexer? OutputIndexer { get; set; }
-    public SessionRunner Runner { get; }
 
     public string Id => Session.Id;
     public string Name => Session.Name;
@@ -74,7 +73,6 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     public SessionViewModel(ShellSession session)
     {
         Session = session;
-        Runner = new SessionRunner(session);
         _ = RefreshGitInfoAsync();
         _ = PollGitInfoAsync(_gitPollCts.Token);
     }
@@ -152,7 +150,6 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
-        Runner.Dispose();
         _gitPollCts.Cancel();
         _gitPollCts.Dispose();
         AlertDetector?.Dispose();
