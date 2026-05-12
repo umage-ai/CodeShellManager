@@ -380,6 +380,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task LaunchAndFollowUpWorktreesAsync(ShellSession primary, IReadOnlyList<string> additionalPaths)
     {
+        SeedRunCommandsAsync(primary);
         await LaunchSessionAsync(primary);
         if (additionalPaths.Count == 0) return;
 
@@ -412,6 +413,7 @@ public partial class MainWindow : Window
             sibling.ProfileBackgroundOpacity = primary.ProfileBackgroundOpacity;
             sibling.ProfileRetroEffect = primary.ProfileRetroEffect;
             sibling.ProfileColorSchemeJson = primary.ProfileColorSchemeJson;
+            SeedRunCommandsAsync(sibling);
             await LaunchSessionAsync(sibling);
             anchorId = sibling.Id;
             lastWasClaude = isClaude;
@@ -452,6 +454,19 @@ public partial class MainWindow : Window
         clone.ProfileBackgroundOpacity = p.ProfileBackgroundOpacity;
         clone.ProfileRetroEffect = p.ProfileRetroEffect;
         clone.ProfileColorSchemeJson = p.ProfileColorSchemeJson;
+        // Copy parent's run commands with fresh Ids so the duplicate has its own list.
+        foreach (var item in p.RunCommands)
+        {
+            clone.RunCommands.Add(new Models.RunCommandItem
+            {
+                Id = System.Guid.NewGuid().ToString(),
+                Label = item.Label,
+                CommandLine = item.CommandLine,
+                IsDefault = item.IsDefault,
+            });
+        }
+        // If the parent had no commands, fall back to detection.
+        if (clone.RunCommands.Count == 0) SeedRunCommandsAsync(clone);
         await LaunchSessionAsync(clone);
     }
 
@@ -502,8 +517,47 @@ public partial class MainWindow : Window
         sibling.ProfileBackgroundOpacity = p.ProfileBackgroundOpacity;
         sibling.ProfileRetroEffect = p.ProfileRetroEffect;
         sibling.ProfileColorSchemeJson = p.ProfileColorSchemeJson;
+        SeedRunCommandsAsync(sibling);
         await LaunchSessionAsync(sibling);
     }
+
+    /// <summary>
+    /// Stamps the session's RunCommands list from the matching project-type template,
+    /// if the list is currently empty AND the session is local (not SSH). Runs on a
+    /// background task so the UI doesn't block on folder enumeration. No-op if the
+    /// folder doesn't match any template.
+    /// </summary>
+    private void SeedRunCommandsAsync(Models.ShellSession session)
+    {
+        if (session.IsRemote) return;
+        if (session.RunCommands.Count > 0) return;
+        if (string.IsNullOrWhiteSpace(session.WorkingFolder)) return;
+
+        string folder = session.WorkingFolder;
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            var template = Services.RunCommandTemplatesService.SeedFor(folder);
+            if (template == null) return;
+            Dispatcher.Invoke(() =>
+            {
+                // Re-check on UI thread — the user may have edited the list manually
+                // while we were scanning (race with the editor dialog).
+                if (session.RunCommands.Count == 0)
+                {
+                    foreach (var item in template.Items)
+                        session.RunCommands.Add(item);
+                    _ = _vm.SaveStateAsync();
+                    RefreshTerminalRunControls(session.Id);
+                }
+            });
+        });
+    }
+
+    /// <summary>
+    /// Rebuilds the play button / chips strip for a single session.
+    /// Stub for Task 6 — fully implemented in Task 7.
+    /// </summary>
+    private void RefreshTerminalRunControls(string sessionId) { /* implemented in Task 7 */ }
 
     private static void Log(string msg)
     {
@@ -2011,6 +2065,7 @@ public partial class MainWindow : Window
         newSession.ProfileRetroEffect = source.Session.ProfileRetroEffect;
         newSession.ProfileColorSchemeJson = source.Session.ProfileColorSchemeJson;
 
+        SeedRunCommandsAsync(newSession);
         await LaunchSessionAsync(newSession);
     }
 
@@ -3156,6 +3211,7 @@ public partial class MainWindow : Window
 
         var newSession = _sessionManager.CreateSession(
             entry.SessionName, entry.WorkingFolder, entry.Command, entry.Args, entry.GroupId);
+        SeedRunCommandsAsync(newSession);
         await LaunchSessionAsync(newSession);
     }
 
@@ -3242,6 +3298,7 @@ public partial class MainWindow : Window
             : System.IO.Path.GetFileName(workingFolder.TrimEnd('/', '\\')) + " (PS)";
 
         var session = _sessionManager.CreateSession(folderName, workingFolder, cmd, "", groupId);
+        SeedRunCommandsAsync(session);
         _ = LaunchSessionAsync(session);
     }
 
