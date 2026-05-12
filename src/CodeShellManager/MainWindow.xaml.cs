@@ -1421,6 +1421,54 @@ public partial class MainWindow : Window
             };
         }
 
+        // Drop target: assign dragged session(s) to this group. The "All" tab (groupId=null)
+        // is a view, not a real group — don't accept drops there. "Ungrouped" accepts drops
+        // and clears the GroupId. Multi-select drops the whole selection when the dragged
+        // session is part of it.
+        if (groupId != null)
+        {
+            border.AllowDrop = true;
+            border.DragEnter += (_, e) =>
+            {
+                if (!IsSessionDragPayload(e.Data)) return;
+                // Highlight the tab as the active drop target.
+                border.Background = new SolidColorBrush(
+                    Color.FromArgb(0x88, 0x89, 0xb4, 0xfa));
+                e.Handled = true;
+            };
+            border.DragLeave += (_, _) =>
+            {
+                // Restore the normal active/inactive state; UpdateGroupStripActiveState
+                // recomputes Background from _vm.ActiveGroupId.
+                UpdateGroupStripActiveState();
+            };
+            border.DragOver += (_, e) =>
+            {
+                if (!IsSessionDragPayload(e.Data))
+                {
+                    // Let the parent GroupStripPanel handler take group-tab reorder drags.
+                    return;
+                }
+                e.Effects = System.Windows.DragDropEffects.Move;
+                // Handled = true prevents the strip's DragOver from overriding Effects to None.
+                e.Handled = true;
+            };
+            border.Drop += (_, e) =>
+            {
+                if (!IsSessionDragPayload(e.Data))
+                {
+                    UpdateGroupStripActiveState();
+                    return;
+                }
+                string sessionId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+                string? targetGroupId = groupId == GroupFilter.Ungrouped ? null : groupId;
+                var targets = _vm.ResolveActionTargets(sessionId);
+                _vm.AssignSessionsToGroup(targets, targetGroupId);
+                e.Handled = true;
+                UpdateGroupStripActiveState();
+            };
+        }
+
         return border;
     }
 
@@ -1429,6 +1477,17 @@ public partial class MainWindow : Window
         for (int i = 0; i < _sessionManager.Groups.Count; i++)
             if (_sessionManager.Groups[i].Id == groupId) return i;
         return -1;
+    }
+
+    /// <summary>
+    /// True when the drag payload is a session id (the raw vm.Id used by BuildSidebarItem),
+    /// not a group-reorder payload (prefixed with "group:") or some unrelated data.
+    /// </summary>
+    private static bool IsSessionDragPayload(System.Windows.IDataObject data)
+    {
+        if (!data.GetDataPresent(System.Windows.DataFormats.StringFormat)) return false;
+        var payload = data.GetData(System.Windows.DataFormats.StringFormat) as string;
+        return !string.IsNullOrEmpty(payload) && !payload!.StartsWith("group:");
     }
 
     private void UpdateGroupStripActiveState()
@@ -1740,13 +1799,14 @@ public partial class MainWindow : Window
         SidebarSessionList.AllowDrop = true;
         SidebarSessionList.DragOver += (_, e) =>
         {
-            e.Effects = e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat)
-                ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+            e.Effects = IsSessionDragPayload(e.Data)
+                ? System.Windows.DragDropEffects.Move
+                : System.Windows.DragDropEffects.None;
             e.Handled = true;
         };
         SidebarSessionList.Drop += (_, e) =>
         {
-            if (!e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat)) return;
+            if (!IsSessionDragPayload(e.Data)) return;
             string draggedId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
             int targetIndex = GetSidebarDropIndex(e.GetPosition(SidebarSessionList));
             _vm.MoveSession(draggedId, targetIndex);
