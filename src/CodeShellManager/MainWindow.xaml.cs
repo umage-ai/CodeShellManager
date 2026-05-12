@@ -1352,42 +1352,20 @@ public partial class MainWindow : Window
                         break;
 
                     case nameof(SessionViewModel.AccentColor):
-                        // RepoRoot resolved → repaint stripe + active ring with the shared color
-                        // so worktree siblings cluster visually.
+                        // RepoRoot resolved → repaint sidebar stripe + ring with the shared
+                        // color so worktree siblings cluster visually. The terminal pane's
+                        // top stripe + ring are repainted by BuildTerminalWrapper's own
+                        // AccentColor subscription using its locally-captured references.
                         try
                         {
                             var newAccent = (Color)ColorConverter.ConvertFromString(vm.AccentColor);
                             stripe.Background = new SolidColorBrush(newAccent);
-                            if (_sessionUi.TryGetValue(vm.Id, out var ui))
-                            {
-                                ui.terminalWrapper.Tag = vm.AccentColor;
-                                if (_vm.ActiveSession?.Id == vm.Id)
-                                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(newAccent);
-                            }
-                            // Sidebar ring picks the accent up too when this session is active.
                             if (_vm.ActiveSession?.Id == vm.Id)
                                 UpdateSidebarActiveState();
                         }
                         catch { /* invalid hex — ignore */ }
                         break;
                 }
-            });
-        };
-
-        // AccentColor depends on RepoRoot which lands asynchronously after GitService probes —
-        // refresh the stripe and the active-state ring when it shifts.
-        vm.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName != nameof(SessionViewModel.AccentColor)) return;
-            Dispatcher.Invoke(() =>
-            {
-                try
-                {
-                    var c = (Color)ColorConverter.ConvertFromString(vm.AccentColor);
-                    stripe.Background = new SolidColorBrush(c);
-                }
-                catch { }
-                UpdateSidebarActiveState();
             });
         };
 
@@ -1425,7 +1403,7 @@ public partial class MainWindow : Window
             // Background: selection takes precedence over active (so a multi-selected
             // active session still shows it belongs to the action set). Active-only items
             // get Catppuccin Surface1 — dark enough that white text still has clear
-            // contrast (~6.5:1) while the accent-coloured ring carries the active signal.
+            // contrast (~6.3:1) while the accent-coloured ring carries the active signal.
             if (isSelected)
                 item.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa));
             else if (isActive)
