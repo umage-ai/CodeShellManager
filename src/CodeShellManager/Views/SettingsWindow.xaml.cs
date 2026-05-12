@@ -33,6 +33,7 @@ public partial class SettingsWindow : Window
             ShowGitBranch = current.ShowGitBranch,
             ShowGroupsTab = current.ShowGroupsTab,
             GroupDisplayMode = current.GroupDisplayMode,
+            SidebarActionIconsMode = current.SidebarActionIconsMode,
             ShowWorktreeClusters = current.ShowWorktreeClusters,
             SearchCollapseAfterNavigate = current.SearchCollapseAfterNavigate,
             Theme = current.Theme,
@@ -70,6 +71,16 @@ public partial class SettingsWindow : Window
         }
         if (GroupDisplayModeCombo.SelectedIndex < 0)
             GroupDisplayModeCombo.SelectedIndex = 1; // FilterStrip default
+        foreach (ComboBoxItem item in SidebarActionIconsModeCombo.Items)
+        {
+            if (item.Tag?.ToString() == _edited.SidebarActionIconsMode.ToString())
+            {
+                SidebarActionIconsModeCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (SidebarActionIconsModeCombo.SelectedIndex < 0)
+            SidebarActionIconsModeCombo.SelectedIndex = 0; // OnHover default
         ImportWindowsTerminalProfilesCheck.IsChecked = _edited.ImportWindowsTerminalProfiles;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
@@ -141,6 +152,9 @@ public partial class SettingsWindow : Window
             // Keep the legacy flag in sync so a downgrade to an older build still respects None.
             _edited.ShowGroupsTab = newMode != Models.GroupDisplayMode.None;
         }
+        var iconsModeTag = (SidebarActionIconsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        if (System.Enum.TryParse<Models.SidebarActionIconsMode>(iconsModeTag, out var newIconsMode))
+            _edited.SidebarActionIconsMode = newIconsMode;
         _edited.ImportWindowsTerminalProfiles = ImportWindowsTerminalProfilesCheck.IsChecked == true;
         _edited.SearchCollapseAfterNavigate = SearchCollapseAfterNavigateCheck.IsChecked == true;
         _edited.AnthropicApiKey = ApiKeyBox.Password;

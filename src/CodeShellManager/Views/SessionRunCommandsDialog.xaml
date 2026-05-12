@@ -1,0 +1,105 @@
+<Window x:Class="CodeShellManager.Views.SessionRunCommandsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Run commands"
+        Width="720" Height="500"
+        MinWidth="560" MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        Background="#1e1e2e"
+        Foreground="#cdd6f4"
+        ResizeMode="CanResizeWithGrip">
+    <DockPanel Margin="18,16,18,14">
+        <TextBlock x:Name="TitleText" DockPanel.Dock="Top" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock DockPanel.Dock="Top" FontSize="11" Foreground="#6c7086" Margin="0,0,0,14"
+                   Text="Commands run in this session's folder. The starred row is the default (F5 / toolbar ▶). Use &amp;&amp; / | / &gt; as in any shell."
+                   TextWrapping="Wrap"/>
+
+        <!-- Bottom: Add (left) and Cancel/Save (right) on one row -->
+        <Grid DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="AddBtn" Grid.Column="0" Content="+ Add command"
+                    Background="Transparent" BorderBrush="#45475a" BorderThickness="1" Padding="12,5"
+                    Foreground="#cdd6f4" Cursor="Hand" Click="Add_Click"/>
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <Button x:Name="CancelBtn" Content="Cancel" Width="84" Margin="0,0,8,0" Padding="0,5"
+                        Background="Transparent" BorderBrush="#45475a" BorderThickness="1"
+                        Foreground="#cdd6f4" Cursor="Hand" Click="Cancel_Click"/>
+                <Button x:Name="SaveBtn" Content="Save" Width="84" Padding="0,5" IsDefault="True"
+                        Background="#89b4fa" Foreground="#1e1e2e" BorderThickness="0"
+                        Cursor="Hand" Click="Save_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Column header row — keep widths in sync with the row template below. -->
+        <Border DockPanel.Dock="Top" BorderBrush="#313244" BorderThickness="0,0,0,1" Padding="0,0,0,6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="44"/>
+                    <ColumnDefinition Width="*" MinWidth="120"/>
+                    <ColumnDefinition Width="2*" MinWidth="200"/>
+                    <ColumnDefinition Width="86"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="★" FontSize="12"
+                           Foreground="#f9e2af" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           ToolTip="Default command — runs on F5 / toolbar ▶"/>
+                <TextBlock Grid.Column="1" Text="LABEL" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
+                           Foreground="#7f849c" VerticalAlignment="Center"
+                           ToolTip="Short name shown on the chip and in the toolbar dropdown"/>
+                <TextBlock Grid.Column="2" Text="COMMAND LINE" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
+                           Foreground="#7f849c" VerticalAlignment="Center"
+                           ToolTip="What runs in the session's folder (cmd locally, bash on SSH parents)"/>
+                <TextBlock Grid.Column="3" Text=""/>
+            </Grid>
+        </Border>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,2,0,0">
+            <ItemsControl x:Name="RowsList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Padding="0,8,0,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="44"/>
+                                    <ColumnDefinition Width="*" MinWidth="120"/>
+                                    <ColumnDefinition Width="2*" MinWidth="200"/>
+                                    <ColumnDefinition Width="86"/>
+                                </Grid.ColumnDefinitions>
+                                <RadioButton Grid.Column="0" GroupName="DefaultGroup"
+                                             HorizontalAlignment="Center" VerticalAlignment="Center"
+                                             IsChecked="{Binding IsDefault, Mode=TwoWay}"
+                                             Foreground="#cdd6f4"
+                                             ToolTip="Set as default (toolbar ▶ / F5)"/>
+                                <TextBox Grid.Column="1" Text="{Binding Label, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
+                                         CaretBrush="#cdd6f4" Padding="6,4" Margin="0,0,8,0"
+                                         VerticalContentAlignment="Center"
+                                         ToolTip="Short, friendly name — e.g. Test, Build, Watch"/>
+                                <TextBox Grid.Column="2" Text="{Binding CommandLine, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
+                                         CaretBrush="#cdd6f4" Padding="6,4" Margin="0,0,8,0"
+                                         FontFamily="Consolas"
+                                         VerticalContentAlignment="Center"
+                                         ToolTip="The actual command line — e.g. dotnet test, npm run build"/>
+                                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="▲" Tag="{Binding}" Click="MoveUp_Click" Width="26" Height="24"
+                                            Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"
+                                            ToolTip="Move up"/>
+                                    <Button Content="▼" Tag="{Binding}" Click="MoveDown_Click" Width="26" Height="24"
+                                            Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"
+                                            ToolTip="Move down"/>
+                                    <Button Content="🗑" Tag="{Binding}" Click="Delete_Click" Width="26" Height="24"
+                                            Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"
+                                            ToolTip="Delete"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

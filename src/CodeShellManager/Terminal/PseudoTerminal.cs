@@ -53,6 +53,22 @@ public sealed class PseudoTerminal : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr hJob, int JobObjectInfoClass,
+        ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION lpJobObjectInfo, int cbJobObjectInfoLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
     // ── Structs ───────────────────────────────────────────────────────────────
 
     [StructLayout(LayoutKind.Sequential)]
@@ -82,13 +98,55 @@ public sealed class PseudoTerminal : IDisposable
         public int dwProcessId, dwThreadId;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public IntPtr MinimumWorkingSetSize;
+        public IntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public IntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+        public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public IntPtr ProcessMemoryLimit;
+        public IntPtr JobMemoryLimit;
+        public IntPtr PeakProcessMemoryUsed;
+        public IntPtr PeakJobMemoryUsed;
+    }
+
     private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     private const IntPtr PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = (IntPtr)0x00020016;
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const int JobObjectExtendedLimitInformation = 9;
 
     // ── Fields ────────────────────────────────────────────────────────────────
 
     private IntPtr _hPC = IntPtr.Zero;
     private IntPtr _hProcess = IntPtr.Zero;
+    private IntPtr _hJob = IntPtr.Zero;
+
+    /// <summary>
+    /// Process exit code, populated once <see cref="Exited"/> fires.
+    /// Null while the process is still running. Uint cast to int (Windows exit codes can be negative).
+    /// </summary>
+    public int? ExitCode { get; private set; }
     private SafeFileHandle? _inputRead, _inputWrite, _outputRead, _outputWrite;
     private FileStream? _stdin, _stdout;
     private CancellationTokenSource _cts = new();
@@ -117,7 +175,8 @@ public sealed class PseudoTerminal : IDisposable
         return $"powershell.exe -NoExit -Command {fullUserCmd}";
     }
 
-    public void Start(string command, string args, string workingDirectory, int cols = 220, int rows = 50)
+    public void Start(string command, string args, string workingDirectory,
+        int cols = 220, int rows = 50, bool useJobObject = false)
     {
         // Create pipe pairs: input to PTY, output from PTY
         CreatePipe(out _inputRead!, out _inputWrite!, IntPtr.Zero, 0);
@@ -157,13 +216,53 @@ public sealed class PseudoTerminal : IDisposable
             string cmdLine = BuildCmdLine(command, userCmd);
             string? workDir = string.IsNullOrWhiteSpace(workingDirectory) ? null : workingDirectory;
 
+            // Build CreateProcess flags. When useJobObject=true we add CREATE_SUSPENDED so
+            // we can attach the new process to the Job Object before it starts spawning children.
+            uint creationFlags = EXTENDED_STARTUPINFO_PRESENT;
+            if (useJobObject) creationFlags |= CREATE_SUSPENDED;
+
             Log($"CreateProcess cmdLine='{cmdLine}' workDir='{workDir}'");
             if (!CreateProcess(null, cmdLine, IntPtr.Zero, IntPtr.Zero, false,
-                    EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, workDir, ref si, out var pi))
+                    creationFlags, IntPtr.Zero, workDir, ref si, out var pi))
                 throw new InvalidOperationException($"CreateProcess failed: {Marshal.GetLastWin32Error()}");
 
             _hProcess = pi.hProcess;
-            CloseHandle(pi.hThread);
+
+            // Inner try/finally guarantees pi.hThread is closed even if any job-object
+            // P/Invoke throws — otherwise we leak the thread handle on error paths.
+            try
+            {
+                if (useJobObject)
+                {
+                    _hJob = CreateJobObject(IntPtr.Zero, null);
+                    if (_hJob == IntPtr.Zero)
+                        throw new InvalidOperationException(
+                            $"CreateJobObject failed: {Marshal.GetLastWin32Error()}");
+
+                    var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+                    {
+                        BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
+                        {
+                            LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                        }
+                    };
+                    if (!SetInformationJobObject(_hJob, JobObjectExtendedLimitInformation,
+                            ref limits, Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()))
+                        throw new InvalidOperationException(
+                            $"SetInformationJobObject failed: {Marshal.GetLastWin32Error()}");
+
+                    if (!AssignProcessToJobObject(_hJob, _hProcess))
+                        throw new InvalidOperationException(
+                            $"AssignProcessToJobObject failed: {Marshal.GetLastWin32Error()}");
+
+                    // Process was started suspended — resume it now that it's in the job.
+                    ResumeThread(pi.hThread);
+                }
+            }
+            finally
+            {
+                CloseHandle(pi.hThread);
+            }
         }
         finally
         {
@@ -247,6 +346,8 @@ public sealed class PseudoTerminal : IDisposable
     private async Task MonitorExitAsync()
     {
         await Task.Run(() => WaitForSingleObject(_hProcess, 0xFFFFFFFF));
+        if (_hProcess != IntPtr.Zero && GetExitCodeProcess(_hProcess, out uint code))
+            ExitCode = unchecked((int)code);
         Exited?.Invoke();
     }
 
@@ -261,6 +362,7 @@ public sealed class PseudoTerminal : IDisposable
         _inputWrite?.Dispose();
         _outputRead?.Dispose();
         _outputWrite?.Dispose();
+        if (_hJob != IntPtr.Zero) { CloseHandle(_hJob); _hJob = IntPtr.Zero; }
         if (_hPC != IntPtr.Zero) { ClosePseudoConsole(_hPC); _hPC = IntPtr.Zero; }
         if (_hProcess != IntPtr.Zero) { CloseHandle(_hProcess); _hProcess = IntPtr.Zero; }
     }

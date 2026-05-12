@@ -15,6 +15,20 @@ public enum GroupDisplayMode
     InlineHeaders
 }
 
+/// <summary>
+/// How per-session action icons (close / sleep / spawn) are surfaced on each sidebar
+/// row. OnHover (default) keeps the sidebar visually calm — icons fade in only while
+/// the row is hovered. Always shows them at all times (the legacy behaviour). Hidden
+/// removes them entirely; users rely on the right-click context menu or the terminal
+/// toolbar instead. The terminal toolbar always shows its own icons regardless.
+/// </summary>
+public enum SidebarActionIconsMode
+{
+    Hidden,
+    OnHover,
+    Always
+}
+
 public class AppSettings
 {
     public bool AutoRestoreSessions { get; set; } = true;
@@ -59,6 +73,8 @@ public class AppSettings
     public int MaxSearchResults { get; set; } = 100;
     public bool ShowTerminalStatusDot { get; set; } = true;
     public bool ImportWindowsTerminalProfiles { get; set; } = false;
+    /// <summary>How per-row action icons are surfaced in the sidebar. See <see cref="Models.SidebarActionIconsMode"/>.</summary>
+    public SidebarActionIconsMode SidebarActionIconsMode { get; set; } = SidebarActionIconsMode.OnHover;
 
     // Storage
     public bool IndexTerminalOutput { get; set; } = true;

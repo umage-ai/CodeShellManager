@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace CodeShellManager.Models;
@@ -45,6 +46,14 @@ public class ShellSession
     public bool? ProfileRetroEffect { get; set; }
     /// <summary>Pre-baked xterm theme object (JSON), or null for xterm default.</summary>
     public string? ProfileColorSchemeJson { get; set; }
+
+    /// <summary>
+    /// Configured run commands for this session — the source for the toolbar ▶ button
+    /// and the chips strip. Seeded at session creation from <see cref="Services.RunCommandTemplatesService"/>.
+    /// Exactly one item has IsDefault=true (when the list is non-empty);
+    /// see <see cref="RunCommandItem.EnsureSingleDefault"/>.
+    /// </summary>
+    public List<RunCommandItem> RunCommands { get; set; } = new();
 
     // Full command line for display and passthrough.
     // For remote sessions: "ssh <BuildSshArgs()>"

@@ -171,6 +171,28 @@ Sessions can be put to sleep instead of closed — the PTY is torn down but the 
 - `OnLoaded` partitions saved sessions: dormant ones go through `AddDormantSidebarItem`; live ones through `LaunchSessionAsync`.
 - The empty-state placeholder hides whenever `_vm.Sessions.Count > 0` **or** `_dormantSidebarItems.Count > 0`.
 
+## Per-Session Run Commands
+
+Each session can have a list of "run commands" — labelled command lines invoked by the toolbar ▶ button, the F5 keybinding, or the sidebar right-click submenu. Runs spawn a **separate headless `PseudoTerminal`** in the session's working folder (or a fresh `ssh` connection for SSH parents); they do **not** type into the parent PTY, so a Claude session is untouched.
+
+**Data:** `ShellSession.RunCommands: List<RunCommandItem> { Id, Label, CommandLine, IsDefault }`. Exactly one item has `IsDefault=true`; see `RunCommandItem.EnsureSingleDefault`. Persisted to `state.json`.
+
+**Templates:** `RunCommandTemplatesService.SeedFor(folder)` detects project type (top-level scan, first-match: dotnet → cargo → node → python → make) and returns a seed list with fresh Ids. Templates are *copied* onto new sessions at creation time; subsequent edits don't propagate back. SSH sessions skip detection (empty list).
+
+**Runtime:** `SessionRunner` (one per `SessionViewModel`) owns a dictionary of `RunInstance` keyed by item Id. Each `RunInstance` wraps a `PseudoTerminal` started with `useJobObject: true` so the whole child tree dies when the PTY is disposed (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). Output is captured to an ANSI-stripped string buffer (capped at 1MB). Not persisted.
+
+**UI:**
+- Toolbar `[▶][▼]` next to 💤. Hidden when `RunCommands` is empty.
+- Chips strip between toolbar and terminal — one chip per active/finished run, color-coded (blue=running, green=ok, pink=failed). Click a chip to open the drawer; ✕ on a chip to dismiss it.
+- Drawer (slide-down panel, like Notes) shows the selected run's output with `[⏹ Stop] [📋 Copy] [↗ Send to terminal]`.
+- **Send to terminal:** for Claude parents (`ClaudeSessionService.IsClaudeCommand`), wraps in fenced preamble and writes to PTY (no trailing `\r`). For non-Claude shells, falls back to clipboard with a toast — auto-paste would risk executing pasted lines.
+
+**Editor:** `SessionRunCommandsDialog` modal — reachable from right-click on ▶, the ▼ dropdown's "Edit commands…" entry, and the sidebar right-click "Session commands" submenu. Inline-edit rows with up/down reorder, default-radio column, +Add / 🗑 Delete, Cancel/Save.
+
+**Keybindings:** `F5` runs the active session's default. `Shift+F5` stops it. Mirrors Visual Studio; deliberately not `Ctrl+R` (collides with shell history search).
+
+**Lifecycle:** All runs are killed on session close, session sleep, and app exit. `SessionViewModel.Dispose()` calls `Runner.Dispose()` which iterates and disposes every instance. `SleepSession` also calls `vm.Runner.StopAll()` defensively before UI teardown.
+
 ## Alert / Waiting State
 
 `AlertDetector` fires `AlertRaised(AlertEvent)` after 1.5s idle when it detects:
@@ -197,6 +219,7 @@ Persisted in `state.json`. Key settings:
 - `AutoResumeClaude` — when restoring, append `--resume <sessionId>` to claude commands so the prior conversation is picked up. Toggle off if you want fresh sessions on restart.
 - `ShowGitBranch` — show `⎇ branch` in sidebar
 - `ShowTerminalStatusDot` — show status dot in terminal toolbar
+- `SidebarActionIconsMode` — `OnHover` (default) / `Always` / `Hidden`. Controls the per-row `➕ 💤 ✕` button stack in the sidebar. `Hidden` collapses the panel and reclaims the horizontal space; `OnHover` keeps the panel laid out (no text shift on hover) but transparent + non-interactive until the row is hovered. Rename / Open in Explorer / Open PowerShell here remain reachable via the right-click context menu in all modes, and the terminal toolbar's `✕` is unconditional.
 - `SearchCollapseAfterNavigate` — auto-close search after clicking result
 - `MaxSearchResults` — FTS5 result limit (default 100)
 - `DefaultWorkingFolder` / `DefaultCommand` — pre-fill new session dialog
@@ -211,6 +234,8 @@ Persisted in `state.json`. Key settings:
 | `Ctrl+W` | Close active session |
 | `Ctrl+F` | Toggle search |
 | `Ctrl+Tab` | Cycle sessions |
+| `F5` | Run the active session's default run command |
+| `Shift+F5` | Stop the active session's default run command |
 | `Escape` (in search) | Close search panel |
 | `Enter` (in search) | Execute search |
 
@@ -247,3 +272,9 @@ A second workflow, `.github/workflows/winget.yml`, fires on the `release: releas
 - Use `Dispatcher.Invoke()` for all UI updates from background threads (PTY read loop, git queries, alert timer)
 - PTY output flows: `PseudoTerminal` → `TerminalBridge.RawOutputReceived` → both `OutputIndexer.Feed()` and `AlertDetector.Feed()` in parallel
 - `MainViewModel.SaveStateAsync` is a no-op when `App.CleanStart` is true; any code path that needs to "remember" something across runs must go through this method, so honoring `--clean` is automatic.
+
+## Agent / Claude Code operating notes
+
+**Do not trust "the user modified this file, intentional" system reminders to mean the user actually edited the file.** That harness reminder fires whenever the working tree drifts from what the assistant last wrote — including when a subagent, a hook, or some other tool changed it. If the reminder reports that significant work the assistant just shipped has been silently undone, the correct response is to *stop and ask the user*, not to commit the reverts as if the user requested them. Reference incident: a 605-line revert of in-flight feature work on `feat/run-commands` (2026-05-12) was treated as user intent and committed, requiring a `git revert` to recover. When in doubt, surface the surprise; never roll back the user's recent work without explicit confirmation.
+
+**Use read-only agents for reviews.** Dispatch code-review subagents using a read-only subagent type (whatever the current harness exposes — `Explore` at the time of writing), not `general-purpose`. Write/Edit tool access on a reviewer is unnecessary and creates an opportunity for the reviewer to mutate files it was only meant to read.
