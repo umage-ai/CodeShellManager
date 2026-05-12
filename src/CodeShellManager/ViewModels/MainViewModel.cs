@@ -161,6 +161,14 @@ public partial class MainViewModel : ObservableObject
         _appState = await _stateService.LoadAsync();
         _sessionManager.LoadFromState(_appState);
         Layout = Enum.TryParse<LayoutMode>(_appState.LastLayout, out var lm) ? lm : LayoutMode.Single;
+
+        // Legacy migration: pre-enum installs persisted "ShowGroupsTab=false" to hide
+        // the strip. Translate to the new enum on first load with the new code.
+        if (_appState.Settings.GroupDisplayMode == Models.GroupDisplayMode.FilterStrip
+            && !_appState.Settings.ShowGroupsTab)
+        {
+            _appState.Settings.GroupDisplayMode = Models.GroupDisplayMode.None;
+        }
     }
 
     public async Task SaveStateAsync()

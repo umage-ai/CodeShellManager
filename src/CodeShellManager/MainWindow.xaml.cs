@@ -51,6 +51,10 @@ public partial class MainWindow : Window
     // Group-tab notification indicators (badge + text), keyed by group id (or "__ALL__"
     // / GroupFilter.Ungrouped sentinels). Repopulated on every RebuildGroupStrip.
     private readonly Dictionary<string, (Border badge, TextBlock badgeText)> _groupTabIndicators = [];
+    // Persisted only for the current session — the implicit Ungrouped bucket in inline-headers
+    // mode. Real groups carry their own SessionGroup.IsExpanded; this holds the equivalent
+    // bit for the Ungrouped pseudo-section.
+    private bool _ungroupedExpanded = true;
 
     private SqliteConnection? _db;
     private SearchService? _searchService;
@@ -1112,7 +1116,7 @@ public partial class MainWindow : Window
         foreach (Border item in SidebarSessionList.Children)
         {
             string? id = item.Tag as string;
-            if (id == null || id.StartsWith("dormant:") || id.StartsWith("cluster:")) continue;
+            if (id == null || id.StartsWith("dormant:") || id.StartsWith("cluster:") || id.StartsWith("groupheader:")) continue;
             bool isActive = id == _vm.ActiveSession?.Id;
             bool isSelected = _vm.IsSelected(id);
 
@@ -1166,7 +1170,8 @@ public partial class MainWindow : Window
 
     private void UpdateGroupStripVisibility()
     {
-        bool show = _vm.Settings.ShowGroupsTab && _sessionManager.Groups.Count > 0;
+        bool show = _vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.FilterStrip
+            && _sessionManager.Groups.Count > 0;
         GroupStripBorder.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         GroupStripCol.Width = new GridLength(show ? 44 : 0);
     }
@@ -1477,6 +1482,211 @@ public partial class MainWindow : Window
         for (int i = 0; i < _sessionManager.Groups.Count; i++)
             if (_sessionManager.Groups[i].Id == groupId) return i;
         return -1;
+    }
+
+    /// <summary>
+    /// Inline-mode header for a group section. <paramref name="group"/> = null renders the
+    /// implicit "Ungrouped" header. Click toggles expand/collapse; right-click opens a
+    /// rename/delete/move menu (real groups only); the header is both a drag source for
+    /// group reorder and a drop target for session reassignment.
+    /// </summary>
+    private Border BuildInlineGroupHeader(Models.SessionGroup? group, int count, bool expanded)
+    {
+        string label = group?.Name ?? "Ungrouped";
+        string headerTagId = group?.Id ?? GroupFilter.Ungrouped;
+
+        var border = new Border
+        {
+            Margin = new Thickness(0, 8, 0, 2),
+            Padding = new Thickness(8, 4, 8, 4),
+            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Tag = "groupheader:" + headerTagId,
+            ToolTip = group == null
+                ? "Sessions not assigned to a group"
+                : $"Group: {group.Name}"
+        };
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var caret = new TextBlock
+        {
+            Text = expanded ? "▼" : "▶",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            FontSize = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        };
+        Grid.SetColumn(caret, 0);
+
+        var labelText = new TextBlock
+        {
+            Text = label,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xcd, 0xd6, 0xf4)),
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetColumn(labelText, 1);
+
+        var countText = new TextBlock
+        {
+            Text = count.ToString(),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            FontSize = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        Grid.SetColumn(countText, 2);
+
+        grid.Children.Add(caret);
+        grid.Children.Add(labelText);
+        grid.Children.Add(countText);
+        border.Child = grid;
+
+        // Click toggles expand/collapse. Use MouseLeftButtonUp + a dragPending flag so a
+        // drag operation doesn't also fire the toggle.
+        System.Windows.Point dragStartPos = default;
+        bool dragPending = false;
+        border.PreviewMouseLeftButtonDown += (_, me) =>
+        {
+            dragStartPos = me.GetPosition(null);
+            dragPending = true;
+        };
+        border.PreviewMouseLeftButtonUp += (_, _) =>
+        {
+            if (!dragPending) return;
+            dragPending = false;
+            if (group != null)
+            {
+                group.IsExpanded = !group.IsExpanded;
+                _ = _vm.SaveStateAsync();
+            }
+            else
+            {
+                _ungroupedExpanded = !_ungroupedExpanded;
+            }
+            RebuildSidebarOrder();
+        };
+
+        // Real groups: drag source for reorder + right-click menu mirroring the strip tab.
+        if (group != null)
+        {
+            border.PreviewMouseMove += (_, me) =>
+            {
+                if (!dragPending || me.LeftButton != MouseButtonState.Pressed) return;
+                var diff = me.GetPosition(null) - dragStartPos;
+                if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
+                    Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
+                {
+                    dragPending = false;
+                    System.Windows.DragDrop.DoDragDrop(border, "group:" + group.Id,
+                        System.Windows.DragDropEffects.Move);
+                }
+            };
+
+            var menu = new System.Windows.Controls.ContextMenu();
+            var moveUp = new System.Windows.Controls.MenuItem { Header = "Move up" };
+            moveUp.Click += (_, _) =>
+            {
+                int idx = IndexOfUserGroup(group.Id);
+                if (idx > 0) _vm.MoveGroup(group.Id, idx - 1);
+            };
+            menu.Items.Add(moveUp);
+            var moveDown = new System.Windows.Controls.MenuItem { Header = "Move down" };
+            moveDown.Click += (_, _) =>
+            {
+                int idx = IndexOfUserGroup(group.Id);
+                if (idx >= 0 && idx < _sessionManager.Groups.Count - 1)
+                    _vm.MoveGroup(group.Id, idx + 1);
+            };
+            menu.Items.Add(moveDown);
+            menu.Items.Add(new System.Windows.Controls.Separator());
+            var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
+            rename.Click += (_, _) => PromptRenameGroup(group.Id, group.Name);
+            menu.Items.Add(rename);
+            var delete = new System.Windows.Controls.MenuItem { Header = "Delete group" };
+            delete.Click += (_, _) =>
+            {
+                var r = MessageBox.Show(
+                    $"Delete group '{group.Name}'? Sessions in this group will revert to Ungrouped.",
+                    "Delete group", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+                if (r == MessageBoxResult.Yes) _vm.RemoveGroup(group.Id);
+            };
+            menu.Items.Add(delete);
+            menu.Opened += (_, _) =>
+            {
+                int idx = IndexOfUserGroup(group.Id);
+                moveUp.IsEnabled = idx > 0;
+                moveDown.IsEnabled = idx >= 0 && idx < _sessionManager.Groups.Count - 1;
+            };
+            border.ContextMenu = menu;
+        }
+
+        // Drop target: sessions get assigned to this group; another group dropped here
+        // reorders to before this group.
+        border.AllowDrop = true;
+        border.DragEnter += (_, e) =>
+        {
+            if (IsSessionDragPayload(e.Data) || IsGroupDragPayload(e.Data, exceptGroupId: group?.Id))
+            {
+                border.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa));
+                e.Handled = true;
+            }
+        };
+        border.DragLeave += (_, _) =>
+        {
+            border.Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25));
+        };
+        border.DragOver += (_, e) =>
+        {
+            if (IsSessionDragPayload(e.Data)
+                || (group != null && IsGroupDragPayload(e.Data, exceptGroupId: group.Id)))
+            {
+                e.Effects = System.Windows.DragDropEffects.Move;
+                e.Handled = true;
+            }
+        };
+        border.Drop += (_, e) =>
+        {
+            border.Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x25));
+            if (IsSessionDragPayload(e.Data))
+            {
+                string sessionId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+                var targets = _vm.ResolveActionTargets(sessionId);
+                _vm.AssignSessionsToGroup(targets, group?.Id);
+                e.Handled = true;
+                return;
+            }
+            if (group != null && IsGroupDragPayload(e.Data, exceptGroupId: group.Id))
+            {
+                string payload = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+                string draggedId = payload.Substring("group:".Length);
+                int targetIdx = IndexOfUserGroup(group.Id);
+                if (targetIdx >= 0) _vm.MoveGroup(draggedId, targetIdx);
+                e.Handled = true;
+            }
+        };
+
+        return border;
+    }
+
+    /// <summary>True when the drag payload is "group:<id>" and (if specified) not the excepted id.</summary>
+    private static bool IsGroupDragPayload(System.Windows.IDataObject data, string? exceptGroupId = null)
+    {
+        if (!data.GetDataPresent(System.Windows.DataFormats.StringFormat)) return false;
+        var payload = data.GetData(System.Windows.DataFormats.StringFormat) as string;
+        if (string.IsNullOrEmpty(payload) || !payload!.StartsWith("group:")) return false;
+        string id = payload.Substring("group:".Length);
+        if (id == "__ALL__" || id == GroupFilter.Ungrouped) return false;
+        if (exceptGroupId != null && id == exceptGroupId) return false;
+        return true;
     }
 
     /// <summary>
@@ -1799,18 +2009,35 @@ public partial class MainWindow : Window
         SidebarSessionList.AllowDrop = true;
         SidebarSessionList.DragOver += (_, e) =>
         {
-            e.Effects = IsSessionDragPayload(e.Data)
+            bool inlineMode = _vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.InlineHeaders;
+            bool ok = IsSessionDragPayload(e.Data)
+                || (inlineMode && IsGroupDragPayload(e.Data));
+            e.Effects = ok
                 ? System.Windows.DragDropEffects.Move
                 : System.Windows.DragDropEffects.None;
             e.Handled = true;
         };
         SidebarSessionList.Drop += (_, e) =>
         {
-            if (!IsSessionDragPayload(e.Data)) return;
-            string draggedId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
-            int targetIndex = GetSidebarDropIndex(e.GetPosition(SidebarSessionList));
-            _vm.MoveSession(draggedId, targetIndex);
-            RebuildSidebarOrder();
+            if (IsSessionDragPayload(e.Data))
+            {
+                string draggedId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+                int targetIndex = GetSidebarDropIndex(e.GetPosition(SidebarSessionList));
+                _vm.MoveSession(draggedId, targetIndex);
+                RebuildSidebarOrder();
+                return;
+            }
+            // Inline mode: group reorder drops onto the sidebar resolve to a position
+            // among the visible group headers. The fixed FilterStrip's own drop handler
+            // is in SetupGroupStripDrop — that's the path when the strip is showing.
+            if (_vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.InlineHeaders
+                && IsGroupDragPayload(e.Data))
+            {
+                string payload = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+                string draggedGroupId = payload.Substring("group:".Length);
+                int targetIdx = GetInlineGroupDropIndex(e.GetPosition(SidebarSessionList));
+                if (targetIdx >= 0) _vm.MoveGroup(draggedGroupId, targetIdx);
+            }
         };
     }
 
@@ -1824,6 +2051,26 @@ public partial class MainWindow : Window
             if (pos.Y < midY) return i;
         }
         return children.Count;
+    }
+
+    /// <summary>
+    /// In inline-headers mode, maps a Y coordinate within SidebarSessionList to a user-group
+    /// insertion index (0-based within SessionManager.Groups). The implicit Ungrouped header
+    /// is skipped — only real-group headers are valid targets.
+    /// </summary>
+    private int GetInlineGroupDropIndex(System.Windows.Point pos)
+    {
+        var headers = SidebarSessionList.Children.OfType<Border>()
+            .Where(b => b.Tag is string t && t.StartsWith("groupheader:")
+                && t != "groupheader:" + GroupFilter.Ungrouped)
+            .ToList();
+        for (int i = 0; i < headers.Count; i++)
+        {
+            var itemPos = headers[i].TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
+            double midY = itemPos.Y + headers[i].ActualHeight / 2;
+            if (pos.Y < midY) return i;
+        }
+        return headers.Count;
     }
 
     /// <summary>
@@ -1882,42 +2129,73 @@ public partial class MainWindow : Window
     private void RebuildSidebarOrder()
     {
         SidebarSessionList.Children.Clear();
+        var mode = _vm.Settings.GroupDisplayMode;
+        bool inlineMode = mode == Models.GroupDisplayMode.InlineHeaders
+            && _sessionManager.Groups.Count > 0;
 
-        // Collect the visible sessions (those matching the active category filter AND
-        // already wired into _sessionUi). Cluster detection happens against this list so
-        // the cluster count reflects what the user is actually looking at — siblings split
-        // across categories don't pull each other into view.
-        var visibleSessions = new List<SessionViewModel>();
-        foreach (var vm in _vm.Sessions)
+        if (inlineMode)
         {
-            if (!_vm.SessionMatchesActiveGroup(vm)) continue;
-            if (_sessionUi.ContainsKey(vm.Id)) visibleSessions.Add(vm);
-        }
-
-        var clusters = ComputeWorktreeClusters(visibleSessions);
-
-        int clusterIdx = 0;
-        for (int i = 0; i < visibleSessions.Count; i++)
-        {
-            var vm = visibleSessions[i];
-            if (clusterIdx < clusters.Count && clusters[clusterIdx].start == i)
+            // Ungrouped section first (only shown when it has members or there are groups).
+            var ungrouped = _vm.Sessions
+                .Where(s => string.IsNullOrEmpty(s.GroupId) && _sessionUi.ContainsKey(s.Id))
+                .ToList();
+            if (ungrouped.Count > 0)
             {
-                var (s, e, root) = clusters[clusterIdx];
-                int count = e - s + 1;
-                SidebarSessionList.Children.Add(
-                    BuildWorktreeClusterHeader(root, count, vm.AccentColor));
-                clusterIdx++;
+                SidebarSessionList.Children.Add(BuildInlineGroupHeader(null, ungrouped.Count, _ungroupedExpanded));
+                if (_ungroupedExpanded) AppendSessionsWithClusters(ungrouped);
             }
-            SidebarSessionList.Children.Add(_sessionUi[vm.Id].sidebarItem);
+            // Each user group, in SortOrder.
+            foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
+            {
+                var members = _vm.Sessions
+                    .Where(s => s.GroupId == g.Id && _sessionUi.ContainsKey(s.Id))
+                    .ToList();
+                SidebarSessionList.Children.Add(BuildInlineGroupHeader(g, members.Count, g.IsExpanded));
+                if (g.IsExpanded) AppendSessionsWithClusters(members);
+            }
+        }
+        else
+        {
+            // Flat list mode (None or FilterStrip).
+            var visibleSessions = new List<SessionViewModel>();
+            foreach (var vm in _vm.Sessions)
+            {
+                if (mode == Models.GroupDisplayMode.FilterStrip && !_vm.SessionMatchesActiveGroup(vm))
+                    continue;
+                if (_sessionUi.ContainsKey(vm.Id)) visibleSessions.Add(vm);
+            }
+            AppendSessionsWithClusters(visibleSessions);
         }
 
         // Dormant entries always render at the bottom of the sidebar regardless of filter
-        // so they remain reachable (and a user filtering by category isn't surprised by
-        // missing entries).
+        // or display mode so they remain reachable (and a user filtering by category isn't
+        // surprised by missing entries).
         foreach (var item in _dormantSidebarItems.Values)
             SidebarSessionList.Children.Add(item);
         UpdateSidebarActiveState();
         RefreshTerminalLayout();
+    }
+
+    /// <summary>
+    /// Appends a list of session sidebar items to <see cref="SidebarSessionList"/>, inserting
+    /// worktree cluster headers above runs of 2+ adjacent siblings (when enabled).
+    /// </summary>
+    private void AppendSessionsWithClusters(List<SessionViewModel> sessions)
+    {
+        var clusters = ComputeWorktreeClusters(sessions);
+        int clusterIdx = 0;
+        for (int i = 0; i < sessions.Count; i++)
+        {
+            var vm = sessions[i];
+            if (clusterIdx < clusters.Count && clusters[clusterIdx].start == i)
+            {
+                var (s, e, root) = clusters[clusterIdx];
+                int count = e - s + 1;
+                SidebarSessionList.Children.Add(BuildWorktreeClusterHeader(root, count, vm.AccentColor));
+                clusterIdx++;
+            }
+            SidebarSessionList.Children.Add(_sessionUi[vm.Id].sidebarItem);
+        }
     }
 
     /// <summary>
@@ -2881,8 +3159,14 @@ public partial class MainWindow : Window
             _vm.Settings.DefaultWorkingFolder = edited.DefaultWorkingFolder;
             _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
             _vm.Settings.ShowGroupsTab = edited.ShowGroupsTab;
+            _vm.Settings.GroupDisplayMode = edited.GroupDisplayMode;
             _vm.Settings.ShowWorktreeClusters = edited.ShowWorktreeClusters;
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
+
+            // ActiveGroupId only makes sense in FilterStrip mode. Reset it so InlineHeaders
+            // and None modes start unfiltered (all groups visible / no filter applied).
+            if (_vm.Settings.GroupDisplayMode != Models.GroupDisplayMode.FilterStrip)
+                _vm.ActiveGroupId = null;
             _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
             _vm.Settings.ImportWindowsTerminalProfiles = edited.ImportWindowsTerminalProfiles;

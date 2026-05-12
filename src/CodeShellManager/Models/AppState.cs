@@ -2,6 +2,19 @@ using System.Collections.Generic;
 
 namespace CodeShellManager.Models;
 
+/// <summary>
+/// How the sidebar surfaces session groups.
+/// None = no group UI at all (flat session list). FilterStrip = vertical tab strip
+/// to the left of the sidebar, one filter at a time (default). InlineHeaders =
+/// collapsible group headers inline in the sidebar, all groups visible at once.
+/// </summary>
+public enum GroupDisplayMode
+{
+    None,
+    FilterStrip,
+    InlineHeaders
+}
+
 public class AppSettings
 {
     public bool AutoRestoreSessions { get; set; } = true;
@@ -13,6 +26,13 @@ public class AppSettings
     public string DefaultCommand { get; set; } = "claude";
     public string DefaultWorkingFolder { get; set; } = "";
     public bool ShowGitBranch { get; set; } = true;
+    /// <summary>Authoritative grouping UI selector. Replaces the legacy <see cref="ShowGroupsTab"/> boolean.</summary>
+    public GroupDisplayMode GroupDisplayMode { get; set; } = GroupDisplayMode.FilterStrip;
+    /// <summary>
+    /// Legacy flag — kept for back-compat with older state.json files. When deserialized
+    /// as false on a state that still has GroupDisplayMode at its default, the loader
+    /// migrates the mode to None. Newer code paths read GroupDisplayMode instead.
+    /// </summary>
     public bool ShowGroupsTab { get; set; } = true;
     /// <summary>
     /// When 2+ adjacent visible sessions share a repo root, draw a small header above
