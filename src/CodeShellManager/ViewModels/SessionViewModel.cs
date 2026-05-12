@@ -85,8 +85,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         GitIsDirty = isDirty;
         GitInfoLoaded = true;
 
-        // RepoRoot is stable for the life of the session — resolve it once.
-        if (RepoRoot == null && !string.IsNullOrEmpty(branch))
+        // RepoRoot is stable for the life of the session — resolve it once. Don't gate on
+        // a non-empty branch: detached HEADs report no branch but are still valid repos
+        // that should participate in sibling detection, shared accent color, and clusters.
+        if (RepoRoot == null)
             RepoRoot = await GitService.GetRepoRootAsync(Session.WorkingFolder);
     }
 

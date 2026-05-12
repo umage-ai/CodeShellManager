@@ -125,7 +125,10 @@ public class SessionManager
         var group = _groups.FirstOrDefault(g => g.Id == groupId);
         if (group == null) return;
         int cur = _groups.IndexOf(group);
-        newIndex = Math.Clamp(newIndex, 0, _groups.Count - 1);
+        // Allow Count as a legal "insert at end" target.
+        newIndex = Math.Clamp(newIndex, 0, _groups.Count);
+        // After RemoveAt(cur), every index above cur shifts down by one.
+        if (cur < newIndex) newIndex--;
         if (cur == newIndex) return;
         _groups.RemoveAt(cur);
         _groups.Insert(newIndex, group);
@@ -155,15 +158,20 @@ public class SessionManager
 
         // Legacy migration: previous versions auto-created a single "Default" group
         // (SortOrder 0) and put every session in it. Drop it so existing users see
-        // an empty group strip until they create real categories themselves.
-        if (_groups.Count == 1 && _groups[0].Name == "Default" && _groups[0].SortOrder == 0)
+        // an empty group strip until they create real categories themselves. Gated on
+        // a one-shot flag so a user-named "Default" group created later survives.
+        if (!state.Settings.LegacyDefaultGroupCleared)
         {
-            string legacyId = _groups[0].Id;
-            foreach (var s in _sessions)
+            if (_groups.Count == 1 && _groups[0].Name == "Default" && _groups[0].SortOrder == 0)
             {
-                if (s.GroupId == legacyId) s.GroupId = "";
+                string legacyId = _groups[0].Id;
+                foreach (var s in _sessions)
+                {
+                    if (s.GroupId == legacyId) s.GroupId = "";
+                }
+                _groups.Clear();
             }
-            _groups.Clear();
+            state.Settings.LegacyDefaultGroupCleared = true;
         }
     }
 

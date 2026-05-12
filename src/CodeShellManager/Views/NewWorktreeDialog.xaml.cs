@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using MessageBox = System.Windows.MessageBox;
@@ -106,12 +108,24 @@ public partial class NewWorktreeDialog : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (Directory.Exists(TargetPath) && Directory.EnumerateFileSystemEntries(TargetPath).GetEnumerator().MoveNext())
+        if (Directory.Exists(TargetPath))
         {
-            MessageBox.Show(this,
-                $"'{TargetPath}' already exists and is non-empty. git worktree add will refuse to use it.",
-                "Folder not empty", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            bool nonEmpty;
+            try { nonEmpty = Directory.EnumerateFileSystemEntries(TargetPath).Any(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this,
+                    $"Cannot inspect '{TargetPath}': {ex.Message}",
+                    "Folder not usable", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (nonEmpty)
+            {
+                MessageBox.Show(this,
+                    $"'{TargetPath}' already exists and is non-empty. git worktree add will refuse to use it.",
+                    "Folder not empty", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
         }
 
         DialogResult = true;

@@ -40,6 +40,20 @@ public class AppSettings
     /// implicit subtitle + shared stripe color are the only signals.
     /// </summary>
     public bool ShowWorktreeClusters { get; set; } = true;
+    /// <summary>
+    /// Expand/collapse state of the implicit Ungrouped header in InlineHeaders mode.
+    /// Real groups carry their own <see cref="SessionGroup.IsExpanded"/> bit; this holds
+    /// the equivalent for the Ungrouped pseudo-section so it persists across restarts.
+    /// </summary>
+    public bool UngroupedSectionExpanded { get; set; } = true;
+    /// <summary>
+    /// One-shot guard for the legacy auto-created "Default" group migration in
+    /// <see cref="Services.SessionManager.LoadFromState"/>. Without this gate the
+    /// heuristic (single group, name "Default", SortOrder 0) could wipe a user-named
+    /// "Default" group on a later restart. Flipped to true after the first load
+    /// regardless of whether the heuristic matched.
+    /// </summary>
+    public bool LegacyDefaultGroupCleared { get; set; } = false;
     public bool SearchCollapseAfterNavigate { get; set; } = true;
     public string Theme { get; set; } = "dark";
     public int MaxSearchResults { get; set; } = 100;

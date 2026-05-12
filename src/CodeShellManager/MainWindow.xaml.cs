@@ -51,11 +51,6 @@ public partial class MainWindow : Window
     // Group-tab notification indicators (badge + text), keyed by group id (or "__ALL__"
     // / GroupFilter.Ungrouped sentinels). Repopulated on every RebuildGroupStrip.
     private readonly Dictionary<string, (Border badge, TextBlock badgeText)> _groupTabIndicators = [];
-    // Persisted only for the current session — the implicit Ungrouped bucket in inline-headers
-    // mode. Real groups carry their own SessionGroup.IsExpanded; this holds the equivalent
-    // bit for the Ungrouped pseudo-section.
-    private bool _ungroupedExpanded = true;
-
     private SqliteConnection? _db;
     private SearchService? _searchService;
     private LayoutMode _currentLayout = LayoutMode.Single;
@@ -388,10 +383,16 @@ public partial class MainWindow : Window
         await LaunchSessionAsync(primary);
         if (additionalPaths.Count == 0) return;
 
+        // Stagger consecutive claude launches for the same reason the boot path does
+        // (see commit 59a7067): claude's CLI does an unlocked read-modify-write on
+        // ~/.claude.json at startup, and back-to-back launches can corrupt it.
         string anchorId = primary.Id;
+        bool lastWasClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
         foreach (var path in additionalPaths)
         {
             if (!System.IO.Directory.Exists(path)) continue;
+            bool isClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
+            if (isClaude && lastWasClaude) await Task.Delay(2000);
             var sibling = _sessionManager.CreateSession(
                 System.IO.Path.GetFileName(path.TrimEnd('/', '\\')) ?? primary.Command,
                 path,
@@ -413,6 +414,7 @@ public partial class MainWindow : Window
             sibling.ProfileColorSchemeJson = primary.ProfileColorSchemeJson;
             await LaunchSessionAsync(sibling);
             anchorId = sibling.Id;
+            lastWasClaude = isClaude;
         }
     }
 
@@ -970,9 +972,15 @@ public partial class MainWindow : Window
             var mods = Keyboard.Modifiers;
             if ((mods & ModifierKeys.Shift) != 0)
             {
+                // Range selection must walk only real session items — header tags like
+                // "groupheader:" (inline mode) and "cluster:" (worktree clusters) are not
+                // sessions and would otherwise leak into SelectedSessionIds.
                 var visibleIds = SidebarSessionList.Children.OfType<Border>()
                     .Select(b => b.Tag as string)
-                    .Where(t => t != null && !t.StartsWith("dormant:"))
+                    .Where(t => !string.IsNullOrEmpty(t)
+                                && !t.StartsWith("dormant:")
+                                && !t.StartsWith("groupheader:")
+                                && !t.StartsWith("cluster:"))
                     .Select(t => t!)
                     .ToList();
                 _vm.SetRangeSelection(visibleIds, _selectionAnchorId, vm.Id);
@@ -1571,12 +1579,12 @@ public partial class MainWindow : Window
             if (group != null)
             {
                 group.IsExpanded = !group.IsExpanded;
-                _ = _vm.SaveStateAsync();
             }
             else
             {
-                _ungroupedExpanded = !_ungroupedExpanded;
+                _vm.Settings.UngroupedSectionExpanded = !_vm.Settings.UngroupedSectionExpanded;
             }
+            _ = _vm.SaveStateAsync();
             RebuildSidebarOrder();
         };
 
@@ -2111,7 +2119,12 @@ public partial class MainWindow : Window
             {
                 // Close out the current section at the new header's top.
                 currentEndY = itemPos.Y;
-                sections.Add((currentGroupId, currentEndY, currentSessions));
+                // Skip empty sections: if no sessions appeared before this header
+                // (e.g. drop above the first header in a no-ungrouped sidebar), an
+                // empty entry would let Pass 2 match the section but fall through to
+                // the "past every session" tail and silently retarget to ungrouped.
+                if (currentSessions.Count > 0)
+                    sections.Add((currentGroupId, currentEndY, currentSessions));
                 // Start a new section.
                 string id = tag.Substring("groupheader:".Length);
                 currentGroupId = id == GroupFilter.Ungrouped ? null : id;
@@ -2121,7 +2134,8 @@ public partial class MainWindow : Window
             if (tag.StartsWith("cluster:") || tag.StartsWith("dormant:")) continue;
             currentSessions.Add(item);
         }
-        sections.Add((currentGroupId, double.MaxValue, currentSessions));
+        if (currentSessions.Count > 0)
+            sections.Add((currentGroupId, double.MaxValue, currentSessions));
 
         // Pass 2: find the section whose end-Y is past the drop Y, then resolve the
         // insertion point within it.
@@ -2246,8 +2260,9 @@ public partial class MainWindow : Window
                 .ToList();
             if (ungrouped.Count > 0)
             {
-                SidebarSessionList.Children.Add(BuildInlineGroupHeader(null, ungrouped.Count, _ungroupedExpanded));
-                if (_ungroupedExpanded) AppendSessionsWithClusters(ungrouped);
+                bool ungroupedExpanded = _vm.Settings.UngroupedSectionExpanded;
+                SidebarSessionList.Children.Add(BuildInlineGroupHeader(null, ungrouped.Count, ungroupedExpanded));
+                if (ungroupedExpanded) AppendSessionsWithClusters(ungrouped);
             }
             // Each user group, in SortOrder.
             foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
@@ -2817,6 +2832,7 @@ public partial class MainWindow : Window
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
         }
+        if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
         _sessionManager.RemoveSession(vm.Id);
         RefreshTerminalLayout();
         UpdateAlertBadge();
@@ -2837,6 +2853,7 @@ public partial class MainWindow : Window
         var session = vm.Session;
         session.IsDormant = true;
 
+        if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
         if (_sessionUi.TryGetValue(vm.Id, out var ui))
         {
             if (TerminalGrid.Children.Contains(ui.terminalWrapper))
