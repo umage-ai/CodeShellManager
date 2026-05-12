@@ -656,10 +656,16 @@ public partial class MainWindow : Window
         string accent = vm.AccentColor;
         var accentBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(accent));
 
+        // Note: the container carries a constant 2px BorderThickness with a Transparent
+        // BorderBrush by default. UpdateSidebarActiveState toggles BorderBrush to the
+        // session accent color when active, so layout doesn't shift as items become
+        // active and the active session stays visually distinct from the multi-select tint.
         var container = new Border
         {
             Margin = new Thickness(0, 2, 0, 2),
             Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(2),
             Cursor = System.Windows.Input.Cursors.Hand,
             CornerRadius = new CornerRadius(6),
             Tag = vm.Id
@@ -1039,6 +1045,9 @@ public partial class MainWindow : Window
                                 if (_vm.ActiveSession?.Id == vm.Id)
                                     ui.terminalWrapper.BorderBrush = new SolidColorBrush(newAccent);
                             }
+                            // Sidebar ring picks the accent up too when this session is active.
+                            if (_vm.ActiveSession?.Id == vm.Id)
+                                UpdateSidebarActiveState();
                         }
                         catch { /* invalid hex — ignore */ }
                         break;
@@ -1076,12 +1085,31 @@ public partial class MainWindow : Window
             if (id == null || id.StartsWith("dormant:")) continue;
             bool isActive = id == _vm.ActiveSession?.Id;
             bool isSelected = _vm.IsSelected(id);
-            if (isActive)
-                item.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
-            else if (isSelected)
+
+            // Background: selection takes precedence over active (so a multi-selected
+            // active session still shows it belongs to the action set). Active-only items
+            // get the lighter Catppuccin Surface2 so they stand out from the blue tints.
+            if (isSelected)
                 item.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa));
+            else if (isActive)
+                item.Background = new SolidColorBrush(Color.FromRgb(0x58, 0x5b, 0x70));
             else
                 item.Background = Brushes.Transparent;
+
+            // Active gets an accent-colored ring around the whole item — the unique signal
+            // that survives any selection state, mirroring the active-terminal ring.
+            if (isActive)
+            {
+                string accentHex = "#89b4fa";
+                var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
+                if (vm != null) accentHex = vm.AccentColor;
+                try { item.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(accentHex)); }
+                catch { item.BorderBrush = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa)); }
+            }
+            else
+            {
+                item.BorderBrush = Brushes.Transparent;
+            }
         }
         UpdateActiveTerminalHighlight();
     }
