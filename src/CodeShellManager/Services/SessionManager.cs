@@ -116,6 +116,24 @@ public class SessionManager
         SessionsChanged?.Invoke();
     }
 
+    /// <summary>
+    /// Moves a group to a new position in the ordered list (0-based). SortOrder fields
+    /// are renumbered so the new order survives persistence.
+    /// </summary>
+    public void MoveGroup(string groupId, int newIndex)
+    {
+        var group = _groups.FirstOrDefault(g => g.Id == groupId);
+        if (group == null) return;
+        int cur = _groups.IndexOf(group);
+        newIndex = Math.Clamp(newIndex, 0, _groups.Count - 1);
+        if (cur == newIndex) return;
+        _groups.RemoveAt(cur);
+        _groups.Insert(newIndex, group);
+        for (int i = 0; i < _groups.Count; i++)
+            _groups[i].SortOrder = i;
+        GroupsChanged?.Invoke();
+    }
+
     /// <summary>Assigns a session to a group (empty/null groupId = ungrouped).</summary>
     public void SetSessionGroup(string sessionId, string? groupId)
     {

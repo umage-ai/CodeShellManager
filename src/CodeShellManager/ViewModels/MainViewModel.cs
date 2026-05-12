@@ -81,6 +81,13 @@ public partial class MainViewModel : ObservableObject
         _ = SaveStateAsync();
     }
 
+    /// <summary>Reorders a group in the strip. <paramref name="newIndex"/> is 0-based within the user-group list.</summary>
+    public void MoveGroup(string groupId, int newIndex)
+    {
+        _sessionManager.MoveGroup(groupId, newIndex);
+        _ = SaveStateAsync();
+    }
+
     /// <summary>Returns true when the session matches the current group filter.</summary>
     public bool SessionMatchesActiveGroup(SessionViewModel vm)
     {

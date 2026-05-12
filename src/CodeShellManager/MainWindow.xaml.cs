@@ -130,6 +130,7 @@ public partial class MainWindow : Window
 
         BuildShortcutPanel();
         SetupSidebarDrop();
+        SetupGroupStripDrop();
     }
 
     private void OnWindowBoundsChanged()
@@ -1339,10 +1340,28 @@ public partial class MainWindow : Window
             _vm.ActiveGroupId = groupId;
         };
 
-        // Real groups get a right-click rename/delete menu (the All/Ungrouped pseudo-tabs don't).
+        // Real groups get a right-click menu + drag-to-reorder (the All/Ungrouped pseudo-tabs don't).
         if (groupId != null && groupId != GroupFilter.Ungrouped)
         {
             var menu = new System.Windows.Controls.ContextMenu();
+
+            var moveUp = new System.Windows.Controls.MenuItem { Header = "Move up" };
+            moveUp.Click += (_, _) =>
+            {
+                int idx = IndexOfUserGroup(groupId);
+                if (idx > 0) _vm.MoveGroup(groupId, idx - 1);
+            };
+            menu.Items.Add(moveUp);
+            var moveDown = new System.Windows.Controls.MenuItem { Header = "Move down" };
+            moveDown.Click += (_, _) =>
+            {
+                int idx = IndexOfUserGroup(groupId);
+                if (idx >= 0 && idx < _sessionManager.Groups.Count - 1)
+                    _vm.MoveGroup(groupId, idx + 1);
+            };
+            menu.Items.Add(moveDown);
+            menu.Items.Add(new System.Windows.Controls.Separator());
+
             var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
             rename.Click += (_, _) => PromptRenameGroup(groupId, fullName);
             menu.Items.Add(rename);
@@ -1355,10 +1374,46 @@ public partial class MainWindow : Window
                 if (r == MessageBoxResult.Yes) _vm.RemoveGroup(groupId);
             };
             menu.Items.Add(delete);
+            menu.Opened += (_, _) =>
+            {
+                int idx = IndexOfUserGroup(groupId);
+                moveUp.IsEnabled = idx > 0;
+                moveDown.IsEnabled = idx >= 0 && idx < _sessionManager.Groups.Count - 1;
+            };
             border.ContextMenu = menu;
+
+            // Drag-to-reorder. The strip's Drop handler (SetupGroupStripDrop) resolves
+            // the new index from the drop position.
+            System.Windows.Point dragStartPos = default;
+            bool dragPending = false;
+            border.PreviewMouseLeftButtonDown += (_, me) =>
+            {
+                dragStartPos = me.GetPosition(null);
+                dragPending = true;
+            };
+            border.PreviewMouseLeftButtonUp += (_, _) => dragPending = false;
+            border.PreviewMouseMove += (_, me) =>
+            {
+                if (!dragPending || me.LeftButton != MouseButtonState.Pressed) return;
+                var diff = me.GetPosition(null) - dragStartPos;
+                if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
+                    Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
+                {
+                    dragPending = false;
+                    System.Windows.DragDrop.DoDragDrop(border, "group:" + groupId,
+                        System.Windows.DragDropEffects.Move);
+                }
+            };
         }
 
         return border;
+    }
+
+    private int IndexOfUserGroup(string groupId)
+    {
+        for (int i = 0; i < _sessionManager.Groups.Count; i++)
+            if (_sessionManager.Groups[i].Id == groupId) return i;
+        return -1;
     }
 
     private void UpdateGroupStripActiveState()
@@ -1624,6 +1679,59 @@ public partial class MainWindow : Window
             if (pos.Y < midY) return i;
         }
         return children.Count;
+    }
+
+    /// <summary>
+    /// Wires the GroupStripPanel as a drop target for group-tab drags. Drop position is
+    /// resolved relative to the user-group tabs only — "All" and "Ungrouped" stay pinned
+    /// at the top of the strip and aren't valid drop targets.
+    /// </summary>
+    private void SetupGroupStripDrop()
+    {
+        GroupStripPanel.AllowDrop = true;
+        GroupStripPanel.DragOver += (_, e) =>
+        {
+            bool ok = e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat)
+                && ((string)e.Data.GetData(System.Windows.DataFormats.StringFormat))
+                    .StartsWith("group:");
+            e.Effects = ok ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+            e.Handled = true;
+        };
+        GroupStripPanel.Drop += (_, e) =>
+        {
+            if (!e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat)) return;
+            string payload = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
+            if (!payload.StartsWith("group:")) return;
+            string draggedId = payload.Substring("group:".Length);
+            if (draggedId == "__ALL__" || draggedId == GroupFilter.Ungrouped) return;
+            int targetIndex = GetGroupStripDropIndex(e.GetPosition(GroupStripPanel));
+            _vm.MoveGroup(draggedId, targetIndex);
+        };
+    }
+
+    /// <summary>
+    /// Maps a Y-coordinate within GroupStripPanel to a user-group insertion index (0-based
+    /// within SessionManager.Groups). The "All" tab is at child 0, "Ungrouped" at child 1,
+    /// and the "+" footer trails the user groups — only children in [2 .. 2+N-1] are tabs.
+    /// </summary>
+    private int GetGroupStripDropIndex(System.Windows.Point pos)
+    {
+        var allTabs = GroupStripPanel.Children.OfType<Border>().ToList();
+        // Skip the fixed "All" and "Ungrouped" pseudo-tabs at indices 0 and 1, and the "+"
+        // footer at the end (it has no group: tag).
+        var groupTabs = allTabs
+            .Where(b => b.Tag is string t
+                && t.StartsWith("group:")
+                && t != "group:__ALL__"
+                && t != "group:" + GroupFilter.Ungrouped)
+            .ToList();
+        for (int i = 0; i < groupTabs.Count; i++)
+        {
+            var itemPos = groupTabs[i].TranslatePoint(new System.Windows.Point(0, 0), GroupStripPanel);
+            double midY = itemPos.Y + groupTabs[i].ActualHeight / 2;
+            if (pos.Y < midY) return i;
+        }
+        return groupTabs.Count;
     }
 
     private void RebuildSidebarOrder()
