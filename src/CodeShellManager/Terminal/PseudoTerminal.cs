@@ -228,31 +228,41 @@ public sealed class PseudoTerminal : IDisposable
 
             _hProcess = pi.hProcess;
 
-            if (useJobObject)
+            // Inner try/finally guarantees pi.hThread is closed even if any job-object
+            // P/Invoke throws — otherwise we leak the thread handle on error paths.
+            try
             {
-                _hJob = CreateJobObject(IntPtr.Zero, null);
-                if (_hJob == IntPtr.Zero)
-                    throw new InvalidOperationException("CreateJobObject failed");
-
-                var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+                if (useJobObject)
                 {
-                    BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
+                    _hJob = CreateJobObject(IntPtr.Zero, null);
+                    if (_hJob == IntPtr.Zero)
+                        throw new InvalidOperationException(
+                            $"CreateJobObject failed: {Marshal.GetLastWin32Error()}");
+
+                    var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
                     {
-                        LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                    }
-                };
-                if (!SetInformationJobObject(_hJob, JobObjectExtendedLimitInformation,
-                        ref limits, Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()))
-                    throw new InvalidOperationException("SetInformationJobObject failed");
+                        BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
+                        {
+                            LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                        }
+                    };
+                    if (!SetInformationJobObject(_hJob, JobObjectExtendedLimitInformation,
+                            ref limits, Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()))
+                        throw new InvalidOperationException(
+                            $"SetInformationJobObject failed: {Marshal.GetLastWin32Error()}");
 
-                if (!AssignProcessToJobObject(_hJob, _hProcess))
-                    throw new InvalidOperationException("AssignProcessToJobObject failed");
+                    if (!AssignProcessToJobObject(_hJob, _hProcess))
+                        throw new InvalidOperationException(
+                            $"AssignProcessToJobObject failed: {Marshal.GetLastWin32Error()}");
 
-                // Process was started suspended — resume it now that it's in the job.
-                ResumeThread(pi.hThread);
+                    // Process was started suspended — resume it now that it's in the job.
+                    ResumeThread(pi.hThread);
+                }
             }
-
-            CloseHandle(pi.hThread);
+            finally
+            {
+                CloseHandle(pi.hThread);
+            }
         }
         finally
         {
