@@ -48,6 +48,9 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Border> _dormantSidebarItems = [];
     // Anchor for shift-click range selection in the sidebar.
     private string? _selectionAnchorId;
+    // Group-tab notification indicators (badge + text), keyed by group id (or "__ALL__"
+    // / GroupFilter.Ungrouped sentinels). Repopulated on every RebuildGroupStrip.
+    private readonly Dictionary<string, (Border badge, TextBlock badgeText)> _groupTabIndicators = [];
 
     private SqliteConnection? _db;
     private SearchService? _searchService;
@@ -95,9 +98,18 @@ public partial class MainWindow : Window
         });
         _vm.SelectionChanged += () => Dispatcher.Invoke(UpdateSidebarActiveState);
         // Re-filter the sidebar when a session's GroupId changes — otherwise the current
-        // filter view stays stale until the user clicks a different tab.
-        _vm.SessionMembershipChanged += () => Dispatcher.Invoke(RebuildSidebarOrder);
-        _vm.Sessions.CollectionChanged += (_, _) => RecomputeWorktreeSiblings();
+        // filter view stays stale until the user clicks a different tab. Also refresh the
+        // group-tab indicators since session-to-group membership just shifted.
+        _vm.SessionMembershipChanged += () => Dispatcher.Invoke(() =>
+        {
+            RebuildSidebarOrder();
+            UpdateGroupTabIndicators();
+        });
+        _vm.Sessions.CollectionChanged += (_, _) =>
+        {
+            RecomputeWorktreeSiblings();
+            UpdateGroupTabIndicators();
+        };
 
         Loaded += OnLoaded;
         KeyDown += OnKeyDown;
@@ -994,6 +1006,7 @@ public partial class MainWindow : Window
                     case nameof(SessionViewModel.NeedsAttention):
                         alertBadge.Visibility = vm.NeedsAttention ? Visibility.Visible : Visibility.Collapsed;
                         UpdateAlertBadge();
+                        UpdateGroupTabIndicators();
                         break;
 
                     case nameof(SessionViewModel.IsWaitingForInput):
@@ -1014,6 +1027,7 @@ public partial class MainWindow : Window
                         {
                             statusDot.Visibility = Visibility.Collapsed;
                         }
+                        UpdateGroupTabIndicators();
                         break;
 
                     case nameof(SessionViewModel.GitBranch):
@@ -1144,6 +1158,7 @@ public partial class MainWindow : Window
     private void RebuildGroupStrip()
     {
         GroupStripPanel.Children.Clear();
+        _groupTabIndicators.Clear();
         if (_sessionManager.Groups.Count == 0) return;
 
         GroupStripPanel.Children.Add(BuildGroupTab(null, "All", "▦"));
@@ -1178,6 +1193,75 @@ public partial class MainWindow : Window
         GroupStripPanel.Children.Add(addBtn);
 
         UpdateGroupStripActiveState();
+        UpdateGroupTabIndicators();
+    }
+
+    /// <summary>
+    /// Refreshes the small status indicator on each group tab. Priority: alert count
+    /// (pink badge with N) > tool-approval (orange dot) > input-required (green dot) >
+    /// hidden. The "All" tab aggregates every live session; "Ungrouped" aggregates only
+    /// sessions with an empty GroupId.
+    /// </summary>
+    private void UpdateGroupTabIndicators()
+    {
+        if (_groupTabIndicators.Count == 0) return;
+
+        var pink = new SolidColorBrush(Color.FromRgb(0xf3, 0x8b, 0xa8));
+        var orange = new SolidColorBrush(Color.FromRgb(0xff, 0xb7, 0x4d));
+        var green = new SolidColorBrush(Color.FromRgb(0xa6, 0xe3, 0xa1));
+        var inkOnLight = new SolidColorBrush(Color.FromRgb(0x1e, 0x1e, 0x2e));
+
+        foreach (var (key, (badge, text)) in _groupTabIndicators)
+        {
+            IEnumerable<SessionViewModel> set = key switch
+            {
+                "__ALL__" => _vm.Sessions,
+                _ when key == GroupFilter.Ungrouped =>
+                    _vm.Sessions.Where(s => string.IsNullOrEmpty(s.GroupId)),
+                _ => _vm.Sessions.Where(s => s.GroupId == key)
+            };
+
+            int alerts = 0;
+            bool anyApproval = false, anyInput = false;
+            foreach (var s in set)
+            {
+                if (s.NeedsAttention) alerts++;
+                if (s.IsWaitingForApproval) anyApproval = true;
+                if (s.IsWaitingForInput) anyInput = true;
+            }
+
+            if (alerts > 0)
+            {
+                badge.Background = pink;
+                badge.MinWidth = 14;
+                text.Text = alerts.ToString();
+                text.Foreground = inkOnLight;
+                badge.ToolTip = alerts == 1
+                    ? "1 session needs attention"
+                    : $"{alerts} sessions need attention";
+                badge.Visibility = Visibility.Visible;
+            }
+            else if (anyApproval)
+            {
+                badge.Background = orange;
+                badge.MinWidth = 10;
+                text.Text = "";
+                badge.ToolTip = "Tool approval needed";
+                badge.Visibility = Visibility.Visible;
+            }
+            else if (anyInput)
+            {
+                badge.Background = green;
+                badge.MinWidth = 10;
+                text.Text = "";
+                badge.ToolTip = "Waiting for input";
+                badge.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                badge.Visibility = Visibility.Collapsed;
+            }
+        }
     }
 
     private static string GroupInitials(string name)
@@ -1207,7 +1291,9 @@ public partial class MainWindow : Window
             Tag = "group:" + (groupId ?? "__ALL__"),
             Height = 36
         };
-        border.Child = new TextBlock
+
+        var grid = new Grid();
+        var labelText = new TextBlock
         {
             Text = label,
             Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
@@ -1216,6 +1302,38 @@ public partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
+        grid.Children.Add(labelText);
+
+        // Notification indicator: pink badge with count when sessions in this group have
+        // NeedsAttention; orange/green dot when only waiting for approval/input.
+        // Hidden when the group has no active state. UpdateGroupTabIndicators recomputes it.
+        var indicatorText = new TextBlock
+        {
+            Text = "",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x1e, 0x1e, 0x2e)),
+            FontSize = 8,
+            FontWeight = FontWeights.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var indicator = new Border
+        {
+            CornerRadius = new CornerRadius(7),
+            MinWidth = 10,
+            MinHeight = 10,
+            Padding = new Thickness(3, 0, 3, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 3, 4, 0),
+            Visibility = Visibility.Collapsed,
+            Child = indicatorText,
+            IsHitTestVisible = false
+        };
+        grid.Children.Add(indicator);
+        border.Child = grid;
+
+        _groupTabIndicators[groupId ?? "__ALL__"] = (indicator, indicatorText);
+
         border.MouseLeftButtonDown += (_, _) =>
         {
             _vm.ActiveGroupId = groupId;
