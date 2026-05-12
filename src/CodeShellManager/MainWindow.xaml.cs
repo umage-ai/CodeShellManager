@@ -3849,6 +3849,20 @@ public partial class MainWindow : Window
         if (key == Key.F && mods == ModifierKeys.Control) { ToggleSearch_Click(this, new RoutedEventArgs()); return true; }
         if (key == Key.Tab && mods == ModifierKeys.Control) { CycleSession(forward: true); return true; }
         if (key == Key.Tab && mods == (ModifierKeys.Control | ModifierKeys.Shift)) { CycleSession(forward: false); return true; }
+        if (key == Key.F5 && mods == ModifierKeys.None)
+        {
+            if (_vm.ActiveSession != null) RunDefaultCommand(_vm.ActiveSession);
+            return true;
+        }
+        if (key == Key.F5 && mods == ModifierKeys.Shift)
+        {
+            if (_vm.ActiveSession is { } vm)
+            {
+                var def = vm.Session.RunCommands.FirstOrDefault(i => i.IsDefault);
+                if (def != null) vm.Runner.Stop(def.Id);
+            }
+            return true;
+        }
         return false;
     }
 
