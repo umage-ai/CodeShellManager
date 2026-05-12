@@ -2175,6 +2175,33 @@ public partial class MainWindow : Window
                 };
                 menu.Items.Add(siblingMenu);
             }
+
+            // Session commands submenu — only for single targets.
+            var runMenu = new System.Windows.Controls.MenuItem { Header = "Session commands" };
+            if (vm.Session.RunCommands.Count == 0)
+            {
+                runMenu.Items.Add(new System.Windows.Controls.MenuItem
+                {
+                    Header = "(none configured)",
+                    IsEnabled = false,
+                });
+            }
+            else
+            {
+                foreach (var item in vm.Session.RunCommands)
+                {
+                    string lbl = item.IsDefault ? $"▶ {item.Label} (default)" : $"▶ {item.Label}";
+                    var mi = new System.Windows.Controls.MenuItem { Header = lbl };
+                    mi.Click += (_, _) => vm.Runner.Run(item);
+                    runMenu.Items.Add(mi);
+                }
+            }
+            runMenu.Items.Add(new System.Windows.Controls.Separator());
+            var editMi = new System.Windows.Controls.MenuItem { Header = "Edit commands…" };
+            editMi.Click += (_, _) => OpenRunCommandsEditor(vm);
+            runMenu.Items.Add(editMi);
+            menu.Items.Add(runMenu);
+
             menu.Items.Add(new System.Windows.Controls.Separator());
         }
 
