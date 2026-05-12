@@ -63,6 +63,12 @@ public partial class MainWindow : Window
         WpfButton drawerCopyBtn,
         WpfButton drawerSendBtn)> _runControls = new();
     private readonly Dictionary<string, string> _drawerItemBySession = new();
+    // Per-session sidebar action button panels — kept so SettingsButton_Click
+    // can flip every row to a new SidebarActionIconsMode without rebuilding sidebar items.
+    private readonly Dictionary<string, StackPanel> _sidebarActionPanels = new();
+    // Per-session rename trigger — captured from BuildSidebarItem so the context menu's
+    // Rename action can invoke the same in-place editor as the double-click handler.
+    private readonly Dictionary<string, Action> _sidebarRenameActions = new();
     // Anchor for shift-click range selection in the sidebar.
     private string? _selectionAnchorId;
     // Group-tab notification indicators (badge + text), keyed by group id (or "__ALL__"
@@ -1184,7 +1190,10 @@ public partial class MainWindow : Window
         };
         Grid.SetColumn(statusDot, 2);
 
-        // Action buttons
+        // Action buttons — reduced set (#29). Secondary actions (Open in Explorer, PowerShell,
+        // Rename) live on the right-click context menu instead. The icons are surfaced based
+        // on AppSettings.SidebarActionIconsMode (default OnHover) so the sidebar stays calm
+        // unless the user is actively reaching for an action.
         var btnPanel = new StackPanel
         {
             Orientation = Orientation.Vertical,
@@ -1192,20 +1201,18 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        var exploreBtn = MakeMiniButton("📁", "Open in Explorer", () => vm.OpenInExplorerCommand.Execute(null));
-        var psBtn      = MakeMiniButton(">_", "Open PowerShell here", () => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId));
-        var spawnBtn   = MakeMiniButton("➕", "New session here (inherits group + profile)",
+        var spawnBtn = MakeMiniButton("➕", "New session here (inherits group + profile)",
                             () => OpenNewSessionDialogFromParent(vm));
-        var renameBtn  = MakeMiniButton("✏", "Rename session", StartRename);
-        var sleepBtn   = MakeMiniButton("💤", "Sleep session (keep it but stop the terminal)", () => SleepSession(vm));
-        var closeBtn   = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
+        var sleepBtn = MakeMiniButton("💤", "Sleep session (keep it but stop the terminal)", () => SleepSession(vm));
+        var closeBtn = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
 
-        btnPanel.Children.Add(exploreBtn);
-        btnPanel.Children.Add(psBtn);
         btnPanel.Children.Add(spawnBtn);
-        btnPanel.Children.Add(renameBtn);
         btnPanel.Children.Add(sleepBtn);
         btnPanel.Children.Add(closeBtn);
+
+        _sidebarActionPanels[vm.Id] = btnPanel;
+        _sidebarRenameActions[vm.Id] = StartRename;
+        ApplyActionIconsMode(btnPanel, container, _vm.Settings.SidebarActionIconsMode, isHovered: false);
 
         Grid.SetColumn(textPanel, 1);
         Grid.SetColumn(btnPanel, 3);
@@ -1283,14 +1290,18 @@ public partial class MainWindow : Window
         // Hover effect — must not clobber multi-select tint. Selected-but-not-active items
         // keep their blue background on hover and on mouse leave; only plain, unselected,
         // non-active items show the muted hover background and clear to transparent.
+        // Also drives the OnHover SidebarActionIconsMode: action buttons fade in on enter,
+        // out on leave. Hidden and Always modes ignore the hover transition.
         container.MouseEnter += (_, _) =>
         {
+            ApplyActionIconsMode(btnPanel, container, _vm.Settings.SidebarActionIconsMode, isHovered: true);
             if (vm.Id == _vm.ActiveSession?.Id) return;
             if (_vm.IsSelected(vm.Id)) return;
             container.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
         };
         container.MouseLeave += (_, _) =>
         {
+            ApplyActionIconsMode(btnPanel, container, _vm.Settings.SidebarActionIconsMode, isHovered: false);
             if (vm.Id == _vm.ActiveSession?.Id) return;
             container.Background = _vm.IsSelected(vm.Id)
                 ? new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa))
@@ -1389,6 +1400,37 @@ public partial class MainWindow : Window
         };
         btn.Click += (_, _) => onClick();
         return btn;
+    }
+
+    /// <summary>
+    /// Applies the current <see cref="Models.SidebarActionIconsMode"/> to a single sidebar
+    /// row's action-button stack. Hidden collapses the panel entirely (the row reclaims the
+    /// horizontal space). OnHover keeps the panel laid out but transparent + non-interactive
+    /// until the row is hovered. Always shows it at full opacity. Called from BuildSidebarItem
+    /// at construction, from the row's MouseEnter/Leave handlers, and after a settings save.
+    /// </summary>
+    private static void ApplyActionIconsMode(StackPanel btnPanel, Border container,
+        Models.SidebarActionIconsMode mode, bool isHovered)
+    {
+        switch (mode)
+        {
+            case Models.SidebarActionIconsMode.Hidden:
+                btnPanel.Visibility = Visibility.Collapsed;
+                btnPanel.IsHitTestVisible = false;
+                btnPanel.Opacity = 0;
+                break;
+            case Models.SidebarActionIconsMode.Always:
+                btnPanel.Visibility = Visibility.Visible;
+                btnPanel.IsHitTestVisible = true;
+                btnPanel.Opacity = 1;
+                break;
+            case Models.SidebarActionIconsMode.OnHover:
+            default:
+                btnPanel.Visibility = Visibility.Visible;  // reserves layout space
+                btnPanel.Opacity = isHovered ? 1 : 0;
+                btnPanel.IsHitTestVisible = isHovered;
+                break;
+        }
     }
 
     private void UpdateSidebarActiveState()
@@ -2124,6 +2166,29 @@ public partial class MainWindow : Window
         // Spawn-near-parent + worktree actions — single-target only
         if (!isMulti)
         {
+            // Rename — in-place editor inside the sidebar row (same path as double-click).
+            // Stored in _sidebarRenameActions when the sidebar row is built.
+            if (_sidebarRenameActions.TryGetValue(vm.Id, out var renameAction))
+            {
+                var renameItem = new System.Windows.Controls.MenuItem { Header = "Rename session" };
+                renameItem.Click += (_, _) => renameAction();
+                menu.Items.Add(renameItem);
+            }
+
+            // Folder actions — only when there's a local working folder to open.
+            if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
+            {
+                var explorerItem = new System.Windows.Controls.MenuItem { Header = "Open in Explorer" };
+                explorerItem.Click += (_, _) => vm.OpenInExplorerCommand.Execute(null);
+                menu.Items.Add(explorerItem);
+
+                var psItem = new System.Windows.Controls.MenuItem { Header = "Open PowerShell here" };
+                psItem.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
+                menu.Items.Add(psItem);
+            }
+
+            menu.Items.Add(new System.Windows.Controls.Separator());
+
             var dupItem = new System.Windows.Controls.MenuItem { Header = "Duplicate session" };
             dupItem.Click += async (_, _) => await DuplicateSessionAsync(vm);
             menu.Items.Add(dupItem);
@@ -3050,6 +3115,25 @@ public partial class MainWindow : Window
         };
         sleepBtn.Click += (_, _) => SleepSession(vm);
 
+        // Close button — tied to the same path as the sidebar ✕ (vm.CloseCommand).
+        // Sits at the far right of the toolbar so the terminal toolbar is a complete,
+        // canonical home for per-session actions (#29). Right margin nudges it slightly
+        // inside the toolbar padding so the ✕ doesn't kiss the toolbar edge.
+        var closeBtn = new WpfButton
+        {
+            Content = "✕",
+            ToolTip = "Close session",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0)
+        };
+        closeBtn.Click += (_, _) => vm.CloseCommand.Execute(null);
+
+        DockPanel.SetDock(closeBtn, Dock.Right);
         DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
@@ -3059,6 +3143,9 @@ public partial class MainWindow : Window
         DockPanel.SetDock(playBtn, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
+        // Dock.Right children are stacked right-to-left in declaration order, so this
+        // puts closeBtn at the far right edge, then termStatusDot to its left, etc.
+        toolbarContent.Children.Add(closeBtn);
         toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
         toolbarContent.Children.Add(toolbarPsBtn);
@@ -3295,6 +3382,8 @@ public partial class MainWindow : Window
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
+        _sidebarActionPanels.Remove(vm.Id);
+        _sidebarRenameActions.Remove(vm.Id);
         if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
         _sessionManager.RemoveSession(vm.Id);
         RefreshTerminalLayout();
@@ -3331,6 +3420,8 @@ public partial class MainWindow : Window
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
+        _sidebarActionPanels.Remove(vm.Id);
+        _sidebarRenameActions.Remove(vm.Id);
 
         // Remove the VM directly — bypass CloseRequested so the ShellSession is
         // NOT removed from the SessionManager (we want to keep it for wake-up).
@@ -3754,6 +3845,7 @@ public partial class MainWindow : Window
             _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
             _vm.Settings.ShowGroupsTab = edited.ShowGroupsTab;
             _vm.Settings.GroupDisplayMode = edited.GroupDisplayMode;
+            _vm.Settings.SidebarActionIconsMode = edited.SidebarActionIconsMode;
             _vm.Settings.ShowWorktreeClusters = edited.ShowWorktreeClusters;
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
 
@@ -3776,6 +3868,17 @@ public partial class MainWindow : Window
             // Push font settings to all active terminal sessions
             foreach (var vm in _vm.Sessions)
                 vm.Bridge?.ApplyFontSettings(_vm.Settings);
+
+            // Push the action-icons mode to every live sidebar row. Hovered state is
+            // recomputed via IsMouseOver so the change is visible immediately without
+            // requiring the cursor to leave + re-enter the row.
+            foreach (var (id, panel) in _sidebarActionPanels)
+            {
+                if (_sessionUi.TryGetValue(id, out var ui))
+                    ApplyActionIconsMode(panel, ui.sidebarItem,
+                        _vm.Settings.SidebarActionIconsMode,
+                        isHovered: ui.sidebarItem.IsMouseOver);
+            }
 
             UpdateGroupStripVisibility();
             RebuildSidebarOrder();

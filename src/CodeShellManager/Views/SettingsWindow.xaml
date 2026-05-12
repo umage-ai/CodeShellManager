@@ -220,6 +220,16 @@
                     <CheckBox x:Name="ShowGitBranchCheck" Content="Show git branch in sidebar"/>
                     <CheckBox x:Name="ShowTerminalStatusDotCheck" Content="Show terminal status indicator"/>
                     <StackPanel Margin="0,4,0,4">
+                        <TextBlock Text="Sidebar action icons" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="SidebarActionIconsModeCombo">
+                            <ComboBoxItem Content="Show on hover (default)" Tag="OnHover"/>
+                            <ComboBoxItem Content="Always show" Tag="Always"/>
+                            <ComboBoxItem Content="Hide (use right-click instead)" Tag="Hidden"/>
+                        </ComboBox>
+                        <TextBlock Text="The small ➕ / 💤 / ✕ buttons on each sidebar row. Hidden moves all per-session actions to the right-click menu and the terminal toolbar; rename still works via double-click."
+                                   Foreground="#6c7086" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <StackPanel Margin="0,4,0,4">
                         <TextBlock Text="Session group display" Style="{StaticResource Label}"/>
                         <ComboBox x:Name="GroupDisplayModeCombo">
                             <ComboBoxItem Content="None (flat list, no groups)" Tag="None"/>

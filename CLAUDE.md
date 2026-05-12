@@ -219,6 +219,7 @@ Persisted in `state.json`. Key settings:
 - `AutoResumeClaude` — when restoring, append `--resume <sessionId>` to claude commands so the prior conversation is picked up. Toggle off if you want fresh sessions on restart.
 - `ShowGitBranch` — show `⎇ branch` in sidebar
 - `ShowTerminalStatusDot` — show status dot in terminal toolbar
+- `SidebarActionIconsMode` — `OnHover` (default) / `Always` / `Hidden`. Controls the per-row `➕ 💤 ✕` button stack in the sidebar. `Hidden` collapses the panel and reclaims the horizontal space; `OnHover` keeps the panel laid out (no text shift on hover) but transparent + non-interactive until the row is hovered. Rename / Open in Explorer / Open PowerShell here remain reachable via the right-click context menu in all modes, and the terminal toolbar's `✕` is unconditional.
 - `SearchCollapseAfterNavigate` — auto-close search after clicking result
 - `MaxSearchResults` — FTS5 result limit (default 100)
 - `DefaultWorkingFolder` / `DefaultCommand` — pre-fill new session dialog
