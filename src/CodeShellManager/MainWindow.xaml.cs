@@ -3287,6 +3287,11 @@ public partial class MainWindow : Window
     /// </summary>
     private void SleepSession(SessionViewModel vm)
     {
+        // Defensive — vm.Dispose() at the bottom of this method also kills runs via
+        // Runner.Dispose, but stopping them explicitly here ensures child processes
+        // die BEFORE UI teardown, avoiding any chance of an orphan output event
+        // racing the disposing UI controls.
+        vm.Runner.StopAll();
         var session = vm.Session;
         session.IsDormant = true;
 
