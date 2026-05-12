@@ -1097,7 +1097,7 @@ public partial class MainWindow : Window
         foreach (Border item in SidebarSessionList.Children)
         {
             string? id = item.Tag as string;
-            if (id == null || id.StartsWith("dormant:")) continue;
+            if (id == null || id.StartsWith("dormant:") || id.StartsWith("cluster:")) continue;
             bool isActive = id == _vm.ActiveSession?.Id;
             bool isSelected = _vm.IsSelected(id);
 
@@ -1457,12 +1457,21 @@ public partial class MainWindow : Window
             if (string.IsNullOrEmpty(s.RepoRoot)) continue;
             byRoot[s.RepoRoot] = byRoot.GetValueOrDefault(s.RepoRoot) + 1;
         }
+        bool anyChanged = false;
         foreach (var s in _vm.Sessions)
         {
             bool siblings = !string.IsNullOrEmpty(s.RepoRoot) && byRoot[s.RepoRoot] > 1;
             if (s.HasWorktreeSiblings != siblings)
+            {
                 s.HasWorktreeSiblings = siblings;
+                anyChanged = true;
+            }
         }
+        // When the cluster wrapper is enabled, sibling-state transitions need a sidebar
+        // rebuild so headers form/dissolve. The shared accent stripe + subtitle update
+        // independently via their own PropertyChanged subscriptions.
+        if (anyChanged && _vm.Settings.ShowWorktreeClusters)
+            RebuildSidebarOrder();
     }
 
     // ── Per-session context menu ──────────────────────────────────────────────
@@ -1737,12 +1746,35 @@ public partial class MainWindow : Window
     private void RebuildSidebarOrder()
     {
         SidebarSessionList.Children.Clear();
+
+        // Collect the visible sessions (those matching the active category filter AND
+        // already wired into _sessionUi). Cluster detection happens against this list so
+        // the cluster count reflects what the user is actually looking at — siblings split
+        // across categories don't pull each other into view.
+        var visibleSessions = new List<SessionViewModel>();
         foreach (var vm in _vm.Sessions)
         {
             if (!_vm.SessionMatchesActiveGroup(vm)) continue;
-            if (_sessionUi.TryGetValue(vm.Id, out var ui))
-                SidebarSessionList.Children.Add(ui.sidebarItem);
+            if (_sessionUi.ContainsKey(vm.Id)) visibleSessions.Add(vm);
         }
+
+        var clusters = ComputeWorktreeClusters(visibleSessions);
+
+        int clusterIdx = 0;
+        for (int i = 0; i < visibleSessions.Count; i++)
+        {
+            var vm = visibleSessions[i];
+            if (clusterIdx < clusters.Count && clusters[clusterIdx].start == i)
+            {
+                var (s, e, root) = clusters[clusterIdx];
+                int count = e - s + 1;
+                SidebarSessionList.Children.Add(
+                    BuildWorktreeClusterHeader(root, count, vm.AccentColor));
+                clusterIdx++;
+            }
+            SidebarSessionList.Children.Add(_sessionUi[vm.Id].sidebarItem);
+        }
+
         // Dormant entries always render at the bottom of the sidebar regardless of filter
         // so they remain reachable (and a user filtering by category isn't surprised by
         // missing entries).
@@ -1750,6 +1782,76 @@ public partial class MainWindow : Window
             SidebarSessionList.Children.Add(item);
         UpdateSidebarActiveState();
         RefreshTerminalLayout();
+    }
+
+    /// <summary>
+    /// Returns the ranges of <paramref name="visible"/> that should render under a worktree
+    /// cluster header — runs of 2+ adjacent sessions sharing a RepoRoot. Empty when
+    /// the setting is off.
+    /// </summary>
+    private List<(int start, int end, string repoRoot)> ComputeWorktreeClusters(
+        IReadOnlyList<SessionViewModel> visible)
+    {
+        var clusters = new List<(int, int, string)>();
+        if (!_vm.Settings.ShowWorktreeClusters) return clusters;
+
+        int runStart = -1;
+        string? runRoot = null;
+        for (int i = 0; i < visible.Count; i++)
+        {
+            string? root = visible[i].RepoRoot;
+            if (!string.IsNullOrEmpty(root) && root == runRoot) continue;
+            if (runStart >= 0 && (i - runStart) >= 2)
+                clusters.Add((runStart, i - 1, runRoot!));
+            runStart = string.IsNullOrEmpty(root) ? -1 : i;
+            runRoot = root;
+        }
+        if (runStart >= 0 && (visible.Count - runStart) >= 2)
+            clusters.Add((runStart, visible.Count - 1, runRoot!));
+        return clusters;
+    }
+
+    /// <summary>
+    /// Tiny banner inserted above an adjacent run of worktree siblings: shows the shared
+    /// repo name and the count of siblings in this view, tinted with the cluster's
+    /// accent color. Tag is prefixed with "cluster:" so UpdateSidebarActiveState skips it.
+    /// </summary>
+    private Border BuildWorktreeClusterHeader(string repoRoot, int count, string accentHex)
+    {
+        string repoName = System.IO.Path.GetFileName(repoRoot.TrimEnd('/', '\\'));
+        if (string.IsNullOrEmpty(repoName)) repoName = "worktrees";
+
+        Color accentColor;
+        try { accentColor = (Color)ColorConverter.ConvertFromString(accentHex); }
+        catch { accentColor = Color.FromRgb(0x89, 0xb4, 0xfa); }
+
+        var header = new Border
+        {
+            Margin = new Thickness(0, 8, 0, 0),
+            Padding = new Thickness(10, 3, 8, 3),
+            Background = new SolidColorBrush(Color.FromArgb(0x33, accentColor.R, accentColor.G, accentColor.B)),
+            BorderBrush = new SolidColorBrush(accentColor),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            CornerRadius = new CornerRadius(4, 4, 0, 0),
+            Tag = "cluster:" + repoRoot,
+            ToolTip = $"{count} worktrees of {repoName} are open"
+        };
+
+        var text = new TextBlock
+        {
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold
+        };
+        text.Inlines.Add(new System.Windows.Documents.Run($"\U0001F4C1 {repoName}")
+        {
+            Foreground = new SolidColorBrush(accentColor)
+        });
+        text.Inlines.Add(new System.Windows.Documents.Run($"  · {count}")
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86))
+        });
+        header.Child = text;
+        return header;
     }
 
     private void RefreshSidebarItem(string sessionId) => UpdateAlertBadge();
@@ -2643,6 +2745,7 @@ public partial class MainWindow : Window
             _vm.Settings.DefaultWorkingFolder = edited.DefaultWorkingFolder;
             _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
             _vm.Settings.ShowGroupsTab = edited.ShowGroupsTab;
+            _vm.Settings.ShowWorktreeClusters = edited.ShowWorktreeClusters;
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
             _vm.Settings.MaxSearchResults = edited.MaxSearchResults;
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
@@ -2661,6 +2764,7 @@ public partial class MainWindow : Window
                 vm.Bridge?.ApplyFontSettings(_vm.Settings);
 
             UpdateGroupStripVisibility();
+            RebuildSidebarOrder();
         }
     }
 

@@ -221,6 +221,8 @@
                     <CheckBox x:Name="ShowTerminalStatusDotCheck" Content="Show terminal status indicator"/>
                     <CheckBox x:Name="ShowGroupsTabCheck" Content="Show group tabs in sidebar"
                               ToolTip="The vertical strip on the left of the sidebar that lets you filter sessions by category. Auto-hidden when you have no groups."/>
+                    <CheckBox x:Name="ShowWorktreeClustersCheck" Content="Group worktree siblings in sidebar"
+                              ToolTip="When 2+ adjacent sessions share a git repo, render them under a small '📁 repo (N)' header so the worktree cluster is visible at a glance. Off = only the shared stripe color + subtitle line indicate worktree siblings."/>
                     <CheckBox x:Name="ImportWindowsTerminalProfilesCheck"
                               AutomationProperties.AutomationId="ImportWindowsTerminalProfilesCheck"
                               Content="Show Windows Terminal profiles when creating sessions"

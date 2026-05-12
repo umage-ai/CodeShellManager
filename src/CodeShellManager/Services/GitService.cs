@@ -30,9 +30,12 @@ public static class GitService
     }
 
     /// <summary>
-    /// Returns the absolute path to the repo's top-level directory (the path that
-    /// contains the .git folder/file), or null if folderPath is not inside a repo.
-    /// For a worktree this returns the worktree root, not the main repo root.
+    /// Returns the canonical "repo identity" path — the parent of the shared .git
+    /// directory (`git rev-parse --git-common-dir`). This is identical for every
+    /// worktree of the same repo, so it's safe to use as a sibling-detection key.
+    /// (`--show-toplevel` would return each worktree's own folder, missing siblings.)
+    /// Returns null if folderPath isn't inside a repo. Forward slashes throughout
+    /// for stable string comparison on Windows.
     /// </summary>
     public static async Task<string?> GetRepoRootAsync(string folderPath)
     {
@@ -40,8 +43,26 @@ public static class GitService
             return null;
         try
         {
-            string? top = await RunGitAsync(folderPath, "rev-parse --show-toplevel");
-            return string.IsNullOrWhiteSpace(top) ? null : top.Trim();
+            string? commonDir = await RunGitAsync(folderPath, "rev-parse --git-common-dir");
+            if (string.IsNullOrWhiteSpace(commonDir)) return null;
+            string trimmed = commonDir.Trim();
+
+            // git may return a path relative to the cwd (e.g. ".git" for a plain repo)
+            // or an absolute path (e.g. "C:/repo/.git" when called from a worktree).
+            // Resolve to an absolute path either way.
+            string absolute = System.IO.Path.IsPathRooted(trimmed)
+                ? trimmed
+                : System.IO.Path.GetFullPath(trimmed, folderPath);
+
+            // Strip the trailing ".git" segment to get the repo's working tree root.
+            string normalized = absolute.Replace('\\', '/').TrimEnd('/');
+            if (normalized.EndsWith("/.git", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized[..^"/.git".Length];
+            else if (normalized.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
+                && !normalized.EndsWith("/.git", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized[..^".git".Length].TrimEnd('/');
+
+            return string.IsNullOrEmpty(normalized) ? null : normalized;
         }
         catch { return null; }
     }

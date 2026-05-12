@@ -32,6 +32,7 @@ public partial class SettingsWindow : Window
             DefaultWorkingFolder = current.DefaultWorkingFolder,
             ShowGitBranch = current.ShowGitBranch,
             ShowGroupsTab = current.ShowGroupsTab,
+            ShowWorktreeClusters = current.ShowWorktreeClusters,
             SearchCollapseAfterNavigate = current.SearchCollapseAfterNavigate,
             Theme = current.Theme,
             MaxSearchResults = current.MaxSearchResults,
@@ -58,6 +59,7 @@ public partial class SettingsWindow : Window
         ShowGitBranchCheck.IsChecked = _edited.ShowGitBranch;
         ShowTerminalStatusDotCheck.IsChecked = _edited.ShowTerminalStatusDot;
         ShowGroupsTabCheck.IsChecked = _edited.ShowGroupsTab;
+        ShowWorktreeClustersCheck.IsChecked = _edited.ShowWorktreeClusters;
         ImportWindowsTerminalProfilesCheck.IsChecked = _edited.ImportWindowsTerminalProfiles;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
@@ -122,6 +124,7 @@ public partial class SettingsWindow : Window
         _edited.ShowGitBranch = ShowGitBranchCheck.IsChecked == true;
         _edited.ShowTerminalStatusDot = ShowTerminalStatusDotCheck.IsChecked == true;
         _edited.ShowGroupsTab = ShowGroupsTabCheck.IsChecked == true;
+        _edited.ShowWorktreeClusters = ShowWorktreeClustersCheck.IsChecked == true;
         _edited.ImportWindowsTerminalProfiles = ImportWindowsTerminalProfilesCheck.IsChecked == true;
         _edited.SearchCollapseAfterNavigate = SearchCollapseAfterNavigateCheck.IsChecked == true;
         _edited.AnthropicApiKey = ApiKeyBox.Password;

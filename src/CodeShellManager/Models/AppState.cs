@@ -14,6 +14,12 @@ public class AppSettings
     public string DefaultWorkingFolder { get; set; } = "";
     public bool ShowGitBranch { get; set; } = true;
     public bool ShowGroupsTab { get; set; } = true;
+    /// <summary>
+    /// When 2+ adjacent visible sessions share a repo root, draw a small header above
+    /// them ("📁 repoName (N)") to make the worktree grouping obvious. Off = the
+    /// implicit subtitle + shared stripe color are the only signals.
+    /// </summary>
+    public bool ShowWorktreeClusters { get; set; } = true;
     public bool SearchCollapseAfterNavigate { get; set; } = true;
     public string Theme { get; set; } = "dark";
     public int MaxSearchResults { get; set; } = 100;
