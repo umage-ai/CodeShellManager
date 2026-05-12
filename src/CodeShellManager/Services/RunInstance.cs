@@ -42,7 +42,6 @@ public partial class RunInstance : ObservableObject, IDisposable
     private readonly StringBuilder _ansiStripped = new();
     private readonly object _bufLock = new();
     private bool _disposed;
-    private bool _stopRequested;
 
     public event Action? OutputChanged;
     public event Action? StateChanged;
@@ -90,12 +89,12 @@ public partial class RunInstance : ObservableObject, IDisposable
                 : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
 
-        _pty.Start(command, args, workDir, cols: 200, rows: 50);
+        _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
     }
 
     public void Stop()
     {
-        _stopRequested = true;
+        // Disposing the PTY closes the Job Object → kills the whole process tree.
         Dispose();
     }
 
@@ -118,10 +117,8 @@ public partial class RunInstance : ObservableObject, IDisposable
     private void OnPtyExited()
     {
         EndedAt = DateTime.Now;
-        // PTY does not expose the exit code today — infer state from whether the
-        // user explicitly stopped us. Natural exit = treat as success; explicit Stop
-        // = failed/cancelled. ExitCode stays null in both cases.
-        State = _stopRequested ? RunState.ExitedFailed : RunState.ExitedOk;
+        ExitCode = _pty?.ExitCode;
+        State = ExitCode == 0 ? RunState.ExitedOk : RunState.ExitedFailed;
         StateChanged?.Invoke();
     }
 
