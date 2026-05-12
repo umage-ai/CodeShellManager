@@ -2024,10 +2024,35 @@ public partial class MainWindow : Window
         };
         SidebarSessionList.Drop += (_, e) =>
         {
+            var mode = _vm.Settings.GroupDisplayMode;
+
             if (IsSessionDragPayload(e.Data))
             {
                 string draggedId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
-                int targetIndex = GetSidebarDropIndex(e.GetPosition(SidebarSessionList));
+                var pos = e.GetPosition(SidebarSessionList);
+
+                // Inline mode: detect which group section the cursor fell in. If different
+                // from the dragged session's current group, reassign — otherwise the move
+                // would just "snap back" once RebuildSidebarOrder regrouped by GroupId.
+                if (mode == Models.GroupDisplayMode.InlineHeaders
+                    && _sessionManager.Groups.Count > 0)
+                {
+                    var (targetGroupId, sessionsIndex) = ResolveInlineSessionDropTarget(pos.Y);
+                    string normalizedTarget = targetGroupId ?? "";
+                    var dragged = _vm.Sessions.FirstOrDefault(s => s.Id == draggedId);
+                    if (dragged != null && (dragged.GroupId ?? "") != normalizedTarget)
+                    {
+                        // Apply the cross-section reassign to the whole selection set when
+                        // the dragged session is part of one — mirrors the header-drop UX.
+                        var targets = _vm.ResolveActionTargets(draggedId);
+                        _vm.AssignSessionsToGroup(targets, targetGroupId);
+                    }
+                    _vm.MoveSession(draggedId, sessionsIndex);
+                    RebuildSidebarOrder();
+                    return;
+                }
+
+                int targetIndex = GetSidebarDropIndex(pos);
                 _vm.MoveSession(draggedId, targetIndex);
                 RebuildSidebarOrder();
                 return;
@@ -2035,7 +2060,7 @@ public partial class MainWindow : Window
             // Inline mode: group reorder drops onto the sidebar resolve to a position
             // among the visible group headers. The fixed FilterStrip's own drop handler
             // is in SetupGroupStripDrop — that's the path when the strip is showing.
-            if (_vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.InlineHeaders
+            if (mode == Models.GroupDisplayMode.InlineHeaders
                 && IsGroupDragPayload(e.Data))
             {
                 string payload = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
@@ -2056,6 +2081,81 @@ public partial class MainWindow : Window
             if (pos.Y < midY) return i;
         }
         return children.Count;
+    }
+
+    /// <summary>
+    /// In inline-headers mode, maps a drop Y to (target group, _vm.Sessions index).
+    /// Walks SidebarSessionList in order: each "groupheader:" item switches the current
+    /// section; session items inside the section define insertion midpoints. If the drop
+    /// falls past every section's midline, the session lands at the end of whatever
+    /// section the cursor was last inside.
+    /// </summary>
+    private (string? targetGroupId, int sessionsIndex) ResolveInlineSessionDropTarget(double y)
+    {
+        // Pass 1: build per-section bounds + session lists by walking the visible children.
+        // A section's vertical bounds are [its-header-bottom .. next-header-top] (or [0..]/[..MaxValue]
+        // for the Ungrouped implicit section / the final section).
+        var sections = new List<(string? groupId, double endY, List<Border> sessions)>();
+        string? currentGroupId = null;
+        double currentEndY = double.MaxValue;
+        var currentSessions = new List<Border>();
+
+        foreach (System.Windows.UIElement child in SidebarSessionList.Children)
+        {
+            if (child is not Border item) continue;
+            string? tag = item.Tag as string;
+            if (tag == null) continue;
+            var itemPos = item.TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
+
+            if (tag.StartsWith("groupheader:"))
+            {
+                // Close out the current section at the new header's top.
+                currentEndY = itemPos.Y;
+                sections.Add((currentGroupId, currentEndY, currentSessions));
+                // Start a new section.
+                string id = tag.Substring("groupheader:".Length);
+                currentGroupId = id == GroupFilter.Ungrouped ? null : id;
+                currentSessions = new List<Border>();
+                continue;
+            }
+            if (tag.StartsWith("cluster:") || tag.StartsWith("dormant:")) continue;
+            currentSessions.Add(item);
+        }
+        sections.Add((currentGroupId, double.MaxValue, currentSessions));
+
+        // Pass 2: find the section whose end-Y is past the drop Y, then resolve the
+        // insertion point within it.
+        foreach (var sec in sections)
+        {
+            if (y >= sec.endY) continue;
+
+            foreach (var sItem in sec.sessions)
+            {
+                var sp = sItem.TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
+                if (y < sp.Y + sItem.ActualHeight / 2)
+                {
+                    string? sid = sItem.Tag as string;
+                    if (!string.IsNullOrEmpty(sid))
+                    {
+                        for (int j = 0; j < _vm.Sessions.Count; j++)
+                            if (_vm.Sessions[j].Id == sid) return (sec.groupId, j);
+                    }
+                }
+            }
+
+            // Past every session in this section — insert at the section's tail, i.e. just
+            // after the last existing member of this group in _vm.Sessions.
+            int lastIdx = -1;
+            for (int j = 0; j < _vm.Sessions.Count; j++)
+            {
+                if ((_vm.Sessions[j].GroupId ?? "") == (sec.groupId ?? ""))
+                    lastIdx = j;
+            }
+            return (sec.groupId, lastIdx < 0 ? _vm.Sessions.Count : lastIdx + 1);
+        }
+
+        // Past every section (shouldn't normally happen — last section's endY is MaxValue).
+        return (currentGroupId, _vm.Sessions.Count);
     }
 
     /// <summary>
