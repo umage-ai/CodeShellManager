@@ -46,6 +46,55 @@ public static class GitService
         catch { return null; }
     }
 
+    /// <summary>Describes one git worktree as reported by `git worktree list --porcelain`.</summary>
+    public record WorktreeInfo(string Path, string? Branch, bool IsBare, bool IsDetached, bool IsLocked, bool IsPrunable);
+
+    /// <summary>
+    /// Returns all worktrees (including the main one) of the repo containing
+    /// <paramref name="folderPath"/>. Empty if the folder isn't in a repo.
+    /// </summary>
+    public static async Task<IReadOnlyList<WorktreeInfo>> ListWorktreesAsync(string folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath) || !System.IO.Directory.Exists(folderPath))
+            return Array.Empty<WorktreeInfo>();
+        try
+        {
+            string? raw = await RunGitAsync(folderPath, "worktree list --porcelain");
+            if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<WorktreeInfo>();
+
+            // Output is blank-line separated stanzas:
+            //   worktree /path
+            //   HEAD <sha>
+            //   branch refs/heads/<name>   (or "detached", "bare")
+            //   locked [reason]
+            //   prunable [reason]
+            var results = new List<WorktreeInfo>();
+            string? path = null;
+            string? branch = null;
+            bool isBare = false, isDetached = false, isLocked = false, isPrunable = false;
+            void Flush()
+            {
+                if (!string.IsNullOrEmpty(path))
+                    results.Add(new WorktreeInfo(path, branch, isBare, isDetached, isLocked, isPrunable));
+                path = null; branch = null; isBare = false; isDetached = false; isLocked = false; isPrunable = false;
+            }
+            foreach (var line in raw.Replace("\r", "").Split('\n'))
+            {
+                if (string.IsNullOrEmpty(line)) { Flush(); continue; }
+                if (line.StartsWith("worktree ")) path = line.Substring("worktree ".Length).Trim();
+                else if (line.StartsWith("branch ")) branch = line.Substring("branch ".Length).Trim()
+                    .Replace("refs/heads/", "", StringComparison.Ordinal);
+                else if (line == "bare") isBare = true;
+                else if (line == "detached") isDetached = true;
+                else if (line.StartsWith("locked")) isLocked = true;
+                else if (line.StartsWith("prunable")) isPrunable = true;
+            }
+            Flush();
+            return results;
+        }
+        catch { return Array.Empty<WorktreeInfo>(); }
+    }
+
     /// <summary>Returns local branch names in the repo, oldest-first by git's default order.</summary>
     public static async Task<IReadOnlyList<string>> ListBranchesAsync(string folderPath)
     {

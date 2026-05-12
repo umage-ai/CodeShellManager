@@ -44,7 +44,11 @@ public partial class SessionViewModel : ObservableObject, IDisposable
                 ? (string.IsNullOrWhiteSpace(Session.SshUser)
                     ? Session.SshHost
                     : $"{Session.SshUser}@{Session.SshHost}")
-                : Session.WorkingFolder);
+                // Key on RepoRoot when known so worktree siblings share a color;
+                // fall back to WorkingFolder for non-git sessions.
+                : (string.IsNullOrEmpty(RepoRoot) ? Session.WorkingFolder : RepoRoot));
+
+    partial void OnRepoRootChanged(string? value) => OnPropertyChanged(nameof(AccentColor));
 
     public string DisplayName => string.IsNullOrWhiteSpace(Session.Name)
         ? (Session.IsRemote

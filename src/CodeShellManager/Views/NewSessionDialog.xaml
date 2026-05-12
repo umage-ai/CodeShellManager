@@ -1,7 +1,7 @@
 <Window x:Class="CodeShellManager.Views.NewSessionDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="New Session" Height="380" Width="480"
+        Title="New Session" Height="480" Width="480"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#1e1e2e" Foreground="#cdd6f4"
         FontFamily="Segoe UI">
@@ -152,6 +152,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -238,8 +239,19 @@
             <TextBox x:Name="NameBox" AutomationProperties.AutomationId="NewSessionNameBox"/>
         </StackPanel>
 
+        <!-- Sibling worktrees (auto-shown when the folder is a worktree with siblings) -->
+        <StackPanel Grid.Row="7" x:Name="WorktreesPanel" Visibility="Collapsed" Margin="0,0,0,8">
+            <TextBlock Text="Also start sessions in sibling worktrees:" Style="{StaticResource Label}"/>
+            <Border Background="#181825" BorderBrush="#313244" BorderThickness="1"
+                    CornerRadius="3" Padding="8,6" MaxHeight="120">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="WorktreesList"/>
+                </ScrollViewer>
+            </Border>
+        </StackPanel>
+
         <!-- Buttons -->
-        <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="9" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Cancel_Click"/>
             <Button Content="Start Session" AutomationProperties.AutomationId="NewSessionOkBtn"
                     Style="{StaticResource PrimaryBtn}" Click="Start_Click" IsDefault="True"/>

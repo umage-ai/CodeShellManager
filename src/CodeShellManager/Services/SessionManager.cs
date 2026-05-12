@@ -19,7 +19,7 @@ public class SessionManager
     public event Action? GroupsChanged;
 
     public ShellSession CreateSession(string name, string folder, string command, string args,
-        string? groupId = null, string? colorOverride = null)
+        string? groupId = null, string? colorOverride = null, string? afterSessionId = null)
     {
         var session = new ShellSession
         {
@@ -34,7 +34,15 @@ public class SessionManager
             Status = SessionStatus.Running
         };
 
-        _sessions.Add(session);
+        int insertAt = -1;
+        if (!string.IsNullOrEmpty(afterSessionId))
+        {
+            int parentIdx = _sessions.FindIndex(s => s.Id == afterSessionId);
+            if (parentIdx >= 0) insertAt = parentIdx + 1;
+        }
+        if (insertAt >= 0 && insertAt <= _sessions.Count) _sessions.Insert(insertAt, session);
+        else _sessions.Add(session);
+
         SessionAdded?.Invoke(session);
         SessionsChanged?.Invoke();
         return session;

@@ -226,7 +226,14 @@ public partial class MainViewModel : ObservableObject
             };
         }
 
-        Sessions.Add(vm);
+        // Mirror SessionManager order so insert-after-parent (CreateSession with afterSessionId)
+        // also lands the VM at the matching slot — otherwise the model order would be correct
+        // but the sidebar would still show the new entry at the bottom.
+        int idx = -1;
+        for (int i = 0; i < _sessionManager.Sessions.Count; i++)
+            if (_sessionManager.Sessions[i].Id == vm.Id) { idx = i; break; }
+        if (idx >= 0 && idx <= Sessions.Count) Sessions.Insert(idx, vm);
+        else Sessions.Add(vm);
         ActiveSession = vm;
         _ = SaveStateAsync();
     }

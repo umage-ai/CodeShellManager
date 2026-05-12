@@ -267,27 +267,51 @@ public partial class MainWindow : Window
     }
 
     private void OpenNewSessionDialog(string defaultFolder = "")
+        => OpenNewSessionDialogCore(defaultFolder, parent: null);
+
+    /// <summary>
+    /// Opens the New Session dialog pre-filled with the parent session's folder, command, args.
+    /// The new session lands immediately after the parent in the sidebar and inherits its
+    /// GroupId + profile overrides (issue #27).
+    /// </summary>
+    private void OpenNewSessionDialogFromParent(SessionViewModel parent)
+        => OpenNewSessionDialogCore(parent.WorkingFolder, parent);
+
+    private void OpenNewSessionDialogCore(string defaultFolder, SessionViewModel? parent)
     {
         var profiles = _vm.Settings.ImportWindowsTerminalProfiles
             ? Services.WindowsTerminalProfileService.GetProfiles()
             : null;
 
+        string folder = !string.IsNullOrEmpty(defaultFolder)
+            ? defaultFolder
+            : _vm.Settings.DefaultWorkingFolder;
+
         var dialog = new NewSessionDialog(
-            string.IsNullOrEmpty(defaultFolder) ? _vm.Settings.DefaultWorkingFolder : defaultFolder,
+            folder,
             _vm.Settings.LaunchCommands,
-            profiles)
+            profiles,
+            defaultCommand: parent?.Session.Command,
+            defaultArgs: parent?.Session.Args)
         {
             Owner = this
         };
 
         if (dialog.ShowDialog() != true) return;
 
+        // Inherit group from parent when present so siblings stay clustered.
+        string? groupId = !string.IsNullOrEmpty(dialog.SelectedGroupId)
+            ? dialog.SelectedGroupId
+            : (!string.IsNullOrEmpty(parent?.Session.GroupId) ? parent!.Session.GroupId : null);
+
         var session = _sessionManager.CreateSession(
             dialog.SessionName,
             dialog.SelectedFolder,
             dialog.SelectedCommand,
             dialog.SelectedArgs,
-            dialog.SelectedGroupId);
+            groupId,
+            colorOverride: null,
+            afterSessionId: parent?.Id);
 
         if (dialog.IsRemote)
         {
@@ -298,19 +322,145 @@ public partial class MainWindow : Window
             session.SshRemoteFolder = dialog.SshRemoteFolder;
         }
 
-        // Copy any profile-driven overrides onto the session so they persist + apply on launch
-        session.ProfileFontFamily = dialog.ProfileFontFamily;
-        session.ProfileFontSize = dialog.ProfileFontSize;
-        session.ProfileFontWeight = dialog.ProfileFontWeight;
-        session.ProfileFontLigatures = dialog.ProfileFontLigatures;
-        session.ProfileCursorShape = dialog.ProfileCursorShape;
-        session.ProfileCursorBlink = dialog.ProfileCursorBlink;
-        session.ProfilePadding = dialog.ProfilePadding;
-        session.ProfileBackgroundOpacity = dialog.ProfileBackgroundOpacity;
-        session.ProfileRetroEffect = dialog.ProfileRetroEffect;
-        session.ProfileColorSchemeJson = dialog.ProfileColorSchemeJson;
+        // Profile overrides come from the dialog (which may have copied from a Windows Terminal
+        // profile). When the dialog left them blank and we have a parent, inherit the parent's.
+        session.ProfileFontFamily = dialog.ProfileFontFamily ?? parent?.Session.ProfileFontFamily;
+        session.ProfileFontSize = dialog.ProfileFontSize ?? parent?.Session.ProfileFontSize;
+        session.ProfileFontWeight = dialog.ProfileFontWeight ?? parent?.Session.ProfileFontWeight;
+        session.ProfileFontLigatures = dialog.ProfileFontLigatures ?? parent?.Session.ProfileFontLigatures;
+        session.ProfileCursorShape = dialog.ProfileCursorShape ?? parent?.Session.ProfileCursorShape;
+        session.ProfileCursorBlink = dialog.ProfileCursorBlink ?? parent?.Session.ProfileCursorBlink;
+        session.ProfilePadding = dialog.ProfilePadding ?? parent?.Session.ProfilePadding;
+        session.ProfileBackgroundOpacity = dialog.ProfileBackgroundOpacity ?? parent?.Session.ProfileBackgroundOpacity;
+        session.ProfileRetroEffect = dialog.ProfileRetroEffect ?? parent?.Session.ProfileRetroEffect;
+        session.ProfileColorSchemeJson = dialog.ProfileColorSchemeJson ?? parent?.Session.ProfileColorSchemeJson;
 
-        _ = LaunchSessionAsync(session);
+        _ = LaunchAndFollowUpWorktreesAsync(session, dialog.AdditionalWorktreePaths);
+    }
+
+    /// <summary>
+    /// Launches the primary session, then any opt-in sibling worktrees from the dialog —
+    /// each inheriting the primary's command, group, and profile overrides, and inserted
+    /// immediately after it so they cluster in the sidebar.
+    /// </summary>
+    private async Task LaunchAndFollowUpWorktreesAsync(ShellSession primary, IReadOnlyList<string> additionalPaths)
+    {
+        await LaunchSessionAsync(primary);
+        if (additionalPaths.Count == 0) return;
+
+        string anchorId = primary.Id;
+        foreach (var path in additionalPaths)
+        {
+            if (!System.IO.Directory.Exists(path)) continue;
+            var sibling = _sessionManager.CreateSession(
+                System.IO.Path.GetFileName(path.TrimEnd('/', '\\')) ?? primary.Command,
+                path,
+                primary.Command,
+                primary.Args,
+                string.IsNullOrEmpty(primary.GroupId) ? null : primary.GroupId,
+                colorOverride: null,
+                afterSessionId: anchorId);
+            // Inherit profile so siblings look identical.
+            sibling.ProfileFontFamily = primary.ProfileFontFamily;
+            sibling.ProfileFontSize = primary.ProfileFontSize;
+            sibling.ProfileFontWeight = primary.ProfileFontWeight;
+            sibling.ProfileFontLigatures = primary.ProfileFontLigatures;
+            sibling.ProfileCursorShape = primary.ProfileCursorShape;
+            sibling.ProfileCursorBlink = primary.ProfileCursorBlink;
+            sibling.ProfilePadding = primary.ProfilePadding;
+            sibling.ProfileBackgroundOpacity = primary.ProfileBackgroundOpacity;
+            sibling.ProfileRetroEffect = primary.ProfileRetroEffect;
+            sibling.ProfileColorSchemeJson = primary.ProfileColorSchemeJson;
+            await LaunchSessionAsync(sibling);
+            anchorId = sibling.Id;
+        }
+    }
+
+    /// <summary>
+    /// Duplicates a session without a dialog: same folder, command, args, group, and
+    /// profile overrides; new GUID; a derived name like "<original> (2)". Lands after parent.
+    /// </summary>
+    private async Task DuplicateSessionAsync(SessionViewModel parent)
+    {
+        var p = parent.Session;
+        string baseName = string.IsNullOrEmpty(p.Name) ? parent.DisplayName : p.Name;
+        var clone = _sessionManager.CreateSession(
+            DeriveDuplicateName(baseName),
+            p.WorkingFolder,
+            p.Command,
+            p.Args,
+            string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
+            colorOverride: null,
+            afterSessionId: parent.Id);
+        if (p.IsRemote)
+        {
+            clone.IsRemote = true;
+            clone.SshUser = p.SshUser;
+            clone.SshHost = p.SshHost;
+            clone.SshPort = p.SshPort;
+            clone.SshRemoteFolder = p.SshRemoteFolder;
+        }
+        clone.ProfileFontFamily = p.ProfileFontFamily;
+        clone.ProfileFontSize = p.ProfileFontSize;
+        clone.ProfileFontWeight = p.ProfileFontWeight;
+        clone.ProfileFontLigatures = p.ProfileFontLigatures;
+        clone.ProfileCursorShape = p.ProfileCursorShape;
+        clone.ProfileCursorBlink = p.ProfileCursorBlink;
+        clone.ProfilePadding = p.ProfilePadding;
+        clone.ProfileBackgroundOpacity = p.ProfileBackgroundOpacity;
+        clone.ProfileRetroEffect = p.ProfileRetroEffect;
+        clone.ProfileColorSchemeJson = p.ProfileColorSchemeJson;
+        await LaunchSessionAsync(clone);
+    }
+
+    private string DeriveDuplicateName(string baseName)
+    {
+        // If baseName already ends with " (N)", increment; otherwise append " (2)".
+        var match = System.Text.RegularExpressions.Regex.Match(baseName, @"^(.*) \((\d+)\)$");
+        string stem = match.Success ? match.Groups[1].Value : baseName;
+        int start = match.Success ? int.Parse(match.Groups[2].Value) + 1 : 2;
+        var existing = new HashSet<string>(
+            _vm.Sessions.Select(s => s.DisplayName), StringComparer.OrdinalIgnoreCase);
+        for (int n = start; n < start + 100; n++)
+        {
+            string candidate = $"{stem} ({n})";
+            if (!existing.Contains(candidate)) return candidate;
+        }
+        return $"{stem} ({start})";
+    }
+
+    /// <summary>
+    /// Launches a new session in an existing sibling worktree (path resolved via
+    /// `git worktree list`). Inherits the source session's command, group, and profile.
+    /// </summary>
+    private async Task LaunchSessionInSiblingWorktreeAsync(SessionViewModel parent, string worktreePath)
+    {
+        if (!System.IO.Directory.Exists(worktreePath))
+        {
+            MessageBox.Show(this, $"Worktree folder '{worktreePath}' does not exist.",
+                "Worktree missing", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        var p = parent.Session;
+        var sibling = _sessionManager.CreateSession(
+            System.IO.Path.GetFileName(worktreePath.TrimEnd('/', '\\')) ?? p.Command,
+            worktreePath,
+            p.Command,
+            p.Args,
+            string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
+            colorOverride: null,
+            afterSessionId: parent.Id);
+        sibling.ProfileFontFamily = p.ProfileFontFamily;
+        sibling.ProfileFontSize = p.ProfileFontSize;
+        sibling.ProfileFontWeight = p.ProfileFontWeight;
+        sibling.ProfileFontLigatures = p.ProfileFontLigatures;
+        sibling.ProfileCursorShape = p.ProfileCursorShape;
+        sibling.ProfileCursorBlink = p.ProfileCursorBlink;
+        sibling.ProfilePadding = p.ProfilePadding;
+        sibling.ProfileBackgroundOpacity = p.ProfileBackgroundOpacity;
+        sibling.ProfileRetroEffect = p.ProfileRetroEffect;
+        sibling.ProfileColorSchemeJson = p.ProfileColorSchemeJson;
+        await LaunchSessionAsync(sibling);
     }
 
     private static void Log(string msg)
@@ -724,12 +874,15 @@ public partial class MainWindow : Window
 
         var exploreBtn = MakeMiniButton("📁", "Open in Explorer", () => vm.OpenInExplorerCommand.Execute(null));
         var psBtn      = MakeMiniButton(">_", "Open PowerShell here", () => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId));
+        var spawnBtn   = MakeMiniButton("➕", "New session here (inherits group + profile)",
+                            () => OpenNewSessionDialogFromParent(vm));
         var renameBtn  = MakeMiniButton("✏", "Rename session", StartRename);
         var sleepBtn   = MakeMiniButton("💤", "Sleep session (keep it but stop the terminal)", () => SleepSession(vm));
         var closeBtn   = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
 
         btnPanel.Children.Add(exploreBtn);
         btnPanel.Children.Add(psBtn);
+        btnPanel.Children.Add(spawnBtn);
         btnPanel.Children.Add(renameBtn);
         btnPanel.Children.Add(sleepBtn);
         btnPanel.Children.Add(closeBtn);
@@ -862,6 +1015,23 @@ public partial class MainWindow : Window
 
                     case nameof(SessionViewModel.HasWorktreeSiblings):
                         UpdateWorktreeText();
+                        break;
+
+                    case nameof(SessionViewModel.AccentColor):
+                        // RepoRoot resolved → repaint stripe + active ring with the shared color
+                        // so worktree siblings cluster visually.
+                        try
+                        {
+                            var newAccent = (Color)ColorConverter.ConvertFromString(vm.AccentColor);
+                            stripe.Background = new SolidColorBrush(newAccent);
+                            if (_sessionUi.TryGetValue(vm.Id, out var ui))
+                            {
+                                ui.terminalWrapper.Tag = vm.AccentColor;
+                                if (_vm.ActiveSession?.Id == vm.Id)
+                                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(newAccent);
+                            }
+                        }
+                        catch { /* invalid hex — ignore */ }
                         break;
                 }
             });
@@ -1094,12 +1264,68 @@ public partial class MainWindow : Window
         bool isMulti = targetIds.Count > 1;
         string countSuffix = isMulti ? $" ({targetIds.Count})" : "";
 
-        // Worktree action — single-target only, local git session
-        if (!isMulti && !vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
+        // Spawn-near-parent + worktree actions — single-target only
+        if (!isMulti)
         {
-            var wtItem = new System.Windows.Controls.MenuItem { Header = "New worktree from this branch…" };
-            wtItem.Click += async (_, _) => await OpenNewWorktreeDialogAsync(vm);
-            menu.Items.Add(wtItem);
+            var dupItem = new System.Windows.Controls.MenuItem { Header = "Duplicate session" };
+            dupItem.Click += async (_, _) => await DuplicateSessionAsync(vm);
+            menu.Items.Add(dupItem);
+
+            if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
+            {
+                var newHere = new System.Windows.Controls.MenuItem { Header = "New session here…" };
+                newHere.Click += (_, _) => OpenNewSessionDialogFromParent(vm);
+                menu.Items.Add(newHere);
+
+                var wtItem = new System.Windows.Controls.MenuItem { Header = "New worktree from this branch…" };
+                wtItem.Click += async (_, _) => await OpenNewWorktreeDialogAsync(vm);
+                menu.Items.Add(wtItem);
+
+                // Sibling worktree submenu — populated on demand so we don't shell out to git
+                // for every right-click on a non-worktree session.
+                var siblingMenu = new System.Windows.Controls.MenuItem { Header = "New session in sibling worktree" };
+                siblingMenu.Items.Add(new System.Windows.Controls.MenuItem
+                {
+                    Header = "(loading…)",
+                    IsEnabled = false
+                });
+                bool populated = false;
+                siblingMenu.SubmenuOpened += async (_, _) =>
+                {
+                    if (populated) return;
+                    populated = true;
+                    var worktrees = await GitService.ListWorktreesAsync(vm.Session.WorkingFolder);
+                    siblingMenu.Items.Clear();
+                    var liveFolders = new HashSet<string>(
+                        _vm.Sessions.Select(s => NormalizePath(s.Session.WorkingFolder)),
+                        StringComparer.OrdinalIgnoreCase);
+                    string selfNorm = NormalizePath(vm.Session.WorkingFolder);
+                    int added = 0;
+                    foreach (var w in worktrees)
+                    {
+                        if (w.IsBare) continue;
+                        string wn = NormalizePath(w.Path);
+                        if (wn == selfNorm) continue;
+                        if (liveFolders.Contains(wn)) continue;
+                        string label = string.IsNullOrEmpty(w.Branch)
+                            ? System.IO.Path.GetFileName(w.Path)
+                            : $"{System.IO.Path.GetFileName(w.Path)}  ⎇ {w.Branch}";
+                        var mi = new System.Windows.Controls.MenuItem { Header = label, Tag = w.Path };
+                        mi.Click += async (_, _) => await LaunchSessionInSiblingWorktreeAsync(vm, w.Path);
+                        siblingMenu.Items.Add(mi);
+                        added++;
+                    }
+                    if (added == 0)
+                    {
+                        siblingMenu.Items.Add(new System.Windows.Controls.MenuItem
+                        {
+                            Header = "(no other worktrees available)",
+                            IsEnabled = false
+                        });
+                    }
+                };
+                menu.Items.Add(siblingMenu);
+            }
             menu.Items.Add(new System.Windows.Controls.Separator());
         }
 
@@ -1152,6 +1378,13 @@ public partial class MainWindow : Window
         menu.Items.Add(closeItem);
 
         return menu;
+    }
+
+    private static string NormalizePath(string p)
+    {
+        if (string.IsNullOrEmpty(p)) return "";
+        try { return System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(p)).Replace('\\', '/'); }
+        catch { return p; }
     }
 
     // ── Worktree creation ─────────────────────────────────────────────────────
@@ -2294,6 +2527,11 @@ public partial class MainWindow : Window
     private bool TryHandleGlobalShortcut(Key key, ModifierKeys mods)
     {
         if (key == Key.T && mods == ModifierKeys.Control) { OpenNewSessionDialog(); return true; }
+        if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            if (_vm.ActiveSession != null) _ = DuplicateSessionAsync(_vm.ActiveSession);
+            return true;
+        }
         if (key == Key.W && mods == ModifierKeys.Control) { _vm.ActiveSession?.CloseCommand.Execute(null); return true; }
         if (key == Key.F && mods == ModifierKeys.Control) { ToggleSearch_Click(this, new RoutedEventArgs()); return true; }
         if (key == Key.Tab && mods == ModifierKeys.Control) { CycleSession(forward: true); return true; }
