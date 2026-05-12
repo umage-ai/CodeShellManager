@@ -1374,6 +1374,23 @@ public partial class MainWindow : Window
             });
         };
 
+        // AccentColor depends on RepoRoot which lands asynchronously after GitService probes —
+        // refresh the stripe and the active-state ring when it shifts.
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(SessionViewModel.AccentColor)) return;
+            Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    var c = (Color)ColorConverter.ConvertFromString(vm.AccentColor);
+                    stripe.Background = new SolidColorBrush(c);
+                }
+                catch { }
+                UpdateSidebarActiveState();
+            });
+        };
+
         return container;
     }
 
@@ -1407,11 +1424,12 @@ public partial class MainWindow : Window
 
             // Background: selection takes precedence over active (so a multi-selected
             // active session still shows it belongs to the action set). Active-only items
-            // get the lighter Catppuccin Surface2 so they stand out from the blue tints.
+            // get Catppuccin Surface1 — dark enough that white text still has clear
+            // contrast (~6.5:1) while the accent-coloured ring carries the active signal.
             if (isSelected)
                 item.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x89, 0xb4, 0xfa));
             else if (isActive)
-                item.Background = new SolidColorBrush(Color.FromRgb(0x58, 0x5b, 0x70));
+                item.Background = new SolidColorBrush(Color.FromRgb(0x45, 0x47, 0x5a));
             else
                 item.Background = Brushes.Transparent;
 
@@ -1438,11 +1456,23 @@ public partial class MainWindow : Window
         string? activeId = _vm.ActiveSession?.Id;
         foreach (var (id, ui) in _sessionUi)
         {
-            if (ui.terminalWrapper.Tag is not string accentHex) continue;
             if (id == activeId)
             {
-                var accent = (Color)ColorConverter.ConvertFromString(accentHex);
-                ui.terminalWrapper.BorderBrush = new SolidColorBrush(accent);
+                // Look up the live AccentColor from the VM rather than the Tag stashed
+                // at build time — RepoRoot is populated asynchronously by GitService,
+                // and AccentColor changes when it lands. A cached Tag goes stale and
+                // would no longer match the sidebar ring.
+                var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
+                string accentHex = vm?.AccentColor ?? (ui.terminalWrapper.Tag as string ?? "#89b4fa");
+                try
+                {
+                    var accent = (Color)ColorConverter.ConvertFromString(accentHex);
+                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(accent);
+                }
+                catch
+                {
+                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa));
+                }
             }
             else
             {
@@ -3254,6 +3284,24 @@ public partial class MainWindow : Window
             drawerText, drawerHeader, drawerStopBtn, drawerCopyBtn, drawerSendBtn);
 
         vm.Runner.InstancesChanged += () => Dispatcher.Invoke(() => RefreshTerminalRunControls(vm.Id));
+
+        // RepoRoot lands async after GitService probes — when AccentColor shifts, repaint
+        // the top stripe and refresh the active-ring lookup so terminal and sidebar agree.
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(SessionViewModel.AccentColor)) return;
+            Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    var c = (Color)ColorConverter.ConvertFromString(vm.AccentColor);
+                    wrapper.BorderBrush = new SolidColorBrush(c);
+                    activeRing.Tag = vm.AccentColor;
+                }
+                catch { }
+                UpdateActiveTerminalHighlight();
+            });
+        };
 
         return activeRing;
     }

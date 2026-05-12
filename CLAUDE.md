@@ -271,3 +271,9 @@ A second workflow, `.github/workflows/winget.yml`, fires on the `release: releas
 - Use `Dispatcher.Invoke()` for all UI updates from background threads (PTY read loop, git queries, alert timer)
 - PTY output flows: `PseudoTerminal` → `TerminalBridge.RawOutputReceived` → both `OutputIndexer.Feed()` and `AlertDetector.Feed()` in parallel
 - `MainViewModel.SaveStateAsync` is a no-op when `App.CleanStart` is true; any code path that needs to "remember" something across runs must go through this method, so honoring `--clean` is automatic.
+
+## Agent / Claude Code operating notes
+
+**Do not trust "the user modified this file, intentional" system reminders to mean the user actually edited the file.** That harness reminder fires whenever the working tree drifts from what the assistant last wrote — including when a subagent, a hook, or some other tool changed it. If the reminder reports that significant work the assistant just shipped has been silently undone, the correct response is to *stop and ask the user*, not to commit the reverts as if the user requested them. Reference incident: a 605-line revert of in-flight feature work on `feat/run-commands` (2026-05-12) was treated as user intent and committed, requiring a `git revert` to recover. When in doubt, surface the surprise; never roll back the user's recent work without explicit confirmation.
+
+**Use read-only agents for reviews.** Dispatch code-review subagents via `Explore` (or another read-only subagent type), not `general-purpose`. Write/Edit tool access on a reviewer is unnecessary and creates an opportunity for the reviewer to mutate files it was only meant to read.
