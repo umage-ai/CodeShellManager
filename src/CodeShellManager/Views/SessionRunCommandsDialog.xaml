@@ -23,6 +23,23 @@
                 Background="Transparent" BorderBrush="#45475a" BorderThickness="1" Padding="10,4"
                 Foreground="#cdd6f4" Margin="0,8,0,0" Click="Add_Click"/>
 
+        <!-- Column header row — keep widths in sync with the row template below. -->
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Default" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
+                       Foreground="#a6adc8" VerticalAlignment="Center" Width="22"/>
+            <TextBlock Grid.Column="1" Text="Label" Margin="0,0,6,0" FontSize="10" FontWeight="SemiBold"
+                       Foreground="#a6adc8" ToolTip="Short name shown on the chip and in the toolbar dropdown"/>
+            <TextBlock Grid.Column="2" Text="Command line" Margin="0,0,6,0" FontSize="10" FontWeight="SemiBold"
+                       Foreground="#a6adc8" ToolTip="What runs in the session's folder (cmd locally, bash on SSH parents)"/>
+            <TextBlock Grid.Column="3" Text="" />
+        </Grid>
+
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <ItemsControl x:Name="RowsList">
                 <ItemsControl.ItemTemplate>
@@ -41,11 +58,13 @@
                                              ToolTip="Set as default (toolbar ▶ / F5)"/>
                                 <TextBox Grid.Column="1" Text="{Binding Label, UpdateSourceTrigger=PropertyChanged}"
                                          Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
-                                         CaretBrush="#cdd6f4" Padding="4,2" Margin="0,0,6,0"/>
+                                         CaretBrush="#cdd6f4" Padding="4,2" Margin="0,0,6,0"
+                                         ToolTip="Short, friendly name — e.g. Test, Build, Watch"/>
                                 <TextBox Grid.Column="2" Text="{Binding CommandLine, UpdateSourceTrigger=PropertyChanged}"
                                          Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
                                          CaretBrush="#cdd6f4" Padding="4,2" Margin="0,0,6,0"
-                                         FontFamily="Consolas"/>
+                                         FontFamily="Consolas"
+                                         ToolTip="The actual command line — e.g. dotnet test, npm run build"/>
                                 <StackPanel Grid.Column="3" Orientation="Horizontal">
                                     <Button Content="▲" Tag="{Binding}" Click="MoveUp_Click" Width="24"
                                             Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"/>
