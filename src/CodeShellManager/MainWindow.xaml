@@ -228,23 +228,49 @@
         </Border>
 
         <!-- ── Sidebar ──────────────────────────────────────────────────── -->
-        <Border DockPanel.Dock="Left" Width="230" Background="#181825"
+        <Border DockPanel.Dock="Left" Background="#181825"
                 BorderThickness="0,0,1,0" BorderBrush="#313244">
-            <DockPanel>
-                <Border DockPanel.Dock="Top" Padding="12,8,8,8" BorderThickness="0,0,0,1"
-                        BorderBrush="#313244">
-                    <DockPanel>
-                        <TextBlock Text="SESSIONS" Foreground="#6c7086" FontSize="10"
-                                   FontWeight="Bold" VerticalAlignment="Center"/>
-                        <Button DockPanel.Dock="Right" Content="+" Style="{StaticResource ToolBtn}"
-                                ToolTip="New Session (Ctrl+T)" Click="NewSession_Click"
-                                Width="24" Height="24" FontSize="16" Foreground="#a6e3a1"/>
-                    </DockPanel>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="GroupStripCol" Width="0"/>
+                    <ColumnDefinition Width="230"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Group tab strip (vertical column of category tabs).
+                     Hidden by default; MainWindow toggles GroupStripCol width on/off. -->
+                <Border Grid.Column="0" x:Name="GroupStripBorder"
+                        Background="#11111b" BorderThickness="0,0,1,0"
+                        BorderBrush="#313244" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel x:Name="GroupStripPanel"
+                                    AutomationProperties.AutomationId="GroupStripPanel"
+                                    Margin="0,6,0,6"/>
+                    </ScrollViewer>
                 </Border>
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="SidebarSessionList" AutomationProperties.AutomationId="SidebarSessionList" Margin="6,6"/>
-                </ScrollViewer>
-            </DockPanel>
+
+                <DockPanel Grid.Column="1">
+                    <Border DockPanel.Dock="Top" Padding="12,8,8,8" BorderThickness="0,0,0,1"
+                            BorderBrush="#313244">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="SESSIONS" Foreground="#6c7086" FontSize="10"
+                                       FontWeight="Bold" VerticalAlignment="Center"/>
+                            <Button Grid.Column="1" Content="+" Style="{StaticResource ToolBtn}"
+                                    ToolTip="New Session (Ctrl+T)" Click="NewSession_Click"
+                                    Width="26" Height="24" FontSize="16" Foreground="#a6e3a1"
+                                    VerticalAlignment="Center" Margin="0,0,2,0"
+                                    Padding="0,0,0,2"/>
+                        </Grid>
+                    </Border>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="SidebarSessionList" AutomationProperties.AutomationId="SidebarSessionList" Margin="6,6"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Grid>
         </Border>
 
         <!-- ── Terminal grid ────────────────────────────────────────────── -->

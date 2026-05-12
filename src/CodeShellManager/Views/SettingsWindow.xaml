@@ -219,6 +219,18 @@
                 <StackPanel Margin="0,8,0,0">
                     <CheckBox x:Name="ShowGitBranchCheck" Content="Show git branch in sidebar"/>
                     <CheckBox x:Name="ShowTerminalStatusDotCheck" Content="Show terminal status indicator"/>
+                    <StackPanel Margin="0,4,0,4">
+                        <TextBlock Text="Session group display" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="GroupDisplayModeCombo">
+                            <ComboBoxItem Content="None (flat list, no groups)" Tag="None"/>
+                            <ComboBoxItem Content="Vertical filter strip" Tag="FilterStrip"/>
+                            <ComboBoxItem Content="Inline collapsible headers" Tag="InlineHeaders"/>
+                        </ComboBox>
+                        <TextBlock Text="Filter strip = one group view at a time, via a tab strip. Inline headers = all groups visible at once, expand/collapse per group."
+                                   Foreground="#6c7086" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <CheckBox x:Name="ShowWorktreeClustersCheck" Content="Group worktree siblings in sidebar"
+                              ToolTip="When 2+ adjacent sessions share a git repo, render them under a small '📁 repo (N)' header so the worktree cluster is visible at a glance. Off = only the shared stripe color + subtitle line indicate worktree siblings."/>
                     <CheckBox x:Name="ImportWindowsTerminalProfilesCheck"
                               AutomationProperties.AutomationId="ImportWindowsTerminalProfilesCheck"
                               Content="Show Windows Terminal profiles when creating sessions"

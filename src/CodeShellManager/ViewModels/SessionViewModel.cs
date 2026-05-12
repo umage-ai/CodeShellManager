@@ -21,6 +21,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string? _gitBranch;
     [ObservableProperty] private bool _gitIsDirty;
     [ObservableProperty] private bool _gitInfoLoaded;
+    /// <summary>Absolute path to the session's repo top-level, or null if the working folder is not in a git repo.</summary>
+    [ObservableProperty] private string? _repoRoot;
+    /// <summary>Set by MainWindow whenever another live session shares this session's RepoRoot.</summary>
+    [ObservableProperty] private bool _hasWorktreeSiblings;
 
     public PseudoTerminal? Pty { get; set; }
     public TerminalBridge? Bridge { get; set; }
@@ -40,7 +44,11 @@ public partial class SessionViewModel : ObservableObject, IDisposable
                 ? (string.IsNullOrWhiteSpace(Session.SshUser)
                     ? Session.SshHost
                     : $"{Session.SshUser}@{Session.SshHost}")
-                : Session.WorkingFolder);
+                // Key on RepoRoot when known so worktree siblings share a color;
+                // fall back to WorkingFolder for non-git sessions.
+                : (string.IsNullOrEmpty(RepoRoot) ? Session.WorkingFolder : RepoRoot));
+
+    partial void OnRepoRootChanged(string? value) => OnPropertyChanged(nameof(AccentColor));
 
     public string DisplayName => string.IsNullOrWhiteSpace(Session.Name)
         ? (Session.IsRemote
@@ -76,6 +84,24 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         GitBranch = branch;
         GitIsDirty = isDirty;
         GitInfoLoaded = true;
+
+        // RepoRoot is stable for the life of the session — resolve it once. Don't gate on
+        // a non-empty branch: detached HEADs report no branch but are still valid repos
+        // that should participate in sibling detection, shared accent color, and clusters.
+        if (RepoRoot == null)
+            RepoRoot = await GitService.GetRepoRootAsync(Session.WorkingFolder);
+    }
+
+    /// <summary>Short repo + branch label shown beneath the session name when sibling worktrees are open.</summary>
+    public string WorktreeSubtitle
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(RepoRoot)) return "";
+            string repoName = System.IO.Path.GetFileName(RepoRoot.TrimEnd('/', '\\')) ?? "";
+            string branch = string.IsNullOrEmpty(GitBranch) ? "—" : GitBranch;
+            return $"\U0001F4C1 {repoName} ⎇ {branch}";
+        }
     }
 
     private async Task PollGitInfoAsync(CancellationToken ct)

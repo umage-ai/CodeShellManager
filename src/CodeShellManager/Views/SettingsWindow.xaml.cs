@@ -31,6 +31,9 @@ public partial class SettingsWindow : Window
             DefaultCommand = current.DefaultCommand,
             DefaultWorkingFolder = current.DefaultWorkingFolder,
             ShowGitBranch = current.ShowGitBranch,
+            ShowGroupsTab = current.ShowGroupsTab,
+            GroupDisplayMode = current.GroupDisplayMode,
+            ShowWorktreeClusters = current.ShowWorktreeClusters,
             SearchCollapseAfterNavigate = current.SearchCollapseAfterNavigate,
             Theme = current.Theme,
             MaxSearchResults = current.MaxSearchResults,
@@ -56,6 +59,17 @@ public partial class SettingsWindow : Window
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
         ShowGitBranchCheck.IsChecked = _edited.ShowGitBranch;
         ShowTerminalStatusDotCheck.IsChecked = _edited.ShowTerminalStatusDot;
+        ShowWorktreeClustersCheck.IsChecked = _edited.ShowWorktreeClusters;
+        foreach (ComboBoxItem item in GroupDisplayModeCombo.Items)
+        {
+            if (item.Tag?.ToString() == _edited.GroupDisplayMode.ToString())
+            {
+                GroupDisplayModeCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (GroupDisplayModeCombo.SelectedIndex < 0)
+            GroupDisplayModeCombo.SelectedIndex = 1; // FilterStrip default
         ImportWindowsTerminalProfilesCheck.IsChecked = _edited.ImportWindowsTerminalProfiles;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
@@ -119,6 +133,14 @@ public partial class SettingsWindow : Window
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
         _edited.ShowGitBranch = ShowGitBranchCheck.IsChecked == true;
         _edited.ShowTerminalStatusDot = ShowTerminalStatusDotCheck.IsChecked == true;
+        _edited.ShowWorktreeClusters = ShowWorktreeClustersCheck.IsChecked == true;
+        var modeTag = (GroupDisplayModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        if (System.Enum.TryParse<Models.GroupDisplayMode>(modeTag, out var newMode))
+        {
+            _edited.GroupDisplayMode = newMode;
+            // Keep the legacy flag in sync so a downgrade to an older build still respects None.
+            _edited.ShowGroupsTab = newMode != Models.GroupDisplayMode.None;
+        }
         _edited.ImportWindowsTerminalProfiles = ImportWindowsTerminalProfilesCheck.IsChecked == true;
         _edited.SearchCollapseAfterNavigate = SearchCollapseAfterNavigateCheck.IsChecked == true;
         _edited.AnthropicApiKey = ApiKeyBox.Password;

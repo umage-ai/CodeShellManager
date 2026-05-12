@@ -43,12 +43,21 @@ public partial class NewSessionDialog : Window
     public bool? ProfileRetroEffect { get; private set; }
     public string? ProfileColorSchemeJson { get; private set; }
 
+    /// <summary>Paths of sibling worktrees the user opted to also launch sessions for.</summary>
+    public IReadOnlyList<string> AdditionalWorktreePaths { get; private set; } = Array.Empty<string>();
+
     private readonly IReadOnlyList<WindowsTerminalProfile> _profiles;
+    private readonly System.Windows.Threading.DispatcherTimer _worktreeDebounce;
+    private System.Threading.CancellationTokenSource? _worktreeProbeCts;
+    private string? _lastProbedFolder;
 
     public NewSessionDialog(
         string defaultFolder = "",
         IEnumerable<string>? launchCommands = null,
-        IReadOnlyList<WindowsTerminalProfile>? profiles = null)
+        IReadOnlyList<WindowsTerminalProfile>? profiles = null,
+        string? defaultCommand = null,
+        string? defaultArgs = null,
+        string? defaultName = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
@@ -59,7 +68,27 @@ public partial class NewSessionDialog : Window
         foreach (var cmd in launchCommands ?? DefaultCommands)
             CommandCombo.Items.Add(new ComboBoxItem { Content = cmd, Tag = cmd });
         CommandCombo.Items.Add(customItem);
-        CommandCombo.SelectedIndex = 0;
+
+        // Pre-fill command if a parent session passed one through; otherwise default to first entry.
+        ComboBoxItem? matchedCmd = null;
+        if (!string.IsNullOrWhiteSpace(defaultCommand))
+        {
+            string combined = string.IsNullOrEmpty(defaultArgs)
+                ? defaultCommand
+                : $"{defaultCommand} {defaultArgs}";
+            matchedCmd = CommandCombo.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(it => string.Equals(it.Tag?.ToString(), combined, StringComparison.Ordinal));
+            if (matchedCmd == null)
+            {
+                // Fall back to [custom] + populate args box.
+                matchedCmd = CommandCombo.Items.OfType<ComboBoxItem>()
+                    .FirstOrDefault(it => it.Tag?.ToString() == "custom");
+                CustomArgsBox.Text = combined;
+            }
+        }
+        CommandCombo.SelectedItem = matchedCmd ?? CommandCombo.Items[0];
+
+        if (!string.IsNullOrWhiteSpace(defaultName)) NameBox.Text = defaultName;
 
         if (_profiles.Count > 0)
         {
@@ -70,8 +99,92 @@ public partial class NewSessionDialog : Window
             ProfileCombo.SelectedIndex = 0;
         }
 
-        FolderBox.TextChanged += (_, _) => AutoFillName();
+        _worktreeDebounce = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(700)
+        };
+        _worktreeDebounce.Tick += async (_, _) =>
+        {
+            _worktreeDebounce.Stop();
+            await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
+        };
+
+        FolderBox.TextChanged += (_, _) => { AutoFillName(); ScheduleWorktreeProbe(); };
         SshHostBox.TextChanged += (_, _) => AutoFillName();
+
+        Loaded += async (_, _) =>
+        {
+            if (!IsRemoteMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
+                await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
+        };
+    }
+
+    private void ScheduleWorktreeProbe()
+    {
+        if (IsRemoteMode)
+        {
+            WorktreesPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        _worktreeDebounce.Stop();
+        _worktreeDebounce.Start();
+    }
+
+    private async System.Threading.Tasks.Task ProbeSiblingWorktreesAsync(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            WorktreesPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (folder == _lastProbedFolder) return;
+        _lastProbedFolder = folder;
+
+        _worktreeProbeCts?.Cancel();
+        var cts = new System.Threading.CancellationTokenSource();
+        _worktreeProbeCts = cts;
+
+        var worktrees = await Services.GitService.ListWorktreesAsync(folder);
+        if (cts.IsCancellationRequested) return;
+
+        // Exclude the chosen folder itself + bare repos. Normalize paths for comparison.
+        string norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)).Replace('\\', '/');
+        var siblings = worktrees
+            .Where(w => !w.IsBare)
+            .Where(w =>
+            {
+                try
+                {
+                    string wp = Path.TrimEndingDirectorySeparator(Path.GetFullPath(w.Path)).Replace('\\', '/');
+                    return !string.Equals(wp, norm, StringComparison.OrdinalIgnoreCase);
+                }
+                catch { return true; }
+            })
+            .ToList();
+
+        WorktreesList.Children.Clear();
+        if (siblings.Count == 0)
+        {
+            WorktreesPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        foreach (var w in siblings)
+        {
+            string label = string.IsNullOrEmpty(w.Branch)
+                ? (w.IsDetached ? $"{Path.GetFileName(w.Path)} (detached)" : Path.GetFileName(w.Path))
+                : $"{Path.GetFileName(w.Path)}  ⎇ {w.Branch}";
+            var cb = new System.Windows.Controls.CheckBox
+            {
+                Content = label,
+                Tag = w.Path,
+                Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xcd, 0xd6, 0xf4)),
+                Margin = new Thickness(0, 2, 0, 2),
+                IsChecked = false
+            };
+            WorktreesList.Children.Add(cb);
+        }
+        WorktreesPanel.Visibility = Visibility.Visible;
     }
 
     private bool IsRemoteMode => RemoteRadio?.IsChecked == true;
@@ -107,6 +220,11 @@ public partial class NewSessionDialog : Window
         // Profile combobox is local-only
         if (ProfilePanel != null && _profiles.Count > 0)
             ProfilePanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+        if (WorktreesPanel != null)
+        {
+            WorktreesPanel.Visibility = Visibility.Collapsed;
+            _lastProbedFolder = null;
+        }
         CommandLabel.Text = IsRemoteMode ? "Remote Shell" : "Command";
         NameBox.Text = "";
         AutoFillName();
@@ -194,6 +312,16 @@ public partial class NewSessionDialog : Window
     {
         IsRemote = IsRemoteMode;
         SessionName = NameBox.Text.Trim();
+
+        if (!IsRemoteMode && WorktreesPanel.Visibility == Visibility.Visible)
+        {
+            AdditionalWorktreePaths = WorktreesList.Children.OfType<System.Windows.Controls.CheckBox>()
+                .Where(c => c.IsChecked == true)
+                .Select(c => c.Tag as string)
+                .Where(p => !string.IsNullOrEmpty(p))
+                .Select(p => p!)
+                .ToList();
+        }
 
         if (IsRemote)
         {

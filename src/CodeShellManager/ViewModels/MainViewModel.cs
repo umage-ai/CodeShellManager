@@ -12,6 +12,12 @@ namespace CodeShellManager.ViewModels;
 
 public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo, TwoRow, FourColumn, SixColumn, SixByTwo, SixByThree }
 
+/// <summary>Sentinel <see cref="MainViewModel.ActiveGroupId"/> value meaning "show only sessions with no group".</summary>
+public static class GroupFilter
+{
+    public const string Ungrouped = "__UNGROUPED__";
+}
+
 public partial class MainViewModel : ObservableObject
 {
     private readonly SessionManager _sessionManager;
@@ -26,14 +32,128 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _showCommandHelper;
     [ObservableProperty] private string _searchQuery = "";
 
+    /// <summary>
+    /// Null = show all sessions (no group filter active). <see cref="GroupFilter.Ungrouped"/>
+    /// = only sessions with no GroupId. Any other value = a specific group's Id.
+    /// </summary>
+    [ObservableProperty] private string? _activeGroupId;
+
+    /// <summary>IDs of sessions currently in the multi-select set (in addition to ActiveSession).</summary>
+    public HashSet<string> SelectedSessionIds { get; } = new();
+
     public int AlertCount => Sessions.Count(s => s.NeedsAttention);
 
     public event Action<SessionViewModel>? SessionClosed;
+    public event Action? GroupsChanged;
+    public event Action? SelectionChanged;
+    /// <summary>Fired when one or more sessions' GroupId changes — sidebar should re-filter.</summary>
+    public event Action? SessionMembershipChanged;
+
+    public SessionManager SessionManager => _sessionManager;
+
+    public IReadOnlyList<Models.SessionGroup> Groups => _sessionManager.Groups;
 
     public MainViewModel(SessionManager sessionManager, StateService stateService)
     {
         _sessionManager = sessionManager;
         _stateService = stateService;
+        _sessionManager.GroupsChanged += () =>
+            App.Current.Dispatcher.Invoke(() => GroupsChanged?.Invoke());
+    }
+
+    public Models.SessionGroup CreateGroup(string name)
+    {
+        var g = _sessionManager.AddGroup(name);
+        _ = SaveStateAsync();
+        return g;
+    }
+
+    public void RenameGroup(string groupId, string newName)
+    {
+        _sessionManager.RenameGroup(groupId, newName);
+        _ = SaveStateAsync();
+    }
+
+    public void RemoveGroup(string groupId)
+    {
+        _sessionManager.RemoveGroup(groupId);
+        if (ActiveGroupId == groupId) ActiveGroupId = null;
+        _ = SaveStateAsync();
+    }
+
+    /// <summary>Reorders a group in the strip. <paramref name="newIndex"/> is 0-based within the user-group list.</summary>
+    public void MoveGroup(string groupId, int newIndex)
+    {
+        _sessionManager.MoveGroup(groupId, newIndex);
+        _ = SaveStateAsync();
+    }
+
+    /// <summary>Returns true when the session matches the current group filter.</summary>
+    public bool SessionMatchesActiveGroup(SessionViewModel vm)
+    {
+        if (ActiveGroupId == null) return true;
+        if (ActiveGroupId == GroupFilter.Ungrouped) return string.IsNullOrEmpty(vm.GroupId);
+        return vm.GroupId == ActiveGroupId;
+    }
+
+    public bool IsSelected(string sessionId) => SelectedSessionIds.Contains(sessionId);
+
+    public void ClearSelection()
+    {
+        if (SelectedSessionIds.Count == 0) return;
+        SelectedSessionIds.Clear();
+        SelectionChanged?.Invoke();
+    }
+
+    public void ToggleSelection(string sessionId)
+    {
+        if (!SelectedSessionIds.Add(sessionId))
+            SelectedSessionIds.Remove(sessionId);
+        SelectionChanged?.Invoke();
+    }
+
+    /// <summary>Selects every session in the visible list between anchor and target (inclusive).</summary>
+    public void SetRangeSelection(IReadOnlyList<string> visibleIdsInOrder, string? anchorId, string targetId)
+    {
+        SelectedSessionIds.Clear();
+        if (visibleIdsInOrder.Count == 0) return;
+        int targetIdx = IndexOf(visibleIdsInOrder, targetId);
+        if (targetIdx < 0) return;
+        int anchorIdx = anchorId != null ? IndexOf(visibleIdsInOrder, anchorId) : -1;
+        if (anchorIdx < 0) anchorIdx = targetIdx;
+        int lo = Math.Min(anchorIdx, targetIdx);
+        int hi = Math.Max(anchorIdx, targetIdx);
+        for (int i = lo; i <= hi; i++)
+            SelectedSessionIds.Add(visibleIdsInOrder[i]);
+        SelectionChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Returns the IDs of all sessions to act on for a multi-target action:
+    /// the current selection if non-empty, otherwise just the explicit target.
+    /// </summary>
+    public IReadOnlyList<string> ResolveActionTargets(string targetSessionId)
+    {
+        if (SelectedSessionIds.Count > 0)
+            return SelectedSessionIds.Contains(targetSessionId)
+                ? SelectedSessionIds.ToArray()
+                : new[] { targetSessionId };
+        return new[] { targetSessionId };
+    }
+
+    public void AssignSessionsToGroup(IEnumerable<string> sessionIds, string? groupId)
+    {
+        foreach (var id in sessionIds)
+            _sessionManager.SetSessionGroup(id, groupId);
+        SessionMembershipChanged?.Invoke();
+        _ = SaveStateAsync();
+    }
+
+    private static int IndexOf(IReadOnlyList<string> list, string value)
+    {
+        for (int i = 0; i < list.Count; i++)
+            if (list[i] == value) return i;
+        return -1;
     }
 
     public async Task LoadStateAsync()
@@ -41,6 +161,14 @@ public partial class MainViewModel : ObservableObject
         _appState = await _stateService.LoadAsync();
         _sessionManager.LoadFromState(_appState);
         Layout = Enum.TryParse<LayoutMode>(_appState.LastLayout, out var lm) ? lm : LayoutMode.Single;
+
+        // Legacy migration: pre-enum installs persisted "ShowGroupsTab=false" to hide
+        // the strip. Translate to the new enum on first load with the new code.
+        if (_appState.Settings.GroupDisplayMode == Models.GroupDisplayMode.FilterStrip
+            && !_appState.Settings.ShowGroupsTab)
+        {
+            _appState.Settings.GroupDisplayMode = Models.GroupDisplayMode.None;
+        }
     }
 
     public async Task SaveStateAsync()
@@ -116,7 +244,14 @@ public partial class MainViewModel : ObservableObject
             };
         }
 
-        Sessions.Add(vm);
+        // Mirror SessionManager order so insert-after-parent (CreateSession with afterSessionId)
+        // also lands the VM at the matching slot — otherwise the model order would be correct
+        // but the sidebar would still show the new entry at the bottom.
+        int idx = -1;
+        for (int i = 0; i < _sessionManager.Sessions.Count; i++)
+            if (_sessionManager.Sessions[i].Id == vm.Id) { idx = i; break; }
+        if (idx >= 0 && idx <= Sessions.Count) Sessions.Insert(idx, vm);
+        else Sessions.Add(vm);
         ActiveSession = vm;
         _ = SaveStateAsync();
     }
@@ -125,6 +260,8 @@ public partial class MainViewModel : ObservableObject
     {
         vm.CloseRequested -= OnSessionCloseRequested;
         Sessions.Remove(vm);
+        if (SelectedSessionIds.Remove(vm.Id))
+            SelectionChanged?.Invoke();
 
         if (ActiveSession == vm)
             ActiveSession = Sessions.LastOrDefault();
