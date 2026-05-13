@@ -74,6 +74,11 @@ public partial class OutputIndexer : IDisposable
         if (_disposed) return;
         _disposed = true;
         _queue.Writer.Complete();
+        // Drain the worker before returning so any in-flight INSERTs finish before
+        // the shared SqliteConnection is closed. Bounded wait so a slow/stuck
+        // worker doesn't hang shutdown — pending writes are non-critical on exit.
+        try { _worker.Wait(TimeSpan.FromSeconds(2)); }
+        catch { /* AggregateException from worker exceptions — already swallowed inside */ }
     }
 
     [GeneratedRegex(@"\x1B\[[0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?\x07|\x1B[=>]|\r", RegexOptions.Compiled)]

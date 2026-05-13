@@ -27,6 +27,13 @@ public sealed class TerminalBridge : IDisposable
     // Output that arrived before the page finished loading is buffered here
     private readonly System.Text.StringBuilder _outputBuffer = new();
 
+    // Diagnostics — gated by AppSettings.DebugTerminalTrace. Zero cost when off.
+    /// <summary>AppSettings reference whose DebugTerminalTrace flag gates [DEBUG-tt] logging.</summary>
+    public AppSettings? DebugSettings { get; set; }
+    /// <summary>Short session-id prefix included in [DEBUG-tt] lines so multi-session logs are readable.</summary>
+    public string? DebugSessionId { get; set; }
+    private long _lastOutputTickMs;
+
     public event Action<string>? RawOutputReceived;
     public event Action? UserInput;
 
@@ -47,6 +54,21 @@ public sealed class TerminalBridge : IDisposable
                 "CodeShellManager", "crash.log");
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
             System.IO.File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss.fff}] BRIDGE {msg}\n");
+        }
+        catch { }
+    }
+
+    private void Trace(string msg)
+    {
+        if (DebugSettings?.DebugTerminalTrace != true) return;
+        try
+        {
+            string path = System.IO.Path.Combine(
+                System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
+                "CodeShellManager", "crash.log");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            System.IO.File.AppendAllText(path,
+                $"[{DateTime.Now:HH:mm:ss.fff}] [DEBUG-tt] {DebugSessionId ?? "?"} {msg}\n");
         }
         catch { }
     }
@@ -157,6 +179,14 @@ public sealed class TerminalBridge : IDisposable
 
     private void OnPtyData(string rawData)
     {
+        if (DebugSettings?.DebugTerminalTrace == true)
+        {
+            long now = Environment.TickCount64;
+            long prev = System.Threading.Interlocked.Exchange(ref _lastOutputTickMs, now);
+            long gap = prev == 0 ? 0 : now - prev;
+            Trace($"OUTPUT recv len={rawData.Length} gap-since-prev={gap}ms");
+        }
+
         RawOutputReceived?.Invoke(rawData);
 
         if (!_ready)
@@ -167,10 +197,18 @@ public sealed class TerminalBridge : IDisposable
         }
 
         string json = JsonSerializer.Serialize(new { type = "output", data = rawData });
+        long enqueueAt = DebugSettings?.DebugTerminalTrace == true ? Environment.TickCount64 : 0;
+        int len = rawData.Length;
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
         {
+            // Capture latency before any work so Trace's file I/O doesn't inflate the
+            // measurement, then post the WebView2 message before tracing so the trace
+            // overhead doesn't delay terminal rendering.
+            long latencyMs = enqueueAt != 0 ? Environment.TickCount64 - enqueueAt : 0;
             try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
             catch { }
+            if (enqueueAt != 0)
+                Trace($"OUTPUT post dispatcher-latency={latencyMs}ms len={len}");
         });
     }
 
@@ -193,9 +231,22 @@ public sealed class TerminalBridge : IDisposable
             switch (type)
             {
                 case "input":
-                    _pty?.Write(root.GetProperty("data").GetString() ?? "");
+                {
+                    string data = root.GetProperty("data").GetString() ?? "";
+                    if (DebugSettings?.DebugTerminalTrace == true)
+                    {
+                        long t0 = Environment.TickCount64;
+                        Trace($"INPUT len={data.Length}");
+                        _pty?.Write(data);
+                        Trace($"PTY-WROTE elapsed={Environment.TickCount64 - t0}ms");
+                    }
+                    else
+                    {
+                        _pty?.Write(data);
+                    }
                     UserInput?.Invoke();
                     break;
+                }
 
                 case "resize":
                 {
