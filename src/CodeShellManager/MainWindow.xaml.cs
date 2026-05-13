@@ -231,6 +231,10 @@ public partial class MainWindow : Window
             // read-modify-write on ~/.claude.json at startup, so simultaneous
             // boots can corrupt the user's profile.
             bool lastWasClaude = false;
+            // WebView2 user-data folder access-denied is a common shared-failure
+            // when another instance is running. Batch these so the user gets one
+            // actionable dialog at the end instead of N "Restore Error" popups.
+            var webView2AccessDenied = new List<string>();
             foreach (var s in saved)
             {
                 if (s.IsDormant) continue;
@@ -241,14 +245,28 @@ public partial class MainWindow : Window
                 catch (Exception ex)
                 {
                     Log($"Restore FAILED for '{s.Name}': {ex}");
-                    MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
-                        "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    if (IsWebView2AccessDenied(ex))
+                        webView2AccessDenied.Add(s.Name);
+                    else
+                        MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
+                            "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 lastWasClaude = isClaude;
             }
             foreach (var s in saved)
             {
                 if (s.IsDormant) AddDormantSidebarItem(s);
+            }
+            if (webView2AccessDenied.Count > 0)
+            {
+                MessageBox.Show(
+                    $"Could not initialize WebView2 for {webView2AccessDenied.Count} session(s):\n\n" +
+                    string.Join("\n", webView2AccessDenied.Select(n => "  • " + n)) +
+                    "\n\nThis usually means another CodeShellManager instance is running, " +
+                    "or a previous instance didn't shut down cleanly. Close any other " +
+                    "instances (or wait a few seconds for the WebView2 user-data folder " +
+                    "to unlock) and reopen the affected sessions from the sidebar.",
+                    "WebView2 unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
         else
@@ -258,6 +276,14 @@ public partial class MainWindow : Window
             await _vm.SaveStateAsync();
         }
     }
+
+    // Detects WebView2 user-data folder access-denied, which surfaces as
+    // UnauthorizedAccessException from CoreWebView2Environment.CreateAsync /
+    // CreateCoreWebView2ControllerAsync when another process is holding the
+    // folder. We surface a clearer message in that specific case.
+    private static bool IsWebView2AccessDenied(Exception ex) =>
+        ex is UnauthorizedAccessException
+        && (ex.StackTrace?.Contains("WebView2", StringComparison.Ordinal) ?? false);
 
     private void RestoreWindowState()
     {
@@ -827,6 +853,11 @@ public partial class MainWindow : Window
         var bridge = new TerminalBridge(webView);
         vm.Bridge = bridge;
         bridge.AcceleratorKeyPressed += OnBridgeAcceleratorKey;
+        // Diagnostics — bridge logs per-keystroke / per-output-chunk timing when
+        // AppSettings.DebugTerminalTrace is on. Shares the live settings ref so
+        // toggling in the Settings dialog takes effect on existing sessions.
+        bridge.DebugSettings = _vm.Settings;
+        bridge.DebugSessionId = session.Id.Length >= 8 ? session.Id[..8] : session.Id;
 
         // Wire output indexer and alert detector
         if (_db != null)
@@ -3863,6 +3894,7 @@ public partial class MainWindow : Window
             _vm.Settings.TerminalFontWeight = edited.TerminalFontWeight;
             _vm.Settings.TerminalLetterSpacing = edited.TerminalLetterSpacing;
             _vm.Settings.TerminalLineHeight = edited.TerminalLineHeight;
+            _vm.Settings.DebugTerminalTrace = edited.DebugTerminalTrace;
             _ = _vm.SaveStateAsync();
 
             // Push font settings to all active terminal sessions
@@ -4068,8 +4100,13 @@ public partial class MainWindow : Window
         await _vm.SaveStateAsync();
         foreach (var vm in _vm.Sessions.ToList())
             vm.Dispose();
-        _db?.Close();
-        _db?.Dispose();
+        // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
+        // has been observed to throw NRE internally on shutdown — swallow + log so it
+        // doesn't escape as an unhandled exception during application exit.
+        try { _db?.Close(); }
+        catch (Exception ex) { Log($"OnClosing _db.Close threw: {ex}"); }
+        try { _db?.Dispose(); }
+        catch (Exception ex) { Log($"OnClosing _db.Dispose threw: {ex}"); }
         App.TrayIcon?.Dispose();
         base.OnClosing(e);
     }
