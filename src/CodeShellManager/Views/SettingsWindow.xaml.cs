@@ -24,6 +24,7 @@ public partial class SettingsWindow : Window
         {
             AutoRestoreSessions = current.AutoRestoreSessions,
             AutoResumeClaude = current.AutoResumeClaude,
+            ClaudeLaunchStaggerMs = current.ClaudeLaunchStaggerMs,
             AutoFocusTerminalOnSelect = current.AutoFocusTerminalOnSelect,
             ShowToastNotifications = current.ShowToastNotifications,
             ShowNotificationSound = current.ShowNotificationSound,
@@ -33,6 +34,8 @@ public partial class SettingsWindow : Window
             ShowGitBranch = current.ShowGitBranch,
             ShowGroupsTab = current.ShowGroupsTab,
             GroupDisplayMode = current.GroupDisplayMode,
+            FilterGridByActiveGroup = current.FilterGridByActiveGroup,
+            PerGroupLayout = current.PerGroupLayout,
             SidebarActionIconsMode = current.SidebarActionIconsMode,
             ShowWorktreeClusters = current.ShowWorktreeClusters,
             SearchCollapseAfterNavigate = current.SearchCollapseAfterNavigate,
@@ -55,6 +58,7 @@ public partial class SettingsWindow : Window
         DefaultFolderBox.Text = _edited.DefaultWorkingFolder;
         AutoRestoreCheck.IsChecked = _edited.AutoRestoreSessions;
         AutoResumeClaudeCheck.IsChecked = _edited.AutoResumeClaude;
+        ClaudeLaunchStaggerBox.Text = _edited.ClaudeLaunchStaggerMs.ToString();
         AutoFocusTerminalOnSelectCheck.IsChecked = _edited.AutoFocusTerminalOnSelect;
         ShowToastCheck.IsChecked = _edited.ShowToastNotifications;
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
@@ -81,6 +85,8 @@ public partial class SettingsWindow : Window
         }
         if (SidebarActionIconsModeCombo.SelectedIndex < 0)
             SidebarActionIconsModeCombo.SelectedIndex = 0; // OnHover default
+        FilterGridByActiveGroupCheck.IsChecked = _edited.FilterGridByActiveGroup;
+        PerGroupLayoutCheck.IsChecked = _edited.PerGroupLayout;
         ImportWindowsTerminalProfilesCheck.IsChecked = _edited.ImportWindowsTerminalProfiles;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
@@ -139,6 +145,8 @@ public partial class SettingsWindow : Window
         _edited.DefaultWorkingFolder = DefaultFolderBox.Text.Trim();
         _edited.AutoRestoreSessions = AutoRestoreCheck.IsChecked == true;
         _edited.AutoResumeClaude = AutoResumeClaudeCheck.IsChecked == true;
+        if (int.TryParse(ClaudeLaunchStaggerBox.Text, out int staggerMs) && staggerMs >= 0)
+            _edited.ClaudeLaunchStaggerMs = staggerMs;
         _edited.AutoFocusTerminalOnSelect = AutoFocusTerminalOnSelectCheck.IsChecked == true;
         _edited.ShowToastNotifications = ShowToastCheck.IsChecked == true;
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
@@ -155,6 +163,8 @@ public partial class SettingsWindow : Window
         var iconsModeTag = (SidebarActionIconsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
         if (System.Enum.TryParse<Models.SidebarActionIconsMode>(iconsModeTag, out var newIconsMode))
             _edited.SidebarActionIconsMode = newIconsMode;
+        _edited.FilterGridByActiveGroup = FilterGridByActiveGroupCheck.IsChecked == true;
+        _edited.PerGroupLayout = PerGroupLayoutCheck.IsChecked == true;
         _edited.ImportWindowsTerminalProfiles = ImportWindowsTerminalProfilesCheck.IsChecked == true;
         _edited.SearchCollapseAfterNavigate = SearchCollapseAfterNavigateCheck.IsChecked == true;
         _edited.AnthropicApiKey = ApiKeyBox.Password;
