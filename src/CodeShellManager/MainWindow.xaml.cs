@@ -46,6 +46,11 @@ public partial class MainWindow : Window
     // Sidebar items for dormant (asleep) sessions — kept here so RebuildSidebarOrder
     // can re-append them to the bottom of the list after rebuilding active items.
     private readonly Dictionary<string, Border> _dormantSidebarItems = [];
+    // Sidebar placeholders shown while a session is still launching (restore-on-startup).
+    // RebuildSidebarOrder weaves them into the live-session list in saved order so the
+    // user sees the full set of icons immediately, each with a "loading" indicator.
+    // Items are removed once LaunchSessionAsync registers the real sidebar item.
+    private readonly Dictionary<string, Border> _launchingSidebarItems = [];
     /// <summary>
     /// Per-session references to the run-related controls inside the terminal wrapper.
     /// Used by RefreshTerminalRunControls() to update the play button / chips strip
@@ -82,6 +87,12 @@ public partial class MainWindow : Window
     // Window state debounce
     private readonly System.Windows.Threading.DispatcherTimer _windowStateTimer;
     private bool _windowStateReady = false; // don't save before state is loaded
+
+    // OnClosing is async void, which WPF does not await — without this gate the window
+    // tears down while SaveStateAsync / claude disposal is still mid-flight. First entry
+    // cancels the close, runs the async cleanup, sets the flag, then re-invokes Close();
+    // the second entry passes through to base.OnClosing.
+    private bool _shutdownComplete = false;
 
     public MainWindow()
     {
@@ -224,12 +235,28 @@ public partial class MainWindow : Window
 
         if (doRestore)
         {
-            // Launch live sessions first, then append dormant entries — keeps the
-            // "dormant always at the bottom" invariant that SleepSession and
-            // RebuildSidebarOrder enforce at runtime.
-            // Stagger consecutive claude launches: claude's CLI does an unlocked
-            // read-modify-write on ~/.claude.json at startup, so simultaneous
-            // boots can corrupt the user's profile.
+            // Build "launching" placeholder sidebar items for every live session up-front
+            // so the full list of icons appears immediately, with a loading indicator on
+            // each row until its real sidebar item replaces it. Dormant entries are added
+            // at the bottom (live ones get placeholders woven in by RebuildSidebarOrder).
+            foreach (var s in saved)
+            {
+                if (s.IsDormant) continue;
+                AddLaunchingSidebarItem(s);
+            }
+            foreach (var s in saved)
+            {
+                if (s.IsDormant) AddDormantSidebarItem(s);
+            }
+            // Render the staged placeholders now. RebuildSidebarOrder weaves them into
+            // the saved-order list (Resolve picks them when no live item exists yet) and
+            // applies the active group filter so off-group placeholders are hidden.
+            RebuildSidebarOrder();
+
+            // Launch live sessions sequentially. Stagger consecutive claude launches:
+            // claude's CLI does an unlocked read-modify-write on ~/.claude.json at startup,
+            // so simultaneous boots can corrupt the user's profile.
+            int staggerMs = _vm.Settings.ClaudeLaunchStaggerMs;
             bool lastWasClaude = false;
             // WebView2 user-data folder access-denied is a common shared-failure
             // when another instance is running. Batch these so the user gets one
@@ -239,8 +266,8 @@ public partial class MainWindow : Window
             {
                 if (s.IsDormant) continue;
                 bool isClaude = ClaudeSessionService.IsClaudeCommand(s.Command);
-                if (isClaude && lastWasClaude)
-                    await Task.Delay(2000);
+                if (isClaude && lastWasClaude && staggerMs > 0)
+                    await Task.Delay(staggerMs);
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -252,10 +279,6 @@ public partial class MainWindow : Window
                             "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 lastWasClaude = isClaude;
-            }
-            foreach (var s in saved)
-            {
-                if (s.IsDormant) AddDormantSidebarItem(s);
             }
             if (webView2AccessDenied.Count > 0)
             {
@@ -436,13 +459,14 @@ public partial class MainWindow : Window
         // Stagger consecutive claude launches for the same reason the boot path does
         // (see commit 59a7067): claude's CLI does an unlocked read-modify-write on
         // ~/.claude.json at startup, and back-to-back launches can corrupt it.
+        int staggerMs = _vm.Settings.ClaudeLaunchStaggerMs;
         string anchorId = primary.Id;
         bool lastWasClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
         foreach (var path in additionalPaths)
         {
             if (!System.IO.Directory.Exists(path)) continue;
             bool isClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
-            if (isClaude && lastWasClaude) await Task.Delay(2000);
+            if (isClaude && lastWasClaude && staggerMs > 0) await Task.Delay(staggerMs);
             var sibling = _sessionManager.CreateSession(
                 System.IO.Path.GetFileName(path.TrimEnd('/', '\\')) ?? primary.Command,
                 path,
@@ -977,6 +1001,9 @@ public partial class MainWindow : Window
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
             vm.Dispose();
             _sessionManager.RemoveSession(session.Id);
+            // Drop any launching placeholder so it doesn't linger after a failed restore.
+            if (_launchingSidebarItems.Remove(session.Id))
+                RebuildSidebarOrder();
             return;
         }
 
@@ -986,6 +1013,9 @@ public partial class MainWindow : Window
         // Build sidebar entry
         var sidebarItem = BuildSidebarItem(vm);
         _sessionUi[session.Id] = (webView, terminalWrapper, sidebarItem);
+        // Once the real sidebar item is registered, the launching placeholder for this
+        // session is no longer rendered by Resolve(); drop it so it doesn't leak.
+        _launchingSidebarItems.Remove(session.Id);
 
         _vm.RegisterSession(vm);
         // RebuildSidebarOrder applies the active group filter; the explicit call here ensures
@@ -2656,11 +2686,42 @@ public partial class MainWindow : Window
         bool inlineMode = mode == Models.GroupDisplayMode.InlineHeaders
             && _sessionManager.Groups.Count > 0;
 
+        // Snapshot _vm.Sessions into a dictionary up front so Resolve is O(1) per call.
+        // RebuildSidebarOrder fires on group filter / membership / drag-reorder / launch,
+        // so the previous FirstOrDefault-in-a-loop was O(n²) for the saved-session list.
+        var liveById = new Dictionary<string, SessionViewModel>(_vm.Sessions.Count);
+        foreach (var v in _vm.Sessions) liveById[v.Id] = v;
+
+        // Resolve a saved ShellSession to either its live sidebar item + VM, or a
+        // launching placeholder (vm == null). Returns null if the session is dormant
+        // or has no rendered representation yet (no UI built).
+        (Border item, SessionViewModel? vm)? Resolve(ShellSession s)
+        {
+            if (s.IsDormant) return null;
+            if (liveById.TryGetValue(s.Id, out var liveVm)
+                && _sessionUi.TryGetValue(liveVm.Id, out var ui))
+                return (ui.sidebarItem, liveVm);
+            if (_launchingSidebarItems.TryGetValue(s.Id, out var ph))
+                return (ph, null);
+            return null;
+        }
+
+        bool MatchesActiveGroupForSession(ShellSession s)
+        {
+            var activeGroupId = _vm.ActiveGroupId;
+            if (activeGroupId == null) return true;
+            if (activeGroupId == GroupFilter.Ungrouped) return string.IsNullOrEmpty(s.GroupId);
+            return s.GroupId == activeGroupId;
+        }
+
         if (inlineMode)
         {
             // Ungrouped section first (only shown when it has members or there are groups).
-            var ungrouped = _vm.Sessions
-                .Where(s => string.IsNullOrEmpty(s.GroupId) && _sessionUi.ContainsKey(s.Id))
+            var ungrouped = _sessionManager.Sessions
+                .Where(s => string.IsNullOrEmpty(s.GroupId) && !s.IsDormant)
+                .Select(s => Resolve(s))
+                .Where(r => r.HasValue)
+                .Select(r => r!.Value)
                 .ToList();
             if (ungrouped.Count > 0)
             {
@@ -2671,8 +2732,11 @@ public partial class MainWindow : Window
             // Each user group, in SortOrder.
             foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
             {
-                var members = _vm.Sessions
-                    .Where(s => s.GroupId == g.Id && _sessionUi.ContainsKey(s.Id))
+                var members = _sessionManager.Sessions
+                    .Where(s => s.GroupId == g.Id && !s.IsDormant)
+                    .Select(s => Resolve(s))
+                    .Where(r => r.HasValue)
+                    .Select(r => r!.Value)
                     .ToList();
                 SidebarSessionList.Children.Add(BuildInlineGroupHeader(g, members.Count, g.IsExpanded));
                 if (g.IsExpanded) AppendSessionsWithClusters(members);
@@ -2681,14 +2745,16 @@ public partial class MainWindow : Window
         else
         {
             // Flat list mode (None or FilterStrip).
-            var visibleSessions = new List<SessionViewModel>();
-            foreach (var vm in _vm.Sessions)
+            var visible = new List<(Border item, SessionViewModel? vm)>();
+            foreach (var s in _sessionManager.Sessions)
             {
-                if (mode == Models.GroupDisplayMode.FilterStrip && !_vm.SessionMatchesActiveGroup(vm))
+                if (s.IsDormant) continue;
+                if (mode == Models.GroupDisplayMode.FilterStrip && !MatchesActiveGroupForSession(s))
                     continue;
-                if (_sessionUi.ContainsKey(vm.Id)) visibleSessions.Add(vm);
+                var r = Resolve(s);
+                if (r.HasValue) visible.Add(r.Value);
             }
-            AppendSessionsWithClusters(visibleSessions);
+            AppendSessionsWithClusters(visible);
         }
 
         // Dormant entries always render at the bottom of the sidebar regardless of filter
@@ -2702,33 +2768,38 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Appends a list of session sidebar items to <see cref="SidebarSessionList"/>, inserting
-    /// worktree cluster headers above runs of 2+ adjacent siblings (when enabled).
+    /// worktree cluster headers above runs of 2+ adjacent siblings (when enabled). Items with
+    /// a null VM are launching placeholders — they're rendered inline but skipped by the
+    /// cluster detector (their RepoRoot isn't known yet).
     /// </summary>
-    private void AppendSessionsWithClusters(List<SessionViewModel> sessions)
+    private void AppendSessionsWithClusters(List<(Border item, SessionViewModel? vm)> items)
     {
-        var clusters = ComputeWorktreeClusters(sessions);
+        var clusters = ComputeWorktreeClusters(items);
         int clusterIdx = 0;
-        for (int i = 0; i < sessions.Count; i++)
+        for (int i = 0; i < items.Count; i++)
         {
-            var vm = sessions[i];
+            var (item, vm) = items[i];
             if (clusterIdx < clusters.Count && clusters[clusterIdx].start == i)
             {
                 var (s, e, root) = clusters[clusterIdx];
                 int count = e - s + 1;
-                SidebarSessionList.Children.Add(BuildWorktreeClusterHeader(root, count, vm.AccentColor));
+                string accent = vm?.AccentColor ?? "#89b4fa";
+                SidebarSessionList.Children.Add(BuildWorktreeClusterHeader(root, count, accent));
                 clusterIdx++;
             }
-            SidebarSessionList.Children.Add(_sessionUi[vm.Id].sidebarItem);
+            SidebarSessionList.Children.Add(item);
         }
     }
 
     /// <summary>
     /// Returns the ranges of <paramref name="visible"/> that should render under a worktree
     /// cluster header — runs of 2+ adjacent sessions sharing a RepoRoot. Empty when
-    /// the setting is off.
+    /// the setting is off. Launching placeholders (vm == null) have no RepoRoot, so they
+    /// act as cluster boundaries — adjacent live siblings around a placeholder won't be
+    /// detected as a cluster until the placeholder is replaced by a real sidebar item.
     /// </summary>
     private List<(int start, int end, string repoRoot)> ComputeWorktreeClusters(
-        IReadOnlyList<SessionViewModel> visible)
+        IReadOnlyList<(Border item, SessionViewModel? vm)> visible)
     {
         var clusters = new List<(int, int, string)>();
         if (!_vm.Settings.ShowWorktreeClusters) return clusters;
@@ -2737,7 +2808,7 @@ public partial class MainWindow : Window
         string? runRoot = null;
         for (int i = 0; i < visible.Count; i++)
         {
-            string? root = visible[i].RepoRoot;
+            string? root = visible[i].vm?.RepoRoot;
             if (!string.IsNullOrEmpty(root) && root == runRoot) continue;
             if (runStart >= 0 && (i - runStart) >= 2)
                 clusters.Add((runStart, i - 1, runRoot!));
@@ -2827,7 +2898,17 @@ public partial class MainWindow : Window
         TerminalGrid.RowDefinitions.Clear();
         TerminalGrid.ColumnDefinitions.Clear();
 
-        var sessions = _vm.Sessions.ToList();
+        // When FilterGridByActiveGroup is on, restrict the panes to the effective group:
+        //   FilterStrip mode → the explicitly selected tab (ActiveGroupId)
+        //   InlineHeaders mode → the ActiveSession's group (no tab strip exists, so the
+        //     focused session is the implicit "current group" selector)
+        // In None mode there is no group concept, so no filter applies.
+        IEnumerable<SessionViewModel> source = _vm.Sessions;
+        if (_vm.Settings.FilterGridByActiveGroup && _vm.EffectiveActiveGroupId != null)
+        {
+            source = source.Where(_vm.SessionMatchesEffectiveGroup);
+        }
+        var sessions = source.ToList();
         if (sessions.Count == 0)
         {
             EmptyState.Visibility = Visibility.Visible;
@@ -2921,7 +3002,11 @@ public partial class MainWindow : Window
 
             default: // Single
             {
-                var target = _vm.ActiveSession ?? sessions.FirstOrDefault();
+                // If the active session is filtered out by the group filter, fall back
+                // to the first visible session so the pane doesn't show a hidden tab.
+                var target = (_vm.ActiveSession != null && sessions.Contains(_vm.ActiveSession))
+                    ? _vm.ActiveSession
+                    : sessions.FirstOrDefault();
                 if (target != null && _sessionUi.TryGetValue(target.Id, out var ui))
                 {
                     TerminalGrid.Children.Add(ui.terminalWrapper);
@@ -3508,6 +3593,119 @@ public partial class MainWindow : Window
         EmptyState.Visibility = Visibility.Collapsed;
     }
 
+    /// <summary>
+    /// Stages a "launching" placeholder sidebar entry for <paramref name="session"/>. The
+    /// placeholder is rendered by <see cref="RebuildSidebarOrder"/> in saved order alongside
+    /// live items, and removed automatically when <see cref="LaunchSessionAsync"/> registers
+    /// the real sidebar item for the same session id.
+    /// </summary>
+    private void AddLaunchingSidebarItem(ShellSession session)
+    {
+        var item = BuildLaunchingSidebarItem(session);
+        _launchingSidebarItems[session.Id] = item;
+        EmptyState.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Builds a muted sidebar row visually similar to the dormant entry (so layout is
+    /// stable when it's later replaced) but with an animated dot indicating "launching".
+    /// No buttons — interaction is disabled until the session has actually started.
+    /// </summary>
+    private Border BuildLaunchingSidebarItem(ShellSession session)
+    {
+        string accentHex = GetAccentForSession(session);
+        var accentColor = (Color)ColorConverter.ConvertFromString(accentHex);
+
+        var container = new Border
+        {
+            Margin = new Thickness(0, 2, 0, 2),
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(6),
+            Tag = "launching:" + session.Id,
+            Opacity = 0.75,
+            ToolTip = "Launching…"
+        };
+
+        var inner = new Grid();
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var stripe = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0x80, accentColor.R, accentColor.G, accentColor.B)),
+            CornerRadius = new CornerRadius(4, 0, 0, 4),
+            Width = 6
+        };
+        Grid.SetColumn(stripe, 0);
+
+        var textPanel = new StackPanel { Margin = new Thickness(8, 6, 4, 6) };
+
+        string displayName = string.IsNullOrWhiteSpace(session.Name)
+            ? (session.IsRemote
+                ? (string.IsNullOrWhiteSpace(session.SshHost) ? session.Command : session.SshHost)
+                : System.IO.Path.GetFileName(session.WorkingFolder.TrimEnd('/', '\\')) ?? session.Command)
+            : session.Name;
+
+        var nameText = new TextBlock
+        {
+            Text = displayName,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 13,
+            FontStyle = FontStyles.Italic,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        string folderShort = session.IsRemote
+            ? (string.IsNullOrWhiteSpace(session.SshHost) ? "" : session.SshHost)
+            : (string.IsNullOrEmpty(session.WorkingFolder)
+                ? ""
+                : new System.IO.DirectoryInfo(session.WorkingFolder).Name);
+
+        var folderText = new TextBlock
+        {
+            Text = "Launching… · " + folderShort,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+            FontSize = 10,
+            Margin = new Thickness(0, 1, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        textPanel.Children.Add(nameText);
+        textPanel.Children.Add(folderText);
+        Grid.SetColumn(textPanel, 1);
+
+        // Pulsing dot using a DoubleAnimation on the dot's Opacity. Color matches the
+        // accent so it's clear which session this row represents.
+        var spinner = new Ellipse
+        {
+            Width = 8,
+            Height = 8,
+            Fill = new SolidColorBrush(accentColor),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 8, 0)
+        };
+        var anim = new System.Windows.Media.Animation.DoubleAnimation
+        {
+            From = 0.25,
+            To = 1.0,
+            Duration = TimeSpan.FromMilliseconds(900),
+            AutoReverse = true,
+            RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever
+        };
+        spinner.BeginAnimation(System.Windows.UIElement.OpacityProperty, anim);
+        Grid.SetColumn(spinner, 2);
+
+        inner.Children.Add(stripe);
+        inner.Children.Add(textPanel);
+        inner.Children.Add(spinner);
+        container.Child = inner;
+
+        return container;
+    }
+
     private Border BuildDormantSidebarItem(ShellSession session)
     {
         string accentHex = GetAccentForSession(session);
@@ -3867,6 +4065,7 @@ public partial class MainWindow : Window
             var edited = dialog.EditedSettings;
             _vm.Settings.AutoRestoreSessions = edited.AutoRestoreSessions;
             _vm.Settings.AutoResumeClaude = edited.AutoResumeClaude;
+            _vm.Settings.ClaudeLaunchStaggerMs = edited.ClaudeLaunchStaggerMs;
             _vm.Settings.AutoFocusTerminalOnSelect = edited.AutoFocusTerminalOnSelect;
             _vm.Settings.ShowToastNotifications = edited.ShowToastNotifications;
             _vm.Settings.ShowNotificationSound = edited.ShowNotificationSound;
@@ -3876,6 +4075,8 @@ public partial class MainWindow : Window
             _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
             _vm.Settings.ShowGroupsTab = edited.ShowGroupsTab;
             _vm.Settings.GroupDisplayMode = edited.GroupDisplayMode;
+            _vm.Settings.FilterGridByActiveGroup = edited.FilterGridByActiveGroup;
+            _vm.Settings.PerGroupLayout = edited.PerGroupLayout;
             _vm.Settings.SidebarActionIconsMode = edited.SidebarActionIconsMode;
             _vm.Settings.ShowWorktreeClusters = edited.ShowWorktreeClusters;
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
@@ -3913,7 +4114,7 @@ public partial class MainWindow : Window
             }
 
             UpdateGroupStripVisibility();
-            RebuildSidebarOrder();
+            RebuildSidebarOrder();  // also re-runs RefreshTerminalLayout — picks up FilterGridByActiveGroup
         }
     }
 
@@ -4094,12 +4295,47 @@ public partial class MainWindow : Window
 
     protected override async void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        // Second entry: cleanup is finished, let WPF tear the window down for real.
+        if (_shutdownComplete)
+        {
+            base.OnClosing(e);
+            return;
+        }
+
+        // First entry: WPF won't wait for async work, so cancel this close, do the
+        // cleanup, then call Close() again to re-enter here through the branch above.
+        e.Cancel = true;
+
         _windowStateTimer.Stop();
         if (_windowStateReady)
             _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
         await _vm.SaveStateAsync();
-        foreach (var vm in _vm.Sessions.ToList())
-            vm.Dispose();
+
+        var all = _vm.Sessions.ToList();
+
+        // Non-Claude sessions don't fight over ~/.claude.json — dispose them in parallel.
+        foreach (var vm in all)
+        {
+            if (!ClaudeSessionService.IsClaudeCommand(vm.Command))
+                vm.Dispose();
+        }
+
+        // Claude rewrites ~/.claude.json on exit without locking, so two claude.exe
+        // processes flushing simultaneously can corrupt it. Dispose claude sessions one
+        // at a time, waiting for each process to *actually exit* before starting the next
+        // — a fixed time stagger isn't safe because claude's shutdown can take longer
+        // than the configured delay on slow disks. Cap each wait at 10s so a stuck claude
+        // doesn't hang application shutdown.
+        int postExitMs = _vm.Settings.ClaudeLaunchStaggerMs;
+        foreach (var vm in all)
+        {
+            if (!ClaudeSessionService.IsClaudeCommand(vm.Command)) continue;
+            await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
+            // Small post-exit pause as belt-and-braces in case ~/.claude.json's write
+            // continues after the parent's shutdown signal but before its handles close.
+            if (postExitMs > 0) await Task.Delay(Math.Min(postExitMs, 1000));
+        }
+
         // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
         // has been observed to throw NRE internally on shutdown — swallow + log so it
         // doesn't escape as an unhandled exception during application exit.
@@ -4108,6 +4344,39 @@ public partial class MainWindow : Window
         try { _db?.Dispose(); }
         catch (Exception ex) { Log($"OnClosing _db.Dispose threw: {ex}"); }
         App.TrayIcon?.Dispose();
-        base.OnClosing(e);
+
+        _shutdownComplete = true;
+        Close();
+    }
+
+    /// <summary>
+    /// Signals the session's PTY to shut down and waits for its child process to actually
+    /// exit (or <paramref name="timeoutMs"/> ms, whichever comes first), then fully
+    /// disposes the VM. Used for claude sessions on app close so consecutive
+    /// <c>~/.claude.json</c> writes can't overlap.
+    /// </summary>
+    private static async Task DisposeAndWaitForExitAsync(SessionViewModel vm, int timeoutMs)
+    {
+        var pty = vm.Pty;
+        if (pty == null || !pty.IsRunning)
+        {
+            vm.Dispose();
+            return;
+        }
+
+        var tcs = new TaskCompletionSource();
+        void OnExit() => tcs.TrySetResult();
+        pty.Exited += OnExit;
+        try
+        {
+            // Dispose triggers ClosePseudoConsole, which signals the child to shut down.
+            // MonitorExitAsync (already running) will fire Exited once the process exits.
+            vm.Dispose();
+            await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+        }
+        finally
+        {
+            pty.Exited -= OnExit;
+        }
     }
 }

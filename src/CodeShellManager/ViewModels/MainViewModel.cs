@@ -16,6 +16,8 @@ public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo, TwoRow, FourC
 public static class GroupFilter
 {
     public const string Ungrouped = "__UNGROUPED__";
+    /// <summary>Key used in <see cref="Models.AppState.GroupLayouts"/> for the no-filter ("All") view.</summary>
+    public const string AllKey = "__ALL__";
 }
 
 public partial class MainViewModel : ObservableObject
@@ -37,6 +39,15 @@ public partial class MainViewModel : ObservableObject
     /// = only sessions with no GroupId. Any other value = a specific group's Id.
     /// </summary>
     [ObservableProperty] private string? _activeGroupId;
+
+    /// <summary>Guard so layout assignments driven by state-load or per-group restore don't write back to GroupLayouts.</summary>
+    private bool _suppressLayoutPersist;
+
+    /// <summary>Tracks the previous effective group key so the per-group handler can save the old slot before switching.</summary>
+    private string _lastEffectiveLayoutKey = GroupFilter.AllKey;
+
+    /// <summary>Key used to look up the current view's layout in <see cref="AppState.GroupLayouts"/>.</summary>
+    private string CurrentLayoutKey => EffectiveActiveGroupId ?? GroupFilter.AllKey;
 
     /// <summary>IDs of sessions currently in the multi-select set (in addition to ActiveSession).</summary>
     public HashSet<string> SelectedSessionIds { get; } = new();
@@ -94,6 +105,36 @@ public partial class MainViewModel : ObservableObject
         if (ActiveGroupId == null) return true;
         if (ActiveGroupId == GroupFilter.Ungrouped) return string.IsNullOrEmpty(vm.GroupId);
         return vm.GroupId == ActiveGroupId;
+    }
+
+    /// <summary>
+    /// The group the main grid is currently scoped to, accounting for display mode:
+    /// FilterStrip = ActiveGroupId (explicit tab); InlineHeaders = the ActiveSession's
+    /// group (there's no tab strip, so the focused session is the implicit selector);
+    /// None = null (no group concept). Returns <see cref="GroupFilter.Ungrouped"/> for
+    /// sessions without a group, or the group id, or null for "no filter".
+    /// </summary>
+    public string? EffectiveActiveGroupId
+    {
+        get
+        {
+            var mode = Settings.GroupDisplayMode;
+            if (mode == Models.GroupDisplayMode.FilterStrip) return ActiveGroupId;
+            if (mode == Models.GroupDisplayMode.InlineHeaders && ActiveSession != null)
+                return string.IsNullOrEmpty(ActiveSession.GroupId)
+                    ? GroupFilter.Ungrouped
+                    : ActiveSession.GroupId;
+            return null;
+        }
+    }
+
+    /// <summary>Like <see cref="SessionMatchesActiveGroup"/> but uses <see cref="EffectiveActiveGroupId"/>.</summary>
+    public bool SessionMatchesEffectiveGroup(SessionViewModel vm)
+    {
+        var eff = EffectiveActiveGroupId;
+        if (eff == null) return true;
+        if (eff == GroupFilter.Ungrouped) return string.IsNullOrEmpty(vm.GroupId);
+        return vm.GroupId == eff;
     }
 
     public bool IsSelected(string sessionId) => SelectedSessionIds.Contains(sessionId);
@@ -160,7 +201,12 @@ public partial class MainViewModel : ObservableObject
     {
         _appState = await _stateService.LoadAsync();
         _sessionManager.LoadFromState(_appState);
-        Layout = Enum.TryParse<LayoutMode>(_appState.LastLayout, out var lm) ? lm : LayoutMode.Single;
+        _suppressLayoutPersist = true;
+        try
+        {
+            Layout = Enum.TryParse<LayoutMode>(_appState.LastLayout, out var lm) ? lm : LayoutMode.Single;
+        }
+        finally { _suppressLayoutPersist = false; }
 
         // Legacy migration: pre-enum installs persisted "ShowGroupsTab=false" to hide
         // the strip. Translate to the new enum on first load with the new code.
@@ -316,5 +362,59 @@ public partial class MainViewModel : ObservableObject
         newIndex = Math.Clamp(newIndex, 0, Sessions.Count - 1);
         if (cur != newIndex) Sessions.Move(cur, newIndex);
         _ = SaveStateAsync();
+    }
+
+    partial void OnLayoutChanged(LayoutMode value)
+    {
+        if (_suppressLayoutPersist) return;
+        if (!Settings.PerGroupLayout) return;
+        _appState.GroupLayouts[CurrentLayoutKey] = value.ToString();
+    }
+
+    partial void OnActiveGroupIdChanged(string? oldValue, string? newValue) => HandleEffectiveGroupChanged();
+
+    partial void OnActiveSessionChanged(SessionViewModel? oldValue, SessionViewModel? newValue)
+    {
+        // ActiveSession only contributes to the effective group in InlineHeaders mode —
+        // in other modes its change doesn't move us between groups.
+        if (Settings.GroupDisplayMode != Models.GroupDisplayMode.InlineHeaders) return;
+        HandleEffectiveGroupChanged();
+    }
+
+    /// <summary>
+    /// Called whenever the effective group filter may have changed (ActiveGroupId in
+    /// FilterStrip mode, or ActiveSession in InlineHeaders mode). Saves the old group's
+    /// layout if not already persisted, then restores the new group's saved layout if any.
+    /// </summary>
+    private void HandleEffectiveGroupChanged()
+    {
+        if (!Settings.PerGroupLayout) return;
+        string newKey = EffectiveActiveGroupId ?? GroupFilter.AllKey;
+        if (newKey == _lastEffectiveLayoutKey) return;
+        string oldKey = _lastEffectiveLayoutKey;
+        _lastEffectiveLayoutKey = newKey;
+
+        // Seed the old key with the current layout in case the user never explicitly
+        // changed it there — otherwise round-tripping back to that group would miss.
+        bool seeded = false;
+        if (!_appState.GroupLayouts.ContainsKey(oldKey))
+        {
+            _appState.GroupLayouts[oldKey] = Layout.ToString();
+            seeded = true;
+        }
+
+        bool layoutSwitched = false;
+        if (_appState.GroupLayouts.TryGetValue(newKey, out var s)
+            && Enum.TryParse<LayoutMode>(s, out var lm)
+            && lm != Layout)
+        {
+            _suppressLayoutPersist = true;
+            try { Layout = lm; }
+            finally { _suppressLayoutPersist = false; }
+            layoutSwitched = true;
+        }
+
+        if (seeded || layoutSwitched)
+            _ = SaveStateAsync();
     }
 }

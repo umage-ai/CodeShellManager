@@ -212,6 +212,13 @@
                           Margin="0,4,0,0"
                           ToolTip="When clicking a session in the sidebar (or cycling with Ctrl+Tab), move keyboard focus into the terminal so you can start typing immediately."/>
 
+                <StackPanel Margin="0,10,0,0">
+                    <TextBlock Text="Claude launch / shutdown stagger (ms)" Style="{StaticResource Label}"/>
+                    <TextBox x:Name="ClaudeLaunchStaggerBox" Width="100" HorizontalAlignment="Left"/>
+                    <TextBlock Text="Delay between consecutive Claude sessions during restore-on-startup and app shutdown. Claude's CLI rewrites ~/.claude.json on startup/exit without locking, so back-to-back Claude processes can corrupt it. 2000 ms is the safe default; set 0 to disable."
+                               Foreground="#6c7086" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+
                 <!-- Appearance -->
                 <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
                 <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
@@ -239,6 +246,12 @@
                         <TextBlock Text="Filter strip = one group view at a time, via a tab strip. Inline headers = all groups visible at once, expand/collapse per group."
                                    Foreground="#6c7086" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
+                    <CheckBox x:Name="FilterGridByActiveGroupCheck"
+                              Content="Limit terminal grid to active group"
+                              ToolTip="When a group filter is selected in the strip, the multi-pane grid only shows sessions from that group. Off = the grid keeps showing every live session regardless of which group is selected."/>
+                    <CheckBox x:Name="PerGroupLayoutCheck"
+                              Content="Remember layout per group"
+                              ToolTip="Switching to a group restores the grid layout (Single / 2×2 / etc.) you last used while that group was active. Off = a single global layout shared across groups."/>
                     <CheckBox x:Name="ShowWorktreeClustersCheck" Content="Group worktree siblings in sidebar"
                               ToolTip="When 2+ adjacent sessions share a git repo, render them under a small '📁 repo (N)' header so the worktree cluster is visible at a glance. Off = only the shared stripe color + subtitle line indicate worktree siblings."/>
                     <CheckBox x:Name="ImportWindowsTerminalProfilesCheck"

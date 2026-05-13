@@ -182,8 +182,8 @@ public sealed class TerminalBridge : IDisposable
         if (DebugSettings?.DebugTerminalTrace == true)
         {
             long now = Environment.TickCount64;
-            long gap = _lastOutputTickMs == 0 ? 0 : now - _lastOutputTickMs;
-            _lastOutputTickMs = now;
+            long prev = System.Threading.Interlocked.Exchange(ref _lastOutputTickMs, now);
+            long gap = prev == 0 ? 0 : now - prev;
             Trace($"OUTPUT recv len={rawData.Length} gap-since-prev={gap}ms");
         }
 
