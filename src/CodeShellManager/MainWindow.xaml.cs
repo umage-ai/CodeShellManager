@@ -88,10 +88,13 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _windowStateTimer;
     private bool _windowStateReady = false; // don't save before state is loaded
 
-    // OnClosing is async void, which WPF does not await — without this gate the window
+    // OnClosing is async void, which WPF does not await — without these gates the window
     // tears down while SaveStateAsync / claude disposal is still mid-flight. First entry
-    // cancels the close, runs the async cleanup, sets the flag, then re-invokes Close();
-    // the second entry passes through to base.OnClosing.
+    // sets _isShuttingDown, cancels the close, runs the async cleanup, sets _shutdownComplete,
+    // then re-invokes Close(); the second entry passes through to base.OnClosing. Any
+    // intermediate re-entries (e.g. user double-clicks the X) hit the _isShuttingDown gate
+    // and just cancel without re-running cleanup.
+    private bool _isShuttingDown = false;
     private bool _shutdownComplete = false;
 
     public MainWindow()
@@ -4295,16 +4298,20 @@ public partial class MainWindow : Window
 
     protected override async void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        // Second entry: cleanup is finished, let WPF tear the window down for real.
+        // Final entry: cleanup is finished, let WPF tear the window down for real.
         if (_shutdownComplete)
         {
             base.OnClosing(e);
             return;
         }
 
-        // First entry: WPF won't wait for async work, so cancel this close, do the
-        // cleanup, then call Close() again to re-enter here through the branch above.
+        // WPF won't wait for async work, so cancel this close. The reclose at the bottom
+        // re-enters through the _shutdownComplete branch above.
         e.Cancel = true;
+
+        // Re-entry during async cleanup (e.g. user double-clicks the X) — just suppress.
+        if (_isShuttingDown) return;
+        _isShuttingDown = true;
 
         _windowStateTimer.Stop();
         if (_windowStateReady)
