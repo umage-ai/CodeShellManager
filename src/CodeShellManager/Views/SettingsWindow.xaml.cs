@@ -24,6 +24,7 @@ public partial class SettingsWindow : Window
         {
             AutoRestoreSessions = current.AutoRestoreSessions,
             AutoResumeClaude = current.AutoResumeClaude,
+            ClaudeLaunchStaggerMs = current.ClaudeLaunchStaggerMs,
             AutoFocusTerminalOnSelect = current.AutoFocusTerminalOnSelect,
             ShowToastNotifications = current.ShowToastNotifications,
             ShowNotificationSound = current.ShowNotificationSound,
@@ -57,6 +58,7 @@ public partial class SettingsWindow : Window
         DefaultFolderBox.Text = _edited.DefaultWorkingFolder;
         AutoRestoreCheck.IsChecked = _edited.AutoRestoreSessions;
         AutoResumeClaudeCheck.IsChecked = _edited.AutoResumeClaude;
+        ClaudeLaunchStaggerBox.Text = _edited.ClaudeLaunchStaggerMs.ToString();
         AutoFocusTerminalOnSelectCheck.IsChecked = _edited.AutoFocusTerminalOnSelect;
         ShowToastCheck.IsChecked = _edited.ShowToastNotifications;
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
@@ -143,6 +145,8 @@ public partial class SettingsWindow : Window
         _edited.DefaultWorkingFolder = DefaultFolderBox.Text.Trim();
         _edited.AutoRestoreSessions = AutoRestoreCheck.IsChecked == true;
         _edited.AutoResumeClaude = AutoResumeClaudeCheck.IsChecked == true;
+        if (int.TryParse(ClaudeLaunchStaggerBox.Text, out int staggerMs) && staggerMs >= 0)
+            _edited.ClaudeLaunchStaggerMs = staggerMs;
         _edited.AutoFocusTerminalOnSelect = AutoFocusTerminalOnSelectCheck.IsChecked == true;
         _edited.ShowToastNotifications = ShowToastCheck.IsChecked == true;
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
