@@ -201,10 +201,14 @@ public sealed class TerminalBridge : IDisposable
         int len = rawData.Length;
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
         {
-            if (enqueueAt != 0)
-                Trace($"OUTPUT post dispatcher-latency={Environment.TickCount64 - enqueueAt}ms len={len}");
+            // Capture latency before any work so Trace's file I/O doesn't inflate the
+            // measurement, then post the WebView2 message before tracing so the trace
+            // overhead doesn't delay terminal rendering.
+            long latencyMs = enqueueAt != 0 ? Environment.TickCount64 - enqueueAt : 0;
             try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
             catch { }
+            if (enqueueAt != 0)
+                Trace($"OUTPUT post dispatcher-latency={latencyMs}ms len={len}");
         });
     }
 

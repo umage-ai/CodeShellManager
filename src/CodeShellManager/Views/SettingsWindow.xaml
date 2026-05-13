@@ -441,8 +441,8 @@
                 <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
 
                 <StackPanel Margin="0,8,0,16">
-                    <CheckBox x:Name="DebugTerminalTraceCheck" Content="Trace terminal input/output to crash.log"/>
-                    <TextBlock Text="Logs every keystroke, PTY write, and output chunk with timing to %AppData%\CodeShellManager\crash.log (prefix [DEBUG-tt]). Use to diagnose terminal freezes. Off by default — turn on only when reproducing a problem."
+                    <CheckBox x:Name="DebugTerminalTraceCheck" Content="Trace terminal input/output timing to crash.log"/>
+                    <TextBlock Text="Logs timing and byte-length metadata only — never the keystrokes or output contents — for each PTY read/write and dispatcher post, to %AppData%\CodeShellManager\crash.log (prefix [DEBUG-tt]). Use to diagnose terminal freezes. Off by default — turn on only when reproducing a problem."
                                Foreground="#6c7086" FontSize="10" Margin="22,0,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
 
