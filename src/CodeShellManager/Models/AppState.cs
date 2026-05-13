@@ -33,6 +33,13 @@ public class AppSettings
 {
     public bool AutoRestoreSessions { get; set; } = true;
     public bool AutoResumeClaude { get; set; } = true;
+    /// <summary>
+    /// Milliseconds to wait between consecutive Claude session launches (and shutdowns).
+    /// The Claude CLI performs an unlocked read-modify-write on <c>~/.claude.json</c> on
+    /// startup and exit, so two claude.exe processes touching the file at the same time
+    /// can corrupt it. Spacing them out by ~2s avoids the race. 0 disables the stagger.
+    /// </summary>
+    public int ClaudeLaunchStaggerMs { get; set; } = 2000;
     public bool AutoFocusTerminalOnSelect { get; set; } = true;
     public bool ShowToastNotifications { get; set; } = false;
     public bool ShowNotificationSound { get; set; } = false;
