@@ -51,6 +51,7 @@ public partial class SettingsWindow : Window
             TerminalLineHeight = current.TerminalLineHeight,
             IndexTerminalOutput = current.IndexTerminalOutput,
             OutputRetentionDays = current.OutputRetentionDays,
+            DebugTerminalTrace = current.DebugTerminalTrace,
             LaunchCommands = current.LaunchCommands.ToList(),
         };
 
@@ -92,6 +93,7 @@ public partial class SettingsWindow : Window
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
         IndexTerminalOutputCheck.IsChecked = _edited.IndexTerminalOutput;
         OutputRetentionDaysBox.Text = _edited.OutputRetentionDays.ToString();
+        DebugTerminalTraceCheck.IsChecked = _edited.DebugTerminalTrace;
         _ = UpdateDatabaseSizeLabelAsync();
         _ = LoadUsageStatsAsync();
         ApiKeyBox.Password = _edited.AnthropicApiKey;
@@ -175,6 +177,7 @@ public partial class SettingsWindow : Window
         _edited.IndexTerminalOutput = IndexTerminalOutputCheck.IsChecked == true;
         if (int.TryParse(OutputRetentionDaysBox.Text, out int retentionDays) && retentionDays >= 0)
             _edited.OutputRetentionDays = retentionDays;
+        _edited.DebugTerminalTrace = DebugTerminalTraceCheck.IsChecked == true;
 
         var commands = LaunchCommandsBox.Text
             .Split('\n', System.StringSplitOptions.RemoveEmptyEntries)

@@ -100,6 +100,13 @@ public class AppSettings
     public bool IndexTerminalOutput { get; set; } = true;
     public int OutputRetentionDays { get; set; } = 30;  // 0 = keep forever
 
+    /// <summary>
+    /// When on, TerminalBridge emits per-keystroke / per-output-chunk timing to
+    /// crash.log (prefix [DEBUG-tt]) so intermittent freezes can be diagnosed
+    /// after the fact. Off by default — has zero cost when off.
+    /// </summary>
+    public bool DebugTerminalTrace { get; set; } = false;
+
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";
     public int TerminalFontSize { get; set; } = 14;
