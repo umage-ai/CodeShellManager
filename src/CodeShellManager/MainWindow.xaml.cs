@@ -2649,14 +2649,20 @@ public partial class MainWindow : Window
         bool inlineMode = mode == Models.GroupDisplayMode.InlineHeaders
             && _sessionManager.Groups.Count > 0;
 
+        // Snapshot _vm.Sessions into a dictionary up front so Resolve is O(1) per call.
+        // RebuildSidebarOrder fires on group filter / membership / drag-reorder / launch,
+        // so the previous FirstOrDefault-in-a-loop was O(n²) for the saved-session list.
+        var liveById = new Dictionary<string, SessionViewModel>(_vm.Sessions.Count);
+        foreach (var v in _vm.Sessions) liveById[v.Id] = v;
+
         // Resolve a saved ShellSession to either its live sidebar item + VM, or a
         // launching placeholder (vm == null). Returns null if the session is dormant
         // or has no rendered representation yet (no UI built).
         (Border item, SessionViewModel? vm)? Resolve(ShellSession s)
         {
             if (s.IsDormant) return null;
-            var liveVm = _vm.Sessions.FirstOrDefault(v => v.Id == s.Id);
-            if (liveVm != null && _sessionUi.TryGetValue(liveVm.Id, out var ui))
+            if (liveById.TryGetValue(s.Id, out var liveVm)
+                && _sessionUi.TryGetValue(liveVm.Id, out var ui))
                 return (ui.sidebarItem, liveVm);
             if (_launchingSidebarItems.TryGetValue(s.Id, out var ph))
                 return (ph, null);
