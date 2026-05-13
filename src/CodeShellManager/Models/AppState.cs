@@ -43,6 +43,19 @@ public class AppSettings
     /// <summary>Authoritative grouping UI selector. Replaces the legacy <see cref="ShowGroupsTab"/> boolean.</summary>
     public GroupDisplayMode GroupDisplayMode { get; set; } = GroupDisplayMode.FilterStrip;
     /// <summary>
+    /// In FilterStrip mode with an active group filter, restrict the terminal grid
+    /// (multi-pane layouts) to sessions belonging to that group. The sidebar already
+    /// hides non-matching rows; with this on, the panes match. Off = the grid keeps
+    /// showing every live session regardless of group filter.
+    /// </summary>
+    public bool FilterGridByActiveGroup { get; set; } = true;
+    /// <summary>
+    /// Remember the grid layout (Single / TwoByTwo / etc.) separately per group so each
+    /// group restores its own layout when selected. See <see cref="AppState.GroupLayouts"/>
+    /// for the backing store.
+    /// </summary>
+    public bool PerGroupLayout { get; set; } = true;
+    /// <summary>
     /// Legacy flag — kept for back-compat with older state.json files. When deserialized
     /// as false on a state that still has GroupDisplayMode at its default, the loader
     /// migrates the mode to None. Newer code paths read GroupDisplayMode instead.
@@ -114,6 +127,13 @@ public class AppState
     public List<ShellSession> Sessions { get; set; } = [];
     public List<SessionGroup> Groups { get; set; } = [];
     public string LastLayout { get; set; } = "Single";
+    /// <summary>
+    /// Per-group grid layouts when <see cref="AppSettings.PerGroupLayout"/> is on.
+    /// Key = group Id, <c>GroupFilter.Ungrouped</c>, or <c>"__ALL__"</c> for the
+    /// no-filter view. Value = <see cref="ViewModels.LayoutMode"/> name. Missing
+    /// keys fall back to <see cref="LastLayout"/>.
+    /// </summary>
+    public Dictionary<string, string> GroupLayouts { get; set; } = new();
     public AppSettings Settings { get; set; } = new();
 
     // Window state persistence

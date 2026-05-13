@@ -239,6 +239,12 @@
                         <TextBlock Text="Filter strip = one group view at a time, via a tab strip. Inline headers = all groups visible at once, expand/collapse per group."
                                    Foreground="#6c7086" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
+                    <CheckBox x:Name="FilterGridByActiveGroupCheck"
+                              Content="Limit terminal grid to active group"
+                              ToolTip="When a group filter is selected in the strip, the multi-pane grid only shows sessions from that group. Off = the grid keeps showing every live session regardless of which group is selected."/>
+                    <CheckBox x:Name="PerGroupLayoutCheck"
+                              Content="Remember layout per group"
+                              ToolTip="Switching to a group restores the grid layout (Single / 2×2 / etc.) you last used while that group was active. Off = a single global layout shared across groups."/>
                     <CheckBox x:Name="ShowWorktreeClustersCheck" Content="Group worktree siblings in sidebar"
                               ToolTip="When 2+ adjacent sessions share a git repo, render them under a small '📁 repo (N)' header so the worktree cluster is visible at a glance. Off = only the shared stripe color + subtitle line indicate worktree siblings."/>
                     <CheckBox x:Name="ImportWindowsTerminalProfilesCheck"

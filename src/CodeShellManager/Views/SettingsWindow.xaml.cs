@@ -33,6 +33,8 @@ public partial class SettingsWindow : Window
             ShowGitBranch = current.ShowGitBranch,
             ShowGroupsTab = current.ShowGroupsTab,
             GroupDisplayMode = current.GroupDisplayMode,
+            FilterGridByActiveGroup = current.FilterGridByActiveGroup,
+            PerGroupLayout = current.PerGroupLayout,
             SidebarActionIconsMode = current.SidebarActionIconsMode,
             ShowWorktreeClusters = current.ShowWorktreeClusters,
             SearchCollapseAfterNavigate = current.SearchCollapseAfterNavigate,
@@ -81,6 +83,8 @@ public partial class SettingsWindow : Window
         }
         if (SidebarActionIconsModeCombo.SelectedIndex < 0)
             SidebarActionIconsModeCombo.SelectedIndex = 0; // OnHover default
+        FilterGridByActiveGroupCheck.IsChecked = _edited.FilterGridByActiveGroup;
+        PerGroupLayoutCheck.IsChecked = _edited.PerGroupLayout;
         ImportWindowsTerminalProfilesCheck.IsChecked = _edited.ImportWindowsTerminalProfiles;
         SearchCollapseAfterNavigateCheck.IsChecked = _edited.SearchCollapseAfterNavigate;
         MaxSearchResultsBox.Text = _edited.MaxSearchResults.ToString();
@@ -155,6 +159,8 @@ public partial class SettingsWindow : Window
         var iconsModeTag = (SidebarActionIconsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
         if (System.Enum.TryParse<Models.SidebarActionIconsMode>(iconsModeTag, out var newIconsMode))
             _edited.SidebarActionIconsMode = newIconsMode;
+        _edited.FilterGridByActiveGroup = FilterGridByActiveGroupCheck.IsChecked == true;
+        _edited.PerGroupLayout = PerGroupLayoutCheck.IsChecked == true;
         _edited.ImportWindowsTerminalProfiles = ImportWindowsTerminalProfilesCheck.IsChecked == true;
         _edited.SearchCollapseAfterNavigate = SearchCollapseAfterNavigateCheck.IsChecked == true;
         _edited.AnthropicApiKey = ApiKeyBox.Password;

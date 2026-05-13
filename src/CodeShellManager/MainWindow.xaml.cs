@@ -2796,7 +2796,17 @@ public partial class MainWindow : Window
         TerminalGrid.RowDefinitions.Clear();
         TerminalGrid.ColumnDefinitions.Clear();
 
-        var sessions = _vm.Sessions.ToList();
+        // When FilterGridByActiveGroup is on, restrict the panes to the effective group:
+        //   FilterStrip mode → the explicitly selected tab (ActiveGroupId)
+        //   InlineHeaders mode → the ActiveSession's group (no tab strip exists, so the
+        //     focused session is the implicit "current group" selector)
+        // In None mode there is no group concept, so no filter applies.
+        IEnumerable<SessionViewModel> source = _vm.Sessions;
+        if (_vm.Settings.FilterGridByActiveGroup && _vm.EffectiveActiveGroupId != null)
+        {
+            source = source.Where(_vm.SessionMatchesEffectiveGroup);
+        }
+        var sessions = source.ToList();
         if (sessions.Count == 0)
         {
             EmptyState.Visibility = Visibility.Visible;
@@ -2890,7 +2900,11 @@ public partial class MainWindow : Window
 
             default: // Single
             {
-                var target = _vm.ActiveSession ?? sessions.FirstOrDefault();
+                // If the active session is filtered out by the group filter, fall back
+                // to the first visible session so the pane doesn't show a hidden tab.
+                var target = (_vm.ActiveSession != null && sessions.Contains(_vm.ActiveSession))
+                    ? _vm.ActiveSession
+                    : sessions.FirstOrDefault();
                 if (target != null && _sessionUi.TryGetValue(target.Id, out var ui))
                 {
                     TerminalGrid.Children.Add(ui.terminalWrapper);
@@ -3845,6 +3859,8 @@ public partial class MainWindow : Window
             _vm.Settings.ShowGitBranch = edited.ShowGitBranch;
             _vm.Settings.ShowGroupsTab = edited.ShowGroupsTab;
             _vm.Settings.GroupDisplayMode = edited.GroupDisplayMode;
+            _vm.Settings.FilterGridByActiveGroup = edited.FilterGridByActiveGroup;
+            _vm.Settings.PerGroupLayout = edited.PerGroupLayout;
             _vm.Settings.SidebarActionIconsMode = edited.SidebarActionIconsMode;
             _vm.Settings.ShowWorktreeClusters = edited.ShowWorktreeClusters;
             _vm.Settings.SearchCollapseAfterNavigate = edited.SearchCollapseAfterNavigate;
@@ -3881,7 +3897,7 @@ public partial class MainWindow : Window
             }
 
             UpdateGroupStripVisibility();
-            RebuildSidebarOrder();
+            RebuildSidebarOrder();  // also re-runs RefreshTerminalLayout — picks up FilterGridByActiveGroup
         }
     }
 
