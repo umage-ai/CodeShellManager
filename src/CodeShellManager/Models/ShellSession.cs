@@ -19,6 +19,14 @@ public class ShellSession
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// Last time the user gave this session focus (clicked it in the sidebar, woke it,
+    /// or it was selected via Ctrl+Tab). Persisted so "Sort by last active" survives
+    /// restarts. Defaults to <see cref="CreatedAt"/> for sessions that have never been
+    /// activated since the field was introduced.
+    /// </summary>
+    public DateTime LastActivityAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
     /// When true, the session has no live PTY/terminal — it is a placeholder
     /// in the sidebar that can be "woken" later. Persisted to state.json.
     /// </summary>

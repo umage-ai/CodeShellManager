@@ -250,16 +250,22 @@
                 </Border>
 
                 <DockPanel Grid.Column="1">
-                    <Border DockPanel.Dock="Top" Padding="12,8,8,8" BorderThickness="0,0,0,1"
-                            BorderBrush="#313244">
+                    <Border x:Name="SidebarHeader" DockPanel.Dock="Top" Padding="12,8,8,8" BorderThickness="0,0,0,1"
+                            BorderBrush="#313244" Background="#181825">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="SESSIONS" Foreground="#6c7086" FontSize="10"
                                        FontWeight="Bold" VerticalAlignment="Center"/>
-                            <Button Grid.Column="1" Content="+" Style="{StaticResource ToolBtn}"
+                            <Button Grid.Column="1" x:Name="SortSessionsButton" Content="⇅" Style="{StaticResource ToolBtn}"
+                                    ToolTip="Sort sessions" Click="SortSessionsButton_Click"
+                                    Width="26" Height="24" FontSize="13" Foreground="#cdd6f4"
+                                    VerticalAlignment="Center" Margin="0,0,2,0"
+                                    Padding="0,0,0,1"/>
+                            <Button Grid.Column="2" Content="+" Style="{StaticResource ToolBtn}"
                                     ToolTip="New Session (Ctrl+T)" Click="NewSession_Click"
                                     Width="26" Height="24" FontSize="16" Foreground="#a6e3a1"
                                     VerticalAlignment="Center" Margin="0,0,2,0"
@@ -267,7 +273,7 @@
                         </Grid>
                     </Border>
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="SidebarSessionList" AutomationProperties.AutomationId="SidebarSessionList" Margin="6,6"/>
+                        <StackPanel x:Name="SidebarSessionList" AutomationProperties.AutomationId="SidebarSessionList" Margin="6,6" Background="Transparent"/>
                     </ScrollViewer>
                 </DockPanel>
             </Grid>

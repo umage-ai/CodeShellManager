@@ -64,6 +64,16 @@ public class SessionManager
         SessionsChanged?.Invoke();
     }
 
+    /// <summary>
+    /// Reorders the session list in place using <paramref name="comparison"/>. The user can
+    /// keep refining the order by drag-reorder afterwards; sorting is a one-shot apply.
+    /// </summary>
+    public void SortSessions(Comparison<ShellSession> comparison)
+    {
+        _sessions.Sort(comparison);
+        SessionsChanged?.Invoke();
+    }
+
     public void MoveSession(string sessionId, int newIndex)
     {
         var session = _sessions.FirstOrDefault(s => s.Id == sessionId);
