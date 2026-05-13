@@ -1739,7 +1739,7 @@ public partial class MainWindow : Window
                     _vm.MoveGroup(groupId, idx + 1);
             };
             menu.Items.Add(moveDown);
-            menu.Items.Add(new System.Windows.Controls.Separator());
+            AddGroupBulkActionItems(menu, groupId, fullName);
 
             var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
             rename.Click += (_, _) => PromptRenameGroup(groupId, fullName);
@@ -1966,7 +1966,7 @@ public partial class MainWindow : Window
                     _vm.MoveGroup(group.Id, idx + 1);
             };
             menu.Items.Add(moveDown);
-            menu.Items.Add(new System.Windows.Controls.Separator());
+            AddGroupBulkActionItems(menu, group.Id, group.Name);
             var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
             rename.Click += (_, _) => PromptRenameGroup(group.Id, group.Name);
             menu.Items.Add(rename);
@@ -2034,6 +2034,72 @@ public partial class MainWindow : Window
         };
 
         return border;
+    }
+
+    /// <summary>
+    /// Appends bulk-action items (Remote control, Sleep all, Start all, Close all) for
+    /// <paramref name="groupId"/>, wrapped in leading + trailing separators. Items are
+    /// enabled/disabled in <c>menu.Opened</c> based on live vs. dormant counts in the group.
+    /// </summary>
+    private void AddGroupBulkActionItems(System.Windows.Controls.ContextMenu menu, string groupId, string groupName)
+    {
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        var remoteControl = new System.Windows.Controls.MenuItem { Header = "Remote control all in group" };
+        remoteControl.Click += (_, _) =>
+        {
+            foreach (var vm in _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList())
+            {
+                vm.Bridge?.SendToTerminal("/remote-control\r");
+                vm.AlertDetector?.NotifyUserInteracted();
+            }
+        };
+        menu.Items.Add(remoteControl);
+
+        var sleepAll = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
+        sleepAll.Click += (_, _) =>
+        {
+            foreach (var vm in _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList())
+                SleepSession(vm);
+        };
+        menu.Items.Add(sleepAll);
+
+        var startAll = new System.Windows.Controls.MenuItem { Header = "Start all" };
+        startAll.Click += async (_, _) =>
+        {
+            var dormant = _sessionManager.Sessions
+                .Where(s => s.GroupId == groupId && s.IsDormant)
+                .ToList();
+            foreach (var session in dormant)
+                await WakeSessionAsync(session);
+        };
+        menu.Items.Add(startAll);
+
+        var closeAll = new System.Windows.Controls.MenuItem { Header = "Close all…" };
+        closeAll.Click += (_, _) =>
+        {
+            var targets = _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList();
+            if (targets.Count == 0) return;
+            var r = MessageBox.Show(
+                $"Close {targets.Count} session(s) in group '{groupName}'? They will be removed permanently.",
+                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (r != MessageBoxResult.Yes) return;
+            foreach (var vm in targets)
+                vm.CloseCommand.Execute(null);
+        };
+        menu.Items.Add(closeAll);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        menu.Opened += (_, _) =>
+        {
+            int liveCount = _vm.Sessions.Count(v => v.Session.GroupId == groupId);
+            int dormantCount = _sessionManager.Sessions.Count(s => s.GroupId == groupId && s.IsDormant);
+            remoteControl.IsEnabled = liveCount > 0;
+            sleepAll.IsEnabled = liveCount > 0;
+            startAll.IsEnabled = dormantCount > 0;
+            closeAll.IsEnabled = liveCount > 0;
+        };
     }
 
     /// <summary>True when the drag payload is "group:<id>" and (if specified) not the excepted id.</summary>
