@@ -31,7 +31,8 @@ public class SessionManager
             Args = args,
             GroupId = groupId ?? "",
             ColorOverride = colorOverride,
-            Status = SessionStatus.Running
+            Status = SessionStatus.Running,
+            LastActivityAt = DateTime.UtcNow
         };
 
         int insertAt = -1;
@@ -164,7 +165,12 @@ public class SessionManager
 
         // Sessions from state are configs only — they get relaunched fresh
         foreach (var s in state.Sessions)
+        {
+            // Backfill LastActivityAt for sessions persisted before the field existed
+            // (deserialization leaves the property initializer's default sentinel).
+            if (s.LastActivityAt == default) s.LastActivityAt = s.CreatedAt;
             _sessions.Add(s);
+        }
 
         // Legacy migration: previous versions auto-created a single "Default" group
         // (SortOrder 0) and put every session in it. Drop it so existing users see
