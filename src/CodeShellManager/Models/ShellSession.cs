@@ -19,6 +19,16 @@ public class ShellSession
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// Last time the user gave this session focus (clicked it in the sidebar, woke it,
+    /// or it was selected via Ctrl+Tab). Persisted so "Sort by last active" survives
+    /// restarts. Initializer is <c>default</c> so that legacy state.json files (which
+    /// don't carry this key) deserialize to a sentinel; <see cref="SessionManager.LoadFromState"/>
+    /// then backfills it from <see cref="CreatedAt"/>. New sessions are populated by
+    /// <see cref="SessionManager.CreateSession"/>.
+    /// </summary>
+    public DateTime LastActivityAt { get; set; } = default;
+
+    /// <summary>
     /// When true, the session has no live PTY/terminal — it is a placeholder
     /// in the sidebar that can be "woken" later. Persisted to state.json.
     /// </summary>

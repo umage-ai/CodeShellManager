@@ -79,6 +79,14 @@ public partial class MainWindow : Window
     // Group-tab notification indicators (badge + text), keyed by group id (or "__ALL__"
     // / GroupFilter.Ungrouped sentinels). Repopulated on every RebuildGroupStrip.
     private readonly Dictionary<string, (Border badge, TextBlock badgeText)> _groupTabIndicators = [];
+
+    // Sidebar sort state — in-memory only. Re-clicking the same field reverses direction;
+    // clicking a new field starts in its natural direction (A→Z for text, newest-first for
+    // last active). After a drag-reorder the field stays remembered so subsequent toggles
+    // still make sense from the user's mental model.
+    private enum SortField { None, Name, Folder, LastActive, Branch, Dirty, Repo }
+    private SortField _currentSortField = SortField.None;
+    private bool _sortDescending;
     private SqliteConnection? _db;
     private SearchService? _searchService;
     private LayoutMode _currentLayout = LayoutMode.Single;
@@ -108,6 +116,8 @@ public partial class MainWindow : Window
         {
             if (args.PropertyName == nameof(MainViewModel.ActiveSession))
             {
+                if (_vm.ActiveSession != null)
+                    _vm.ActiveSession.Session.LastActivityAt = DateTime.UtcNow;
                 RefreshTerminalLayout();
                 UpdateSidebarActiveState();
             }
@@ -173,6 +183,7 @@ public partial class MainWindow : Window
         BuildShortcutPanel();
         SetupSidebarDrop();
         SetupGroupStripDrop();
+        AttachSidebarQuickMenus();
     }
 
     private void OnWindowBoundsChanged()
@@ -1565,6 +1576,363 @@ public partial class MainWindow : Window
         }
     }
 
+    // ── Sidebar quick-menu (right-click on empty sidebar / tab / placeholder area) ─
+
+    /// <summary>
+    /// Attaches the sidebar quick-action ContextMenu to every empty-space surface in the
+    /// sidebar column (header, session list, group strip) and to the TerminalGrid empty
+    /// state. Children with their own ContextMenu — session rows, group tabs — shadow this
+    /// one, so the menu only opens when right-clicking actual empty space.
+    /// </summary>
+    private void AttachSidebarQuickMenus()
+    {
+        var menu = BuildSidebarQuickMenu();
+        SidebarHeader.ContextMenu = menu;
+        SidebarSessionList.ContextMenu = menu;
+        GroupStripBorder.ContextMenu = menu;
+        TerminalGrid.ContextMenu = menu;
+
+        // The sort button has its own menu — left-click drops it down rather than
+        // requiring a right-click on a small target.
+        SortSessionsButton.ContextMenu = BuildSortSessionsMenu();
+    }
+
+    private System.Windows.Controls.ContextMenu BuildSortSessionsMenu()
+    {
+        var menu = new System.Windows.Controls.ContextMenu();
+
+        var byName = new System.Windows.Controls.MenuItem();
+        byName.Click += (_, _) => ApplySort(SortField.Name);
+        menu.Items.Add(byName);
+
+        var byFolder = new System.Windows.Controls.MenuItem();
+        byFolder.Click += (_, _) => ApplySort(SortField.Folder);
+        menu.Items.Add(byFolder);
+
+        var byActive = new System.Windows.Controls.MenuItem();
+        byActive.Click += (_, _) => ApplySort(SortField.LastActive);
+        menu.Items.Add(byActive);
+
+        // Git submenu. Sessions without live git info (dormant or non-git folders) sink to
+        // the end of every git-based ordering — the comparison emits "empty" keys last.
+        var gitMenu = new System.Windows.Controls.MenuItem { Header = "Git" };
+        var byBranch = new System.Windows.Controls.MenuItem();
+        byBranch.Click += (_, _) => ApplySort(SortField.Branch);
+        gitMenu.Items.Add(byBranch);
+
+        var byDirty = new System.Windows.Controls.MenuItem();
+        byDirty.Click += (_, _) => ApplySort(SortField.Dirty);
+        gitMenu.Items.Add(byDirty);
+
+        var byRepo = new System.Windows.Controls.MenuItem();
+        byRepo.Click += (_, _) => ApplySort(SortField.Repo);
+        gitMenu.Items.Add(byRepo);
+        menu.Items.Add(gitMenu);
+
+        // Repopulate headers each open so the active field shows its current direction
+        // arrow and the others show their natural default direction as a preview.
+        menu.Opened += (_, _) =>
+        {
+            SetSortHeader(byName,   "Name",        SortField.Name,       ascendingDefault: true);
+            SetSortHeader(byFolder, "Folder",      SortField.Folder,     ascendingDefault: true);
+            SetSortHeader(byActive, "Last active", SortField.LastActive, ascendingDefault: false);
+            SetSortHeader(byBranch, "Branch",      SortField.Branch,     ascendingDefault: true);
+            SetSortHeader(byDirty,  "Dirty",       SortField.Dirty,      ascendingDefault: false);
+            SetSortHeader(byRepo,   "Repo",        SortField.Repo,       ascendingDefault: true);
+        };
+
+        return menu;
+    }
+
+    /// <summary>
+    /// Writes the sort menu item's label + direction glyph. The arrow goes into the Icon
+    /// slot (not the header text) so it sits in the menu's icon column with consistent
+    /// alignment regardless of label length, and we can size/dim it independently of the
+    /// label font. Active fields render at full opacity in SemiBold; inactive fields show
+    /// the field's natural default direction at 45% opacity as a preview.
+    /// </summary>
+    private void SetSortHeader(System.Windows.Controls.MenuItem item, string label, SortField field, bool ascendingDefault)
+    {
+        bool active = _currentSortField == field;
+        bool descending = active ? _sortDescending : !ascendingDefault;
+        item.Header = label;
+        item.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
+        item.Icon = new TextBlock
+        {
+            Text = descending ? "↓" : "↑",
+            FontSize = 11,
+            Opacity = active ? 1.0 : 0.45,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+    }
+
+    private void ApplySort(SortField field)
+    {
+        // Re-clicking the active field flips direction; switching field picks its natural
+        // starting direction (text fields ascend, timestamps + dirty newest-/dirty-first).
+        if (_currentSortField == field)
+        {
+            _sortDescending = !_sortDescending;
+        }
+        else
+        {
+            _currentSortField = field;
+            _sortDescending = field is SortField.LastActive or SortField.Dirty;
+        }
+
+        // Live VMs hold git info; dormant sessions don't. Build a snapshot lookup so each
+        // comparison call is O(1) and stable for the duration of the sort.
+        var live = _vm.Sessions.ToDictionary(v => v.Id);
+
+        string RepoName(SessionViewModel? vm) =>
+            string.IsNullOrEmpty(vm?.RepoRoot)
+                ? ""
+                : System.IO.Path.GetFileName(vm!.RepoRoot!.TrimEnd('/', '\\')) ?? "";
+
+        // For text-key git fields, empty keys (no live VM, or no git) sink to the bottom of
+        // the ascending order — that way users always see the "real" data grouped at top.
+        int CompareEmptyLast(string a, string b)
+        {
+            bool aEmpty = string.IsNullOrEmpty(a);
+            bool bEmpty = string.IsNullOrEmpty(b);
+            if (aEmpty && bEmpty) return 0;
+            if (aEmpty) return 1;
+            if (bEmpty) return -1;
+            return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Comparison<Models.ShellSession> baseCmp = field switch
+        {
+            SortField.Name       => (a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase),
+            SortField.Folder     => (a, b) => string.Compare(a.WorkingFolder, b.WorkingFolder, StringComparison.OrdinalIgnoreCase),
+            SortField.LastActive => (a, b) => a.LastActivityAt.CompareTo(b.LastActivityAt),
+            SortField.Branch     => (a, b) =>
+            {
+                live.TryGetValue(a.Id, out var va);
+                live.TryGetValue(b.Id, out var vb);
+                int c = CompareEmptyLast(va?.GitBranch ?? "", vb?.GitBranch ?? "");
+                if (c != 0) return c;
+                // Same branch: keep worktrees adjacent by folder.
+                return string.Compare(a.WorkingFolder, b.WorkingFolder, StringComparison.OrdinalIgnoreCase);
+            },
+            SortField.Dirty      => (a, b) =>
+            {
+                live.TryGetValue(a.Id, out var va);
+                live.TryGetValue(b.Id, out var vb);
+                // bool.CompareTo: false < true. Ascending = clean first; descending = dirty first.
+                int c = (va?.GitIsDirty ?? false).CompareTo(vb?.GitIsDirty ?? false);
+                if (c != 0) return c;
+                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            },
+            SortField.Repo       => (a, b) =>
+            {
+                live.TryGetValue(a.Id, out var va);
+                live.TryGetValue(b.Id, out var vb);
+                int c = CompareEmptyLast(RepoName(va), RepoName(vb));
+                if (c != 0) return c;
+                return string.Compare(a.WorkingFolder, b.WorkingFolder, StringComparison.OrdinalIgnoreCase);
+            },
+            _                    => (_, _) => 0
+        };
+        Comparison<Models.ShellSession> cmp = _sortDescending
+            ? (a, b) => baseCmp(b, a)
+            : baseCmp;
+
+        _sessionManager.SortSessions(cmp);
+        _ = _vm.SaveStateAsync();
+        RebuildSidebarOrder();
+    }
+
+    private void SortSessionsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button btn && btn.ContextMenu != null)
+        {
+            btn.ContextMenu.PlacementTarget = btn;
+            btn.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            btn.ContextMenu.IsOpen = true;
+        }
+    }
+
+    private System.Windows.Controls.ContextMenu BuildSidebarQuickMenu()
+    {
+        var menu = new System.Windows.Controls.ContextMenu();
+
+        var newSession = new System.Windows.Controls.MenuItem
+        {
+            Header = "＋ New session",
+            InputGestureText = "Ctrl+T"
+        };
+        newSession.Click += (_, _) => OpenNewSessionDialog();
+        menu.Items.Add(newSession);
+
+        var newGroup = new System.Windows.Controls.MenuItem { Header = "＋ New group…" };
+        newGroup.Click += (_, _) => PromptCreateGroup();
+        menu.Items.Add(newGroup);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        // Global bulk actions — operate on every live or dormant session, not just one group.
+        var bulkActions = new System.Windows.Controls.MenuItem { Header = "Bulk actions" };
+        var wakeAllDormant = new System.Windows.Controls.MenuItem { Header = "Wake all dormant" };
+        wakeAllDormant.Click += async (_, _) =>
+        {
+            var dormant = _sessionManager.Sessions.Where(s => s.IsDormant).ToList();
+            foreach (var s in dormant)
+                await WakeSessionAsync(s);
+        };
+        bulkActions.Items.Add(wakeAllDormant);
+
+        var sleepAllGlobal = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
+        sleepAllGlobal.Click += (_, _) =>
+        {
+            foreach (var vm in _vm.Sessions.ToList())
+                SleepSession(vm);
+        };
+        bulkActions.Items.Add(sleepAllGlobal);
+
+        var closeAllGlobal = new System.Windows.Controls.MenuItem { Header = "Close all…" };
+        closeAllGlobal.Click += (_, _) =>
+        {
+            var targets = _vm.Sessions.ToList();
+            if (targets.Count == 0) return;
+            var r = MessageBox.Show(
+                $"Close all {targets.Count} live session(s)? They will be removed permanently.",
+                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (r != MessageBoxResult.Yes) return;
+            foreach (var vm in targets)
+                vm.CloseCommand.Execute(null);
+        };
+        bulkActions.Items.Add(closeAllGlobal);
+        menu.Items.Add(bulkActions);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        // Group display submenu — None / FilterStrip / InlineHeaders.
+        var groupDisplay = new System.Windows.Controls.MenuItem { Header = "Group display" };
+        var modeNone   = new System.Windows.Controls.MenuItem { Header = "None (flat list)",       IsCheckable = true };
+        var modeStrip  = new System.Windows.Controls.MenuItem { Header = "Vertical filter strip",   IsCheckable = true };
+        var modeInline = new System.Windows.Controls.MenuItem { Header = "Inline group headers",    IsCheckable = true };
+        modeNone.Click   += (_, _) => SetGroupDisplayMode(Models.GroupDisplayMode.None);
+        modeStrip.Click  += (_, _) => SetGroupDisplayMode(Models.GroupDisplayMode.FilterStrip);
+        modeInline.Click += (_, _) => SetGroupDisplayMode(Models.GroupDisplayMode.InlineHeaders);
+        groupDisplay.Items.Add(modeNone);
+        groupDisplay.Items.Add(modeStrip);
+        groupDisplay.Items.Add(modeInline);
+        menu.Items.Add(groupDisplay);
+
+        // Expand / collapse all group sections — only meaningful in InlineHeaders mode.
+        var expandAll = new System.Windows.Controls.MenuItem { Header = "Expand all groups" };
+        expandAll.Click += (_, _) => SetAllGroupsExpanded(true);
+        menu.Items.Add(expandAll);
+
+        var collapseAll = new System.Windows.Controls.MenuItem { Header = "Collapse all groups" };
+        collapseAll.Click += (_, _) => SetAllGroupsExpanded(false);
+        menu.Items.Add(collapseAll);
+
+        // Sidebar action-icons submenu — OnHover / Always / Hidden.
+        var rowIcons = new System.Windows.Controls.MenuItem { Header = "Session row icons" };
+        var iconHover  = new System.Windows.Controls.MenuItem { Header = "On hover",       IsCheckable = true };
+        var iconAlways = new System.Windows.Controls.MenuItem { Header = "Always visible", IsCheckable = true };
+        var iconHidden = new System.Windows.Controls.MenuItem { Header = "Hidden",         IsCheckable = true };
+        iconHover.Click  += (_, _) => SetSidebarActionIconsMode(Models.SidebarActionIconsMode.OnHover);
+        iconAlways.Click += (_, _) => SetSidebarActionIconsMode(Models.SidebarActionIconsMode.Always);
+        iconHidden.Click += (_, _) => SetSidebarActionIconsMode(Models.SidebarActionIconsMode.Hidden);
+        rowIcons.Items.Add(iconHover);
+        rowIcons.Items.Add(iconAlways);
+        rowIcons.Items.Add(iconHidden);
+        menu.Items.Add(rowIcons);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        var showGit = new System.Windows.Controls.MenuItem { Header = "Show git branch", IsCheckable = true };
+        showGit.Click += (_, _) =>
+        {
+            _vm.Settings.ShowGitBranch = !_vm.Settings.ShowGitBranch;
+            _ = _vm.SaveStateAsync();
+            RebuildSidebarOrder();
+        };
+        menu.Items.Add(showGit);
+
+        var showClusters = new System.Windows.Controls.MenuItem { Header = "Show worktree clusters", IsCheckable = true };
+        showClusters.Click += (_, _) =>
+        {
+            _vm.Settings.ShowWorktreeClusters = !_vm.Settings.ShowWorktreeClusters;
+            _ = _vm.SaveStateAsync();
+            RebuildSidebarOrder();
+        };
+        menu.Items.Add(showClusters);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        var allSettings = new System.Windows.Controls.MenuItem { Header = "All settings…" };
+        allSettings.Click += (s, e) => SettingsButton_Click(s, e);
+        menu.Items.Add(allSettings);
+
+        menu.Opened += (_, _) =>
+        {
+            var mode = _vm.Settings.GroupDisplayMode;
+            modeNone.IsChecked   = mode == Models.GroupDisplayMode.None;
+            modeStrip.IsChecked  = mode == Models.GroupDisplayMode.FilterStrip;
+            modeInline.IsChecked = mode == Models.GroupDisplayMode.InlineHeaders;
+
+            var iconMode = _vm.Settings.SidebarActionIconsMode;
+            iconHover.IsChecked  = iconMode == Models.SidebarActionIconsMode.OnHover;
+            iconAlways.IsChecked = iconMode == Models.SidebarActionIconsMode.Always;
+            iconHidden.IsChecked = iconMode == Models.SidebarActionIconsMode.Hidden;
+
+            showGit.IsChecked      = _vm.Settings.ShowGitBranch;
+            showClusters.IsChecked = _vm.Settings.ShowWorktreeClusters;
+
+            int liveCount = _vm.Sessions.Count;
+            int dormantCount = _sessionManager.Sessions.Count(s => s.IsDormant);
+            wakeAllDormant.IsEnabled = dormantCount > 0;
+            sleepAllGlobal.IsEnabled = liveCount > 0;
+            closeAllGlobal.IsEnabled = liveCount > 0;
+            bulkActions.IsEnabled    = liveCount > 0 || dormantCount > 0;
+
+            bool inlineHeaders = mode == Models.GroupDisplayMode.InlineHeaders;
+            bool anyGroups = _sessionManager.Groups.Count > 0;
+            expandAll.IsEnabled   = inlineHeaders && anyGroups;
+            collapseAll.IsEnabled = inlineHeaders && anyGroups;
+        };
+
+        return menu;
+    }
+
+    private void SetGroupDisplayMode(Models.GroupDisplayMode mode)
+    {
+        if (_vm.Settings.GroupDisplayMode == mode) return;
+        _vm.Settings.GroupDisplayMode = mode;
+        // ActiveGroupId only makes sense in FilterStrip mode — same reset SettingsButton_Click does.
+        if (mode != Models.GroupDisplayMode.FilterStrip)
+            _vm.ActiveGroupId = null;
+        _ = _vm.SaveStateAsync();
+        UpdateGroupStripVisibility();
+        RebuildSidebarOrder();
+    }
+
+    private void SetAllGroupsExpanded(bool expanded)
+    {
+        foreach (var g in _sessionManager.Groups)
+            g.IsExpanded = expanded;
+        _vm.Settings.UngroupedSectionExpanded = expanded;
+        _ = _vm.SaveStateAsync();
+        RebuildSidebarOrder();
+    }
+
+    private void SetSidebarActionIconsMode(Models.SidebarActionIconsMode mode)
+    {
+        if (_vm.Settings.SidebarActionIconsMode == mode) return;
+        _vm.Settings.SidebarActionIconsMode = mode;
+        _ = _vm.SaveStateAsync();
+        foreach (var (id, panel) in _sidebarActionPanels)
+        {
+            if (_sessionUi.TryGetValue(id, out var ui))
+                ApplyActionIconsMode(panel, ui.sidebarItem, mode, isHovered: ui.sidebarItem.IsMouseOver);
+        }
+    }
+
     // ── Group strip (categories) ──────────────────────────────────────────────
 
     private void UpdateGroupStripVisibility()
@@ -1582,35 +1950,15 @@ public partial class MainWindow : Window
         if (_sessionManager.Groups.Count == 0) return;
 
         GroupStripPanel.Children.Add(BuildGroupTab(null, "All", "▦"));
-        GroupStripPanel.Children.Add(BuildGroupTab(GroupFilter.Ungrouped, "Ungrouped", "·"));
+        GroupStripPanel.Children.Add(BuildGroupTab(GroupFilter.Ungrouped, "Ungrouped", "□"));
+        GroupStripPanel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44)),
+            Margin = new Thickness(8, 6, 8, 6)
+        });
         foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
             GroupStripPanel.Children.Add(BuildGroupTab(g.Id, g.Name, GroupInitials(g.Name)));
-
-        // Footer "+" tab to add a new group inline.
-        var addBtn = new Border
-        {
-            Margin = new Thickness(4, 8, 4, 4),
-            Background = Brushes.Transparent,
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x45, 0x47, 0x5a)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Cursor = System.Windows.Input.Cursors.Hand,
-            ToolTip = "New group"
-        };
-        addBtn.Child = new TextBlock
-        {
-            Text = "+",
-            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xe3, 0xa1)),
-            FontSize = 16,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 4, 0, 4)
-        };
-        addBtn.MouseEnter += (_, _) =>
-            addBtn.Background = new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44));
-        addBtn.MouseLeave += (_, _) => addBtn.Background = Brushes.Transparent;
-        addBtn.MouseLeftButtonDown += (_, _) => PromptCreateGroup();
-        GroupStripPanel.Children.Add(addBtn);
 
         UpdateGroupStripActiveState();
         UpdateGroupTabIndicators();
@@ -1779,7 +2127,7 @@ public partial class MainWindow : Window
                     _vm.MoveGroup(groupId, idx + 1);
             };
             menu.Items.Add(moveDown);
-            menu.Items.Add(new System.Windows.Controls.Separator());
+            AddGroupBulkActionItems(menu, groupId, fullName);
 
             var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
             rename.Click += (_, _) => PromptRenameGroup(groupId, fullName);
@@ -2006,7 +2354,7 @@ public partial class MainWindow : Window
                     _vm.MoveGroup(group.Id, idx + 1);
             };
             menu.Items.Add(moveDown);
-            menu.Items.Add(new System.Windows.Controls.Separator());
+            AddGroupBulkActionItems(menu, group.Id, group.Name);
             var rename = new System.Windows.Controls.MenuItem { Header = "Rename group…" };
             rename.Click += (_, _) => PromptRenameGroup(group.Id, group.Name);
             menu.Items.Add(rename);
@@ -2074,6 +2422,72 @@ public partial class MainWindow : Window
         };
 
         return border;
+    }
+
+    /// <summary>
+    /// Appends bulk-action items (Remote control, Sleep all, Wake all, Close all) for
+    /// <paramref name="groupId"/>, wrapped in leading + trailing separators. Items are
+    /// enabled/disabled in <c>menu.Opened</c> based on live vs. dormant counts in the group.
+    /// </summary>
+    private void AddGroupBulkActionItems(System.Windows.Controls.ContextMenu menu, string groupId, string groupName)
+    {
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        var remoteControl = new System.Windows.Controls.MenuItem { Header = "Remote control all in group" };
+        remoteControl.Click += (_, _) =>
+        {
+            foreach (var vm in _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList())
+            {
+                vm.Bridge?.SendToTerminal("/remote-control\r");
+                vm.AlertDetector?.NotifyUserInteracted();
+            }
+        };
+        menu.Items.Add(remoteControl);
+
+        var sleepAll = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
+        sleepAll.Click += (_, _) =>
+        {
+            foreach (var vm in _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList())
+                SleepSession(vm);
+        };
+        menu.Items.Add(sleepAll);
+
+        var wakeAll = new System.Windows.Controls.MenuItem { Header = "Wake all" };
+        wakeAll.Click += async (_, _) =>
+        {
+            var dormant = _sessionManager.Sessions
+                .Where(s => s.GroupId == groupId && s.IsDormant)
+                .ToList();
+            foreach (var session in dormant)
+                await WakeSessionAsync(session);
+        };
+        menu.Items.Add(wakeAll);
+
+        var closeAll = new System.Windows.Controls.MenuItem { Header = "Close all…" };
+        closeAll.Click += (_, _) =>
+        {
+            var targets = _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList();
+            if (targets.Count == 0) return;
+            var r = MessageBox.Show(
+                $"Close {targets.Count} session(s) in group '{groupName}'? They will be removed permanently.",
+                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (r != MessageBoxResult.Yes) return;
+            foreach (var vm in targets)
+                vm.CloseCommand.Execute(null);
+        };
+        menu.Items.Add(closeAll);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        menu.Opened += (_, _) =>
+        {
+            int liveCount = _vm.Sessions.Count(v => v.Session.GroupId == groupId);
+            int dormantCount = _sessionManager.Sessions.Count(s => s.GroupId == groupId && s.IsDormant);
+            remoteControl.IsEnabled = liveCount > 0;
+            sleepAll.IsEnabled = liveCount > 0;
+            wakeAll.IsEnabled = dormantCount > 0;
+            closeAll.IsEnabled = liveCount > 0;
+        };
     }
 
     /// <summary>True when the drag payload is "group:<id>" and (if specified) not the excepted id.</summary>
