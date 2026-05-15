@@ -8,7 +8,7 @@
     <title>CodeShellManager</title>
     <authors>umage.ai</authors>
     <projectUrl>https://umage.ai/products/code-shell-manager/</projectUrl>
-    <iconUrl>https://raw.githubusercontent.com/umage-ai/CodeShellManager/main/src/CodeShellManager/Assets/app.ico</iconUrl>
+    <iconUrl>https://raw.githubusercontent.com/umage-ai/CodeShellManager/ad0ea186aefc00c4d4494f04d15f5dd5492c774e/src/CodeShellManager/Assets/app.png</iconUrl>
     <copyright>Copyright (c) 2025 umage.ai</copyright>
     <licenseUrl>https://github.com/umage-ai/CodeShellManager/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
