@@ -20,11 +20,11 @@ jobs:
 
     steps:
       # ── Checkout ────────────────────────────────────────────────────────────
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ── .NET 10 ─────────────────────────────────────────────────────────────
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.x'
 
@@ -101,7 +101,7 @@ jobs:
       # Setup guide: https://learn.microsoft.com/azure/trusted-signing/quickstart
       - name: Sign executable (Azure Trusted Signing)
         if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNING == 'true'
-        uses: azure/trusted-signing-action@v0.5.0
+        uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -131,7 +131,7 @@ jobs:
       # ── Sign MSI (Azure Trusted Signing) ─────────────────────────────────────
       - name: Sign MSI (Azure Trusted Signing)
         if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNING == 'true'
-        uses: azure/trusted-signing-action@v0.5.0
+        uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -157,7 +157,7 @@ jobs:
       # ── Create GitHub Release ────────────────────────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
