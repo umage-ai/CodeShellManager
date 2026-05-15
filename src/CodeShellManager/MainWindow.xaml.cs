@@ -4767,7 +4767,15 @@ public partial class MainWindow : Window
         App.TrayIcon?.Dispose();
 
         _shutdownComplete = true;
-        Close();
+        // Queue Close() on the dispatcher rather than calling it inline. If none of
+        // the awaits above actually yielded (e.g. --clean mode with no sessions —
+        // SaveStateAsync short-circuits, and the foreach loops over an empty list
+        // never await), control never returns to WPF between e.Cancel=true and this
+        // point, so WPF's internal _isClosing flag is still set and Close() throws
+        // "Cannot ... call Close ... while a Window is closing." Posting via
+        // BeginInvoke lets OnClosing return first, WPF resets _isClosing, then the
+        // queued Close() re-enters cleanly through the _shutdownComplete branch.
+        _ = Dispatcher.BeginInvoke(new System.Action(Close));
     }
 
     /// <summary>
