@@ -1,0 +1,34 @@
+VERIFICATION
+
+Verification is intended to assist Chocolatey moderators and end-users in
+verifying that this package's contents are authentic.
+
+This Chocolatey package downloads the official signed MSI installer from the
+matching CodeShellManager GitHub Release:
+
+    https://github.com/umage-ai/CodeShellManager/releases
+
+The MSI is built and signed by GitHub Actions from the source in
+https://github.com/umage-ai/CodeShellManager (see .github/workflows/build.yml)
+using Azure Trusted Signing — publisher: umage.ai.
+
+To verify the package independently:
+
+1. Note the embedded download URL and SHA256 checksum in
+   tools\chocolateyinstall.ps1 (variables $url64 and $checksum64).
+
+2. Download the same MSI directly from the GitHub Release page above.
+
+3. On Windows, compute the SHA256 of the downloaded file:
+
+       Get-FileHash -Algorithm SHA256 .\CodeShellManager-<version>-Setup.msi
+
+   The output should match the $checksum64 value in chocolateyinstall.ps1.
+
+4. Optionally inspect the Authenticode signature on the MSI — it should be
+   issued to "umage.ai" via Microsoft's Azure Trusted Signing service.
+
+The bundled LICENSE.txt is a verbatim copy of the project license, also
+available at:
+
+    https://github.com/umage-ai/CodeShellManager/blob/main/LICENSE
