@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/umage-ai/CodeShellManager/discussions
+    about: For "how do I…?", design ideas, or anything that isn't a confirmed bug or a concrete feature request.
+  - name: Security vulnerability
+    url: https://github.com/umage-ai/CodeShellManager/security/advisories/new
+    about: Please do not file a public issue. Use a private security advisory or see SECURITY.md.

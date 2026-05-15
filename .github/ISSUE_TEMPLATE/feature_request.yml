@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a new capability or a meaningful enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an idea. Please first skim the [open enhancement issues](https://github.com/umage-ai/CodeShellManager/issues?q=is%3Aissue+label%3Aenhancement) to see if it's already on the list.
+
+        For open-ended ideas or "how should we approach X?" questions, [Discussions](https://github.com/umage-ai/CodeShellManager/discussions) is usually a better starting point than an issue.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What are you trying to do that CSM doesn't currently let you do (or makes hard)? Concrete user-story phrasing helps.
+      placeholder: |
+        When I have many sessions across multiple projects, I can't see at a glance which ones are still claude-active vs idle.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like CSM to do? UI sketch, behavior, settings — whatever you have in mind. Don't worry about whether it's implementable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, or workarounds you're using today.
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Mockups, screenshots, or examples
+      description: Drag-drop images or paste links. Examples from other tools that do this well are welcome.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I've checked this isn't already an open issue
+          required: true

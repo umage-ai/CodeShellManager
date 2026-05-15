@@ -1,0 +1,84 @@
+name: Bug report
+description: Something is broken or behaving wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The more concrete the repro, the faster it gets fixed.
+
+        Please first check the [open issues](https://github.com/umage-ai/CodeShellManager/issues?q=is%3Aissue) to see if it's already reported.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, in one paragraph.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal numbered steps that hit the bug from a clean state. If the `--clean` flag changes the outcome, please mention.
+      placeholder: |
+        1. Launch CodeShellManager
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behaviour
+      description: What you expected to see, and what you actually saw.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: CodeShellManager version
+      description: From the title bar / About dialog, or the installer file name (e.g. `v0.4.2`).
+      placeholder: v0.4.2
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Run `winver` and paste the version (e.g. `Windows 11 24H2 build 26200`).
+    validations:
+      required: true
+
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET runtime
+      description: Output of `dotnet --version` (or skip if you're running a packaged release and don't have the SDK installed).
+      placeholder: 10.0.100
+
+  - type: input
+    id: cli
+    attributes:
+      label: CLI tool and version
+      description: If the bug involves a specific CLI hosted in a session (claude, codex, pwsh, ssh, etc.), give the tool name and version.
+      placeholder: claude 1.0.65
+
+  - type: textarea
+    id: log
+    attributes:
+      label: crash.log excerpt
+      description: |
+        If there's anything in `%AppData%\CodeShellManager\crash.log` around the time of the bug, paste the relevant lines here.
+        For terminal freezes, enabling **Settings -> Diagnostics -> Trace terminal input/output timing to crash.log** before reproducing the bug captures `[DEBUG-tt]` timing lines that are very useful.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, screen recordings, sample state.json (sanitised) — whatever helps.
