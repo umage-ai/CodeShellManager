@@ -263,6 +263,8 @@ The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` fl
 
 A second workflow, `.github/workflows/winget.yml`, fires on the `release: released` event and submits the signed MSI to microsoft/winget-pkgs as `UmageAI.CodeShellManager` via [vedantmgoyal9/winget-releaser](https://github.com/vedantmgoyal9/winget-releaser). It needs the repo secret `WINGET_TOKEN` (classic PAT, `public_repo` scope). The same workflow is `workflow_dispatch`-able with a `tag` input to backfill or retry a release.
 
+A third workflow, `.github/workflows/chocolatey.yml`, also fires on `release: released` and publishes the signed MSI to community.chocolatey.org as `codeshellmanager`. It downloads the MSI from the GitHub Release, computes its SHA256, substitutes `__URL64__` / `__CHECKSUM64__` placeholders in `.chocolatey/tools/chocolateyinstall.ps1`, then runs `choco pack` and `choco push`. Needs the repo secret `CHOCO_API_KEY` (API key from a chocolatey.org account with push rights on the `codeshellmanager` id). Also `workflow_dispatch`-able with a `tag` input. The `.chocolatey/` folder holds the package skeleton (`codeshellmanager.nuspec`, `tools/chocolateyinstall.ps1`, `tools/chocolateyuninstall.ps1`, `tools/LICENSE.txt`, `tools/VERIFICATION.txt`); never commit a resolved URL or checksum into the install script — those placeholders are only substituted by the workflow at pack time.
+
 ## Known Conventions
 
 - All WPF color literals use Catppuccin Mocha hex values — do not introduce system colors

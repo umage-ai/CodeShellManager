@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>codeshellmanager</id>
+    <version>__VERSION__</version>
+    <packageSourceUrl>https://github.com/umage-ai/CodeShellManager/tree/main/.chocolatey</packageSourceUrl>
+    <owners>umage.ai</owners>
+    <title>CodeShellManager</title>
+    <authors>umage.ai</authors>
+    <projectUrl>https://umage.ai/products/code-shell-manager/</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/umage-ai/CodeShellManager/main/src/CodeShellManager/Assets/app.ico</iconUrl>
+    <copyright>Copyright (c) 2025 umage.ai</copyright>
+    <licenseUrl>https://github.com/umage-ai/CodeShellManager/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/umage-ai/CodeShellManager</projectSourceUrl>
+    <docsUrl>https://github.com/umage-ai/CodeShellManager#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/umage-ai/CodeShellManager/issues</bugTrackerUrl>
+    <tags>codeshellmanager terminal claude claude-code wpf conpty xterm ai coding-agent admin</tags>
+    <summary>Multi-terminal host for Claude Code and other CLI coding agents on Windows.</summary>
+    <description><![CDATA[
+**CodeShellManager** is a Windows desktop app for running multiple AI coding agents side-by-side — Claude Code, Codex, GitHub Copilot, or any CLI tool — in a tabbed and grid-layout terminal host. Built with WPF, xterm.js, and Windows ConPTY for full pseudo-terminal fidelity.
+
+## Features
+
+* Multi-terminal grid — up to 18 sessions simultaneously in configurable layouts
+* Sleep & wake — park sessions without losing them
+* Full-text search across every session, ever (SQLite FTS5)
+* Per-project notepad, alert detection, git status, session rename, auto-resume
+* SSH remote sessions, session history, configurable launch commands
+* Tray icon with balloon notifications
+
+## Requirements
+
+* Windows 10 (1903+) or Windows 11
+* [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (pre-installed on Windows 11)
+]]></description>
+    <releaseNotes>https://github.com/umage-ai/CodeShellManager/releases/tag/v__VERSION__</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

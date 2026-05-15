@@ -1,0 +1,112 @@
+name: Publish to Chocolatey
+
+# Packs and pushes a Chocolatey package wrapping the signed MSI from a GitHub Release
+# to community.chocolatey.org.
+# - `release` event fires automatically when CI / Release publishes the GitHub Release.
+# - `workflow_dispatch` lets us re-publish a past version (used for the first
+#   submission once this workflow exists on main).
+#
+# Requires repo secret CHOCO_API_KEY (from https://community.chocolatey.org/account)
+# scoped to push for package id `codeshellmanager`.
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.5.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve tag and version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag }}'
+          if (-not $tag) { $tag = '${{ github.event.release.tag_name }}' }
+          if (-not $tag) { Write-Error 'No release tag resolved.'; exit 1 }
+          $version = $tag.TrimStart('v')
+          "tag=$tag"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Publishing tag=$tag version=$version"
+
+      - name: Download signed MSI from GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag     = '${{ steps.ver.outputs.tag }}'
+          $version = '${{ steps.ver.outputs.version }}'
+          $msiName = "CodeShellManager-$version-Setup.msi"
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          gh release download $tag --repo umage-ai/CodeShellManager --pattern $msiName --dir artifact
+          if (-not (Test-Path "artifact\$msiName")) {
+            Write-Error "MSI $msiName not found in release $tag."
+            exit 1
+          }
+          Write-Host "Downloaded artifact\$msiName"
+
+      - name: Template version, URL, and checksum into package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $msiName = "CodeShellManager-$version-Setup.msi"
+          $url64   = "https://github.com/umage-ai/CodeShellManager/releases/download/v$version/$msiName"
+          $sha256  = (Get-FileHash "artifact\$msiName" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "URL:      $url64"
+          Write-Host "SHA256:   $sha256"
+
+          $installPs1 = '.chocolatey/tools/chocolateyinstall.ps1'
+          (Get-Content $installPs1 -Raw).
+            Replace('__URL64__', $url64).
+            Replace('__CHECKSUM64__', $sha256) |
+            Set-Content -Path $installPs1 -NoNewline
+
+          $nuspec = '.chocolatey/codeshellmanager.nuspec'
+          (Get-Content $nuspec -Raw).
+            Replace('__VERSION__', $version) |
+            Set-Content -Path $nuspec -NoNewline
+
+          Write-Host '--- chocolateyinstall.ps1 ---'
+          Get-Content $installPs1
+          Write-Host '--- codeshellmanager.nuspec ---'
+          Get-Content $nuspec
+
+      - name: choco pack
+        shell: pwsh
+        run: |
+          choco pack .chocolatey/codeshellmanager.nuspec --out artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem artifact\*.nupkg
+
+      - name: choco push
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $nupkg   = "artifact/codeshellmanager.$version.nupkg"
+          if (-not (Test-Path $nupkg)) {
+            Write-Error "Expected nupkg not found: $nupkg"
+            exit 1
+          }
+          choco push $nupkg --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload built nupkg as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeshellmanager-chocolatey-${{ steps.ver.outputs.version }}
+          path: artifact/*.nupkg
+          if-no-files-found: warn

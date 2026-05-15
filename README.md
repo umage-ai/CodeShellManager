@@ -3,6 +3,7 @@
 [![Build](https://github.com/umage-ai/CodeShellManager/actions/workflows/build.yml/badge.svg)](https://github.com/umage-ai/CodeShellManager/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/umage-ai/CodeShellManager?label=download&cacheSeconds=3600)](https://github.com/umage-ai/CodeShellManager/releases/latest)
 [![winget](https://img.shields.io/winget/v/UmageAI.CodeShellManager?label=winget)](https://winstall.app/apps/UmageAI.CodeShellManager)
+[![Chocolatey](https://img.shields.io/chocolatey/v/codeshellmanager?label=chocolatey)](https://community.chocolatey.org/packages/codeshellmanager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **🌐 [umage.ai/products/code-shell-manager](https://umage.ai/products/code-shell-manager/)** — product page, screenshots, and latest news
@@ -48,6 +49,14 @@ winget install UmageAI.CodeShellManager
 ```
 
 Future updates pick up automatically with `winget upgrade UmageAI.CodeShellManager` (or `winget upgrade --all`).
+
+### Chocolatey
+
+```powershell
+choco install codeshellmanager
+```
+
+Upgrade with `choco upgrade codeshellmanager` (or `choco upgrade all`).
 
 ### Download from Releases
 
