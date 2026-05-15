@@ -5,6 +5,8 @@
 [![winget](https://img.shields.io/winget/v/UmageAI.CodeShellManager?label=winget)](https://winstall.app/apps/UmageAI.CodeShellManager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+> **🌐 [umage.ai/products/code-shell-manager](https://umage.ai/products/code-shell-manager/)** — product page, screenshots, and latest news
+
 A Windows desktop app for running **multiple AI coding agents side-by-side** — Claude Code, Codex, GitHub Copilot, or any CLI tool — in a tabbed and grid-layout terminal host.
 
 Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseudo-terminal fidelity.
