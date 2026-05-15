@@ -8,6 +8,8 @@ $toolsDir    = "$(Split-Path -Parent $MyInvocation.MyCommand.Definition)"
 $url64       = '__URL64__'
 $checksum64  = '__CHECKSUM64__'
 
+$logPath = "$env:TEMP\$packageName.$env:chocolateyPackageVersion.MsiInstall.log"
+
 $packageArgs = @{
   packageName    = $packageName
   unzipLocation  = $toolsDir
@@ -16,7 +18,7 @@ $packageArgs = @{
   softwareName   = 'CodeShellManager*'
   checksum64     = $checksum64
   checksumType64 = 'sha256'
-  silentArgs     = '/qn /norestart /l*v "$($env:TEMP)\$($packageName).$($env:chocolateyPackageVersion).MsiInstall.log"'
+  silentArgs     = "/qn /norestart /l*v `"$logPath`""
   validExitCodes = @(0, 3010, 1641)
 }
 
