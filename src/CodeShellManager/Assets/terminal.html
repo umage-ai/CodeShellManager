@@ -37,11 +37,46 @@
     mix-blend-mode: multiply;
     z-index: 50;
   }
+
+  /* Boot overlay — visible until terminal-init.js receives bootDone */
+  #bootOverlay {
+    position: fixed; inset: 0;
+    background: #1e1e2e;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 14px;
+    font-family: 'Segoe UI', sans-serif;
+    color: #cdd6f4;
+    transition: opacity 200ms ease-out;
+  }
+  #bootOverlay.hidden { opacity: 0; pointer-events: none; }
+  #bootSpinner {
+    width: 44px; height: 44px;
+    --boot-accent: #89b4fa;
+  }
+  #bootSpinner circle {
+    fill: none;
+    stroke: var(--boot-accent);
+    stroke-width: 4;
+    stroke-linecap: round;
+    stroke-dasharray: 90 150;
+    transform-origin: center;
+    animation: bootSpin 1.2s linear infinite;
+  }
+  @keyframes bootSpin { to { transform: rotate(360deg); } }
+  #bootLabel { font-size: 13px; opacity: 0.85; }
 </style>
 <link rel="stylesheet" href="xterm.css" />
 </head>
 <body>
 <div id="terminal"></div>
+<div id="bootOverlay">
+  <svg id="bootSpinner" viewBox="0 0 50 50"><circle cx="25" cy="25" r="20"/></svg>
+  <div id="bootLabel">Initializing terminal…</div>
+</div>
 <div id="dropOverlay">Drop files to insert path(s)</div>
 
 <script src="xterm.js"></script>
