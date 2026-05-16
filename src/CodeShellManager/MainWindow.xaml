@@ -66,6 +66,7 @@
         </Style>
     </Window.Resources>
 
+    <Grid>
     <DockPanel>
         <!-- ── Top toolbar ─────────────────────────────────────────────── -->
         <Border DockPanel.Dock="Top" Background="#181825" BorderThickness="0,0,0,1"
@@ -288,4 +289,32 @@
                        LineHeight="24"/>
         </Grid>
     </DockPanel>
+
+        <Grid x:Name="ShutdownOverlay" Visibility="Collapsed" Background="#cc1e1e2e" Panel.ZIndex="100">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Vertical">
+                <Grid Width="48" Height="48">
+                    <Path Stroke="#89b4fa" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                          Data="M 24 4 A 20 20 0 1 1 4 24"
+                          RenderTransformOrigin="0.5,0.5">
+                        <Path.RenderTransform>
+                            <RotateTransform x:Name="ShutdownSpinnerRotate" Angle="0"/>
+                        </Path.RenderTransform>
+                        <Path.Triggers>
+                            <EventTrigger RoutedEvent="Path.Loaded">
+                                <BeginStoryboard>
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetName="ShutdownSpinnerRotate"
+                                                         Storyboard.TargetProperty="Angle"
+                                                         From="0" To="360" Duration="0:0:1.2"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </Path.Triggers>
+                    </Path>
+                </Grid>
+                <TextBlock Text="Shutting down…" Foreground="#cdd6f4" FontFamily="Segoe UI" FontSize="13"
+                           Margin="0,14,0,0" HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
 </Window>
