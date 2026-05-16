@@ -4731,6 +4731,13 @@ public partial class MainWindow : Window
         if (_isShuttingDown) return;
         _isShuttingDown = true;
 
+        // Show the shutdown overlay so the user sees progress while sessions tear down.
+        // The yield lets WPF render the overlay before the synchronous disposal below blocks
+        // the UI thread; without it, the overlay would only paint after Close() is reached.
+        ShutdownOverlay.Visibility = Visibility.Visible;
+        await Dispatcher.InvokeAsync(() => { },
+            System.Windows.Threading.DispatcherPriority.Background);
+
         _windowStateTimer.Stop();
         if (_windowStateReady)
             _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
