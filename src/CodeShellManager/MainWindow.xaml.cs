@@ -886,6 +886,7 @@ public partial class MainWindow : Window
         var terminalWrapper = BuildTerminalWrapper(vm, webView);
         terminalWrapper.Visibility = Visibility.Collapsed;
         TerminalGrid.Children.Add(terminalWrapper);   // in tree → WebView2 can init
+        terminalWrapper.Visibility = Visibility.Visible; // show spinner immediately
 
         // Create bridge and initialize
         var bridge = new TerminalBridge(webView);
@@ -918,6 +919,10 @@ public partial class MainWindow : Window
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
         string htmlPath = new Uri(Path.Combine(assetsDir, htmlFile)).AbsoluteUri;
 
+        string bootLabel = session.IsRemote
+            ? $"Connecting to {session.SshHost}…"
+            : $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…";
+        bridge.SetBootContext(bootLabel, GetAccentForSession(session));
         await bridge.InitializeAsync(htmlPath);
         bridge.ApplyFontSettings(_vm.Settings);
         bridge.ApplyProfileOverrides(session);
@@ -1022,7 +1027,6 @@ public partial class MainWindow : Window
         }
 
         Log($"terminalWrapper visible, TerminalGrid children={TerminalGrid.Children.Count}");
-        terminalWrapper.Visibility = Visibility.Visible;
 
         // Build sidebar entry
         var sidebarItem = BuildSidebarItem(vm);
