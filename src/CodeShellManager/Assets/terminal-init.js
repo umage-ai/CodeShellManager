@@ -69,6 +69,23 @@
         fitAddon.fit();
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
+      else if (msg.type === 'setBootState') {
+        const label = document.getElementById('bootLabel');
+        const spinner = document.getElementById('bootSpinner');
+        if (label && typeof msg.label === 'string') label.textContent = msg.label;
+        if (spinner && typeof msg.accentHex === 'string') {
+          spinner.style.setProperty('--boot-accent', msg.accentHex);
+        }
+      }
+      else if (msg.type === 'bootDone') {
+        const overlay = document.getElementById('bootOverlay');
+        if (overlay && !overlay.classList.contains('hidden')) {
+          overlay.classList.add('hidden');
+          overlay.addEventListener('transitionend', () => {
+            try { overlay.parentNode && overlay.parentNode.removeChild(overlay); } catch {}
+          }, { once: true });
+        }
+      }
     } catch {}
   });
 
