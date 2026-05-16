@@ -4,6 +4,19 @@ using System.Collections.Generic;
 namespace CodeShellManager.Models;
 
 /// <summary>
+/// How the run-command's command line is launched.
+///   Process:    cmd /c "<cmd>"  — bare ConPTY child, the historical default.
+///   PowerShell: pwsh.exe -EncodedCommand <b64>  (falls back to powershell.exe if pwsh is missing)
+///               needed when the command relies on pipes, $env:, cmdlets, or other PS syntax.
+/// SSH parents ignore this — remote runs always go through bash.
+/// </summary>
+public enum RunMode
+{
+    Process,
+    PowerShell,
+}
+
+/// <summary>
 /// One configured "run" command on a session. The user can have many of these;
 /// exactly one is the default (driven by the toolbar ▶ button and F5 keybinding).
 /// Persisted to state.json under <see cref="ShellSession.RunCommands"/>.
@@ -14,6 +27,15 @@ public class RunCommandItem
     public string Label { get; set; } = "";
     public string CommandLine { get; set; } = "";
     public bool IsDefault { get; set; }
+
+    /// <summary>Host process for the command. Defaults to Process for back-compat with pre-existing state.json entries.</summary>
+    public RunMode Mode { get; set; } = RunMode.Process;
+
+    /// <summary>
+    /// Optional URL opened in the default browser when the command exits with code 0.
+    /// Null / empty disables. Invoked via ShellExecute, so the OS handles validation.
+    /// </summary>
+    public string? PostRunUrl { get; set; }
 
     /// <summary>
     /// Normalizes the list so exactly one item has IsDefault=true (when non-empty).

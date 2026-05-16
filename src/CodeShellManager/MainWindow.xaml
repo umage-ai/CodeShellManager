@@ -139,6 +139,8 @@
                             Click="Layout_SixTwo_Click" FontSize="9" Padding="4,4"/>
                     <Button Content="6×3" Style="{StaticResource ToolBtn}" ToolTip="6×3 grid (18 panes)"
                             Click="Layout_SixThree_Click" FontSize="9" Padding="4,4"/>
+                    <Button Content="3×3" Style="{StaticResource ToolBtn}" ToolTip="3×3 grid (9 panes)"
+                            Click="Layout_ThreeByThree_Click" FontSize="9" Padding="4,4"/>
                 </StackPanel>
 
                 <Button DockPanel.Dock="Left" AutomationProperties.AutomationId="NewSessionBtn" Content="＋ New Session" Style="{StaticResource ToolBtn}"

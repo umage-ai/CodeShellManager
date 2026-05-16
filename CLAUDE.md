@@ -155,6 +155,19 @@ When any override is set, `LaunchSessionAsync` calls `bridge.ApplyProfileOverrid
 
 **Once stamped, profile overrides are independent.** A session keeps its appearance even if the user later edits or deletes the source profile in Windows Terminal.
 
+## Recently Closed Sessions
+
+Closing a session (`Ctrl+W`, sidebar `✕`, or terminal-toolbar close) pushes a snapshot onto a ring buffer (`AppState.RecentlyClosed`, cap `MainViewModel.MaxRecentlyClosed = 10`, newest first). Two ways to reopen:
+
+- **`Ctrl+Shift+T`** — pops the newest entry and re-launches it via `MainWindow.ReopenClosedSessionAsync`. The reopened session gets a **fresh Id** so it's independent of anything that may still reference the old one.
+- **"Recently closed" list at the top of the New Session dialog** — click an entry to reopen it; that entry is removed from the ring.
+
+Sleep/wake doesn't touch the ring (`SleepSession` bypasses `OnSessionCloseRequested`). `--clean` mode neither pushes new entries nor persists the existing ring, matching `SaveStateAsync` semantics.
+
+The snapshot model is `Models/RecentlyClosedEntry.cs` — a separate POCO from `ShellSession` so PTY/runtime fields (`IsDormant`, `Status`, `LastActivityAt`) don't leak into the ring buffer. `RunCommands` are deep-copied with fresh Ids on both snapshot creation and session recreation, so edits to either side never alias the other.
+
+FTS5 scrollback retention is **out of scope** for v1 — restored sessions start with an empty xterm buffer.
+
 ## Sleep / Wake (Dormant Sessions)
 
 Sessions can be put to sleep instead of closed — the PTY is torn down but the `ShellSession` is kept in `state.json` (`IsDormant = true`) so it can be relaunched from the sidebar later. Useful when you have many long-running projects but only need a few live at once.
@@ -175,7 +188,10 @@ Sessions can be put to sleep instead of closed — the PTY is torn down but the 
 
 Each session can have a list of "run commands" — labelled command lines invoked by the toolbar ▶ button, the F5 keybinding, or the sidebar right-click submenu. Runs spawn a **separate headless `PseudoTerminal`** in the session's working folder (or a fresh `ssh` connection for SSH parents); they do **not** type into the parent PTY, so a Claude session is untouched.
 
-**Data:** `ShellSession.RunCommands: List<RunCommandItem> { Id, Label, CommandLine, IsDefault }`. Exactly one item has `IsDefault=true`; see `RunCommandItem.EnsureSingleDefault`. Persisted to `state.json`.
+**Data:** `ShellSession.RunCommands: List<RunCommandItem> { Id, Label, CommandLine, IsDefault, Mode, PostRunUrl }`. Exactly one item has `IsDefault=true`; see `RunCommandItem.EnsureSingleDefault`. Persisted to `state.json`.
+
+- **`Mode`** (`RunMode.Process` default / `RunMode.PowerShell`) — `Process` runs through `cmd /c` as before; `PowerShell` wraps the command line in `pwsh.exe -NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand <utf16le-b64>` (falls back to `powershell.exe` if `pwsh` isn't on PATH). SSH parents ignore `Mode` — remote runs always go through bash. Use PowerShell when the command relies on pipes (`|`), redirection (`>`), `$env:` variables, or cmdlets.
+- **`PostRunUrl`** (`string?`, default `null`) — when set and the run exits with code 0, `Process.Start` opens the URL via `UseShellExecute=true` (default browser). Failures are swallowed; no health-check polling.
 
 **Templates:** `RunCommandTemplatesService.SeedFor(folder)` detects project type (top-level scan, first-match: dotnet → cargo → node → python → make) and returns a seed list with fresh Ids. Templates are *copied* onto new sessions at creation time; subsequent edits don't propagate back. SSH sessions skip detection (empty list).
 
@@ -231,6 +247,8 @@ Persisted in `state.json`. Key settings:
 | Key | Action |
 |---|---|
 | `Ctrl+T` | New session |
+| `Ctrl+Shift+T` | Reopen the most-recently-closed session (browser convention) |
+| `Ctrl+Alt+T` | Duplicate active session (was `Ctrl+Shift+T` pre-bundle) |
 | `Ctrl+W` | Close active session |
 | `Ctrl+F` | Toggle search |
 | `Ctrl+Tab` | Cycle sessions |

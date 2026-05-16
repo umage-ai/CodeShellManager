@@ -26,6 +26,8 @@ public partial class SessionRunCommandsDialog : Window
                 Label = item.Label,
                 CommandLine = item.CommandLine,
                 IsDefault = item.IsDefault,
+                ModeIndex = (int)item.Mode,
+                PostRunUrl = item.PostRunUrl ?? "",
             });
         }
         RowsList.ItemsSource = _rows;
@@ -39,6 +41,8 @@ public partial class SessionRunCommandsDialog : Window
             Label = "",
             CommandLine = "",
             IsDefault = _rows.Count == 0,
+            ModeIndex = 0,
+            PostRunUrl = "",
         });
     }
 
@@ -91,6 +95,8 @@ public partial class SessionRunCommandsDialog : Window
             Label = r.Label.Trim(),
             CommandLine = r.CommandLine.Trim(),
             IsDefault = r.IsDefault,
+            Mode = (RunMode)r.ModeIndex,
+            PostRunUrl = string.IsNullOrWhiteSpace(r.PostRunUrl) ? null : r.PostRunUrl.Trim(),
         }).ToList();
         RunCommandItem.EnsureSingleDefault(list);
 
@@ -109,6 +115,8 @@ public partial class SessionRunCommandsDialog : Window
         private string _label = "";
         private string _commandLine = "";
         private bool _isDefault;
+        private int _modeIndex;
+        private string _postRunUrl = "";
         public string Label
         {
             get => _label;
@@ -123,6 +131,16 @@ public partial class SessionRunCommandsDialog : Window
         {
             get => _isDefault;
             set { _isDefault = value; OnChanged(nameof(IsDefault)); }
+        }
+        public int ModeIndex
+        {
+            get => _modeIndex;
+            set { _modeIndex = value; OnChanged(nameof(ModeIndex)); }
+        }
+        public string PostRunUrl
+        {
+            get => _postRunUrl;
+            set { _postRunUrl = value; OnChanged(nameof(PostRunUrl)); }
         }
 
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;

@@ -399,12 +399,24 @@ public partial class MainWindow : Window
             _vm.Settings.LaunchCommands,
             profiles,
             defaultCommand: parent?.Session.Command,
-            defaultArgs: parent?.Session.Args)
+            defaultArgs: parent?.Session.Args,
+            defaultName: null,
+            recentlyClosed: _vm.RecentlyClosed)
         {
             Owner = this
         };
 
         if (dialog.ShowDialog() != true) return;
+
+        // If the user picked an entry from the "Recently closed" list, reopen that
+        // session directly with copied settings and skip the rest of the form.
+        if (dialog.SelectedRecentlyClosed != null)
+        {
+            var entry = dialog.SelectedRecentlyClosed;
+            _vm.RemoveRecentlyClosed(entry);
+            _ = ReopenClosedSessionAsync(entry);
+            return;
+        }
 
         // Group resolution priority:
         //   1. Explicit selection from the dialog (currently unused — no group picker there)
@@ -457,6 +469,52 @@ public partial class MainWindow : Window
         session.ProfileColorSchemeJson = dialog.ProfileColorSchemeJson ?? parent?.Session.ProfileColorSchemeJson;
 
         _ = LaunchAndFollowUpWorktreesAsync(session, dialog.AdditionalWorktreePaths);
+    }
+
+    /// <summary>
+    /// Recreates a session from a <see cref="RecentlyClosedEntry"/> snapshot. Gets a fresh
+    /// Id (so it's independent of the original) and goes through the normal launch path.
+    /// </summary>
+    private async Task ReopenClosedSessionAsync(RecentlyClosedEntry entry)
+    {
+        var session = _sessionManager.CreateSession(
+            entry.Name,
+            entry.WorkingFolder,
+            entry.Command,
+            entry.Args,
+            string.IsNullOrEmpty(entry.GroupId) ? null : entry.GroupId,
+            colorOverride: entry.ColorOverride);
+
+        session.IsRemote = entry.IsRemote;
+        session.SshUser = entry.SshUser;
+        session.SshHost = entry.SshHost;
+        session.SshPort = entry.SshPort;
+        session.SshRemoteFolder = entry.SshRemoteFolder;
+
+        session.ProfileFontFamily = entry.ProfileFontFamily;
+        session.ProfileFontSize = entry.ProfileFontSize;
+        session.ProfileFontWeight = entry.ProfileFontWeight;
+        session.ProfileFontLigatures = entry.ProfileFontLigatures;
+        session.ProfileCursorShape = entry.ProfileCursorShape;
+        session.ProfileCursorBlink = entry.ProfileCursorBlink;
+        session.ProfilePadding = entry.ProfilePadding;
+        session.ProfileBackgroundOpacity = entry.ProfileBackgroundOpacity;
+        session.ProfileRetroEffect = entry.ProfileRetroEffect;
+        session.ProfileColorSchemeJson = entry.ProfileColorSchemeJson;
+
+        // Deep-copy RunCommands so subsequent edits don't mutate any other entry
+        // that may still share the same list reference.
+        session.RunCommands = entry.RunCommands.Select(r => new RunCommandItem
+        {
+            Id = Guid.NewGuid().ToString(),
+            Label = r.Label,
+            CommandLine = r.CommandLine,
+            IsDefault = r.IsDefault,
+            Mode = r.Mode,
+            PostRunUrl = r.PostRunUrl,
+        }).ToList();
+
+        await LaunchSessionAsync(session);
     }
 
     /// <summary>
@@ -3300,6 +3358,7 @@ public partial class MainWindow : Window
     private void Layout_Six_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixColumn);
     private void Layout_SixTwo_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixByTwo);
     private void Layout_SixThree_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixByThree);
+    private void Layout_ThreeByThree_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.ThreeByThree);
 
     private void SetLayout(LayoutMode mode)
     {
@@ -3414,6 +3473,15 @@ public partial class MainWindow : Window
                 for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 for (int r = 0; r < 3; r++) TerminalGrid.RowDefinitions.Add(new RowDefinition());
                 for (int i = 0; i < 18; i++) PlaceTerminal(view, i, i / 6, i % 6);
+                break;
+            }
+
+            case LayoutMode.ThreeByThree:
+            {
+                var view = GetViewportSessions(sessions, 9);
+                for (int i = 0; i < 3; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                for (int r = 0; r < 3; r++) TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                for (int i = 0; i < 9; i++) PlaceTerminal(view, i, i / 3, i % 3);
                 break;
             }
 
@@ -4661,7 +4729,15 @@ public partial class MainWindow : Window
     private bool TryHandleGlobalShortcut(Key key, ModifierKeys mods)
     {
         if (key == Key.T && mods == ModifierKeys.Control) { OpenNewSessionDialog(); return true; }
+        // Browser convention: Ctrl+Shift+T reopens the most-recently-closed session.
+        // Duplicate moved to Ctrl+Alt+T to free this slot.
         if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            var entry = _vm.PopMostRecentlyClosed();
+            if (entry != null) _ = ReopenClosedSessionAsync(entry);
+            return true;
+        }
+        if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Alt))
         {
             if (_vm.ActiveSession != null) _ = DuplicateSessionAsync(_vm.ActiveSession);
             return true;

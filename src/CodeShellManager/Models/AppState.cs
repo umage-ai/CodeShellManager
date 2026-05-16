@@ -140,6 +140,12 @@ public class AppState
 {
     public List<ShellSession> Sessions { get; set; } = [];
     public List<SessionGroup> Groups { get; set; } = [];
+    /// <summary>
+    /// Ring buffer of recently-closed sessions (newest first), capped at
+    /// <see cref="ViewModels.MainViewModel.MaxRecentlyClosed"/>. Reopen via
+    /// Ctrl+Shift+T or the "Recently closed" list in the New Session dialog.
+    /// </summary>
+    public List<RecentlyClosedEntry> RecentlyClosed { get; set; } = [];
     public string LastLayout { get; set; } = "Single";
     /// <summary>
     /// Per-group grid layouts when <see cref="AppSettings.PerGroupLayout"/> is on.

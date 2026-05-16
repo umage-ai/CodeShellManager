@@ -10,7 +10,7 @@ using CodeShellManager.Services;
 
 namespace CodeShellManager.ViewModels;
 
-public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo, TwoRow, FourColumn, SixColumn, SixByTwo, SixByThree }
+public enum LayoutMode { Single, TwoColumn, ThreeColumn, TwoByTwo, TwoRow, FourColumn, SixColumn, SixByTwo, SixByThree, ThreeByThree }
 
 /// <summary>Sentinel <see cref="MainViewModel.ActiveGroupId"/> value meaning "show only sessions with no group".</summary>
 public static class GroupFilter
@@ -27,6 +27,12 @@ public partial class MainViewModel : ObservableObject
     private AppState _appState = new();
 
     public ObservableCollection<SessionViewModel> Sessions { get; } = [];
+
+    /// <summary>Cap on the recently-closed ring buffer. Older entries fall off the end.</summary>
+    public const int MaxRecentlyClosed = 10;
+
+    /// <summary>Read-only view of the recently-closed ring buffer (newest first).</summary>
+    public IReadOnlyList<RecentlyClosedEntry> RecentlyClosed => _appState.RecentlyClosed;
 
     [ObservableProperty] private SessionViewModel? _activeSession;
     [ObservableProperty] private LayoutMode _layout = LayoutMode.Single;
@@ -305,6 +311,10 @@ public partial class MainViewModel : ObservableObject
     private void OnSessionCloseRequested(SessionViewModel vm)
     {
         vm.CloseRequested -= OnSessionCloseRequested;
+        // Snapshot the underlying ShellSession into the ring buffer BEFORE disposing —
+        // Dispose() doesn't actually null the model, but capturing here keeps the
+        // ordering deterministic (push → drop → save) regardless of future changes.
+        PushRecentlyClosed(vm.Session);
         Sessions.Remove(vm);
         if (SelectedSessionIds.Remove(vm.Id))
             SelectionChanged?.Invoke();
@@ -316,6 +326,36 @@ public partial class MainViewModel : ObservableObject
         vm.Dispose();
         OnPropertyChanged(nameof(AlertCount));
         _ = SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Pushes a snapshot of the session onto the recently-closed ring buffer.
+    /// No-op in --clean mode (mirrors <see cref="SaveStateAsync"/> semantics —
+    /// debug runs must not pollute the persisted recent list).
+    /// </summary>
+    public void PushRecentlyClosed(ShellSession session)
+    {
+        if (App.CleanStart) return;
+        _appState.RecentlyClosed.Insert(0, RecentlyClosedEntry.FromSession(session));
+        while (_appState.RecentlyClosed.Count > MaxRecentlyClosed)
+            _appState.RecentlyClosed.RemoveAt(_appState.RecentlyClosed.Count - 1);
+    }
+
+    /// <summary>Pops and returns the most-recently-closed entry, or null if the ring is empty.</summary>
+    public RecentlyClosedEntry? PopMostRecentlyClosed()
+    {
+        if (_appState.RecentlyClosed.Count == 0) return null;
+        var e = _appState.RecentlyClosed[0];
+        _appState.RecentlyClosed.RemoveAt(0);
+        _ = SaveStateAsync();
+        return e;
+    }
+
+    /// <summary>Removes a specific entry from the ring (e.g. after the user reopens it from the dialog).</summary>
+    public void RemoveRecentlyClosed(RecentlyClosedEntry entry)
+    {
+        if (_appState.RecentlyClosed.Remove(entry))
+            _ = SaveStateAsync();
     }
 
     [RelayCommand]
