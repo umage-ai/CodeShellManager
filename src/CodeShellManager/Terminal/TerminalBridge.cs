@@ -28,7 +28,9 @@ public sealed class TerminalBridge : IDisposable
     // navigation completes, and hidden via bootDone on the first PTY byte (see OnPtyData).
     private string? _bootLabel;
     private string? _bootAccentHex;
+#pragma warning disable CS0169 // Used in Task 4; pragma keeps the build clean in between.
     private int _bootDoneFlag; // 0 = overlay still visible, 1 = bootDone already posted
+#pragma warning restore CS0169
 
     // Output that arrived before the page finished loading is buffered here
     private readonly System.Text.StringBuilder _outputBuffer = new();
