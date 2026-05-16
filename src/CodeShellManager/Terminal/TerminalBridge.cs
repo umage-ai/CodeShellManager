@@ -24,6 +24,12 @@ public sealed class TerminalBridge : IDisposable
     // so the PTY starts at the right dimensions even if resize fired before AttachPty.
     private (int cols, int rows) _lastSize = (80, 24);
 
+    // Boot overlay — set by MainWindow before InitializeAsync; posted as setBootState after
+    // navigation completes, and hidden via bootDone on the first PTY byte (see OnPtyData).
+    private string? _bootLabel;
+    private string? _bootAccentHex;
+    private int _bootDoneFlag; // 0 = overlay still visible, 1 = bootDone already posted
+
     // Output that arrived before the page finished loading is buffered here
     private readonly System.Text.StringBuilder _outputBuffer = new();
 
@@ -79,6 +85,17 @@ public sealed class TerminalBridge : IDisposable
     }
 
     /// <summary>
+    /// Sets the boot-overlay label and accent color. Must be called before
+    /// <see cref="InitializeAsync"/> — the bridge posts a setBootState message to the
+    /// page as soon as navigation completes.
+    /// </summary>
+    public void SetBootContext(string label, string accentHex)
+    {
+        _bootLabel = label;
+        _bootAccentHex = accentHex;
+    }
+
+    /// <summary>
     /// Initializes WebView2, navigates to terminal.html and AWAITS full page load
     /// before returning. This ensures PTY output is never dropped.
     /// </summary>
@@ -95,6 +112,11 @@ public sealed class TerminalBridge : IDisposable
         var env = await CoreWebView2Environment.CreateAsync(null, wv2DataDir);
         await _webView.EnsureCoreWebView2Async(env);
         Log("EnsureCoreWebView2Async done");
+
+        // Match the boot overlay background so the WebView2 init flicker (the gap between
+        // the control becoming visible and terminal.html rendering) is invisible.
+        try { _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0x1e, 0x1e, 0x2e); }
+        catch { }
 
         var settings = _webView.CoreWebView2.Settings;
         settings.AreDevToolsEnabled = true;  // enable for debugging
@@ -136,6 +158,19 @@ public sealed class TerminalBridge : IDisposable
             _webView.CoreWebView2.NavigationCompleted -= NavCompleted;
             Log($"NavigationCompleted: success={e.IsSuccess} httpStatus={e.HttpStatusCode} webErrorStatus={e.WebErrorStatus}");
             _ready = true;
+
+            // Apply boot-overlay state if MainWindow called SetBootContext before init.
+            if (_bootLabel != null && _bootAccentHex != null)
+            {
+                var bootJson = JsonSerializer.Serialize(new
+                {
+                    type = "setBootState",
+                    label = _bootLabel,
+                    accentHex = _bootAccentHex
+                });
+                try { _webView.CoreWebView2?.PostWebMessageAsString(bootJson); }
+                catch { }
+            }
 
             // Flush any PTY output that arrived during page load
             string buffered;
