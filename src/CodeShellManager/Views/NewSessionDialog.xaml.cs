@@ -71,6 +71,11 @@ public partial class NewSessionDialog : Window
     /// the user has edited it and we must not stomp.
     /// </summary>
     private string _lastAutoFilledName = "";
+    /// <summary>
+    /// Distro name we want PopulateWslDistrosAsync to pre-select once the combo
+    /// finishes loading. Empty = use the default (first / system default distro).
+    /// </summary>
+    private readonly string _preselectWslDistro = "";
 
     public NewSessionDialog(
         string defaultFolder = "",
@@ -79,11 +84,13 @@ public partial class NewSessionDialog : Window
         string? defaultCommand = null,
         string? defaultArgs = null,
         string? defaultName = null,
-        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null)
+        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null,
+        ShellSession? defaultSourceSession = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
         _profiles = profiles ?? Array.Empty<WindowsTerminalProfile>();
+        _preselectWslDistro = defaultSourceSession?.IsWsl == true ? defaultSourceSession.WslDistro : "";
 
         var customItem = CommandCombo.Items[0];
         CommandCombo.Items.Clear();
@@ -138,6 +145,17 @@ public partial class NewSessionDialog : Window
         WslDistroCombo.SelectionChanged += (_, _) => AutoFillName();
         WslWorkingFolderBox.TextChanged += (_, _) => AutoFillName();
 
+        // Inherit WSL parent: when a user right-clicks a WSL session and picks
+        // "New session here", default the new dialog to WSL mode with the same
+        // distro/user/folder pre-filled. The combo selection happens later in
+        // PopulateWslDistrosAsync (it's async-populated on Loaded).
+        if (defaultSourceSession?.IsWsl == true)
+        {
+            WslRadio.IsChecked = true;
+            WslUserBox.Text = defaultSourceSession.WslUser ?? "";
+            WslWorkingFolderBox.Text = defaultSourceSession.WslWorkingFolder ?? "";
+        }
+
         Loaded += async (_, _) =>
         {
             if (IsLocalMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
@@ -160,12 +178,19 @@ public partial class NewSessionDialog : Window
             WslHelpText.Text = "No WSL distros found. Install WSL from the Microsoft Store, then re-open this dialog.";
             return;
         }
+        ComboBoxItem? preselectMatch = null;
         foreach (var d in distros)
         {
             string label = d.IsDefault ? $"{d.Name}  (default, v{d.Version})" : $"{d.Name}  (v{d.Version})";
-            WslDistroCombo.Items.Add(new ComboBoxItem { Content = label, Tag = d.Name });
+            var item = new ComboBoxItem { Content = label, Tag = d.Name };
+            WslDistroCombo.Items.Add(item);
+            if (!string.IsNullOrEmpty(_preselectWslDistro)
+                && string.Equals(d.Name, _preselectWslDistro, StringComparison.OrdinalIgnoreCase))
+            {
+                preselectMatch = item;
+            }
         }
-        WslDistroCombo.SelectedIndex = 0;
+        WslDistroCombo.SelectedItem = preselectMatch ?? WslDistroCombo.Items[0];
         WslHelpText.Text = "";
     }
 

@@ -406,7 +406,8 @@ public partial class MainWindow : Window
             defaultCommand: parent?.Session.Command,
             defaultArgs: parent?.Session.Args,
             defaultName: null,
-            recentlyClosed: _vm.RecentlyClosed)
+            recentlyClosed: _vm.RecentlyClosed,
+            defaultSourceSession: parent?.Session)
         {
             Owner = this
         };
