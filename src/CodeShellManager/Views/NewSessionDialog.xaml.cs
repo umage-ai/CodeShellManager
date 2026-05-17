@@ -374,9 +374,14 @@ public partial class NewSessionDialog : Window
         var (distro, linuxPath) = ParseWslUncPath(dialog.SelectedPath);
         if (string.IsNullOrEmpty(distro))
         {
-            // User picked something outside `\\wsl$\<distro>\` — fall back to just
-            // setting the raw path so we don't silently throw away their selection.
-            WslWorkingFolderBox.Text = dialog.SelectedPath;
+            // User navigated out of the WSL share entirely (e.g. into C:\…). Putting
+            // a Windows path into the Linux-folder box would just make `wsl --cd`
+            // fail later — so refuse the selection and tell them why.
+            System.Windows.MessageBox.Show(
+                $"'{dialog.SelectedPath}' is not inside a WSL distro.\n\n" +
+                "Please pick a folder under one of the distros shown in the left pane (Linux → Ubuntu, etc.).",
+                "Not a WSL folder", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
         else
         {
