@@ -358,16 +358,16 @@ public partial class NewSessionDialog : Window
         string selectedDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
         string seed = await ComputeWslBrowseSeedAsync(selectedDistro, WslUserBox.Text.Trim());
 
-        // Both InitialDirectory AND SelectedPath are needed: SelectedPath alone leaves
-        // the COM file dialog rooted at the user's last location (often Documents) for
-        // UNC paths it can't resolve to a shell namespace folder. Setting both makes the
-        // dialog navigate into the WSL share.
+        // Only InitialDirectory is set: it navigates the dialog to the seed but
+        // leaves the bottom "Folder:" textbox empty (the user is about to pick anyway).
+        // Setting SelectedPath as well shoves the raw UNC into that textbox, which the
+        // shell renders as a truncated, slash-flipped mess (e.g. "bu/home/bitblade") —
+        // worse than empty.
         using var dialog = new System.Windows.Forms.FolderBrowserDialog
         {
             Description = "Select Linux working folder (inside WSL)",
             UseDescriptionForTitle = true,
             InitialDirectory = seed,
-            SelectedPath = seed,
         };
         if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
 
