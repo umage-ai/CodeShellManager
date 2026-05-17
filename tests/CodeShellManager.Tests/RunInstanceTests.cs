@@ -89,7 +89,9 @@ public class RunInstanceTests
             WslWorkingFolder = "/home/alice/proj",
         };
         string args = RunInstance.BuildWslArgs(p, "cargo test");
-        Assert.Equal("-d Ubuntu -u alice --cd /home/alice/proj -- bash -lc 'cargo test'", args);
+        // Double quotes (Windows-side grouping) — single quotes would leak through
+        // Windows command-line tokenization and reach bash as broken token pieces.
+        Assert.Equal("-d Ubuntu -u alice --cd /home/alice/proj -- bash -lc \"cargo test\"", args);
     }
 
     [Fact]
@@ -97,14 +99,27 @@ public class RunInstanceTests
     {
         var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Debian" };
         string args = RunInstance.BuildWslArgs(p, "ls");
-        Assert.Equal("-d Debian -- bash -lc 'ls'", args);
+        Assert.Equal("-d Debian -- bash -lc \"ls\"", args);
     }
 
     [Fact]
-    public void BuildWslArgs_CommandLineWithApostrophe_IsEscaped()
+    public void BuildWslArgs_CommandLineWithEmbeddedDoubleQuote_Escapes()
     {
         var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" };
+        string args = RunInstance.BuildWslArgs(p, "echo \"hi\"");
+        Assert.Contains("bash -lc \"echo \\\"hi\\\"\"", args);
+    }
+
+    [Fact]
+    public void BuildWslArgs_CommandLineWithApostrophe_PassesThroughVerbatim()
+    {
+        // Apostrophes need no escaping from us — the outer wrapper is "..." so
+        // Windows tokenization keeps the whole commandLine as one argv entry, and
+        // bash then sees the apostrophe at face value. (What bash does with an
+        // unbalanced apostrophe is the caller's problem; we just refuse to mangle
+        // it during arg-building.)
+        var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" };
         string args = RunInstance.BuildWslArgs(p, "echo it's me");
-        Assert.Contains(@"bash -lc 'echo it'\''s me'", args);
+        Assert.Contains("bash -lc \"echo it's me\"", args);
     }
 }

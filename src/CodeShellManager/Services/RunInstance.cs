@@ -282,8 +282,16 @@ public partial class RunInstance : ObservableObject, IDisposable
             sb.Append($" -u {ShellSession.QuoteForCmd(parent.WslUser)}");
         if (!string.IsNullOrWhiteSpace(parent.WslWorkingFolder))
             sb.Append($" --cd {ShellSession.QuoteForCmd(parent.WslWorkingFolder)}");
-        sb.Append(" -- bash -lc ");
-        sb.Append(SingleQuoteEscape(commandLine));
+        // Use Windows-style double quotes here, NOT POSIX single quotes: wsl.exe is
+        // launched directly by CreateProcess (no outer shell), so Windows command-line
+        // tokenization runs first and only respects "..." for grouping. Single quotes
+        // would leak through literally — `bash -lc 'cargo test'` reaches bash split at
+        // the space into the two args `'cargo` and `test'`, and bash then chokes on
+        // the unbalanced quote. ShellSession.BuildWslArgs uses this same double-quote
+        // shape; we mirror it for parity.
+        sb.Append(" -- bash -lc \"");
+        sb.Append(commandLine.Replace("\"", "\\\""));
+        sb.Append("\"");
         return sb.ToString();
     }
 
