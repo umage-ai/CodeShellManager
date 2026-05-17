@@ -307,6 +307,75 @@ public partial class NewSessionDialog : Window
         }
     }
 
+    /// <summary>
+    /// Pops a folder picker rooted at the WSL filesystem (<c>\\wsl$\</c>). When the
+    /// user picks a folder under one of the distros, both the distro combo and the
+    /// Linux working-folder box update to match — so they can also switch distros
+    /// by drilling into a different one in the dialog.
+    /// </summary>
+    private void BrowseWslFolder_Click(object sender, RoutedEventArgs e)
+    {
+        string selectedDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+        string seed = string.IsNullOrEmpty(selectedDistro) ? @"\\wsl$" : $@"\\wsl$\{selectedDistro}";
+
+        using var dialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "Select Linux working folder (inside WSL)",
+            UseDescriptionForTitle = true,
+            SelectedPath = seed,
+        };
+        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+
+        var (distro, linuxPath) = ParseWslUncPath(dialog.SelectedPath);
+        if (string.IsNullOrEmpty(distro))
+        {
+            // User picked something outside `\\wsl$\<distro>\` — fall back to just
+            // setting the raw path so we don't silently throw away their selection.
+            WslWorkingFolderBox.Text = dialog.SelectedPath;
+        }
+        else
+        {
+            // If they drilled into a different distro than the combo had, switch the combo too.
+            if (!string.Equals(distro, selectedDistro, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var item in WslDistroCombo.Items.OfType<ComboBoxItem>())
+                {
+                    if (string.Equals(item.Tag as string, distro, StringComparison.OrdinalIgnoreCase))
+                    {
+                        WslDistroCombo.SelectedItem = item;
+                        break;
+                    }
+                }
+            }
+            WslWorkingFolderBox.Text = linuxPath;
+        }
+        AutoFillName();
+    }
+
+    /// <summary>
+    /// Splits a WSL UNC path (<c>\\wsl$\Ubuntu\home\alice</c> or the
+    /// <c>\\wsl.localhost\</c> variant) into (distro, linux-path). Returns empty
+    /// strings when the input isn't a recognizable WSL UNC.
+    /// </summary>
+    internal static (string distro, string linuxPath) ParseWslUncPath(string unc)
+    {
+        if (string.IsNullOrWhiteSpace(unc)) return ("", "");
+        string normalized = unc.Replace('/', '\\').TrimEnd('\\');
+        string[] prefixes = { @"\\wsl$\", @"\\wsl.localhost\" };
+        foreach (var prefix in prefixes)
+        {
+            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            string rest = normalized[prefix.Length..];
+            if (string.IsNullOrEmpty(rest)) return ("", "");
+            int slash = rest.IndexOf('\\');
+            string distro = slash < 0 ? rest : rest[..slash];
+            string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
+            string linuxPath = string.IsNullOrEmpty(linuxRest) ? "" : "/" + linuxRest.Replace('\\', '/');
+            return (distro, linuxPath);
+        }
+        return ("", "");
+    }
+
     private void CommandCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (CustomArgsPanel == null) return;

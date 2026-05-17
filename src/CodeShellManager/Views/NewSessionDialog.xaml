@@ -251,9 +251,18 @@
                          ToolTip="Optional WSL user (-u). Leave blank for the distro's default user."/>
             </Grid>
             <TextBlock Text="Linux Working Folder (optional)" Style="{StaticResource Label}"/>
-            <TextBox x:Name="WslWorkingFolderBox"
-                     AutomationProperties.AutomationId="NewSessionWslWorkingFolderBox"
-                     ToolTip="e.g. /home/alice/project — leave blank for the user's home directory"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="WslWorkingFolderBox"
+                         AutomationProperties.AutomationId="NewSessionWslWorkingFolderBox"
+                         Grid.Column="0" Margin="0,0,6,0"
+                         ToolTip="e.g. /home/alice/project — leave blank for the user's home directory"/>
+                <Button Grid.Column="1" Content="Browse…" Style="{StaticResource Btn}"
+                        Click="BrowseWslFolder_Click"/>
+            </Grid>
             <TextBlock x:Name="WslHelpText"
                        Margin="0,4,0,0"
                        FontSize="11"
