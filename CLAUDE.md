@@ -14,6 +14,10 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 
 **Requirements:** .NET 10 SDK, Windows 10/11 (uses ConPTY + WebView2)
 
+### Visual Studio: Hot Reload disabled
+
+`Properties/launchSettings.json` ships with `"hotReloadEnabled": false`, and the csproj sets `<MetadataUpdaterSupport>false</MetadataUpdaterSupport>` in Debug. Both are workarounds for a `System.ExecutionEngineException` that crashes the app on F5 under .NET 10.0.8 + VS 18 — `Microsoft.Extensions.DotNetDeltaApplier.dll` faults during its own startup before any managed code runs. Ctrl+F5 (Start Without Debugging) is unaffected either way. **Remove both when the runtime bug is fixed upstream.**
+
 ### Command-line flags
 
 | Flag | Effect |
@@ -36,7 +40,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
                            AlertDetector → SessionViewModel.RaiseAlert()
 ```
 
-- **PseudoTerminal** (`Terminal/PseudoTerminal.cs`): Windows ConPTY wrapper, P/Invoke only
+- **PseudoTerminal** (`Terminal/PseudoTerminal.cs`): Windows ConPTY wrapper, P/Invoke only. Implements `IPseudoTerminal` (`Terminal/IPseudoTerminal.cs`) — the minimum surface needed by `RunInstance` (`DataReceived`, `Exited`, `ExitCode`, `Start`). Tests inject a fake via the `internal RunInstance(item, Func<IPseudoTerminal>)` constructor.
 - **TerminalBridge** (`Terminal/TerminalBridge.cs`): Routes bytes between PTY and xterm.js via WebView2 messages. Surfaces accelerator keys (Ctrl-combos, F-keys, Esc) via `_webView.PreviewKeyDown` — the newer WPF WebView2 wrapper forwards accelerators through standard key events rather than a separate `CoreWebView2Controller.AcceleratorKeyPressed`. Bridge re-raises them as `AcceleratorKeyPressed` so `MainWindow.OnBridgeAcceleratorKey` can run global shortcuts even when the terminal has focus.
 - **OutputIndexer** (`Terminal/OutputIndexer.cs`): Async channels → SQLite, strips ANSI
 - **AlertDetector** (`Services/AlertDetector.cs`): Regex on raw PTY output, fires after 1.5s idle
@@ -249,6 +253,16 @@ Each session gets a collapsible 📝 notepad panel between the terminal toolbar 
 
 `AlertDetector.NotifyUserInteracted()` clears alert state on user input.
 
+## Session Spinners
+
+Two overlays cover launch and shutdown so the user sees progress instead of a blank pane.
+
+**Launch overlay (per session)** lives in `Assets/terminal.html` and `Assets/terminal-transparent.html` as a CSS-animated rotating SVG arc with a phase label. Visible by default; `TerminalBridge` posts `setBootState` after `NavigationCompleted` (label = `Starting {cmd}…` for local, `Connecting to {host}…` for SSH; accent = session color) and `bootDone` on the first PTY byte (via `OnPtyData → PostBootDoneIfNeeded`, race-safe via `Interlocked.CompareExchange`). An 8-second fallback timer scheduled in `NavCompleted` also calls `PostBootDoneIfNeeded` so silent sessions and slow SSH handshakes don't lock the user out of the pane.
+
+**Shutdown overlay (app-level)** is a `Grid x:Name="ShutdownOverlay"` on `MainWindow.xaml` with a `Storyboard`-rotated `Path`. `OnClosing` shows it then `await Dispatcher.InvokeAsync(() => {}, DispatcherPriority.Background)` to force a render pass before the existing synchronous session-disposal loop blocks the UI thread.
+
+Full design: `docs/superpowers/specs/2026-05-16-session-spinners-design.md`.
+
 ## Search
 
 - All PTY output is stripped of ANSI and indexed to SQLite FTS5 by `OutputIndexer`
@@ -294,6 +308,10 @@ Persisted in `state.json`. Key settings:
 Unit tests cover model logic (`ShellSession`, etc.) and run headless. UI tests require the app running on a live Windows desktop.
 
 `ShellSession.BuildSshArgs()` is `internal` — accessible from tests via `[assembly: InternalsVisibleTo("CodeShellManager.Tests")]` in `AssemblyInfo.cs`.
+
+**`IPseudoTerminal` testability seam.** `PseudoTerminal` implements `IPseudoTerminal` (in `Terminal/IPseudoTerminal.cs`), and `RunInstance` / `SessionRunner` both expose an `internal` constructor that accepts a `Func<IPseudoTerminal>` factory. Production code uses the parameterless public ctors which default to `() => new PseudoTerminal()`; tests pass a hand-rolled `FakePseudoTerminal` to exercise the run-command lifecycle (Run, Stop, Dismiss, kill-and-restart, 1MB output-buffer cap) without spawning a real ConPTY child. Keep the interface surface minimal — only what `RunInstance` actually calls (`DataReceived`, `Exited`, `ExitCode`, `Start`).
+
+**SearchService tests** open a fresh file-backed SQLite at `Path.GetTempPath()` per test for isolation. The test class is `IDisposable` and clears the connection pool (`SqliteConnection.ClearAllPools()`) before deleting the file on Windows. Seed `session_history` rows with explicit timestamps rather than `Task.Delay` — Windows' 15.6ms timer granularity makes wall-clock-based ordering flaky on CI.
 
 ## Releases
 
