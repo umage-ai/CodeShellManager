@@ -755,9 +755,12 @@ public partial class MainWindow : Window
     /// </summary>
     private void SeedRunCommandsAsync(Models.ShellSession session)
     {
-        // Templates are local-only — SSH and WSL working folders are out of reach for
-        // the synchronous Directory.EnumerateFiles probe in RunCommandTemplatesService.
-        if (session.Kind != Models.SessionKind.Local) return;
+        // SSH is out of reach for the synchronous Directory.EnumerateFiles probe.
+        // WSL is reachable via the `\\wsl$\<distro>\…` UNC view — slow on first
+        // access if the distro VM is stopped, but the probe runs on a background
+        // task so the UI doesn't block. RunInstance already wraps run commands in
+        // `wsl.exe -- bash -lc` for WSL parents.
+        if (session.Kind == Models.SessionKind.Ssh) return;
         if (session.RunCommands.Count > 0) return;
         if (string.IsNullOrWhiteSpace(session.WorkingFolder)) return;
 
