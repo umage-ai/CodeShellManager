@@ -287,13 +287,9 @@ public partial class NewSessionDialog : Window
         {
             string distro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
             string folder = WslWorkingFolderBox.Text.Trim();
-            string leaf = "";
-            if (!string.IsNullOrEmpty(folder))
-            {
-                string trimmed = folder.TrimEnd('/');
-                int slash = trimmed.LastIndexOf('/');
-                leaf = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
-            }
+            string leaf = string.IsNullOrEmpty(folder)
+                ? ""
+                : Path.GetFileName(folder.TrimEnd('/'));
             suggested = string.IsNullOrEmpty(leaf)
                 ? distro
                 : (string.IsNullOrEmpty(distro) ? leaf : $"{distro}: {leaf}");

@@ -198,7 +198,7 @@ public class ShellSession
             ? Command
             : (string.IsNullOrEmpty(WslWorkingFolder)
                 ? WslDistro
-                : $"{WslDistro}: {LeafName(WslWorkingFolder)}"),
+                : $"{WslDistro}: {System.IO.Path.GetFileName(WslWorkingFolder.TrimEnd('/'))}"),
         _ => System.IO.Path.GetFileName(WorkingFolder.TrimEnd('/', '\\')) ?? Command,
     };
 
@@ -217,15 +217,11 @@ public class ShellSession
     private string BuildWslFolderShort()
     {
         if (string.IsNullOrWhiteSpace(WslDistro)) return "";
-        string leaf = LeafName(WslWorkingFolder);
+        // Path.GetFileName understands both separators on Windows and returns ""
+        // for empty input, so it covers our "WslWorkingFolder might be blank" case.
+        string leaf = string.IsNullOrWhiteSpace(WslWorkingFolder)
+            ? ""
+            : System.IO.Path.GetFileName(WslWorkingFolder.TrimEnd('/'));
         return string.IsNullOrEmpty(leaf) ? WslDistro : $"{WslDistro}: {leaf}";
-    }
-
-    private static string LeafName(string linuxPath)
-    {
-        if (string.IsNullOrWhiteSpace(linuxPath)) return "";
-        string trimmed = linuxPath.TrimEnd('/');
-        int slash = trimmed.LastIndexOf('/');
-        return slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
     }
 }
