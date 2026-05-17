@@ -351,6 +351,13 @@ public partial class MainViewModel : ObservableObject
         return e;
     }
 
+    /// <summary>
+    /// Returns the most-recently-closed entry without removing it. Use when the caller
+    /// wants to attempt a reopen and remove the entry only if it succeeds.
+    /// </summary>
+    public RecentlyClosedEntry? PeekMostRecentlyClosed()
+        => _appState.RecentlyClosed.Count == 0 ? null : _appState.RecentlyClosed[0];
+
     /// <summary>Removes a specific entry from the ring (e.g. after the user reopens it from the dialog).</summary>
     public void RemoveRecentlyClosed(RecentlyClosedEntry entry)
     {

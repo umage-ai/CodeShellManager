@@ -26,6 +26,9 @@ public sealed class TerminalBridge : IDisposable
 
     // Boot overlay — set by MainWindow before InitializeAsync; posted as setBootState after
     // navigation completes, and hidden via bootDone on the first PTY byte (see OnPtyData).
+    // Fallback hides the overlay after BootDoneFallbackMs so silent sessions (e.g. a child
+    // that prints nothing, an SSH connect that's mid-handshake) aren't locked out.
+    private const int BootDoneFallbackMs = 8000;
     private string? _bootLabel;
     private string? _bootAccentHex;
     private int _bootDoneFlag; // 0 = overlay still visible, 1 = bootDone already posted
@@ -182,6 +185,13 @@ public sealed class TerminalBridge : IDisposable
                 try { _webView.CoreWebView2?.PostWebMessageAsString(bootJson); }
                 catch { }
             }
+
+            // Silent-session fallback: if the child writes nothing (or exits without
+            // any output) the overlay would otherwise block the terminal indefinitely.
+            // PostBootDoneIfNeeded is idempotent via Interlocked, so this is a no-op
+            // when the first PTY byte beat the timer.
+            _ = Task.Delay(BootDoneFallbackMs).ContinueWith(
+                _ => PostBootDoneIfNeeded(), TaskScheduler.Default);
 
             // Flush any PTY output that arrived during page load
             string buffered;

@@ -246,14 +246,32 @@ public class SearchServiceTests : IDisposable
     [Fact]
     public async Task GetLatestSessionHistoryForFolderAsync_ReturnsMostRecent()
     {
-        await _svc.RecordSessionHistoryAsync("sid-old", "Old", @"C:\proj", "claude", "", "");
-        await Task.Delay(5); // ensure different exited_at
-        await _svc.RecordSessionHistoryAsync("sid-new", "New", @"C:\proj", "claude", "", "");
+        // Seed timestamps directly rather than relying on Task.Delay between RecordSessionHistoryAsync
+        // calls — Windows' default 15.6ms timer resolution can collide millisecond unix timestamps
+        // on slow CI workers, making "most recent" nondeterministic.
+        await SeedSessionHistoryAsync("sid-old", "Old", @"C:\proj", "claude", tsMs: 1000);
+        await SeedSessionHistoryAsync("sid-new", "New", @"C:\proj", "claude", tsMs: 2000);
 
         var entry = await _svc.GetLatestSessionHistoryForFolderAsync(@"C:\proj");
 
         Assert.NotNull(entry);
         Assert.Equal("sid-new", entry!.SessionId);
+    }
+
+    private async Task SeedSessionHistoryAsync(string sessionId, string sessionName, string workingFolder, string command, long tsMs)
+    {
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO session_history
+                (session_id, session_name, working_folder, command, args, group_id, exited_at)
+            VALUES ($sid, $name, $folder, $cmd, '', '', $ts)
+            """;
+        cmd.Parameters.AddWithValue("$sid", sessionId);
+        cmd.Parameters.AddWithValue("$name", sessionName);
+        cmd.Parameters.AddWithValue("$folder", workingFolder);
+        cmd.Parameters.AddWithValue("$cmd", command);
+        cmd.Parameters.AddWithValue("$ts", tsMs);
+        await cmd.ExecuteNonQueryAsync();
     }
 
     [Fact]

@@ -147,13 +147,27 @@ public partial class RunInstance : ObservableObject, IDisposable
         StateChanged?.Invoke();
 
         // Open post-run URL on success only. ShellExecute hands the URL to the
-        // OS default browser. We swallow exceptions because there's nothing
-        // useful to surface from the PTY exit callback's thread.
+        // OS default browser. We can't pop UI from the PTY-exit callback thread,
+        // so failures are logged to crash.log for diagnosability rather than silenced.
         if (State == RunState.ExitedOk && !string.IsNullOrWhiteSpace(PostRunUrl))
         {
             try { Process.Start(new ProcessStartInfo(PostRunUrl) { UseShellExecute = true }); }
-            catch { /* invalid URL or no associated handler — caller can't do anything */ }
+            catch (Exception ex) { LogPostRunUrlFailure(PostRunUrl, ex); }
         }
+    }
+
+    private static void LogPostRunUrlFailure(string url, Exception ex)
+    {
+        try
+        {
+            string path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "CodeShellManager", "crash.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.AppendAllText(path,
+                $"[{DateTime.Now:HH:mm:ss.fff}] PostRunUrl failed '{url}': {ex.Message}\n");
+        }
+        catch { /* logger failure is not actionable */ }
     }
 
     /// <summary>
@@ -196,9 +210,16 @@ public partial class RunInstance : ObservableObject, IDisposable
             });
             if (probe != null)
             {
-                probe.WaitForExit(2000);
-                _pwshResolved = "pwsh.exe";
-                return _pwshResolved;
+                // Cache pwsh only if the probe actually exited cleanly. A hung probe
+                // (WaitForExit returns false) or non-zero exit means pwsh is in a bad
+                // state; fall back to powershell.exe instead of caching a broken choice.
+                if (probe.WaitForExit(2000) && probe.ExitCode == 0)
+                {
+                    _pwshResolved = "pwsh.exe";
+                    return _pwshResolved;
+                }
+                try { if (!probe.HasExited) probe.Kill(entireProcessTree: true); }
+                catch { }
             }
         }
         catch { /* not on PATH */ }

@@ -413,8 +413,10 @@ public partial class MainWindow : Window
         if (dialog.SelectedRecentlyClosed != null)
         {
             var entry = dialog.SelectedRecentlyClosed;
-            _vm.RemoveRecentlyClosed(entry);
-            _ = ReopenClosedSessionAsync(entry);
+            // Only drop the entry from the ring after reopen succeeds — a transient
+            // launch failure (bad folder, SSH unavailable) would otherwise lose the
+            // entry permanently and the user couldn't retry.
+            _ = ReopenAndRemoveOnSuccessAsync(entry);
             return;
         }
 
@@ -474,8 +476,10 @@ public partial class MainWindow : Window
     /// <summary>
     /// Recreates a session from a <see cref="RecentlyClosedEntry"/> snapshot. Gets a fresh
     /// Id (so it's independent of the original) and goes through the normal launch path.
+    /// Returns the created session; callers can verify it remained in
+    /// <c>_sessionManager.Sessions</c> after the await to confirm launch success.
     /// </summary>
-    private async Task ReopenClosedSessionAsync(RecentlyClosedEntry entry)
+    private async Task<ShellSession> ReopenClosedSessionAsync(RecentlyClosedEntry entry)
     {
         var session = _sessionManager.CreateSession(
             entry.Name,
@@ -515,6 +519,19 @@ public partial class MainWindow : Window
         }).ToList();
 
         await LaunchSessionAsync(session);
+        return session;
+    }
+
+    /// <summary>
+    /// Reopens a recently-closed entry and only drops it from the ring if the launch
+    /// actually succeeded. LaunchSessionAsync's catch path removes the session it
+    /// created on failure, so we use SessionManager membership as the success signal.
+    /// </summary>
+    private async Task ReopenAndRemoveOnSuccessAsync(RecentlyClosedEntry entry)
+    {
+        var session = await ReopenClosedSessionAsync(entry);
+        if (_sessionManager.Sessions.Any(s => s.Id == session.Id))
+            _vm.RemoveRecentlyClosed(entry);
     }
 
     /// <summary>
@@ -608,6 +625,8 @@ public partial class MainWindow : Window
                 Label = item.Label,
                 CommandLine = item.CommandLine,
                 IsDefault = item.IsDefault,
+                Mode = item.Mode,
+                PostRunUrl = item.PostRunUrl,
             });
         }
         // If the parent had no commands, fall back to detection.
@@ -4737,8 +4756,11 @@ public partial class MainWindow : Window
         // Duplicate moved to Ctrl+Alt+T to free this slot.
         if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Shift))
         {
-            var entry = _vm.PopMostRecentlyClosed();
-            if (entry != null) _ = ReopenClosedSessionAsync(entry);
+            // Peek instead of pop — if the reopen fails, the entry stays available
+            // for retry. PeekMostRecentlyClosed returns the same entry PopMostRecently
+            // would have popped; ReopenAndRemoveOnSuccessAsync removes only on success.
+            var entry = _vm.PeekMostRecentlyClosed();
+            if (entry != null) _ = ReopenAndRemoveOnSuccessAsync(entry);
             return true;
         }
         if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Alt))

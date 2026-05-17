@@ -92,7 +92,7 @@
                                           Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
                                           Padding="6,3" Margin="0,0,8,0"
                                           VerticalContentAlignment="Center"
-                                          ToolTip="Process = direct ConPTY child. PowerShell = wrapped in pwsh -EncodedCommand.">
+                                          ToolTip="Process = cmd /c &lt;cmd&gt; (bare ConPTY child). PowerShell = pwsh -EncodedCommand (use for pipes, $env:, cmdlets).">
                                     <ComboBoxItem Content="Process"/>
                                     <ComboBoxItem Content="PowerShell"/>
                                 </ComboBox>
