@@ -278,14 +278,27 @@ public static class GitService
     internal static string TranslateUncArgsToLinux(string arguments, string distro)
     {
         if (string.IsNullOrEmpty(arguments)) return arguments;
-        // Match \\wsl$\<distro>\<rest> or \\wsl.localhost\<distro>\<rest>; \<rest> is
-        // greedy up to the next quote/space (anything that would terminate a shell token).
-        var pattern = $@"\\\\wsl(?:\$|\.localhost)\\{Regex.Escape(distro)}(\\[^""\s]*)?";
-        return Regex.Replace(arguments, pattern, m =>
+        string esc = Regex.Escape(distro);
+        string body = $@"\\\\wsl(?:\$|\.localhost)\\{esc}";
+
+        // Pass 1: quoted UNCs ("\\wsl$\<distro>\..."). The tail may contain spaces
+        // and runs until the closing quote — without this pass, the unquoted regex
+        // below would stop at the first space and produce a half-translated path.
+        arguments = Regex.Replace(arguments, $@"""({body}(?:\\[^""]*)?)""", m =>
         {
-            string tail = m.Groups[1].Value;
-            return string.IsNullOrEmpty(tail) ? "/" : tail.Replace('\\', '/');
+            var (_, linux) = TryParseWslUnc(m.Groups[1].Value);
+            return "\"" + (string.IsNullOrEmpty(linux) ? "/" : linux) + "\"";
         }, RegexOptions.IgnoreCase);
+
+        // Pass 2: unquoted UNCs. The tail runs to whitespace; if a path needed
+        // spaces it would have been quoted and handled above.
+        arguments = Regex.Replace(arguments, $@"{body}(?:\\[^""\s]*)?", m =>
+        {
+            var (_, linux) = TryParseWslUnc(m.Value);
+            return string.IsNullOrEmpty(linux) ? "/" : linux;
+        }, RegexOptions.IgnoreCase);
+
+        return arguments;
     }
 
     /// <summary>

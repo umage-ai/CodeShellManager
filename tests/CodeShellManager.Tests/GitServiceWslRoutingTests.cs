@@ -85,4 +85,23 @@ public class GitServiceWslRoutingTests
         string raw = "M README.md\n?? new.txt\n";
         Assert.Equal(raw, GitService.TranslateLinuxPathsToUnc(raw, "Ubuntu"));
     }
+
+    [Fact]
+    public void TranslateUncArgsToLinux_QuotedUncWithSpaces_TranslatedWholeAndReQuoted()
+    {
+        // Regression: the unquoted regex stops at whitespace, so a quoted UNC
+        // containing a space (worktree add target) used to be half-translated.
+        string args = "worktree add \"\\\\wsl$\\Ubuntu\\home\\alice\\my repo\" main";
+        string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
+        Assert.Contains("\"/home/alice/my repo\"", translated);
+        Assert.DoesNotContain(@"\\wsl$\Ubuntu", translated);
+    }
+
+    [Fact]
+    public void TranslateUncArgsToLinux_QuotedUncRoot_BecomesQuotedRoot()
+    {
+        string args = "rev-parse \"\\\\wsl$\\Ubuntu\"";
+        string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
+        Assert.Equal("rev-parse \"/\"", translated);
+    }
 }
