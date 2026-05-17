@@ -582,6 +582,7 @@ public partial class MainWindow : Window
                 string.IsNullOrEmpty(primary.GroupId) ? null : primary.GroupId,
                 colorOverride: null,
                 afterSessionId: anchorId);
+            InheritSessionKindFrom(sibling, primary);
             // Inherit profile so siblings look identical.
             sibling.ProfileFontFamily = primary.ProfileFontFamily;
             sibling.ProfileFontSize = primary.ProfileFontSize;
@@ -616,20 +617,7 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
             colorOverride: null,
             afterSessionId: parent.Id);
-        clone.Kind = p.Kind;
-        if (p.Kind == Models.SessionKind.Ssh)
-        {
-            clone.SshUser = p.SshUser;
-            clone.SshHost = p.SshHost;
-            clone.SshPort = p.SshPort;
-            clone.SshRemoteFolder = p.SshRemoteFolder;
-        }
-        else if (p.Kind == Models.SessionKind.Wsl)
-        {
-            clone.WslDistro = p.WslDistro;
-            clone.WslUser = p.WslUser;
-            clone.WslWorkingFolder = p.WslWorkingFolder;
-        }
+        InheritSessionKindFrom(clone, p);
         clone.ProfileFontFamily = p.ProfileFontFamily;
         clone.ProfileFontSize = p.ProfileFontSize;
         clone.ProfileFontWeight = p.ProfileFontWeight;
@@ -675,6 +663,55 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Propagates a parent session's <see cref="Models.SessionKind"/> and kind-specific
+    /// fields (SSH host/user/port, WSL distro/user) onto a freshly-created child
+    /// session. For WSL children it also derives <c>WslWorkingFolder</c> from the
+    /// child's <c>WorkingFolder</c>, which the worktree code paths set to a
+    /// <c>\\wsl$\&lt;distro&gt;\…</c> UNC. Without this step a new session spawned
+    /// from a WSL parent (Duplicate, sibling worktree, new worktree) silently falls
+    /// back to <see cref="Models.SessionKind.Local"/> and tries to run the parent's
+    /// command (e.g. <c>claude</c>) inside a Windows PowerShell at the UNC path.
+    /// </summary>
+    private static void InheritSessionKindFrom(Models.ShellSession target, Models.ShellSession source)
+    {
+        target.Kind = source.Kind;
+        if (source.Kind == Models.SessionKind.Ssh)
+        {
+            target.SshUser = source.SshUser;
+            target.SshHost = source.SshHost;
+            target.SshPort = source.SshPort;
+            target.SshRemoteFolder = source.SshRemoteFolder;
+            return;
+        }
+        if (source.Kind == Models.SessionKind.Wsl)
+        {
+            target.WslDistro = source.WslDistro;
+            target.WslUser = source.WslUser;
+
+            var (parsedDistro, parsedLinux) = Services.GitService.TryParseWslUnc(target.WorkingFolder);
+            if (!string.IsNullOrEmpty(parsedDistro))
+            {
+                // Common path: WorkingFolder is a WSL UNC the caller already built.
+                target.WslWorkingFolder = parsedLinux == "/" ? "" : parsedLinux;
+            }
+            else if (!string.IsNullOrEmpty(target.WorkingFolder) && target.WorkingFolder.StartsWith('/'))
+            {
+                // Caller passed a Linux path directly (e.g. typed into a worktree dialog).
+                target.WslWorkingFolder = target.WorkingFolder;
+                target.WorkingFolder = Services.WslDiscoveryService.ToUncPath(
+                    source.WslDistro, target.WslWorkingFolder);
+            }
+            else
+            {
+                // Unknown shape — keep the parent's folder so the child at least lands
+                // somewhere usable instead of in $HOME-by-accident.
+                target.WslWorkingFolder = source.WslWorkingFolder;
+                target.WorkingFolder = source.WorkingFolder;
+            }
+        }
+    }
+
+    /// <summary>
     /// Launches a new session in an existing sibling worktree (path resolved via
     /// `git worktree list`). Inherits the source session's command, group, and profile.
     /// </summary>
@@ -695,6 +732,7 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
             colorOverride: null,
             afterSessionId: parent.Id);
+        InheritSessionKindFrom(sibling, p);
         sibling.ProfileFontFamily = p.ProfileFontFamily;
         sibling.ProfileFontSize = p.ProfileFontSize;
         sibling.ProfileFontWeight = p.ProfileFontWeight;
@@ -2973,6 +3011,7 @@ public partial class MainWindow : Window
             source.Session.Args,
             string.IsNullOrEmpty(source.Session.GroupId) ? null : source.Session.GroupId,
             source.Session.ColorOverride);
+        InheritSessionKindFrom(newSession, source.Session);
         newSession.ProfileFontFamily = source.Session.ProfileFontFamily;
         newSession.ProfileFontSize = source.Session.ProfileFontSize;
         newSession.ProfileFontWeight = source.Session.ProfileFontWeight;
