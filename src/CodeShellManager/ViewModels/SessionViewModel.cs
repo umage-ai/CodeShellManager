@@ -71,8 +71,9 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     public async Task RefreshGitInfoAsync()
     {
         // SSH sessions have no local working folder to inspect. WSL sessions store
-        // their WorkingFolder as a `\\wsl$\<distro>\...` UNC path, which Git for
-        // Windows handles via `git -C` — so the Local code path applies unchanged.
+        // their WorkingFolder as a `\\wsl$\<distro>\...` UNC; GitService detects that
+        // and dispatches to `wsl.exe -- git -C <linuxPath>` internally (Git for
+        // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
         if (Session.Kind == SessionKind.Ssh) return;
         var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
         GitBranch = branch;
