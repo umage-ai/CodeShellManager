@@ -31,6 +31,12 @@ public partial class NewSessionDialog : Window
     public string SshUser { get; private set; } = "";
     public string SshRemoteFolder { get; private set; } = "";
 
+    // WSL session output
+    public bool IsWsl { get; private set; } = false;
+    public string WslDistro { get; private set; } = "";
+    public string WslUser { get; private set; } = "";
+    public string WslWorkingFolder { get; private set; } = "";
+
     // Profile-driven appearance overrides (null when no profile picked)
     public string? ProfileFontFamily { get; private set; }
     public int? ProfileFontSize { get; private set; }
@@ -121,17 +127,43 @@ public partial class NewSessionDialog : Window
 
         FolderBox.TextChanged += (_, _) => { AutoFillName(); ScheduleWorktreeProbe(); };
         SshHostBox.TextChanged += (_, _) => AutoFillName();
+        WslDistroCombo.SelectionChanged += (_, _) => AutoFillName();
+        WslWorkingFolderBox.TextChanged += (_, _) => AutoFillName();
 
         Loaded += async (_, _) =>
         {
-            if (!IsRemoteMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
+            if (IsLocalMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
                 await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
+            await PopulateWslDistrosAsync();
         };
+    }
+
+    /// <summary>
+    /// Fills <c>WslDistroCombo</c> from <see cref="WslDiscoveryService.GetDistrosAsync"/>.
+    /// On hosts without WSL installed we leave the combo empty and surface a one-line hint
+    /// so the WSL radio doesn't appear broken.
+    /// </summary>
+    private async System.Threading.Tasks.Task PopulateWslDistrosAsync()
+    {
+        var distros = await WslDiscoveryService.GetDistrosAsync();
+        WslDistroCombo.Items.Clear();
+        if (distros.Count == 0)
+        {
+            WslHelpText.Text = "No WSL distros found. Install WSL from the Microsoft Store, then re-open this dialog.";
+            return;
+        }
+        foreach (var d in distros)
+        {
+            string label = d.IsDefault ? $"{d.Name}  (default, v{d.Version})" : $"{d.Name}  (v{d.Version})";
+            WslDistroCombo.Items.Add(new ComboBoxItem { Content = label, Tag = d.Name });
+        }
+        WslDistroCombo.SelectedIndex = 0;
+        WslHelpText.Text = "";
     }
 
     private void ScheduleWorktreeProbe()
     {
-        if (IsRemoteMode)
+        if (!IsLocalMode)
         {
             WorktreesPanel.Visibility = Visibility.Collapsed;
             return;
@@ -198,6 +230,8 @@ public partial class NewSessionDialog : Window
     }
 
     private bool IsRemoteMode => RemoteRadio?.IsChecked == true;
+    private bool IsWslMode => WslRadio?.IsChecked == true;
+    private bool IsLocalMode => !IsRemoteMode && !IsWslMode;
 
     private void AutoFillName()
     {
@@ -212,6 +246,21 @@ public partial class NewSessionDialog : Window
                 catch { }
             }
         }
+        else if (IsWslMode)
+        {
+            string distro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            string folder = WslWorkingFolderBox.Text.Trim();
+            string leaf = "";
+            if (!string.IsNullOrEmpty(folder))
+            {
+                string trimmed = folder.TrimEnd('/');
+                int slash = trimmed.LastIndexOf('/');
+                leaf = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
+            }
+            NameBox.Text = string.IsNullOrEmpty(leaf)
+                ? distro
+                : (string.IsNullOrEmpty(distro) ? leaf : $"{distro}: {leaf}");
+        }
         else
         {
             if (!string.IsNullOrWhiteSpace(FolderBox.Text))
@@ -225,17 +274,20 @@ public partial class NewSessionDialog : Window
     private void SessionType_Changed(object sender, RoutedEventArgs e)
     {
         if (LocalPanel == null) return;
-        LocalPanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+        LocalPanel.Visibility = IsLocalMode ? Visibility.Visible : Visibility.Collapsed;
         SshPanel.Visibility = IsRemoteMode ? Visibility.Visible : Visibility.Collapsed;
+        WslPanel.Visibility = IsWslMode ? Visibility.Visible : Visibility.Collapsed;
         // Profile combobox is local-only
         if (ProfilePanel != null && _profiles.Count > 0)
-            ProfilePanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+            ProfilePanel.Visibility = IsLocalMode ? Visibility.Visible : Visibility.Collapsed;
         if (WorktreesPanel != null)
         {
             WorktreesPanel.Visibility = Visibility.Collapsed;
             _lastProbedFolder = null;
         }
-        CommandLabel.Text = IsRemoteMode ? "Remote Shell" : "Command";
+        CommandLabel.Text = IsRemoteMode ? "Remote Shell"
+            : IsWslMode ? "Shell (inside WSL)"
+            : "Command";
         NameBox.Text = "";
         AutoFillName();
     }
@@ -321,9 +373,10 @@ public partial class NewSessionDialog : Window
     private void Start_Click(object sender, RoutedEventArgs e)
     {
         IsRemote = IsRemoteMode;
+        IsWsl = IsWslMode;
         SessionName = NameBox.Text.Trim();
 
-        if (!IsRemoteMode && WorktreesPanel.Visibility == Visibility.Visible)
+        if (IsLocalMode && WorktreesPanel.Visibility == Visibility.Visible)
         {
             AdditionalWorktreePaths = WorktreesList.Children.OfType<System.Windows.Controls.CheckBox>()
                 .Where(c => c.IsChecked == true)
@@ -331,6 +384,33 @@ public partial class NewSessionDialog : Window
                 .Where(p => !string.IsNullOrEmpty(p))
                 .Select(p => p!)
                 .ToList();
+        }
+
+        if (IsWsl)
+        {
+            WslDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            if (string.IsNullOrWhiteSpace(WslDistro))
+            {
+                System.Windows.MessageBox.Show(
+                    "Please select a WSL distro.",
+                    "Distro required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                WslDistroCombo.Focus();
+                return;
+            }
+
+            WslUser = WslUserBox.Text.Trim();
+            WslWorkingFolder = WslWorkingFolderBox.Text.Trim();
+
+            var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
+            string raw = selectedTag == "custom" ? CustomArgsBox.Text.Trim() : selectedTag;
+            var (exe, args) = CommandLineSplitter.Split(raw);
+            SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+            SelectedArgs = args;
+
+            SelectedFolder = "";
+            DialogResult = true;
+            Close();
+            return;
         }
 
         if (IsRemote)

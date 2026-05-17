@@ -6,6 +6,13 @@ namespace CodeShellManager.Models;
 
 public enum SessionStatus { Idle, Running, NeedsAttention, Exited }
 
+/// <summary>
+/// Kind of pseudo-terminal session. <see cref="Local"/> runs a Windows process directly,
+/// <see cref="Ssh"/> tunnels through the system ssh client, <see cref="Wsl"/> launches
+/// a shell inside a WSL distro via <c>wsl.exe</c>.
+/// </summary>
+public enum SessionKind { Local, Ssh, Wsl }
+
 public class ShellSession
 {
     public string Id { get; set; } = Guid.NewGuid().ToString();
@@ -34,12 +41,40 @@ public class ShellSession
     /// </summary>
     public bool IsDormant { get; set; }
 
+    /// <summary>
+    /// Authoritative session kind. New code reads this; <see cref="IsRemote"/> is kept
+    /// as a back-compat shim so legacy state.json (which only carried the SSH boolean)
+    /// continues to deserialize: on load, <c>IsRemote=true</c> promotes <c>Kind</c> to
+    /// <see cref="SessionKind.Ssh"/>.
+    /// </summary>
+    public SessionKind Kind { get; set; } = SessionKind.Local;
+
     // SSH / remote session fields
-    public bool IsRemote { get; set; }
+    /// <summary>
+    /// Legacy SSH flag — true iff <see cref="Kind"/> is <see cref="SessionKind.Ssh"/>.
+    /// Kept as a property (not just a computed getter) so old state.json files with
+    /// <c>"IsRemote": true</c> and no <c>Kind</c> key still migrate cleanly on
+    /// deserialization. The setter only promotes <c>Local → Ssh</c>; it never clears
+    /// <c>Kind</c>, so a JSON document with both <c>IsRemote</c> and <c>Kind</c>
+    /// (deserialized in any order) lands on the correct value.
+    /// </summary>
+    public bool IsRemote
+    {
+        get => Kind == SessionKind.Ssh;
+        set { if (value && Kind == SessionKind.Local) Kind = SessionKind.Ssh; }
+    }
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
     public string SshRemoteFolder { get; set; } = "";
+
+    // WSL session fields
+    /// <summary>Name of the WSL distro (matches <c>wsl -l -q</c>), e.g. "Ubuntu".</summary>
+    public string WslDistro { get; set; } = "";
+    /// <summary>Optional WSL user override (<c>wsl -u &lt;user&gt;</c>). Empty = the distro's default user.</summary>
+    public string WslUser { get; set; } = "";
+    /// <summary>Linux-style working folder inside the distro, e.g. "/home/alice/project". Empty = the user's home.</summary>
+    public string WslWorkingFolder { get; set; } = "";
 
     // Per-session appearance overrides (typically populated from a Windows
     // Terminal profile via NewSessionDialog). All nullable — null means "use the
@@ -66,11 +101,12 @@ public class ShellSession
     public List<RunCommandItem> RunCommands { get; set; } = new();
 
     // Full command line for display and passthrough.
-    // For remote sessions: "ssh <BuildSshArgs()>"
-    // For local sessions: "Command [Args]"
-    public string FullCommandLine => IsRemote
-        ? $"ssh {BuildSshArgs()}"
-        : (string.IsNullOrWhiteSpace(Args) ? Command : $"{Command} {Args}");
+    public string FullCommandLine => Kind switch
+    {
+        SessionKind.Ssh => $"ssh {BuildSshArgs()}",
+        SessionKind.Wsl => $"wsl.exe {BuildWslArgs()}",
+        _ => string.IsNullOrWhiteSpace(Args) ? Command : $"{Command} {Args}",
+    };
 
     /// <summary>
     /// Builds the argument string passed to the ssh executable.
@@ -95,5 +131,83 @@ public class ShellSession
             sb.Append($" {Args}");
         sb.Append("\"");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds the argument string passed to wsl.exe.
+    /// Example: "-d Ubuntu -u alice --cd /home/alice/project -- bash -lc \"claude\""
+    /// The command is wrapped in <c>bash -lc</c> so PATH-resolved tools (nvm-managed
+    /// node, pyenv, etc.) work the same as in a user-launched login shell.
+    /// </summary>
+    internal string BuildWslArgs()
+    {
+        if (string.IsNullOrWhiteSpace(WslDistro))
+            throw new InvalidOperationException("WslDistro must be set for WSL sessions.");
+        var sb = new StringBuilder();
+        sb.Append($"-d {WslDistro}");
+        if (!string.IsNullOrWhiteSpace(WslUser))
+            sb.Append($" -u {WslUser}");
+        if (!string.IsNullOrWhiteSpace(WslWorkingFolder))
+            sb.Append($" --cd {WslWorkingFolder}");
+        var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
+        string inner = string.IsNullOrWhiteSpace(Args) ? shell : $"{shell} {Args}";
+        sb.Append($" -- bash -lc \"{inner.Replace("\"", "\\\"")}\"");
+        return sb.ToString();
+    }
+
+    // ── Display helpers (single source of truth — see MainWindow sidebar / VM) ────
+
+    /// <summary>
+    /// Subtitle-line text for the sidebar: a short, kind-appropriate locator.
+    /// Local → working folder leaf; Ssh → host; Wsl → <c>distro:linux-leaf</c>.
+    /// </summary>
+    public string FolderShort => Kind switch
+    {
+        SessionKind.Ssh => string.IsNullOrWhiteSpace(SshHost) ? "" : SshHost,
+        SessionKind.Wsl => BuildWslFolderShort(),
+        _ => string.IsNullOrEmpty(WorkingFolder)
+            ? ""
+            : new System.IO.DirectoryInfo(WorkingFolder).Name,
+    };
+
+    /// <summary>
+    /// What to show as the session's label when <see cref="Name"/> is blank.
+    /// </summary>
+    public string DefaultDisplayName => Kind switch
+    {
+        SessionKind.Ssh => string.IsNullOrWhiteSpace(SshHost) ? Command : SshHost,
+        SessionKind.Wsl => string.IsNullOrWhiteSpace(WslDistro)
+            ? Command
+            : (string.IsNullOrEmpty(WslWorkingFolder)
+                ? WslDistro
+                : $"{WslDistro}: {LeafName(WslWorkingFolder)}"),
+        _ => System.IO.Path.GetFileName(WorkingFolder.TrimEnd('/', '\\')) ?? Command,
+    };
+
+    /// <summary>
+    /// Key used by ColorService to pick a deterministic accent color. Worktree
+    /// siblings share an accent via the repo-root override done in <see cref="ViewModels.SessionViewModel.AccentColor"/>;
+    /// this is the base key when no repo-root is known.
+    /// </summary>
+    public string AccentKey => Kind switch
+    {
+        SessionKind.Ssh => string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}",
+        SessionKind.Wsl => $"wsl://{WslDistro}{WslWorkingFolder}",
+        _ => WorkingFolder,
+    };
+
+    private string BuildWslFolderShort()
+    {
+        if (string.IsNullOrWhiteSpace(WslDistro)) return "";
+        string leaf = LeafName(WslWorkingFolder);
+        return string.IsNullOrEmpty(leaf) ? WslDistro : $"{WslDistro}: {leaf}";
+    }
+
+    private static string LeafName(string linuxPath)
+    {
+        if (string.IsNullOrWhiteSpace(linuxPath)) return "";
+        string trimmed = linuxPath.TrimEnd('/');
+        int slash = trimmed.LastIndexOf('/');
+        return slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
     }
 }

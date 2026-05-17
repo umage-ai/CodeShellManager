@@ -455,11 +455,23 @@ public partial class MainWindow : Window
 
         if (dialog.IsRemote)
         {
-            session.IsRemote = true;
+            session.Kind = Models.SessionKind.Ssh;
             session.SshUser = dialog.SshUser;
             session.SshHost = dialog.SshHost;
             session.SshPort = dialog.SshPort;
             session.SshRemoteFolder = dialog.SshRemoteFolder;
+        }
+        else if (dialog.IsWsl)
+        {
+            session.Kind = Models.SessionKind.Wsl;
+            session.WslDistro = dialog.WslDistro;
+            session.WslUser = dialog.WslUser;
+            session.WslWorkingFolder = dialog.WslWorkingFolder;
+            // The session's WorkingFolder stays as a Windows UNC view of the same path
+            // so anything that touches the filesystem (git status, "open in Explorer")
+            // resolves correctly. Empty = unmounted; LaunchSessionAsync falls back.
+            session.WorkingFolder = Services.WslDiscoveryService.ToUncPath(
+                dialog.WslDistro, dialog.WslWorkingFolder);
         }
 
         // Profile overrides come from the dialog (which may have copied from a Windows Terminal
@@ -603,13 +615,19 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
             colorOverride: null,
             afterSessionId: parent.Id);
-        if (p.IsRemote)
+        clone.Kind = p.Kind;
+        if (p.Kind == Models.SessionKind.Ssh)
         {
-            clone.IsRemote = true;
             clone.SshUser = p.SshUser;
             clone.SshHost = p.SshHost;
             clone.SshPort = p.SshPort;
             clone.SshRemoteFolder = p.SshRemoteFolder;
+        }
+        else if (p.Kind == Models.SessionKind.Wsl)
+        {
+            clone.WslDistro = p.WslDistro;
+            clone.WslUser = p.WslUser;
+            clone.WslWorkingFolder = p.WslWorkingFolder;
         }
         clone.ProfileFontFamily = p.ProfileFontFamily;
         clone.ProfileFontSize = p.ProfileFontSize;
@@ -698,7 +716,9 @@ public partial class MainWindow : Window
     /// </summary>
     private void SeedRunCommandsAsync(Models.ShellSession session)
     {
-        if (session.IsRemote) return;
+        // Templates are local-only — SSH and WSL working folders are out of reach for
+        // the synchronous Directory.EnumerateFiles probe in RunCommandTemplatesService.
+        if (session.Kind != Models.SessionKind.Local) return;
         if (session.RunCommands.Count > 0) return;
         if (string.IsNullOrWhiteSpace(session.WorkingFolder)) return;
 
@@ -1038,10 +1058,19 @@ public partial class MainWindow : Window
         string effectiveArgs;
         string workDir;
 
-        if (session.IsRemote)
+        if (session.Kind == Models.SessionKind.Ssh)
         {
             effectiveCommand = "ssh";
             effectiveArgs = session.BuildSshArgs();
+            workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+        else if (session.Kind == Models.SessionKind.Wsl)
+        {
+            // wsl.exe handles its own cwd via --cd inside BuildWslArgs; pass the user
+            // profile as the launching process's cwd so CreateProcess never sees a UNC
+            // path it might reject.
+            effectiveCommand = "wsl.exe";
+            effectiveArgs = session.BuildWslArgs();
             workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
         else
@@ -4157,9 +4186,7 @@ public partial class MainWindow : Window
         var textPanel = new StackPanel { Margin = new Thickness(8, 6, 4, 6) };
 
         string displayName = string.IsNullOrWhiteSpace(session.Name)
-            ? (session.IsRemote
-                ? (string.IsNullOrWhiteSpace(session.SshHost) ? session.Command : session.SshHost)
-                : System.IO.Path.GetFileName(session.WorkingFolder.TrimEnd('/', '\\')) ?? session.Command)
+            ? session.DefaultDisplayName
             : session.Name;
 
         var nameText = new TextBlock
@@ -4171,11 +4198,7 @@ public partial class MainWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis
         };
 
-        string folderShort = session.IsRemote
-            ? (string.IsNullOrWhiteSpace(session.SshHost) ? "" : session.SshHost)
-            : (string.IsNullOrEmpty(session.WorkingFolder)
-                ? ""
-                : new System.IO.DirectoryInfo(session.WorkingFolder).Name);
+        string folderShort = session.FolderShort;
 
         var folderText = new TextBlock
         {
@@ -4252,9 +4275,7 @@ public partial class MainWindow : Window
         var textPanel = new StackPanel { Margin = new Thickness(8, 6, 4, 6) };
 
         string displayName = string.IsNullOrWhiteSpace(session.Name)
-            ? (session.IsRemote
-                ? (string.IsNullOrWhiteSpace(session.SshHost) ? session.Command : session.SshHost)
-                : System.IO.Path.GetFileName(session.WorkingFolder.TrimEnd('/', '\\')) ?? session.Command)
+            ? session.DefaultDisplayName
             : session.Name;
 
         var nameText = new TextBlock
@@ -4266,11 +4287,7 @@ public partial class MainWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis
         };
 
-        string folderShort = session.IsRemote
-            ? (string.IsNullOrWhiteSpace(session.SshHost) ? "" : session.SshHost)
-            : (string.IsNullOrEmpty(session.WorkingFolder)
-                ? ""
-                : new System.IO.DirectoryInfo(session.WorkingFolder).Name);
+        string folderShort = session.FolderShort;
 
         var folderText = new TextBlock
         {
@@ -4358,10 +4375,7 @@ public partial class MainWindow : Window
     }
 
     private static string GetAccentForSession(ShellSession s) =>
-        s.ColorOverride ?? ColorService.GetHexColor(
-            s.IsRemote
-                ? (string.IsNullOrWhiteSpace(s.SshUser) ? s.SshHost : $"{s.SshUser}@{s.SshHost}")
-                : s.WorkingFolder);
+        s.ColorOverride ?? ColorService.GetHexColor(s.AccentKey);
 
     // ── Search ────────────────────────────────────────────────────────────────
 

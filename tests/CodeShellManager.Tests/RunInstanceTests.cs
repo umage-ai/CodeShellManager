@@ -79,4 +79,32 @@ public class RunInstanceTests
         string decoded = System.Text.Encoding.Unicode.GetString(System.Convert.FromBase64String(b64));
         Assert.Equal(cmd, decoded);
     }
+
+    [Fact]
+    public void BuildWslArgs_HappyPath_BuildsExpectedShape()
+    {
+        var p = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu", WslUser = "alice",
+            WslWorkingFolder = "/home/alice/proj",
+        };
+        string args = RunInstance.BuildWslArgs(p, "cargo test");
+        Assert.Equal("-d Ubuntu -u alice --cd /home/alice/proj -- bash -lc 'cargo test'", args);
+    }
+
+    [Fact]
+    public void BuildWslArgs_NoUserOrFolder_OmitsFlags()
+    {
+        var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Debian" };
+        string args = RunInstance.BuildWslArgs(p, "ls");
+        Assert.Equal("-d Debian -- bash -lc 'ls'", args);
+    }
+
+    [Fact]
+    public void BuildWslArgs_CommandLineWithApostrophe_IsEscaped()
+    {
+        var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" };
+        string args = RunInstance.BuildWslArgs(p, "echo it's me");
+        Assert.Contains(@"bash -lc 'echo it'\''s me'", args);
+    }
 }

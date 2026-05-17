@@ -32,6 +32,7 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 - **SSH remote sessions** — connect to remote hosts using your existing SSH config; sessions persist across restarts
 - **Windows Terminal profile import** — opt-in import of profiles from Windows Terminal's `settings.json`; pick a profile in the New Session dialog to stamp its font, color scheme, cursor and padding onto the new terminal
 - **Launch & shutdown spinners** — every starting session shows a brief overlay (`Starting <cmd>…` or `Connecting to <host>…`) until the first PTY byte arrives; closing the window shows a "Shutting down…" overlay during session disposal
+- **WSL sessions** — first-class session type for any installed WSL distro: distro picker (auto-detected via `wsl -l -v`), Linux working folder, optional `-u` user override; git status works via the `\\wsl$\<distro>` UNC view
 - **Session history** — clicking a search result from a closed session offers to relaunch it
 - **Configurable launch commands** — customise the commands available in the New Session dialog
 - **Claude badge** — sessions running `claude` commands get a visual indicator
