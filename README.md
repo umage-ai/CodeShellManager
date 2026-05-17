@@ -19,7 +19,10 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 ## Features
 
 - **Multi-terminal grid** — run up to 18 sessions simultaneously in configurable layouts (1, 2, 3, 4, 6 columns; 2×2, 6×2, 6×3 grids); the active pane is highlighted with a 2px accent ring so it's easy to spot
+- **Sidebar groups** — organise sessions into named groups with their own color and filter strip; bulk actions (sleep / close / re-group) operate on the active group
 - **Sleep & wake** — 💤 button parks a session: PTY torn down, but the session (and its notes) stays in the sidebar so you can wake it later from where you left off. Great when you have many long-running projects but only need a few live at once.
+- **Recently closed** — Ctrl+Shift+T reopens the last-closed session (browser convention); the New Session dialog also lists the last 10 closed sessions for one-click revival
+- **Per-session run commands** — define a list of labelled commands per session (Test, Build, Watch…); ▶ runs the default, F5 / Shift+F5 run/stop it, output streams into a side drawer without touching the parent terminal. Optional post-run URL opens in your browser on exit code 0.
 - **Full-text search** — all terminal output indexed to SQLite FTS5; instant search across every session, ever
 - **Per-project notepad** — collapsible 📝 notes panel on every terminal, auto-saved and searchable
 - **Alert detection** — detects when Claude is waiting for input or tool approval; green/orange dot indicators
@@ -27,6 +30,8 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 - **Session rename** — double-click any session name or click ✏ to rename inline
 - **Auto-resume** — automatically resumes the last Claude Code session when restoring on startup (`--resume <id>`); toggleable in Settings
 - **SSH remote sessions** — connect to remote hosts using your existing SSH config; sessions persist across restarts
+- **Windows Terminal profile import** — opt-in import of profiles from Windows Terminal's `settings.json`; pick a profile in the New Session dialog to stamp its font, color scheme, cursor and padding onto the new terminal
+- **Launch & shutdown spinners** — every starting session shows a brief overlay (`Starting <cmd>…` or `Connecting to <host>…`) until the first PTY byte arrives; closing the window shows a "Shutting down…" overlay during session disposal
 - **Session history** — clicking a search result from a closed session offers to relaunch it
 - **Configurable launch commands** — customise the commands available in the New Session dialog
 - **Claude badge** — sessions running `claude` commands get a visual indicator
@@ -86,9 +91,13 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 | Key | Action |
 |-----|--------|
 | `Ctrl+T` | New session |
+| `Ctrl+Shift+T` | Reopen the most-recently-closed session |
+| `Ctrl+Alt+T` | Duplicate the active session |
 | `Ctrl+W` | Close active session |
 | `Ctrl+F` | Toggle search |
-| `Ctrl+Tab` | Cycle sessions |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle sessions |
+| `F5` | Run the active session's default run-command |
+| `Shift+F5` | Stop the active session's running run-command |
 | `Escape` (in search) | Close search panel |
 
 ## Layout Options
