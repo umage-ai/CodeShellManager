@@ -51,7 +51,7 @@ public class ShellSession
 
     // SSH / remote session fields
     /// <summary>
-    /// Legacy SSH flag — true iff <see cref="Kind"/> is <see cref="SessionKind.Ssh"/>.
+    /// SSH flag — true iff <see cref="Kind"/> is <see cref="SessionKind.Ssh"/>.
     /// Kept as a property (not just a computed getter) so old state.json files with
     /// <c>"IsRemote": true</c> and no <c>Kind</c> key still migrate cleanly on
     /// deserialization. The setter only promotes <c>Local → Ssh</c>; it never clears
@@ -63,6 +63,9 @@ public class ShellSession
         get => Kind == SessionKind.Ssh;
         set { if (value && Kind == SessionKind.Local) Kind = SessionKind.Ssh; }
     }
+
+    /// <summary>True iff this session runs inside a WSL distro via wsl.exe.</summary>
+    public bool IsWsl => Kind == SessionKind.Wsl;
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
