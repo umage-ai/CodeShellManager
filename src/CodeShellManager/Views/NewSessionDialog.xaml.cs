@@ -503,7 +503,7 @@ public partial class NewSessionDialog : Window
         ProfileColorSchemeJson = profile.ColorSchemeJson;
     }
 
-    private void Start_Click(object sender, RoutedEventArgs e)
+    private async void Start_Click(object sender, RoutedEventArgs e)
     {
         IsRemote = IsRemoteMode;
         IsWsl = IsWslMode;
@@ -533,6 +533,19 @@ public partial class NewSessionDialog : Window
 
             WslUser = WslUserBox.Text.Trim();
             WslWorkingFolder = WslWorkingFolderBox.Text.Trim();
+
+            // If the user left the Linux folder blank, resolve $HOME eagerly so the
+            // session's WorkingFolder UNC and its Linux path stay in sync. Otherwise
+            // git status runs against the distro root (\\wsl$\<distro> → "/") while
+            // the shell actually starts in $HOME — and the sidebar branch info goes
+            // missing for repos under home. Best-effort: silent fallback to blank
+            // (the existing "land in $HOME, no git info" behavior) when WSL is
+            // unreachable.
+            if (string.IsNullOrEmpty(WslWorkingFolder))
+            {
+                string? home = await WslDiscoveryService.GetDistroHomeAsync(WslDistro, WslUser);
+                if (!string.IsNullOrEmpty(home)) WslWorkingFolder = home;
+            }
 
             var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
             string raw = selectedTag == "custom" ? CustomArgsBox.Text.Trim() : selectedTag;
