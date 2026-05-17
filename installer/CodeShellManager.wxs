@@ -53,6 +53,9 @@
       <Component Directory="AssetsFolder" Guid="*">
         <File Source="$(var.PublishDir)\Assets\app.ico" KeyPath="yes" />
       </Component>
+      <Component Directory="AssetsFolder" Guid="*">
+        <File Source="$(var.PublishDir)\Assets\app.png" KeyPath="yes" />
+      </Component>
 
       <!-- Assets — one component per file so auto-GUID works.
            If you add a new file to src/CodeShellManager/Assets, also add it here
