@@ -53,10 +53,24 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 |---|---|
 | `SessionManager` | CRUD for ShellSession models |
 | `StateService` | JSON persistence → `%AppData%/CodeShellManager/state.json` |
-| `SearchService` | SQLite FTS5 search of all terminal output |
+| `SearchService` | SQLite FTS5 search of all terminal output; also owns the `project_notes` table |
 | `ColorService` | FNV-1a hash of folder path → 12-color palette |
 | `GitService` | Async `git branch --show-current` + `git status --porcelain` |
 | `AlertDetector` | Pattern matching for Claude prompts/approvals |
+| `CommandPresetsService` | Launch presets + in-session shortcuts |
+| `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
+| `UpdateService` | GitHub Releases version check; caches result for 24h at `%AppData%/CodeShellManager/update-cache.json` |
+| `ImportExportService` | Read/write a full `AppState` to a JSON file (settings + sessions backup) |
+| `ToastHelper` | Tray balloon notifications |
+| `SessionRunner` | Per-session owner of `RunInstance` dictionary (run commands runtime) |
+| `RunInstance` | One headless PTY-backed run with ANSI-stripped output buffer |
+| `RunCommandTemplatesService` | Detects project type (dotnet/cargo/node/python/make) → seed run-command list |
+| `WindowsTerminalProfileService` | Reads Windows Terminal `settings.json` from all install variants |
+| `BuiltInTerminalSchemes` | Lookup table of WT default color schemes not present in user `settings.json` |
+| `SchemeMapper` | WT scheme JSON → xterm.js theme JSON (renames `purple` → `magenta`, rewrites background as `rgba()` when opacity < 1) |
+| `CursorShapeMapper` | WT `cursorShape` → xterm.js `cursorStyle` (+ optional forced blink) |
+| `PaddingParser` | WT `padding` shorthand (1/2/4 comma ints) → CSS `Npx` shorthand |
+| `CommandLineSplitter` | Helper — quote-aware split of a Windows commandline into `(exe, args)` |
 
 ## Project Structure
 
@@ -209,7 +223,20 @@ Each session can have a list of "run commands" — labelled command lines invoke
 
 **Lifecycle:** All runs are killed on session close, session sleep, and app exit. `SessionViewModel.Dispose()` calls `Runner.Dispose()` which iterates and disposes every instance. `SleepSession` also calls `vm.Runner.StopAll()` defensively before UI teardown.
 
-## Alert / Waiting State
+## Per-Session Notes
+
+Each session gets a collapsible 📝 notepad panel between the terminal toolbar and the terminal. Toggled by the 📝 button on the terminal toolbar; the panel is a docked 160px-high `TextBox` (`Visibility.Collapsed` by default).
+
+**Storage:** notes are **not** on `ShellSession` and not in `state.json`. They live in the FTS5 SQLite DB owned by `SearchService` in a separate `project_notes` table keyed by `folder_path` (the session's `WorkingFolder`). Two sessions in the same folder share one note; SSH sessions and sessions with no working folder don't get a note (`vm.WorkingFolder` is empty → save is skipped).
+
+- `SearchService.GetNoteAsync(folderPath)` — `SELECT content FROM project_notes WHERE folder_path = ?`
+- `SearchService.SaveNoteAsync(folderPath, content)` — UPSERT on `folder_path`, stamps `updated_at` (ms since epoch)
+
+**UI lifecycle:** content is lazy-loaded on the first time the panel is opened (`notesLoaded` flag in the toolbar build). Each keystroke restarts a 1-second `System.Threading.Timer` debounce; when it fires, `SaveNoteAsync` is called on the dispatcher thread. No explicit save action — closing the panel or the session just leaves the last debounce to flush. There's no save-on-exit hook, so a note edited in the final ~1s before app close can be lost.
+
+**Search integration:** `SearchService.SearchAsync` queries notes alongside terminal output — notes use `LIKE %query%` (short free-text, FTS5 overkill) and are tagged `SearchResultType.Note` so the search panel can label them. The note's row in the search panel is keyed by folder, not session.
+
+**Dormant sessions:** because notes are folder-keyed and live outside `state.json`, a dormant or reopened session in the same folder transparently picks up the existing note on next wake/restore.
 
 `AlertDetector` fires `AlertRaised(AlertEvent)` after 1.5s idle when it detects:
 - **ToolApproval**: Claude asking to run a tool (regex on approval phrases)

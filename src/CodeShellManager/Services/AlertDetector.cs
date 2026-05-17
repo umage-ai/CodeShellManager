@@ -38,6 +38,7 @@ public partial class AlertDetector : IDisposable
         }
 
         _idleTimer?.Dispose();
+        // 1.5s idle: long enough for Claude's prompt redraw bursts to settle, short enough to feel responsive.
         _idleTimer = new System.Threading.Timer(OnIdle, null, 1500, Timeout.Infinite);
     }
 
