@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -67,13 +65,14 @@ public static class WslDiscoveryService
 
             return Parse(outTask.Result);
         }
-        catch (Win32Exception)
+        catch (Exception)
         {
-            // wsl.exe not on PATH — WSL feature isn't installed.
-            return Array.Empty<WslDistro>();
-        }
-        catch (FileNotFoundException)
-        {
+            // Honor the "Never throws" contract: every failure mode (wsl.exe absent,
+            // I/O hiccup, transient process error) collapses to an empty list so the
+            // dialog's Loaded handler never crashes the picker. Specific causes were
+            // previously caught individually (Win32Exception for missing wsl.exe,
+            // FileNotFoundException) but Process.Start + the read pipeline can throw
+            // a wider set than that.
             return Array.Empty<WslDistro>();
         }
     }
@@ -168,8 +167,7 @@ public static class WslDiscoveryService
             lock (_homeCache) _homeCache[key] = home;
             return home;
         }
-        catch (Win32Exception) { return null; }
-        catch (FileNotFoundException) { return null; }
+        catch (Exception) { return null; }
     }
 
     private static readonly Dictionary<string, string> _homeCache = new();
