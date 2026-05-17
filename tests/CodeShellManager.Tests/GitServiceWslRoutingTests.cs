@@ -104,4 +104,15 @@ public class GitServiceWslRoutingTests
         string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
         Assert.Equal("rev-parse \"/\"", translated);
     }
+
+    [Fact]
+    public void TranslateLinuxPathsToUnc_PathContainsSpaces_TranslatesWholePath()
+    {
+        // Regression: the tail used to stop at the first whitespace, so a worktree
+        // path with a space got half-translated.
+        string raw = "worktree /home/alice/My Projects/repo\n";
+        string translated = GitService.TranslateLinuxPathsToUnc(raw, "Ubuntu");
+        Assert.Contains(@"\\wsl$\Ubuntu\home\alice\My Projects\repo", translated);
+        Assert.DoesNotContain("Projects/repo", translated); // no leftover forward slashes
+    }
 }

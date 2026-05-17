@@ -310,7 +310,13 @@ public static class GitService
     internal static string TranslateLinuxPathsToUnc(string text, string distro)
     {
         if (string.IsNullOrEmpty(text)) return text;
-        return Regex.Replace(text, @"(^|[\s=:])(/[^\s'""<>|]+)", m =>
+        // Tail used to stop at any whitespace, which mangled paths containing spaces
+        // (`/home/alice/My Projects/proj` came back as `\\wsl$\Ubuntu\home\alice\My`
+        // with the rest left as forward-slashed garbage). Our callers (rev-parse,
+        // worktree list --porcelain) always emit the path as the full remainder of
+        // the line, so widening the tail to "anything but newline / shell-meta" is
+        // safe and recovers space-containing paths correctly.
+        return Regex.Replace(text, @"(^|[\s=:])(/[^\r\n'""<>|]+)", m =>
         {
             string linuxPath = m.Groups[2].Value;
             string unc = $@"\\wsl$\{distro}" + linuxPath.Replace('/', '\\');
