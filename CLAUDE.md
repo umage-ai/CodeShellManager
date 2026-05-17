@@ -176,7 +176,7 @@ Closing a session (`Ctrl+W`, sidebar `✕`, or terminal-toolbar close) pushes a 
 - **`Ctrl+Shift+T`** — pops the newest entry and re-launches it via `MainWindow.ReopenClosedSessionAsync`. The reopened session gets a **fresh Id** so it's independent of anything that may still reference the old one.
 - **"Recently closed" list at the top of the New Session dialog** — click an entry to reopen it; that entry is removed from the ring.
 
-Sleep/wake doesn't touch the ring (`SleepSession` bypasses `OnSessionCloseRequested`). `--clean` mode neither pushes new entries nor persists the existing ring, matching `SaveStateAsync` semantics.
+Sleep/wake doesn't touch the ring (`SleepSession` bypasses `OnSessionCloseRequested`). `--clean` mode clears the ring at startup (full debug isolation) and never persists changes — `SaveStateAsync` is a no-op in clean mode.
 
 The snapshot model is `Models/RecentlyClosedEntry.cs` — a separate POCO from `ShellSession` so PTY/runtime fields (`IsDormant`, `Status`, `LastActivityAt`) don't leak into the ring buffer. `RunCommands` are deep-copied with fresh Ids on both snapshot creation and session recreation, so edits to either side never alias the other.
 

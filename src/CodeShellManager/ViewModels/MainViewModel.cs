@@ -365,6 +365,14 @@ public partial class MainViewModel : ObservableObject
             _ = SaveStateAsync();
     }
 
+    /// <summary>Empties the recently-closed ring. Used by <c>--clean</c> mode for full isolation.</summary>
+    public void ClearRecentlyClosed()
+    {
+        if (_appState.RecentlyClosed.Count == 0) return;
+        _appState.RecentlyClosed.Clear();
+        _ = SaveStateAsync();
+    }
+
     [RelayCommand]
     private void SetLayout(LayoutMode mode)
     {

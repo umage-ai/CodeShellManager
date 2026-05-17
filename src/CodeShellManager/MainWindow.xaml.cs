@@ -225,15 +225,16 @@ public partial class MainWindow : Window
         Log($"OnLoaded: {saved.Count} saved sessions, AutoRestore={_vm.Settings.AutoRestoreSessions}, CleanStart={App.CleanStart}");
         if (App.CleanStart)
         {
-            // --clean: skip restore and leave state.json untouched. Drop the
-            // saved sessions AND groups from the in-memory SessionManager so any
-            // new work this run starts from a clean slate (no leftover groups
-            // from prior debug sessions). SaveStateAsync is a no-op in --clean
-            // mode so removing these from memory doesn't touch the persisted file.
+            // --clean: skip restore and leave state.json untouched. Drop sessions,
+            // groups, AND the recently-closed ring from in-memory state so any new
+            // work this run starts from a clean slate (no leftover scaffolding from
+            // prior debug sessions). SaveStateAsync is a no-op in --clean mode so
+            // these clears don't touch the persisted file.
             foreach (var s in saved)
                 _sessionManager.RemoveSession(s.Id);
             foreach (var g in _sessionManager.Groups.ToList())
                 _sessionManager.RemoveGroup(g.Id);
+            _vm.ClearRecentlyClosed();
             return;
         }
         if (saved.Count == 0) return;
