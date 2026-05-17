@@ -151,9 +151,15 @@ public static class WslDiscoveryService
             using var process = Process.Start(psi);
             if (process is null) return null;
 
+            // Drain BOTH stdout and stderr. If we only awaited stdout, a chatty
+            // wsl.exe error (e.g. distro stopped, transient init message) could
+            // fill the stderr pipe buffer and block the child — the stdout await
+            // would never complete and we'd silently fall through to the timeout.
             var outTask = process.StandardOutput.ReadToEndAsync();
-            var completed = await Task.WhenAny(outTask, Task.Delay(3000));
-            if (completed != outTask) { try { process.Kill(); } catch { } return null; }
+            var errTask = process.StandardError.ReadToEndAsync();
+            var bothTask = Task.WhenAll(outTask, errTask);
+            var completed = await Task.WhenAny(bothTask, Task.Delay(3000));
+            if (completed != bothTask) { try { process.Kill(); } catch { } return null; }
             try { await process.WaitForExitAsync(); } catch { }
             if (process.ExitCode != 0) return null;
 
