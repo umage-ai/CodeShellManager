@@ -94,16 +94,21 @@ public static class WslDiscoveryService
             if (line.TrimStart().StartsWith("NAME", StringComparison.Ordinal)) continue;
 
             var tokens = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (tokens.Length < 2) continue;
 
-            bool isDefault = tokens[0] == "*";
-            int idx = isDefault ? 1 : 0;
-            if (tokens.Length - idx < 1) continue;
+            bool isDefault = tokens.Length > 0 && tokens[0] == "*";
+            int firstNameIdx = isDefault ? 1 : 0;
 
-            string name = tokens[idx];
-            string state = tokens.Length - idx >= 2 ? tokens[idx + 1] : "";
-            int version = 0;
-            if (tokens.Length - idx >= 3) int.TryParse(tokens[idx + 2], out version);
+            // `wsl -l -v` always emits three columns: NAME, STATE, VERSION. NAME can
+            // contain spaces if the user `wsl --import`'d a distro with one (rare but
+            // legal), so consume from the end instead of the start: last token is
+            // VERSION, second-to-last is STATE, anything in between is the name.
+            if (tokens.Length - firstNameIdx < 3) continue;
+
+            int versionIdx = tokens.Length - 1;
+            int stateIdx = tokens.Length - 2;
+            string name = string.Join(' ', tokens, firstNameIdx, stateIdx - firstNameIdx);
+            string state = tokens[stateIdx];
+            int.TryParse(tokens[versionIdx], out int version);
 
             results.Add(new WslDistro(name, version, isDefault, state));
         }

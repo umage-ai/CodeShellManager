@@ -82,4 +82,21 @@ public class WslDiscoveryServiceTests
     {
         Assert.Equal("", WslDiscoveryService.ToUncPath("", "/home/x"));
     }
+
+    [Fact]
+    public void Parse_DistroNameWithSpace_ParsesNameCorrectly()
+    {
+        // `wsl --import "My Distro" ...` produces a row where NAME spans two tokens.
+        // Old parser took just the first token; the from-the-end approach takes
+        // the trailing two columns as STATE/VERSION and joins the rest as NAME.
+        const string raw =
+            "  NAME             STATE           VERSION\n" +
+            "* My Distro        Running         2\n";
+        var result = WslDiscoveryService.Parse(raw);
+        Assert.Single(result);
+        Assert.Equal("My Distro", result[0].Name);
+        Assert.Equal("Running", result[0].State);
+        Assert.Equal(2, result[0].Version);
+        Assert.True(result[0].IsDefault);
+    }
 }
