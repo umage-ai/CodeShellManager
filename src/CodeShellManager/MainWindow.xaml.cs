@@ -2779,6 +2779,13 @@ public partial class MainWindow : Window
                 var psItem = new System.Windows.Controls.MenuItem { Header = "Open PowerShell here" };
                 psItem.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
                 menu.Items.Add(psItem);
+
+                if (vm.Session.IsWsl)
+                {
+                    var wslConsoleItem = new System.Windows.Controls.MenuItem { Header = "Open WSL console here" };
+                    wslConsoleItem.Click += (_, _) => LaunchWslConsoleFromSession(vm.Session);
+                    menu.Items.Add(wslConsoleItem);
+                }
             }
 
             menu.Items.Add(new System.Windows.Controls.Separator());
@@ -4562,6 +4569,27 @@ public partial class MainWindow : Window
 
         var session = _sessionManager.CreateSession(folderName, workingFolder, cmd, "", groupId);
         SeedRunCommandsAsync(session);
+        _ = LaunchSessionAsync(session);
+    }
+
+    /// <summary>
+    /// WSL counterpart of <see cref="LaunchPowerShellInFolder"/>: spawns a bare bash
+    /// session inside the same distro + Linux folder as <paramref name="parent"/>.
+    /// Used by the "Open WSL console here" context-menu item.
+    /// </summary>
+    private void LaunchWslConsoleFromSession(Models.ShellSession parent)
+    {
+        if (!parent.IsWsl) return;
+        string leaf = string.IsNullOrEmpty(parent.WslWorkingFolder)
+            ? parent.WslDistro
+            : System.IO.Path.GetFileName(parent.WslWorkingFolder.TrimEnd('/'));
+        string name = string.IsNullOrEmpty(leaf) ? "bash" : $"{leaf} (bash)";
+
+        var session = _sessionManager.CreateSession(name, parent.WorkingFolder, "bash", "", parent.GroupId);
+        session.Kind = Models.SessionKind.Wsl;
+        session.WslDistro = parent.WslDistro;
+        session.WslUser = parent.WslUser;
+        session.WslWorkingFolder = parent.WslWorkingFolder;
         _ = LaunchSessionAsync(session);
     }
 
