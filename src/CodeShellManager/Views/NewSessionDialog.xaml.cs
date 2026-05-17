@@ -63,6 +63,14 @@ public partial class NewSessionDialog : Window
     private readonly System.Windows.Threading.DispatcherTimer _worktreeDebounce;
     private System.Threading.CancellationTokenSource? _worktreeProbeCts;
     private string? _lastProbedFolder;
+    /// <summary>
+    /// What we last auto-filled into <see cref="NameBox"/>. AutoFillName uses this
+    /// to tell "the user hasn't typed anything custom" from "the user has". When
+    /// the box equals this value (or is empty), we're free to overwrite it when
+    /// the source context (folder / distro / host) changes. Anything else means
+    /// the user has edited it and we must not stomp.
+    /// </summary>
+    private string _lastAutoFilledName = "";
 
     public NewSessionDialog(
         string defaultFolder = "",
@@ -235,14 +243,18 @@ public partial class NewSessionDialog : Window
 
     private void AutoFillName()
     {
-        if (!string.IsNullOrWhiteSpace(NameBox.Text)) return;
+        // Allow overwrite when the box is empty OR still holds our last auto-fill.
+        // Anything else means the user typed something — leave it alone.
+        if (!string.IsNullOrWhiteSpace(NameBox.Text) && NameBox.Text != _lastAutoFilledName)
+            return;
 
+        string suggested = "";
         if (IsRemoteMode)
         {
             var raw = SshHostBox.Text.Trim();
             if (!string.IsNullOrWhiteSpace(raw))
             {
-                try { NameBox.Text = raw.Split(':')[0]; }
+                try { suggested = raw.Split(':')[0]; }
                 catch { }
             }
         }
@@ -257,7 +269,7 @@ public partial class NewSessionDialog : Window
                 int slash = trimmed.LastIndexOf('/');
                 leaf = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
             }
-            NameBox.Text = string.IsNullOrEmpty(leaf)
+            suggested = string.IsNullOrEmpty(leaf)
                 ? distro
                 : (string.IsNullOrEmpty(distro) ? leaf : $"{distro}: {leaf}");
         }
@@ -265,10 +277,13 @@ public partial class NewSessionDialog : Window
         {
             if (!string.IsNullOrWhiteSpace(FolderBox.Text))
             {
-                try { NameBox.Text = Path.GetFileName(FolderBox.Text.TrimEnd('/', '\\')); }
+                try { suggested = Path.GetFileName(FolderBox.Text.TrimEnd('/', '\\')) ?? ""; }
                 catch { }
             }
         }
+
+        NameBox.Text = suggested;
+        _lastAutoFilledName = suggested;
     }
 
     private void SessionType_Changed(object sender, RoutedEventArgs e)
