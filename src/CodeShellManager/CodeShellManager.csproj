@@ -15,6 +15,16 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <!-- Hot Reload (Microsoft.Extensions.DotNetDeltaApplier) crashes the app with
+       System.ExecutionEngineException on F5 under .NET 10.0.8 + VS 18. Setting
+       MetadataUpdaterSupport=false disables runtime metadata updates, which the
+       delta applier needs, so the applier becomes a no-op. Ctrl+F5 (Start Without
+       Debugging) is unaffected either way. Remove this block when the runtime
+       bug is fixed upstream. -->
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />

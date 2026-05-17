@@ -21,7 +21,7 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 | `--clean` | Debug isolation mode — see below. |
 
 **`--clean`** (parsed in `App.OnStartup`, exposed as `App.CleanStart`):
-- `MainWindow.OnLoaded` skips the restore loop and clears the in-memory `SessionManager` so any new sessions in the run don't co-mingle with the persisted set.
+- `MainWindow.OnLoaded` skips the restore loop and clears the in-memory `SessionManager` — both sessions AND groups — so any new work in the run starts from a blank slate.
 - `MainViewModel.SaveStateAsync` short-circuits — **nothing is written to `state.json`** for the entire run. Window bounds, layout changes, settings tweaks, and any sessions created during the clean run are all discarded on exit.
 - The user's prior `state.json` survives the run untouched, so this is the safe way to test from a blank slate.
 

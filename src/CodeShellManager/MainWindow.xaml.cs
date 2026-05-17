@@ -226,10 +226,14 @@ public partial class MainWindow : Window
         if (App.CleanStart)
         {
             // --clean: skip restore and leave state.json untouched. Drop the
-            // saved-session list from the in-memory SessionManager so any new
-            // work this run doesn't co-mingle with the persisted set.
+            // saved sessions AND groups from the in-memory SessionManager so any
+            // new work this run starts from a clean slate (no leftover groups
+            // from prior debug sessions). SaveStateAsync is a no-op in --clean
+            // mode so removing these from memory doesn't touch the persisted file.
             foreach (var s in saved)
                 _sessionManager.RemoveSession(s.Id);
+            foreach (var g in _sessionManager.Groups.ToList())
+                _sessionManager.RemoveGroup(g.Id);
             return;
         }
         if (saved.Count == 0) return;
