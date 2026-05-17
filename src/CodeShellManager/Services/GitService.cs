@@ -214,10 +214,10 @@ public static class GitService
         string distro, string linuxPath, string arguments, int timeoutMs)
     {
         string translatedArgs = TranslateUncArgsToLinux(arguments, distro);
-        // Use double quotes around the cwd — wsl.exe + Linux git both accept them and
-        // it sidesteps the apostrophe-in-path footgun that single quotes would have.
+        // QuoteForCmd handles spaces in both the distro name (rare) and the cwd
+        // (Linux paths often have them) without disturbing the simple-name case.
         string cwd = string.IsNullOrEmpty(linuxPath) ? "/" : linuxPath;
-        string args = $"-d {distro} -- git -C \"{cwd}\" {translatedArgs}";
+        string args = $"-d {Models.ShellSession.QuoteForCmd(distro)} -- git -C {Models.ShellSession.QuoteForCmd(cwd)} {translatedArgs}";
 
         var psi = new ProcessStartInfo("wsl.exe")
         {

@@ -277,10 +277,11 @@ public partial class RunInstance : ObservableObject, IDisposable
     internal static string BuildWslArgs(ShellSession parent, string commandLine)
     {
         var sb = new StringBuilder();
-        sb.Append($"-d {parent.WslDistro}");
-        if (!string.IsNullOrWhiteSpace(parent.WslUser)) sb.Append($" -u {parent.WslUser}");
+        sb.Append($"-d {ShellSession.QuoteForCmd(parent.WslDistro)}");
+        if (!string.IsNullOrWhiteSpace(parent.WslUser))
+            sb.Append($" -u {ShellSession.QuoteForCmd(parent.WslUser)}");
         if (!string.IsNullOrWhiteSpace(parent.WslWorkingFolder))
-            sb.Append($" --cd {parent.WslWorkingFolder}");
+            sb.Append($" --cd {ShellSession.QuoteForCmd(parent.WslWorkingFolder)}");
         sb.Append(" -- bash -lc ");
         sb.Append(SingleQuoteEscape(commandLine));
         return sb.ToString();

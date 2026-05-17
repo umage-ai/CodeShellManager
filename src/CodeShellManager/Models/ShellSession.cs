@@ -140,22 +140,37 @@ public class ShellSession
     /// Builds the argument string passed to wsl.exe.
     /// Example: "-d Ubuntu -u alice --cd /home/alice/project -- bash -lc \"claude\""
     /// The command is wrapped in <c>bash -lc</c> so PATH-resolved tools (nvm-managed
-    /// node, pyenv, etc.) work the same as in a user-launched login shell.
+    /// node, pyenv, etc.) work the same as in a user-launched login shell. Distro,
+    /// user, and working-folder values are passed through <see cref="QuoteForCmd"/>
+    /// so values containing spaces (Linux paths often do) survive Win32 arg parsing.
     /// </summary>
     internal string BuildWslArgs()
     {
         if (string.IsNullOrWhiteSpace(WslDistro))
             throw new InvalidOperationException("WslDistro must be set for WSL sessions.");
         var sb = new StringBuilder();
-        sb.Append($"-d {WslDistro}");
+        sb.Append($"-d {QuoteForCmd(WslDistro)}");
         if (!string.IsNullOrWhiteSpace(WslUser))
-            sb.Append($" -u {WslUser}");
+            sb.Append($" -u {QuoteForCmd(WslUser)}");
         if (!string.IsNullOrWhiteSpace(WslWorkingFolder))
-            sb.Append($" --cd {WslWorkingFolder}");
+            sb.Append($" --cd {QuoteForCmd(WslWorkingFolder)}");
         var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
         string inner = string.IsNullOrWhiteSpace(Args) ? shell : $"{shell} {Args}";
         sb.Append($" -- bash -lc \"{inner.Replace("\"", "\\\"")}\"");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Conservative Win32 command-line quoting: leaves space-free, quote-free values
+    /// alone (so existing call sites and tests don't regress) and wraps anything else
+    /// in double quotes with embedded <c>"</c> escaped as <c>\"</c>. Used by the WSL
+    /// arg builders (here and in <c>RunInstance</c>) and GitService's wsl.exe routing.
+    /// </summary>
+    internal static string QuoteForCmd(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "\"\"";
+        if (value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0) return value;
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
     // ── Display helpers (single source of truth — see MainWindow sidebar / VM) ────

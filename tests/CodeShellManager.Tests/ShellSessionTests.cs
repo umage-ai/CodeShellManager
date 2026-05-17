@@ -190,4 +190,27 @@ public class ShellSessionTests
         var local = new ShellSession { WorkingFolder = "/proj" };
         Assert.NotEqual(wsl.AccentKey, local.AccentKey);
     }
+
+    [Theory]
+    [InlineData("Ubuntu", "Ubuntu")]
+    [InlineData("", "\"\"")]
+    [InlineData("/home/alice/proj", "/home/alice/proj")]
+    [InlineData("/home/alice/my proj", "\"/home/alice/my proj\"")]
+    [InlineData("with\"quote", "\"with\\\"quote\"")]
+    public void QuoteForCmd_QuotesWhenNeeded(string input, string expected)
+    {
+        Assert.Equal(expected, ShellSession.QuoteForCmd(input));
+    }
+
+    [Fact]
+    public void BuildWslArgs_LinuxPathWithSpaces_QuotesCdValue()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu",
+            WslWorkingFolder = "/home/alice/my proj", Command = "claude",
+        };
+        Assert.Equal("-d Ubuntu --cd \"/home/alice/my proj\" -- bash -lc \"claude\"",
+            s.BuildWslArgs());
+    }
 }
