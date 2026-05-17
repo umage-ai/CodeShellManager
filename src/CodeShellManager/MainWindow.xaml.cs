@@ -507,11 +507,19 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(entry.GroupId) ? null : entry.GroupId,
             colorOverride: entry.ColorOverride);
 
-        session.IsRemote = entry.IsRemote;
+        // Kind first so the IsRemote shim below doesn't promote a Wsl entry back
+        // to Ssh when its IsRemote happens to round-trip as false.
+        session.Kind = entry.Kind;
+        // Legacy entries (pre-Kind) have Kind=Local but IsRemote=true for SSH —
+        // the IsRemote setter on ShellSession migrates that to Kind=Ssh.
+        if (entry.Kind == Models.SessionKind.Local) session.IsRemote = entry.IsRemote;
         session.SshUser = entry.SshUser;
         session.SshHost = entry.SshHost;
         session.SshPort = entry.SshPort;
         session.SshRemoteFolder = entry.SshRemoteFolder;
+        session.WslDistro = entry.WslDistro;
+        session.WslUser = entry.WslUser;
+        session.WslWorkingFolder = entry.WslWorkingFolder;
 
         session.ProfileFontFamily = entry.ProfileFontFamily;
         session.ProfileFontSize = entry.ProfileFontSize;
