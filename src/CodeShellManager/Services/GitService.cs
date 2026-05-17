@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace CodeShellManager.Services;
@@ -166,6 +168,13 @@ public static class GitService
     private static async Task<(string stdout, string stderr, int exit)> RunGitFullAsync(
         string workingDir, string arguments, int timeoutMs)
     {
+        // WSL working folders (\\wsl$\<distro>\…) get routed through wsl.exe so git
+        // runs inside the distro. Git for Windows trips on WSL UNCs (dubious-ownership
+        // checks, .git symlink quirks) and reports "not a git repo" for valid repos.
+        var (wslDistro, linuxPath) = TryParseWslUnc(workingDir);
+        if (wslDistro != null)
+            return await RunGitInWslAsync(wslDistro, linuxPath, arguments, timeoutMs);
+
         var psi = new ProcessStartInfo("git")
         {
             Arguments = $"-C \"{workingDir}\" {arguments}",
@@ -192,5 +201,126 @@ public static class GitService
         string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
         string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
         return (stdout, stderr, process.HasExited ? process.ExitCode : -1);
+    }
+
+    /// <summary>
+    /// Runs <c>wsl.exe -d &lt;distro&gt; -- git -C &lt;linuxPath&gt; &lt;arguments&gt;</c>.
+    /// Translates any WSL UNC paths in <paramref name="arguments"/> to Linux form
+    /// before invocation (so things like <c>worktree add "\\wsl$\Ubuntu\…"</c> reach
+    /// git as a normal Linux path), and translates absolute Linux paths in stdout
+    /// back to UNC form so callers receive Windows-shaped paths.
+    /// </summary>
+    private static async Task<(string stdout, string stderr, int exit)> RunGitInWslAsync(
+        string distro, string linuxPath, string arguments, int timeoutMs)
+    {
+        string translatedArgs = TranslateUncArgsToLinux(arguments, distro);
+        // QuoteForCmd handles spaces in both the distro name (rare) and the cwd
+        // (Linux paths often have them) without disturbing the simple-name case.
+        string cwd = string.IsNullOrEmpty(linuxPath) ? "/" : linuxPath;
+        string args = $"-d {Models.ShellSession.QuoteForCmd(distro)} -- git -C {Models.ShellSession.QuoteForCmd(cwd)} {translatedArgs}";
+
+        var psi = new ProcessStartInfo("wsl.exe")
+        {
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+
+        using var process = Process.Start(psi);
+        if (process is null) return ("", "", -1);
+
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errTask = process.StandardError.ReadToEndAsync();
+        var bothTask = Task.WhenAll(outTask, errTask);
+        var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs));
+        if (completed != bothTask) { try { process.Kill(); } catch { } }
+        try { await process.WaitForExitAsync(); } catch { }
+
+        string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
+        string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
+        stdout = TranslateLinuxPathsToUnc(stdout, distro);
+        return (stdout, stderr, process.HasExited ? process.ExitCode : -1);
+    }
+
+    /// <summary>
+    /// Detects a <c>\\wsl$\&lt;distro&gt;\…</c> or <c>\\wsl.localhost\&lt;distro&gt;\…</c>
+    /// path and splits it into (distro, linux-path). Returns (null, "") otherwise.
+    /// </summary>
+    internal static (string? distro, string linuxPath) TryParseWslUnc(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return (null, "");
+        string normalized = path.Replace('/', '\\').TrimEnd('\\');
+        string[] prefixes = { @"\\wsl$\", @"\\wsl.localhost\" };
+        foreach (var prefix in prefixes)
+        {
+            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            string rest = normalized[prefix.Length..];
+            if (string.IsNullOrEmpty(rest)) return (null, "");
+            int slash = rest.IndexOf('\\');
+            string distro = slash < 0 ? rest : rest[..slash];
+            string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
+            string linuxPath = string.IsNullOrEmpty(linuxRest) ? "/" : "/" + linuxRest.Replace('\\', '/');
+            return (distro, linuxPath);
+        }
+        return (null, "");
+    }
+
+    /// <summary>
+    /// Replaces WSL UNC tokens in a git arg string with their Linux equivalents.
+    /// Only translates UNCs that belong to <paramref name="distro"/> — a UNC for a
+    /// different distro is passed through unchanged (so the caller sees the eventual
+    /// "no such directory" error rather than silently aiming at the wrong tree).
+    /// </summary>
+    internal static string TranslateUncArgsToLinux(string arguments, string distro)
+    {
+        if (string.IsNullOrEmpty(arguments)) return arguments;
+        string esc = Regex.Escape(distro);
+        string body = $@"\\\\wsl(?:\$|\.localhost)\\{esc}";
+
+        // Pass 1: quoted UNCs ("\\wsl$\<distro>\..."). The tail may contain spaces
+        // and runs until the closing quote — without this pass, the unquoted regex
+        // below would stop at the first space and produce a half-translated path.
+        arguments = Regex.Replace(arguments, $@"""({body}(?:\\[^""]*)?)""", m =>
+        {
+            var (_, linux) = TryParseWslUnc(m.Groups[1].Value);
+            return "\"" + (string.IsNullOrEmpty(linux) ? "/" : linux) + "\"";
+        }, RegexOptions.IgnoreCase);
+
+        // Pass 2: unquoted UNCs. The tail runs to whitespace; if a path needed
+        // spaces it would have been quoted and handled above.
+        arguments = Regex.Replace(arguments, $@"{body}(?:\\[^""\s]*)?", m =>
+        {
+            var (_, linux) = TryParseWslUnc(m.Value);
+            return string.IsNullOrEmpty(linux) ? "/" : linux;
+        }, RegexOptions.IgnoreCase);
+
+        return arguments;
+    }
+
+    /// <summary>
+    /// Replaces absolute Linux paths in <paramref name="text"/> (typically git stdout)
+    /// with <c>\\wsl$\&lt;distro&gt;\…</c> equivalents so callers see Windows-shaped
+    /// paths. Conservative — only matches tokens at start-of-line or after whitespace
+    /// to avoid mangling text that happens to contain a slash.
+    /// </summary>
+    internal static string TranslateLinuxPathsToUnc(string text, string distro)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        // Tail used to stop at any whitespace, which mangled paths containing spaces
+        // (`/home/alice/My Projects/proj` came back as `\\wsl$\Ubuntu\home\alice\My`
+        // with the rest left as forward-slashed garbage). Our callers (rev-parse,
+        // worktree list --porcelain) always emit the path as the full remainder of
+        // the line, so widening the tail to "anything but newline / shell-meta" is
+        // safe and recovers space-containing paths correctly.
+        return Regex.Replace(text, @"(^|[\s=:])(/[^\r\n'""<>|]+)", m =>
+        {
+            string linuxPath = m.Groups[2].Value;
+            string unc = $@"\\wsl$\{distro}" + linuxPath.Replace('/', '\\');
+            return m.Groups[1].Value + unc;
+        }, RegexOptions.Multiline);
     }
 }

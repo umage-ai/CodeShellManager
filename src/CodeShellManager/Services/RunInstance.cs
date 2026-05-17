@@ -70,8 +70,9 @@ public partial class RunInstance : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Spawns the child PTY. Builds the command line based on whether the parent
-    /// is local or remote — see <see cref="BuildLocalCmd"/> / <see cref="BuildSshArgs"/>.
+    /// Spawns the child PTY. Builds the command line based on the parent's
+    /// <see cref="ShellSession.Kind"/> — see <see cref="BuildLocalCmd"/>,
+    /// <see cref="BuildSshArgs"/>, and <see cref="BuildWslArgs"/>.
     /// </summary>
     public void Start(ShellSession parent)
     {
@@ -90,28 +91,36 @@ public partial class RunInstance : ObservableObject, IDisposable
         _pty.Exited += OnPtyExited;
 
         string command, args, workDir;
-        if (parent.IsRemote)
+        switch (parent.Kind)
         {
-            // SSH parents always go through bash — Mode is meaningless for remote runs.
-            command = "ssh";
-            args = BuildSshArgs(parent, CommandLine);
-            workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-        else if (Mode == RunMode.PowerShell)
-        {
-            command = ResolvePwsh();
-            args = BuildPwshArgs(CommandLine);
-            workDir = Directory.Exists(parent.WorkingFolder)
-                ? parent.WorkingFolder
-                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-        else
-        {
-            command = "cmd";
-            args = BuildLocalCmd(CommandLine);
-            workDir = Directory.Exists(parent.WorkingFolder)
-                ? parent.WorkingFolder
-                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            case SessionKind.Ssh:
+                // SSH parents always go through bash — Mode is meaningless for remote runs.
+                command = "ssh";
+                args = BuildSshArgs(parent, CommandLine);
+                workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                break;
+            case SessionKind.Wsl:
+                // WSL parents wrap the command in `wsl.exe … -- bash -lc` —
+                // running pwsh inside WSL is out of scope so Mode is ignored here too.
+                command = "wsl.exe";
+                args = BuildWslArgs(parent, CommandLine);
+                workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                break;
+            default:
+                if (Mode == RunMode.PowerShell)
+                {
+                    command = ResolvePwsh();
+                    args = BuildPwshArgs(CommandLine);
+                }
+                else
+                {
+                    command = "cmd";
+                    args = BuildLocalCmd(CommandLine);
+                }
+                workDir = Directory.Exists(parent.WorkingFolder)
+                    ? parent.WorkingFolder
+                    : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                break;
         }
 
         _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
@@ -257,6 +266,31 @@ public partial class RunInstance : ObservableObject, IDisposable
             sb.Append($"cd '{parent.SshRemoteFolder}' && ");
         sb.Append("bash -c ");
         sb.Append(SingleQuoteEscape(commandLine));
+        sb.Append("\"");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds wsl.exe args for a run executed inside the parent's WSL distro. Pattern:
+    ///   -d &lt;distro&gt; [-u &lt;user&gt;] [--cd &lt;folder&gt;] -- bash -lc '&lt;escaped&gt;'
+    /// </summary>
+    internal static string BuildWslArgs(ShellSession parent, string commandLine)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"-d {ShellSession.QuoteForCmd(parent.WslDistro)}");
+        if (!string.IsNullOrWhiteSpace(parent.WslUser))
+            sb.Append($" -u {ShellSession.QuoteForCmd(parent.WslUser)}");
+        if (!string.IsNullOrWhiteSpace(parent.WslWorkingFolder))
+            sb.Append($" --cd {ShellSession.QuoteForCmd(parent.WslWorkingFolder)}");
+        // Use Windows-style double quotes here, NOT POSIX single quotes: wsl.exe is
+        // launched directly by CreateProcess (no outer shell), so Windows command-line
+        // tokenization runs first and only respects "..." for grouping. Single quotes
+        // would leak through literally — `bash -lc 'cargo test'` reaches bash split at
+        // the space into the two args `'cargo` and `test'`, and bash then chokes on
+        // the unbalanced quote. ShellSession.BuildWslArgs uses this same double-quote
+        // shape; we mirror it for parity.
+        sb.Append(" -- bash -lc \"");
+        sb.Append(commandLine.Replace("\"", "\\\""));
         sb.Append("\"");
         return sb.ToString();
     }

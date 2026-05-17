@@ -90,4 +90,127 @@ public class ShellSessionTests
         };
         Assert.Throws<InvalidOperationException>(() => s.BuildSshArgs());
     }
+
+    [Fact]
+    public void IsRemote_SetTrue_PromotesKindToSsh()
+    {
+        var s = new ShellSession { IsRemote = true };
+        Assert.Equal(SessionKind.Ssh, s.Kind);
+        Assert.True(s.IsRemote);
+    }
+
+    [Fact]
+    public void IsRemote_GetterTrueOnlyForSsh()
+    {
+        Assert.False(new ShellSession { Kind = SessionKind.Local }.IsRemote);
+        Assert.True(new ShellSession { Kind = SessionKind.Ssh }.IsRemote);
+        Assert.False(new ShellSession { Kind = SessionKind.Wsl }.IsRemote);
+    }
+
+    [Fact]
+    public void BuildWslArgs_HappyPath_BuildsExpectedShape()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu", WslUser = "alice",
+            WslWorkingFolder = "/home/alice/proj", Command = "claude",
+        };
+        Assert.Equal("-d Ubuntu -u alice --cd /home/alice/proj -- bash -lc \"claude\"",
+            s.BuildWslArgs());
+    }
+
+    [Fact]
+    public void BuildWslArgs_NoUser_OmitsUserFlag()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Debian",
+            WslWorkingFolder = "/srv", Command = "bash",
+        };
+        Assert.Equal("-d Debian --cd /srv -- bash -lc \"bash\"", s.BuildWslArgs());
+    }
+
+    [Fact]
+    public void BuildWslArgs_NoWorkingFolder_OmitsCdFlag()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu", Command = "bash",
+        };
+        Assert.Equal("-d Ubuntu -- bash -lc \"bash\"", s.BuildWslArgs());
+    }
+
+    [Fact]
+    public void BuildWslArgs_ArgsAppendedToShell()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu",
+            Command = "claude", Args = "--continue",
+        };
+        Assert.Contains("bash -lc \"claude --continue\"", s.BuildWslArgs());
+    }
+
+    [Fact]
+    public void BuildWslArgs_EmptyDistro_ThrowsInvalidOperationException()
+    {
+        var s = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "", Command = "bash" };
+        Assert.Throws<InvalidOperationException>(() => s.BuildWslArgs());
+    }
+
+    [Fact]
+    public void FullCommandLine_Wsl_StartsWithWslExe()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu",
+            Command = "claude",
+        };
+        Assert.StartsWith("wsl.exe ", s.FullCommandLine);
+    }
+
+    [Fact]
+    public void DefaultDisplayName_WslWithFolder_IsDistroAndLeaf()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu",
+            WslWorkingFolder = "/home/alice/proj",
+        };
+        Assert.Equal("Ubuntu: proj", s.DefaultDisplayName);
+    }
+
+    [Fact]
+    public void AccentKey_Wsl_DistinctFromLocal()
+    {
+        var wsl = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu", WslWorkingFolder = "/proj",
+        };
+        var local = new ShellSession { WorkingFolder = "/proj" };
+        Assert.NotEqual(wsl.AccentKey, local.AccentKey);
+    }
+
+    [Theory]
+    [InlineData("Ubuntu", "Ubuntu")]
+    [InlineData("", "\"\"")]
+    [InlineData("/home/alice/proj", "/home/alice/proj")]
+    [InlineData("/home/alice/my proj", "\"/home/alice/my proj\"")]
+    [InlineData("with\"quote", "\"with\\\"quote\"")]
+    public void QuoteForCmd_QuotesWhenNeeded(string input, string expected)
+    {
+        Assert.Equal(expected, ShellSession.QuoteForCmd(input));
+    }
+
+    [Fact]
+    public void BuildWslArgs_LinuxPathWithSpaces_QuotesCdValue()
+    {
+        var s = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "Ubuntu",
+            WslWorkingFolder = "/home/alice/my proj", Command = "claude",
+        };
+        Assert.Equal("-d Ubuntu --cd \"/home/alice/my proj\" -- bash -lc \"claude\"",
+            s.BuildWslArgs());
+    }
 }

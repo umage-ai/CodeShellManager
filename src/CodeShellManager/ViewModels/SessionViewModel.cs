@@ -41,31 +41,20 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public string AccentColor => Session.ColorOverride
         ?? ColorService.GetHexColor(
-            Session.IsRemote
-                ? (string.IsNullOrWhiteSpace(Session.SshUser)
-                    ? Session.SshHost
-                    : $"{Session.SshUser}@{Session.SshHost}")
-                // Key on RepoRoot when known so worktree siblings share a color;
-                // fall back to WorkingFolder for non-git sessions.
-                : (string.IsNullOrEmpty(RepoRoot) ? Session.WorkingFolder : RepoRoot));
+            // SSH never gets a RepoRoot override (no local filesystem); for Local + WSL
+            // prefer RepoRoot so worktree siblings share a color, falling back to
+            // the kind-specific accent key.
+            Session.Kind == SessionKind.Ssh
+                ? Session.AccentKey
+                : (string.IsNullOrEmpty(RepoRoot) ? Session.AccentKey : RepoRoot));
 
     partial void OnRepoRootChanged(string? value) => OnPropertyChanged(nameof(AccentColor));
 
     public string DisplayName => string.IsNullOrWhiteSpace(Session.Name)
-        ? (Session.IsRemote
-            ? (string.IsNullOrWhiteSpace(Session.SshHost) ? Session.Command : Session.SshHost)
-            : System.IO.Path.GetFileName(Session.WorkingFolder.TrimEnd('/', '\\')) ?? Session.Command)
+        ? Session.DefaultDisplayName
         : Session.Name;
 
-    public string FolderShort
-    {
-        get
-        {
-            if (string.IsNullOrEmpty(Session.WorkingFolder)) return "";
-            var di = new System.IO.DirectoryInfo(Session.WorkingFolder);
-            return di.Name;
-        }
-    }
+    public string FolderShort => Session.FolderShort;
 
     public event Action<SessionViewModel>? CloseRequested;
 
@@ -81,7 +70,11 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public async Task RefreshGitInfoAsync()
     {
-        if (Session.IsRemote) return;
+        // SSH sessions have no local working folder to inspect. WSL sessions store
+        // their WorkingFolder as a `\\wsl$\<distro>\...` UNC; GitService detects that
+        // and dispatches to `wsl.exe -- git -C <linuxPath>` internally (Git for
+        // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
+        if (Session.Kind == SessionKind.Ssh) return;
         var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
         GitBranch = branch;
         GitIsDirty = isDirty;
