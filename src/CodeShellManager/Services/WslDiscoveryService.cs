@@ -138,8 +138,12 @@ public static class WslDiscoveryService
 
         try
         {
-            string args = $"-d {distro}";
-            if (!string.IsNullOrEmpty(normalizedUser)) args += $" -u {normalizedUser}";
+            // QuoteForCmd for parity with the WSL arg builders — distro and user are
+            // usually space-free but Parse now accepts space-containing names, so the
+            // launcher side must not break on the same input.
+            string args = $"-d {Models.ShellSession.QuoteForCmd(distro)}";
+            if (!string.IsNullOrEmpty(normalizedUser))
+                args += $" -u {Models.ShellSession.QuoteForCmd(normalizedUser)}";
             args += " -- sh -c \"cd ~ && pwd\"";
 
             var psi = new ProcessStartInfo("wsl.exe")
