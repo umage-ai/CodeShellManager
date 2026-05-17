@@ -81,6 +81,10 @@ public partial class OutputIndexer : IDisposable
         catch { /* AggregateException from worker exceptions — already swallowed inside */ }
     }
 
-    [GeneratedRegex(@"\x1B\[[0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?\x07|\x1B[=>]|\r", RegexOptions.Compiled)]
+    // Mirrors the strip regex in RunInstance.AnsiPattern — keep them in sync.
+    // The `?` inside [?0-9;]* covers CSI private-mode sequences like ESC[?9001h
+    // (ConPTY's Win32 input-mode bootstrap), ESC[?1049h (alt screen), etc.
+    // OSC strings may terminate with BEL (\x07) or ST (ESC\).
+    [GeneratedRegex(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]|\r", RegexOptions.Compiled)]
     private static partial Regex AnsiPattern();
 }

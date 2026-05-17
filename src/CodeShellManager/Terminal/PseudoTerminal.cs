@@ -11,7 +11,7 @@ namespace CodeShellManager.Terminal;
 /// <summary>
 /// Wraps the Windows ConPTY (Pseudo Console) API to host an interactive terminal process.
 /// </summary>
-public sealed class PseudoTerminal : IDisposable
+public sealed class PseudoTerminal : IPseudoTerminal
 {
     // ── P/Invoke ──────────────────────────────────────────────────────────────
 
@@ -68,6 +68,16 @@ public sealed class PseudoTerminal : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DuplicateHandle(IntPtr hSourceProcessHandle, IntPtr hSourceHandle,
+        IntPtr hTargetProcessHandle, out IntPtr lpTargetHandle, uint dwDesiredAccess,
+        bool bInheritHandle, uint dwOptions);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    private const uint DUPLICATE_SAME_ACCESS = 0x00000002;
 
     // ── Structs ───────────────────────────────────────────────────────────────
 
@@ -345,9 +355,25 @@ public sealed class PseudoTerminal : IDisposable
 
     private async Task MonitorExitAsync()
     {
-        await Task.Run(() => WaitForSingleObject(_hProcess, 0xFFFFFFFF));
-        if (_hProcess != IntPtr.Zero && GetExitCodeProcess(_hProcess, out uint code))
-            ExitCode = unchecked((int)code);
+        // Duplicate _hProcess so Dispose() can close the original without racing the wait.
+        // Closing a handle that another thread is waiting on is Win32 UB — the wait may
+        // return prematurely and we'd fire Exited before the child actually exits.
+        if (!DuplicateHandle(GetCurrentProcess(), _hProcess, GetCurrentProcess(),
+                out IntPtr waitHandle, 0, false, DUPLICATE_SAME_ACCESS))
+        {
+            Log($"DuplicateHandle failed: {Marshal.GetLastWin32Error()}");
+            return;
+        }
+        try
+        {
+            await Task.Run(() => WaitForSingleObject(waitHandle, 0xFFFFFFFF));
+            if (GetExitCodeProcess(waitHandle, out uint code))
+                ExitCode = unchecked((int)code);
+        }
+        finally
+        {
+            CloseHandle(waitHandle);
+        }
         Exited?.Invoke();
     }
 

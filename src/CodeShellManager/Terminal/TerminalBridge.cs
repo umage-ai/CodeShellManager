@@ -24,6 +24,15 @@ public sealed class TerminalBridge : IDisposable
     // so the PTY starts at the right dimensions even if resize fired before AttachPty.
     private (int cols, int rows) _lastSize = (80, 24);
 
+    // Boot overlay — set by MainWindow before InitializeAsync; posted as setBootState after
+    // navigation completes, and hidden via bootDone on the first PTY byte (see OnPtyData).
+    // Fallback hides the overlay after BootDoneFallbackMs so silent sessions (e.g. a child
+    // that prints nothing, an SSH connect that's mid-handshake) aren't locked out.
+    private const int BootDoneFallbackMs = 8000;
+    private string? _bootLabel;
+    private string? _bootAccentHex;
+    private int _bootDoneFlag; // 0 = overlay still visible, 1 = bootDone already posted
+
     // Output that arrived before the page finished loading is buffered here
     private readonly System.Text.StringBuilder _outputBuffer = new();
 
@@ -73,9 +82,31 @@ public sealed class TerminalBridge : IDisposable
         catch { }
     }
 
+    // Posts a one-shot bootDone message to the WebView2. Safe to call from any thread.
+    private void PostBootDoneIfNeeded()
+    {
+        if (System.Threading.Interlocked.CompareExchange(ref _bootDoneFlag, 1, 0) != 0) return;
+        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            try { _webView.CoreWebView2?.PostWebMessageAsString("{\"type\":\"bootDone\"}"); }
+            catch { }
+        });
+    }
+
     public TerminalBridge(WebView2 webView)
     {
         _webView = webView;
+    }
+
+    /// <summary>
+    /// Sets the boot-overlay label and accent color. Must be called before
+    /// <see cref="InitializeAsync"/> — the bridge posts a setBootState message to the
+    /// page as soon as navigation completes.
+    /// </summary>
+    public void SetBootContext(string label, string accentHex)
+    {
+        _bootLabel = label;
+        _bootAccentHex = accentHex;
     }
 
     /// <summary>
@@ -95,6 +126,11 @@ public sealed class TerminalBridge : IDisposable
         var env = await CoreWebView2Environment.CreateAsync(null, wv2DataDir);
         await _webView.EnsureCoreWebView2Async(env);
         Log("EnsureCoreWebView2Async done");
+
+        // Match the boot overlay background so the WebView2 init flicker (the gap between
+        // the control becoming visible and terminal.html rendering) is invisible.
+        try { _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0x1e, 0x1e, 0x2e); }
+        catch { }
 
         var settings = _webView.CoreWebView2.Settings;
         settings.AreDevToolsEnabled = true;  // enable for debugging
@@ -136,6 +172,26 @@ public sealed class TerminalBridge : IDisposable
             _webView.CoreWebView2.NavigationCompleted -= NavCompleted;
             Log($"NavigationCompleted: success={e.IsSuccess} httpStatus={e.HttpStatusCode} webErrorStatus={e.WebErrorStatus}");
             _ready = true;
+
+            // Apply boot-overlay state if MainWindow called SetBootContext before init.
+            if (_bootLabel != null && _bootAccentHex != null)
+            {
+                var bootJson = JsonSerializer.Serialize(new
+                {
+                    type = "setBootState",
+                    label = _bootLabel,
+                    accentHex = _bootAccentHex
+                });
+                try { _webView.CoreWebView2?.PostWebMessageAsString(bootJson); }
+                catch { }
+            }
+
+            // Silent-session fallback: if the child writes nothing (or exits without
+            // any output) the overlay would otherwise block the terminal indefinitely.
+            // PostBootDoneIfNeeded is idempotent via Interlocked, so this is a no-op
+            // when the first PTY byte beat the timer.
+            _ = Task.Delay(BootDoneFallbackMs).ContinueWith(
+                _ => PostBootDoneIfNeeded(), TaskScheduler.Default);
 
             // Flush any PTY output that arrived during page load
             string buffered;
@@ -188,6 +244,7 @@ public sealed class TerminalBridge : IDisposable
         }
 
         RawOutputReceived?.Invoke(rawData);
+        PostBootDoneIfNeeded();
 
         if (!_ready)
         {
@@ -403,6 +460,7 @@ public sealed class TerminalBridge : IDisposable
 
     public void Dispose()
     {
+        PostBootDoneIfNeeded();
         if (_pty != null) _pty.DataReceived -= OnPtyData;
         if (_webView.CoreWebView2 != null)
         {

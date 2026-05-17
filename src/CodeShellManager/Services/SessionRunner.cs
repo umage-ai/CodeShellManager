@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using CodeShellManager.Models;
+using CodeShellManager.Terminal;
 
 namespace CodeShellManager.Services;
 
@@ -14,11 +15,23 @@ public class SessionRunner : IDisposable
 {
     private readonly ShellSession _session;
     private readonly Dictionary<string, RunInstance> _instances = new();
+    private readonly Func<IPseudoTerminal>? _ptyFactory;
 
     /// <summary>Fires when any instance is added, replaced, or removed, or any state changes.</summary>
     public event Action? InstancesChanged;
 
     public SessionRunner(ShellSession session) { _session = session; }
+
+    /// <summary>
+    /// Test seam — when a factory is supplied, <see cref="Run"/> wires every
+    /// <see cref="RunInstance"/> to it instead of letting RunInstance default
+    /// to a real <see cref="PseudoTerminal"/>.
+    /// </summary>
+    internal SessionRunner(ShellSession session, Func<IPseudoTerminal> ptyFactory)
+    {
+        _session = session;
+        _ptyFactory = ptyFactory;
+    }
 
     public IReadOnlyDictionary<string, RunInstance> Instances => _instances;
 
@@ -39,7 +52,9 @@ public class SessionRunner : IDisposable
             _instances.Remove(item.Id);
         }
 
-        var inst = new RunInstance(item);
+        var inst = _ptyFactory is null
+            ? new RunInstance(item)
+            : new RunInstance(item, _ptyFactory);
         inst.StateChanged += OnInstanceStateChanged;
         inst.OutputChanged += OnInstanceOutputChanged;
         _instances[item.Id] = inst;

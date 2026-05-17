@@ -46,6 +46,13 @@ public partial class NewSessionDialog : Window
     /// <summary>Paths of sibling worktrees the user opted to also launch sessions for.</summary>
     public IReadOnlyList<string> AdditionalWorktreePaths { get; private set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// When non-null, the user picked an entry from the "Recently closed" list instead of
+    /// filling in the form. The caller (<c>OpenNewSessionDialogCore</c>) should reopen this
+    /// session via <c>ReopenClosedSessionAsync</c> and ignore the rest of the form fields.
+    /// </summary>
+    public RecentlyClosedEntry? SelectedRecentlyClosed { get; private set; }
+
     private readonly IReadOnlyList<WindowsTerminalProfile> _profiles;
     private readonly System.Windows.Threading.DispatcherTimer _worktreeDebounce;
     private System.Threading.CancellationTokenSource? _worktreeProbeCts;
@@ -57,7 +64,8 @@ public partial class NewSessionDialog : Window
         IReadOnlyList<WindowsTerminalProfile>? profiles = null,
         string? defaultCommand = null,
         string? defaultArgs = null,
-        string? defaultName = null)
+        string? defaultName = null,
+        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
@@ -98,6 +106,8 @@ public partial class NewSessionDialog : Window
                 ProfileCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
             ProfileCombo.SelectedIndex = 0;
         }
+
+        PopulateRecentlyClosed(recentlyClosed);
 
         _worktreeDebounce = new System.Windows.Threading.DispatcherTimer
         {
@@ -395,5 +405,58 @@ public partial class NewSessionDialog : Window
     {
         DialogResult = false;
         Close();
+    }
+
+    private void PopulateRecentlyClosed(IReadOnlyList<RecentlyClosedEntry>? entries)
+    {
+        if (entries == null || entries.Count == 0)
+        {
+            RecentlyClosedPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        RecentlyClosedPanel.Visibility = Visibility.Visible;
+        var fg = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0xcd, 0xd6, 0xf4));
+        var sub = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0x6c, 0x70, 0x86));
+        foreach (var entry in entries)
+        {
+            var stack = new StackPanel { Orientation = System.Windows.Controls.Orientation.Vertical };
+            stack.Children.Add(new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(entry.Name) ? "(unnamed)" : entry.Name,
+                Foreground = fg, FontSize = 13,
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = entry.Subtitle,
+                Foreground = sub, FontSize = 11,
+                TextTrimming = System.Windows.TextTrimming.CharacterEllipsis,
+            });
+            var btn = new System.Windows.Controls.Button
+            {
+                Content = stack,
+                Tag = entry,
+                Background = System.Windows.Media.Brushes.Transparent,
+                BorderBrush = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0x31, 0x32, 0x44)),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(6, 5, 6, 5),
+                HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
+                Cursor = System.Windows.Input.Cursors.Hand,
+            };
+            btn.Click += RecentlyClosed_Click;
+            RecentlyClosedList.Children.Add(btn);
+        }
+    }
+
+    private void RecentlyClosed_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is RecentlyClosedEntry entry)
+        {
+            SelectedRecentlyClosed = entry;
+            DialogResult = true;
+            Close();
+        }
     }
 }

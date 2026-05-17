@@ -64,4 +64,19 @@ public class RunInstanceTests
         string args = RunInstance.BuildSshArgs(p, "echo it's me");
         Assert.Contains(@"bash -c 'echo it'\''s me'", args);
     }
+
+    [Fact]
+    public void BuildPwshArgs_RoundTripsCommandLineViaBase64()
+    {
+        // -EncodedCommand expects UTF-16 LE base64. Round-trip a known string with
+        // tricky chars ($env: would otherwise be eaten by cmd.exe parsing) to
+        // confirm the wrapping is preserved verbatim.
+        const string cmd = "Write-Host \"hi $env:USERNAME!\" | Out-Default";
+        string args = RunInstance.BuildPwshArgs(cmd);
+
+        Assert.StartsWith("-NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand ", args);
+        string b64 = args.Substring(args.LastIndexOf(' ') + 1);
+        string decoded = System.Text.Encoding.Unicode.GetString(System.Convert.FromBase64String(b64));
+        Assert.Equal(cmd, decoded);
+    }
 }

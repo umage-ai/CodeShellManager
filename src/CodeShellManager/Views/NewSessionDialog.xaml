@@ -1,7 +1,7 @@
 <Window x:Class="CodeShellManager.Views.NewSessionDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="New Session" Height="480" Width="480"
+        Title="New Session" Height="560" Width="480"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#1e1e2e" Foreground="#cdd6f4"
         FontFamily="Segoe UI">
@@ -157,8 +157,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Session Type -->
+        <!-- Recently closed + Session Type -->
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <!-- Recently closed list (collapsed when empty). Click an entry to reopen. -->
+            <StackPanel x:Name="RecentlyClosedPanel" Visibility="Collapsed" Margin="0,0,0,12">
+                <TextBlock Text="Recently closed (click to reopen)" Style="{StaticResource Label}"/>
+                <Border Background="#181825" BorderBrush="#313244" BorderThickness="1"
+                        CornerRadius="3" Padding="4" MaxHeight="120">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel x:Name="RecentlyClosedList"/>
+                    </ScrollViewer>
+                </Border>
+            </StackPanel>
+
             <TextBlock Text="Session Type" Style="{StaticResource Label}"/>
             <StackPanel Orientation="Horizontal">
                 <RadioButton x:Name="LocalRadio"

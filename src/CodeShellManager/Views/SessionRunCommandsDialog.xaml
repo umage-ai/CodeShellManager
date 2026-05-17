@@ -2,8 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Run commands"
-        Width="720" Height="500"
-        MinWidth="560" MinHeight="360"
+        Width="900" Height="520"
+        MinWidth="720" MinHeight="380"
         WindowStartupLocation="CenterOwner"
         Background="#1e1e2e"
         Foreground="#cdd6f4"
@@ -39,8 +39,10 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="44"/>
-                    <ColumnDefinition Width="*" MinWidth="120"/>
+                    <ColumnDefinition Width="*" MinWidth="110"/>
+                    <ColumnDefinition Width="92"/>
                     <ColumnDefinition Width="2*" MinWidth="200"/>
+                    <ColumnDefinition Width="*" MinWidth="140"/>
                     <ColumnDefinition Width="86"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="★" FontSize="12"
@@ -49,10 +51,16 @@
                 <TextBlock Grid.Column="1" Text="LABEL" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
                            Foreground="#7f849c" VerticalAlignment="Center"
                            ToolTip="Short name shown on the chip and in the toolbar dropdown"/>
-                <TextBlock Grid.Column="2" Text="COMMAND LINE" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
+                <TextBlock Grid.Column="2" Text="HOST" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
+                           Foreground="#7f849c" VerticalAlignment="Center"
+                           ToolTip="Process = bare ConPTY child (cmd /c). PowerShell = pwsh -EncodedCommand (use for pipes, $env:, cmdlets). SSH parents ignore this."/>
+                <TextBlock Grid.Column="3" Text="COMMAND LINE" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
                            Foreground="#7f849c" VerticalAlignment="Center"
                            ToolTip="What runs in the session's folder (cmd locally, bash on SSH parents)"/>
-                <TextBlock Grid.Column="3" Text=""/>
+                <TextBlock Grid.Column="4" Text="OPEN URL ON SUCCESS" Margin="0,0,8,0" FontSize="10" FontWeight="SemiBold"
+                           Foreground="#7f849c" VerticalAlignment="Center"
+                           ToolTip="Optional. Opens this URL in the default browser when the command exits with code 0."/>
+                <TextBlock Grid.Column="5" Text=""/>
             </Grid>
         </Border>
 
@@ -64,8 +72,10 @@
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="44"/>
-                                    <ColumnDefinition Width="*" MinWidth="120"/>
+                                    <ColumnDefinition Width="*" MinWidth="110"/>
+                                    <ColumnDefinition Width="92"/>
                                     <ColumnDefinition Width="2*" MinWidth="200"/>
+                                    <ColumnDefinition Width="*" MinWidth="140"/>
                                     <ColumnDefinition Width="86"/>
                                 </Grid.ColumnDefinitions>
                                 <RadioButton Grid.Column="0" GroupName="DefaultGroup"
@@ -78,13 +88,26 @@
                                          CaretBrush="#cdd6f4" Padding="6,4" Margin="0,0,8,0"
                                          VerticalContentAlignment="Center"
                                          ToolTip="Short, friendly name — e.g. Test, Build, Watch"/>
-                                <TextBox Grid.Column="2" Text="{Binding CommandLine, UpdateSourceTrigger=PropertyChanged}"
+                                <ComboBox Grid.Column="2" SelectedIndex="{Binding ModeIndex, Mode=TwoWay}"
+                                          Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
+                                          Padding="6,3" Margin="0,0,8,0"
+                                          VerticalContentAlignment="Center"
+                                          ToolTip="Process = cmd /c &lt;cmd&gt; (bare ConPTY child). PowerShell = pwsh -EncodedCommand (use for pipes, $env:, cmdlets).">
+                                    <ComboBoxItem Content="Process"/>
+                                    <ComboBoxItem Content="PowerShell"/>
+                                </ComboBox>
+                                <TextBox Grid.Column="3" Text="{Binding CommandLine, UpdateSourceTrigger=PropertyChanged}"
                                          Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
                                          CaretBrush="#cdd6f4" Padding="6,4" Margin="0,0,8,0"
                                          FontFamily="Consolas"
                                          VerticalContentAlignment="Center"
                                          ToolTip="The actual command line — e.g. dotnet test, npm run build"/>
-                                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBox Grid.Column="4" Text="{Binding PostRunUrl, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
+                                         CaretBrush="#cdd6f4" Padding="6,4" Margin="0,0,8,0"
+                                         VerticalContentAlignment="Center"
+                                         ToolTip="Optional. e.g. http://localhost:5173 — opens in the default browser when the command exits 0."/>
+                                <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
                                     <Button Content="▲" Tag="{Binding}" Click="MoveUp_Click" Width="26" Height="24"
                                             Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"
                                             ToolTip="Move up"/>

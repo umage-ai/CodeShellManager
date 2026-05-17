@@ -43,4 +43,14 @@ public class RunCommandItemTests
         RunCommandItem.EnsureSingleDefault(list);
         Assert.Empty(list);
     }
+
+    [Fact]
+    public void Defaults_ModeIsProcess_PostRunUrlIsNull()
+    {
+        // Back-compat: legacy state.json files that lack Mode/PostRunUrl must round-trip
+        // to "Process" and null respectively so existing run commands keep working.
+        var item = new RunCommandItem();
+        Assert.Equal(RunMode.Process, item.Mode);
+        Assert.Null(item.PostRunUrl);
+    }
 }

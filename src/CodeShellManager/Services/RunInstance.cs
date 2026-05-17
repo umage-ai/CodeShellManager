@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -29,6 +30,8 @@ public partial class RunInstance : ObservableObject, IDisposable
     public string ItemId { get; }
     public string Label { get; }
     public string CommandLine { get; }
+    public RunMode Mode { get; }
+    public string? PostRunUrl { get; }
 
     [ObservableProperty] private RunState _state = RunState.Idle;
     [ObservableProperty] private int? _exitCode;
@@ -38,7 +41,8 @@ public partial class RunInstance : ObservableObject, IDisposable
 
     public TimeSpan? Duration => StartedAt is { } s && EndedAt is { } e ? e - s : null;
 
-    private PseudoTerminal? _pty;
+    private IPseudoTerminal? _pty;
+    private readonly Func<IPseudoTerminal> _ptyFactory;
     private readonly StringBuilder _ansiStripped = new();
     private readonly object _bufLock = new();
     private bool _disposed;
@@ -47,10 +51,22 @@ public partial class RunInstance : ObservableObject, IDisposable
     public event Action? StateChanged;
 
     public RunInstance(RunCommandItem item)
+        : this(item, static () => new PseudoTerminal())
+    {
+    }
+
+    /// <summary>
+    /// Test seam — accepts a factory that produces an <see cref="IPseudoTerminal"/>.
+    /// Production code uses the parameterless ctor which delegates to <see cref="PseudoTerminal"/>.
+    /// </summary>
+    internal RunInstance(RunCommandItem item, Func<IPseudoTerminal> ptyFactory)
     {
         ItemId = item.Id;
         Label = item.Label;
         CommandLine = item.CommandLine;
+        Mode = item.Mode;
+        PostRunUrl = item.PostRunUrl;
+        _ptyFactory = ptyFactory;
     }
 
     /// <summary>
@@ -69,16 +85,25 @@ public partial class RunInstance : ObservableObject, IDisposable
         State = RunState.Running;
         StateChanged?.Invoke();
 
-        _pty = new PseudoTerminal();
+        _pty = _ptyFactory();
         _pty.DataReceived += OnPtyData;
         _pty.Exited += OnPtyExited;
 
         string command, args, workDir;
         if (parent.IsRemote)
         {
+            // SSH parents always go through bash — Mode is meaningless for remote runs.
             command = "ssh";
             args = BuildSshArgs(parent, CommandLine);
             workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+        else if (Mode == RunMode.PowerShell)
+        {
+            command = ResolvePwsh();
+            args = BuildPwshArgs(CommandLine);
+            workDir = Directory.Exists(parent.WorkingFolder)
+                ? parent.WorkingFolder
+                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
         else
         {
@@ -120,6 +145,29 @@ public partial class RunInstance : ObservableObject, IDisposable
         ExitCode = _pty?.ExitCode;
         State = ExitCode == 0 ? RunState.ExitedOk : RunState.ExitedFailed;
         StateChanged?.Invoke();
+
+        // Open post-run URL on success only. ShellExecute hands the URL to the
+        // OS default browser. We can't pop UI from the PTY-exit callback thread,
+        // so failures are logged to crash.log for diagnosability rather than silenced.
+        if (State == RunState.ExitedOk && !string.IsNullOrWhiteSpace(PostRunUrl))
+        {
+            try { Process.Start(new ProcessStartInfo(PostRunUrl) { UseShellExecute = true }); }
+            catch (Exception ex) { LogPostRunUrlFailure(PostRunUrl, ex); }
+        }
+    }
+
+    private static void LogPostRunUrlFailure(string url, Exception ex)
+    {
+        try
+        {
+            string path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "CodeShellManager", "crash.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.AppendAllText(path,
+                $"[{DateTime.Now:HH:mm:ss.fff}] PostRunUrl failed '{url}': {ex.Message}\n");
+        }
+        catch { /* logger failure is not actionable */ }
     }
 
     /// <summary>
@@ -136,6 +184,61 @@ public partial class RunInstance : ObservableObject, IDisposable
     /// exits when the wrapped process exits — needed for clean Exited firing.
     /// </summary>
     internal static string BuildLocalCmd(string commandLine) => $"/c \"{commandLine}\"";
+
+    /// <summary>
+    /// Returns "pwsh.exe" if PowerShell 7+ is on PATH, otherwise falls back to
+    /// the Windows-bundled "powershell.exe". ConPTY's CreateProcess resolves PATH
+    /// for us — we just pick which name to ask for.
+    /// </summary>
+    internal static string ResolvePwsh()
+    {
+        // Cheap check: try to spawn pwsh -NoLogo -Command "exit". If it returns,
+        // we trust pwsh is on PATH. Use a one-shot Process so we don't perturb
+        // the user's environment. Skip the probe if we already know.
+        if (_pwshResolved is { } cached) return cached;
+
+        try
+        {
+            using var probe = Process.Start(new ProcessStartInfo
+            {
+                FileName = "pwsh.exe",
+                Arguments = "-NoLogo -NoProfile -Command \"exit 0\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            if (probe != null)
+            {
+                // Cache pwsh only if the probe actually exited cleanly. A hung probe
+                // (WaitForExit returns false) or non-zero exit means pwsh is in a bad
+                // state; fall back to powershell.exe instead of caching a broken choice.
+                if (probe.WaitForExit(2000) && probe.ExitCode == 0)
+                {
+                    _pwshResolved = "pwsh.exe";
+                    return _pwshResolved;
+                }
+                try { if (!probe.HasExited) probe.Kill(entireProcessTree: true); }
+                catch { }
+            }
+        }
+        catch { /* not on PATH */ }
+
+        _pwshResolved = "powershell.exe";
+        return _pwshResolved;
+    }
+    private static string? _pwshResolved;
+
+    /// <summary>
+    /// Builds powershell args using -EncodedCommand so we don't have to worry
+    /// about quoting in the user's command line. The payload is UTF-16 LE base64,
+    /// which is what -EncodedCommand expects.
+    /// </summary>
+    internal static string BuildPwshArgs(string commandLine)
+    {
+        string b64 = Convert.ToBase64String(Encoding.Unicode.GetBytes(commandLine));
+        return $"-NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand {b64}";
+    }
 
     /// <summary>
     /// Builds ssh args for a remote run. Pattern:
@@ -186,6 +289,9 @@ public partial class RunInstance : ObservableObject, IDisposable
         }
     }
 
-    [GeneratedRegex(@"\x1B\[[0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?\x07|\x1B[=>]|\r", RegexOptions.Compiled)]
+    // Mirrors the strip regex in OutputIndexer.AnsiPattern — keep them in sync.
+    // The `?` inside [?0-9;]* covers CSI private-mode sequences like ESC[?9001h
+    // (ConPTY's Win32 input-mode bootstrap), ESC[?1049h (alt screen), etc.
+    [GeneratedRegex(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]|\r", RegexOptions.Compiled)]
     private static partial Regex AnsiPattern();
 }

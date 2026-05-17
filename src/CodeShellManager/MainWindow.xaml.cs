@@ -225,11 +225,16 @@ public partial class MainWindow : Window
         Log($"OnLoaded: {saved.Count} saved sessions, AutoRestore={_vm.Settings.AutoRestoreSessions}, CleanStart={App.CleanStart}");
         if (App.CleanStart)
         {
-            // --clean: skip restore and leave state.json untouched. Drop the
-            // saved-session list from the in-memory SessionManager so any new
-            // work this run doesn't co-mingle with the persisted set.
+            // --clean: skip restore and leave state.json untouched. Drop sessions,
+            // groups, AND the recently-closed ring from in-memory state so any new
+            // work this run starts from a clean slate (no leftover scaffolding from
+            // prior debug sessions). SaveStateAsync is a no-op in --clean mode so
+            // these clears don't touch the persisted file.
             foreach (var s in saved)
                 _sessionManager.RemoveSession(s.Id);
+            foreach (var g in _sessionManager.Groups.ToList())
+                _sessionManager.RemoveGroup(g.Id);
+            _vm.ClearRecentlyClosed();
             return;
         }
         if (saved.Count == 0) return;
@@ -399,12 +404,26 @@ public partial class MainWindow : Window
             _vm.Settings.LaunchCommands,
             profiles,
             defaultCommand: parent?.Session.Command,
-            defaultArgs: parent?.Session.Args)
+            defaultArgs: parent?.Session.Args,
+            defaultName: null,
+            recentlyClosed: _vm.RecentlyClosed)
         {
             Owner = this
         };
 
         if (dialog.ShowDialog() != true) return;
+
+        // If the user picked an entry from the "Recently closed" list, reopen that
+        // session directly with copied settings and skip the rest of the form.
+        if (dialog.SelectedRecentlyClosed != null)
+        {
+            var entry = dialog.SelectedRecentlyClosed;
+            // Only drop the entry from the ring after reopen succeeds — a transient
+            // launch failure (bad folder, SSH unavailable) would otherwise lose the
+            // entry permanently and the user couldn't retry.
+            _ = ReopenAndRemoveOnSuccessAsync(entry);
+            return;
+        }
 
         // Group resolution priority:
         //   1. Explicit selection from the dialog (currently unused — no group picker there)
@@ -457,6 +476,67 @@ public partial class MainWindow : Window
         session.ProfileColorSchemeJson = dialog.ProfileColorSchemeJson ?? parent?.Session.ProfileColorSchemeJson;
 
         _ = LaunchAndFollowUpWorktreesAsync(session, dialog.AdditionalWorktreePaths);
+    }
+
+    /// <summary>
+    /// Recreates a session from a <see cref="RecentlyClosedEntry"/> snapshot. Gets a fresh
+    /// Id (so it's independent of the original) and goes through the normal launch path.
+    /// Returns the created session; callers can verify it remained in
+    /// <c>_sessionManager.Sessions</c> after the await to confirm launch success.
+    /// </summary>
+    private async Task<ShellSession> ReopenClosedSessionAsync(RecentlyClosedEntry entry)
+    {
+        var session = _sessionManager.CreateSession(
+            entry.Name,
+            entry.WorkingFolder,
+            entry.Command,
+            entry.Args,
+            string.IsNullOrEmpty(entry.GroupId) ? null : entry.GroupId,
+            colorOverride: entry.ColorOverride);
+
+        session.IsRemote = entry.IsRemote;
+        session.SshUser = entry.SshUser;
+        session.SshHost = entry.SshHost;
+        session.SshPort = entry.SshPort;
+        session.SshRemoteFolder = entry.SshRemoteFolder;
+
+        session.ProfileFontFamily = entry.ProfileFontFamily;
+        session.ProfileFontSize = entry.ProfileFontSize;
+        session.ProfileFontWeight = entry.ProfileFontWeight;
+        session.ProfileFontLigatures = entry.ProfileFontLigatures;
+        session.ProfileCursorShape = entry.ProfileCursorShape;
+        session.ProfileCursorBlink = entry.ProfileCursorBlink;
+        session.ProfilePadding = entry.ProfilePadding;
+        session.ProfileBackgroundOpacity = entry.ProfileBackgroundOpacity;
+        session.ProfileRetroEffect = entry.ProfileRetroEffect;
+        session.ProfileColorSchemeJson = entry.ProfileColorSchemeJson;
+
+        // Deep-copy RunCommands so subsequent edits don't mutate any other entry
+        // that may still share the same list reference.
+        session.RunCommands = entry.RunCommands.Select(r => new RunCommandItem
+        {
+            Id = Guid.NewGuid().ToString(),
+            Label = r.Label,
+            CommandLine = r.CommandLine,
+            IsDefault = r.IsDefault,
+            Mode = r.Mode,
+            PostRunUrl = r.PostRunUrl,
+        }).ToList();
+
+        await LaunchSessionAsync(session);
+        return session;
+    }
+
+    /// <summary>
+    /// Reopens a recently-closed entry and only drops it from the ring if the launch
+    /// actually succeeded. LaunchSessionAsync's catch path removes the session it
+    /// created on failure, so we use SessionManager membership as the success signal.
+    /// </summary>
+    private async Task ReopenAndRemoveOnSuccessAsync(RecentlyClosedEntry entry)
+    {
+        var session = await ReopenClosedSessionAsync(entry);
+        if (_sessionManager.Sessions.Any(s => s.Id == session.Id))
+            _vm.RemoveRecentlyClosed(entry);
     }
 
     /// <summary>
@@ -550,6 +630,8 @@ public partial class MainWindow : Window
                 Label = item.Label,
                 CommandLine = item.CommandLine,
                 IsDefault = item.IsDefault,
+                Mode = item.Mode,
+                PostRunUrl = item.PostRunUrl,
             });
         }
         // If the parent had no commands, fall back to detection.
@@ -886,6 +968,7 @@ public partial class MainWindow : Window
         var terminalWrapper = BuildTerminalWrapper(vm, webView);
         terminalWrapper.Visibility = Visibility.Collapsed;
         TerminalGrid.Children.Add(terminalWrapper);   // in tree → WebView2 can init
+        terminalWrapper.Visibility = Visibility.Visible; // show spinner immediately
 
         // Create bridge and initialize
         var bridge = new TerminalBridge(webView);
@@ -918,6 +1001,10 @@ public partial class MainWindow : Window
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
         string htmlPath = new Uri(Path.Combine(assetsDir, htmlFile)).AbsoluteUri;
 
+        string bootLabel = session.IsRemote
+            ? $"Connecting to {session.SshHost}…"
+            : $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…";
+        bridge.SetBootContext(bootLabel, GetAccentForSession(session));
         await bridge.InitializeAsync(htmlPath);
         bridge.ApplyFontSettings(_vm.Settings);
         bridge.ApplyProfileOverrides(session);
@@ -1022,7 +1109,6 @@ public partial class MainWindow : Window
         }
 
         Log($"terminalWrapper visible, TerminalGrid children={TerminalGrid.Children.Count}");
-        terminalWrapper.Visibility = Visibility.Visible;
 
         // Build sidebar entry
         var sidebarItem = BuildSidebarItem(vm);
@@ -3300,6 +3386,7 @@ public partial class MainWindow : Window
     private void Layout_Six_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixColumn);
     private void Layout_SixTwo_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixByTwo);
     private void Layout_SixThree_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.SixByThree);
+    private void Layout_ThreeByThree_Click(object s, RoutedEventArgs e) => SetLayout(LayoutMode.ThreeByThree);
 
     private void SetLayout(LayoutMode mode)
     {
@@ -3414,6 +3501,15 @@ public partial class MainWindow : Window
                 for (int i = 0; i < 6; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
                 for (int r = 0; r < 3; r++) TerminalGrid.RowDefinitions.Add(new RowDefinition());
                 for (int i = 0; i < 18; i++) PlaceTerminal(view, i, i / 6, i % 6);
+                break;
+            }
+
+            case LayoutMode.ThreeByThree:
+            {
+                var view = GetViewportSessions(sessions, 9);
+                for (int i = 0; i < 3; i++) TerminalGrid.ColumnDefinitions.Add(new ColumnDefinition());
+                for (int r = 0; r < 3; r++) TerminalGrid.RowDefinitions.Add(new RowDefinition());
+                for (int i = 0; i < 9; i++) PlaceTerminal(view, i, i / 3, i % 3);
                 break;
             }
 
@@ -4661,7 +4757,18 @@ public partial class MainWindow : Window
     private bool TryHandleGlobalShortcut(Key key, ModifierKeys mods)
     {
         if (key == Key.T && mods == ModifierKeys.Control) { OpenNewSessionDialog(); return true; }
+        // Browser convention: Ctrl+Shift+T reopens the most-recently-closed session.
+        // Duplicate moved to Ctrl+Alt+T to free this slot.
         if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            // Peek instead of pop — if the reopen fails, the entry stays available
+            // for retry. PeekMostRecentlyClosed returns the same entry PopMostRecently
+            // would have popped; ReopenAndRemoveOnSuccessAsync removes only on success.
+            var entry = _vm.PeekMostRecentlyClosed();
+            if (entry != null) _ = ReopenAndRemoveOnSuccessAsync(entry);
+            return true;
+        }
+        if (key == Key.T && mods == (ModifierKeys.Control | ModifierKeys.Alt))
         {
             if (_vm.ActiveSession != null) _ = DuplicateSessionAsync(_vm.ActiveSession);
             return true;
@@ -4726,6 +4833,13 @@ public partial class MainWindow : Window
         // Re-entry during async cleanup (e.g. user double-clicks the X) — just suppress.
         if (_isShuttingDown) return;
         _isShuttingDown = true;
+
+        // Show the shutdown overlay so the user sees progress while sessions tear down.
+        // The yield lets WPF render the overlay before the synchronous disposal below blocks
+        // the UI thread; without it, the overlay would only paint after Close() is reached.
+        ShutdownOverlay.Visibility = Visibility.Visible;
+        await Dispatcher.InvokeAsync(() => { },
+            System.Windows.Threading.DispatcherPriority.Background);
 
         _windowStateTimer.Stop();
         if (_windowStateReady)

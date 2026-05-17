@@ -15,6 +15,17 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <!-- Hot Reload (Microsoft.Extensions.DotNetDeltaApplier) crashes the app with
+       System.ExecutionEngineException on F5 under .NET 10.0.8 + VS 18. The primary
+       fix is "hotReloadEnabled": false in Properties/launchSettings.json which
+       prevents VS from injecting the delta applier at all. This runtime feature
+       switch is a belt-and-braces fallback for anyone whose launchSettings.json
+       has been overridden locally. Remove both when the runtime bug is fixed
+       upstream. -->
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />
@@ -39,6 +50,10 @@
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
     <Content Include="Assets\app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+    <Content Include="Assets\app.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
