@@ -11,7 +11,7 @@ namespace CodeShellManager.Terminal;
 /// <summary>
 /// Wraps the Windows ConPTY (Pseudo Console) API to host an interactive terminal process.
 /// </summary>
-public sealed class PseudoTerminal : IDisposable
+public sealed class PseudoTerminal : IPseudoTerminal
 {
     // ── P/Invoke ──────────────────────────────────────────────────────────────
 

@@ -41,7 +41,8 @@ public partial class RunInstance : ObservableObject, IDisposable
 
     public TimeSpan? Duration => StartedAt is { } s && EndedAt is { } e ? e - s : null;
 
-    private PseudoTerminal? _pty;
+    private IPseudoTerminal? _pty;
+    private readonly Func<IPseudoTerminal> _ptyFactory;
     private readonly StringBuilder _ansiStripped = new();
     private readonly object _bufLock = new();
     private bool _disposed;
@@ -50,12 +51,22 @@ public partial class RunInstance : ObservableObject, IDisposable
     public event Action? StateChanged;
 
     public RunInstance(RunCommandItem item)
+        : this(item, static () => new PseudoTerminal())
+    {
+    }
+
+    /// <summary>
+    /// Test seam — accepts a factory that produces an <see cref="IPseudoTerminal"/>.
+    /// Production code uses the parameterless ctor which delegates to <see cref="PseudoTerminal"/>.
+    /// </summary>
+    internal RunInstance(RunCommandItem item, Func<IPseudoTerminal> ptyFactory)
     {
         ItemId = item.Id;
         Label = item.Label;
         CommandLine = item.CommandLine;
         Mode = item.Mode;
         PostRunUrl = item.PostRunUrl;
+        _ptyFactory = ptyFactory;
     }
 
     /// <summary>
@@ -74,7 +85,7 @@ public partial class RunInstance : ObservableObject, IDisposable
         State = RunState.Running;
         StateChanged?.Invoke();
 
-        _pty = new PseudoTerminal();
+        _pty = _ptyFactory();
         _pty.DataReceived += OnPtyData;
         _pty.Exited += OnPtyExited;
 
