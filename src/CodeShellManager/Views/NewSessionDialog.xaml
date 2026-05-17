@@ -235,19 +235,26 @@
 
         <!-- WSL: distro + linux working folder + optional user -->
         <StackPanel Grid.Row="3" x:Name="WslPanel" Visibility="Collapsed" Margin="0,0,0,12">
-            <TextBlock Text="Distro" Style="{StaticResource Label}"/>
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="140"/>
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Distro" Style="{StaticResource Label}"
+                           Grid.Row="0" Grid.Column="0"/>
+                <TextBlock Text="User (optional)" Style="{StaticResource Label}"
+                           Grid.Row="0" Grid.Column="1" Margin="6,0,0,3"/>
                 <ComboBox x:Name="WslDistroCombo"
                           AutomationProperties.AutomationId="NewSessionWslDistroCombo"
-                          Grid.Column="0" Margin="0,0,6,0"
+                          Grid.Row="1" Grid.Column="0" Margin="0,0,6,0"
                           ToolTip="Installed WSL distros (from `wsl -l -v`)"/>
                 <TextBox x:Name="WslUserBox"
                          AutomationProperties.AutomationId="NewSessionWslUserBox"
-                         Grid.Column="1"
+                         Grid.Row="1" Grid.Column="1"
                          ToolTip="Optional WSL user (-u). Leave blank for the distro's default user."/>
             </Grid>
             <TextBlock Text="Linux Working Folder (optional)" Style="{StaticResource Label}"/>

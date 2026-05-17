@@ -313,15 +313,20 @@ public partial class NewSessionDialog : Window
     /// Linux working-folder box update to match — so they can also switch distros
     /// by drilling into a different one in the dialog.
     /// </summary>
-    private void BrowseWslFolder_Click(object sender, RoutedEventArgs e)
+    private async void BrowseWslFolder_Click(object sender, RoutedEventArgs e)
     {
         string selectedDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
-        string seed = string.IsNullOrEmpty(selectedDistro) ? @"\\wsl$" : $@"\\wsl$\{selectedDistro}";
+        string seed = await ComputeWslBrowseSeedAsync(selectedDistro, WslUserBox.Text.Trim());
 
+        // Both InitialDirectory AND SelectedPath are needed: SelectedPath alone leaves
+        // the COM file dialog rooted at the user's last location (often Documents) for
+        // UNC paths it can't resolve to a shell namespace folder. Setting both makes the
+        // dialog navigate into the WSL share.
         using var dialog = new System.Windows.Forms.FolderBrowserDialog
         {
             Description = "Select Linux working folder (inside WSL)",
             UseDescriptionForTitle = true,
+            InitialDirectory = seed,
             SelectedPath = seed,
         };
         if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
@@ -350,6 +355,20 @@ public partial class NewSessionDialog : Window
             WslWorkingFolderBox.Text = linuxPath;
         }
         AutoFillName();
+    }
+
+    /// <summary>
+    /// Seed path for the WSL folder picker. Prefers the user's home directory inside
+    /// the distro (resolved via <c>cd ~ &amp;&amp; pwd</c>) so picking lands somewhere
+    /// useful; falls back to the distro root when WSL isn't reachable, and to
+    /// <c>\\wsl$</c> when no distro is selected yet.
+    /// </summary>
+    private async System.Threading.Tasks.Task<string> ComputeWslBrowseSeedAsync(string distro, string user)
+    {
+        if (string.IsNullOrEmpty(distro)) return @"\\wsl$";
+        string? home = await WslDiscoveryService.GetDistroHomeAsync(distro, user);
+        if (string.IsNullOrEmpty(home)) return $@"\\wsl$\{distro}";
+        return WslDiscoveryService.ToUncPath(distro, home);
     }
 
     /// <summary>

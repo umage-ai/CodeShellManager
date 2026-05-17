@@ -116,6 +116,59 @@ public static class WslDiscoveryService
     }
 
     /// <summary>
+    /// Resolves the home directory inside a WSL distro for the given user (or the distro's
+    /// default user when <paramref name="user"/> is null/empty). Cached per (distro, user) —
+    /// shells out once via <c>wsl -d &lt;distro&gt; [-u &lt;user&gt;] -- sh -c "cd ~ &amp;&amp; pwd"</c>
+    /// then returns the cached value on subsequent calls. Returns null on failure
+    /// (WSL not running, command timeout, or non-zero exit).
+    /// </summary>
+    public static async Task<string?> GetDistroHomeAsync(string distro, string? user = null)
+    {
+        if (string.IsNullOrWhiteSpace(distro)) return null;
+        string normalizedUser = user?.Trim() ?? "";
+        string key = $"{distro}|{normalizedUser}";
+        lock (_homeCache)
+        {
+            if (_homeCache.TryGetValue(key, out var cached)) return cached;
+        }
+
+        try
+        {
+            string args = $"-d {distro}";
+            if (!string.IsNullOrEmpty(normalizedUser)) args += $" -u {normalizedUser}";
+            args += " -- sh -c \"cd ~ && pwd\"";
+
+            var psi = new ProcessStartInfo("wsl.exe")
+            {
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+            using var process = Process.Start(psi);
+            if (process is null) return null;
+
+            var outTask = process.StandardOutput.ReadToEndAsync();
+            var completed = await Task.WhenAny(outTask, Task.Delay(3000));
+            if (completed != outTask) { try { process.Kill(); } catch { } return null; }
+            try { await process.WaitForExitAsync(); } catch { }
+            if (process.ExitCode != 0) return null;
+
+            string home = outTask.Result.Trim();
+            if (string.IsNullOrEmpty(home)) return null;
+            lock (_homeCache) _homeCache[key] = home;
+            return home;
+        }
+        catch (Win32Exception) { return null; }
+        catch (FileNotFoundException) { return null; }
+    }
+
+    private static readonly Dictionary<string, string> _homeCache = new();
+
+    /// <summary>
     /// Converts a WSL distro + Linux-style path to the Windows UNC view of that path
     /// (<c>\\wsl$\Ubuntu\home\alice</c>). Used by GitService and PseudoTerminal's
     /// working-directory argument so Windows-native tools can read the WSL filesystem.
