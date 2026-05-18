@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload built nupkg as workflow artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codeshellmanager-chocolatey-${{ steps.ver.outputs.version }}
           path: artifact/*.nupkg
