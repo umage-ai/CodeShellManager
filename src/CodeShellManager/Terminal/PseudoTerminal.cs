@@ -172,17 +172,44 @@ public sealed class PseudoTerminal : IPseudoTerminal
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    private static string BuildCmdLine(string command, string fullUserCmd)
+    // Resolved once per process. pwsh (PowerShell 7+) is preferred because that's
+    // where modern users keep their profile functions — wrapping in legacy
+    // powershell.exe (5.1) loads a different profile and won't see them.
+    private static readonly Lazy<string> s_wrapperShell = new(ResolveWrapperShell);
+
+    private static string ResolveWrapperShell()
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "where.exe",
+                Arguments = "pwsh.exe",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            p?.WaitForExit(2000);
+            if (p?.ExitCode == 0) return "pwsh.exe";
+        }
+        catch { }
+        return "powershell.exe";
+    }
+
+    internal static string BuildCmdLine(string command, string fullUserCmd)
+        => BuildCmdLine(command, fullUserCmd, s_wrapperShell.Value);
+
+    internal static string BuildCmdLine(string command, string fullUserCmd, string wrapperShell)
     {
         // Shells are passed through as-is (they initialize the console themselves).
         string exe = System.IO.Path.GetFileNameWithoutExtension(command).ToLowerInvariant();
-        if (exe is "cmd" or "powershell" or "pwsh" or "wsl" or "bash" or "zsh" or "sh" or "ssh")
+        if (exe is "cmd" or "powershell" or "pwsh" or "wsl" or "bash" or "zsh" or "sh" or "ssh" or "nu" or "fish")
             return fullUserCmd;
 
         // Wrap in PowerShell so the shell sets up the Win32 console environment
         // before launching the target process (Electron/Node SEA apps like claude.exe
         // crash with STATUS_DLL_INIT_FAILED when launched directly inside a ConPTY).
-        return $"powershell.exe -NoExit -Command {fullUserCmd}";
+        return $"{wrapperShell} -NoExit -Command {fullUserCmd}";
     }
 
     public void Start(string command, string args, string workingDirectory,
