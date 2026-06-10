@@ -28,6 +28,37 @@ The issue was written 2026-05-12; two assumptions have changed:
    native `forkpty()`+`execvp()` shim per platform (linux-x64/arm64, osx-x64/arm64).
    The native shim matters: .NET 7+ cannot safely call `forkpty` from managed code
    (fork in a threaded runtime is hazardous), so pure-P/Invoke approaches are out.
+3. **Avalonia is now at v12** (12.0.x on nuget.org); the spike targets 12, not the 11.x
+   the issue mentions.
+
+## Licensing constraint (hard requirement)
+
+The product must stay **100% free and open-source, including all dependencies**.
+"Free to use" is not sufficient — every package must carry an OSI-approved license.
+Verified against nuget.org license metadata (2026-06-10):
+
+| Package | License |
+|---|---|
+| `Avalonia` 12.0.x | MIT |
+| `Avalonia.Controls.WebView` 12.0.x | MIT (confirmed — *not* an Accelerate/EULA license) |
+| `Porta.Pty` 1.0.x | MIT |
+| xterm.js + fit addon (vendored) | MIT |
+| Linux runtime: WPE WebKit / WebKitGTK | BSD/LGPL (system packages, not shipped) |
+
+Any dependency added later (spike or port) must be license-checked against this bar
+before adoption. Fallback candidates are pre-checked in the fallback ladder below.
+
+## Alternatives considered (UI layer)
+
+- **Uno Platform** (Apache 2.0) — disqualified: no embedded WebView support on its
+  macOS/Linux Skia desktop targets, and this app is "N web views in a grid".
+- **.NET MAUI** (MIT) — disqualified: no Linux target.
+- **Photino.Blazor** (Apache 2.0) — credible architectural alternative: whole UI as web
+  content in a single native web view, terminal panes as xterm.js divs (the VS Code
+  model). Rejected as primary because it means a full UI rewrite in Blazor/HTML rather
+  than a WPF→Avalonia port, and the project's maintainer investment is smaller — but it
+  is the recognized fallback **if Avalonia's multi-WebView embedding fails the spike**.
+- **Eto.Forms** (BSD) — aging, dated web view support; not competitive.
 
 ## Validation constraints
 
@@ -58,8 +89,8 @@ spikes/
 
 Not referenced by `CodeShellManager.slnx`. Easy to delete or mine later.
 
-**Packages:** `Avalonia` 11.x, `Avalonia.Desktop`, `Avalonia.Themes.Fluent`,
-`Avalonia.Controls.WebView`, `Porta.Pty`.
+**Packages:** `Avalonia` 12.x, `Avalonia.Desktop`, `Avalonia.Themes.Fluent`,
+`Avalonia.Controls.WebView`, `Porta.Pty` — all MIT (see licensing constraint).
 
 ## Components
 
@@ -122,9 +153,11 @@ Each layer swaps independently; the rest of the spike survives:
 
 | Layer | Primary | Fallback 1 | Fallback 2 |
 |---|---|---|---|
-| Web view | `Avalonia.Controls.WebView` (NativeWebView) | community `WebView.Avalonia` | CefGlue-based `WebViewControl-Avalonia` (heavy, ~100MB) |
-| PTY | `Porta.Pty` | `Quick.PtyNet` | vendor `microsoft/vs-pty.net` source (MIT) |
-| UI shell | Avalonia 11 | — (no fallback; if Avalonia itself fails, the whole strategy reopens) |
+| Web view | `Avalonia.Controls.WebView` (NativeWebView, MIT) | community `WebView.Avalonia` (MIT) | CefGlue-based `WebViewControl-Avalonia` (heavy, ~100MB) |
+| PTY | `Porta.Pty` (MIT) | `Quick.PtyNet` | vendor `microsoft/vs-pty.net` source (MIT) |
+| UI shell | Avalonia 12 (MIT) | Photino.Blazor (Apache 2.0) — architecture change, see alternatives | — |
+
+Fallback licenses must be re-verified at adoption time (licensing constraint above).
 
 ## CI
 
