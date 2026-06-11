@@ -18,7 +18,7 @@ package names vary by distro/version; record what actually worked below.)
 | 2 | Interactive shell (typing, arrows, Ctrl+C) | ✅ (typing; arrows/Ctrl+C untested) | ☐ | deferred |
 | 3 | ANSI colors + cursor addressing (TUI) | ✅ (colored dir listing; full TUI untested) | ☐ | deferred |
 | 4 | Resize propagates to the PTY | ☐ (not tested) | ☐ | deferred |
-| 5 | CI build green | ☐ | ☐ | ☐ |
+| 5 | CI build green | ✅ | ✅ | ✅ |
 | 6 | Type-echo latency acceptable | ✅ (no perceptible latency at interactive volume) | ☐ | deferred |
 
 **Footnotes:**
@@ -50,6 +50,10 @@ package names vary by distro/version; record what actually worked below.)
 - Concurrent `WriterStream.WriteAsync` calls are not serialized — interleaving is possible under rapid input.
 - Disposal relies on a swallow-all `catch` around `InvokeScript` rather than a proper shutdown gate.
 - `InvokeScript` is called once per 4 KB output chunk; heavy output should batch/coalesce calls to reduce round-trip overhead.
+
+### 2026-06-11 — CI matrix
+
+All three matrix legs built green on the first attempt with no source changes: ubuntu-latest (24s), macos-latest (35s), windows-latest (1m10s). Run: https://github.com/umage-ai/CodeShellManager/actions/runs/27333797882. The only notable CI annotation was an informational notice that `windows-latest` requests will be redirected to `windows-2025-vs2026` by 15 June 2026 — this is a GitHub runner housekeeping change, not a build issue. No restore warnings on Linux; all three platforms resolved NuGet packages and compiled without modification.
 
 ## Verdict
 
