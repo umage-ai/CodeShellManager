@@ -39,7 +39,7 @@ package names vary by distro/version; record what actually worked below.)
 
 **WebView2 adapter script injection.** On Windows, the WebView2 adapter injects `invokeCSharpAction` via `AddScriptToExecuteOnDocumentCreated`, wired to `window.chrome.webview.postMessage`. The WPE (Linux) and WKWebView (macOS) equivalents have not yet been confirmed — this needs verification in Task 6 and any macOS follow-up.
 
-**CRITICAL — app.manifest required.** An `app.manifest` containing the standard Windows `supportedOS` GUIDs (Vista through 11) is **mandatory**. Without it, `Win32NativeControlHost` throws `"Unable to create child window for native control host"` when `NativeWebView` tries to attach its HWND. Avalonia scaffold templates do not include this file; it must be added manually. This is the most likely blocker for anyone trying to reproduce the spike from scratch.
+**CRITICAL — app.manifest required.** An `app.manifest` containing the Windows 10/11 `supportedOS` GUID is **mandatory**. Without it, `Win32NativeControlHost` throws `"Unable to create child window for native control host"` when `NativeWebView` tries to attach its HWND. Avalonia scaffold templates do not include this file; it must be added manually. This is the most likely blocker for anyone trying to reproduce the spike from scratch.
 
 **Initial resize race did not occur.** The 0×0 initial-size race that the main CodeShellManager app guards against (with a delayed re-fit) was not observed here — `NativeWebView` reported 119×38 correctly on first fit. This may be app-manifest or DPI-awareness related; worth noting in case it resurfaces on Linux.
 
