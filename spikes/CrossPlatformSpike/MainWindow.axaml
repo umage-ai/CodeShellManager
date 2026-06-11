@@ -1,0 +1,14 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CrossPlatformSpike.MainWindow"
+        Title="CrossPlatformSpike" Width="1000" Height="640"
+        Background="#1e1e2e">
+  <DockPanel>
+    <Border DockPanel.Dock="Bottom" Background="#181825" Padding="8,4">
+      <TextBlock x:Name="StatusText" Foreground="#cdd6f4" FontSize="12"
+                 Text="PTY: not started" />
+    </Border>
+    <TextBlock Text="terminal goes here" Foreground="#6c7086"
+               HorizontalAlignment="Center" VerticalAlignment="Center" />
+  </DockPanel>
+</Window>
