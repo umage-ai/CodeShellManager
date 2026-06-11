@@ -8,7 +8,6 @@
       <TextBlock x:Name="StatusText" Foreground="#cdd6f4" FontSize="12"
                  Text="PTY: not started" />
     </Border>
-    <TextBlock Text="terminal goes here" Foreground="#6c7086"
-               HorizontalAlignment="Center" VerticalAlignment="Center" />
+    <NativeWebView x:Name="WebView" />
   </DockPanel>
 </Window>

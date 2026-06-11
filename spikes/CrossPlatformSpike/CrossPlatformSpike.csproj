@@ -7,6 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>CrossPlatformSpike</RootNamespace>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <!-- Required for NativeWebView: Win32NativeControlHost refuses to create the
+         child HWND unless the exe declares Windows 10/11 in its supportedOS list. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
