@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Avalonia.Controls;
+using Avalonia.Platform;
 using Avalonia.Threading;
 
 namespace CrossPlatformSpike;
@@ -20,6 +21,14 @@ public sealed class SpikeBridge : IDisposable
     {
         _webView = webView;
         _setStatus = setStatus;
+        // Ubuntu 24.04 ships no WPE WebKit packages, so prefer the WebKitGTK
+        // adapter (libwebkitgtk-6.0) on Linux. WPE-capable distros would work
+        // without this, but the spike validates the path that stock Ubuntu needs.
+        _webView.EnvironmentRequested += (_, args) =>
+        {
+            if (args is LinuxWpeWebViewEnvironmentRequestedEventArgs wpe)
+                wpe.PreferWebKitGtkInstead = true;
+        };
         _webView.WebMessageReceived += OnWebMessage;
         _pty.DataReceived += OnPtyData;
         _pty.Exited += code => Dispatcher.UIThread.Post(() =>
