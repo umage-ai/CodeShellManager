@@ -14,12 +14,12 @@ package names vary by distro/version; record what actually worked below.)
 
 | # | Criterion | Windows | WSLg (Linux) | macOS |
 |---|---|---|---|---|
-| 1 | Window opens, xterm.js renders | ✅ | ☐ | deferred |
-| 2 | Interactive shell (typing, arrows, Ctrl+C) | ✅ (typing; arrows/Ctrl+C untested) | ☐ | deferred |
-| 3 | ANSI colors + cursor addressing (TUI) | ✅ (colored dir listing; full TUI untested) | ☐ | deferred |
-| 4 | Resize propagates to the PTY | ☐ (not tested) | ☐ | deferred |
+| 1 | Window opens, xterm.js renders | ✅ | ⚠️ window + page work; **content invisible** | deferred |
+| 2 | Interactive shell (typing, arrows, Ctrl+C) | ✅ (typing; arrows/Ctrl+C untested) | ⚠️ input path proven headlessly; unusable visually | deferred |
+| 3 | ANSI colors + cursor addressing (TUI) | ✅ (colored dir listing; full TUI untested) | ☐ (blocked by invisible rendering) | deferred |
+| 4 | Resize propagates to the PTY | ☐ (not tested) | ❌ web surface stuck at 200×200 | deferred |
 | 5 | CI build green | ✅ | ✅ | ✅ |
-| 6 | Type-echo latency acceptable | ✅ (no perceptible latency at interactive volume) | ☐ | deferred |
+| 6 | Type-echo latency acceptable | ✅ (no perceptible latency at interactive volume) | ☐ (blocked by invisible rendering) | deferred |
 
 **Footnotes:**
 - **#2:** Keyboard input via `SendKeys` was validated through a full `dir` round-trip. Arrow keys and Ctrl+C were not explicitly tested; their behaviour depends on PTY raw-mode pass-through which was not exercised.
@@ -55,7 +55,61 @@ package names vary by distro/version; record what actually worked below.)
 
 All three matrix legs built green on the first attempt with no source changes: ubuntu-latest (24s), macos-latest (35s), windows-latest (1m10s). Run: https://github.com/umage-ai/CodeShellManager/actions/runs/27333797882. The only notable CI annotation was an informational notice that `windows-latest` requests will be redirected to `windows-2025-vs2026` by 15 June 2026 — this is a GitHub runner housekeeping change, not a build issue. No restore warnings on Linux; all three platforms resolved NuGet packages and compiled without modification.
 
+### 2026-06-12 — WSLg (Linux) validation
+
+**Linux runtime dependencies (Ubuntu 24.04, actual working set).** The spec's WPE package
+list does not exist on Ubuntu 24.04 — the distro ships **no WPE WebKit packages at all**.
+What the spike actually needed:
+- `libice6 libsm6` — Avalonia's X11 backend P/Invokes `libICE.so.6`/`libSM.so.6` for
+  session management; missing on minimal WSL images (crash at startup without them).
+- `libwebkit2gtk-4.1-0` — the GTK adapter P/Invokes `libwebkit2gtk` (the GTK3-era
+  WebKit2GTK 4.x API), **not** `libwebkitgtk-6.0` (GTK4 API). Installing
+  `libwebkitgtk-6.0-4` was unnecessary.
+- Code opt-in required: `EnvironmentRequested` → `LinuxWpeWebViewEnvironmentRequestedEventArgs.PreferWebKitGtkInstead = true`
+  (type lives in `Avalonia.Platform`, not `Avalonia.Controls`).
+
+**The bridge is fully functional on Linux.** Proven headlessly via `InvokeScript` probes
+(no screen or keyboard involved):
+- `ready` arrived, bash spawned (status bar: `PTY: running /bin/bash`).
+- Reading `term.buffer` back showed the real bash prompt — PTY → C# → `InvokeScript` →
+  `term.write` all work on WebKitGTK.
+- Injecting `{type:'input',data:'touch /tmp/spike-probe…'}` through the page's own
+  `send()` created the file — JS → C# → PTY → bash all work.
+
+**But the GTK adapter fails at presentation under WSLg.** Two distinct defects:
+1. The web surface reports `innerWidth×innerHeight = 200×200` regardless of the actual
+   window size (~1000×640), so fit sizes the terminal to 23×12. The adapter never
+   propagates the Avalonia control bounds to its X11 child.
+2. The rendered content never reaches the screen — the window shows only the Avalonia
+   background and status bar; the terminal area is blank (human-verified). Setting
+   `WEBKIT_DISABLE_COMPOSITING_MODE=1` / `LIBGL_ALWAYS_SOFTWARE=1` did not help.
+
+**WSLg caveat.** WSLg's X server (Weston/RAIL, no DRI3, `libEGL` warnings at startup)
+is an unusual environment. The presentation failures may or may not reproduce on a
+native Linux desktop (real X11/Wayland + GTK session) — that retest is the first
+follow-up before drawing conclusions about Linux in general.
+
+**Headless validation technique (keep).** `RunDiagnosticsAsync` in `SpikeBridge`
+validates both message directions via `InvokeScript` buffer reads and synthetic input —
+useful wherever a human can't interact with the window (CI, remote validation).
+
 ## Verdict
 
-<!-- Go / no-go recommendation for Phase 2, written when validation is done.
-     Mirror it as a comment on issue #32. -->
+**Conditional GO for Phase 2 (Avalonia port on Windows).**
+
+- **Windows: full pass.** Avalonia 12 + NativeWebView + Porta.Pty runs a real interactive
+  pwsh terminal — typing, colors, exit codes, no perceptible latency. The stack is fit
+  for the port. (One setup gotcha: `app.manifest` is mandatory.)
+- **Linux: core proven, presentation broken (under WSLg).** Every layer we own — PTY,
+  bridge, message contract, xterm.js — works on Linux. The failure is confined to
+  `Avalonia.Controls.WebView`'s GTK adapter (fixed 200×200 surface, invisible content).
+  Open paths, in order: retest on a native Linux desktop; test the WPE adapter on a
+  distro that packages WPE; file/track an upstream Avalonia issue; fall back per the
+  spec's ladder (community `WebView.Avalonia`, CefGlue) if the first-party adapter
+  stays broken.
+- **macOS: builds green in CI;** runtime untested (no hardware) — WKWebView adapter
+  risk remains open.
+
+Phase 2 (full Avalonia port, Windows-only target) does not depend on the Linux web-view
+fix and can start now; the Linux presentation question should be resolved in parallel
+before Phase 4 (Linux release).

@@ -53,8 +53,14 @@ public sealed class SpikeBridge : IDisposable
                 case "ready":
                     int cols = msg.GetProperty("cols").GetInt32();
                     int rows = msg.GetProperty("rows").GetInt32();
+                    // Diagnostic probe: proves the C#→JS direction independently of
+                    // PTY traffic and reports the size the page actually sees.
+                    var probe = await _webView.InvokeScript(
+                        "`innerSize=${innerWidth}x${innerHeight} ptyData=${typeof window.ptyData}`");
+                    Console.WriteLine($"[spike] ready {cols}x{rows}; InvokeScript probe => {probe ?? "null"}");
                     await _pty.StartAsync(cols, rows);
                     _setStatus($"PTY: running {_pty.ShellPath} (pid {_pty.Pid}, {cols}x{rows})");
+                    _ = RunDiagnosticsAsync();
                     break;
                 case "input":
                     await _pty.WriteAsync(msg.GetProperty("data").GetString() ?? "");
@@ -76,9 +82,37 @@ public sealed class SpikeBridge : IDisposable
         Dispatcher.UIThread.Post(async () =>
         {
             try { await _webView.InvokeScript($"window.ptyData('{b64}')"); }
-            catch { /* page navigating or torn down; drop the chunk */ }
+            catch (Exception ex)
+            {
+                // Spike diagnostic: a broken C#→JS path must be visible, not silent.
+                Console.WriteLine($"[spike] ptyData InvokeScript failed: {ex.GetType().Name}: {ex.Message}");
+            }
         });
     }
+
+    /// <summary>
+    /// Headless spike diagnostics: reads xterm's buffer back through InvokeScript
+    /// (proves PTY output reached the page without needing to see the screen) and
+    /// injects a shell command through the page's own send() (proves the full
+    /// input path: JS → C# → PTY → shell). Results go to stdout / the run log.
+    /// </summary>
+    private async Task RunDiagnosticsAsync()
+    {
+        await Task.Delay(3000);
+        Console.WriteLine($"[spike] diag line0 => {await JsAsync("term.buffer.active.getLine(0)?.translateToString(true) ?? 'null'")}");
+        await JsAsync("send({type:'input',data:'touch /tmp/spike-probe; echo PROBE_OK\\n'})");
+        await Task.Delay(2500);
+        Console.WriteLine($"[spike] diag tail => {await JsAsync(
+            "Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i)?.translateToString(true))" +
+            ".filter(l=>l&&l.trim()).slice(-4).join(' || ')")}");
+    }
+
+    private Task<string?> JsAsync(string script) =>
+        Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            try { return await _webView.InvokeScript(script); }
+            catch (Exception ex) { return "ERR: " + ex.Message; }
+        });
 
     public void Dispose()
     {
