@@ -1,0 +1,22 @@
+name: spike-crossplatform
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'spikes/CrossPlatformSpike/**'
+      - '.github/workflows/spike-crossplatform.yml'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.x'
+      - run: dotnet build spikes/CrossPlatformSpike/CrossPlatformSpike.csproj -c Release
