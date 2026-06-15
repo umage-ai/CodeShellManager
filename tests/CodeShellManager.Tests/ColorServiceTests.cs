@@ -162,27 +162,4 @@ public class ColorServiceTests
         Assert.Throws<NullReferenceException>(() => ColorService.GetHexColor(null!));
     }
 
-    [Fact]
-    public void GetColor_RoundTripsHexValue()
-    {
-        const string key = @"C:\projects\round-trip";
-        var hex = ColorService.GetHexColor(key);
-        var color = ColorService.GetColor(key);
-
-        var expected = (System.Windows.Media.Color)
-            System.Windows.Media.ColorConverter.ConvertFromString(hex)!;
-
-        Assert.Equal(expected, color);
-    }
-
-    [Fact]
-    public void GetBrush_ProducesBrushWithMatchingColor()
-    {
-        const string key = "user@example.com";
-        var brush = ColorService.GetBrush(key);
-        var color = ColorService.GetColor(key);
-
-        Assert.NotNull(brush);
-        Assert.Equal(color, brush.Color);
-    }
 }

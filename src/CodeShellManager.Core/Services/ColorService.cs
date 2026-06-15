@@ -1,5 +1,3 @@
-using System.Windows.Media;
-
 namespace CodeShellManager.Services;
 
 public static class ColorService
@@ -27,14 +25,6 @@ public static class ColorService
         uint hash = Fnv1a(folderPath.ToLowerInvariant().TrimEnd('/', '\\'));
         return Palette[hash % (uint)Palette.Length];
     }
-
-    public static System.Windows.Media.Color GetColor(string folderPath)
-    {
-        return (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(GetHexColor(folderPath));
-    }
-
-    public static SolidColorBrush GetBrush(string folderPath) =>
-        new(GetColor(folderPath));
 
     private static uint Fnv1a(string s)
     {
