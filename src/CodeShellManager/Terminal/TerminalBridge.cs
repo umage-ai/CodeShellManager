@@ -15,7 +15,7 @@ namespace CodeShellManager.Terminal;
 /// Also handles clipboard (Ctrl+Shift+C/V, right-click paste) and
 /// file drag-and-drop (converts dropped files to their paths in the terminal).
 /// </summary>
-public sealed class TerminalBridge : IDisposable
+public sealed class TerminalBridge : ITerminalBridge
 {
     private readonly WebView2 _webView;
     private PseudoTerminal? _pty;

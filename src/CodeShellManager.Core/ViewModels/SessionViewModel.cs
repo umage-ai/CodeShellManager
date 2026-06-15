@@ -27,7 +27,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _hasWorktreeSiblings;
 
     public PseudoTerminal? Pty { get; set; }
-    public TerminalBridge? Bridge { get; set; }
+    public ITerminalBridge? Bridge { get; set; }
     public AlertDetector? AlertDetector { get; set; }
     public OutputIndexer? OutputIndexer { get; set; }
     public SessionRunner Runner { get; }
