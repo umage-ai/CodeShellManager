@@ -25,6 +25,11 @@ public partial class MainViewModel : ObservableObject
     private readonly SessionManager _sessionManager;
     private readonly StateService _stateService;
     private AppState _appState = new();
+    private readonly IDispatcher _dispatcher;
+    private readonly IToastNotifier _toast;
+
+    /// <summary>When true, state is never persisted (debug isolation). Set by the host at startup.</summary>
+    public bool CleanStart { get; set; }
 
     public ObservableCollection<SessionViewModel> Sessions { get; } = [];
 
@@ -70,12 +75,15 @@ public partial class MainViewModel : ObservableObject
 
     public IReadOnlyList<Models.SessionGroup> Groups => _sessionManager.Groups;
 
-    public MainViewModel(SessionManager sessionManager, StateService stateService)
+    public MainViewModel(SessionManager sessionManager, StateService stateService,
+        IDispatcher dispatcher, IToastNotifier toast)
     {
         _sessionManager = sessionManager;
         _stateService = stateService;
+        _dispatcher = dispatcher;
+        _toast = toast;
         _sessionManager.GroupsChanged += () =>
-            App.Current.Dispatcher.Invoke(() => GroupsChanged?.Invoke());
+            _dispatcher.Post(() => GroupsChanged?.Invoke());
     }
 
     public Models.SessionGroup CreateGroup(string name)
@@ -228,7 +236,7 @@ public partial class MainViewModel : ObservableObject
         // In --clean mode, never write state.json so the user's prior session list
         // survives the debug run untouched. Settings/window/layout changes from a
         // clean run are also discarded — that's the point of "clean".
-        if (App.CleanStart) return;
+        if (CleanStart) return;
 
         _sessionManager.PopulateState(_appState);
         _appState.LastLayout = Layout.ToString();
@@ -241,10 +249,10 @@ public partial class MainViewModel : ObservableObject
     public AppState CurrentState => _appState;
 
     /// <summary>Saves window position/size. Only updates NormalBounds when not maximized.</summary>
-    public void UpdateWindowState(System.Windows.WindowState windowState, double left, double top, double width, double height)
+    public void UpdateWindowState(bool isMaximized, bool isNormal, double left, double top, double width, double height)
     {
-        _appState.WindowMaximized = windowState == System.Windows.WindowState.Maximized;
-        if (windowState == System.Windows.WindowState.Normal)
+        _appState.WindowMaximized = isMaximized;
+        if (isNormal)
         {
             _appState.LastNormalBounds = new Models.WindowBounds
             {
@@ -270,7 +278,7 @@ public partial class MainViewModel : ObservableObject
             vm.Bridge.UserInput += () =>
             {
                 vm.AlertDetector?.NotifyUserInteracted();
-                App.Current.Dispatcher.Invoke(() => OnPropertyChanged(nameof(AlertCount)));
+                _dispatcher.Post(() => OnPropertyChanged(nameof(AlertCount)));
             };
         }
 
@@ -278,17 +286,17 @@ public partial class MainViewModel : ObservableObject
         {
             vm.AlertDetector.AlertRaised += alert =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                _dispatcher.Post(() =>
                 {
                     vm.RaiseAlert(alert.Message, alert.Type);
                     OnPropertyChanged(nameof(AlertCount));
                     if (Settings.ShowToastNotifications)
-                        ToastHelper.Show(vm.DisplayName, alert.Message, Settings.ShowNotificationSound);
+                        _toast.Show(vm.DisplayName, alert.Message, Settings.ShowNotificationSound);
                 });
             };
             vm.AlertDetector.AlertCleared += _ =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                _dispatcher.Post(() =>
                 {
                     vm.ClearAlert();
                     OnPropertyChanged(nameof(AlertCount));
@@ -335,7 +343,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public void PushRecentlyClosed(ShellSession session)
     {
-        if (App.CleanStart) return;
+        if (CleanStart) return;
         _appState.RecentlyClosed.Insert(0, RecentlyClosedEntry.FromSession(session));
         while (_appState.RecentlyClosed.Count > MaxRecentlyClosed)
             _appState.RecentlyClosed.RemoveAt(_appState.RecentlyClosed.Count - 1);

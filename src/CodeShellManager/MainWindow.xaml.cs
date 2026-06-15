@@ -108,7 +108,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _vm = new MainViewModel(_sessionManager, _stateService);
+        _vm = new MainViewModel(_sessionManager, _stateService, new WpfDispatcher(), new WpfToastNotifier())
+        {
+            CleanStart = App.CleanStart,
+        };
         _vm.SessionClosed += OnSessionVmClosed;
 
         // Refresh terminal layout whenever active session changes (Single mode needs this)
@@ -196,7 +199,10 @@ public partial class MainWindow : Window
     private void SaveWindowBounds()
     {
         if (!_windowStateReady) return;
-        _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
+        _vm.UpdateWindowState(
+            WindowState == System.Windows.WindowState.Maximized,
+            WindowState == System.Windows.WindowState.Normal,
+            Left, Top, Width, Height);
         _ = _vm.SaveStateAsync();
     }
 
@@ -4843,7 +4849,10 @@ public partial class MainWindow : Window
 
         _windowStateTimer.Stop();
         if (_windowStateReady)
-            _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
+            _vm.UpdateWindowState(
+                WindowState == System.Windows.WindowState.Maximized,
+                WindowState == System.Windows.WindowState.Normal,
+                Left, Top, Width, Height);
         await _vm.SaveStateAsync();
 
         var all = _vm.Sessions.ToList();
