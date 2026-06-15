@@ -13,6 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CodeShellManager" />
     <InternalsVisibleTo Include="CodeShellManager.Tests" />
   </ItemGroup>
 

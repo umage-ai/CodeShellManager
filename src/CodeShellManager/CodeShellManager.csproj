@@ -33,6 +33,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CodeShellManager.Core\CodeShellManager.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Assets\terminal.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>

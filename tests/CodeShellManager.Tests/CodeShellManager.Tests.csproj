@@ -15,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodeShellManager\CodeShellManager.csproj" />
+    <ProjectReference Include="..\..\src\CodeShellManager.Core\CodeShellManager.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="Fixtures\wt\*.json">
