@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/CodeShellManager/CodeShellManager.csproj" />
+    <Project Path="src/CodeShellManager.Core/CodeShellManager.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CodeShellManager.UITests/CodeShellManager.UITests.csproj" />
