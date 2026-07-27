@@ -4,7 +4,7 @@ $packageName = 'codeshellmanager'
 $softwareName = 'CodeShellManager*'
 
 # Discover the install record (MSI product code) registered for the
-# installed CodeShellManager and uninstall via msiexec.
+# installed CodeShellManager.
 $key = Get-UninstallRegistryKey -SoftwareName $softwareName
 
 if ($key.Count -eq 1) {
