@@ -1635,6 +1635,13 @@ public partial class MainWindow : Window
     private void UpdateActiveTerminalHighlight()
     {
         string? activeId = _vm.ActiveSession?.Id;
+
+        // Keep each bridge's output dispatcher priority in sync with focus, so a chatty
+        // background session posts at Background priority and can't sit ahead of the
+        // active pane's rendering or its keystrokes (issue #70).
+        foreach (var s in _vm.Sessions)
+            if (s.Bridge != null) s.Bridge.IsForeground = s.Id == activeId;
+
         foreach (var (id, ui) in _sessionUi)
         {
             if (id == activeId)

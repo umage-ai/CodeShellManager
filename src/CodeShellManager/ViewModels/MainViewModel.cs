@@ -60,6 +60,19 @@ public partial class MainViewModel : ObservableObject
 
     public int AlertCount => Sessions.Count(s => s.NeedsAttention);
 
+    // AlertCount is an O(N) scan and every raise invalidates WPF bindings. It's touched on
+    // the keystroke path (via AlertCleared), where the value is almost always unchanged, so
+    // suppress no-op raises rather than re-running binding invalidation per character (#70).
+    private int _lastRaisedAlertCount = -1;
+
+    private void RaiseAlertCountIfChanged()
+    {
+        int count = AlertCount;
+        if (count == _lastRaisedAlertCount) return;
+        _lastRaisedAlertCount = count;
+        OnPropertyChanged(nameof(AlertCount));
+    }
+
     public event Action<SessionViewModel>? SessionClosed;
     public event Action? GroupsChanged;
     public event Action? SelectionChanged;
@@ -267,31 +280,34 @@ public partial class MainViewModel : ObservableObject
 
         if (vm.Bridge != null)
         {
-            vm.Bridge.UserInput += () =>
-            {
-                vm.AlertDetector?.NotifyUserInteracted();
-                App.Current.Dispatcher.Invoke(() => OnPropertyChanged(nameof(AlertCount)));
-            };
+            // Runs on the UI thread for every keystroke (WebView2 raises WebMessageReceived
+            // there), so it must stay cheap. NotifyUserInteracted already fires AlertCleared
+            // unconditionally, whose handler below raises AlertCount — so this deliberately
+            // does not raise it a second time (issue #70).
+            vm.Bridge.UserInput += () => vm.AlertDetector?.NotifyUserInteracted();
         }
 
         if (vm.AlertDetector != null)
         {
+            // BeginInvoke, not Invoke: AlertRaised arrives on a System.Threading.Timer
+            // callback, and blocking a threadpool thread on a busy UI thread serves no
+            // purpose — no caller consumes a result.
             vm.AlertDetector.AlertRaised += alert =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                App.Current.Dispatcher.BeginInvoke(() =>
                 {
                     vm.RaiseAlert(alert.Message, alert.Type);
-                    OnPropertyChanged(nameof(AlertCount));
+                    RaiseAlertCountIfChanged();
                     if (Settings.ShowToastNotifications)
                         ToastHelper.Show(vm.DisplayName, alert.Message, Settings.ShowNotificationSound);
                 });
             };
             vm.AlertDetector.AlertCleared += _ =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                App.Current.Dispatcher.BeginInvoke(() =>
                 {
                     vm.ClearAlert();
-                    OnPropertyChanged(nameof(AlertCount));
+                    RaiseAlertCountIfChanged();
                 });
             };
         }

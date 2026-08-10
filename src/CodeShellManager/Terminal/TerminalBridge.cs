@@ -36,6 +36,17 @@ public sealed class TerminalBridge : IDisposable
     // Output that arrived before the page finished loading is buffered here
     private readonly System.Text.StringBuilder _outputBuffer = new();
 
+    // Coalesces PTY chunks into one dispatcher post per tick (issue #70).
+    private readonly OutputCoalescer _coalescer;
+
+    /// <summary>
+    /// True when this session's pane is the active one. Foreground output posts at
+    /// Normal priority; background sessions post at Background priority so a chatty
+    /// off-screen session can't delay the pane the user is actually typing into.
+    /// Set by MainWindow whenever MainViewModel.ActiveSession changes.
+    /// </summary>
+    public bool IsForeground { get; set; }
+
     // Diagnostics — gated by AppSettings.DebugTerminalTrace. Zero cost when off.
     /// <summary>AppSettings reference whose DebugTerminalTrace flag gates [DEBUG-tt] logging.</summary>
     public AppSettings? DebugSettings { get; set; }
@@ -96,6 +107,30 @@ public sealed class TerminalBridge : IDisposable
     public TerminalBridge(WebView2 webView)
     {
         _webView = webView;
+        _coalescer = new OutputCoalescer(ScheduleFlush, PostOutput);
+    }
+
+    // Queues one coalesced flush. Background sessions yield to the foreground pane so
+    // their output can't sit ahead of the active session's rendering or its keystrokes.
+    private void ScheduleFlush(Action flush)
+    {
+        var dispatcher = WpfApplication.Current?.Dispatcher;
+        if (dispatcher == null) return;
+        dispatcher.BeginInvoke(
+            IsForeground
+                ? System.Windows.Threading.DispatcherPriority.Normal
+                : System.Windows.Threading.DispatcherPriority.Background,
+            flush);
+    }
+
+    // Runs on the UI thread. One WebView2 post per coalesced batch.
+    private void PostOutput(string data)
+    {
+        string json = JsonSerializer.Serialize(new { type = "output", data });
+        try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
+        catch { }
+        if (DebugSettings?.DebugTerminalTrace == true)
+            Trace($"OUTPUT flush len={data.Length}");
     }
 
     /// <summary>
@@ -200,16 +235,10 @@ public sealed class TerminalBridge : IDisposable
                 buffered = _outputBuffer.ToString();
                 _outputBuffer.Clear();
             }
-            if (buffered.Length > 0)
-            {
-                string json = System.Text.Json.JsonSerializer.Serialize(
-                    new { type = "output", data = buffered });
-                WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
-                {
-                    try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
-                    catch { }
-                });
-            }
+            // Route through the coalescer rather than posting directly: chunks that land
+            // between `_ready = true` above and this drain go to the coalescer, so sharing
+            // one buffer keeps load-time output in arrival order.
+            if (buffered.Length > 0) _coalescer.Append(buffered);
 
             navDone.TrySetResult(true);
         }
@@ -253,20 +282,10 @@ public sealed class TerminalBridge : IDisposable
             return;
         }
 
-        string json = JsonSerializer.Serialize(new { type = "output", data = rawData });
-        long enqueueAt = DebugSettings?.DebugTerminalTrace == true ? Environment.TickCount64 : 0;
-        int len = rawData.Length;
-        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            // Capture latency before any work so Trace's file I/O doesn't inflate the
-            // measurement, then post the WebView2 message before tracing so the trace
-            // overhead doesn't delay terminal rendering.
-            long latencyMs = enqueueAt != 0 ? Environment.TickCount64 - enqueueAt : 0;
-            try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
-            catch { }
-            if (enqueueAt != 0)
-                Trace($"OUTPUT post dispatcher-latency={latencyMs}ms len={len}");
-        });
+        // Buffer instead of posting per chunk. Many chunks arriving before the dispatcher
+        // gets a turn collapse into a single post, so background sessions can no longer
+        // flood the shared UI queue and starve the foreground pane (issue #70).
+        _coalescer.Append(rawData);
     }
 
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
