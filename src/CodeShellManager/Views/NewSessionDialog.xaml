@@ -180,6 +180,10 @@
                              AutomationProperties.AutomationId="NewSessionRemoteRadio"
                              Content="Remote (SSH)"
                              Checked="SessionType_Changed"/>
+                <RadioButton x:Name="WslRadio"
+                             AutomationProperties.AutomationId="NewSessionWslRadio"
+                             Content="WSL"
+                             Checked="SessionType_Changed"/>
             </StackPanel>
         </StackPanel>
 
@@ -227,6 +231,51 @@
             <TextBox x:Name="SshRemoteFolderBox"
                      AutomationProperties.AutomationId="NewSessionSshRemoteFolderBox"
                      ToolTip="e.g. /home/alice/project — leave blank for home directory"/>
+        </StackPanel>
+
+        <!-- WSL: distro + linux working folder + optional user -->
+        <StackPanel Grid.Row="3" x:Name="WslPanel" Visibility="Collapsed" Margin="0,0,0,12">
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="140"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Distro" Style="{StaticResource Label}"
+                           Grid.Row="0" Grid.Column="0"/>
+                <TextBlock Text="User (optional)" Style="{StaticResource Label}"
+                           Grid.Row="0" Grid.Column="1" Margin="6,0,0,3"/>
+                <ComboBox x:Name="WslDistroCombo"
+                          AutomationProperties.AutomationId="NewSessionWslDistroCombo"
+                          Grid.Row="1" Grid.Column="0" Margin="0,0,6,0"
+                          ToolTip="Installed WSL distros (from `wsl -l -v`)"/>
+                <TextBox x:Name="WslUserBox"
+                         AutomationProperties.AutomationId="NewSessionWslUserBox"
+                         Grid.Row="1" Grid.Column="1"
+                         ToolTip="Optional WSL user (-u). Leave blank for the distro's default user."/>
+            </Grid>
+            <TextBlock Text="Linux Working Folder (optional)" Style="{StaticResource Label}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="WslWorkingFolderBox"
+                         AutomationProperties.AutomationId="NewSessionWslWorkingFolderBox"
+                         Grid.Column="0" Margin="0,0,6,0"
+                         ToolTip="e.g. /home/alice/project — leave blank for the user's home directory"/>
+                <Button Grid.Column="1" Content="Browse…" Style="{StaticResource Btn}"
+                        Click="BrowseWslFolder_Click"/>
+            </Grid>
+            <TextBlock x:Name="WslHelpText"
+                       Margin="0,4,0,0"
+                       FontSize="11"
+                       Foreground="#6c7086"
+                       TextWrapping="Wrap"
+                       Text=""/>
         </StackPanel>
 
         <!-- Command -->

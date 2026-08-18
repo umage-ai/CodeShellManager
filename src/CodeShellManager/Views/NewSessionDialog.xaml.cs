@@ -31,6 +31,12 @@ public partial class NewSessionDialog : Window
     public string SshUser { get; private set; } = "";
     public string SshRemoteFolder { get; private set; } = "";
 
+    // WSL session output
+    public bool IsWsl { get; private set; } = false;
+    public string WslDistro { get; private set; } = "";
+    public string WslUser { get; private set; } = "";
+    public string WslWorkingFolder { get; private set; } = "";
+
     // Profile-driven appearance overrides (null when no profile picked)
     public string? ProfileFontFamily { get; private set; }
     public int? ProfileFontSize { get; private set; }
@@ -57,6 +63,19 @@ public partial class NewSessionDialog : Window
     private readonly System.Windows.Threading.DispatcherTimer _worktreeDebounce;
     private System.Threading.CancellationTokenSource? _worktreeProbeCts;
     private string? _lastProbedFolder;
+    /// <summary>
+    /// What we last auto-filled into <see cref="NameBox"/>. AutoFillName uses this
+    /// to tell "the user hasn't typed anything custom" from "the user has". When
+    /// the box equals this value (or is empty), we're free to overwrite it when
+    /// the source context (folder / distro / host) changes. Anything else means
+    /// the user has edited it and we must not stomp.
+    /// </summary>
+    private string _lastAutoFilledName = "";
+    /// <summary>
+    /// Distro name we want PopulateWslDistrosAsync to pre-select once the combo
+    /// finishes loading. Empty = use the default (first / system default distro).
+    /// </summary>
+    private readonly string _preselectWslDistro = "";
 
     public NewSessionDialog(
         string defaultFolder = "",
@@ -65,11 +84,13 @@ public partial class NewSessionDialog : Window
         string? defaultCommand = null,
         string? defaultArgs = null,
         string? defaultName = null,
-        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null)
+        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null,
+        ShellSession? defaultSourceSession = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
         _profiles = profiles ?? Array.Empty<WindowsTerminalProfile>();
+        _preselectWslDistro = defaultSourceSession?.IsWsl == true ? defaultSourceSession.WslDistro : "";
 
         var customItem = CommandCombo.Items[0];
         CommandCombo.Items.Clear();
@@ -121,17 +142,61 @@ public partial class NewSessionDialog : Window
 
         FolderBox.TextChanged += (_, _) => { AutoFillName(); ScheduleWorktreeProbe(); };
         SshHostBox.TextChanged += (_, _) => AutoFillName();
+        WslDistroCombo.SelectionChanged += (_, _) => AutoFillName();
+        WslWorkingFolderBox.TextChanged += (_, _) => AutoFillName();
+
+        // Inherit WSL parent: when a user right-clicks a WSL session and picks
+        // "New session here", default the new dialog to WSL mode with the same
+        // distro/user/folder pre-filled. The combo selection happens later in
+        // PopulateWslDistrosAsync (it's async-populated on Loaded).
+        if (defaultSourceSession?.IsWsl == true)
+        {
+            WslRadio.IsChecked = true;
+            WslUserBox.Text = defaultSourceSession.WslUser ?? "";
+            WslWorkingFolderBox.Text = defaultSourceSession.WslWorkingFolder ?? "";
+        }
 
         Loaded += async (_, _) =>
         {
-            if (!IsRemoteMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
+            if (IsLocalMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
                 await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
+            await PopulateWslDistrosAsync();
         };
+    }
+
+    /// <summary>
+    /// Fills <c>WslDistroCombo</c> from <see cref="WslDiscoveryService.GetDistrosAsync"/>.
+    /// On hosts without WSL installed we leave the combo empty and surface a one-line hint
+    /// so the WSL radio doesn't appear broken.
+    /// </summary>
+    private async System.Threading.Tasks.Task PopulateWslDistrosAsync()
+    {
+        var distros = await WslDiscoveryService.GetDistrosAsync();
+        WslDistroCombo.Items.Clear();
+        if (distros.Count == 0)
+        {
+            WslHelpText.Text = "No WSL distros found. Install WSL from the Microsoft Store, then re-open this dialog.";
+            return;
+        }
+        ComboBoxItem? preselectMatch = null;
+        foreach (var d in distros)
+        {
+            string label = d.IsDefault ? $"{d.Name}  (default, v{d.Version})" : $"{d.Name}  (v{d.Version})";
+            var item = new ComboBoxItem { Content = label, Tag = d.Name };
+            WslDistroCombo.Items.Add(item);
+            if (!string.IsNullOrEmpty(_preselectWslDistro)
+                && string.Equals(d.Name, _preselectWslDistro, StringComparison.OrdinalIgnoreCase))
+            {
+                preselectMatch = item;
+            }
+        }
+        WslDistroCombo.SelectedItem = preselectMatch ?? WslDistroCombo.Items[0];
+        WslHelpText.Text = "";
     }
 
     private void ScheduleWorktreeProbe()
     {
-        if (IsRemoteMode)
+        if (!IsLocalMode)
         {
             WorktreesPanel.Visibility = Visibility.Collapsed;
             return;
@@ -198,44 +263,67 @@ public partial class NewSessionDialog : Window
     }
 
     private bool IsRemoteMode => RemoteRadio?.IsChecked == true;
+    private bool IsWslMode => WslRadio?.IsChecked == true;
+    private bool IsLocalMode => !IsRemoteMode && !IsWslMode;
 
     private void AutoFillName()
     {
-        if (!string.IsNullOrWhiteSpace(NameBox.Text)) return;
+        // Allow overwrite when the box is empty OR still holds our last auto-fill.
+        // Anything else means the user typed something — leave it alone.
+        if (!string.IsNullOrWhiteSpace(NameBox.Text) && NameBox.Text != _lastAutoFilledName)
+            return;
 
+        string suggested = "";
         if (IsRemoteMode)
         {
             var raw = SshHostBox.Text.Trim();
             if (!string.IsNullOrWhiteSpace(raw))
             {
-                try { NameBox.Text = raw.Split(':')[0]; }
+                try { suggested = raw.Split(':')[0]; }
                 catch { }
             }
+        }
+        else if (IsWslMode)
+        {
+            string distro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            string folder = WslWorkingFolderBox.Text.Trim();
+            string leaf = string.IsNullOrEmpty(folder)
+                ? ""
+                : Path.GetFileName(folder.TrimEnd('/'));
+            suggested = string.IsNullOrEmpty(leaf)
+                ? distro
+                : (string.IsNullOrEmpty(distro) ? leaf : $"{distro}: {leaf}");
         }
         else
         {
             if (!string.IsNullOrWhiteSpace(FolderBox.Text))
             {
-                try { NameBox.Text = Path.GetFileName(FolderBox.Text.TrimEnd('/', '\\')); }
+                try { suggested = Path.GetFileName(FolderBox.Text.TrimEnd('/', '\\')) ?? ""; }
                 catch { }
             }
         }
+
+        NameBox.Text = suggested;
+        _lastAutoFilledName = suggested;
     }
 
     private void SessionType_Changed(object sender, RoutedEventArgs e)
     {
         if (LocalPanel == null) return;
-        LocalPanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+        LocalPanel.Visibility = IsLocalMode ? Visibility.Visible : Visibility.Collapsed;
         SshPanel.Visibility = IsRemoteMode ? Visibility.Visible : Visibility.Collapsed;
+        WslPanel.Visibility = IsWslMode ? Visibility.Visible : Visibility.Collapsed;
         // Profile combobox is local-only
         if (ProfilePanel != null && _profiles.Count > 0)
-            ProfilePanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+            ProfilePanel.Visibility = IsLocalMode ? Visibility.Visible : Visibility.Collapsed;
         if (WorktreesPanel != null)
         {
             WorktreesPanel.Visibility = Visibility.Collapsed;
             _lastProbedFolder = null;
         }
-        CommandLabel.Text = IsRemoteMode ? "Remote Shell" : "Command";
+        CommandLabel.Text = IsRemoteMode ? "Remote Shell"
+            : IsWslMode ? "Shell (inside WSL)"
+            : "Command";
         NameBox.Text = "";
         AutoFillName();
     }
@@ -253,6 +341,99 @@ public partial class NewSessionDialog : Window
             FolderBox.Text = dialog.SelectedPath;
             AutoFillName();
         }
+    }
+
+    /// <summary>
+    /// Pops a folder picker rooted at the WSL filesystem (<c>\\wsl$\</c>). When the
+    /// user picks a folder under one of the distros, both the distro combo and the
+    /// Linux working-folder box update to match — so they can also switch distros
+    /// by drilling into a different one in the dialog.
+    /// </summary>
+    private async void BrowseWslFolder_Click(object sender, RoutedEventArgs e)
+    {
+        string selectedDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+        string seed = await ComputeWslBrowseSeedAsync(selectedDistro, WslUserBox.Text.Trim());
+
+        // Only InitialDirectory is set: it navigates the dialog to the seed but
+        // leaves the bottom "Folder:" textbox empty (the user is about to pick anyway).
+        // Setting SelectedPath as well shoves the raw UNC into that textbox, which the
+        // shell renders as a truncated, slash-flipped mess (e.g. "bu/home/bitblade") —
+        // worse than empty.
+        using var dialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "Select Linux working folder (inside WSL)",
+            UseDescriptionForTitle = true,
+            InitialDirectory = seed,
+        };
+        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+
+        var (distro, linuxPath) = ParseWslUncPath(dialog.SelectedPath);
+        if (string.IsNullOrEmpty(distro))
+        {
+            // User navigated out of the WSL share entirely (e.g. into C:\…). Putting
+            // a Windows path into the Linux-folder box would just make `wsl --cd`
+            // fail later — so refuse the selection and tell them why.
+            System.Windows.MessageBox.Show(
+                $"'{dialog.SelectedPath}' is not inside a WSL distro.\n\n" +
+                "Please pick a folder under one of the distros shown in the left pane (Linux → Ubuntu, etc.).",
+                "Not a WSL folder", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        else
+        {
+            // If they drilled into a different distro than the combo had, switch the combo too.
+            if (!string.Equals(distro, selectedDistro, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var item in WslDistroCombo.Items.OfType<ComboBoxItem>())
+                {
+                    if (string.Equals(item.Tag as string, distro, StringComparison.OrdinalIgnoreCase))
+                    {
+                        WslDistroCombo.SelectedItem = item;
+                        break;
+                    }
+                }
+            }
+            WslWorkingFolderBox.Text = linuxPath;
+        }
+        AutoFillName();
+    }
+
+    /// <summary>
+    /// Seed path for the WSL folder picker. Prefers the user's home directory inside
+    /// the distro (resolved via <c>cd ~ &amp;&amp; pwd</c>) so picking lands somewhere
+    /// useful; falls back to the distro root when WSL isn't reachable, and to
+    /// <c>\\wsl$</c> when no distro is selected yet.
+    /// </summary>
+    private async System.Threading.Tasks.Task<string> ComputeWslBrowseSeedAsync(string distro, string user)
+    {
+        if (string.IsNullOrEmpty(distro)) return @"\\wsl$";
+        string? home = await WslDiscoveryService.GetDistroHomeAsync(distro, user);
+        if (string.IsNullOrEmpty(home)) return $@"\\wsl$\{distro}";
+        return WslDiscoveryService.ToUncPath(distro, home);
+    }
+
+    /// <summary>
+    /// Splits a WSL UNC path (<c>\\wsl$\Ubuntu\home\alice</c> or the
+    /// <c>\\wsl.localhost\</c> variant) into (distro, linux-path). Returns empty
+    /// strings when the input isn't a recognizable WSL UNC.
+    /// </summary>
+    internal static (string distro, string linuxPath) ParseWslUncPath(string unc)
+    {
+        if (string.IsNullOrWhiteSpace(unc)) return ("", "");
+        string normalized = unc.Replace('/', '\\').TrimEnd('\\');
+        string[] prefixes = { @"\\wsl$\", @"\\wsl.localhost\" };
+        foreach (var prefix in prefixes)
+        {
+            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            string rest = normalized[prefix.Length..];
+            if (string.IsNullOrEmpty(rest)) return ("", "");
+            int slash = rest.IndexOf('\\');
+            string distro = slash < 0 ? rest : rest[..slash];
+            string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
+            string linuxPath = string.IsNullOrEmpty(linuxRest) ? "" : "/" + linuxRest.Replace('\\', '/');
+            return (distro, linuxPath);
+        }
+        return ("", "");
     }
 
     private void CommandCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -318,12 +499,13 @@ public partial class NewSessionDialog : Window
         ProfileColorSchemeJson = profile.ColorSchemeJson;
     }
 
-    private void Start_Click(object sender, RoutedEventArgs e)
+    private async void Start_Click(object sender, RoutedEventArgs e)
     {
         IsRemote = IsRemoteMode;
+        IsWsl = IsWslMode;
         SessionName = NameBox.Text.Trim();
 
-        if (!IsRemoteMode && WorktreesPanel.Visibility == Visibility.Visible)
+        if (IsLocalMode && WorktreesPanel.Visibility == Visibility.Visible)
         {
             AdditionalWorktreePaths = WorktreesList.Children.OfType<System.Windows.Controls.CheckBox>()
                 .Where(c => c.IsChecked == true)
@@ -331,6 +513,46 @@ public partial class NewSessionDialog : Window
                 .Where(p => !string.IsNullOrEmpty(p))
                 .Select(p => p!)
                 .ToList();
+        }
+
+        if (IsWsl)
+        {
+            WslDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            if (string.IsNullOrWhiteSpace(WslDistro))
+            {
+                System.Windows.MessageBox.Show(
+                    "Please select a WSL distro.",
+                    "Distro required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                WslDistroCombo.Focus();
+                return;
+            }
+
+            WslUser = WslUserBox.Text.Trim();
+            WslWorkingFolder = WslWorkingFolderBox.Text.Trim();
+
+            // If the user left the Linux folder blank, resolve $HOME eagerly so the
+            // session's WorkingFolder UNC and its Linux path stay in sync. Otherwise
+            // git status runs against the distro root (\\wsl$\<distro> → "/") while
+            // the shell actually starts in $HOME — and the sidebar branch info goes
+            // missing for repos under home. Best-effort: silent fallback to blank
+            // (the existing "land in $HOME, no git info" behavior) when WSL is
+            // unreachable.
+            if (string.IsNullOrEmpty(WslWorkingFolder))
+            {
+                string? home = await WslDiscoveryService.GetDistroHomeAsync(WslDistro, WslUser);
+                if (!string.IsNullOrEmpty(home)) WslWorkingFolder = home;
+            }
+
+            var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
+            string raw = selectedTag == "custom" ? CustomArgsBox.Text.Trim() : selectedTag;
+            var (exe, args) = CommandLineSplitter.Split(raw);
+            SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+            SelectedArgs = args;
+
+            SelectedFolder = "";
+            DialogResult = true;
+            Close();
+            return;
         }
 
         if (IsRemote)
