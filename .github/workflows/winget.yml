@@ -1,12 +1,22 @@
 name: Publish to WinGet
 
 # Submits the signed MSI from a GitHub Release to microsoft/winget-pkgs.
-# - `release` event fires automatically when CI / Release publishes the GitHub Release.
-# - `workflow_dispatch` lets us re-publish a past version (used for the very first
-#   submission once this workflow exists on main).
 #
-# Requires repo secret WINGET_TOKEN: a classic PAT with `public_repo` scope.
-# (winget-releaser does not yet support fine-grained tokens.)
+# ⚠️ THE `release` TRIGGER BELOW HAS NEVER ACTUALLY FIRED. Every run in this repo's
+# history is a workflow_dispatch. That is GitHub behaving as designed: events raised
+# by a workflow authenticated with the default GITHUB_TOKEN do not trigger other
+# workflows, and CI / Release creates the Release with exactly that token. So
+# **dispatching this manually is the release process**, not a fallback:
+#
+#     gh workflow run winget.yml -f tag=vX.Y.Z
+#
+# To make the automatic trigger real, CI / Release would need to create the Release
+# with a PAT instead of GITHUB_TOKEN. Left as-is deliberately — see CLAUDE.md.
+#
+# Requires repo secret WINGET_TOKEN: a classic PAT with `public_repo` scope
+# (winget-releaser does not support fine-grained tokens). `public_repo` IS enough —
+# if you hit a permissions-looking error, read the sync step below before touching
+# the token, because that error is almost never about the token.
 
 on:
   release:
@@ -25,6 +35,33 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # ── Sync the fork before submitting ─────────────────────────────────────
+      # komac creates its release branch in OUR fork of winget-pkgs. Upstream lands
+      # dozens of commits a day, so a fork left alone between releases falls far
+      # enough behind that GitHub rejects the branch creation.
+      #
+      # The failure is badly disguised — it surfaces as
+      #     "<user> does not have the correct permissions to execute `CreateRef`"
+      #     "failed to create branch UmageAI.CodeShellManager-<version>-<hash>"
+      # which reads like a token-scope problem and is not one. v0.6.0 burned three
+      # regenerated PATs (including needlessly widening the scope to full `repo`)
+      # before the actual cause turned up. See komac#376 and winget-releaser#336.
+      #
+      # NOTE the fork komac uses is the one under the SAME OWNER as this repo —
+      # umage-ai/winget-pkgs — not a maintainer's personal fork. A personal fork of
+      # winget-pkgs may also exist; syncing that one does nothing. Override with the
+      # `fork-user` input if this ever needs to point elsewhere.
+      # continue-on-error: a sync hiccup must not block a submit that might still
+      # succeed, and if the submit then fails we want its real error, not this one.
+      - name: Sync umage-ai/winget-pkgs with upstream
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          gh api -X POST "repos/${{ github.repository_owner }}/winget-pkgs/merge-upstream" \
+            -f branch=master \
+            --jq '"sync: \(.merge_type) - \(.message)"'
+
       - name: Submit to winget-pkgs
         uses: vedantmgoyal9/winget-releaser@v2
         with:

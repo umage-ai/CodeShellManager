@@ -322,9 +322,47 @@ git tag v1.2.3 -m "v1.2.3 - description"
 git push origin v1.2.3
 ```
 
-The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` flag). **Do not rely on the csproj version number** — bump it for local build clarity only. CI produces a signed exe, MSI installer, and portable ZIP, then creates a GitHub Release automatically.
+The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` flag). `AssemblyVersion` / `FileVersion` are deliberately **not** set in the csproj so they derive from `Version` — pinning them is what made every release through v0.5.0 ship binaries reporting `FileVersion 0.3.4.0`. CI produces a signed exe, MSI installer, and portable ZIP, then creates a GitHub Release automatically.
 
-A second workflow, `.github/workflows/winget.yml`, fires on the `release: released` event and submits the signed MSI to microsoft/winget-pkgs as `UmageAI.CodeShellManager` via [vedantmgoyal9/winget-releaser](https://github.com/vedantmgoyal9/winget-releaser). It needs the repo secret `WINGET_TOKEN` (classic PAT, `public_repo` scope). The same workflow is `workflow_dispatch`-able with a `tag` input to backfill or retry a release.
+### Pushing the tag is only half the release
+
+**The `release: released` triggers on `winget.yml` and `chocolatey.yml` have never fired.** Every run in the repo's history is a `workflow_dispatch`. This is GitHub behaving as designed: events raised by a workflow authenticated with the default `GITHUB_TOKEN` do not trigger other workflows, and `softprops/action-gh-release` creates the Release with exactly that token. Both workflows still *declare* the trigger, which makes it look automatic. It is not.
+
+**Post-tag checklist — required, not optional:**
+
+```bash
+# 1. wait for CI / Release to finish and the GitHub Release to exist
+# 2. then dispatch BOTH mirrors by hand
+gh workflow run winget.yml     -f tag=vX.Y.Z
+gh workflow run chocolatey.yml -f tag=vX.Y.Z
+# 3. watch both — they fail independently of CI and nothing else will tell you
+```
+
+To make it genuinely automatic, CI / Release would have to create the Release with a PAT rather than `GITHUB_TOKEN`.
+
+### winget: the `CreateRef` error is not about the token
+
+`winget.yml` submits the signed MSI to microsoft/winget-pkgs as `UmageAI.CodeShellManager` via [winget-releaser](https://github.com/vedantmgoyal9/winget-releaser). Needs `WINGET_TOKEN` — a **classic** PAT with `public_repo` (fine-grained tokens are unsupported).
+
+When it fails you will see:
+
+```
+0: AThraen does not have the correct permissions to execute `CreateRef`
+1: failed to create branch UmageAI.CodeShellManager-<version>-<hash>
+```
+
+**This is almost never a token problem.** It means our fork of winget-pkgs is too far behind upstream for GitHub to accept the new branch. Upstream lands dozens of commits a day, so a fork untouched since the last release is always stale by the next one.
+
+Two traps that cost real time on v0.6.0:
+
+- **Sync the fork under the org, `umage-ai/winget-pkgs`** — komac uses the fork owned by the same account as this repo. A maintainer's *personal* fork (`AThraen/winget-pkgs`) may also exist and is a red herring; syncing it changes nothing.
+- **Don't widen the token scope.** `public_repo` is sufficient. winget-releaser's README once carried advice to use full `repo`; the PR proposing it was closed unmerged. Broadening the scope does not fix this and hands CI write access to every private repo the owner can reach.
+
+`winget.yml` now syncs the org fork automatically before submitting, so this should not recur. If it does, sync manually and re-dispatch:
+
+```bash
+gh api -X POST repos/umage-ai/winget-pkgs/merge-upstream -f branch=master
+```
 
 A third workflow, `.github/workflows/chocolatey.yml`, also fires on `release: released` and publishes the signed MSI to community.chocolatey.org as `codeshellmanager`. It downloads the MSI from the GitHub Release, computes its SHA256, substitutes `__URL64__` / `__CHECKSUM64__` placeholders in `.chocolatey/tools/chocolateyinstall.ps1`, then runs `choco pack` and `choco push`. Needs the repo secret `CHOCO_API_KEY` (API key from a chocolatey.org account with push rights on the `codeshellmanager` id). Also `workflow_dispatch`-able with a `tag` input. The `.chocolatey/` folder holds the package skeleton (`codeshellmanager.nuspec`, `tools/chocolateyinstall.ps1`, `tools/chocolateyuninstall.ps1`); never commit a resolved URL or checksum into the install script — those placeholders are only substituted by the workflow at pack time. The nuspec's `licenseUrl` points at the GitHub `LICENSE` file, so no bundled `LICENSE.txt`/`VERIFICATION.txt` is needed (Chocolatey moderator feedback on the v0.5.0 submission asked these to be removed, along with setting `owners` to the maintainer account rather than the org).
 
