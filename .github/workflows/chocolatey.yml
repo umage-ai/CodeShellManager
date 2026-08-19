@@ -2,9 +2,14 @@ name: Publish to Chocolatey
 
 # Packs and pushes a Chocolatey package wrapping the signed MSI from a GitHub Release
 # to community.chocolatey.org.
-# - `release` event fires automatically when CI / Release publishes the GitHub Release.
-# - `workflow_dispatch` lets us re-publish a past version (used for the first
-#   submission once this workflow exists on main).
+# ⚠️ The `release` trigger below has never actually fired — every run in this repo's
+# history is a workflow_dispatch. Events raised by a workflow using the default
+# GITHUB_TOKEN do not trigger other workflows, and CI / Release creates the Release
+# with that token. **Dispatching this manually is the release process**:
+#
+#     gh workflow run chocolatey.yml -f tag=vX.Y.Z
+#
+# See CLAUDE.md → Releases for the full post-tag checklist.
 #
 # Requires repo secret CHOCO_API_KEY (from https://community.chocolatey.org/account)
 # scoped to push for package id `codeshellmanager`.
