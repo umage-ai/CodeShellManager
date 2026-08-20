@@ -277,6 +277,10 @@ public partial class MainWindow : Window
             // so simultaneous boots can corrupt the user's profile.
             int staggerMs = _vm.Settings.ClaudeLaunchStaggerMs;
             bool lastWasClaude = false;
+            // Last-write time of Claude's config captured just before the previous
+            // Claude launch, so the gate below can tell whether that launch has
+            // finished writing yet. See ClaudeConfigGate (issue #82).
+            DateTime? prevClaudeCfgBaseline = null;
             // WebView2 user-data folder access-denied is a common shared-failure
             // when another instance is running. Batch these so the user gets one
             // actionable dialog at the end instead of N "Restore Error" popups.
@@ -285,8 +289,19 @@ public partial class MainWindow : Window
             {
                 if (s.IsDormant) continue;
                 bool isClaude = ClaudeSessionService.IsClaudeCommand(s.Command);
+
+                // Wait for the PREVIOUS Claude to finish rewriting its config rather
+                // than sleeping a flat staggerMs. Same protection, but it costs what it
+                // actually takes instead of the worst case every time — 19 consecutive
+                // Claude sessions used to mean 38s of pure sleep. Capped at staggerMs,
+                // so this can never be slower than the old behaviour.
                 if (isClaude && lastWasClaude && staggerMs > 0)
-                    await Task.Delay(staggerMs);
+                    await WaitForClaudeConfigQuiesceAsync(prevClaudeCfgBaseline, staggerMs);
+
+                // Baseline BEFORE launching — a fast write would otherwise land before
+                // the first poll and read as "never written".
+                if (isClaude) prevClaudeCfgBaseline = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
+
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -556,11 +571,16 @@ public partial class MainWindow : Window
         int staggerMs = _vm.Settings.ClaudeLaunchStaggerMs;
         string anchorId = primary.Id;
         bool lastWasClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
+        DateTime? prevClaudeCfgBaseline = lastWasClaude
+            ? ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath) : null;
         foreach (var path in additionalPaths)
         {
             if (!System.IO.Directory.Exists(path)) continue;
             bool isClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
-            if (isClaude && lastWasClaude && staggerMs > 0) await Task.Delay(staggerMs);
+            // Adaptive gate rather than a flat sleep — see the restore loop in OnLoaded.
+            if (isClaude && lastWasClaude && staggerMs > 0)
+                await WaitForClaudeConfigQuiesceAsync(prevClaudeCfgBaseline, staggerMs);
+            if (isClaude) prevClaudeCfgBaseline = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
             var sibling = _sessionManager.CreateSession(
                 System.IO.Path.GetFileName(path.TrimEnd('/', '\\')) ?? primary.Command,
                 path,
@@ -4884,10 +4904,21 @@ public partial class MainWindow : Window
         foreach (var vm in all)
         {
             if (!ClaudeSessionService.IsClaudeCommand(vm.Command)) continue;
+
+            // Baseline before the process is signalled, so the gate below can see the
+            // shutdown write land.
+            DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
+
             await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
-            // Small post-exit pause as belt-and-braces in case ~/.claude.json's write
-            // continues after the parent's shutdown signal but before its handles close.
-            if (postExitMs > 0) await Task.Delay(Math.Min(postExitMs, 1000));
+
+            // The exit wait above is on the process handle, but Claude's config write can
+            // still be in flight when the handle closes — hence a post-exit pause. This
+            // used to be a flat sleep of up to 1s per session (20s across 20 sessions)
+            // justified as belt-and-braces. Now it waits for the write to actually settle
+            // and returns as soon as it has, capped at the same 1s so the worst case is
+            // unchanged (issue #82).
+            if (postExitMs > 0)
+                await WaitForClaudeConfigQuiesceAsync(cfgBefore, Math.Min(postExitMs, 1000));
         }
 
         // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
@@ -4917,6 +4948,27 @@ public partial class MainWindow : Window
     /// disposes the VM. Used for claude sessions on app close so consecutive
     /// <c>~/.claude.json</c> writes can't overlap.
     /// </summary>
+    /// <summary>
+    /// Claude's config file, resolved once. Honours CLAUDE_CONFIG_DIR — with that set
+    /// the file lives inside it, not at %USERPROFILE%\.claude.json, and watching the
+    /// wrong one means always waiting the full cap.
+    /// </summary>
+    private readonly string _claudeConfigPath = ClaudeConfigGate.ResolveConfigFile();
+
+    /// <summary>
+    /// Blocks until Claude's config file has been written and gone quiet, or
+    /// <paramref name="capMs"/> elapses. Replaces a flat <c>Task.Delay(staggerMs)</c>
+    /// between consecutive Claude launches (issue #82).
+    /// </summary>
+    private Task WaitForClaudeConfigQuiesceAsync(DateTime? baseline, int capMs) =>
+        ClaudeConfigGate.WaitForQuiesceAsync(
+            baseline,
+            () => ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath),
+            () => DateTime.UtcNow,
+            Task.Delay,
+            TimeSpan.FromMilliseconds(capMs),
+            ClaudeConfigGate.DefaultQuietFor);
+
     private static async Task DisposeAndWaitForExitAsync(SessionViewModel vm, int timeoutMs)
     {
         var pty = vm.Pty;
