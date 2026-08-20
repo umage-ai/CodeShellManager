@@ -56,7 +56,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | Service | Purpose |
 |---|---|
 | `SessionManager` | CRUD for ShellSession models |
-| `StateService` | JSON persistence → `%AppData%/CodeShellManager/state.json` |
+| `StateService` | JSON persistence → `%AppData%/CodeShellManager/state.json`. Writes are **atomic**: serialize to `.tmp`, then `File.Replace` into place, rotating the previous file to `.bak`. `LoadAsync` falls back to `.bak` when the primary won't parse, and logs every step to `crash.log` rather than silently starting empty. A static `SemaphoreSlim` serializes saves — 29 of the ~32 `SaveStateAsync` call sites are fire-and-forget, and overlapping saves would otherwise race on the shared temp file. See issue #88. |
 | `SearchService` | SQLite FTS5 search of all terminal output; also owns the `project_notes` table |
 | `ColorService` | FNV-1a hash of folder path → 12-color palette |
 | `GitService` | Async `git branch --show-current` + `git status --porcelain` |

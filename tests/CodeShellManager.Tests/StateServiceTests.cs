@@ -78,6 +78,31 @@ public class StateServiceTests : IDisposable
         Assert.Equal(new[] { "x", "y", "z" }, loaded.Sessions.ConvertAll(s => s.Id));
     }
 
+    [Fact]
+    public async Task Save_ManyConcurrentSaves_LeaveAValidFileAndNoTempFile()
+    {
+        // 29 of the ~32 SaveStateAsync call sites are fire-and-forget, so overlapping
+        // saves are routine. They share one temp file, so without serialization one
+        // save can swap another's half-written content into the live file. This also
+        // catches a semaphore that is acquired but never released — that would hang
+        // here rather than fail.
+        var saves = new List<Task>();
+        for (int i = 0; i < 40; i++)
+        {
+            var s = WithSessions($"s{i}");
+            saves.Add(_svc.SaveAsync(s));
+        }
+
+        await Task.WhenAll(saves).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.False(File.Exists(_path + ".tmp"));
+
+        // Whichever save landed last, the file must be complete and parseable.
+        var loaded = await _svc.LoadAsync();
+        Assert.Single(loaded.Sessions);
+        Assert.StartsWith("s", loaded.Sessions[0].Id);
+    }
+
     // ── recovery ─────────────────────────────────────────────────────────────
 
     [Fact]
