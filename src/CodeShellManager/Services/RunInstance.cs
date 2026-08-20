@@ -208,48 +208,11 @@ public partial class RunInstance : ObservableObject, IDisposable
     internal static string BuildLocalCmd(string commandLine) => $"/c \"{commandLine}\"";
 
     /// <summary>
-    /// Returns "pwsh.exe" if PowerShell 7+ is on PATH, otherwise falls back to
-    /// the Windows-bundled "powershell.exe". ConPTY's CreateProcess resolves PATH
-    /// for us — we just pick which name to ask for.
+    /// Returns "pwsh.exe" if PowerShell 7+ is on PATH, otherwise "powershell.exe".
+    /// Delegates to <see cref="PwshLocator"/> so this and PseudoTerminal's session
+    /// wrapper can never disagree about which shell the machine has.
     /// </summary>
-    internal static string ResolvePwsh()
-    {
-        // Cheap check: try to spawn pwsh -NoLogo -Command "exit". If it returns,
-        // we trust pwsh is on PATH. Use a one-shot Process so we don't perturb
-        // the user's environment. Skip the probe if we already know.
-        if (_pwshResolved is { } cached) return cached;
-
-        try
-        {
-            using var probe = Process.Start(new ProcessStartInfo
-            {
-                FileName = "pwsh.exe",
-                Arguments = "-NoLogo -NoProfile -Command \"exit 0\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (probe != null)
-            {
-                // Cache pwsh only if the probe actually exited cleanly. A hung probe
-                // (WaitForExit returns false) or non-zero exit means pwsh is in a bad
-                // state; fall back to powershell.exe instead of caching a broken choice.
-                if (probe.WaitForExit(2000) && probe.ExitCode == 0)
-                {
-                    _pwshResolved = "pwsh.exe";
-                    return _pwshResolved;
-                }
-                try { if (!probe.HasExited) probe.Kill(entireProcessTree: true); }
-                catch { }
-            }
-        }
-        catch { /* not on PATH */ }
-
-        _pwshResolved = "powershell.exe";
-        return _pwshResolved;
-    }
-    private static string? _pwshResolved;
+    internal static string ResolvePwsh() => PwshLocator.Executable;
 
     /// <summary>
     /// Builds powershell args using -EncodedCommand so we don't have to worry
