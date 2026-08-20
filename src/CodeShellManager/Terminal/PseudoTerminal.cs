@@ -175,29 +175,9 @@ public sealed class PseudoTerminal : IPseudoTerminal
     // Resolved once per process. pwsh (PowerShell 7+) is preferred because that's
     // where modern users keep their profile functions — wrapping in legacy
     // powershell.exe (5.1) loads a different profile and won't see them.
-    private static readonly Lazy<string> s_wrapperShell = new(ResolveWrapperShell);
-
-    private static string ResolveWrapperShell()
-    {
-        try
-        {
-            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "where.exe",
-                Arguments = "pwsh.exe",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            p?.WaitForExit(2000);
-            if (p?.ExitCode == 0) return "pwsh.exe";
-        }
-        catch { }
-        return "powershell.exe";
-    }
-
+    // Shared with RunInstance so both PowerShell-wrapping paths agree — see PwshLocator.
     internal static string BuildCmdLine(string command, string fullUserCmd)
-        => BuildCmdLine(command, fullUserCmd, s_wrapperShell.Value);
+        => BuildCmdLine(command, fullUserCmd, Services.PwshLocator.Executable);
 
     internal static string BuildCmdLine(string command, string fullUserCmd, string wrapperShell)
     {
