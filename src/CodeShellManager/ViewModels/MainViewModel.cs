@@ -60,6 +60,19 @@ public partial class MainViewModel : ObservableObject
 
     public int AlertCount => Sessions.Count(s => s.NeedsAttention);
 
+    // AlertCount is an O(N) scan and every raise invalidates WPF bindings. It's touched on
+    // the keystroke path (via AlertCleared), where the value is almost always unchanged, so
+    // suppress no-op raises rather than re-running binding invalidation per character (#70).
+    private int _lastRaisedAlertCount = -1;
+
+    private void RaiseAlertCountIfChanged()
+    {
+        int count = AlertCount;
+        if (count == _lastRaisedAlertCount) return;
+        _lastRaisedAlertCount = count;
+        OnPropertyChanged(nameof(AlertCount));
+    }
+
     public event Action<SessionViewModel>? SessionClosed;
     public event Action? GroupsChanged;
     public event Action? SelectionChanged;
@@ -267,31 +280,51 @@ public partial class MainViewModel : ObservableObject
 
         if (vm.Bridge != null)
         {
+            // Runs on the UI thread for every keystroke (WebView2 raises WebMessageReceived
+            // there), so it must stay cheap. NotifyUserInteracted already fires AlertCleared
+            // unconditionally, whose handler below raises AlertCount — so this deliberately
+            // does not raise it a second time (issue #70).
             vm.Bridge.UserInput += () =>
             {
+                // Typing into a pane makes it the active session.
+                //
+                // Without this, ActiveSession only moved when the user clicked a SIDEBAR
+                // row — there is no focus handler on the WebView2. So in a multi-pane
+                // layout, clicking straight into a pane and typing left ActiveSession on
+                // whatever the sidebar last selected, which left this bridge's
+                // IsForeground false, which made its output flush at Background
+                // dispatcher priority. The pane you are typing in rendered its own echo
+                // behind every other session's output — the #70 priority split working
+                // exactly as designed, against the wrong session.
+                //
+                // Guarded on reference equality: this runs per keystroke, and the assign
+                // fans out to UpdateActiveTerminalHighlight over every session.
+                if (!ReferenceEquals(ActiveSession, vm)) ActiveSession = vm;
                 vm.AlertDetector?.NotifyUserInteracted();
-                App.Current.Dispatcher.Invoke(() => OnPropertyChanged(nameof(AlertCount)));
             };
         }
 
         if (vm.AlertDetector != null)
         {
+            // BeginInvoke, not Invoke: AlertRaised arrives on a System.Threading.Timer
+            // callback, and blocking a threadpool thread on a busy UI thread serves no
+            // purpose — no caller consumes a result.
             vm.AlertDetector.AlertRaised += alert =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                App.Current.Dispatcher.BeginInvoke(() =>
                 {
                     vm.RaiseAlert(alert.Message, alert.Type);
-                    OnPropertyChanged(nameof(AlertCount));
+                    RaiseAlertCountIfChanged();
                     if (Settings.ShowToastNotifications)
                         ToastHelper.Show(vm.DisplayName, alert.Message, Settings.ShowNotificationSound);
                 });
             };
             vm.AlertDetector.AlertCleared += _ =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                App.Current.Dispatcher.BeginInvoke(() =>
                 {
                     vm.ClearAlert();
-                    OnPropertyChanged(nameof(AlertCount));
+                    RaiseAlertCountIfChanged();
                 });
             };
         }

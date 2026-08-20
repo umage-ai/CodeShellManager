@@ -151,12 +151,34 @@ public partial class RunInstance : ObservableObject, IDisposable
         // so failures are logged to crash.log for diagnosability rather than silenced.
         if (State == RunState.ExitedOk && !string.IsNullOrWhiteSpace(PostRunUrl))
         {
+            if (!IsLaunchableUrl(PostRunUrl))
+            {
+                LogPostRunUrl(PostRunUrl, "rejected — only http and https URLs are opened");
+                return;
+            }
             try { Process.Start(new ProcessStartInfo(PostRunUrl) { UseShellExecute = true }); }
-            catch (Exception ex) { LogPostRunUrlFailure(PostRunUrl, ex); }
+            catch (Exception ex) { LogPostRunUrl(PostRunUrl, ex.Message); }
         }
     }
 
-    private static void LogPostRunUrlFailure(string url, Exception ex)
+    /// <summary>
+    /// True when <paramref name="url"/> is safe to hand to ShellExecute — an absolute
+    /// http or https URL, and nothing else.
+    ///
+    /// This fires automatically when a run exits 0, with no confirmation step, and
+    /// ShellExecute will happily launch a local executable, a .ps1, a UNC path or any
+    /// registered protocol handler. A whole AppState — run commands included — can be
+    /// imported from a JSON file the user didn't write (see ImportExportService), so the
+    /// scheme is checked at launch time rather than trusting the stored value.
+    ///
+    /// Scheme-less input like "localhost:5173" is rejected too: Uri parses it as scheme
+    /// "localhost", and guessing http:// on the user's behalf would defeat the check.
+    /// </summary>
+    internal static bool IsLaunchableUrl(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    private static void LogPostRunUrl(string url, string detail)
     {
         try
         {
@@ -165,7 +187,7 @@ public partial class RunInstance : ObservableObject, IDisposable
                 "CodeShellManager", "crash.log");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.AppendAllText(path,
-                $"[{DateTime.Now:HH:mm:ss.fff}] PostRunUrl failed '{url}': {ex.Message}\n");
+                $"[{DateTime.Now:HH:mm:ss.fff}] PostRunUrl '{url}': {detail}\n");
         }
         catch { /* logger failure is not actionable */ }
     }

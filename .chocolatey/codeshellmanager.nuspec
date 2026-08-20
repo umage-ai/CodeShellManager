@@ -4,7 +4,7 @@
     <id>codeshellmanager</id>
     <version>__VERSION__</version>
     <packageSourceUrl>https://github.com/umage-ai/CodeShellManager/tree/main/.chocolatey</packageSourceUrl>
-    <owners>umage.ai</owners>
+    <owners>athraen</owners>
     <title>CodeShellManager</title>
     <authors>umage.ai</authors>
     <projectUrl>https://umage.ai/products/code-shell-manager/</projectUrl>

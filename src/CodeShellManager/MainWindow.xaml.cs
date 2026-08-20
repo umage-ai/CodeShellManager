@@ -1635,6 +1635,13 @@ public partial class MainWindow : Window
     private void UpdateActiveTerminalHighlight()
     {
         string? activeId = _vm.ActiveSession?.Id;
+
+        // Keep each bridge's output dispatcher priority in sync with focus, so a chatty
+        // background session posts at Background priority and can't sit ahead of the
+        // active pane's rendering or its keystrokes (issue #70).
+        foreach (var s in _vm.Sessions)
+            if (s.Bridge != null) s.Bridge.IsForeground = s.Id == activeId;
+
         foreach (var (id, ui) in _sessionUi)
         {
             if (id == activeId)
@@ -3591,6 +3598,18 @@ public partial class MainWindow : Window
             BorderThickness = new Thickness(2),
             BorderBrush = Brushes.Transparent,
             Tag = accent
+        };
+
+        // Clicking anywhere in a pane makes that session active. Tunnelling (Preview)
+        // because the WebView2 swallows the bubbling event before it reaches us, and
+        // Handled is deliberately NOT set so the click still lands in the terminal.
+        //
+        // Without this, ActiveSession only followed sidebar clicks, so a pane clicked
+        // directly kept IsForeground=false and flushed its output at Background
+        // dispatcher priority — its own echo queued behind every other session's.
+        activeRing.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            if (!ReferenceEquals(_vm.ActiveSession, vm)) _vm.ActiveSession = vm;
         };
 
         var outer = new DockPanel();
