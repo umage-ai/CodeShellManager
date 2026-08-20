@@ -3600,6 +3600,18 @@ public partial class MainWindow : Window
             Tag = accent
         };
 
+        // Clicking anywhere in a pane makes that session active. Tunnelling (Preview)
+        // because the WebView2 swallows the bubbling event before it reaches us, and
+        // Handled is deliberately NOT set so the click still lands in the terminal.
+        //
+        // Without this, ActiveSession only followed sidebar clicks, so a pane clicked
+        // directly kept IsForeground=false and flushed its output at Background
+        // dispatcher priority — its own echo queued behind every other session's.
+        activeRing.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            if (!ReferenceEquals(_vm.ActiveSession, vm)) _vm.ActiveSession = vm;
+        };
+
         var outer = new DockPanel();
 
         // Terminal toolbar
