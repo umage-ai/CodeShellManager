@@ -185,7 +185,8 @@
 
         <!-- Profile (local-only, hidden when empty) -->
         <StackPanel Grid.Row="1" x:Name="ProfilePanel" Visibility="Collapsed" Margin="0,0,0,12">
-            <TextBlock Text="Windows Terminal Profile (optional)" Style="{StaticResource Label}"/>
+            <TextBlock x:Name="ProfileLabel" Text="Windows Terminal Profile (optional)"
+                       Style="{StaticResource Label}"/>
             <ComboBox x:Name="ProfileCombo"
                       AutomationProperties.AutomationId="NewSessionProfileCombo"
                       SelectionChanged="ProfileCombo_SelectionChanged"/>
@@ -264,7 +265,8 @@
         <!-- Buttons -->
         <StackPanel Grid.Row="9" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Cancel" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Cancel_Click"/>
-            <Button Content="Start Session" AutomationProperties.AutomationId="NewSessionOkBtn"
+            <Button x:Name="OkButton" Content="Start Session"
+                    AutomationProperties.AutomationId="NewSessionOkBtn"
                     Style="{StaticResource PrimaryBtn}" Click="Start_Click" IsDefault="True"/>
         </StackPanel>
     </Grid>

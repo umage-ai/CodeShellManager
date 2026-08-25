@@ -142,6 +142,38 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(DisplayName));
     }
 
+    /// <summary>
+    /// Re-raises every property that mirrors a field on <see cref="Session"/>. Call after
+    /// editing the model in place (see <c>MainWindow.EditSessionAsync</c>) so the sidebar row
+    /// and terminal toolbar pick up the new name / folder / command without being rebuilt.
+    /// </summary>
+    public void NotifyConfigChanged()
+    {
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(WorkingFolder));
+        OnPropertyChanged(nameof(FolderShort));
+        OnPropertyChanged(nameof(Command));
+        OnPropertyChanged(nameof(Args));
+        OnPropertyChanged(nameof(AccentColor));
+        OnPropertyChanged(nameof(WorktreeSubtitle));
+    }
+
+    /// <summary>
+    /// Drops the cached git info and re-probes it. <see cref="RefreshGitInfoAsync"/> resolves
+    /// <see cref="RepoRoot"/> only once (it's stable for the life of a session), so a working
+    /// folder that changed under us needs the cache cleared first.
+    /// </summary>
+    public Task ReloadGitInfoAsync()
+    {
+        RepoRoot = null;
+        GitBranch = null;
+        GitIsDirty = false;
+        GitInfoLoaded = false;
+        HasWorktreeSiblings = false;
+        return RefreshGitInfoAsync();
+    }
+
     public void ClearAlert()
     {
         NeedsAttention = false;
