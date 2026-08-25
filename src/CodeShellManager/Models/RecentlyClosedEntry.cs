@@ -23,11 +23,28 @@ public class RecentlyClosedEntry
     public string GroupId { get; set; } = "";
     public string? ColorOverride { get; set; }
 
-    public bool IsRemote { get; set; }
+    /// <summary>
+    /// Kind of the closed session — needed so a reopened WSL session comes back
+    /// as WSL instead of falling back to Local at the UNC path. Mirrors the
+    /// <see cref="ShellSession.IsRemote"/> migration: setting <see cref="IsRemote"/>
+    /// to true promotes <c>Local → Ssh</c>, so legacy state.json entries (which
+    /// only carried IsRemote) still display the right subtitle and reopen as SSH.
+    /// </summary>
+    public SessionKind Kind { get; set; } = SessionKind.Local;
+
+    public bool IsRemote
+    {
+        get => Kind == SessionKind.Ssh;
+        set { if (value && Kind == SessionKind.Local) Kind = SessionKind.Ssh; }
+    }
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
     public string SshRemoteFolder { get; set; } = "";
+
+    public string WslDistro { get; set; } = "";
+    public string WslUser { get; set; } = "";
+    public string WslWorkingFolder { get; set; } = "";
 
     public string? ProfileFontFamily { get; set; }
     public int? ProfileFontSize { get; set; }
@@ -57,11 +74,15 @@ public class RecentlyClosedEntry
         Args = s.Args,
         GroupId = s.GroupId,
         ColorOverride = s.ColorOverride,
+        Kind = s.Kind,
         IsRemote = s.IsRemote,
         SshUser = s.SshUser,
         SshHost = s.SshHost,
         SshPort = s.SshPort,
         SshRemoteFolder = s.SshRemoteFolder,
+        WslDistro = s.WslDistro,
+        WslUser = s.WslUser,
+        WslWorkingFolder = s.WslWorkingFolder,
         ProfileFontFamily = s.ProfileFontFamily,
         ProfileFontSize = s.ProfileFontSize,
         ProfileFontWeight = s.ProfileFontWeight,
@@ -84,8 +105,13 @@ public class RecentlyClosedEntry
         ClosedAt = DateTime.UtcNow,
     };
 
-    /// <summary>Friendly subtitle for the recents UI — folder or user@host.</summary>
-    public string Subtitle => IsRemote
-        ? (string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}")
-        : WorkingFolder;
+    /// <summary>Friendly subtitle for the recents UI — kind-specific locator.</summary>
+    public string Subtitle => Kind switch
+    {
+        SessionKind.Ssh => string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}",
+        SessionKind.Wsl => string.IsNullOrEmpty(WslWorkingFolder)
+            ? WslDistro
+            : $"{WslDistro}: {WslWorkingFolder}",
+        _ => WorkingFolder,
+    };
 }
