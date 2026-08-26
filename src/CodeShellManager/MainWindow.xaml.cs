@@ -4941,10 +4941,27 @@ public partial class MainWindow : Window
         // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
         // has been observed to throw NRE internally on shutdown — swallow + log so it
         // doesn't escape as an unhandled exception during application exit.
+        // Take the gate before closing (issue #102). Closing is itself a use of the
+        // connection, and it is NOT guaranteed to be the last one: OutputIndexer.Dispose
+        // waits a bounded 2s for its worker, and several SearchService calls are
+        // fire-and-forget and never awaited at all. Closing underneath a live
+        // SqliteCommand reproduces exactly the race the gate exists to prevent.
+        // Bounded so a stuck writer can't hang exit — the process is going away anyway.
+        IDisposable? dbLock = null;
+        try
+        {
+            var acquire = DbGate.AcquireAsync();
+            // Bounded: a stuck writer must not hang exit — the process is going away.
+            if (await Task.WhenAny(acquire, Task.Delay(3000)) == acquire) dbLock = await acquire;
+            else Log("OnClosing: DB gate still busy after 3s; closing anyway");
+        }
+        catch (Exception ex) { Log($"OnClosing: DB gate wait threw: {ex.Message}"); }
+
         try { _db?.Close(); }
         catch (Exception ex) { Log($"OnClosing _db.Close threw: {ex}"); }
         try { _db?.Dispose(); }
         catch (Exception ex) { Log($"OnClosing _db.Dispose threw: {ex}"); }
+        dbLock?.Dispose();
         App.TrayIcon?.Dispose();
 
         _shutdownComplete = true;

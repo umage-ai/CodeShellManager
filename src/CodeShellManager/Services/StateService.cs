@@ -89,7 +89,7 @@ public class StateService
     /// <see cref="ImportExportService"/> will happily deserialize whatever JSON file
     /// the user points at, so the loader can't assume its input came from us.
     /// </summary>
-    private static AppState Normalize(AppState s)
+    internal static AppState Normalize(AppState s)
     {
         s.Sessions ??= [];
         s.Groups ??= [];
