@@ -284,24 +284,21 @@ public partial class MainViewModel : ObservableObject
             // there), so it must stay cheap. NotifyUserInteracted already fires AlertCleared
             // unconditionally, whose handler below raises AlertCount — so this deliberately
             // does not raise it a second time (issue #70).
-            vm.Bridge.UserInput += () =>
+            // Typing into a pane makes it the active session, so its output flushes at
+            // foreground dispatcher priority (#70) instead of behind every other pane.
+            //
+            // MUST NOT fire on mouse movement. terminal-init.js forwards xterm's onData,
+            // and onData carries mouse reports as well as keystrokes whenever the running
+            // app enables mouse tracking — which Claude Code does. Promoting on those
+            // turned this into hover-to-focus and repainted every pane's border on every
+            // mouse move. Hence the mouse-report filter rather than promoting on any input.
+            vm.Bridge.KeyboardInput += () =>
             {
-                // Typing into a pane makes it the active session.
-                //
-                // Without this, ActiveSession only moved when the user clicked a SIDEBAR
-                // row — there is no focus handler on the WebView2. So in a multi-pane
-                // layout, clicking straight into a pane and typing left ActiveSession on
-                // whatever the sidebar last selected, which left this bridge's
-                // IsForeground false, which made its output flush at Background
-                // dispatcher priority. The pane you are typing in rendered its own echo
-                // behind every other session's output — the #70 priority split working
-                // exactly as designed, against the wrong session.
-                //
-                // Guarded on reference equality: this runs per keystroke, and the assign
-                // fans out to UpdateActiveTerminalHighlight over every session.
+                // Guarded on reference equality: runs per keystroke, and the assign fans
+                // out to UpdateActiveTerminalHighlight across every session.
                 if (!ReferenceEquals(ActiveSession, vm)) ActiveSession = vm;
-                vm.AlertDetector?.NotifyUserInteracted();
             };
+            vm.Bridge.UserInput += () => vm.AlertDetector?.NotifyUserInteracted();
         }
 
         if (vm.AlertDetector != null)

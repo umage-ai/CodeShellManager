@@ -1672,21 +1672,33 @@ public partial class MainWindow : Window
                 // would no longer match the sidebar ring.
                 var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
                 string accentHex = vm?.AccentColor ?? (ui.terminalWrapper.Tag as string ?? "#89b4fa");
-                try
-                {
-                    var accent = (Color)ColorConverter.ConvertFromString(accentHex);
-                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(accent);
-                }
-                catch
-                {
-                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa));
-                }
+                Color accent;
+                try { accent = (Color)ColorConverter.ConvertFromString(accentHex); }
+                catch { accent = Color.FromRgb(0x89, 0xb4, 0xfa); }
+                SetBorderColor(ui.terminalWrapper, accent);
             }
             else
             {
-                ui.terminalWrapper.BorderBrush = Brushes.Transparent;
+                SetBorderColor(ui.terminalWrapper, Colors.Transparent);
             }
         }
+    }
+
+    /// <summary>
+    /// Assigns a border colour only when it actually differs.
+    ///
+    /// This used to allocate a fresh SolidColorBrush and reassign BorderBrush on every
+    /// pane on every call, so each invocation dirtied all of them and WPF repainted the
+    /// lot. Harmless at one call per session switch; very visible as flicker when
+    /// something calls it rapidly — which a bug briefly did on every mouse move.
+    /// Idempotent now, so a stray caller costs nothing visible.
+    /// </summary>
+    private static void SetBorderColor(Border border, Color color)
+    {
+        if (border.BorderBrush is SolidColorBrush current && current.Color == color) return;
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();   // frozen brushes skip change-tracking and are cheaper to render
+        border.BorderBrush = brush;
     }
 
     // ── Sidebar quick-menu (right-click on empty sidebar / tab / placeholder area) ─
