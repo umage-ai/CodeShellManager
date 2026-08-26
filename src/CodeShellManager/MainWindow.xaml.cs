@@ -959,7 +959,14 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    private async Task LaunchSessionAsync(ShellSession session, bool restoring = false)
+    /// <param name="removeOnFailure">
+    /// When the PTY fails to start, drop the session from <see cref="SessionManager"/>
+    /// entirely. Right for a session that never existed before this call; wrong for a
+    /// relaunch of an existing one — see <see cref="RestartSessionAsync"/>, where a bad
+    /// edit would otherwise delete the session the user was only trying to reconfigure.
+    /// </param>
+    private async Task LaunchSessionAsync(ShellSession session, bool restoring = false,
+        bool removeOnFailure = true)
     {
         Log($"LaunchSession START: cmd='{session.Command}' args='{session.Args}' folder='{session.WorkingFolder}' restoring={restoring}");
         var vm = new SessionViewModel(session);
@@ -1121,7 +1128,7 @@ public partial class MainWindow : Window
             MessageBox.Show($"Failed to start '{session.FullCommandLine}':\n{ex.Message}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
             vm.Dispose();
-            _sessionManager.RemoveSession(session.Id);
+            if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
             // Drop any launching placeholder so it doesn't linger after a failed restore.
             if (_launchingSidebarItems.Remove(session.Id))
                 RebuildSidebarOrder();
@@ -4230,7 +4237,39 @@ public partial class MainWindow : Window
         AddLaunchingSidebarItem(session);
         RebuildSidebarOrder();
 
-        await LaunchSessionAsync(session);
+        try
+        {
+            // restoring: true so a Claude session resumes its conversation instead of
+            // starting a fresh one. Sleep/wake already does this; a restart tears down the
+            // same way, so it must recover the same way — otherwise reconfiguring a session
+            // silently discards its history. GetLastSessionId resolves against the NEW
+            // working folder, so this stays correct when the folder is what changed.
+            //
+            // removeOnFailure: false so a bad edit can't delete the session. The PTY-start
+            // failure path inside LaunchSessionAsync removes it from SessionManager, which
+            // is right for a brand-new session and destructive here.
+            await LaunchSessionAsync(session, restoring: true, removeOnFailure: false);
+        }
+        catch (Exception ex)
+        {
+            Log($"Restart FAILED for '{session.Name}': {ex}");
+            MessageBox.Show($"Failed to restart '{session.Name}': {ex.Message}",
+                "Restart Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        // Both failure shapes land here: LaunchSessionAsync handles PTY-start failure
+        // internally (no throw) and rethrows earlier ones, and either way the session is
+        // left with no live terminal. Fall back to dormant so the row stays visible and
+        // the user can fix the configuration and wake it, rather than being left with a
+        // placeholder that never resolves.
+        if (!_sessionUi.ContainsKey(session.Id))
+        {
+            _launchingSidebarItems.Remove(session.Id);
+            session.IsDormant = true;
+            AddDormantSidebarItem(session);
+            RebuildSidebarOrder();
+            _ = _vm.SaveStateAsync();
+        }
     }
 
     // ── Sleep / wake (dormant sessions) ───────────────────────────────────────
