@@ -54,6 +54,9 @@ public partial class OutputIndexer : IDisposable
         {
             try
             {
+                // Every session has its own indexer draining its own channel, and they all
+                // share one SqliteConnection with SearchService. Serialise (issue #102).
+                using var _dbLock = await Services.DbGate.AcquireAsync();
                 await using var cmd = _db.CreateCommand();
                 cmd.CommandText = """
                     INSERT INTO session_output (session_id, session_name, ts, line)

@@ -109,6 +109,7 @@ public class SearchService
 
     public async Task<string?> GetNoteAsync(string folderPath)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "SELECT content FROM project_notes WHERE folder_path = $fp";
         cmd.Parameters.AddWithValue("$fp", folderPath);
@@ -118,6 +119,7 @@ public class SearchService
 
     public async Task SaveNoteAsync(string folderPath, string content)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             INSERT INTO project_notes (folder_path, content, updated_at)
@@ -138,6 +140,9 @@ public class SearchService
     {
         var results = new List<SearchResult>();
         if (string.IsNullOrWhiteSpace(query)) return results;
+
+        // After the guard — an empty query touches no connection, so don't queue for one.
+        using var _dbLock = await DbGate.AcquireAsync();
 
         // Search terminal output via FTS5
         try
@@ -225,6 +230,7 @@ public class SearchService
         string sessionId, string sessionName, string workingFolder,
         string command, string args, string groupId)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             INSERT INTO session_history
@@ -243,6 +249,7 @@ public class SearchService
 
     public async Task<SessionHistoryEntry?> GetSessionHistoryAsync(string sessionId)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             SELECT session_id, session_name, working_folder, command, args, group_id, exited_at
@@ -259,6 +266,7 @@ public class SearchService
 
     public async Task<SessionHistoryEntry?> GetLatestSessionHistoryForFolderAsync(string folderPath)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             SELECT session_id, session_name, working_folder, command, args, group_id, exited_at
@@ -275,6 +283,7 @@ public class SearchService
 
     public async Task DeleteSessionLogsAsync(string sessionId)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "DELETE FROM session_output WHERE session_id = $sid";
         cmd.Parameters.AddWithValue("$sid", sessionId);
@@ -286,6 +295,7 @@ public class SearchService
     /// <summary>Deletes output rows older than the retention cutoff. No-op if retentionDays &lt;= 0.</summary>
     public async Task<int> PruneOldOutputAsync(int retentionDays)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         if (retentionDays <= 0) return 0;
         long cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays).ToUnixTimeMilliseconds();
         await using var cmd = _db.CreateCommand();
@@ -297,6 +307,7 @@ public class SearchService
     /// <summary>Wipes all indexed terminal output and reclaims disk space via VACUUM.</summary>
     public async Task ClearAllOutputAsync()
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using (var del = _db.CreateCommand())
         {
             del.CommandText = "DELETE FROM session_output";
@@ -312,6 +323,7 @@ public class SearchService
     /// <summary>Returns the SQLite database file size in bytes (page_count * page_size).</summary>
     public async Task<long> GetDatabaseSizeBytesAsync()
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()";
         var result = await cmd.ExecuteScalarAsync();
@@ -331,6 +343,7 @@ public class SearchService
 
     public async Task RecordSessionStartAsync(string command)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         string key = NormalizeCommandName(command);
         string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
         await using var cmd = _db.CreateCommand();
@@ -347,6 +360,7 @@ public class SearchService
 
     public async Task RecordSessionDurationAsync(string command, long seconds)
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         if (seconds <= 0) return;
         string key = NormalizeCommandName(command);
         string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
@@ -365,6 +379,7 @@ public class SearchService
 
     public async Task<List<UsageStat>> GetUsageStatsAsync()
     {
+        using var _dbLock = await DbGate.AcquireAsync();
         var list = new List<UsageStat>();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """

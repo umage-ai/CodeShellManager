@@ -1111,8 +1111,13 @@ public partial class MainWindow : Window
 
             usageCommandKey = effectiveCommand;
             sessionStartUtc = DateTime.UtcNow;
+            // Fire-and-forget, but observe the fault. Discarding the task is how the
+            // SqliteConnection race in #102 stayed invisible: nothing awaited it, so the
+            // exception only surfaced when the finalizer rethrew it, detached from here.
             if (_searchService != null)
-                _ = _searchService.RecordSessionStartAsync(effectiveCommand);
+                _ = _searchService.RecordSessionStartAsync(effectiveCommand)
+                    .ContinueWith(t => Log($"RecordSessionStart FAILED: {t.Exception}"),
+                        TaskContinuationOptions.OnlyOnFaulted);
         }
         catch (Exception ex)
         {
