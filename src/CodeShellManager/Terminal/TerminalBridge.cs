@@ -55,7 +55,22 @@ public sealed class TerminalBridge : IDisposable
     private long _lastOutputTickMs;
 
     public event Action<string>? RawOutputReceived;
+
+    /// <summary>
+    /// Any input travelling to the PTY — keystrokes, pastes, and mouse reports.
+    /// Used for "the user interacted with this session" (alert clearing).
+    /// </summary>
     public event Action? UserInput;
+
+    /// <summary>
+    /// Input that was not a mouse report, i.e. an actual keystroke or paste.
+    ///
+    /// Separate from <see cref="UserInput"/> because xterm's onData carries mouse
+    /// reports too whenever the running app enables mouse tracking (Claude Code does).
+    /// Anything that changes UI state off the back of input must use this one, or
+    /// merely moving the mouse across a pane drives it.
+    /// </summary>
+    public event Action? KeyboardInput;
 
     /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
@@ -288,6 +303,21 @@ public sealed class TerminalBridge : IDisposable
         _coalescer.Append(rawData);
     }
 
+    /// <summary>
+    /// True when <paramref name="data"/> is a terminal mouse report rather than typed
+    /// input. Covers the two encodings xterm.js emits:
+    ///   SGR (modern, the default for xterm.js)  ESC [ &lt; btn ; col ; row (M|m)
+    ///   X10 / normal (legacy)                   ESC [ M btn col row
+    ///
+    /// Motion events fire continuously while the pointer moves over a pane with mouse
+    /// tracking on, so anything driving UI state off input has to skip these.
+    /// </summary>
+    internal static bool IsMouseReport(string data) =>
+        data.Length >= 3
+        && data[0] == '\x1b'
+        && data[1] == '['
+        && (data[2] == '<' || data[2] == 'M');
+
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
     {
         AcceleratorKeyPressed?.Invoke(this, e);
@@ -321,6 +351,7 @@ public sealed class TerminalBridge : IDisposable
                         _pty?.Write(data);
                     }
                     UserInput?.Invoke();
+                    if (!IsMouseReport(data)) KeyboardInput?.Invoke();
                     break;
                 }
 
