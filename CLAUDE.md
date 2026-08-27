@@ -65,6 +65,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
 | `UpdateService` | GitHub Releases version check; caches result for 24h at `%AppData%/CodeShellManager/update-cache.json` |
 | `ImportExportService` | Read/write a full `AppState` to a JSON file (settings + sessions backup) |
+| `SessionConfigEditor` | Diffs/applies a `SessionConfigDraft` onto a `ShellSession`; decides whether the change needs a PTY restart |
 | `ToastHelper` | Tray balloon notifications |
 | `SessionRunner` | Per-session owner of `RunInstance` dictionary (run commands runtime) |
 | `RunInstance` | One headless PTY-backed run with ANSI-stripped output buffer |
@@ -138,7 +139,64 @@ tests/
    - **Close** (`vm.CloseCommand`) → `MainViewModel.OnSessionCloseRequested` → `vm.Dispose()` + remove from `Sessions` + `SessionManager.RemoveSession()`. Session is gone from `state.json`.
    - **Sleep** (`SleepSession(vm)`) → `vm.Dispose()` + remove from `Sessions` but **keep** the `ShellSession` in `SessionManager` with `IsDormant = true`. A muted dormant sidebar entry replaces the active one.
    - **Wake** (`WakeSessionAsync(session)`) → re-runs `LaunchSessionAsync(session, restoring: true)` — same path as restore-on-startup.
+   - **Restart** (`RestartSessionAsync(vm)`) → sleep-style teardown *without* the dormant bookkeeping, then `LaunchSessionAsync(session, restoring: true, removeOnFailure: false)`. The `ShellSession` stays in `SessionManager` (so Id, group, run commands and sidebar slot survive) and never enters the recently-closed ring. Used by "Edit session…" — see below. Both non-default arguments matter: `restoring: true` makes a Claude session resume rather than start a fresh conversation (matching Wake — a restart tears down the same way, so it must recover the same way), and `removeOnFailure: false` stops a bad edit from *deleting* the session, since `LaunchSessionAsync`'s PTY-failure path calls `SessionManager.RemoveSession` — correct for a session that never started, destructive for a relaunch. If the relaunch fails either way, the session falls back to dormant so the row stays visible and fixable instead of leaving a launching placeholder that never resolves.
 6. On app close: `_vm.SaveStateAsync()` flushes `_sessionManager.Sessions` (live + dormant) to `state.json` (unless `--clean`).
+
+## Editing a Session's Configuration
+
+Any existing session can be reconfigured through the **same form used to create one** —
+`NewSessionDialog` has an edit mode rather than a second, drifting dialog.
+
+**Entry points:** the ⚙ button on the terminal toolbar, **"Edit session…"** in the sidebar
+right-click menu (single-target only), and **"Edit session…"** in the right-click menu on a
+dormant row (edit a sleeping session without waking it).
+
+**Dialog** — `NewSessionDialog.ForEdit(session, launchCommands, profiles)`:
+- Title becomes "Edit Session", the primary button becomes "Save".
+- "Recently closed" and the sibling-worktree checkbox list are hidden (both are
+  create-only concepts); the worktree probe is skipped entirely (`IsEditMode` guard).
+- Local/Remote radio, folder, SSH host/port/remote folder, command (matched against the
+  launch-command list, falling back to `[custom]`), and name are all pre-filled.
+- **Appearance combobox in edit mode:** when the session already carries profile overrides,
+  the list gains a `— keep current appearance —` entry (tag `KeepCurrentAppearanceTag`,
+  selected by default so saving never silently resets the look) and the old `— none —`
+  entry is relabelled `— clear appearance overrides —`. The panel is shown when there are
+  profiles to pick **or** overrides to clear, so overrides remain removable with Windows
+  Terminal import switched off.
+
+**Result plumbing** — the dialog's `ToDraft()` returns a `Models.SessionConfigDraft` (a flat,
+UI-free snapshot of every field the form owns). `Services.SessionConfigEditor` then does the
+work, and being WPF-free is what makes the rules unit-testable
+(`tests/CodeShellManager.Tests/SessionConfigEditorTests.cs`):
+
+- `Diff(session, draft)` → `SessionConfigChange(AnyChange, RequiresRelaunch, WorkingFolderChanged, AppearanceChanged)`
+- `Apply(session, draft)` writes every form-owned field verbatim (blanks included, so
+  clearing in the dialog really clears). Runtime state — `Id`, `GroupId`, `Status`,
+  `RunCommands`, `IsDormant` — is untouched.
+
+**What needs a restart.** `RequiresRelaunch` is true for: local↔remote flip, command or
+args change, working-folder change (path-normalized compare), any SSH target field change,
+crossing the transparency boundary (opacity `< 1.0` picks a different xterm host page at
+navigation time), and *clearing* an override (`TerminalBridge.ApplyProfileOverrides` only
+ever **sets** options, so it can't push a value back to the global default). SSH fields and
+the working folder are only compared while the session stays in the same mode, so leftovers
+from a previous mode don't read as a change.
+
+Everything else is applied live: `SessionViewModel.NotifyConfigChanged()` re-raises the
+model-mirroring properties so the sidebar row and terminal toolbar repaint in place (no
+rebuild → no orphaned `PropertyChanged` subscriptions), and added/changed overrides go out
+via `ApplyFontSettings` + `ApplyProfileOverrides`. A folder change also calls
+`SessionViewModel.ReloadGitInfoAsync()`, which clears the once-only `RepoRoot` cache before
+re-probing.
+
+When a restart *is* needed, the user is asked. **No** keeps the live terminal and defers the
+change to the next launch (it's already persisted); **Yes** runs `RestartSessionAsync`.
+
+Editing a **dormant** session skips all of that — `EditDormantSession` rewrites the model and
+rebuilds the muted sidebar row, which renders name/folder/accent statically.
+
+Run commands are *not* part of this form; they have their own editor
+(`SessionRunCommandsDialog`, see below).
 
 ## SSH Remote Sessions
 
@@ -216,7 +274,7 @@ Each session can have a list of "run commands" — labelled command lines invoke
 **Runtime:** `SessionRunner` (one per `SessionViewModel`) owns a dictionary of `RunInstance` keyed by item Id. Each `RunInstance` wraps a `PseudoTerminal` started with `useJobObject: true` so the whole child tree dies when the PTY is disposed (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). Output is captured to an ANSI-stripped string buffer (capped at 1MB). Not persisted.
 
 **UI:**
-- Toolbar `[▶][▼]` next to 💤. Hidden when `RunCommands` is empty.
+- Toolbar `[▶][▼]` next to ⚙ / 💤. Hidden when `RunCommands` is empty.
 - Chips strip between toolbar and terminal — one chip per active/finished run, color-coded (blue=running, green=ok, pink=failed). Click a chip to open the drawer; ✕ on a chip to dismiss it.
 - Drawer (slide-down panel, like Notes) shows the selected run's output with `[⏹ Stop] [📋 Copy] [↗ Send to terminal]`.
 - **Send to terminal:** for Claude parents (`ClaudeSessionService.IsClaudeCommand`), wraps in fenced preamble and writes to PTY (no trailing `\r`). For non-Claude shells, falls back to clipboard with a toast — auto-paste would risk executing pasted lines.

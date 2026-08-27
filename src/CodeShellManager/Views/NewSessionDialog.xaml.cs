@@ -53,7 +53,15 @@ public partial class NewSessionDialog : Window
     /// </summary>
     public RecentlyClosedEntry? SelectedRecentlyClosed { get; private set; }
 
+    /// <summary>
+    /// Sentinel <c>Tag</c> for the "keep current appearance" entry that edit mode puts at the
+    /// top of the profile combobox. Profile entries carry a <see cref="WindowsTerminalProfile"/>
+    /// and the "clear" entry carries null, so a string tag can't collide with either.
+    /// </summary>
+    private const string KeepCurrentAppearanceTag = "keep-current-appearance";
+
     private readonly IReadOnlyList<WindowsTerminalProfile> _profiles;
+    private readonly ShellSession? _editSession;
     private readonly System.Windows.Threading.DispatcherTimer _worktreeDebounce;
     private System.Threading.CancellationTokenSource? _worktreeProbeCts;
     private string? _lastProbedFolder;
@@ -65,11 +73,13 @@ public partial class NewSessionDialog : Window
         string? defaultCommand = null,
         string? defaultArgs = null,
         string? defaultName = null,
-        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null)
+        IReadOnlyList<RecentlyClosedEntry>? recentlyClosed = null,
+        ShellSession? editSession = null)
     {
         InitializeComponent();
         FolderBox.Text = defaultFolder;
         _profiles = profiles ?? Array.Empty<WindowsTerminalProfile>();
+        _editSession = editSession;
 
         var customItem = CommandCombo.Items[0];
         CommandCombo.Items.Clear();
@@ -122,15 +132,146 @@ public partial class NewSessionDialog : Window
         FolderBox.TextChanged += (_, _) => { AutoFillName(); ScheduleWorktreeProbe(); };
         SshHostBox.TextChanged += (_, _) => AutoFillName();
 
+        if (editSession != null) ApplyEditMode(editSession);
+
         Loaded += async (_, _) =>
         {
+            // Sibling-worktree fan-out only makes sense when creating sessions.
+            if (IsEditMode) return;
             if (!IsRemoteMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
                 await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
         };
     }
 
+    /// <summary>
+    /// Opens the same form used to create a session, pre-filled from <paramref name="session"/>
+    /// and re-labelled for editing. Read the result back with <see cref="ToDraft"/>.
+    /// </summary>
+    public static NewSessionDialog ForEdit(
+        ShellSession session,
+        IEnumerable<string>? launchCommands = null,
+        IReadOnlyList<WindowsTerminalProfile>? profiles = null)
+        => new(
+            defaultFolder: session.IsRemote ? "" : session.WorkingFolder,
+            launchCommands: launchCommands,
+            profiles: profiles,
+            defaultCommand: session.Command,
+            defaultArgs: session.Args,
+            defaultName: session.Name,
+            recentlyClosed: null,
+            editSession: session);
+
+    /// <summary>True when the dialog is editing an existing session rather than creating one.</summary>
+    public bool IsEditMode => _editSession != null;
+
+    /// <summary>
+    /// Re-labels the form for editing and pre-fills the fields the shared constructor
+    /// doesn't cover (session type, SSH fields, existing appearance overrides).
+    /// </summary>
+    private void ApplyEditMode(ShellSession s)
+    {
+        Title = "Edit Session";
+        OkButton.Content = "Save";
+        RecentlyClosedPanel.Visibility = Visibility.Collapsed;
+        WorktreesPanel.Visibility = Visibility.Collapsed;
+
+        if (s.IsRemote)
+        {
+            // Checking the radio runs SessionType_Changed, which swaps the panels and
+            // blanks NameBox — so the name is filled back in afterwards.
+            RemoteRadio.IsChecked = true;
+            SshHostBox.Text = string.IsNullOrWhiteSpace(s.SshUser)
+                ? s.SshHost
+                : $"{s.SshUser}@{s.SshHost}";
+            SshPortBox.Text = s.SshPort.ToString();
+            SshRemoteFolderBox.Text = s.SshRemoteFolder;
+        }
+        NameBox.Text = s.Name;
+
+        SetUpEditModeProfileCombo(s);
+    }
+
+    /// <summary>
+    /// In edit mode the profile picker gains a "keep current appearance" entry (selected by
+    /// default, so simply saving never silently resets the look) and the "none" entry becomes
+    /// an explicit "clear". Only needed when the session actually carries overrides.
+    /// </summary>
+    private void SetUpEditModeProfileCombo(ShellSession s)
+    {
+        if (!HasAppearanceOverrides(s)) return;   // the plain "— none —" list is already correct
+
+        CopyOverridesFrom(s);
+
+        // With profile import off there's no combobox content yet, but the user still needs
+        // a way to drop the overrides this session was stamped with.
+        if (ProfileCombo.Items.Count == 0)
+            ProfileCombo.Items.Add(new ComboBoxItem { Content = "— none —", Tag = null });
+
+        if (ProfileCombo.Items[0] is ComboBoxItem noneItem)
+            noneItem.Content = "— clear appearance overrides —";
+
+        ProfileCombo.Items.Insert(0, new ComboBoxItem
+        {
+            Content = "— keep current appearance —",
+            Tag = KeepCurrentAppearanceTag
+        });
+        ProfileLabel.Text = "Appearance";
+        ProfilePanel.Visibility = s.IsRemote ? Visibility.Collapsed : Visibility.Visible;
+        ProfileCombo.SelectedIndex = 0;
+    }
+
+    private static bool HasAppearanceOverrides(ShellSession s) =>
+        s.ProfileFontFamily != null || s.ProfileFontSize != null
+        || s.ProfileFontWeight != null || s.ProfileFontLigatures != null
+        || s.ProfileCursorShape != null || s.ProfileCursorBlink != null
+        || s.ProfilePadding != null || s.ProfileBackgroundOpacity != null
+        || s.ProfileRetroEffect != null || !string.IsNullOrEmpty(s.ProfileColorSchemeJson);
+
+    private void CopyOverridesFrom(ShellSession s)
+    {
+        ProfileFontFamily = s.ProfileFontFamily;
+        ProfileFontSize = s.ProfileFontSize;
+        ProfileFontWeight = s.ProfileFontWeight;
+        ProfileFontLigatures = s.ProfileFontLigatures;
+        ProfileCursorShape = s.ProfileCursorShape;
+        ProfileCursorBlink = s.ProfileCursorBlink;
+        ProfilePadding = s.ProfilePadding;
+        ProfileBackgroundOpacity = s.ProfileBackgroundOpacity;
+        ProfileRetroEffect = s.ProfileRetroEffect;
+        ProfileColorSchemeJson = s.ProfileColorSchemeJson;
+    }
+
+    /// <summary>
+    /// The form's result as a flat draft — see <see cref="Services.SessionConfigEditor"/>
+    /// for diffing and applying it onto an existing session. Only meaningful after the
+    /// dialog returned <c>true</c>.
+    /// </summary>
+    public SessionConfigDraft ToDraft() => new()
+    {
+        Name = SessionName,
+        WorkingFolder = SelectedFolder,
+        Command = SelectedCommand,
+        Args = SelectedArgs,
+        IsRemote = IsRemote,
+        SshUser = SshUser,
+        SshHost = SshHost,
+        SshPort = SshPort,
+        SshRemoteFolder = SshRemoteFolder,
+        ProfileFontFamily = ProfileFontFamily,
+        ProfileFontSize = ProfileFontSize,
+        ProfileFontWeight = ProfileFontWeight,
+        ProfileFontLigatures = ProfileFontLigatures,
+        ProfileCursorShape = ProfileCursorShape,
+        ProfileCursorBlink = ProfileCursorBlink,
+        ProfilePadding = ProfilePadding,
+        ProfileBackgroundOpacity = ProfileBackgroundOpacity,
+        ProfileRetroEffect = ProfileRetroEffect,
+        ProfileColorSchemeJson = ProfileColorSchemeJson,
+    };
+
     private void ScheduleWorktreeProbe()
     {
+        if (IsEditMode) return;
         if (IsRemoteMode)
         {
             WorktreesPanel.Visibility = Visibility.Collapsed;
@@ -228,7 +369,7 @@ public partial class NewSessionDialog : Window
         LocalPanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         SshPanel.Visibility = IsRemoteMode ? Visibility.Visible : Visibility.Collapsed;
         // Profile combobox is local-only
-        if (ProfilePanel != null && _profiles.Count > 0)
+        if (ProfilePanel != null && ProfileCombo.Items.Count > 0)
             ProfilePanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         if (WorktreesPanel != null)
         {
@@ -264,7 +405,14 @@ public partial class NewSessionDialog : Window
 
     private void ProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        var profile = (ProfileCombo.SelectedItem as ComboBoxItem)?.Tag as WindowsTerminalProfile;
+        var tag = (ProfileCombo.SelectedItem as ComboBoxItem)?.Tag;
+        if (tag as string == KeepCurrentAppearanceTag && _editSession != null)
+        {
+            CopyOverridesFrom(_editSession);
+            return;
+        }
+
+        var profile = tag as WindowsTerminalProfile;
 
         if (profile == null)
         {

@@ -975,7 +975,14 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    private async Task LaunchSessionAsync(ShellSession session, bool restoring = false)
+    /// <param name="removeOnFailure">
+    /// When the PTY fails to start, drop the session from <see cref="SessionManager"/>
+    /// entirely. Right for a session that never existed before this call; wrong for a
+    /// relaunch of an existing one — see <see cref="RestartSessionAsync"/>, where a bad
+    /// edit would otherwise delete the session the user was only trying to reconfigure.
+    /// </param>
+    private async Task LaunchSessionAsync(ShellSession session, bool restoring = false,
+        bool removeOnFailure = true)
     {
         Log($"LaunchSession START: cmd='{session.Command}' args='{session.Args}' folder='{session.WorkingFolder}' restoring={restoring}");
         var vm = new SessionViewModel(session);
@@ -1142,7 +1149,7 @@ public partial class MainWindow : Window
             MessageBox.Show($"Failed to start '{session.FullCommandLine}':\n{ex.Message}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
             vm.Dispose();
-            _sessionManager.RemoveSession(session.Id);
+            if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
             // Drop any launching placeholder so it doesn't linger after a failed restore.
             if (_launchingSidebarItems.Remove(session.Id))
                 RebuildSidebarOrder();
@@ -1333,28 +1340,28 @@ public partial class MainWindow : Window
 
         UpdateGitText(gitText, vm);
 
-        // Claude session tag (sidebar)
-        if (ClaudeSessionService.IsClaudeCommand(vm.Command))
+        // Claude session tag (sidebar). Always built — "Edit session…" can swap the command
+        // on a live session, so visibility is toggled rather than the badge conditionally created.
+        var sidebarClaudeBadge = new Border
         {
-            var sidebarClaudeBadge = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(0x28, 0x89, 0xb4, 0xfa)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0x89, 0xb4, 0xfa)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(3),
-                Padding = new Thickness(4, 1, 4, 1),
-                Margin = new Thickness(0, 2, 0, 0),
-                HorizontalAlignment = HorizontalAlignment.Left
-            };
-            sidebarClaudeBadge.Child = new TextBlock
-            {
-                Text = "claude",
-                Foreground = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa)),
-                FontSize = 9,
-                FontWeight = FontWeights.SemiBold
-            };
-            textPanel.Children.Add(sidebarClaudeBadge);
-        }
+            Background = new SolidColorBrush(Color.FromArgb(0x28, 0x89, 0xb4, 0xfa)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0x89, 0xb4, 0xfa)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(4, 1, 4, 1),
+            Margin = new Thickness(0, 2, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Visibility = ClaudeSessionService.IsClaudeCommand(vm.Command)
+                ? Visibility.Visible : Visibility.Collapsed
+        };
+        sidebarClaudeBadge.Child = new TextBlock
+        {
+            Text = "claude",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa)),
+            FontSize = 9,
+            FontWeight = FontWeights.SemiBold
+        };
+        textPanel.Children.Add(sidebarClaudeBadge);
 
         // Alert badge
         var alertBadge = new Border
@@ -1547,6 +1554,18 @@ public partial class MainWindow : Window
                             statusDot.Visibility = Visibility.Collapsed;
                         }
                         UpdateGroupTabIndicators();
+                        break;
+
+                    // Both fire from SessionViewModel.NotifyConfigChanged() after an
+                    // "Edit session…" save rewrote the model in place.
+                    case nameof(SessionViewModel.FolderShort):
+                        folderText.Text = vm.FolderShort;
+                        break;
+
+                    case nameof(SessionViewModel.Command):
+                        sidebarClaudeBadge.Visibility =
+                            ClaudeSessionService.IsClaudeCommand(vm.Command)
+                                ? Visibility.Visible : Visibility.Collapsed;
                         break;
 
                     case nameof(SessionViewModel.GitBranch):
@@ -2800,6 +2819,11 @@ public partial class MainWindow : Window
                 menu.Items.Add(renameItem);
             }
 
+            // Full configuration editor — the New Session form, pre-filled.
+            var editItem = new System.Windows.Controls.MenuItem { Header = "Edit session…" };
+            editItem.Click += async (_, _) => await EditSessionAsync(vm);
+            menu.Items.Add(editItem);
+
             // Folder actions — only when there's a local working folder to open.
             if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
             {
@@ -3877,6 +3901,21 @@ public partial class MainWindow : Window
         };
         chevronBtn.Click += (_, _) => ShowRunCommandsDropdown(vm, chevronBtn);
 
+        // Edit session — opens the New Session form pre-filled with this session's config.
+        var editBtn = new WpfButton
+        {
+            Content = "⚙",
+            ToolTip = "Edit session settings (folder, command, appearance)",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+        editBtn.Click += async (_, _) => await EditSessionAsync(vm);
+
         // Sleep (dormant) button — keeps the session in the sidebar but stops the PTY
         var sleepBtn = new WpfButton
         {
@@ -3916,6 +3955,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
+        DockPanel.SetDock(editBtn, Dock.Right);
         DockPanel.SetDock(chevronBtn, Dock.Right);
         DockPanel.SetDock(playBtn, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
@@ -3928,6 +3968,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
+        toolbarContent.Children.Add(editBtn);
         toolbarContent.Children.Add(chevronBtn);
         toolbarContent.Children.Add(playBtn);
         toolbarContent.Children.Add(claudeBadge);
@@ -4122,6 +4163,21 @@ public partial class MainWindow : Window
             }
         };
 
+        // "Edit session…" rewrites the model in place, so the toolbar labels have to follow.
+        vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is not (nameof(SessionViewModel.DisplayName)
+                                       or nameof(SessionViewModel.WorkingFolder)
+                                       or nameof(SessionViewModel.Command))) return;
+            Dispatcher.Invoke(() =>
+            {
+                titleBlock.Text = vm.DisplayName;
+                folderBlock.Text = vm.WorkingFolder;
+                claudeBadge.Visibility = ClaudeSessionService.IsClaudeCommand(vm.Command)
+                    ? Visibility.Visible : Visibility.Collapsed;
+            });
+        };
+
         _runControls[vm.Id] = (playBtn, chevronBtn, chipsStrip, chipsPanel, drawer,
             drawerText, drawerHeader, drawerStopBtn, drawerCopyBtn, drawerSendBtn);
 
@@ -4169,6 +4225,161 @@ public partial class MainWindow : Window
 
         if (_vm.Sessions.Count == 0 && _dormantSidebarItems.Count == 0)
             EmptyState.Visibility = Visibility.Visible;
+    }
+
+    // ── Edit session configuration ───────────────────────────────────────────
+
+    /// <summary>
+    /// Shows the New Session form in edit mode, pre-filled from <paramref name="session"/>.
+    /// Returns the edited values, or null when the user cancelled.
+    /// </summary>
+    private Models.SessionConfigDraft? ShowEditSessionDialog(ShellSession session)
+    {
+        var profiles = _vm.Settings.ImportWindowsTerminalProfiles
+            ? Services.WindowsTerminalProfileService.GetProfiles()
+            : null;
+        var dialog = NewSessionDialog.ForEdit(session, _vm.Settings.LaunchCommands, profiles);
+        dialog.Owner = this;
+        return dialog.ShowDialog() == true ? dialog.ToDraft() : null;
+    }
+
+    /// <summary>
+    /// Edits a live session's configuration in place. Everything the running terminal can
+    /// absorb (name, appearance overrides) is applied immediately; anything that only takes
+    /// effect at launch time (command, args, folder, SSH target, transparency, cleared
+    /// overrides) prompts for a restart — declining keeps the current terminal and defers the
+    /// change to the next launch.
+    /// </summary>
+    private async Task EditSessionAsync(SessionViewModel vm)
+    {
+        var session = vm.Session;
+        var draft = ShowEditSessionDialog(session);
+        if (draft == null) return;
+
+        var change = Services.SessionConfigEditor.Diff(session, draft);
+        if (!change.AnyChange) return;
+
+        bool wasRemote = session.IsRemote;
+        Services.SessionConfigEditor.Apply(session, draft);
+
+        vm.NotifyConfigChanged();
+        if (change.WorkingFolderChanged || session.IsRemote != wasRemote)
+            _ = vm.ReloadGitInfoAsync();
+
+        // No-op when the session carries no overrides; re-asserting the global font first
+        // keeps a partially-overridden session from inheriting stale values.
+        if (change.AppearanceChanged)
+        {
+            vm.Bridge?.ApplyFontSettings(_vm.Settings);
+            vm.Bridge?.ApplyProfileOverrides(session);
+        }
+
+        UpdateSidebarActiveState();
+        _ = _vm.SaveStateAsync();
+
+        if (!change.RequiresRelaunch) return;
+
+        var answer = MessageBox.Show(this,
+            $"'{vm.DisplayName}' needs a terminal restart to pick up the new settings.\n\n" +
+            "Restart now? The running process is terminated.\n" +
+            "Choosing No keeps the current terminal — the new settings apply the next time "
+            + "this session starts.",
+            "Restart session?", MessageBoxButton.YesNo, MessageBoxImage.Question,
+            MessageBoxResult.Yes);
+        if (answer == MessageBoxResult.Yes) await RestartSessionAsync(vm);
+    }
+
+    /// <summary>
+    /// Edits a dormant session. There's no PTY or VM to reconcile — just rewrite the model
+    /// and rebuild the muted sidebar row, which renders name/folder/accent statically.
+    /// </summary>
+    private void EditDormantSession(ShellSession session)
+    {
+        var draft = ShowEditSessionDialog(session);
+        if (draft == null) return;
+        if (!Services.SessionConfigEditor.Diff(session, draft).AnyChange) return;
+
+        Services.SessionConfigEditor.Apply(session, draft);
+
+        if (_dormantSidebarItems.TryGetValue(session.Id, out var old))
+        {
+            SidebarSessionList.Children.Remove(old);
+            _dormantSidebarItems.Remove(session.Id);
+        }
+        AddDormantSidebarItem(session);
+        RebuildSidebarOrder();
+        _ = _vm.SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Tears down a live session's PTY/terminal and relaunches it from the same
+    /// <see cref="ShellSession"/> — the sleep/wake teardown without the dormant bookkeeping.
+    /// The session keeps its Id, group, run commands and sidebar slot
+    /// (<see cref="MainViewModel.RegisterSession"/> re-inserts at the SessionManager index),
+    /// and it never enters the recently-closed ring.
+    /// </summary>
+    private async Task RestartSessionAsync(SessionViewModel vm)
+    {
+        var session = vm.Session;
+
+        vm.Runner.StopAll();
+        if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
+        if (_sessionUi.TryGetValue(vm.Id, out var ui))
+        {
+            if (TerminalGrid.Children.Contains(ui.terminalWrapper))
+                TerminalGrid.Children.Remove(ui.terminalWrapper);
+            SidebarSessionList.Children.Remove(ui.sidebarItem);
+            _sessionUi.Remove(vm.Id);
+        }
+        _runControls.Remove(vm.Id);
+        _drawerItemBySession.Remove(vm.Id);
+        _sidebarActionPanels.Remove(vm.Id);
+        _sidebarRenameActions.Remove(vm.Id);
+
+        // Remove the VM directly — bypassing CloseRequested keeps the ShellSession in the
+        // SessionManager (so state.json and the sidebar slot survive) and off the ring buffer.
+        _vm.Sessions.Remove(vm);
+        if (_vm.ActiveSession == vm)
+            _vm.ActiveSession = _vm.Sessions.LastOrDefault();
+        vm.Dispose();
+
+        // Placeholder so the row doesn't blink out of the sidebar while WebView2 boots.
+        AddLaunchingSidebarItem(session);
+        RebuildSidebarOrder();
+
+        try
+        {
+            // restoring: true so a Claude session resumes its conversation instead of
+            // starting a fresh one. Sleep/wake already does this; a restart tears down the
+            // same way, so it must recover the same way — otherwise reconfiguring a session
+            // silently discards its history. GetLastSessionId resolves against the NEW
+            // working folder, so this stays correct when the folder is what changed.
+            //
+            // removeOnFailure: false so a bad edit can't delete the session. The PTY-start
+            // failure path inside LaunchSessionAsync removes it from SessionManager, which
+            // is right for a brand-new session and destructive here.
+            await LaunchSessionAsync(session, restoring: true, removeOnFailure: false);
+        }
+        catch (Exception ex)
+        {
+            Log($"Restart FAILED for '{session.Name}': {ex}");
+            MessageBox.Show($"Failed to restart '{session.Name}': {ex.Message}",
+                "Restart Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        // Both failure shapes land here: LaunchSessionAsync handles PTY-start failure
+        // internally (no throw) and rethrows earlier ones, and either way the session is
+        // left with no live terminal. Fall back to dormant so the row stays visible and
+        // the user can fix the configuration and wake it, rather than being left with a
+        // placeholder that never resolves.
+        if (!_sessionUi.ContainsKey(session.Id))
+        {
+            _launchingSidebarItems.Remove(session.Id);
+            session.IsDormant = true;
+            AddDormantSidebarItem(session);
+            RebuildSidebarOrder();
+            _ = _vm.SaveStateAsync();
+        }
     }
 
     // ── Sleep / wake (dormant sessions) ───────────────────────────────────────
@@ -4487,6 +4698,16 @@ public partial class MainWindow : Window
             container.Opacity = 0.55;
             container.Background = Brushes.Transparent;
         };
+
+        // Right-click → reconfigure (or wake) without needing the row to be live first.
+        var dormantMenu = new System.Windows.Controls.ContextMenu();
+        var dormantEdit = new System.Windows.Controls.MenuItem { Header = "Edit session…" };
+        dormantEdit.Click += (_, _) => EditDormantSession(session);
+        dormantMenu.Items.Add(dormantEdit);
+        var dormantWake = new System.Windows.Controls.MenuItem { Header = "Wake session" };
+        dormantWake.Click += async (_, _) => await WakeSessionAsync(session);
+        dormantMenu.Items.Add(dormantWake);
+        container.ContextMenu = dormantMenu;
 
         // Click anywhere on the row → wake
         container.MouseLeftButtonDown += async (_, e) =>
