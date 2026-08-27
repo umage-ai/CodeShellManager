@@ -63,12 +63,18 @@ public sealed class TerminalBridge : IDisposable
     public event Action? UserInput;
 
     /// <summary>
-    /// Input that was not a mouse report, i.e. an actual keystroke or paste.
+    /// A real key press in this pane. Raised from xterm's <c>onKey</c> (posted as a
+    /// <c>userkey</c> message), throttled to at most one per 500ms.
     ///
-    /// Separate from <see cref="UserInput"/> because xterm's onData carries mouse
-    /// reports too whenever the running app enables mouse tracking (Claude Code does).
-    /// Anything that changes UI state off the back of input must use this one, or
-    /// merely moving the mouse across a pane drives it.
+    /// Anything that changes UI state off the back of input must use this rather than
+    /// <see cref="UserInput"/>. onData carries everything xterm sends to the PTY,
+    /// including replies the TERMINAL itself generates — device-attribute answers
+    /// (<c>ESC[?1;2c</c>), cursor-position reports, OSC colour replies, and focus
+    /// in/out (<c>ESC[I</c>/<c>ESC[O</c>) — plus mouse reports when the app enables
+    /// tracking. An earlier attempt filtered those by inspecting the bytes; it could
+    /// not work, because a device-attribute reply is not distinguishable from typing
+    /// by shape. xterm knows which is which (triggerDataEvent's wasUserInput flag) but
+    /// does not surface it on onData, so onKey is the only honest source.
     /// </summary>
     public event Action? KeyboardInput;
 
@@ -303,21 +309,6 @@ public sealed class TerminalBridge : IDisposable
         _coalescer.Append(rawData);
     }
 
-    /// <summary>
-    /// True when <paramref name="data"/> is a terminal mouse report rather than typed
-    /// input. Covers the two encodings xterm.js emits:
-    ///   SGR (modern, the default for xterm.js)  ESC [ &lt; btn ; col ; row (M|m)
-    ///   X10 / normal (legacy)                   ESC [ M btn col row
-    ///
-    /// Motion events fire continuously while the pointer moves over a pane with mouse
-    /// tracking on, so anything driving UI state off input has to skip these.
-    /// </summary>
-    internal static bool IsMouseReport(string data) =>
-        data.Length >= 3
-        && data[0] == '\x1b'
-        && data[1] == '['
-        && (data[2] == '<' || data[2] == 'M');
-
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
     {
         AcceleratorKeyPressed?.Invoke(this, e);
@@ -351,9 +342,14 @@ public sealed class TerminalBridge : IDisposable
                         _pty?.Write(data);
                     }
                     UserInput?.Invoke();
-                    if (!IsMouseReport(data)) KeyboardInput?.Invoke();
                     break;
                 }
+
+                // Posted from xterm's onKey — a real key event, never a terminal reply.
+                // See terminal-init.js for why onData can't be used for this.
+                case "userkey":
+                    KeyboardInput?.Invoke();
+                    break;
 
                 case "resize":
                 {

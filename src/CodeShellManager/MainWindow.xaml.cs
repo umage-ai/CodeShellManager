@@ -285,6 +285,9 @@ public partial class MainWindow : Window
             // when another instance is running. Batch these so the user gets one
             // actionable dialog at the end instead of N "Restore Error" popups.
             var webView2AccessDenied = new List<string>();
+            // Wall clock for the whole restore, so per-session timings are comparable and
+            // the total is visible in crash.log (issue #82).
+            var restoreClock = System.Diagnostics.Stopwatch.StartNew();
             foreach (var s in saved)
             {
                 if (s.IsDormant) continue;
@@ -295,13 +298,16 @@ public partial class MainWindow : Window
                 // actually takes instead of the worst case every time — 19 consecutive
                 // Claude sessions used to mean 38s of pure sleep. Capped at staggerMs,
                 // so this can never be slower than the old behaviour.
+                long gateStart = restoreClock.ElapsedMilliseconds;
                 if (isClaude && lastWasClaude && staggerMs > 0)
                     await WaitForClaudeConfigQuiesceAsync(prevClaudeCfgBaseline, staggerMs);
+                long gateMs = restoreClock.ElapsedMilliseconds - gateStart;
 
                 // Baseline BEFORE launching — a fast write would otherwise land before
                 // the first poll and read as "never written".
                 if (isClaude) prevClaudeCfgBaseline = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
 
+                long launchStart = restoreClock.ElapsedMilliseconds;
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -312,6 +318,16 @@ public partial class MainWindow : Window
                         MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                             "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+
+                // Split the per-session cost into "waiting for the previous Claude" vs
+                // "actually launching" (WebView2 create + navigate + PTY spawn). #82 asked
+                // for this before optimising further: the gate column is now usually small,
+                // so whatever remains is launch cost, and that is what parallelising would
+                // have to target.
+                Log($"RESTORE '{s.Name}': gate={gateMs}ms " +
+                    $"launch={restoreClock.ElapsedMilliseconds - launchStart}ms " +
+                    $"total={restoreClock.ElapsedMilliseconds}ms");
+
                 lastWasClaude = isClaude;
             }
             if (webView2AccessDenied.Count > 0)
@@ -1111,8 +1127,13 @@ public partial class MainWindow : Window
 
             usageCommandKey = effectiveCommand;
             sessionStartUtc = DateTime.UtcNow;
+            // Fire-and-forget, but observe the fault. Discarding the task is how the
+            // SqliteConnection race in #102 stayed invisible: nothing awaited it, so the
+            // exception only surfaced when the finalizer rethrew it, detached from here.
             if (_searchService != null)
-                _ = _searchService.RecordSessionStartAsync(effectiveCommand);
+                _ = _searchService.RecordSessionStartAsync(effectiveCommand)
+                    .ContinueWith(t => Log($"RecordSessionStart FAILED: {t.Exception}"),
+                        TaskContinuationOptions.OnlyOnFaulted);
         }
         catch (Exception ex)
         {
@@ -4991,15 +5012,39 @@ public partial class MainWindow : Window
         // than the configured delay on slow disks. Cap each wait at 10s so a stuck claude
         // doesn't hang application shutdown.
         int postExitMs = _vm.Settings.ClaudeLaunchStaggerMs;
+
+        // Overall budget across ALL Claude disposals (issue #82). The per-session cap
+        // alone is unbounded in aggregate: 20 sessions × 10s is 200s of the user staring
+        // at a shutdown overlay, and one wedged claude drags everything behind it.
+        // Once the budget is gone the rest are disposed without waiting — the job object
+        // (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) still tears the process tree down, we just
+        // stop waiting to watch it happen.
+        var shutdownClock = System.Diagnostics.Stopwatch.StartNew();
+        int disposed = 0, skippedWait = 0;
+
         foreach (var vm in all)
         {
             if (!ClaudeSessionService.IsClaudeCommand(vm.Command)) continue;
+
+            int remainingBudget = ClaudeShutdownBudgetMs - (int)shutdownClock.ElapsedMilliseconds;
+            if (remainingBudget <= 0)
+            {
+                // Out of budget — tear down without waiting for a clean exit.
+                Log($"Shutdown budget exhausted after {disposed} session(s); " +
+                    $"disposing '{vm.Name}' without waiting");
+                try { vm.Dispose(); } catch { }
+                skippedWait++;
+                continue;
+            }
 
             // Baseline before the process is signalled, so the gate below can see the
             // shutdown write land.
             DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
 
-            await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
+            long t0 = shutdownClock.ElapsedMilliseconds;
+            await DisposeAndWaitForExitAsync(vm, timeoutMs: Math.Min(10000, remainingBudget));
+            long exitMs = shutdownClock.ElapsedMilliseconds - t0;
+            disposed++;
 
             // The exit wait above is on the process handle, but Claude's config write can
             // still be in flight when the handle closes — hence a post-exit pause. This
@@ -5007,17 +5052,44 @@ public partial class MainWindow : Window
             // justified as belt-and-braces. Now it waits for the write to actually settle
             // and returns as soon as it has, capped at the same 1s so the worst case is
             // unchanged (issue #82).
+            long q0 = shutdownClock.ElapsedMilliseconds;
             if (postExitMs > 0)
                 await WaitForClaudeConfigQuiesceAsync(cfgBefore, Math.Min(postExitMs, 1000));
+
+            // Per-session timing so the exit-vs-config-settle split is known rather than
+            // guessed at. #82 asked for this before optimising further.
+            Log($"SHUTDOWN '{vm.Name}': exit={exitMs}ms " +
+                $"cfgSettle={shutdownClock.ElapsedMilliseconds - q0}ms " +
+                $"total={shutdownClock.ElapsedMilliseconds}ms");
         }
+
+        Log($"SHUTDOWN complete: {disposed} waited, {skippedWait} force-disposed, " +
+            $"{shutdownClock.ElapsedMilliseconds}ms total");
 
         // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
         // has been observed to throw NRE internally on shutdown — swallow + log so it
         // doesn't escape as an unhandled exception during application exit.
+        // Take the gate before closing (issue #102). Closing is itself a use of the
+        // connection, and it is NOT guaranteed to be the last one: OutputIndexer.Dispose
+        // waits a bounded 2s for its worker, and several SearchService calls are
+        // fire-and-forget and never awaited at all. Closing underneath a live
+        // SqliteCommand reproduces exactly the race the gate exists to prevent.
+        // Bounded so a stuck writer can't hang exit — the process is going away anyway.
+        IDisposable? dbLock = null;
+        try
+        {
+            var acquire = DbGate.AcquireAsync();
+            // Bounded: a stuck writer must not hang exit — the process is going away.
+            if (await Task.WhenAny(acquire, Task.Delay(3000)) == acquire) dbLock = await acquire;
+            else Log("OnClosing: DB gate still busy after 3s; closing anyway");
+        }
+        catch (Exception ex) { Log($"OnClosing: DB gate wait threw: {ex.Message}"); }
+
         try { _db?.Close(); }
         catch (Exception ex) { Log($"OnClosing _db.Close threw: {ex}"); }
         try { _db?.Dispose(); }
         catch (Exception ex) { Log($"OnClosing _db.Dispose threw: {ex}"); }
+        dbLock?.Dispose();
         App.TrayIcon?.Dispose();
 
         _shutdownComplete = true;
@@ -5044,6 +5116,20 @@ public partial class MainWindow : Window
     /// wrong one means always waiting the full cap.
     /// </summary>
     private readonly string _claudeConfigPath = ClaudeConfigGate.ResolveConfigFile();
+
+    /// <summary>
+    /// Total time budget for waiting on Claude sessions to exit at shutdown (issue #82).
+    ///
+    /// The per-session 10s cap is unbounded in aggregate — 20 sessions is 200s worst
+    /// case, and one wedged claude drags every session behind it. Past this budget the
+    /// remaining sessions are disposed without waiting; the job object still kills the
+    /// process tree, we just stop watching.
+    ///
+    /// 15s is chosen to comfortably cover a normal fleet (measured exits are well under
+    /// a second each) while capping the pathological case at something a user will sit
+    /// through.
+    /// </summary>
+    private const int ClaudeShutdownBudgetMs = 15000;
 
     /// <summary>
     /// Blocks until Claude's config file has been written and gone quiet, or
