@@ -362,26 +362,43 @@ public sealed class PseudoTerminal : IPseudoTerminal
 
     private async Task MonitorExitAsync()
     {
-        // Duplicate _hProcess so Dispose() can close the original without racing the wait.
-        // Closing a handle that another thread is waiting on is Win32 UB — the wait may
-        // return prematurely and we'd fire Exited before the child actually exits.
-        if (!DuplicateHandle(GetCurrentProcess(), _hProcess, GetCurrentProcess(),
-                out IntPtr waitHandle, 0, false, DUPLICATE_SAME_ACCESS))
-        {
-            Log($"DuplicateHandle failed: {Marshal.GetLastWin32Error()}");
-            return;
-        }
+        // Exited must fire on EVERY path, exactly once (issue #91).
+        //
+        // MainWindow.DisposeAndWaitForExitAsync waits on this event with a 10s timeout,
+        // and the shutdown loop is sequential. A path that returns without firing costs
+        // the full 10s for that session, every time, on top of every other session's.
+        // The early return below used to do exactly that.
         try
         {
-            await Task.Run(() => WaitForSingleObject(waitHandle, 0xFFFFFFFF));
-            if (GetExitCodeProcess(waitHandle, out uint code))
-                ExitCode = unchecked((int)code);
+            // Duplicate _hProcess so Dispose() can close the original without racing the
+            // wait. Closing a handle another thread is waiting on is Win32 UB — the wait
+            // may return prematurely and we'd fire Exited before the child actually exits.
+            if (!DuplicateHandle(GetCurrentProcess(), _hProcess, GetCurrentProcess(),
+                    out IntPtr waitHandle, 0, false, DUPLICATE_SAME_ACCESS))
+            {
+                // Can't observe the real exit, so ExitCode stays null and the caller
+                // treats it as unknown — but it must not be left waiting on an event
+                // that will never arrive.
+                Log($"DuplicateHandle failed: {Marshal.GetLastWin32Error()} — " +
+                    "firing Exited without an exit code so shutdown doesn't stall");
+                return;
+            }
+
+            try
+            {
+                await Task.Run(() => WaitForSingleObject(waitHandle, 0xFFFFFFFF));
+                if (GetExitCodeProcess(waitHandle, out uint code))
+                    ExitCode = unchecked((int)code);
+            }
+            finally
+            {
+                CloseHandle(waitHandle);
+            }
         }
         finally
         {
-            CloseHandle(waitHandle);
+            Exited?.Invoke();
         }
-        Exited?.Invoke();
     }
 
     public void Dispose()
