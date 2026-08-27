@@ -1133,6 +1133,7 @@ public partial class MainWindow : Window
         // Build sidebar entry
         var sidebarItem = BuildSidebarItem(vm);
         _sessionUi[session.Id] = (webView, terminalWrapper, sidebarItem);
+        _sessionUiVersion++;   // invalidate the layout signature — see RefreshTerminalLayout
         // Once the real sidebar item is registered, the launching placeholder for this
         // session is no longer rendered by Resolve(); drop it so it doesn't leak.
         _launchingSidebarItems.Remove(session.Id);
@@ -3435,8 +3436,83 @@ public partial class MainWindow : Window
         RefreshTerminalLayout();
     }
 
+    /// <summary>
+    /// Panes a layout shows at once. Must match the <c>GetViewportSessions(sessions, N)</c>
+    /// call in each case of <see cref="RefreshTerminalLayout"/>. Single is 1.
+    /// </summary>
+    private static int SlotCountFor(LayoutMode layout) => layout switch
+    {
+        LayoutMode.TwoColumn    => 2,
+        LayoutMode.ThreeColumn  => 3,
+        LayoutMode.TwoByTwo     => 4,
+        LayoutMode.TwoRow       => 2,
+        LayoutMode.FourColumn   => 4,
+        LayoutMode.SixColumn    => 6,
+        LayoutMode.SixByTwo     => 12,
+        LayoutMode.SixByThree   => 18,
+        LayoutMode.ThreeByThree => 9,
+        _                       => 1,   // Single
+    };
+
+    /// <summary>Layout + the exact ordered panes it would render. Cheap to compute, cheap to compare.</summary>
+    private string? _lastLayoutSignature;
+
+    /// <summary>
+    /// Bumped whenever <c>_sessionUi</c> gains or loses an entry, and folded into the
+    /// layout signature.
+    ///
+    /// Without it the skip is unsound: RestartSessionAsync (edit-session) tears a
+    /// session's wrapper out and builds a NEW one for the same session Id, so the id list
+    /// is unchanged, the signature would match, and the grid would keep rendering the old
+    /// disposed wrapper. Session ids alone don't identify the visual objects.
+    /// </summary>
+    private int _sessionUiVersion;
+
     private void RefreshTerminalLayout()
     {
+        // Skip the teardown when nothing visible would actually change (issue #103).
+        //
+        // This runs on every ActiveSession change, and it starts by detaching EVERY
+        // WebView2 from the visual tree — WebView2 is an HwndHost, so reparenting it is
+        // not a cheap layout pass. Since #93 made clicking or typing in a pane promote it,
+        // that fired on ordinary interaction rather than only on sidebar clicks.
+        //
+        // Comparing the rendered set rather than special-casing layouts is deliberate:
+        // GetViewportSessions PAGES around the active session once the session count
+        // exceeds the slot count, so "multi-pane layouts don't change on focus" is false
+        // for exactly the crowded setups this is meant to help. The signature captures
+        // that, so paging still rebuilds and only genuinely-identical renders are skipped.
+        {
+            IEnumerable<SessionViewModel> probe = _vm.Sessions;
+            if (_vm.Settings.FilterGridByActiveGroup && _vm.EffectiveActiveGroupId != null)
+                probe = probe.Where(_vm.SessionMatchesEffectiveGroup);
+            var probeList = probe.ToList();
+
+            string signature;
+            if (probeList.Count == 0)
+            {
+                signature = $"{_sessionUiVersion}|{_currentLayout}|<empty>";
+            }
+            else if (_currentLayout == LayoutMode.Single)
+            {
+                // Single renders the active session (or the first visible one).
+                var shown = probeList.Contains(_vm.ActiveSession!) ? _vm.ActiveSession : probeList[0];
+                signature = $"{_sessionUiVersion}|{_currentLayout}|{shown?.Id}";
+            }
+            else
+            {
+                // Note: this advances the viewport offset if the active session moved
+                // out of view — which is exactly what the real render would do, so the
+                // signature reflects the post-scroll state either way.
+                var view = GetViewportSessions(probeList, SlotCountFor(_currentLayout));
+                signature = $"{_sessionUiVersion}|{_currentLayout}|{string.Join(",", view.Select(s => s.Id))}";
+            }
+
+            // TerminalGrid.Children.Count guards the first call and any external teardown.
+            if (signature == _lastLayoutSignature && TerminalGrid.Children.Count > 0) return;
+            _lastLayoutSignature = signature;
+        }
+
         TerminalGrid.Children.Clear();
         TerminalGrid.RowDefinitions.Clear();
         TerminalGrid.ColumnDefinitions.Clear();
@@ -4059,6 +4135,7 @@ public partial class MainWindow : Window
         {
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
+            _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
@@ -4097,6 +4174,7 @@ public partial class MainWindow : Window
                 TerminalGrid.Children.Remove(ui.terminalWrapper);
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
+            _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
