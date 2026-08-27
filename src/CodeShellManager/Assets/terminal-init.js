@@ -39,6 +39,25 @@
 
   term.onData(data => sendInput(data));
 
+  // ── "the user actually typed here" signal ──────────────────────────────────
+  // Distinct from onData on purpose. onData carries everything xterm sends to the
+  // PTY, including replies the TERMINAL generates by itself: device-attribute
+  // answers (ESC[?1;2c, ESC[?6c, ESC[>85;95;0c), cursor-position reports, OSC
+  // colour replies, and focus in/out (ESC[I / ESC[O). Those are indistinguishable
+  // from typing by inspecting the bytes — xterm knows which is which internally
+  // (triggerDataEvent's wasUserInput flag) but does not surface it on onData.
+  //
+  // onKey fires only for real key events, so it is the honest source for "make
+  // this pane active". Throttled because promotion is idempotent on the C# side
+  // and there is no reason to post on every character.
+  var lastKeyPost = 0;
+  term.onKey(() => {
+    var now = Date.now();
+    if (now - lastKeyPost < 500) return;
+    lastKeyPost = now;
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'userkey' }));
+  });
+
   // ── Resize notification ────────────────────────────────────────────────────
   term.onResize(({ cols, rows }) => {
     window.chrome.webview.postMessage(JSON.stringify({ type: 'resize', cols, rows }));
