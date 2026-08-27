@@ -285,6 +285,9 @@ public partial class MainWindow : Window
             // when another instance is running. Batch these so the user gets one
             // actionable dialog at the end instead of N "Restore Error" popups.
             var webView2AccessDenied = new List<string>();
+            // Wall clock for the whole restore, so per-session timings are comparable and
+            // the total is visible in crash.log (issue #82).
+            var restoreClock = System.Diagnostics.Stopwatch.StartNew();
             foreach (var s in saved)
             {
                 if (s.IsDormant) continue;
@@ -295,13 +298,16 @@ public partial class MainWindow : Window
                 // actually takes instead of the worst case every time — 19 consecutive
                 // Claude sessions used to mean 38s of pure sleep. Capped at staggerMs,
                 // so this can never be slower than the old behaviour.
+                long gateStart = restoreClock.ElapsedMilliseconds;
                 if (isClaude && lastWasClaude && staggerMs > 0)
                     await WaitForClaudeConfigQuiesceAsync(prevClaudeCfgBaseline, staggerMs);
+                long gateMs = restoreClock.ElapsedMilliseconds - gateStart;
 
                 // Baseline BEFORE launching — a fast write would otherwise land before
                 // the first poll and read as "never written".
                 if (isClaude) prevClaudeCfgBaseline = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
 
+                long launchStart = restoreClock.ElapsedMilliseconds;
                 try { await LaunchSessionAsync(s, restoring: true); }
                 catch (Exception ex)
                 {
@@ -312,6 +318,16 @@ public partial class MainWindow : Window
                         MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                             "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+
+                // Split the per-session cost into "waiting for the previous Claude" vs
+                // "actually launching" (WebView2 create + navigate + PTY spawn). #82 asked
+                // for this before optimising further: the gate column is now usually small,
+                // so whatever remains is launch cost, and that is what parallelising would
+                // have to target.
+                Log($"RESTORE '{s.Name}': gate={gateMs}ms " +
+                    $"launch={restoreClock.ElapsedMilliseconds - launchStart}ms " +
+                    $"total={restoreClock.ElapsedMilliseconds}ms");
+
                 lastWasClaude = isClaude;
             }
             if (webView2AccessDenied.Count > 0)
@@ -1118,8 +1134,13 @@ public partial class MainWindow : Window
 
             usageCommandKey = effectiveCommand;
             sessionStartUtc = DateTime.UtcNow;
+            // Fire-and-forget, but observe the fault. Discarding the task is how the
+            // SqliteConnection race in #102 stayed invisible: nothing awaited it, so the
+            // exception only surfaced when the finalizer rethrew it, detached from here.
             if (_searchService != null)
-                _ = _searchService.RecordSessionStartAsync(effectiveCommand);
+                _ = _searchService.RecordSessionStartAsync(effectiveCommand)
+                    .ContinueWith(t => Log($"RecordSessionStart FAILED: {t.Exception}"),
+                        TaskContinuationOptions.OnlyOnFaulted);
         }
         catch (Exception ex)
         {
@@ -1140,6 +1161,7 @@ public partial class MainWindow : Window
         // Build sidebar entry
         var sidebarItem = BuildSidebarItem(vm);
         _sessionUi[session.Id] = (webView, terminalWrapper, sidebarItem);
+        _sessionUiVersion++;   // invalidate the layout signature — see RefreshTerminalLayout
         // Once the real sidebar item is registered, the launching placeholder for this
         // session is no longer rendered by Resolve(); drop it so it doesn't leak.
         _launchingSidebarItems.Remove(session.Id);
@@ -1691,21 +1713,33 @@ public partial class MainWindow : Window
                 // would no longer match the sidebar ring.
                 var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
                 string accentHex = vm?.AccentColor ?? (ui.terminalWrapper.Tag as string ?? "#89b4fa");
-                try
-                {
-                    var accent = (Color)ColorConverter.ConvertFromString(accentHex);
-                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(accent);
-                }
-                catch
-                {
-                    ui.terminalWrapper.BorderBrush = new SolidColorBrush(Color.FromRgb(0x89, 0xb4, 0xfa));
-                }
+                Color accent;
+                try { accent = (Color)ColorConverter.ConvertFromString(accentHex); }
+                catch { accent = Color.FromRgb(0x89, 0xb4, 0xfa); }
+                SetBorderColor(ui.terminalWrapper, accent);
             }
             else
             {
-                ui.terminalWrapper.BorderBrush = Brushes.Transparent;
+                SetBorderColor(ui.terminalWrapper, Colors.Transparent);
             }
         }
+    }
+
+    /// <summary>
+    /// Assigns a border colour only when it actually differs.
+    ///
+    /// This used to allocate a fresh SolidColorBrush and reassign BorderBrush on every
+    /// pane on every call, so each invocation dirtied all of them and WPF repainted the
+    /// lot. Harmless at one call per session switch; very visible as flicker when
+    /// something calls it rapidly — which a bug briefly did on every mouse move.
+    /// Idempotent now, so a stray caller costs nothing visible.
+    /// </summary>
+    private static void SetBorderColor(Border border, Color color)
+    {
+        if (border.BorderBrush is SolidColorBrush current && current.Color == color) return;
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();   // frozen brushes skip change-tracking and are cheaper to render
+        border.BorderBrush = brush;
     }
 
     // ── Sidebar quick-menu (right-click on empty sidebar / tab / placeholder area) ─
@@ -3447,8 +3481,83 @@ public partial class MainWindow : Window
         RefreshTerminalLayout();
     }
 
+    /// <summary>
+    /// Panes a layout shows at once. Must match the <c>GetViewportSessions(sessions, N)</c>
+    /// call in each case of <see cref="RefreshTerminalLayout"/>. Single is 1.
+    /// </summary>
+    private static int SlotCountFor(LayoutMode layout) => layout switch
+    {
+        LayoutMode.TwoColumn    => 2,
+        LayoutMode.ThreeColumn  => 3,
+        LayoutMode.TwoByTwo     => 4,
+        LayoutMode.TwoRow       => 2,
+        LayoutMode.FourColumn   => 4,
+        LayoutMode.SixColumn    => 6,
+        LayoutMode.SixByTwo     => 12,
+        LayoutMode.SixByThree   => 18,
+        LayoutMode.ThreeByThree => 9,
+        _                       => 1,   // Single
+    };
+
+    /// <summary>Layout + the exact ordered panes it would render. Cheap to compute, cheap to compare.</summary>
+    private string? _lastLayoutSignature;
+
+    /// <summary>
+    /// Bumped whenever <c>_sessionUi</c> gains or loses an entry, and folded into the
+    /// layout signature.
+    ///
+    /// Without it the skip is unsound: RestartSessionAsync (edit-session) tears a
+    /// session's wrapper out and builds a NEW one for the same session Id, so the id list
+    /// is unchanged, the signature would match, and the grid would keep rendering the old
+    /// disposed wrapper. Session ids alone don't identify the visual objects.
+    /// </summary>
+    private int _sessionUiVersion;
+
     private void RefreshTerminalLayout()
     {
+        // Skip the teardown when nothing visible would actually change (issue #103).
+        //
+        // This runs on every ActiveSession change, and it starts by detaching EVERY
+        // WebView2 from the visual tree — WebView2 is an HwndHost, so reparenting it is
+        // not a cheap layout pass. Since #93 made clicking or typing in a pane promote it,
+        // that fired on ordinary interaction rather than only on sidebar clicks.
+        //
+        // Comparing the rendered set rather than special-casing layouts is deliberate:
+        // GetViewportSessions PAGES around the active session once the session count
+        // exceeds the slot count, so "multi-pane layouts don't change on focus" is false
+        // for exactly the crowded setups this is meant to help. The signature captures
+        // that, so paging still rebuilds and only genuinely-identical renders are skipped.
+        {
+            IEnumerable<SessionViewModel> probe = _vm.Sessions;
+            if (_vm.Settings.FilterGridByActiveGroup && _vm.EffectiveActiveGroupId != null)
+                probe = probe.Where(_vm.SessionMatchesEffectiveGroup);
+            var probeList = probe.ToList();
+
+            string signature;
+            if (probeList.Count == 0)
+            {
+                signature = $"{_sessionUiVersion}|{_currentLayout}|<empty>";
+            }
+            else if (_currentLayout == LayoutMode.Single)
+            {
+                // Single renders the active session (or the first visible one).
+                var shown = probeList.Contains(_vm.ActiveSession!) ? _vm.ActiveSession : probeList[0];
+                signature = $"{_sessionUiVersion}|{_currentLayout}|{shown?.Id}";
+            }
+            else
+            {
+                // Note: this advances the viewport offset if the active session moved
+                // out of view — which is exactly what the real render would do, so the
+                // signature reflects the post-scroll state either way.
+                var view = GetViewportSessions(probeList, SlotCountFor(_currentLayout));
+                signature = $"{_sessionUiVersion}|{_currentLayout}|{string.Join(",", view.Select(s => s.Id))}";
+            }
+
+            // TerminalGrid.Children.Count guards the first call and any external teardown.
+            if (signature == _lastLayoutSignature && TerminalGrid.Children.Count > 0) return;
+            _lastLayoutSignature = signature;
+        }
+
         TerminalGrid.Children.Clear();
         TerminalGrid.RowDefinitions.Clear();
         TerminalGrid.ColumnDefinitions.Clear();
@@ -4103,6 +4212,7 @@ public partial class MainWindow : Window
         {
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
+            _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
@@ -4296,6 +4406,7 @@ public partial class MainWindow : Window
                 TerminalGrid.Children.Remove(ui.terminalWrapper);
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
+            _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
@@ -5122,15 +5233,39 @@ public partial class MainWindow : Window
         // than the configured delay on slow disks. Cap each wait at 10s so a stuck claude
         // doesn't hang application shutdown.
         int postExitMs = _vm.Settings.ClaudeLaunchStaggerMs;
+
+        // Overall budget across ALL Claude disposals (issue #82). The per-session cap
+        // alone is unbounded in aggregate: 20 sessions × 10s is 200s of the user staring
+        // at a shutdown overlay, and one wedged claude drags everything behind it.
+        // Once the budget is gone the rest are disposed without waiting — the job object
+        // (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) still tears the process tree down, we just
+        // stop waiting to watch it happen.
+        var shutdownClock = System.Diagnostics.Stopwatch.StartNew();
+        int disposed = 0, skippedWait = 0;
+
         foreach (var vm in all)
         {
             if (!ClaudeSessionService.IsClaudeCommand(vm.Command)) continue;
+
+            int remainingBudget = ClaudeShutdownBudgetMs - (int)shutdownClock.ElapsedMilliseconds;
+            if (remainingBudget <= 0)
+            {
+                // Out of budget — tear down without waiting for a clean exit.
+                Log($"Shutdown budget exhausted after {disposed} session(s); " +
+                    $"disposing '{vm.Name}' without waiting");
+                try { vm.Dispose(); } catch { }
+                skippedWait++;
+                continue;
+            }
 
             // Baseline before the process is signalled, so the gate below can see the
             // shutdown write land.
             DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
 
-            await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
+            long t0 = shutdownClock.ElapsedMilliseconds;
+            await DisposeAndWaitForExitAsync(vm, timeoutMs: Math.Min(10000, remainingBudget));
+            long exitMs = shutdownClock.ElapsedMilliseconds - t0;
+            disposed++;
 
             // The exit wait above is on the process handle, but Claude's config write can
             // still be in flight when the handle closes — hence a post-exit pause. This
@@ -5138,17 +5273,44 @@ public partial class MainWindow : Window
             // justified as belt-and-braces. Now it waits for the write to actually settle
             // and returns as soon as it has, capped at the same 1s so the worst case is
             // unchanged (issue #82).
+            long q0 = shutdownClock.ElapsedMilliseconds;
             if (postExitMs > 0)
                 await WaitForClaudeConfigQuiesceAsync(cfgBefore, Math.Min(postExitMs, 1000));
+
+            // Per-session timing so the exit-vs-config-settle split is known rather than
+            // guessed at. #82 asked for this before optimising further.
+            Log($"SHUTDOWN '{vm.Name}': exit={exitMs}ms " +
+                $"cfgSettle={shutdownClock.ElapsedMilliseconds - q0}ms " +
+                $"total={shutdownClock.ElapsedMilliseconds}ms");
         }
+
+        Log($"SHUTDOWN complete: {disposed} waited, {skippedWait} force-disposed, " +
+            $"{shutdownClock.ElapsedMilliseconds}ms total");
 
         // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
         // has been observed to throw NRE internally on shutdown — swallow + log so it
         // doesn't escape as an unhandled exception during application exit.
+        // Take the gate before closing (issue #102). Closing is itself a use of the
+        // connection, and it is NOT guaranteed to be the last one: OutputIndexer.Dispose
+        // waits a bounded 2s for its worker, and several SearchService calls are
+        // fire-and-forget and never awaited at all. Closing underneath a live
+        // SqliteCommand reproduces exactly the race the gate exists to prevent.
+        // Bounded so a stuck writer can't hang exit — the process is going away anyway.
+        IDisposable? dbLock = null;
+        try
+        {
+            var acquire = DbGate.AcquireAsync();
+            // Bounded: a stuck writer must not hang exit — the process is going away.
+            if (await Task.WhenAny(acquire, Task.Delay(3000)) == acquire) dbLock = await acquire;
+            else Log("OnClosing: DB gate still busy after 3s; closing anyway");
+        }
+        catch (Exception ex) { Log($"OnClosing: DB gate wait threw: {ex.Message}"); }
+
         try { _db?.Close(); }
         catch (Exception ex) { Log($"OnClosing _db.Close threw: {ex}"); }
         try { _db?.Dispose(); }
         catch (Exception ex) { Log($"OnClosing _db.Dispose threw: {ex}"); }
+        dbLock?.Dispose();
         App.TrayIcon?.Dispose();
 
         _shutdownComplete = true;
@@ -5175,6 +5337,20 @@ public partial class MainWindow : Window
     /// wrong one means always waiting the full cap.
     /// </summary>
     private readonly string _claudeConfigPath = ClaudeConfigGate.ResolveConfigFile();
+
+    /// <summary>
+    /// Total time budget for waiting on Claude sessions to exit at shutdown (issue #82).
+    ///
+    /// The per-session 10s cap is unbounded in aggregate — 20 sessions is 200s worst
+    /// case, and one wedged claude drags every session behind it. Past this budget the
+    /// remaining sessions are disposed without waiting; the job object still kills the
+    /// process tree, we just stop watching.
+    ///
+    /// 15s is chosen to comfortably cover a normal fleet (measured exits are well under
+    /// a second each) while capping the pathological case at something a user will sit
+    /// through.
+    /// </summary>
+    private const int ClaudeShutdownBudgetMs = 15000;
 
     /// <summary>
     /// Blocks until Claude's config file has been written and gone quiet, or

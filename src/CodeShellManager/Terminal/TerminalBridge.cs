@@ -55,7 +55,28 @@ public sealed class TerminalBridge : IDisposable
     private long _lastOutputTickMs;
 
     public event Action<string>? RawOutputReceived;
+
+    /// <summary>
+    /// Any input travelling to the PTY — keystrokes, pastes, and mouse reports.
+    /// Used for "the user interacted with this session" (alert clearing).
+    /// </summary>
     public event Action? UserInput;
+
+    /// <summary>
+    /// A real key press in this pane. Raised from xterm's <c>onKey</c> (posted as a
+    /// <c>userkey</c> message), throttled to at most one per 500ms.
+    ///
+    /// Anything that changes UI state off the back of input must use this rather than
+    /// <see cref="UserInput"/>. onData carries everything xterm sends to the PTY,
+    /// including replies the TERMINAL itself generates — device-attribute answers
+    /// (<c>ESC[?1;2c</c>), cursor-position reports, OSC colour replies, and focus
+    /// in/out (<c>ESC[I</c>/<c>ESC[O</c>) — plus mouse reports when the app enables
+    /// tracking. An earlier attempt filtered those by inspecting the bytes; it could
+    /// not work, because a device-attribute reply is not distinguishable from typing
+    /// by shape. xterm knows which is which (triggerDataEvent's wasUserInput flag) but
+    /// does not surface it on onData, so onKey is the only honest source.
+    /// </summary>
+    public event Action? KeyboardInput;
 
     /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
@@ -323,6 +344,12 @@ public sealed class TerminalBridge : IDisposable
                     UserInput?.Invoke();
                     break;
                 }
+
+                // Posted from xterm's onKey — a real key event, never a terminal reply.
+                // See terminal-init.js for why onData can't be used for this.
+                case "userkey":
+                    KeyboardInput?.Invoke();
+                    break;
 
                 case "resize":
                 {

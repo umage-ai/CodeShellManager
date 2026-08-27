@@ -102,22 +102,24 @@ public class SearchService
                 UNIQUE(command, date)
             );
             """;
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     // ── Project notes ─────────────────────────────────────────────────────────
 
     public async Task<string?> GetNoteAsync(string folderPath)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "SELECT content FROM project_notes WHERE folder_path = $fp";
         cmd.Parameters.AddWithValue("$fp", folderPath);
-        var result = await cmd.ExecuteScalarAsync();
+        var result = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
         return result as string;
     }
 
     public async Task SaveNoteAsync(string folderPath, string content)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             INSERT INTO project_notes (folder_path, content, updated_at)
@@ -129,7 +131,7 @@ public class SearchService
         cmd.Parameters.AddWithValue("$fp", folderPath);
         cmd.Parameters.AddWithValue("$content", content);
         cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -138,6 +140,9 @@ public class SearchService
     {
         var results = new List<SearchResult>();
         if (string.IsNullOrWhiteSpace(query)) return results;
+
+        // After the guard — an empty query touches no connection, so don't queue for one.
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
 
         // Search terminal output via FTS5
         try
@@ -156,8 +161,8 @@ public class SearchService
             cmd.Parameters.AddWithValue("$q", query);
             cmd.Parameters.AddWithValue("$limit", limit);
 
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            await using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false))
             {
                 results.Add(new SearchResult(
                     SessionId: reader.GetString(0),
@@ -183,8 +188,8 @@ public class SearchService
             cmd2.Parameters.AddWithValue("$q", $"%{query}%");
             cmd2.Parameters.AddWithValue("$limit", limit);
 
-            await using var reader2 = await cmd2.ExecuteReaderAsync();
-            while (await reader2.ReadAsync())
+            await using var reader2 = await cmd2.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader2.ReadAsync().ConfigureAwait(false))
             {
                 string folderPath = reader2.GetString(0);
                 string content    = reader2.GetString(1);
@@ -225,6 +230,7 @@ public class SearchService
         string sessionId, string sessionName, string workingFolder,
         string command, string args, string groupId)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             INSERT INTO session_history
@@ -238,19 +244,20 @@ public class SearchService
         cmd.Parameters.AddWithValue("$args", args);
         cmd.Parameters.AddWithValue("$gid", groupId);
         cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     public async Task<SessionHistoryEntry?> GetSessionHistoryAsync(string sessionId)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             SELECT session_id, session_name, working_folder, command, args, group_id, exited_at
             FROM session_history WHERE session_id = $sid ORDER BY exited_at DESC LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$sid", sessionId);
-        await using var r = await cmd.ExecuteReaderAsync();
-        if (!await r.ReadAsync()) return null;
+        await using var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+        if (!await r.ReadAsync().ConfigureAwait(false)) return null;
         return new SessionHistoryEntry(
             r.GetString(0), r.GetString(1), r.GetString(2),
             r.GetString(3), r.GetString(4), r.GetString(5),
@@ -259,14 +266,15 @@ public class SearchService
 
     public async Task<SessionHistoryEntry?> GetLatestSessionHistoryForFolderAsync(string folderPath)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             SELECT session_id, session_name, working_folder, command, args, group_id, exited_at
             FROM session_history WHERE working_folder = $fp ORDER BY exited_at DESC LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$fp", folderPath);
-        await using var r = await cmd.ExecuteReaderAsync();
-        if (!await r.ReadAsync()) return null;
+        await using var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+        if (!await r.ReadAsync().ConfigureAwait(false)) return null;
         return new SessionHistoryEntry(
             r.GetString(0), r.GetString(1), r.GetString(2),
             r.GetString(3), r.GetString(4), r.GetString(5),
@@ -275,10 +283,11 @@ public class SearchService
 
     public async Task DeleteSessionLogsAsync(string sessionId)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "DELETE FROM session_output WHERE session_id = $sid";
         cmd.Parameters.AddWithValue("$sid", sessionId);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     // ── Storage management ───────────────────────────────────────────────────
@@ -287,34 +296,37 @@ public class SearchService
     public async Task<int> PruneOldOutputAsync(int retentionDays)
     {
         if (retentionDays <= 0) return 0;
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         long cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays).ToUnixTimeMilliseconds();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "DELETE FROM session_output WHERE ts < $cutoff";
         cmd.Parameters.AddWithValue("$cutoff", cutoff);
-        return await cmd.ExecuteNonQueryAsync();
+        return await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     /// <summary>Wipes all indexed terminal output and reclaims disk space via VACUUM.</summary>
     public async Task ClearAllOutputAsync()
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using (var del = _db.CreateCommand())
         {
             del.CommandText = "DELETE FROM session_output";
-            await del.ExecuteNonQueryAsync();
+            await del.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         await using (var vac = _db.CreateCommand())
         {
             vac.CommandText = "VACUUM";
-            await vac.ExecuteNonQueryAsync();
+            await vac.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
     }
 
     /// <summary>Returns the SQLite database file size in bytes (page_count * page_size).</summary>
     public async Task<long> GetDatabaseSizeBytesAsync()
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()";
-        var result = await cmd.ExecuteScalarAsync();
+        var result = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
         return result is long l ? l : Convert.ToInt64(result ?? 0);
     }
 
@@ -331,6 +343,7 @@ public class SearchService
 
     public async Task RecordSessionStartAsync(string command)
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         string key = NormalizeCommandName(command);
         string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
         await using var cmd = _db.CreateCommand();
@@ -342,12 +355,13 @@ public class SearchService
             """;
         cmd.Parameters.AddWithValue("$cmd", key);
         cmd.Parameters.AddWithValue("$date", date);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     public async Task RecordSessionDurationAsync(string command, long seconds)
     {
         if (seconds <= 0) return;
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         string key = NormalizeCommandName(command);
         string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
         await using var cmd = _db.CreateCommand();
@@ -360,11 +374,12 @@ public class SearchService
         cmd.Parameters.AddWithValue("$cmd", key);
         cmd.Parameters.AddWithValue("$date", date);
         cmd.Parameters.AddWithValue("$sec", seconds);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     public async Task<List<UsageStat>> GetUsageStatsAsync()
     {
+        using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         var list = new List<UsageStat>();
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
@@ -376,8 +391,8 @@ public class SearchService
             GROUP BY command
             ORDER BY sessions DESC, command ASC
             """;
-        await using var r = await cmd.ExecuteReaderAsync();
-        while (await r.ReadAsync())
+        await using var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+        while (await r.ReadAsync().ConfigureAwait(false))
         {
             string cmdName = r.GetString(0);
             long sessions = r.IsDBNull(1) ? 0 : r.GetInt64(1);
