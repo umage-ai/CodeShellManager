@@ -137,6 +137,27 @@ public class ClaudeConfigGateTests
     }
 
     [Fact]
+    public async Task Wait_NeverSleepsPastTheDeadline()
+    {
+        // Each individual sleep is clamped to the remaining budget, so the wait can't
+        // overshoot by a whole poll interval at the tail either.
+        var clock = new Clock();
+        var baseline = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        await ClaudeConfigGate.WaitForQuiesceAsync(
+            baseline,
+            () => baseline,
+            () => clock.Now,
+            clock.Delay,
+            cap: TimeSpan.FromMilliseconds(175),   // deliberately not a multiple of pollMs
+            quietFor: TimeSpan.FromMilliseconds(250),
+            pollMs: 50);
+
+        Assert.True(clock.TotalWaitedMs <= 175,
+            $"slept {clock.TotalWaitedMs}ms against a 175ms cap");
+    }
+
+    [Fact]
     public async Task Wait_ZeroCap_ReturnsImmediately()
     {
         // Mirrors the existing `staggerMs > 0` opt-out.

@@ -5358,13 +5358,24 @@ public partial class MainWindow : Window
     /// between consecutive Claude launches (issue #82).
     /// </summary>
     private Task WaitForClaudeConfigQuiesceAsync(DateTime? baseline, int capMs) =>
-        ClaudeConfigGate.WaitForQuiesceAsync(
+        // Task.Run is the actual fix for the overshoot, not just tidiness.
+        //
+        // This is awaited from the restore loop, which runs on the UI thread. Left there,
+        // every Task.Delay continuation queues behind whatever the dispatcher is doing —
+        // and during restore that's creating a WebView2 per session. A "50ms" poll then
+        // takes seconds, and the file-time reads are synchronous I/O on the same thread.
+        // Measured on a real restore before this change: gate=22953ms against a 2000ms
+        // cap, and 63s of a 70s restore spent in here — far worse than the flat 2s stagger
+        // this replaced.
+        //
+        // On the thread pool the timer continuations are prompt and the cap holds.
+        Task.Run(() => ClaudeConfigGate.WaitForQuiesceAsync(
             baseline,
             () => ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath),
             () => DateTime.UtcNow,
             Task.Delay,
             TimeSpan.FromMilliseconds(capMs),
-            ClaudeConfigGate.DefaultQuietFor);
+            ClaudeConfigGate.DefaultQuietFor));
 
     private static async Task DisposeAndWaitForExitAsync(SessionViewModel vm, int timeoutMs)
     {

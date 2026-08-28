@@ -84,7 +84,19 @@ internal static class ClaudeConfigGate
 
         while (utcNow() - start < cap)
         {
-            await delayAsync(pollMs);
+            // Never sleep past the deadline: ask for at most the remaining budget.
+            int remaining = (int)(cap - (utcNow() - start)).TotalMilliseconds;
+            if (remaining <= 0) return;
+
+            await delayAsync(Math.Min(pollMs, remaining)).ConfigureAwait(false);
+
+            // Belt-and-braces. Note this does NOT explain the measured overshoot
+            // (gate=22953ms against a 2000ms cap): the top-of-loop check already caught
+            // that on the next pass, so it was ONE starved continuation, not a missed
+            // deadline. The fix for that is running this off the UI thread — see
+            // MainWindow.WaitForClaudeConfigQuiesceAsync. Kept because it costs nothing
+            // and stops a late delay from being followed by yet another poll.
+            if (utcNow() - start >= cap) return;
 
             DateTime? current = lastWriteUtc();
             if (current != seen)
