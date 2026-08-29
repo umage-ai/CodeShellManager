@@ -292,12 +292,17 @@ public partial class MainViewModel : ObservableObject
             // app enables mouse tracking — which Claude Code does. Promoting on those
             // turned this into hover-to-focus and repainted every pane's border on every
             // mouse move. Hence the mouse-report filter rather than promoting on any input.
-            vm.Bridge.KeyboardInput += () =>
+            // Guarded on reference equality: these run per keystroke / per click, and the
+            // assign fans out to UpdateActiveTerminalHighlight across every session.
+            void Promote()
             {
-                // Guarded on reference equality: runs per keystroke, and the assign fans
-                // out to UpdateActiveTerminalHighlight across every session.
                 if (!ReferenceEquals(ActiveSession, vm)) ActiveSession = vm;
-            };
+            }
+
+            vm.Bridge.KeyboardInput += Promote;
+            // Clicking into a pane must promote it too. This can only come from the page —
+            // see TerminalBridge.PaneActivated for why WPF never sees the click.
+            vm.Bridge.PaneActivated += Promote;
             vm.Bridge.UserInput += () => vm.AlertDetector?.NotifyUserInteracted();
         }
 

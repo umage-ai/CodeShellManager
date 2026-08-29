@@ -3753,13 +3753,11 @@ public partial class MainWindow : Window
             Tag = accent
         };
 
-        // Clicking anywhere in a pane makes that session active. Tunnelling (Preview)
-        // because the WebView2 swallows the bubbling event before it reaches us, and
-        // Handled is deliberately NOT set so the click still lands in the terminal.
-        //
-        // Without this, ActiveSession only followed sidebar clicks, so a pane clicked
-        // directly kept IsForeground=false and flushed its output at Background
-        // dispatcher priority — its own echo queued behind every other session's.
+        // Fires only for the thin ring/chrome AROUND the terminal — WebView2 is an
+        // HwndHost, so a click on the terminal itself never reaches WPF as a routed
+        // event. The terminal case is handled by TerminalBridge.PaneActivated, posted
+        // from the page. Kept because clicking the border should still activate, and
+        // Handled is deliberately unset so the click still passes through.
         activeRing.PreviewMouseLeftButtonDown += (_, _) =>
         {
             if (!ReferenceEquals(_vm.ActiveSession, vm)) _vm.ActiveSession = vm;

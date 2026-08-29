@@ -79,6 +79,15 @@ public sealed class TerminalBridge : IDisposable
     public event Action? KeyboardInput;
 
     /// <summary>
+    /// The user clicked into this pane. Posted from the page's <c>mousedown</c>, because
+    /// WebView2 is an <c>HwndHost</c>: mouse input landing on hosted native content never
+    /// raises WPF routed events, so a <c>PreviewMouseLeftButtonDown</c> on the host Border
+    /// only fires for the thin ring around the terminal — never for the terminal itself.
+    /// That is why clicking a pane did not make it the active session.
+    /// </summary>
+    public event Action? PaneActivated;
+
+    /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
     /// while the WebView2 has focus. Subscribers set <c>e.Handled = true</c> to prevent
     /// the key from also reaching xterm.js. The WPF WebView2 wrapper forwards
@@ -349,6 +358,13 @@ public sealed class TerminalBridge : IDisposable
                 // See terminal-init.js for why onData can't be used for this.
                 case "userkey":
                     KeyboardInput?.Invoke();
+                    break;
+
+                // Posted from the page on mousedown. WebView2 is an HwndHost, so a click
+                // in the terminal never reaches WPF as a routed event — this is the only
+                // way the host learns the user clicked into this pane.
+                case "activate":
+                    PaneActivated?.Invoke();
                     break;
 
                 case "resize":

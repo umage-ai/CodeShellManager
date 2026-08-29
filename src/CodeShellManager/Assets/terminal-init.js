@@ -58,6 +58,28 @@
     window.chrome.webview.postMessage(JSON.stringify({ type: 'userkey' }));
   });
 
+  // ── "the user clicked into this pane" signal ───────────────────────────────
+  // This MUST come from here rather than from WPF. WebView2 is an HwndHost — a
+  // native child window — and WPF routed mouse events (tunnelling Preview* ones
+  // included) do not fire for input that lands on hosted native content. A
+  // PreviewMouseLeftButtonDown on the host Border therefore only ever fires for
+  // the 2px ring around the terminal, never for a click in the terminal itself,
+  // so clicking a pane never made it the active session.
+  //
+  // fit() here as well: the grid rebuild that used to run on every activation
+  // incidentally forced a layout pass and hence a re-fit. That rebuild is now
+  // skipped when nothing visible changes, so re-fit on interaction has to be
+  // explicit — otherwise xterm's column count can drift from what the PTY was
+  // told, and redraws land a character off.
+  var lastActivate = 0;
+  document.addEventListener('mousedown', function () {
+    var now = Date.now();
+    if (now - lastActivate < 300) return;
+    lastActivate = now;
+    try { fitAddon.fit(); } catch (e) {}
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'activate' }));
+  }, { capture: true });
+
   // ── Resize notification ────────────────────────────────────────────────────
   term.onResize(({ cols, rows }) => {
     window.chrome.webview.postMessage(JSON.stringify({ type: 'resize', cols, rows }));
