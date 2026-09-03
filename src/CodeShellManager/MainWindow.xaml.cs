@@ -277,10 +277,6 @@ public partial class MainWindow : Window
             // so simultaneous boots can corrupt the user's profile.
             int staggerMs = _vm.Settings.ClaudeLaunchStaggerMs;
             bool lastWasClaude = false;
-            // Last-write time of Claude's config captured just before the previous
-            // Claude launch, so the gate below can tell whether that launch has
-            // finished writing yet. See ClaudeConfigGate (issue #82).
-            DateTime? prevClaudeCfgBaseline = null;
             // WebView2 user-data folder access-denied is a common shared-failure
             // when another instance is running. Batch these so the user gets one
             // actionable dialog at the end instead of N "Restore Error" popups.
@@ -293,19 +289,25 @@ public partial class MainWindow : Window
                 if (s.IsDormant) continue;
                 bool isClaude = ClaudeSessionService.IsClaudeCommand(s.Command);
 
-                // Wait for the PREVIOUS Claude to finish rewriting its config rather
-                // than sleeping a flat staggerMs. Same protection, but it costs what it
-                // actually takes instead of the worst case every time — 19 consecutive
-                // Claude sessions used to mean 38s of pure sleep. Capped at staggerMs,
-                // so this can never be slower than the old behaviour.
+                // Flat stagger, deliberately. The adaptive config-watching gate from #96
+                // could not hold its own 2000ms cap on this path and was reverted here;
+                // measured across three runs on a 10-session machine it produced gates of
+                // 12574ms, 22953ms and 31378ms. Two follow-up fixes (#107 off the UI
+                // thread, #110 off the blocked-thread-per-PTY) roughly halved it but never
+                // bounded it.
+                //
+                // What it bought when it did work was ~1.2s per session, and a third of
+                // the samples hit the cap anyway — i.e. behaved exactly like this line
+                // with more machinery. Predictable beats occasionally-clever on a path
+                // the user waits through at every launch.
+                //
+                // The gate is still used at SHUTDOWN, where the machine is quiet and it
+                // measures a consistent ~304ms against this same flat 1000ms — see
+                // OnClosing. Different contention, different answer.
                 long gateStart = restoreClock.ElapsedMilliseconds;
                 if (isClaude && lastWasClaude && staggerMs > 0)
-                    await WaitForClaudeConfigQuiesceAsync(prevClaudeCfgBaseline, staggerMs);
+                    await Task.Delay(staggerMs);
                 long gateMs = restoreClock.ElapsedMilliseconds - gateStart;
-
-                // Baseline BEFORE launching — a fast write would otherwise land before
-                // the first poll and read as "never written".
-                if (isClaude) prevClaudeCfgBaseline = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
 
                 long launchStart = restoreClock.ElapsedMilliseconds;
                 try { await LaunchSessionAsync(s, restoring: true); }
@@ -587,16 +589,13 @@ public partial class MainWindow : Window
         int staggerMs = _vm.Settings.ClaudeLaunchStaggerMs;
         string anchorId = primary.Id;
         bool lastWasClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
-        DateTime? prevClaudeCfgBaseline = lastWasClaude
-            ? ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath) : null;
         foreach (var path in additionalPaths)
         {
             if (!System.IO.Directory.Exists(path)) continue;
             bool isClaude = ClaudeSessionService.IsClaudeCommand(primary.Command);
-            // Adaptive gate rather than a flat sleep — see the restore loop in OnLoaded.
-            if (isClaude && lastWasClaude && staggerMs > 0)
-                await WaitForClaudeConfigQuiesceAsync(prevClaudeCfgBaseline, staggerMs);
-            if (isClaude) prevClaudeCfgBaseline = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
+            // Flat stagger — see the restore loop in OnLoaded for why the adaptive gate
+            // was reverted on launch paths.
+            if (isClaude && lastWasClaude && staggerMs > 0) await Task.Delay(staggerMs);
             var sibling = _sessionManager.CreateSession(
                 System.IO.Path.GetFileName(path.TrimEnd('/', '\\')) ?? primary.Command,
                 path,
