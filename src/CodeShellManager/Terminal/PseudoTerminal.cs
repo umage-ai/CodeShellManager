@@ -360,6 +360,37 @@ public sealed class PseudoTerminal : IPseudoTerminal
         catch (Exception ex) { Log($"ReadLoop error: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// Awaits a Win32 handle becoming signalled without occupying a thread while it waits.
+    ///
+    /// <see cref="ThreadPool.RegisterWaitForSingleObject"/> registers the handle with the
+    /// OS wait infrastructure; the callback runs on a pool thread only once it signals.
+    /// The registration is unregistered from inside the callback, which is the documented
+    /// way to release it exactly once for a one-shot wait.
+    /// </summary>
+    private static Task WaitForHandleAsync(IntPtr handle)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var safe = new SafeWaitHandle(handle, ownsHandle: false);   // caller closes the handle
+        var waitHandle = new ManualResetEvent(false) { SafeWaitHandle = safe };
+
+        RegisteredWaitHandle? registration = null;
+        registration = ThreadPool.RegisterWaitForSingleObject(
+            waitHandle,
+            (_, _) =>
+            {
+                // Unregister first so the entry is released even if a continuation throws.
+                registration?.Unregister(null);
+                waitHandle.Dispose();
+                tcs.TrySetResult();
+            },
+            state: null,
+            millisecondsTimeOutInterval: Timeout.Infinite,
+            executeOnlyOnce: true);
+
+        return tcs.Task;
+    }
+
     private async Task MonitorExitAsync()
     {
         // Exited must fire on EVERY path, exactly once (issue #91).
@@ -386,7 +417,21 @@ public sealed class PseudoTerminal : IPseudoTerminal
 
             try
             {
-                await Task.Run(() => WaitForSingleObject(waitHandle, 0xFFFFFFFF));
+                // Wait WITHOUT holding a thread.
+                //
+                // This used to be `await Task.Run(() => WaitForSingleObject(h, INFINITE))`,
+                // which parks one thread-pool thread per live PTY for the whole lifetime of
+                // the session — plus one per run-command PTY. With ~25 sessions restoring,
+                // that is ~25 permanently blocked pool threads, and the pool only injects
+                // replacements at roughly one per second. Everything else queued behind it.
+                //
+                // Measured consequence: the Claude launch gate, itself moved onto the pool
+                // in #107, waited up to 23998ms against a 2000ms cap — not because the gate
+                // was slow but because it could not get a thread. 81s of a 135s restore.
+                //
+                // RegisterWaitForSingleObject hands the wait to the OS and calls back on a
+                // pool thread only once the handle signals, so an idle PTY costs nothing.
+                await WaitForHandleAsync(waitHandle).ConfigureAwait(false);
                 if (GetExitCodeProcess(waitHandle, out uint code))
                     ExitCode = unchecked((int)code);
             }
