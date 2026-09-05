@@ -66,6 +66,9 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `UpdateService` | GitHub Releases version check; caches result for 24h at `%AppData%/CodeShellManager/update-cache.json` |
 | `ImportExportService` | Read/write a full `AppState` to a JSON file (settings + sessions backup) |
 | `SessionConfigEditor` | Diffs/applies a `SessionConfigDraft` onto a `ShellSession`; decides whether the change needs a PTY restart |
+| `DbGate` | Serializes every use of the shared `output.db` `SqliteConnection`. That one connection is handed to `SearchService` *and* to every `OutputIndexer`, and it is not thread-safe — concurrent create/dispose corrupts its internal command list. Acquire as `using var _ = await DbGate.AcquireAsync();` at the top of anything touching it. See issue #102 |
+| `PwshLocator` | Single answer to "pwsh or powershell?", shared by `RunInstance` (run commands) and `PseudoTerminal.BuildCmdLine` (session wrapper) so they can't disagree. Resolves via `where.exe`, then rejects zero-length/reparse-point hits — a Microsoft Store App Execution Alias stub resolves on PATH but fails to execute (#104) |
+| `ClaudeConfigGate` | Watches Claude's config file settle. **Only used at shutdown.** The same mechanism was tried on the launch path and reverted (#111) — see the Claude launch stagger note below |
 | `ToastHelper` | Tray balloon notifications |
 | `SessionRunner` | Per-session owner of `RunInstance` dictionary (run commands runtime) |
 | `RunInstance` | One headless PTY-backed run with ANSI-stripped output buffer |
@@ -127,7 +130,24 @@ tests/
 
 **Session accent colors** — `ColorService.GetHexColor(key)` uses FNV-1a hash to deterministically assign one of 12 colors. For local sessions the key is `WorkingFolder`; for SSH sessions it is `user@host`. Used as sidebar stripe + terminal toolbar top border.
 
-**Active-terminal highlight** — every terminal pane is wrapped in an outer "active ring" Border (constant 2px thickness, transparent by default) so toggling it doesn't shift content. `UpdateActiveTerminalHighlight` (called from `UpdateSidebarActiveState`, which fires on every `MainViewModel.ActiveSession` change) paints the ring of the active session's pane in its accent color and clears all others. The ring's accent hex is stashed on `Border.Tag` at build time so the highlight method doesn't need to look up the VM.
+**Active-terminal highlight** — every terminal pane is wrapped in an outer "active ring" Border (constant 2px thickness, transparent by default) so toggling it doesn't shift content. `UpdateActiveTerminalHighlight` (called from `UpdateSidebarActiveState`, which fires on every `MainViewModel.ActiveSession` change) paints the ring of the active session's pane in its accent color and clears all others.
+
+The accent comes from the **live VM**, not the `Border.Tag` stashed at build time: `RepoRoot` is populated asynchronously by `GitService` and `AccentColor` changes when it lands, so a cached Tag goes stale and stops matching the sidebar ring. The Tag survives only as a fallback. `SetBorderColor` also assigns only when the colour actually differs — it previously allocated a fresh brush and reassigned every pane on every call, which was invisible at one call per switch and a visible flicker storm when something called it rapidly.
+
+## What makes a session "active"
+
+`MainViewModel.ActiveSession` drives the highlight, the dispatcher priority of terminal output (`TerminalBridge.IsForeground`, issue #70), and every `ActiveSession`-scoped command (`Ctrl+W`, `F5`, the run buttons). Three things set it:
+
+1. **A sidebar row click** → `FocusSession`, which also calls `FocusTerminal()` when `AutoFocusTerminalOnSelect` is on.
+2. **Typing in a pane** → the page posts `userkey` from xterm's `onKey`, throttled to one per 500ms.
+3. **Clicking in a pane** → the page posts `activate` from a capture-phase `mousedown`, throttled to 300ms.
+
+Both (2) and (3) **must come from the page**, and this is the part that is easy to get wrong twice:
+
+- **WebView2 is an `HwndHost`.** Mouse input landing on hosted native content raises **no** WPF routed events, tunnelling `Preview*` ones included. A `PreviewMouseLeftButtonDown` on the host Border only ever fires for the thin ring around the terminal (#108).
+- **xterm's `onData` is not "the user typed".** It also carries replies the terminal generates itself — device attributes (`ESC[?1;2c`), cursor-position reports, OSC colour replies, focus in/out (`ESC[I`/`ESC[O`) — plus mouse reports when the app enables tracking. Filtering those by inspecting the bytes cannot work; a device-attribute reply is not distinguishable from typing by shape. xterm knows internally (`triggerDataEvent`'s `wasUserInput`) but does not expose it on `onData`. `onKey` is the only honest source (#106).
+
+The page-side `mousedown` handler also calls `fitAddon.fit()`, and the initial fit is re-run on `document.fonts.ready`. xterm derives its column count from the *measured advance width* of the font, so a fit that runs before the font loads computes the wrong `cols` and tells the PTY a width that doesn't match what is drawn — text then overlaps mid-line. The `ResizeObserver` cannot catch that, because the element size never changed, only the glyph metrics (#113).
 
 ## Session Lifecycle
 
@@ -332,6 +352,11 @@ Full design: `docs/superpowers/specs/2026-05-16-session-spinners-design.md`.
 Persisted in `state.json`. Key settings:
 - `AutoRestoreSessions` — restore open sessions on next launch
 - `AutoResumeClaude` — when restoring, append `--resume <sessionId>` to claude commands so the prior conversation is picked up. Toggle off if you want fresh sessions on restart.
+- `ClaudeLaunchStaggerMs` (default 2000) — flat delay between consecutive Claude launches, and the cap on the post-exit settle at shutdown. The Claude CLI rewrites its config unlocked on startup and exit, so two `claude.exe` doing it at once can lose each other's updates. Evidence this is real: a machine here had two orphaned `.claude.json.tmp.<pid>.<hash>` files with the same timestamp and different pids.
+
+  **Do not replace this with an adaptive wait again.** That was tried (#96), watched the config file settle instead of sleeping a fixed 2s, and was reverted in #111 after three attempts to make it hold its cap. Measured on a real restore it produced gates of 12574ms, 22953ms and 31378ms against a 2000ms cap. Two follow-ups helped without bounding it: #107 moved it off the UI thread, #110 removed a thread-pool thread that `PseudoTerminal` was parking per PTY.
+
+  The reason it could never work is worth recording: the restore loop periodically stalls for seconds at a time under load, and *any* timer's continuation absorbs that stall. After the revert, a plain `Task.Delay(2000)` still logged `gate=36339ms`. The gate was never slow — it was a stopwatch measuring someone else's freeze. The gate is still used at **shutdown**, where the machine is quiet and it measures a consistent ~304ms against the flat 1000ms.
 - `ShowGitBranch` — show `⎇ branch` in sidebar
 - `ShowTerminalStatusDot` — show status dot in terminal toolbar
 - `SidebarActionIconsMode` — `OnHover` (default) / `Always` / `Hidden`. Controls the per-row `➕ 💤 ✕` button stack in the sidebar. `Hidden` collapses the panel and reclaims the horizontal space; `OnHover` keeps the panel laid out (no text shift on hover) but transparent + non-interactive until the row is hovered. Rename / Open in Explorer / Open PowerShell here remain reachable via the right-click context menu in all modes, and the terminal toolbar's `✕` is unconditional.
