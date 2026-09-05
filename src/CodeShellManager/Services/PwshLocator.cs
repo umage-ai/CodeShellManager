@@ -92,9 +92,59 @@ internal static class PwshLocator
         try
         {
             var info = new System.IO.FileInfo(path);
-            if (!info.Exists || info.Length == 0) return false;
-            return (info.Attributes & System.IO.FileAttributes.ReparsePoint) == 0;
+            if (!info.Exists) return false;
+
+            // A real executable — decided, no probe needed.
+            if (info.Length > 0 &&
+                (info.Attributes & System.IO.FileAttributes.ReparsePoint) == 0)
+                return true;
+
+            // Zero-byte and/or a reparse point: a Microsoft Store App Execution Alias.
+            //
+            // The earlier version rejected these outright to skip stubs left behind for
+            // uninstalled apps. That was wrong: a WORKING Store install of PowerShell 7 is
+            // exactly the same shape — a zero-byte AppExecLink at
+            // %LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe. The two are indistinguishable
+            // on disk, so rejecting the shape silently downgraded Store-PowerShell users to
+            // 5.1 — losing the PS7 profile functions that are the whole reason for
+            // preferring pwsh, on every session launch since the locators merged.
+            //
+            // Neither answer is safe from metadata alone, so ask the alias to run. Only
+            // reached for the alias shape, so the common MSI install still costs nothing.
+            return CanExecute(path);
         }
         catch { return false; }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="path"/> with a trivial no-op and reports whether it exited
+    /// cleanly. Used only to disambiguate a Store App Execution Alias, where the on-disk
+    /// metadata cannot tell a live alias from a dead stub.
+    /// </summary>
+    private static bool CanExecute(string path)
+    {
+        Process? probe = null;
+        try
+        {
+            probe = Process.Start(new ProcessStartInfo
+            {
+                FileName = path,
+                Arguments = "-NoLogo -NoProfile -Command \"exit 0\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            // A dead alias fails fast (Win32Exception). A live one still pays a PowerShell
+            // startup, hence the generous ceiling — but a hang must not become a hang here.
+            return probe != null && probe.WaitForExit(5000) && probe.ExitCode == 0;
+        }
+        catch { return false; }
+        finally
+        {
+            try { if (probe is { HasExited: false }) probe.Kill(entireProcessTree: true); }
+            catch { /* best effort */ }
+            probe?.Dispose();
+        }
     }
 }

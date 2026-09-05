@@ -284,14 +284,19 @@ public partial class MainViewModel : ObservableObject
             // there), so it must stay cheap. NotifyUserInteracted already fires AlertCleared
             // unconditionally, whose handler below raises AlertCount — so this deliberately
             // does not raise it a second time (issue #70).
-            // Typing into a pane makes it the active session, so its output flushes at
-            // foreground dispatcher priority (#70) instead of behind every other pane.
+            // Typing or clicking in a pane makes it the active session, so its output
+            // flushes at foreground dispatcher priority (#70) instead of behind every
+            // other pane.
             //
-            // MUST NOT fire on mouse movement. terminal-init.js forwards xterm's onData,
-            // and onData carries mouse reports as well as keystrokes whenever the running
-            // app enables mouse tracking — which Claude Code does. Promoting on those
-            // turned this into hover-to-focus and repainted every pane's border on every
-            // mouse move. Hence the mouse-report filter rather than promoting on any input.
+            // Both signals come from the PAGE, and must:
+            //   - KeyboardInput  <- xterm's onKey. NOT onData: that also carries the
+            //     terminal's own replies (device attributes, cursor-position reports, OSC
+            //     colour replies, focus in/out) and mouse reports, none of which are
+            //     distinguishable from typing by inspecting the bytes. An earlier attempt
+            //     filtered them and turned this into hover-to-focus (#106).
+            //   - PaneActivated  <- a capture-phase mousedown. WebView2 is an HwndHost, so
+            //     a click on the terminal raises no WPF routed event at all (#108).
+            //
             // Guarded on reference equality: these run per keystroke / per click, and the
             // assign fans out to UpdateActiveTerminalHighlight across every session.
             void Promote()

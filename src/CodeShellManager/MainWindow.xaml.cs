@@ -4327,6 +4327,12 @@ public partial class MainWindow : Window
                 TerminalGrid.Children.Remove(ui.terminalWrapper);
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
+            // The layout signature is keyed on session ids plus this counter; ids alone
+            // don't identify visual objects, and this method builds a NEW wrapper for the
+            // SAME id. Safe today only because LaunchSessionAsync bumps on re-add, but a
+            // future path that removes without re-adding would leave the signature stale
+            // and make RefreshTerminalLayout skip a rebuild it needed.
+            _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
@@ -4338,7 +4344,27 @@ public partial class MainWindow : Window
         _vm.Sessions.Remove(vm);
         if (_vm.ActiveSession == vm)
             _vm.ActiveSession = _vm.Sessions.LastOrDefault();
-        vm.Dispose();
+
+        // Wait for the old process to actually exit before starting its replacement.
+        //
+        // For a Claude session this is the same concurrent-config-writer race the launch
+        // stagger and the shutdown loop both exist to prevent: the outgoing claude.exe can
+        // still be flushing its config while the new one reads and rewrites it. It also
+        // makes --resume reliable, since GetLastSessionId is read on the relaunch path and
+        // the outgoing process may not have finalised its session index yet.
+        //
+        // Non-Claude sessions don't touch that file, so they keep the cheap teardown.
+        if (ClaudeSessionService.IsClaudeCommand(session.Command))
+        {
+            DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
+            await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
+            await WaitForClaudeConfigQuiesceAsync(
+                cfgBefore, Math.Min(_vm.Settings.ClaudeLaunchStaggerMs, 1000));
+        }
+        else
+        {
+            vm.Dispose();
+        }
 
         // Placeholder so the row doesn't blink out of the sidebar while WebView2 boots.
         AddLaunchingSidebarItem(session);
@@ -5377,7 +5403,17 @@ public partial class MainWindow : Window
     private static async Task DisposeAndWaitForExitAsync(SessionViewModel vm, int timeoutMs)
     {
         var pty = vm.Pty;
-        if (pty == null || !pty.IsRunning)
+
+        // HasExited, not IsRunning. IsRunning only reports "we still hold a handle", and
+        // that handle is released in Dispose — so it stays true for a child that exited
+        // earlier in the run (user typed `exit`, or claude crashed). Waiting on Exited for
+        // one of those burns the full timeout for an event that already fired.
+        //
+        // That mattered more than it looks: with the shutdown budget above, two such stale
+        // panes consume the entire allowance, and every remaining LIVE Claude session is
+        // then force-disposed with no exit wait — losing exactly the ~/.claude.json
+        // serialization this loop exists to provide.
+        if (pty == null || pty.HasExited)
         {
             vm.Dispose();
             return;
@@ -5388,6 +5424,10 @@ public partial class MainWindow : Window
         pty.Exited += OnExit;
         try
         {
+            // Re-check after subscribing: the child can exit in the window between the
+            // guard above and this line, and that firing would otherwise be missed.
+            if (pty.HasExited) { vm.Dispose(); return; }
+
             // Dispose triggers ClosePseudoConsole, which signals the child to shut down.
             // MonitorExitAsync (already running) will fire Exited once the process exits.
             vm.Dispose();

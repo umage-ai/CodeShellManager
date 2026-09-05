@@ -110,12 +110,21 @@
         fitAddon.fit();
         // A profile override can switch fontFamily/fontSize to a face that isn't loaded
         // yet, so the fit above measures the wrong metrics for the same reason the
-        // initial one can. Re-fit once the new face is ready.
+        // initial one can. Re-fit once THAT face has loaded.
+        //
+        // document.fonts.ready is the wrong signal here: it resolves once at page load and
+        // stays resolved, so a .then() attached now runs immediately and re-fits with the
+        // same wrong metrics — the exact bug it was meant to fix. fonts.load() asks about
+        // a specific face and resolves when that face is available.
         if (opts.fontFamily !== undefined || opts.fontSize !== undefined) {
-          if (document.fonts && document.fonts.ready) {
-            document.fonts.ready.then(function () {
-              try { fitAddon.fit(); } catch (e) {}
-            });
+          if (document.fonts && document.fonts.load) {
+            try {
+              var px = (term.options.fontSize || 14) + 'px';
+              var fam = term.options.fontFamily || 'monospace';
+              document.fonts.load(px + ' ' + fam).then(function () {
+                try { fitAddon.fit(); } catch (e) {}
+              }).catch(function () {});
+            } catch (e) {}
           }
         }
       }
