@@ -184,7 +184,14 @@ public sealed class PseudoTerminal : IPseudoTerminal
     /// whole timeout for an event that will never come again. See
     /// MainWindow.DisposeAndWaitForExitAsync.
     /// </summary>
-    public bool HasExited { get; private set; }
+    // volatile-equivalent: written on the monitor thread, read by shutdown on the UI
+    // thread. Today the Exited subscribe/unsubscribe accessors are Interlocked and supply
+    // the fence, but that is a subtle thing to depend on — an explicit field keeps it true
+    // for any future reader that polls without one.
+    private volatile bool _hasExited;
+
+    /// <inheritdoc cref="HasExited"/>
+    public bool HasExited => _hasExited;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -485,7 +492,7 @@ public sealed class PseudoTerminal : IPseudoTerminal
             // Latch BEFORE raising, so a subscriber that checks HasExited from inside the
             // handler — or one that subscribes concurrently — never sees "not exited yet"
             // for a process that has already gone.
-            HasExited = true;
+            _hasExited = true;
             Exited?.Invoke();
         }
     }

@@ -177,8 +177,9 @@ public partial class NewSessionDialog : Window
 
         if (s.IsRemote)
         {
-            // Checking the radio runs SessionType_Changed, which swaps the panels and
-            // blanks NameBox — so the name is filled back in afterwards.
+            // Checking the radio runs SessionType_Changed, which swaps the panels. It no
+            // longer blanks NameBox — that handler returns early in edit mode — so the
+            // assignment below is the only thing setting the name, not a repair.
             RemoteRadio.IsChecked = true;
             SshHostBox.Text = string.IsNullOrWhiteSpace(s.SshUser)
                 ? s.SshHost

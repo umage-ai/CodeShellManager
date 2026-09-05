@@ -204,6 +204,17 @@ public partial class MainWindow : Window
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        // Resolve pwsh-vs-powershell off the UI thread, before anything needs it.
+        //
+        // PwshLocator.Executable is a Lazy first forced from PseudoTerminal.BuildCmdLine
+        // inside Start(), which LaunchSessionAsync calls ON THE UI THREAD. That costs a
+        // where.exe spawn, and — since the Store-alias disambiguation was added — possibly
+        // a full PowerShell cold start behind it. Left there it is up to ~7s of frozen
+        // window on first launch, which is exactly the class of stall #107 and #110 were
+        // undoing. Warming it here means the Lazy is already resolved by the time any
+        // session starts, and the cost lands on a pool thread during startup instead.
+        _ = Task.Run(() => _ = Services.PwshLocator.Executable);
+
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
         RestoreWindowState();
@@ -4257,6 +4268,12 @@ public partial class MainWindow : Window
         if (!change.AnyChange) return;
 
         bool wasRemote = session.IsRemote;
+        // Apply mutates session.Command in place, so capture what the RUNNING process was
+        // launched with before that happens. RestartSessionAsync needs the OLD command to
+        // decide whether the outgoing process is a Claude that has to be waited out —
+        // reading session.Command there would see the new one and skip the wait on exactly
+        // the claude -> non-claude edit that needs it.
+        string launchedCommand = session.Command;
         Services.SessionConfigEditor.Apply(session, draft);
 
         vm.NotifyConfigChanged();
@@ -4283,7 +4300,7 @@ public partial class MainWindow : Window
             + "this session starts.",
             "Restart session?", MessageBoxButton.YesNo, MessageBoxImage.Question,
             MessageBoxResult.Yes);
-        if (answer == MessageBoxResult.Yes) await RestartSessionAsync(vm);
+        if (answer == MessageBoxResult.Yes) await RestartSessionAsync(vm, launchedCommand);
     }
 
     /// <summary>
@@ -4315,7 +4332,13 @@ public partial class MainWindow : Window
     /// (<see cref="MainViewModel.RegisterSession"/> re-inserts at the SessionManager index),
     /// and it never enters the recently-closed ring.
     /// </summary>
-    private async Task RestartSessionAsync(SessionViewModel vm)
+    /// <param name="launchedCommand">
+    /// The command the RUNNING process was started with. Callers that have already mutated
+    /// <c>session.Command</c> (the edit flow applies the draft before restarting) must pass
+    /// the old value, or a claude → non-claude edit skips the exit wait the outgoing
+    /// process needs. Null means "use the session's current command".
+    /// </param>
+    private async Task RestartSessionAsync(SessionViewModel vm, string? launchedCommand = null)
     {
         var session = vm.Session;
 
@@ -4345,6 +4368,12 @@ public partial class MainWindow : Window
         if (_vm.ActiveSession == vm)
             _vm.ActiveSession = _vm.Sessions.LastOrDefault();
 
+        // Placeholder BEFORE the teardown wait, not after: the sidebar row was removed
+        // above, and a Claude restart can now wait up to 11s. Without this the row is
+        // simply missing for that whole time.
+        AddLaunchingSidebarItem(session);
+        RebuildSidebarOrder();
+
         // Wait for the old process to actually exit before starting its replacement.
         //
         // For a Claude session this is the same concurrent-config-writer race the launch
@@ -4353,8 +4382,10 @@ public partial class MainWindow : Window
         // makes --resume reliable, since GetLastSessionId is read on the relaunch path and
         // the outgoing process may not have finalised its session index yet.
         //
+        // Keyed on the command the running process was LAUNCHED with — see the parameter.
+        //
         // Non-Claude sessions don't touch that file, so they keep the cheap teardown.
-        if (ClaudeSessionService.IsClaudeCommand(session.Command))
+        if (ClaudeSessionService.IsClaudeCommand(launchedCommand ?? session.Command))
         {
             DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
             await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
@@ -4365,10 +4396,6 @@ public partial class MainWindow : Window
         {
             vm.Dispose();
         }
-
-        // Placeholder so the row doesn't blink out of the sidebar while WebView2 boots.
-        AddLaunchingSidebarItem(session);
-        RebuildSidebarOrder();
 
         try
         {

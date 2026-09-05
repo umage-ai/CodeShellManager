@@ -15,12 +15,18 @@ namespace CodeShellManager.Services;
 /// Prefer pwsh because that is where modern users keep their profile functions —
 /// wrapping in 5.1 loads a different profile and won't see them.
 ///
-/// We only pick a *name*; CreateProcess resolves PATH. So a PATH lookup is the whole
-/// question, and <c>where.exe</c> answers it in ~10ms. The earlier RunInstance version
-/// spawned <c>pwsh -Command "exit 0"</c> instead, which additionally proved pwsh could
-/// actually run — but at the cost of a full PowerShell startup (hundreds of ms) on a
-/// path that runs during session restore. Not worth it for the rare broken install:
-/// that case now surfaces as a failed session rather than a slower launch for everyone.
+/// We only pick a *name*; CreateProcess resolves PATH. So a PATH lookup is most of the
+/// question, and <c>where.exe</c> answers it in ~10ms. That alone is enough for an
+/// ordinary executable.
+///
+/// It is NOT enough for a Microsoft Store App Execution Alias, which is a zero-byte
+/// reparse point whether the app behind it is installed or not — so a working Store
+/// PowerShell 7 and a stub left by an uninstalled one are identical on disk. Only that
+/// ambiguous case pays an execution probe; see <see cref="IsRunnable"/>.
+///
+/// <see cref="Executable"/> is warmed off the UI thread in MainWindow.OnLoaded, because
+/// the Lazy is otherwise first forced from PseudoTerminal.Start on the UI thread and the
+/// probe would freeze the window.
 /// </summary>
 internal static class PwshLocator
 {
@@ -78,12 +84,12 @@ internal static class PwshLocator
     }
 
     /// <summary>
-    /// True when <paramref name="path"/> looks like a real executable rather than a Store
-    /// App Execution Alias stub.
+    /// True when <paramref name="path"/> can actually be executed.
     ///
-    /// The stubs live under WindowsApps, are zero bytes on disk, and are reparse points.
-    /// Length is the cheap discriminator and needs no extra API; the reparse-point check
-    /// is the belt-and-braces one. An unreadable path is treated as not runnable, because
+    /// Ordinary executables are decided from metadata alone — non-zero length and not a
+    /// reparse point — so the common install costs nothing. A zero-byte reparse point is
+    /// a Store App Execution Alias, which is *ambiguous* rather than bad, and only that
+    /// case is settled by probing. An unreadable path is treated as not runnable, because
     /// falling back to powershell.exe is always safe and picking a broken pwsh is not.
     /// </summary>
     internal static bool IsRunnable(string path)
