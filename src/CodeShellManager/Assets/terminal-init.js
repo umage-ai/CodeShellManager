@@ -108,15 +108,8 @@
         if (opts.padding       !== undefined) document.getElementById('terminal').style.padding = opts.padding;
         if (opts.retro         !== undefined) document.body.classList.toggle('retro', !!opts.retro);
         fitAddon.fit();
-        // A profile override can switch fontFamily/fontSize to a face that isn't loaded
-        // yet, so the fit above measures the wrong metrics for the same reason the
-        // initial one can. Re-fit once THAT face has loaded.
-        //
-        // document.fonts.ready is the wrong signal here: it resolves once at page load and
-        // stays resolved, so a .then() attached now runs immediately and re-fits with the
-        // same wrong metrics — the exact bug it was meant to fix. fonts.load() asks about
-        // a specific face and resolves when that face is available.
-        // Re-fit on the next frame, once the new metrics are actually in effect.
+        // A profile override can switch fontFamily/fontSize, so the fit above measures the
+        // old metrics. Re-fit on the next frame, once the new ones are in effect.
         //
         // Neither fonts API helps here. document.fonts.ready resolves once at page load
         // and stays resolved, so a .then() attached now runs synchronously with the stale

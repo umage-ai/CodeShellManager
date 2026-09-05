@@ -202,18 +202,22 @@ public partial class MainWindow : Window
 
     // ── Startup ───────────────────────────────────────────────────────────────
 
+    /// <summary>Resolves PwshLocator.Executable off the UI thread; awaited before restore.</summary>
+    private Task _pwshWarmup = Task.CompletedTask;
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        // Resolve pwsh-vs-powershell off the UI thread, before anything needs it.
+        // Start resolving pwsh-vs-powershell off the UI thread, as early as possible.
         //
         // PwshLocator.Executable is a Lazy first forced from PseudoTerminal.BuildCmdLine
         // inside Start(), which LaunchSessionAsync calls ON THE UI THREAD. That costs a
-        // where.exe spawn, and — since the Store-alias disambiguation was added — possibly
-        // a full PowerShell cold start behind it. Left there it is up to ~7s of frozen
-        // window on first launch, which is exactly the class of stall #107 and #110 were
-        // undoing. Warming it here means the Lazy is already resolved by the time any
-        // session starts, and the cost lands on a pool thread during startup instead.
-        _ = Task.Run(() => _ = Services.PwshLocator.Executable);
+        // where.exe spawn and — since the Store-alias disambiguation — possibly a full
+        // PowerShell cold start behind it: up to ~7s of frozen window, exactly the class
+        // of stall #107 and #110 were undoing.
+        //
+        // The task is awaited before the restore loop rather than fire-and-forget; see
+        // there for why starting it here is necessary but not sufficient.
+        _pwshWarmup = Task.Run(() => _ = Services.PwshLocator.Executable);
 
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
@@ -282,6 +286,20 @@ public partial class MainWindow : Window
             // the saved-order list (Resolve picks them when no live item exists yet) and
             // applies the active group filter so off-group placeholders are hidden.
             RebuildSidebarOrder();
+
+            // Make sure the pwsh/powershell decision is finished before the first launch.
+            //
+            // Starting the warm task in OnLoaded is not sufficient on its own: PwshLocator's
+            // Lazy uses ExecutionAndPublication, so a UI thread that reaches .Value while
+            // the pool thread is still inside the factory takes the Lazy's monitor and
+            // blocks for the REMAINING factory duration — a raced stall rather than no
+            // stall. PublicationOnly would not help either; the UI thread would simply run
+            // its own copy of the factory and pay the same cost.
+            //
+            // Awaiting here yields instead of blocking, so the window stays responsive.
+            // WhenAny with a ceiling above Resolve's own 7s bound (2s where.exe + 5s alias
+            // probe) so a wedged probe delays restore rather than preventing it.
+            await Task.WhenAny(_pwshWarmup, Task.Delay(8000));
 
             // Launch live sessions sequentially. Stagger consecutive claude launches:
             // claude's CLI does an unlocked read-modify-write on ~/.claude.json at startup,
