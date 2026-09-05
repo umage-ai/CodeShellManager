@@ -108,6 +108,16 @@
         if (opts.padding       !== undefined) document.getElementById('terminal').style.padding = opts.padding;
         if (opts.retro         !== undefined) document.body.classList.toggle('retro', !!opts.retro);
         fitAddon.fit();
+        // A profile override can switch fontFamily/fontSize to a face that isn't loaded
+        // yet, so the fit above measures the wrong metrics for the same reason the
+        // initial one can. Re-fit once the new face is ready.
+        if (opts.fontFamily !== undefined || opts.fontSize !== undefined) {
+          if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(function () {
+              try { fitAddon.fit(); } catch (e) {}
+            });
+          }
+        }
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
       else if (msg.type === 'setBootState') {
@@ -260,5 +270,26 @@
   // Re-fit after a short delay so xterm picks up the real dimensions once visible.
   setTimeout(() => { try { fitAddon.fit(); term.focus(); } catch {} }, 50);
   setTimeout(() => { try { fitAddon.fit(); } catch {} }, 250);
+
+  // Re-fit once the font has actually loaded.
+  //
+  // xterm derives its column count from the MEASURED advance width of the font. The
+  // first fit() runs immediately after term.open(); if Cascadia Code hasn't loaded
+  // yet, xterm measures the fallback's metrics, computes the wrong cols, and reports
+  // a width to the PTY that doesn't match what is drawn — text then wraps and
+  // overlaps mid-line.
+  //
+  // The ResizeObserver above cannot correct this: the ELEMENT size never changed,
+  // only the glyph metrics, so no resize fires. It stays wrong until something else
+  // forces a fit, which is why switching layouts appeared to "fix" it.
+  //
+  // The two timeouts above are guesses at "fonts are probably ready by now" and are
+  // easily too early during a heavy restore with many WebView2s initialising. They
+  // stay as a fallback for the 0x0 case; this is the real signal.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () {
+      try { fitAddon.fit(); } catch (e) {}
+    });
+  }
 
   term.focus();
