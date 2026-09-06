@@ -26,7 +26,12 @@ public static class ImportExportService
         try
         {
             string json = await File.ReadAllTextAsync(path);
-            return JsonSerializer.Deserialize<AppState>(json, Options);
+            var state = JsonSerializer.Deserialize<AppState>(json, Options);
+            // Same coercion StateService.LoadAsync applies. Property initialisers only
+            // cover an ABSENT key — an explicit "Sessions": null deserializes to a real
+            // null. This is the untrusted path (any file the user points at), and the
+            // caller dereferences Settings immediately, outside its own try block.
+            return state is null ? null : StateService.Normalize(state);
         }
         catch
         {

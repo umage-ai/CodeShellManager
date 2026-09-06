@@ -2,7 +2,6 @@
   "profiles": {
     "CodeShellManager": {
       "commandName": "Project",
-      "commandLineArgs": "--clean",
       "hotReloadEnabled": false
     }
   }

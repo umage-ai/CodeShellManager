@@ -106,7 +106,7 @@
                                          Background="#313244" Foreground="#cdd6f4" BorderBrush="#45475a"
                                          CaretBrush="#cdd6f4" Padding="6,4" Margin="0,0,8,0"
                                          VerticalContentAlignment="Center"
-                                         ToolTip="Optional. e.g. http://localhost:5173 — opens in the default browser when the command exits 0."/>
+                                         ToolTip="Optional. Opens in the default browser when the command exits 0. Must be a full http:// or https:// URL — e.g. http://localhost:5173, not localhost:5173."/>
                                 <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
                                     <Button Content="▲" Tag="{Binding}" Click="MoveUp_Click" Width="26" Height="24"
                                             Background="Transparent" BorderThickness="0" Foreground="#a6adc8" Cursor="Hand"

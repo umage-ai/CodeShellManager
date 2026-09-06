@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -20,11 +21,13 @@ public static class GroupFilter
     public const string AllKey = "__ALL__";
 }
 
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly SessionManager _sessionManager;
     private readonly StateService _stateService;
     private AppState _appState = new();
+    private System.Threading.Timer? _saveDebounceTimer;
+    private readonly object _timerLock = new();
 
     public ObservableCollection<SessionViewModel> Sessions { get; } = [];
 
@@ -59,6 +62,19 @@ public partial class MainViewModel : ObservableObject
     public HashSet<string> SelectedSessionIds { get; } = new();
 
     public int AlertCount => Sessions.Count(s => s.NeedsAttention);
+
+    // AlertCount is an O(N) scan and every raise invalidates WPF bindings. It's touched on
+    // the keystroke path (via AlertCleared), where the value is almost always unchanged, so
+    // suppress no-op raises rather than re-running binding invalidation per character (#70).
+    private int _lastRaisedAlertCount = -1;
+
+    private void RaiseAlertCountIfChanged()
+    {
+        int count = AlertCount;
+        if (count == _lastRaisedAlertCount) return;
+        _lastRaisedAlertCount = count;
+        OnPropertyChanged(nameof(AlertCount));
+    }
 
     public event Action<SessionViewModel>? SessionClosed;
     public event Action? GroupsChanged;
@@ -235,6 +251,28 @@ public partial class MainViewModel : ObservableObject
         await _stateService.SaveAsync(_appState);
     }
 
+    /// <summary>
+    /// Debounced save for high-frequency events (e.g., OSC 9001 shell integration).
+    /// Coalesces multiple rapid calls into a single write after 500ms of idle.
+    /// Thread-safe: uses lock to prevent race conditions on timer replacement.
+    /// </summary>
+    public void SaveStateDebounced()
+    {
+        lock (_timerLock)
+        {
+            _saveDebounceTimer?.Dispose();
+            _saveDebounceTimer = new System.Threading.Timer(
+                _ => App.Current.Dispatcher.InvokeAsync(async () =>
+                {
+                    try { await SaveStateAsync(); }
+                    catch { /* non-critical: state persistence failures (disk full, permissions) */ }
+                }),
+                null,
+                500,
+                Timeout.Infinite);
+        }
+    }
+
     public AppSettings Settings => _appState.Settings;
 
     /// <summary>Returns the current app state (after SaveStateAsync has been called to flush session data).</summary>
@@ -267,31 +305,58 @@ public partial class MainViewModel : ObservableObject
 
         if (vm.Bridge != null)
         {
-            vm.Bridge.UserInput += () =>
+            // Runs on the UI thread for every keystroke (WebView2 raises WebMessageReceived
+            // there), so it must stay cheap. NotifyUserInteracted already fires AlertCleared
+            // unconditionally, whose handler below raises AlertCount — so this deliberately
+            // does not raise it a second time (issue #70).
+            // Typing or clicking in a pane makes it the active session, so its output
+            // flushes at foreground dispatcher priority (#70) instead of behind every
+            // other pane.
+            //
+            // Both signals come from the PAGE, and must:
+            //   - KeyboardInput  <- xterm's onKey. NOT onData: that also carries the
+            //     terminal's own replies (device attributes, cursor-position reports, OSC
+            //     colour replies, focus in/out) and mouse reports, none of which are
+            //     distinguishable from typing by inspecting the bytes. An earlier attempt
+            //     filtered them and turned this into hover-to-focus (#106).
+            //   - PaneActivated  <- a capture-phase mousedown. WebView2 is an HwndHost, so
+            //     a click on the terminal raises no WPF routed event at all (#108).
+            //
+            // Guarded on reference equality: these run per keystroke / per click, and the
+            // assign fans out to UpdateActiveTerminalHighlight across every session.
+            void Promote()
             {
-                vm.AlertDetector?.NotifyUserInteracted();
-                App.Current.Dispatcher.Invoke(() => OnPropertyChanged(nameof(AlertCount)));
-            };
+                if (!ReferenceEquals(ActiveSession, vm)) ActiveSession = vm;
+            }
+
+            vm.Bridge.KeyboardInput += Promote;
+            // Clicking into a pane must promote it too. This can only come from the page —
+            // see TerminalBridge.PaneActivated for why WPF never sees the click.
+            vm.Bridge.PaneActivated += Promote;
+            vm.Bridge.UserInput += () => vm.AlertDetector?.NotifyUserInteracted();
         }
 
         if (vm.AlertDetector != null)
         {
+            // BeginInvoke, not Invoke: AlertRaised arrives on a System.Threading.Timer
+            // callback, and blocking a threadpool thread on a busy UI thread serves no
+            // purpose — no caller consumes a result.
             vm.AlertDetector.AlertRaised += alert =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                App.Current.Dispatcher.BeginInvoke(() =>
                 {
                     vm.RaiseAlert(alert.Message, alert.Type);
-                    OnPropertyChanged(nameof(AlertCount));
+                    RaiseAlertCountIfChanged();
                     if (Settings.ShowToastNotifications)
                         ToastHelper.Show(vm.DisplayName, alert.Message, Settings.ShowNotificationSound);
                 });
             };
             vm.AlertDetector.AlertCleared += _ =>
             {
-                App.Current.Dispatcher.Invoke(() =>
+                App.Current.Dispatcher.BeginInvoke(() =>
                 {
                     vm.ClearAlert();
-                    OnPropertyChanged(nameof(AlertCount));
+                    RaiseAlertCountIfChanged();
                 });
             };
         }
@@ -471,5 +536,14 @@ public partial class MainViewModel : ObservableObject
 
         if (seeded || layoutSwitched)
             _ = SaveStateAsync();
+    }
+
+    public void Dispose()
+    {
+        lock (_timerLock)
+        {
+            _saveDebounceTimer?.Dispose();
+            _saveDebounceTimer = null;
+        }
     }
 }

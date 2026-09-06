@@ -36,6 +36,17 @@ public sealed class TerminalBridge : IDisposable
     // Output that arrived before the page finished loading is buffered here
     private readonly System.Text.StringBuilder _outputBuffer = new();
 
+    // Coalesces PTY chunks into one dispatcher post per tick (issue #70).
+    private readonly OutputCoalescer _coalescer;
+
+    /// <summary>
+    /// True when this session's pane is the active one. Foreground output posts at
+    /// Normal priority; background sessions post at Background priority so a chatty
+    /// off-screen session can't delay the pane the user is actually typing into.
+    /// Set by MainWindow whenever MainViewModel.ActiveSession changes.
+    /// </summary>
+    public bool IsForeground { get; set; }
+
     // Diagnostics — gated by AppSettings.DebugTerminalTrace. Zero cost when off.
     /// <summary>AppSettings reference whose DebugTerminalTrace flag gates [DEBUG-tt] logging.</summary>
     public AppSettings? DebugSettings { get; set; }
@@ -44,7 +55,43 @@ public sealed class TerminalBridge : IDisposable
     private long _lastOutputTickMs;
 
     public event Action<string>? RawOutputReceived;
+
+    /// <summary>
+    /// Any input travelling to the PTY — keystrokes, pastes, and mouse reports.
+    /// Used for "the user interacted with this session" (alert clearing).
+    /// </summary>
     public event Action? UserInput;
+
+    /// <summary>
+    /// A real key press in this pane. Raised from xterm's <c>onKey</c> (posted as a
+    /// <c>userkey</c> message), throttled to at most one per 500ms.
+    ///
+    /// Anything that changes UI state off the back of input must use this rather than
+    /// <see cref="UserInput"/>. onData carries everything xterm sends to the PTY,
+    /// including replies the TERMINAL itself generates — device-attribute answers
+    /// (<c>ESC[?1;2c</c>), cursor-position reports, OSC colour replies, and focus
+    /// in/out (<c>ESC[I</c>/<c>ESC[O</c>) — plus mouse reports when the app enables
+    /// tracking. An earlier attempt filtered those by inspecting the bytes; it could
+    /// not work, because a device-attribute reply is not distinguishable from typing
+    /// by shape. xterm knows which is which (triggerDataEvent's wasUserInput flag) but
+    /// does not surface it on onData, so onKey is the only honest source.
+    /// </summary>
+    public event Action? KeyboardInput;
+
+    /// <summary>
+    /// The user clicked into this pane. Posted from the page's <c>mousedown</c>, because
+    /// WebView2 is an <c>HwndHost</c>: mouse input landing on hosted native content never
+    /// raises WPF routed events, so a <c>PreviewMouseLeftButtonDown</c> on the host Border
+    /// only fires for the thin ring around the terminal — never for the terminal itself.
+    /// That is why clicking a pane did not make it the active session.
+    /// </summary>
+    public event Action? PaneActivated;
+
+    /// <summary>
+    /// Fires when the running shell program emits OSC 9001 (CSM shell integration).
+    /// Carries the parsed key=value fields it included (color, git-branch, git-dirty, title, …).
+    /// </summary>
+    public event Action<System.Collections.Generic.IReadOnlyDictionary<string, string>>? ShellIntegrationReceived;
 
     /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
@@ -96,6 +143,30 @@ public sealed class TerminalBridge : IDisposable
     public TerminalBridge(WebView2 webView)
     {
         _webView = webView;
+        _coalescer = new OutputCoalescer(ScheduleFlush, PostOutput);
+    }
+
+    // Queues one coalesced flush. Background sessions yield to the foreground pane so
+    // their output can't sit ahead of the active session's rendering or its keystrokes.
+    private void ScheduleFlush(Action flush)
+    {
+        var dispatcher = WpfApplication.Current?.Dispatcher;
+        if (dispatcher == null) return;
+        dispatcher.BeginInvoke(
+            IsForeground
+                ? System.Windows.Threading.DispatcherPriority.Normal
+                : System.Windows.Threading.DispatcherPriority.Background,
+            flush);
+    }
+
+    // Runs on the UI thread. One WebView2 post per coalesced batch.
+    private void PostOutput(string data)
+    {
+        string json = JsonSerializer.Serialize(new { type = "output", data });
+        try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
+        catch { }
+        if (DebugSettings?.DebugTerminalTrace == true)
+            Trace($"OUTPUT flush len={data.Length}");
     }
 
     /// <summary>
@@ -200,16 +271,10 @@ public sealed class TerminalBridge : IDisposable
                 buffered = _outputBuffer.ToString();
                 _outputBuffer.Clear();
             }
-            if (buffered.Length > 0)
-            {
-                string json = System.Text.Json.JsonSerializer.Serialize(
-                    new { type = "output", data = buffered });
-                WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
-                {
-                    try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
-                    catch { }
-                });
-            }
+            // Route through the coalescer rather than posting directly: chunks that land
+            // between `_ready = true` above and this drain go to the coalescer, so sharing
+            // one buffer keeps load-time output in arrival order.
+            if (buffered.Length > 0) _coalescer.Append(buffered);
 
             navDone.TrySetResult(true);
         }
@@ -253,20 +318,10 @@ public sealed class TerminalBridge : IDisposable
             return;
         }
 
-        string json = JsonSerializer.Serialize(new { type = "output", data = rawData });
-        long enqueueAt = DebugSettings?.DebugTerminalTrace == true ? Environment.TickCount64 : 0;
-        int len = rawData.Length;
-        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            // Capture latency before any work so Trace's file I/O doesn't inflate the
-            // measurement, then post the WebView2 message before tracing so the trace
-            // overhead doesn't delay terminal rendering.
-            long latencyMs = enqueueAt != 0 ? Environment.TickCount64 - enqueueAt : 0;
-            try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
-            catch { }
-            if (enqueueAt != 0)
-                Trace($"OUTPUT post dispatcher-latency={latencyMs}ms len={len}");
-        });
+        // Buffer instead of posting per chunk. Many chunks arriving before the dispatcher
+        // gets a turn collapse into a single post, so background sessions can no longer
+        // flood the shared UI queue and starve the foreground pane (issue #70).
+        _coalescer.Append(rawData);
     }
 
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
@@ -305,6 +360,19 @@ public sealed class TerminalBridge : IDisposable
                     break;
                 }
 
+                // Posted from xterm's onKey — a real key event, never a terminal reply.
+                // See terminal-init.js for why onData can't be used for this.
+                case "userkey":
+                    KeyboardInput?.Invoke();
+                    break;
+
+                // Posted from the page on mousedown. WebView2 is an HwndHost, so a click
+                // in the terminal never reaches WPF as a routed event — this is the only
+                // way the host learns the user clicked into this pane.
+                case "activate":
+                    PaneActivated?.Invoke();
+                    break;
+
                 case "resize":
                 {
                     int cols = root.GetProperty("cols").GetInt32();
@@ -336,6 +404,21 @@ public sealed class TerminalBridge : IDisposable
                     if (!string.IsNullOrEmpty(copy))
                         WpfApplication.Current?.Dispatcher.Invoke(() =>
                             WpfClipboard.SetText(copy));
+                    break;
+
+                case "shellIntegration":
+                    if (root.TryGetProperty("fields", out var fieldsEl)
+                        && fieldsEl.ValueKind == JsonValueKind.Object)
+                    {
+                        var dict = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var prop in fieldsEl.EnumerateObject())
+                        {
+                            if (prop.Value.ValueKind == JsonValueKind.String)
+                                dict[prop.Name] = prop.Value.GetString() ?? "";
+                        }
+                        if (dict.Count > 0)
+                            ShellIntegrationReceived?.Invoke(dict);
+                    }
                     break;
 
                 case "filesDropped":
@@ -394,8 +477,19 @@ public sealed class TerminalBridge : IDisposable
         if (session.ProfileCursorBlink   != null) opts["cursorBlink"]   = session.ProfileCursorBlink;
         if (session.ProfilePadding       != null) opts["padding"]       = session.ProfilePadding;
         if (session.ProfileRetroEffect   != null) opts["retro"]         = session.ProfileRetroEffect;
+        // Malformed JSON here must not take the session down. This value is normally
+        // produced by SchemeMapper, but ImportExportService will deserialize a whole
+        // AppState from any file the user opens, so it can be arbitrary — and an
+        // unhandled throw on this path aborts the launch of an otherwise fine session.
+        // Dropping the theme degrades to the default palette, which is survivable.
         if (!string.IsNullOrEmpty(session.ProfileColorSchemeJson))
-            opts["theme"] = JsonSerializer.Deserialize<JsonElement>(session.ProfileColorSchemeJson);
+        {
+            try { opts["theme"] = JsonSerializer.Deserialize<JsonElement>(session.ProfileColorSchemeJson); }
+            catch (JsonException ex)
+            {
+                Log($"ignoring malformed ProfileColorSchemeJson for '{session.Name}': {ex.Message}");
+            }
+        }
 
         string json = JsonSerializer.Serialize(new { type = "setOptions", options = opts });
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>

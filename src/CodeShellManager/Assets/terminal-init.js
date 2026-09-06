@@ -32,12 +32,72 @@
   term.open(document.getElementById('terminal'));
   fitAddon.fit();
 
+  // ── Shell integration: OSC 9001;key=value;key=value;ST ─────────────────────
+  // A program inside the terminal can push session state up to CSM by emitting:
+  //   ESC ] 9001 ; color=#89b4fa ; git-branch=main ; git-dirty=1 ; title=foo  ST
+  // Recognised keys: color, git-branch, git-dirty (0/1), title.
+  // Returning true tells xterm we consumed the sequence so it isn't rendered.
+  term.parser.registerOscHandler(9001, data => {
+    try {
+      const fields = {};
+      for (const part of String(data).split(';')) {
+        const eq = part.indexOf('=');
+        if (eq > 0) fields[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+      }
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'shellIntegration', fields
+      }));
+    } catch {}
+    return true;
+  });
+
   // ── Input → PTY ────────────────────────────────────────────────────────────
   function sendInput(data) {
     window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data }));
   }
 
   term.onData(data => sendInput(data));
+
+  // ── "the user actually typed here" signal ──────────────────────────────────
+  // Distinct from onData on purpose. onData carries everything xterm sends to the
+  // PTY, including replies the TERMINAL generates by itself: device-attribute
+  // answers (ESC[?1;2c, ESC[?6c, ESC[>85;95;0c), cursor-position reports, OSC
+  // colour replies, and focus in/out (ESC[I / ESC[O). Those are indistinguishable
+  // from typing by inspecting the bytes — xterm knows which is which internally
+  // (triggerDataEvent's wasUserInput flag) but does not surface it on onData.
+  //
+  // onKey fires only for real key events, so it is the honest source for "make
+  // this pane active". Throttled because promotion is idempotent on the C# side
+  // and there is no reason to post on every character.
+  var lastKeyPost = 0;
+  term.onKey(() => {
+    var now = Date.now();
+    if (now - lastKeyPost < 500) return;
+    lastKeyPost = now;
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'userkey' }));
+  });
+
+  // ── "the user clicked into this pane" signal ───────────────────────────────
+  // This MUST come from here rather than from WPF. WebView2 is an HwndHost — a
+  // native child window — and WPF routed mouse events (tunnelling Preview* ones
+  // included) do not fire for input that lands on hosted native content. A
+  // PreviewMouseLeftButtonDown on the host Border therefore only ever fires for
+  // the 2px ring around the terminal, never for a click in the terminal itself,
+  // so clicking a pane never made it the active session.
+  //
+  // fit() here as well: the grid rebuild that used to run on every activation
+  // incidentally forced a layout pass and hence a re-fit. That rebuild is now
+  // skipped when nothing visible changes, so re-fit on interaction has to be
+  // explicit — otherwise xterm's column count can drift from what the PTY was
+  // told, and redraws land a character off.
+  var lastActivate = 0;
+  document.addEventListener('mousedown', function () {
+    var now = Date.now();
+    if (now - lastActivate < 300) return;
+    lastActivate = now;
+    try { fitAddon.fit(); } catch (e) {}
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'activate' }));
+  }, { capture: true });
 
   // ── Resize notification ────────────────────────────────────────────────────
   term.onResize(({ cols, rows }) => {
@@ -67,6 +127,21 @@
         if (opts.padding       !== undefined) document.getElementById('terminal').style.padding = opts.padding;
         if (opts.retro         !== undefined) document.body.classList.toggle('retro', !!opts.retro);
         fitAddon.fit();
+        // A profile override can switch fontFamily/fontSize, so the fit above measures the
+        // old metrics. Re-fit on the next frame, once the new ones are in effect.
+        //
+        // Neither fonts API helps here. document.fonts.ready resolves once at page load
+        // and stays resolved, so a .then() attached now runs synchronously with the stale
+        // metrics — the bug this replaced. document.fonts.load() only matches
+        // CSS-connected FontFace objects (@font-face rules); the families used here are
+        // OS-installed and there are no such rules, so it resolves on the next microtask
+        // having matched nothing. requestAnimationFrame is the honest signal: it fires
+        // after the style change has been applied and measured.
+        if (opts.fontFamily !== undefined || opts.fontSize !== undefined) {
+          requestAnimationFrame(function () {
+            try { fitAddon.fit(); } catch (e) {}
+          });
+        }
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
       else if (msg.type === 'setBootState') {
@@ -219,5 +294,26 @@
   // Re-fit after a short delay so xterm picks up the real dimensions once visible.
   setTimeout(() => { try { fitAddon.fit(); term.focus(); } catch {} }, 50);
   setTimeout(() => { try { fitAddon.fit(); } catch {} }, 250);
+
+  // Re-fit once the font has actually loaded.
+  //
+  // xterm derives its column count from the MEASURED advance width of the font. The
+  // first fit() runs immediately after term.open(); if Cascadia Code hasn't loaded
+  // yet, xterm measures the fallback's metrics, computes the wrong cols, and reports
+  // a width to the PTY that doesn't match what is drawn — text then wraps and
+  // overlaps mid-line.
+  //
+  // The ResizeObserver above cannot correct this: the ELEMENT size never changed,
+  // only the glyph metrics, so no resize fires. It stays wrong until something else
+  // forces a fit, which is why switching layouts appeared to "fix" it.
+  //
+  // The two timeouts above are guesses at "fonts are probably ready by now" and are
+  // easily too early during a heavy restore with many WebView2s initialising. They
+  // stay as a fallback for the 0x0 case; this is the real signal.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () {
+      try { fitAddon.fit(); } catch (e) {}
+    });
+  }
 
   term.focus();

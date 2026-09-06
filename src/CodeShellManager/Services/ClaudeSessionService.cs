@@ -19,19 +19,36 @@ public static class ClaudeSessionService
         command.StartsWith("claude ", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Resolves the directory Claude Code keeps its data in. CLAUDE_CONFIG_DIR wins when
+    /// set; otherwise the default ~/.claude.
+    ///
+    /// This matters because a machine that has ever run without the env var keeps a stale
+    /// ~/.claude/projects/ tree. Reading that one yields a session id from the wrong store
+    /// and `claude --resume &lt;id&gt;` fails with "No conversation found with session ID".
+    /// </summary>
+    internal static string ResolveClaudeHome(string? configDir, string userProfile) =>
+        string.IsNullOrWhiteSpace(configDir)
+            ? Path.Combine(userProfile, ".claude")
+            : configDir;
+
+    /// <summary>
     /// Finds the most recently modified session ID for the given working folder.
     /// Returns null if no session exists (new project or claude not yet run there).
     /// </summary>
-    public static string? GetLastSessionId(string workingFolder)
+    public static string? GetLastSessionId(string workingFolder) =>
+        GetLastSessionId(workingFolder, ResolveClaudeHome(
+            Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
+
+    /// <param name="claudeHome">Claude's data directory — see <see cref="ResolveClaudeHome"/>.</param>
+    internal static string? GetLastSessionId(string workingFolder, string claudeHome)
     {
         if (string.IsNullOrWhiteSpace(workingFolder)) return null;
 
         try
         {
             string projectDir = ToProjectDirName(workingFolder);
-            string claudeProjectsPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".claude", "projects", projectDir);
+            string claudeProjectsPath = Path.Combine(claudeHome, "projects", projectDir);
 
             if (!Directory.Exists(claudeProjectsPath)) return null;
 

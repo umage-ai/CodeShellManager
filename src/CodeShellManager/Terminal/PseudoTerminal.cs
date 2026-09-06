@@ -168,21 +168,51 @@ public sealed class PseudoTerminal : IPseudoTerminal
     public event Action<string>? DataReceived;
     public event Action? Exited;
 
+    /// <summary>
+    /// True while we still hold a process handle. NOT the same as "the child is alive" —
+    /// the handle is only released in <see cref="Dispose"/>, so this stays true after the
+    /// child has exited on its own. Use <see cref="HasExited"/> to ask that question.
+    /// </summary>
     public bool IsRunning => _hProcess != IntPtr.Zero;
+
+    /// <summary>
+    /// Latched once the child has actually exited and <see cref="Exited"/> has been raised.
+    ///
+    /// Callers that wait on <see cref="Exited"/> must check this, because the event may
+    /// already have fired before they subscribed — a session whose child exited earlier in
+    /// the run (user typed `exit`, or the process crashed) would otherwise wait out its
+    /// whole timeout for an event that will never come again. See
+    /// MainWindow.DisposeAndWaitForExitAsync.
+    /// </summary>
+    // volatile-equivalent: written on the monitor thread, read by shutdown on the UI
+    // thread. Today the Exited subscribe/unsubscribe accessors are Interlocked and supply
+    // the fence, but that is a subtle thing to depend on — an explicit field keeps it true
+    // for any future reader that polls without one.
+    private volatile bool _hasExited;
+
+    /// <inheritdoc cref="HasExited"/>
+    public bool HasExited => _hasExited;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    private static string BuildCmdLine(string command, string fullUserCmd)
+    // Resolved once per process. pwsh (PowerShell 7+) is preferred because that's
+    // where modern users keep their profile functions — wrapping in legacy
+    // powershell.exe (5.1) loads a different profile and won't see them.
+    // Shared with RunInstance so both PowerShell-wrapping paths agree — see PwshLocator.
+    internal static string BuildCmdLine(string command, string fullUserCmd)
+        => BuildCmdLine(command, fullUserCmd, Services.PwshLocator.Executable);
+
+    internal static string BuildCmdLine(string command, string fullUserCmd, string wrapperShell)
     {
         // Shells are passed through as-is (they initialize the console themselves).
         string exe = System.IO.Path.GetFileNameWithoutExtension(command).ToLowerInvariant();
-        if (exe is "cmd" or "powershell" or "pwsh" or "wsl" or "bash" or "zsh" or "sh" or "ssh")
+        if (exe is "cmd" or "powershell" or "pwsh" or "wsl" or "bash" or "zsh" or "sh" or "ssh" or "nu" or "fish")
             return fullUserCmd;
 
         // Wrap in PowerShell so the shell sets up the Win32 console environment
         // before launching the target process (Electron/Node SEA apps like claude.exe
         // crash with STATUS_DLL_INIT_FAILED when launched directly inside a ConPTY).
-        return $"powershell.exe -NoExit -Command {fullUserCmd}";
+        return $"{wrapperShell} -NoExit -Command {fullUserCmd}";
     }
 
     public void Start(string command, string args, string workingDirectory,
@@ -353,28 +383,118 @@ public sealed class PseudoTerminal : IPseudoTerminal
         catch (Exception ex) { Log($"ReadLoop error: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// Awaits a Win32 handle becoming signalled without occupying a thread while it waits.
+    ///
+    /// <see cref="ThreadPool.RegisterWaitForSingleObject"/> registers the handle with the
+    /// OS wait infrastructure; the callback runs on a pool thread only once it signals.
+    /// The registration is unregistered from inside the callback, which is the documented
+    /// way to release it exactly once for a one-shot wait.
+    /// </summary>
+    private static Task WaitForHandleAsync(IntPtr handle)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var safe = new SafeWaitHandle(handle, ownsHandle: false);   // caller closes the handle
+        var waitHandle = new ManualResetEvent(false) { SafeWaitHandle = safe };
+
+        // The registration is published through a gate rather than a bare local.
+        //
+        // If the handle is ALREADY signalled — a run-command child that exits immediately —
+        // the callback can run on a pool thread before RegisterWaitForSingleObject has even
+        // returned, so a plain `registration` local is still null when the callback reads
+        // it. The wait would then never be unregistered, and the ManualResetEvent would be
+        // disposed while the pool still held a live registration on it, which is documented
+        // as unsafe.
+        //
+        // The lock makes the callback wait for the assignment; TryUnregister runs exactly
+        // once either way, so a callback that arrives late is a no-op rather than a
+        // double-release.
+        var gate = new object();
+        RegisteredWaitHandle? registration = null;
+        bool unregistered = false;
+
+        void Release()
+        {
+            lock (gate)
+            {
+                if (unregistered) return;
+                unregistered = true;
+                registration?.Unregister(null);
+            }
+            waitHandle.Dispose();
+            tcs.TrySetResult();
+        }
+
+        lock (gate)
+        {
+            registration = ThreadPool.RegisterWaitForSingleObject(
+                waitHandle,
+                (_, _) => Release(),
+                state: null,
+                millisecondsTimeOutInterval: Timeout.Infinite,
+                executeOnlyOnce: true);
+        }
+
+        return tcs.Task;
+    }
+
     private async Task MonitorExitAsync()
     {
-        // Duplicate _hProcess so Dispose() can close the original without racing the wait.
-        // Closing a handle that another thread is waiting on is Win32 UB — the wait may
-        // return prematurely and we'd fire Exited before the child actually exits.
-        if (!DuplicateHandle(GetCurrentProcess(), _hProcess, GetCurrentProcess(),
-                out IntPtr waitHandle, 0, false, DUPLICATE_SAME_ACCESS))
-        {
-            Log($"DuplicateHandle failed: {Marshal.GetLastWin32Error()}");
-            return;
-        }
+        // Exited must fire on EVERY path, exactly once (issue #91).
+        //
+        // MainWindow.DisposeAndWaitForExitAsync waits on this event with a 10s timeout,
+        // and the shutdown loop is sequential. A path that returns without firing costs
+        // the full 10s for that session, every time, on top of every other session's.
+        // The early return below used to do exactly that.
         try
         {
-            await Task.Run(() => WaitForSingleObject(waitHandle, 0xFFFFFFFF));
-            if (GetExitCodeProcess(waitHandle, out uint code))
-                ExitCode = unchecked((int)code);
+            // Duplicate _hProcess so Dispose() can close the original without racing the
+            // wait. Closing a handle another thread is waiting on is Win32 UB — the wait
+            // may return prematurely and we'd fire Exited before the child actually exits.
+            if (!DuplicateHandle(GetCurrentProcess(), _hProcess, GetCurrentProcess(),
+                    out IntPtr waitHandle, 0, false, DUPLICATE_SAME_ACCESS))
+            {
+                // Can't observe the real exit, so ExitCode stays null and the caller
+                // treats it as unknown — but it must not be left waiting on an event
+                // that will never arrive.
+                Log($"DuplicateHandle failed: {Marshal.GetLastWin32Error()} — " +
+                    "firing Exited without an exit code so shutdown doesn't stall");
+                return;
+            }
+
+            try
+            {
+                // Wait WITHOUT holding a thread.
+                //
+                // This used to be `await Task.Run(() => WaitForSingleObject(h, INFINITE))`,
+                // which parks one thread-pool thread per live PTY for the whole lifetime of
+                // the session — plus one per run-command PTY. With ~25 sessions restoring,
+                // that is ~25 permanently blocked pool threads, and the pool only injects
+                // replacements at roughly one per second. Everything else queued behind it.
+                //
+                // Measured consequence: the Claude launch gate, itself moved onto the pool
+                // in #107, waited up to 23998ms against a 2000ms cap — not because the gate
+                // was slow but because it could not get a thread. 81s of a 135s restore.
+                //
+                // RegisterWaitForSingleObject hands the wait to the OS and calls back on a
+                // pool thread only once the handle signals, so an idle PTY costs nothing.
+                await WaitForHandleAsync(waitHandle).ConfigureAwait(false);
+                if (GetExitCodeProcess(waitHandle, out uint code))
+                    ExitCode = unchecked((int)code);
+            }
+            finally
+            {
+                CloseHandle(waitHandle);
+            }
         }
         finally
         {
-            CloseHandle(waitHandle);
+            // Latch BEFORE raising, so a subscriber that checks HasExited from inside the
+            // handler — or one that subscribes concurrently — never sees "not exited yet"
+            // for a process that has already gone.
+            _hasExited = true;
+            Exited?.Invoke();
         }
-        Exited?.Invoke();
     }
 
     public void Dispose()

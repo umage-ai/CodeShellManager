@@ -64,6 +64,28 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Flat determinate bar. The stock ProgressBar template draws a track border and
+             a gradient decorator that read as chrome at 2-3px; this is just the fill. -->
+        <Style x:Key="FlatBar" TargetType="ProgressBar">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="#313244"/>
+            <Setter Property="Foreground" Value="#89b4fa"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid>
+                            <Rectangle Fill="{TemplateBinding Background}"
+                                       RadiusX="1" RadiusY="1"/>
+                            <Rectangle x:Name="PART_Track" Fill="Transparent"/>
+                            <Rectangle x:Name="PART_Indicator" HorizontalAlignment="Left"
+                                       Fill="{TemplateBinding Foreground}"
+                                       RadiusX="1" RadiusY="1"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -91,6 +113,16 @@
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Restore counter — paired with RestoreRail; both live only for the
+                         duration of the restore loop in OnLoaded. -->
+                    <Border x:Name="RestorePill" Background="#1c2438" CornerRadius="10"
+                            BorderBrush="#2f4368" BorderThickness="1"
+                            Padding="8,2" Margin="0,0,8,0" VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="RestorePillText" Text="restoring…" Foreground="#89b4fa"
+                                   FontSize="11" FontWeight="SemiBold"/>
+                    </Border>
+
                     <!-- Update-available badge (shown when a new GitHub release exists) -->
                     <Border x:Name="UpdateBadge" Background="#a6e3a1" CornerRadius="10"
                             Margin="0,0,8,0" VerticalAlignment="Center" Visibility="Collapsed">
@@ -151,6 +183,19 @@
                         ToolTip="Send /remote-control to all sessions"/>
             </DockPanel>
         </Border>
+
+        <!-- ── Restore rail ─────────────────────────────────────────────────
+             Determinate k-of-N progress for session restore, which takes ~131s for a
+             25-session setup with per-session cost swinging 12x (issue #82). A spinner
+             can't express that; a filling bar can.
+
+             Deliberately docked here rather than drawn as an overlay: everything below
+             TerminalGrid is WebView2, an HwndHost, whose native window composites OVER
+             all WPF content regardless of Panel.ZIndex. The toolbar strip is one of the
+             few places an indicator is guaranteed to be visible. -->
+        <ProgressBar x:Name="RestoreRail" DockPanel.Dock="Top" Height="2"
+                     Style="{StaticResource FlatBar}" Background="Transparent"
+                     Minimum="0" Maximum="1" Value="0" Visibility="Collapsed"/>
 
         <!-- ── Command helper panel ─────────────────────────────────────── -->
         <Border x:Name="CommandHelperPanel" DockPanel.Dock="Top" Background="#11111b"
@@ -292,31 +337,92 @@
         </Grid>
     </DockPanel>
 
-        <Grid x:Name="ShutdownOverlay" Visibility="Collapsed" Background="#cc1e1e2e" Panel.ZIndex="100">
-            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Vertical">
-                <Grid Width="48" Height="48">
-                    <Path Stroke="#89b4fa" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                          Data="M 24 4 A 20 20 0 1 1 4 24"
-                          RenderTransformOrigin="0.5,0.5">
-                        <Path.RenderTransform>
-                            <RotateTransform x:Name="ShutdownSpinnerRotate" Angle="0"/>
-                        </Path.RenderTransform>
-                        <Path.Triggers>
-                            <EventTrigger RoutedEvent="Path.Loaded">
-                                <BeginStoryboard>
-                                    <Storyboard RepeatBehavior="Forever">
-                                        <DoubleAnimation Storyboard.TargetName="ShutdownSpinnerRotate"
-                                                         Storyboard.TargetProperty="Angle"
-                                                         From="0" To="360" Duration="0:0:1.2"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </EventTrigger>
-                        </Path.Triggers>
-                    </Path>
-                </Grid>
-                <TextBlock Text="Shutting down…" Foreground="#cdd6f4" FontFamily="Segoe UI" FontSize="13"
-                           Margin="0,14,0,0" HorizontalAlignment="Center"/>
-            </StackPanel>
+        <!-- ── Shutdown board ───────────────────────────────────────────────
+             Names every session and ticks it off, because shutdown genuinely blocks,
+             has a hard 30s budget (ClaudeShutdownBudgetMs), and force-disposes whatever
+             the budget doesn't cover — which used to happen with no indication at all.
+
+             This is only visible because OnClosing collapses TerminalGrid before showing
+             it. WebView2 is an HwndHost; its native window composites over WPF content
+             whatever Panel.ZIndex says, so the previous centred spinner was drawn behind
+             the terminal panes and only leaked through the gaps between them. -->
+        <Grid x:Name="ShutdownOverlay" Visibility="Collapsed" Background="#e61e1e2e" Panel.ZIndex="100">
+            <Border Width="420" MaxHeight="440" Background="#1e1e2e" CornerRadius="8"
+                    BorderBrush="#313244" BorderThickness="1"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <DockPanel>
+                    <!-- header: title + k/N + overall progress -->
+                    <StackPanel DockPanel.Dock="Top" Margin="16,13,16,11">
+                        <DockPanel Margin="0,0,0,8">
+                            <TextBlock x:Name="ShutdownCount" DockPanel.Dock="Right"
+                                       Text="" Foreground="#6c7086" FontFamily="Consolas" FontSize="11"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="Closing sessions" Foreground="#cdd6f4"
+                                       FontFamily="Segoe UI" FontSize="13" FontWeight="SemiBold"/>
+                        </DockPanel>
+                        <ProgressBar x:Name="ShutdownProgress" Height="3"
+                                     Style="{StaticResource FlatBar}" Minimum="0" Maximum="1" Value="0"/>
+                    </StackPanel>
+
+                    <!-- footer: budget bar + why-it's-taking-a-while line -->
+                    <StackPanel DockPanel.Dock="Bottom" Margin="16,10,16,13">
+                        <ProgressBar x:Name="ShutdownBudgetBar" Height="3" Margin="0,0,0,6"
+                                     Style="{StaticResource FlatBar}" Foreground="#a6e3a1"
+                                     Minimum="0" Maximum="1" Value="0"/>
+                        <DockPanel>
+                            <TextBlock x:Name="ShutdownBudgetLeft" DockPanel.Dock="Right" Text=""
+                                       Foreground="#6c7086" FontFamily="Consolas" FontSize="10"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ShutdownHint" Text="Letting each session exit cleanly…"
+                                       Foreground="#6c7086" FontFamily="Segoe UI" FontSize="11"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+                    </StackPanel>
+
+                    <ScrollViewer x:Name="ShutdownListScroll" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Margin="8,0"
+                                  Background="Transparent">
+                        <!-- Implicit style, scoped to this ScrollViewer: the stock WPF
+                             scrollbar is system-coloured and reads as a light bar dropped
+                             into the panel. Any setup past ~14 sessions scrolls, so this
+                             is on screen for most shutdowns, not an edge case. -->
+                        <ScrollViewer.Resources>
+                            <Style TargetType="ScrollBar">
+                                <Setter Property="Width" Value="6"/>
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ScrollBar">
+                                            <Grid Background="Transparent">
+                                                <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                                    <Track.Thumb>
+                                                        <Thumb>
+                                                            <Thumb.Template>
+                                                                <ControlTemplate TargetType="Thumb">
+                                                                    <Border Background="#45475a" CornerRadius="3"/>
+                                                                </ControlTemplate>
+                                                            </Thumb.Template>
+                                                        </Thumb>
+                                                    </Track.Thumb>
+                                                    <Track.IncreaseRepeatButton>
+                                                        <RepeatButton Command="ScrollBar.PageDownCommand"
+                                                                      Opacity="0" Focusable="False"/>
+                                                    </Track.IncreaseRepeatButton>
+                                                    <Track.DecreaseRepeatButton>
+                                                        <RepeatButton Command="ScrollBar.PageUpCommand"
+                                                                      Opacity="0" Focusable="False"/>
+                                                    </Track.DecreaseRepeatButton>
+                                                </Track>
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ScrollViewer.Resources>
+                        <StackPanel x:Name="ShutdownList"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
         </Grid>
     </Grid>
 </Window>

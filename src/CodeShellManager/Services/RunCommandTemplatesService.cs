@@ -44,16 +44,16 @@ public static class RunCommandTemplatesService
         // Priority order: dotnet → cargo → node → python → make. First match wins.
         if (HasExt(".sln") || HasExt(".csproj"))
             return Build("dotnet",
-                ("Run",   "dotnet run",   isDefault: true),
-                ("Build", "dotnet build", isDefault: false),
-                ("Test",  "dotnet test",  isDefault: false));
+                ("Run",   "dotnet run",   IsDefault: true),
+                ("Build", "dotnet build", IsDefault: false),
+                ("Test",  "dotnet test",  IsDefault: false));
 
         if (Has("Cargo.toml"))
             return Build("cargo",
-                ("Run",    "cargo run",    isDefault: true),
-                ("Build",  "cargo build",  isDefault: false),
-                ("Test",   "cargo test",   isDefault: false),
-                ("Clippy", "cargo clippy", isDefault: false));
+                ("Run",    "cargo run",    IsDefault: true),
+                ("Build",  "cargo build",  IsDefault: false),
+                ("Test",   "cargo test",   IsDefault: false),
+                ("Clippy", "cargo clippy", IsDefault: false));
 
         if (Has("package.json"))
         {
@@ -66,21 +66,21 @@ public static class RunCommandTemplatesService
             // yarn's invocation differs slightly: `yarn start` (no `run`) is conventional.
             string runPrefix = pm == "yarn" ? "yarn" : $"{pm} run";
             return Build("node",
-                ("Start", $"{pm} start",         isDefault: true),
-                ("Test",  $"{pm} test",          isDefault: false),
-                ("Build", $"{runPrefix} build",  isDefault: false));
+                ("Start", $"{pm} start",         IsDefault: true),
+                ("Test",  $"{pm} test",          IsDefault: false),
+                ("Build", $"{runPrefix} build",  IsDefault: false));
         }
 
         if (Has("pyproject.toml") || Has("requirements.txt"))
             return Build("python",
-                ("Run",  "python main.py",     isDefault: true),
-                ("Test", "python -m pytest",   isDefault: false));
+                ("Run",  "python main.py",     IsDefault: true),
+                ("Test", "python -m pytest",   IsDefault: false));
 
         if (Has("Makefile") || Has("makefile"))
             return Build("make",
-                ("Run",   "make",       isDefault: true),
-                ("Test",  "make test",  isDefault: false),
-                ("Clean", "make clean", isDefault: false));
+                ("Run",   "make",       IsDefault: true),
+                ("Test",  "make test",  IsDefault: false),
+                ("Clean", "make clean", IsDefault: false));
 
         return null;
     }

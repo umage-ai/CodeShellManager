@@ -60,6 +60,15 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     private readonly CancellationTokenSource _gitPollCts = new();
 
+    // Set by ApplyShellIntegration when the running program pushes git-branch
+    // or git-dirty via OSC 9001. Tells the local poller to stand down: the
+    // program is sourcing its own git state (e.g. `nexus ssh` into a container
+    // whose /workspace branch is unrelated to the host CWD) and the local
+    // poll would otherwise clobber the OSC value every 10s. Sticky for the
+    // lifetime of the session — once a program declares itself the source of
+    // truth, we trust it.
+    private bool _gitOverriddenByOsc;
+
     public SessionViewModel(ShellSession session)
     {
         Session = session;
@@ -74,7 +83,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // their WorkingFolder as a `\\wsl$\<distro>\...` UNC; GitService detects that
         // and dispatches to `wsl.exe -- git -C <linuxPath>` internally (Git for
         // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
-        if (Session.Kind == SessionKind.Ssh) return;
+        if (Session.Kind == SessionKind.Ssh || _gitOverriddenByOsc) return;
         var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
         GitBranch = branch;
         GitIsDirty = isDirty;
@@ -120,6 +129,53 @@ public partial class SessionViewModel : ObservableObject, IDisposable
             System.Diagnostics.Process.Start("explorer.exe", Session.WorkingFolder);
     }
 
+    /// <summary>
+    /// Applies a CSM shell-integration payload (OSC 9001) emitted by the running program.
+    /// Recognised keys: <c>color</c> (#rrggbb / #aarrggbb), <c>git-branch</c>, <c>git-dirty</c> (0/1),
+    /// <c>title</c>. Unknown keys are ignored. Useful for SSH overlays whose remote
+    /// state CSM cannot inspect locally.
+    /// </summary>
+    public void ApplyShellIntegration(System.Collections.Generic.IReadOnlyDictionary<string, string> fields)
+    {
+        // Every value is untrusted terminal output — validation lives in ShellIntegrationPayload.
+        if (fields.TryGetValue("color", out var color)
+            && ShellIntegrationPayload.TryNormalizeColor(color, out var wpfHex))
+        {
+            Session.ColorOverride = wpfHex;
+            OnPropertyChanged(nameof(AccentColor));
+        }
+
+        if (fields.TryGetValue("git-branch", out var branch))
+        {
+            GitBranch = ShellIntegrationPayload.SanitizeBranch(branch);
+            GitInfoLoaded = true;
+            _gitOverriddenByOsc = true;
+        }
+
+        if (fields.TryGetValue("git-dirty", out var dirty))
+        {
+            GitIsDirty = ShellIntegrationPayload.ParseDirty(dirty);
+            _gitOverriddenByOsc = true;
+        }
+
+        if (fields.TryGetValue("title", out var title)
+            && ShellIntegrationPayload.SanitizeTitle(title) is { } cleanTitle)
+            Rename(cleanTitle);
+    }
+
+    /// <summary>
+    /// Drops a <see cref="ShellSession.ColorOverride"/> so the accent falls back to the
+    /// hash-derived colour. OSC 9001 is currently the only writer of that field and it
+    /// persists across sleep/wake and restart, so without this a program that recoloured
+    /// a session once would own its colour forever.
+    /// </summary>
+    public void ClearColorOverride()
+    {
+        if (Session.ColorOverride is null) return;
+        Session.ColorOverride = null;
+        OnPropertyChanged(nameof(AccentColor));
+    }
+
     public void RaiseAlert(string message, AlertType alertType = AlertType.InputRequired)
     {
         NeedsAttention = true;
@@ -133,6 +189,42 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         Session.Name = newName;
         OnPropertyChanged(nameof(Name));
         OnPropertyChanged(nameof(DisplayName));
+    }
+
+    /// <summary>
+    /// Re-raises every property that mirrors a field on <see cref="Session"/>. Call after
+    /// editing the model in place (see <c>MainWindow.EditSessionAsync</c>) so the sidebar row
+    /// and terminal toolbar pick up the new name / folder / command without being rebuilt.
+    /// </summary>
+    public void NotifyConfigChanged()
+    {
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(WorkingFolder));
+        OnPropertyChanged(nameof(FolderShort));
+        OnPropertyChanged(nameof(Command));
+        OnPropertyChanged(nameof(Args));
+        OnPropertyChanged(nameof(AccentColor));
+        OnPropertyChanged(nameof(WorktreeSubtitle));
+    }
+
+    /// <summary>
+    /// Drops the cached git info and re-probes it. <see cref="RefreshGitInfoAsync"/> resolves
+    /// <see cref="RepoRoot"/> only once (it's stable for the life of a session), so a working
+    /// folder that changed under us needs the cache cleared first.
+    /// </summary>
+    public Task ReloadGitInfoAsync()
+    {
+        RepoRoot = null;
+        GitBranch = null;
+        GitIsDirty = false;
+        GitInfoLoaded = false;
+        HasWorktreeSiblings = false;
+        // The user just pointed this session at a different folder, so whatever program
+        // pushed git info via OSC 9001 was describing the old one. Let the local poller
+        // back in until a program re-declares itself.
+        _gitOverriddenByOsc = false;
+        return RefreshGitInfoAsync();
     }
 
     public void ClearAlert()

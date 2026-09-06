@@ -160,12 +160,34 @@ public partial class RunInstance : ObservableObject, IDisposable
         // so failures are logged to crash.log for diagnosability rather than silenced.
         if (State == RunState.ExitedOk && !string.IsNullOrWhiteSpace(PostRunUrl))
         {
+            if (!IsLaunchableUrl(PostRunUrl))
+            {
+                LogPostRunUrl(PostRunUrl, "rejected — only http and https URLs are opened");
+                return;
+            }
             try { Process.Start(new ProcessStartInfo(PostRunUrl) { UseShellExecute = true }); }
-            catch (Exception ex) { LogPostRunUrlFailure(PostRunUrl, ex); }
+            catch (Exception ex) { LogPostRunUrl(PostRunUrl, ex.Message); }
         }
     }
 
-    private static void LogPostRunUrlFailure(string url, Exception ex)
+    /// <summary>
+    /// True when <paramref name="url"/> is safe to hand to ShellExecute — an absolute
+    /// http or https URL, and nothing else.
+    ///
+    /// This fires automatically when a run exits 0, with no confirmation step, and
+    /// ShellExecute will happily launch a local executable, a .ps1, a UNC path or any
+    /// registered protocol handler. A whole AppState — run commands included — can be
+    /// imported from a JSON file the user didn't write (see ImportExportService), so the
+    /// scheme is checked at launch time rather than trusting the stored value.
+    ///
+    /// Scheme-less input like "localhost:5173" is rejected too: Uri parses it as scheme
+    /// "localhost", and guessing http:// on the user's behalf would defeat the check.
+    /// </summary>
+    internal static bool IsLaunchableUrl(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    private static void LogPostRunUrl(string url, string detail)
     {
         try
         {
@@ -174,7 +196,7 @@ public partial class RunInstance : ObservableObject, IDisposable
                 "CodeShellManager", "crash.log");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.AppendAllText(path,
-                $"[{DateTime.Now:HH:mm:ss.fff}] PostRunUrl failed '{url}': {ex.Message}\n");
+                $"[{DateTime.Now:HH:mm:ss.fff}] PostRunUrl '{url}': {detail}\n");
         }
         catch { /* logger failure is not actionable */ }
     }
@@ -195,48 +217,11 @@ public partial class RunInstance : ObservableObject, IDisposable
     internal static string BuildLocalCmd(string commandLine) => $"/c \"{commandLine}\"";
 
     /// <summary>
-    /// Returns "pwsh.exe" if PowerShell 7+ is on PATH, otherwise falls back to
-    /// the Windows-bundled "powershell.exe". ConPTY's CreateProcess resolves PATH
-    /// for us — we just pick which name to ask for.
+    /// Returns "pwsh.exe" if PowerShell 7+ is on PATH, otherwise "powershell.exe".
+    /// Delegates to <see cref="PwshLocator"/> so this and PseudoTerminal's session
+    /// wrapper can never disagree about which shell the machine has.
     /// </summary>
-    internal static string ResolvePwsh()
-    {
-        // Cheap check: try to spawn pwsh -NoLogo -Command "exit". If it returns,
-        // we trust pwsh is on PATH. Use a one-shot Process so we don't perturb
-        // the user's environment. Skip the probe if we already know.
-        if (_pwshResolved is { } cached) return cached;
-
-        try
-        {
-            using var probe = Process.Start(new ProcessStartInfo
-            {
-                FileName = "pwsh.exe",
-                Arguments = "-NoLogo -NoProfile -Command \"exit 0\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (probe != null)
-            {
-                // Cache pwsh only if the probe actually exited cleanly. A hung probe
-                // (WaitForExit returns false) or non-zero exit means pwsh is in a bad
-                // state; fall back to powershell.exe instead of caching a broken choice.
-                if (probe.WaitForExit(2000) && probe.ExitCode == 0)
-                {
-                    _pwshResolved = "pwsh.exe";
-                    return _pwshResolved;
-                }
-                try { if (!probe.HasExited) probe.Kill(entireProcessTree: true); }
-                catch { }
-            }
-        }
-        catch { /* not on PATH */ }
-
-        _pwshResolved = "powershell.exe";
-        return _pwshResolved;
-    }
-    private static string? _pwshResolved;
+    internal static string ResolvePwsh() => PwshLocator.Executable;
 
     /// <summary>
     /// Builds powershell args using -EncodedCommand so we don't have to worry
