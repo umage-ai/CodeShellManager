@@ -1243,6 +1243,15 @@ public partial class MainWindow : Window
             bridge.RawOutputReceived += alertDetector.Feed;
         }
 
+        // Shell programs (e.g. an SSH overlay, a prompt hook, a Claude Code hook) push
+        // session state via OSC 9001. Apply it on the VM, then debounce-save so the
+        // accent/title persist without a state.json write per emission.
+        bridge.ShellIntegrationReceived += fields =>
+        {
+            Dispatcher.Invoke(() => vm.ApplyShellIntegration(fields));
+            _vm.SaveStateDebounced();
+        };
+
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
         bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
@@ -3027,6 +3036,20 @@ public partial class MainWindow : Window
             var editItem = new System.Windows.Controls.MenuItem { Header = "Edit session…" };
             editItem.Click += async (_, _) => await EditSessionAsync(vm);
             menu.Items.Add(editItem);
+
+            // A program can recolour the session through OSC 9001 and the override persists
+            // across sleep/wake and restart. This is the only way to hand the colour back
+            // to the folder hash, so show it whenever an override exists.
+            if (vm.Session.ColorOverride is not null)
+            {
+                var resetColor = new System.Windows.Controls.MenuItem { Header = "Reset accent color" };
+                resetColor.Click += (_, _) =>
+                {
+                    vm.ClearColorOverride();
+                    _ = _vm.SaveStateAsync();
+                };
+                menu.Items.Add(resetColor);
+            }
 
             // Folder actions — only when there's a local working folder to open.
             if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))

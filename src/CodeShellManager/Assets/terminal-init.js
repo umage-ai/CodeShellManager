@@ -32,6 +32,25 @@
   term.open(document.getElementById('terminal'));
   fitAddon.fit();
 
+  // ── Shell integration: OSC 9001;key=value;key=value;ST ─────────────────────
+  // A program inside the terminal can push session state up to CSM by emitting:
+  //   ESC ] 9001 ; color=#89b4fa ; git-branch=main ; git-dirty=1 ; title=foo  ST
+  // Recognised keys: color, git-branch, git-dirty (0/1), title.
+  // Returning true tells xterm we consumed the sequence so it isn't rendered.
+  term.parser.registerOscHandler(9001, data => {
+    try {
+      const fields = {};
+      for (const part of String(data).split(';')) {
+        const eq = part.indexOf('=');
+        if (eq > 0) fields[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+      }
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'shellIntegration', fields
+      }));
+    } catch {}
+    return true;
+  });
+
   // ── Input → PTY ────────────────────────────────────────────────────────────
   function sendInput(data) {
     window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data }));
