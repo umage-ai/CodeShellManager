@@ -115,4 +115,20 @@ public class GitServiceWslRoutingTests
         Assert.Contains(@"\\wsl$\Ubuntu\home\alice\My Projects\repo", translated);
         Assert.DoesNotContain("Projects/repo", translated); // no leftover forward slashes
     }
+
+    [Fact]
+    public void TranslateUncArgsToLinux_PrefixCollidingDistro_LeftAlone()
+    {
+        // `Ubuntu` must not match `Ubuntu-22.04` — the default `wsl --install` naming.
+        string args = "worktree add \"\\\\wsl$\\Ubuntu-22.04\\home\\alice\\x\" main";
+        Assert.Equal(args, GitService.TranslateUncArgsToLinux(args, "Ubuntu"));
+        string bare = "worktree add \\\\wsl$\\Ubuntu-22.04\\home\\alice\\x main";
+        Assert.Equal(bare, GitService.TranslateUncArgsToLinux(bare, "Ubuntu"));
+    }
+
+    [Fact]
+    public void TranslateUncArgsToLinux_DistroRootUnquoted_BecomesSlash()
+    {
+        Assert.Equal("-C / status", GitService.TranslateUncArgsToLinux("-C \\\\wsl$\\Ubuntu status", "Ubuntu"));
+    }
 }

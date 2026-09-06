@@ -609,21 +609,10 @@ public partial class NewSessionDialog : Window
     /// </summary>
     internal static (string distro, string linuxPath) ParseWslUncPath(string unc)
     {
-        if (string.IsNullOrWhiteSpace(unc)) return ("", "");
-        string normalized = unc.Replace('/', '\\').TrimEnd('\\');
-        string[] prefixes = { @"\\wsl$\", @"\\wsl.localhost\" };
-        foreach (var prefix in prefixes)
-        {
-            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-            string rest = normalized[prefix.Length..];
-            if (string.IsNullOrEmpty(rest)) return ("", "");
-            int slash = rest.IndexOf('\\');
-            string distro = slash < 0 ? rest : rest[..slash];
-            string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
-            string linuxPath = string.IsNullOrEmpty(linuxRest) ? "" : "/" + linuxRest.Replace('\\', '/');
-            return (distro, linuxPath);
-        }
-        return ("", "");
+        var (distro, linux) = WslDiscoveryService.TryParseUncPath(unc);
+        // Dialog convention: blank Linux folder means "the user's home", so the distro root
+        // ("/") from the shared parser is reported as "" here.
+        return distro is null ? ("", "") : (distro, linux == "/" ? "" : linux);
     }
 
     private void CommandCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

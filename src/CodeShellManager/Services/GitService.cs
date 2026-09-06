@@ -249,25 +249,11 @@ public static class GitService
     /// <summary>
     /// Detects a <c>\\wsl$\&lt;distro&gt;\…</c> or <c>\\wsl.localhost\&lt;distro&gt;\…</c>
     /// path and splits it into (distro, linux-path). Returns (null, "") otherwise.
+    /// Delegates to <see cref="WslDiscoveryService.TryParseUncPath"/> — the single
+    /// parser for this shape shared with NewSessionDialog.
     /// </summary>
     internal static (string? distro, string linuxPath) TryParseWslUnc(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path)) return (null, "");
-        string normalized = path.Replace('/', '\\').TrimEnd('\\');
-        string[] prefixes = { @"\\wsl$\", @"\\wsl.localhost\" };
-        foreach (var prefix in prefixes)
-        {
-            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-            string rest = normalized[prefix.Length..];
-            if (string.IsNullOrEmpty(rest)) return (null, "");
-            int slash = rest.IndexOf('\\');
-            string distro = slash < 0 ? rest : rest[..slash];
-            string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
-            string linuxPath = string.IsNullOrEmpty(linuxRest) ? "/" : "/" + linuxRest.Replace('\\', '/');
-            return (distro, linuxPath);
-        }
-        return (null, "");
-    }
+        => WslDiscoveryService.TryParseUncPath(path);
 
     /// <summary>
     /// Replaces WSL UNC tokens in a git arg string with their Linux equivalents.
@@ -279,7 +265,9 @@ public static class GitService
     {
         if (string.IsNullOrEmpty(arguments)) return arguments;
         string esc = Regex.Escape(distro);
-        string body = $@"\\\\wsl(?:\$|\.localhost)\\{esc}";
+        // Lookahead: the distro name must be followed by a separator, a quote, whitespace or
+        // end-of-string — otherwise `Ubuntu` also matches `Ubuntu-22.04`.
+        string body = $@"\\\\wsl(?:\$|\.localhost)\\{esc}(?=[\\""\s]|$)";
 
         // Pass 1: quoted UNCs ("\\wsl$\<distro>\..."). The tail may contain spaces
         // and runs until the closing quote — without this pass, the unquoted regex

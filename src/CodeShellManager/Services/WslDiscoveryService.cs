@@ -194,4 +194,27 @@ public static class WslDiscoveryService
         string trimmed = linuxPath.TrimStart('/').Replace('/', '\\');
         return $@"\\wsl$\{distro}\{trimmed}";
     }
+
+    /// <summary>
+    /// Splits a WSL UNC (<c>\\wsl$\Ubuntu\home\alice</c> or <c>\\wsl.localhost\…</c>, either
+    /// slash direction) into (distro, linuxPath). linuxPath is "/" for the distro root.
+    /// Returns (null, "") for anything that isn't a WSL UNC. The single parser for the
+    /// whole app — GitService and NewSessionDialog both delegate here.
+    /// </summary>
+    public static (string? distro, string linuxPath) TryParseUncPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return (null, "");
+        string normalized = path.Replace('/', '\\').TrimEnd('\\');
+        foreach (var prefix in new[] { @"\\wsl$\", @"\\wsl.localhost\" })
+        {
+            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            string rest = normalized[prefix.Length..];
+            if (string.IsNullOrEmpty(rest)) return (null, "");
+            int slash = rest.IndexOf('\\');
+            string distro = slash < 0 ? rest : rest[..slash];
+            string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
+            return (distro, string.IsNullOrEmpty(linuxRest) ? "/" : "/" + linuxRest.Replace('\\', '/'));
+        }
+        return (null, "");
+    }
 }

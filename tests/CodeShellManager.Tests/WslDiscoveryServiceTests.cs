@@ -99,4 +99,20 @@ public class WslDiscoveryServiceTests
         Assert.Equal(2, result[0].Version);
         Assert.True(result[0].IsDefault);
     }
+
+    [Theory]
+    [InlineData(@"\\wsl$\Ubuntu\home\alice", "Ubuntu", "/home/alice")]
+    [InlineData(@"\\wsl.localhost\Debian\srv\app", "Debian", "/srv/app")]
+    [InlineData(@"\\WSL$\Ubuntu\", "Ubuntu", "/")]
+    [InlineData(@"//wsl$/Ubuntu/home/alice", "Ubuntu", "/home/alice")]
+    [InlineData(@"\\wsl$\Ubuntu", "Ubuntu", "/")]
+    [InlineData(@"\\wsl$\", null, "")]
+    [InlineData(@"C:\proj", null, "")]
+    [InlineData("", null, "")]
+    public void TryParseUncPath_KnownShapes(string path, string? distro, string linux)
+    {
+        var (d, l) = WslDiscoveryService.TryParseUncPath(path);
+        Assert.Equal(distro, d);
+        Assert.Equal(linux, l);
+    }
 }
