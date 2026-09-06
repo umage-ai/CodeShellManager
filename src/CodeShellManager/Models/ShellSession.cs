@@ -142,6 +142,20 @@ public class ShellSession
     };
 
     /// <summary>
+    /// Null when the session has everything it needs to launch; otherwise a sentence for
+    /// the user. Checked at the top of <c>MainWindow.LaunchSessionAsync</c> BEFORE any
+    /// WebView2 or PTY is created, because the arg builders throw on these and a throw at
+    /// that point leaks the pane. state.json and imports are untrusted input.
+    /// </summary>
+    [JsonIgnore]
+    public string? LaunchValidationError => Kind switch
+    {
+        SessionKind.Ssh when string.IsNullOrWhiteSpace(SshHost) => "This SSH session has no host. Edit the session and set one.",
+        SessionKind.Wsl when string.IsNullOrWhiteSpace(WslDistro) => "This WSL session has no distro. Edit the session and pick one.",
+        _ => null,
+    };
+
+    /// <summary>
     /// Builds the argument string passed to the ssh executable.
     /// Example: "-t alice@dev.example.com \"cd '/proj' && bash\""
     /// </summary>
@@ -206,7 +220,7 @@ public class ShellSession
     /// when given (run commands). It is wrapped in <c>bash -lc</c> so PATH-resolved tools
     /// (nvm node, pyenv, …) behave as in a login shell; bash then interprets the payload as
     /// a shell command line, which is the intent. Throws when <see cref="WslDistro"/> is
-    /// blank — callers validate first (<c>LaunchValidationError</c>, Task 5).
+    /// blank — callers validate first (<see cref="LaunchValidationError"/>).
     /// </summary>
     internal string BuildWslArgs(string? inner = null)
     {

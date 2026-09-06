@@ -1,3 +1,4 @@
+using System;
 using CodeShellManager.Models;
 using Xunit;
 
@@ -213,4 +214,20 @@ public class ShellSessionTests
         Assert.Equal("-d Ubuntu --cd \"/home/alice/my proj\" -- bash -lc \"claude\"",
             s.BuildWslArgs());
     }
+
+    [Fact]
+    public void LaunchValidationError_Local_IsNull() =>
+        Assert.Null(new ShellSession { Kind = SessionKind.Local, Command = "claude" }.LaunchValidationError);
+
+    [Fact]
+    public void LaunchValidationError_SshBlankHost_Reports() =>
+        Assert.Contains("host", new ShellSession { Kind = SessionKind.Ssh }.LaunchValidationError!, StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void LaunchValidationError_WslBlankDistro_Reports() =>
+        Assert.Contains("distro", new ShellSession { Kind = SessionKind.Wsl }.LaunchValidationError!, StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void LaunchValidationError_WslWithDistro_IsNull() =>
+        Assert.Null(new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" }.LaunchValidationError);
 }

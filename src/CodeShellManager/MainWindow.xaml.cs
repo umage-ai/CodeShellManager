@@ -1254,6 +1254,18 @@ public partial class MainWindow : Window
         bool removeOnFailure = true)
     {
         Log($"LaunchSession START: cmd='{session.Command}' args='{session.Args}' folder='{session.WorkingFolder}' restoring={restoring}");
+
+        if (session.LaunchValidationError is { } validationError)
+        {
+            Log($"LaunchSession REFUSED: {validationError}");
+            MessageBox.Show(this, $"Cannot start '{session.Name}'.\n\n{validationError}",
+                "Launch Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
+            else { session.IsDormant = true; AddDormantSidebarItem(session); }
+            if (_launchingSidebarItems.Remove(session.Id)) RebuildSidebarOrder();
+            return;
+        }
+
         var vm = new SessionViewModel(session);
 
         // Set up alert detection
