@@ -13,10 +13,16 @@ name: Publish to WinGet
 # To make the automatic trigger real, CI / Release would need to create the Release
 # with a PAT instead of GITHUB_TOKEN. Left as-is deliberately — see CLAUDE.md.
 #
-# Requires repo secret WINGET_TOKEN: a classic PAT with `public_repo` scope
-# (winget-releaser does not support fine-grained tokens). `public_repo` IS enough —
-# if you hit a permissions-looking error, read the sync step below before touching
-# the token, because that error is almost never about the token.
+# Requires repo secret WINGET_TOKEN: a classic PAT (winget-releaser does not support
+# fine-grained tokens) with BOTH scopes:
+#
+#   public_repo  — submit the manifest PR to microsoft/winget-pkgs
+#   workflow     — sync our fork, which copies upstream's .github/workflows/*.yml
+#
+# The `workflow` scope is the non-obvious one and its absence does NOT look like a
+# scope problem: the sync fails with HTTP 422, the fork goes stale, and the SUBMIT
+# step then reports "does not have the correct permissions to execute CreateRef".
+# See the sync step below for the full chain.
 
 on:
   release:
@@ -40,21 +46,31 @@ jobs:
       # dozens of commits a day, so a fork left alone between releases falls far
       # enough behind that GitHub rejects the branch creation.
       #
-      # The failure is badly disguised — it surfaces as
+      # The failure is badly disguised — it surfaces from the SUBMIT step as
       #     "<user> does not have the correct permissions to execute `CreateRef`"
       #     "failed to create branch UmageAI.CodeShellManager-<version>-<hash>"
-      # which reads like a token-scope problem and is not one. v0.6.0 burned three
-      # regenerated PATs (including needlessly widening the scope to full `repo`)
-      # before the actual cause turned up. See komac#376 and winget-releaser#336.
+      # which reads like a token problem. Three releases were spent rotating and
+      # widening PATs before the real chain turned up:
+      #
+      #   WINGET_TOKEN lacks `workflow` scope
+      #     -> merge-upstream refuses with HTTP 422, because upstream winget-pkgs
+      #        contains .github/workflows/*.yml and syncing means writing them
+      #     -> the fork stays stale
+      #     -> CreateRef is rejected
+      #
+      # So WINGET_TOKEN must be a classic PAT with BOTH `public_repo` AND `workflow`.
+      # See komac#376 and winget-releaser#336 for the symptom; the scope is ours.
+      #
+      # NOT continue-on-error, deliberately. It was — and that is precisely why this
+      # masqueraded as a token problem for three releases: the sync failed silently
+      # and only the misleading downstream error was ever seen. A failed sync means
+      # the submit is about to fail anyway, so fail here where the message is honest.
       #
       # NOTE the fork komac uses is the one under the SAME OWNER as this repo —
       # umage-ai/winget-pkgs — not a maintainer's personal fork. A personal fork of
       # winget-pkgs may also exist; syncing that one does nothing. Override with the
       # `fork-user` input if this ever needs to point elsewhere.
-      # continue-on-error: a sync hiccup must not block a submit that might still
-      # succeed, and if the submit then fails we want its real error, not this one.
       - name: Sync umage-ai/winget-pkgs with upstream
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |

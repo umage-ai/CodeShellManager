@@ -428,9 +428,9 @@ gh workflow run chocolatey.yml -f tag=vX.Y.Z
 
 To make it genuinely automatic, CI / Release would have to create the Release with a PAT rather than `GITHUB_TOKEN`.
 
-### winget: the `CreateRef` error is not about the token
+### winget: the `CreateRef` error names the wrong culprit
 
-`winget.yml` submits the signed MSI to microsoft/winget-pkgs as `UmageAI.CodeShellManager` via [winget-releaser](https://github.com/vedantmgoyal9/winget-releaser). Needs `WINGET_TOKEN` — a **classic** PAT with `public_repo` (fine-grained tokens are unsupported).
+`winget.yml` submits the signed MSI to microsoft/winget-pkgs as `UmageAI.CodeShellManager` via [winget-releaser](https://github.com/vedantmgoyal9/winget-releaser). Needs `WINGET_TOKEN` — a **classic** PAT (fine-grained tokens are unsupported) with **both** `public_repo` and `workflow`.
 
 When it fails you will see:
 
@@ -439,14 +439,17 @@ When it fails you will see:
 1: failed to create branch UmageAI.CodeShellManager-<version>-<hash>
 ```
 
-**This is almost never a token problem.** It means our fork of winget-pkgs is too far behind upstream for GitHub to accept the new branch. Upstream lands dozens of commits a day, so a fork untouched since the last release is always stale by the next one.
+**The message points at the wrong thing.** Two distinct causes produce it, and the token itself is the *second* one, not the first:
 
-Two traps that cost real time on v0.6.0:
+1. **The fork is stale.** komac creates its branch in `umage-ai/winget-pkgs`; upstream lands dozens of commits a day, so a fork untouched since the last release is always too far behind for GitHub to accept a new branch.
+2. **`WINGET_TOKEN` is missing the `workflow` scope**, so the automatic sync that would have fixed (1) *cannot* run — `merge-upstream` returns HTTP 422 because upstream winget-pkgs contains `.github/workflows/*.yml` and syncing means writing them. The fork stays stale and you land back at (1).
+
+Two traps that cost real time across v0.6.0 and v0.7.0:
 
 - **Sync the fork under the org, `umage-ai/winget-pkgs`** — komac uses the fork owned by the same account as this repo. A maintainer's *personal* fork (`AThraen/winget-pkgs`) may also exist and is a red herring; syncing it changes nothing.
-- **Don't widen the token scope.** `public_repo` is sufficient. winget-releaser's README once carried advice to use full `repo`; the PR proposing it was closed unmerged. Broadening the scope does not fix this and hands CI write access to every private repo the owner can reach.
+- **`public_repo` alone is not enough — the token also needs `workflow`.** This was recorded backwards here through v0.6.0 ("`public_repo` is sufficient"), which is why the same failure was rediagnosed three releases running. It is still true that widening to *full* `repo` is wrong and does not help: that grants CI write access to every private repo the owner can reach. `public_repo` + `workflow`, nothing more.
 
-`winget.yml` now syncs the org fork automatically before submitting, so this should not recur. If it does, sync manually and re-dispatch:
+`winget.yml` syncs the org fork automatically before submitting, and that step is deliberately **not** `continue-on-error` — it used to be, which is exactly how a failing sync stayed invisible and only the misleading `CreateRef` error was ever seen. If the sync fails, fix the token scope; to unblock a release in the meantime, sync by hand and re-dispatch:
 
 ```bash
 gh api -X POST repos/umage-ai/winget-pkgs/merge-upstream -f branch=master
