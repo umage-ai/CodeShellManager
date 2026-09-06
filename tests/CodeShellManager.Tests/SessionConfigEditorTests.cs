@@ -17,12 +17,23 @@ public class SessionConfigEditorTests
     private static ShellSession RemoteSession() => new()
     {
         Name = "dev box",
-        IsRemote = true,
+        Kind = SessionKind.Ssh,
         SshUser = "alice",
         SshHost = "dev.example.com",
         SshPort = 22,
         SshRemoteFolder = "/home/alice/project",
         Command = "bash",
+    };
+
+    private static ShellSession WslSession() => new()
+    {
+        Name = "ubuntu proj",
+        Kind = SessionKind.Wsl,
+        WslDistro = "Ubuntu",
+        WslUser = "alice",
+        WslWorkingFolder = "/home/alice/proj",
+        WorkingFolder = @"\\wsl$\Ubuntu\home\alice\proj",
+        Command = "claude",
     };
 
     [Fact]
@@ -95,7 +106,7 @@ public class SessionConfigEditorTests
     {
         var s = LocalSession();
         var d = SessionConfigDraft.FromSession(s);
-        d.IsRemote = true;
+        d.Kind = SessionKind.Ssh;
         d.SshHost = "dev.example.com";
         d.WorkingFolder = "";
 
@@ -218,7 +229,7 @@ public class SessionConfigEditorTests
             WorkingFolder = @"C:\src\api",
             Command = "codex",
             Args = "--verbose",
-            IsRemote = false,
+            Kind = SessionKind.Local,
             ProfileFontFamily = "Cascadia Code",
             ProfileFontSize = 15,
             ProfileCursorShape = "bar",
@@ -273,7 +284,7 @@ public class SessionConfigEditorTests
     {
         var s = LocalSession();
         var d = SessionConfigDraft.FromSession(s);
-        d.IsRemote = true;
+        d.Kind = SessionKind.Ssh;
         d.WorkingFolder = "";
         d.SshUser = "alice";
         d.SshHost = "dev.example.com";
@@ -287,5 +298,96 @@ public class SessionConfigEditorTests
         Assert.True(s.IsRemote);
         Assert.Equal("", s.WorkingFolder);
         Assert.Equal("-p 2222 -t alice@dev.example.com \"cd '/srv/app' && bash\"", s.BuildSshArgs());
+    }
+
+    [Fact]
+    public void Apply_SshToLocal_DemotesKind()
+    {
+        // Regression: with the promote-only IsRemote setter this silently left Kind=Ssh.
+        var s = RemoteSession();
+        var d = SessionConfigDraft.FromSession(s);
+        d.Kind = SessionKind.Local;
+        d.WorkingFolder = @"C:\src";
+
+        Assert.True(SessionConfigEditor.Diff(s, d).RequiresRelaunch);
+        SessionConfigEditor.Apply(s, d);
+
+        Assert.Equal(SessionKind.Local, s.Kind);
+        Assert.False(s.IsRemote);
+        Assert.Equal(@"C:\src", s.WorkingFolder);
+    }
+
+    [Fact]
+    public void Diff_WslIdentical_NoChange()
+    {
+        var s = WslSession();
+        Assert.False(SessionConfigEditor.Diff(s, SessionConfigDraft.FromSession(s)).AnyChange);
+    }
+
+    [Fact]
+    public void Diff_WslDistroChanged_RequiresRelaunchAndFolderChanged()
+    {
+        var s = WslSession();
+        var d = SessionConfigDraft.FromSession(s);
+        d.WslDistro = "Debian";
+        var c = SessionConfigEditor.Diff(s, d);
+        Assert.True(c.AnyChange);
+        Assert.True(c.RequiresRelaunch);
+        Assert.True(c.WorkingFolderChanged);
+    }
+
+    [Fact]
+    public void Diff_WslUserChanged_RequiresRelaunchButFolderUnchanged()
+    {
+        var s = WslSession();
+        var d = SessionConfigDraft.FromSession(s);
+        d.WslUser = "root";
+        var c = SessionConfigEditor.Diff(s, d);
+        Assert.True(c.RequiresRelaunch);
+        Assert.False(c.WorkingFolderChanged);
+    }
+
+    [Fact]
+    public void Diff_WslLinuxFolderTrailingSlash_IsNotAChange()
+    {
+        var s = WslSession();
+        var d = SessionConfigDraft.FromSession(s);
+        d.WslWorkingFolder = "/home/alice/proj/";
+        Assert.False(SessionConfigEditor.Diff(s, d).AnyChange);
+    }
+
+    [Fact]
+    public void Apply_WslFolderChanged_ResyncsUncWorkingFolder()
+    {
+        var s = WslSession();
+        var d = SessionConfigDraft.FromSession(s);
+        d.WslWorkingFolder = "/srv/other";
+        SessionConfigEditor.Apply(s, d);
+        Assert.Equal("/srv/other", s.WslWorkingFolder);
+        Assert.Equal(@"\\wsl$\Ubuntu\srv\other", s.WorkingFolder);
+    }
+
+    [Fact]
+    public void Apply_LocalToWsl_SetsKindAndUnc()
+    {
+        var s = LocalSession();
+        var d = SessionConfigDraft.FromSession(s);
+        d.Kind = SessionKind.Wsl;
+        d.WslDistro = "Ubuntu";
+        d.WslWorkingFolder = "/home/alice";
+        Assert.True(SessionConfigEditor.Diff(s, d).RequiresRelaunch);
+        SessionConfigEditor.Apply(s, d);
+        Assert.Equal(SessionKind.Wsl, s.Kind);
+        Assert.Equal(@"\\wsl$\Ubuntu\home\alice", s.WorkingFolder);
+    }
+
+    [Fact]
+    public void Diff_StaleWslFieldsOnLocalSession_DoNotCount()
+    {
+        var s = LocalSession();
+        s.WslDistro = "leftover";
+        var d = SessionConfigDraft.FromSession(s);
+        d.WslDistro = "";
+        Assert.False(SessionConfigEditor.Diff(s, d).AnyChange);
     }
 }

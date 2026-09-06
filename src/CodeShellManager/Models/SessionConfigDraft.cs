@@ -20,12 +20,16 @@ public sealed class SessionConfigDraft
     public string Command { get; set; } = "";
     public string Args { get; set; } = "";
 
-    // Remote
-    public bool IsRemote { get; set; }
+    // Kind + kind-specific fields. Kind is authoritative; IsRemote is a read-only view.
+    public SessionKind Kind { get; set; } = SessionKind.Local;
+    public bool IsRemote => Kind == SessionKind.Ssh;
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
     public string SshRemoteFolder { get; set; } = "";
+    public string WslDistro { get; set; } = "";
+    public string WslUser { get; set; } = "";
+    public string WslWorkingFolder { get; set; } = "";
 
     // Appearance overrides — null means "use the global terminal settings"
     public string? ProfileFontFamily { get; set; }
@@ -46,7 +50,10 @@ public sealed class SessionConfigDraft
         WorkingFolder = s.WorkingFolder,
         Command = s.Command,
         Args = s.Args,
-        IsRemote = s.IsRemote,
+        Kind = s.Kind,
+        WslDistro = s.WslDistro,
+        WslUser = s.WslUser,
+        WslWorkingFolder = s.WslWorkingFolder,
         SshUser = s.SshUser,
         SshHost = s.SshHost,
         SshPort = s.SshPort,
