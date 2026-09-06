@@ -144,55 +144,43 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     /// </summary>
     public void ApplyShellIntegration(System.Collections.Generic.IReadOnlyDictionary<string, string> fields)
     {
-        if (fields.TryGetValue("color", out var color) && IsValidHexColor(color))
+        // Every value is untrusted terminal output — validation lives in ShellIntegrationPayload.
+        if (fields.TryGetValue("color", out var color)
+            && ShellIntegrationPayload.TryNormalizeColor(color, out var wpfHex))
         {
-            // WPF ColorConverter.ConvertFromString interprets 8-digit hex as #AARRGGBB.
-            // Integrators emit #rrggbbaa (alpha last), so we reorder before storing.
-            Session.ColorOverride = ToWpfHexColor(color);
+            Session.ColorOverride = wpfHex;
             OnPropertyChanged(nameof(AccentColor));
         }
 
         if (fields.TryGetValue("git-branch", out var branch))
         {
-            GitBranch = string.IsNullOrWhiteSpace(branch) ? null : branch;
+            GitBranch = ShellIntegrationPayload.SanitizeBranch(branch);
             GitInfoLoaded = true;
             _gitOverriddenByOsc = true;
         }
 
         if (fields.TryGetValue("git-dirty", out var dirty))
         {
-            GitIsDirty = dirty == "1" || string.Equals(dirty, "true", StringComparison.OrdinalIgnoreCase);
+            GitIsDirty = ShellIntegrationPayload.ParseDirty(dirty);
             _gitOverriddenByOsc = true;
         }
 
-        if (fields.TryGetValue("title", out var title) && !string.IsNullOrWhiteSpace(title))
-            Rename(title.Trim());
-    }
-
-    private static bool IsValidHexColor(string s)
-    {
-        if (string.IsNullOrEmpty(s) || s[0] != '#') return false;
-        if (s.Length != 4 && s.Length != 7 && s.Length != 9) return false;
-        for (int i = 1; i < s.Length; i++)
-            if (!Uri.IsHexDigit(s[i])) return false;
-        return true;
+        if (fields.TryGetValue("title", out var title)
+            && ShellIntegrationPayload.SanitizeTitle(title) is { } cleanTitle)
+            Rename(cleanTitle);
     }
 
     /// <summary>
-    /// Converts an integrator-supplied hex color to WPF format.
-    /// <para>
-    /// 6-digit (<c>#rrggbb</c>) and 3-digit (<c>#rgb</c>) values are stored as-is.
-    /// 8-digit values use the integrator convention <c>#rrggbbaa</c> (alpha last),
-    /// but WPF's <see cref="System.Windows.Media.ColorConverter"/> expects <c>#AARRGGBB</c>
-    /// (alpha first), so we reorder to <c>#aarrggbb</c>.
-    /// </para>
+    /// Drops a <see cref="ShellSession.ColorOverride"/> so the accent falls back to the
+    /// hash-derived colour. OSC 9001 is currently the only writer of that field and it
+    /// persists across sleep/wake and restart, so without this a program that recoloured
+    /// a session once would own its colour forever.
     /// </summary>
-    private static string ToWpfHexColor(string s)
+    public void ClearColorOverride()
     {
-        // Only 8-digit (#rrggbbaa) needs reordering; 3- and 6-digit are fine as-is.
-        if (s.Length == 9)
-            return "#" + s[7..9] + s[1..7];
-        return s;
+        if (Session.ColorOverride is null) return;
+        Session.ColorOverride = null;
+        OnPropertyChanged(nameof(AccentColor));
     }
 
     public void RaiseAlert(string message, AlertType alertType = AlertType.InputRequired)
@@ -239,6 +227,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         GitIsDirty = false;
         GitInfoLoaded = false;
         HasWorktreeSiblings = false;
+        // The user just pointed this session at a different folder, so whatever program
+        // pushed git info via OSC 9001 was describing the old one. Let the local poller
+        // back in until a program re-declares itself.
+        _gitOverriddenByOsc = false;
         return RefreshGitInfoAsync();
     }
 

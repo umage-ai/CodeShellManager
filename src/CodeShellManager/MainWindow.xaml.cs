@@ -3037,6 +3037,20 @@ public partial class MainWindow : Window
             editItem.Click += async (_, _) => await EditSessionAsync(vm);
             menu.Items.Add(editItem);
 
+            // A program can recolour the session through OSC 9001 and the override persists
+            // across sleep/wake and restart. This is the only way to hand the colour back
+            // to the folder hash, so show it whenever an override exists.
+            if (vm.Session.ColorOverride is not null)
+            {
+                var resetColor = new System.Windows.Controls.MenuItem { Header = "Reset accent color" };
+                resetColor.Click += (_, _) =>
+                {
+                    vm.ClearColorOverride();
+                    _ = _vm.SaveStateAsync();
+                };
+                menu.Items.Add(resetColor);
+            }
+
             // Folder actions — only when there's a local working folder to open.
             if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
             {
