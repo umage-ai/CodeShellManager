@@ -4405,10 +4405,10 @@ public partial class MainWindow : Window
         // Non-Claude sessions don't touch that file, so they keep the cheap teardown.
         if (ClaudeSessionService.IsClaudeCommand(launchedCommand ?? session.Command))
         {
-            DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
             await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
-            await WaitForClaudeConfigQuiesceAsync(
-                cfgBefore, Math.Min(_vm.Settings.ClaudeLaunchStaggerMs, 1000));
+            // Flat pause, same as shutdown — the adaptive gate couldn't hold its cap on
+            // either path. See the shutdown loop for the measurement.
+            await Task.Delay(Math.Min(_vm.Settings.ClaudeLaunchStaggerMs, 1000));
         }
         else
         {
@@ -5326,24 +5326,28 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            // Baseline before the process is signalled, so the gate below can see the
-            // shutdown write land.
-            DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
-
             long t0 = shutdownClock.ElapsedMilliseconds;
             await DisposeAndWaitForExitAsync(vm, timeoutMs: Math.Min(10000, remainingBudget));
             long exitMs = shutdownClock.ElapsedMilliseconds - t0;
             disposed++;
 
             // The exit wait above is on the process handle, but Claude's config write can
-            // still be in flight when the handle closes — hence a post-exit pause. This
-            // used to be a flat sleep of up to 1s per session (20s across 20 sessions)
-            // justified as belt-and-braces. Now it waits for the write to actually settle
-            // and returns as soon as it has, capped at the same 1s so the worst case is
-            // unchanged (issue #82).
+            // still be in flight when the handle closes — hence a flat post-exit pause.
+            //
+            // This was an adaptive config-watching gate. #111 reverted that on the launch
+            // path but KEPT it here, on the reasoning that "the machine is quiet at
+            // shutdown, so polling is reliable". Measurement falsified that: with sessions
+            // actively dying, shutdown is not quiet either, and a real run logged
+            // cfgSettle=8731ms against this 1000ms cap — 8.7x over, and 56% of the whole
+            // shutdown budget spent in one session, which is what forced the rest to be
+            // killed without a wait.
+            //
+            // The gate's typical ~300ms beats a flat 1000ms right up until it doesn't, and
+            // the tail is what costs. Recomputing that run with a flat pause gives 8969ms
+            // instead of 15506ms, with nothing force-disposed. Predictable wins.
             long q0 = shutdownClock.ElapsedMilliseconds;
             if (postExitMs > 0)
-                await WaitForClaudeConfigQuiesceAsync(cfgBefore, Math.Min(postExitMs, 1000));
+                await Task.Delay(Math.Min(postExitMs, 1000));
 
             // Per-session timing so the exit-vs-config-settle split is known rather than
             // guessed at. #82 asked for this before optimising further.
@@ -5400,13 +5404,6 @@ public partial class MainWindow : Window
     /// <c>~/.claude.json</c> writes can't overlap.
     /// </summary>
     /// <summary>
-    /// Claude's config file, resolved once. Honours CLAUDE_CONFIG_DIR — with that set
-    /// the file lives inside it, not at %USERPROFILE%\.claude.json, and watching the
-    /// wrong one means always waiting the full cap.
-    /// </summary>
-    private readonly string _claudeConfigPath = ClaudeConfigGate.ResolveConfigFile();
-
-    /// <summary>
     /// Total time budget for waiting on Claude sessions to exit at shutdown (issue #82).
     ///
     /// The per-session 10s cap is unbounded in aggregate — 20 sessions is 200s worst
@@ -5414,36 +5411,16 @@ public partial class MainWindow : Window
     /// remaining sessions are disposed without waiting; the job object still kills the
     /// process tree, we just stop watching.
     ///
-    /// 15s is chosen to comfortably cover a normal fleet (measured exits are well under
-    /// a second each) while capping the pathological case at something a user will sit
-    /// through.
+    /// Sized from measurement, not taste. The original 15000 was set when the only data
+    /// available showed ~460-770ms exits on an idle fleet. Real shutdowns of *busy*
+    /// sessions measure 2.3-4.7s each, so nine of them need roughly 30s — and 15s meant
+    /// force-disposing over half the fleet on an ordinary close.
+    ///
+    /// Waiting is the right trade here: a clean exit lets Claude finish writing its
+    /// config, and the shutdown overlay already tells the user what is happening. The
+    /// budget exists to bound a genuinely wedged session, not to rush a healthy one.
     /// </summary>
-    private const int ClaudeShutdownBudgetMs = 15000;
-
-    /// <summary>
-    /// Blocks until Claude's config file has been written and gone quiet, or
-    /// <paramref name="capMs"/> elapses. Replaces a flat <c>Task.Delay(staggerMs)</c>
-    /// between consecutive Claude launches (issue #82).
-    /// </summary>
-    private Task WaitForClaudeConfigQuiesceAsync(DateTime? baseline, int capMs) =>
-        // Task.Run is the actual fix for the overshoot, not just tidiness.
-        //
-        // This is awaited from the restore loop, which runs on the UI thread. Left there,
-        // every Task.Delay continuation queues behind whatever the dispatcher is doing —
-        // and during restore that's creating a WebView2 per session. A "50ms" poll then
-        // takes seconds, and the file-time reads are synchronous I/O on the same thread.
-        // Measured on a real restore before this change: gate=22953ms against a 2000ms
-        // cap, and 63s of a 70s restore spent in here — far worse than the flat 2s stagger
-        // this replaced.
-        //
-        // On the thread pool the timer continuations are prompt and the cap holds.
-        Task.Run(() => ClaudeConfigGate.WaitForQuiesceAsync(
-            baseline,
-            () => ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath),
-            () => DateTime.UtcNow,
-            Task.Delay,
-            TimeSpan.FromMilliseconds(capMs),
-            ClaudeConfigGate.DefaultQuietFor));
+    private const int ClaudeShutdownBudgetMs = 30000;
 
     private static async Task DisposeAndWaitForExitAsync(SessionViewModel vm, int timeoutMs)
     {
