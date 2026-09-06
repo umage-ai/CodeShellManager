@@ -83,7 +83,7 @@ public partial class NewSessionDialog : Window
     /// Distro name we want PopulateWslDistrosAsync to pre-select once the combo
     /// finishes loading. Empty = use the default (first / system default distro).
     /// </summary>
-    private readonly string _preselectWslDistro = "";
+    private string _preselectWslDistro = "";
 
     public NewSessionDialog(
         string defaultFolder = "",
@@ -170,11 +170,13 @@ public partial class NewSessionDialog : Window
 
         Loaded += async (_, _) =>
         {
+            // The distro list is needed in every mode the WSL radio can be reached from,
+            // including edit mode — otherwise editing a WSL session shows an empty combo.
+            await PopulateWslDistrosAsync();
             // Sibling-worktree fan-out only makes sense when creating sessions.
             if (IsEditMode) return;
             if (IsLocalMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
                 await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
-            await PopulateWslDistrosAsync();
         };
     }
 
@@ -187,10 +189,10 @@ public partial class NewSessionDialog : Window
     {
         var distros = await WslDiscoveryService.GetDistrosAsync();
         WslDistroCombo.Items.Clear();
-        if (distros.Count == 0)
+        bool listWasEmpty = distros.Count == 0;
+        if (listWasEmpty)
         {
             WslHelpText.Text = "No WSL distros found. Install WSL from the Microsoft Store, then re-open this dialog.";
-            return;
         }
         ComboBoxItem? preselectMatch = null;
         foreach (var d in distros)
@@ -204,8 +206,27 @@ public partial class NewSessionDialog : Window
                 preselectMatch = item;
             }
         }
-        WslDistroCombo.SelectedItem = preselectMatch ?? WslDistroCombo.Items[0];
-        WslHelpText.Text = "";
+        if (preselectMatch == null && !string.IsNullOrEmpty(_preselectWslDistro))
+        {
+            // Editing a session whose distro is no longer installed (or WSL itself isn't) —
+            // keep it selectable rather than silently falling back to whatever sorts first,
+            // which would wipe the distro on Save.
+            preselectMatch = new ComboBoxItem
+            {
+                Content = $"{_preselectWslDistro}  (not installed)",
+                Tag = _preselectWslDistro
+            };
+            WslDistroCombo.Items.Add(preselectMatch);
+        }
+        if (preselectMatch != null)
+        {
+            WslDistroCombo.SelectedItem = preselectMatch;
+        }
+        else if (WslDistroCombo.Items.Count > 0)
+        {
+            WslDistroCombo.SelectedItem = WslDistroCombo.Items[0];
+        }
+        if (!listWasEmpty) WslHelpText.Text = "";
     }
 
 
@@ -218,7 +239,7 @@ public partial class NewSessionDialog : Window
         IEnumerable<string>? launchCommands = null,
         IReadOnlyList<WindowsTerminalProfile>? profiles = null)
         => new(
-            defaultFolder: session.IsRemote ? "" : session.WorkingFolder,
+            defaultFolder: session.Kind == SessionKind.Local ? session.WorkingFolder : "",
             launchCommands: launchCommands,
             profiles: profiles,
             defaultCommand: session.Command,
@@ -241,17 +262,27 @@ public partial class NewSessionDialog : Window
         RecentlyClosedPanel.Visibility = Visibility.Collapsed;
         WorktreesPanel.Visibility = Visibility.Collapsed;
 
-        if (s.IsRemote)
+        switch (s.Kind)
         {
-            // Checking the radio runs SessionType_Changed, which swaps the panels. It no
-            // longer blanks NameBox — that handler returns early in edit mode — so the
-            // assignment below is the only thing setting the name, not a repair.
-            RemoteRadio.IsChecked = true;
-            SshHostBox.Text = string.IsNullOrWhiteSpace(s.SshUser)
-                ? s.SshHost
-                : $"{s.SshUser}@{s.SshHost}";
-            SshPortBox.Text = s.SshPort.ToString();
-            SshRemoteFolderBox.Text = s.SshRemoteFolder;
+            case SessionKind.Ssh:
+                // Checking the radio runs SessionType_Changed, which swaps the panels. It no
+                // longer blanks NameBox — that handler returns early in edit mode — so the
+                // assignment below is the only thing setting the name, not a repair.
+                RemoteRadio.IsChecked = true;
+                SshHostBox.Text = string.IsNullOrWhiteSpace(s.SshUser)
+                    ? s.SshHost
+                    : $"{s.SshUser}@{s.SshHost}";
+                SshPortBox.Text = s.SshPort.ToString();
+                SshRemoteFolderBox.Text = s.SshRemoteFolder;
+                break;
+            case SessionKind.Wsl:
+                WslRadio.IsChecked = true;
+                WslUserBox.Text = s.WslUser;
+                WslWorkingFolderBox.Text = s.WslWorkingFolder;
+                // The distro combo is filled asynchronously on Loaded; PopulateWslDistrosAsync
+                // selects this name once the list arrives.
+                _preselectWslDistro = s.WslDistro;
+                break;
         }
         NameBox.Text = s.Name;
 
@@ -283,7 +314,7 @@ public partial class NewSessionDialog : Window
             Tag = KeepCurrentAppearanceTag
         });
         ProfileLabel.Text = "Appearance";
-        ProfilePanel.Visibility = s.IsRemote ? Visibility.Collapsed : Visibility.Visible;
+        ProfilePanel.Visibility = s.Kind == SessionKind.Ssh ? Visibility.Collapsed : Visibility.Visible;
         ProfileCombo.SelectedIndex = 0;
     }
 
@@ -459,9 +490,10 @@ public partial class NewSessionDialog : Window
         LocalPanel.Visibility = IsLocalMode ? Visibility.Visible : Visibility.Collapsed;
         SshPanel.Visibility = IsRemoteMode ? Visibility.Visible : Visibility.Collapsed;
         WslPanel.Visibility = IsWslMode ? Visibility.Visible : Visibility.Collapsed;
-        // Profile combobox is local-only
+        // Appearance overrides apply to any xterm-hosted session, WSL included; SSH is
+        // excluded because the remote profile is out of our hands.
         if (ProfilePanel != null && ProfileCombo.Items.Count > 0)
-            ProfilePanel.Visibility = IsLocalMode ? Visibility.Visible : Visibility.Collapsed;
+            ProfilePanel.Visibility = IsRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         if (WorktreesPanel != null)
         {
             WorktreesPanel.Visibility = Visibility.Collapsed;

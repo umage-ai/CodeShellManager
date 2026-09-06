@@ -1322,9 +1322,12 @@ public partial class MainWindow : Window
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
         string htmlPath = new Uri(Path.Combine(assetsDir, htmlFile)).AbsoluteUri;
 
-        string bootLabel = session.IsRemote
-            ? $"Connecting to {session.SshHost}…"
-            : $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…";
+        string bootLabel = session.Kind switch
+        {
+            Models.SessionKind.Ssh => $"Connecting to {session.SshHost}…",
+            Models.SessionKind.Wsl => $"Starting {session.WslDistro}…",
+            _ => $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…",
+        };
         bridge.SetBootContext(bootLabel, GetAccentForSession(session));
         await bridge.InitializeAsync(htmlPath);
         bridge.ApplyFontSettings(_vm.Settings);
@@ -4566,7 +4569,7 @@ public partial class MainWindow : Window
         var change = Services.SessionConfigEditor.Diff(session, draft);
         if (!change.AnyChange) return;
 
-        bool wasRemote = session.IsRemote;
+        var wasKind = session.Kind;
         // Apply mutates session.Command in place, so capture what the RUNNING process was
         // launched with before that happens. RestartSessionAsync needs the OLD command to
         // decide whether the outgoing process is a Claude that has to be waited out —
@@ -4576,7 +4579,7 @@ public partial class MainWindow : Window
         Services.SessionConfigEditor.Apply(session, draft);
 
         vm.NotifyConfigChanged();
-        if (change.WorkingFolderChanged || session.IsRemote != wasRemote)
+        if (change.WorkingFolderChanged || session.Kind != wasKind)
             _ = vm.ReloadGitInfoAsync();
 
         // No-op when the session carries no overrides; re-asserting the global font first
