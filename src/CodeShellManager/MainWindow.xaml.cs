@@ -1260,8 +1260,11 @@ public partial class MainWindow : Window
             Log($"LaunchSession REFUSED: {validationError}");
             MessageBox.Show(this, $"Cannot start '{session.Name}'.\n\n{validationError}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            // Mirrors the PTY-failure catch below: dormant fallback is the caller's job.
+            // RestartSessionAsync (the only removeOnFailure: false caller) already checks
+            // _sessionUi after the await and adds the dormant row itself — doing it here
+            // too would leave a second, untracked Border in the sidebar.
             if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
-            else { session.IsDormant = true; AddDormantSidebarItem(session); }
             if (_launchingSidebarItems.Remove(session.Id)) RebuildSidebarOrder();
             return;
         }
