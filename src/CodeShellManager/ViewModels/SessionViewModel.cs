@@ -96,11 +96,18 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
         if (Session.Kind == SessionKind.Ssh || _gitOverriddenByOsc) return;
 
+        // Captured before the probe goes off-thread, not read from _gitPollCts afterwards:
+        // Dispose() cancels (then disposes) that CTS if the session closes while the
+        // Task.Run below is still in flight, and CancellationToken.IsCancellationRequested
+        // never throws even once the source is disposed, so this stays safe either way.
+        var token = _gitPollCts.Token;
+
         // Off the dispatcher: GitService begins with a synchronous Directory.Exists, and on
         // a \\wsl$ share that boots a stopped distro (seconds). Continuations return to the
         // captured UI context, so the property sets below stay on the UI thread.
         string folder = Session.WorkingFolder;
         var (branch, isDirty) = await Task.Run(() => GitService.GetGitInfoAsync(folder));
+        if (token.IsCancellationRequested) return; // session closed while the probe was off-thread
         GitBranch = branch;
         GitIsDirty = isDirty;
         GitInfoLoaded = true;
@@ -110,7 +117,9 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // that should participate in sibling detection, shared accent color, and clusters.
         if (RepoRoot == null && !_repoRootProbedNegative)
         {
-            RepoRoot = await Task.Run(() => GitService.GetRepoRootAsync(folder));
+            string? repoRoot = await Task.Run(() => GitService.GetRepoRootAsync(folder));
+            if (token.IsCancellationRequested) return; // session closed while the probe was off-thread
+            RepoRoot = repoRoot;
             if (RepoRoot == null && Session.Kind == SessionKind.Wsl) _repoRootProbedNegative = true;
         }
     }
