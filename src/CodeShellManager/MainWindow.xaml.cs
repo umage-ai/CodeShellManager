@@ -1243,6 +1243,15 @@ public partial class MainWindow : Window
             bridge.RawOutputReceived += alertDetector.Feed;
         }
 
+        // Shell programs (e.g. an SSH overlay, a prompt hook, a Claude Code hook) push
+        // session state via OSC 9001. Apply it on the VM, then debounce-save so the
+        // accent/title persist without a state.json write per emission.
+        bridge.ShellIntegrationReceived += fields =>
+        {
+            Dispatcher.Invoke(() => vm.ApplyShellIntegration(fields));
+            _vm.SaveStateDebounced();
+        };
+
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
         bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
