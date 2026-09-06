@@ -1,75 +1,104 @@
 using System.Text.Json;
 using CodeShellManager.Models;
+using CodeShellManager.Services;
 using Xunit;
 
 namespace CodeShellManager.Tests;
 
 /// <summary>
 /// State-file migration coverage. Legacy state.json predates the <see cref="SessionKind"/>
-/// enum and only carried <c>IsRemote</c>; the deserializer must still produce a session
-/// with the right <see cref="ShellSession.Kind"/>.
+/// enum and only carried <c>IsRemote</c>. Migration happens in
+/// <see cref="StateService.Normalize"/> — the loader — not in a property setter, so the
+/// in-memory <see cref="ShellSession.IsRemote"/> setter can stay a plain two-way switch.
 /// </summary>
 public class ShellSessionMigrationTests
 {
+    private static AppState LoadState(string json) =>
+        StateService.Normalize(JsonSerializer.Deserialize<AppState>(json)!);
+
     [Fact]
-    public void Deserialize_LegacyIsRemoteTrue_PromotesKindToSsh()
+    public void Normalize_LegacyIsRemoteTrue_PromotesKindToSsh()
     {
-        // Hand-rolled to match what an older app version would have written —
-        // no `Kind` key, only `IsRemote`.
         const string legacy = """
-            {
-              "IsRemote": true,
-              "SshUser": "alice",
-              "SshHost": "dev.example.com",
-              "SshPort": 22
-            }
+            { "Sessions": [ { "IsRemote": true, "SshUser": "alice", "SshHost": "dev.example.com" } ] }
             """;
-        var s = JsonSerializer.Deserialize<ShellSession>(legacy)!;
+        var s = LoadState(legacy).Sessions[0];
         Assert.Equal(SessionKind.Ssh, s.Kind);
         Assert.True(s.IsRemote);
-        Assert.Equal("alice", s.SshUser);
+        Assert.Null(s.LegacyIsRemote);
     }
 
     [Fact]
-    public void Deserialize_LegacyIsRemoteFalse_KeepsKindLocal()
+    public void Normalize_LegacyIsRemoteFalse_KeepsKindLocal()
     {
-        const string legacy = """{ "IsRemote": false, "WorkingFolder": "C:\\proj" }""";
-        var s = JsonSerializer.Deserialize<ShellSession>(legacy)!;
+        const string legacy = """{ "Sessions": [ { "IsRemote": false, "WorkingFolder": "C:\\proj" } ] }""";
+        var s = LoadState(legacy).Sessions[0];
         Assert.Equal(SessionKind.Local, s.Kind);
         Assert.False(s.IsRemote);
     }
 
     [Fact]
-    public void Deserialize_NewFormatWithKindWsl_LeavesIsRemoteFalse()
+    public void Normalize_KindWslWithStrayLegacyFalse_StaysWsl()
     {
-        // StateService doesn't configure JsonStringEnumConverter, so enums round-trip
-        // as integers. SessionKind.Wsl == 2.
-        const string current = """
-            {
-              "Kind": 2,
-              "WslDistro": "Ubuntu",
-              "WslWorkingFolder": "/home/alice/proj"
-            }
-            """;
-        var s = JsonSerializer.Deserialize<ShellSession>(current)!;
+        const string mixed = """{ "Sessions": [ { "Kind": 2, "IsRemote": false, "WslDistro": "Ubuntu" } ] }""";
+        var s = LoadState(mixed).Sessions[0];
         Assert.Equal(SessionKind.Wsl, s.Kind);
-        Assert.False(s.IsRemote);
-        Assert.Equal("Ubuntu", s.WslDistro);
     }
 
     [Fact]
-    public void Deserialize_BothKindAndLegacyIsRemote_KindWinsWhenKindIsWsl()
+    public void Normalize_KindWslWithStrayLegacyTrue_KindWins()
     {
-        // Defensive: a file written by new code carries both IsRemote (computed, so false
-        // for Wsl) and Kind. Verify the setter never demotes a Wsl Kind back to Ssh.
-        const string mixed = """
-            {
-              "Kind": 2,
-              "IsRemote": false,
-              "WslDistro": "Ubuntu"
-            }
-            """;
-        var s = JsonSerializer.Deserialize<ShellSession>(mixed)!;
+        // Kind is authoritative once present; a stale IsRemote must not clobber it.
+        const string mixed = """{ "Sessions": [ { "Kind": 2, "IsRemote": true, "WslDistro": "Ubuntu" } ] }""";
+        var s = LoadState(mixed).Sessions[0];
+        Assert.Equal(SessionKind.Wsl, s.Kind);
+    }
+
+    [Fact]
+    public void Normalize_RecentlyClosedLegacyIsRemote_PromotesToSsh()
+    {
+        const string legacy = """{ "RecentlyClosed": [ { "IsRemote": true, "SshHost": "h" } ] }""";
+        var e = LoadState(legacy).RecentlyClosed[0];
+        Assert.Equal(SessionKind.Ssh, e.Kind);
+        Assert.Null(e.LegacyIsRemote);
+    }
+
+    [Fact]
+    public void Serialize_DoesNotWriteLegacyIsRemoteOrComputedProperties()
+    {
+        var s = new ShellSession { Kind = SessionKind.Ssh, SshHost = "h" };
+        string json = JsonSerializer.Serialize(s);
+        Assert.DoesNotContain("\"IsRemote\"", json);
+        Assert.DoesNotContain("FullCommandLine", json);
+        Assert.DoesNotContain("FolderShort", json);
+        Assert.DoesNotContain("AccentKey", json);
+        Assert.Contains("\"Kind\":1", json);
+    }
+
+    [Fact]
+    public void Serialize_IncompleteSshSession_DoesNotThrow()
+    {
+        // Regression: FullCommandLine used to be serialised and BuildSshArgs threw on a
+        // blank host, which made every state.json save fail after a bad edit.
+        var s = new ShellSession { Kind = SessionKind.Ssh, SshHost = "" };
+        string json = JsonSerializer.Serialize(s);
+        Assert.NotNull(json);
+        Assert.Equal("ssh", s.FullCommandLine);
+    }
+
+    [Fact]
+    public void IsRemoteSetter_FalseOnSsh_DemotesToLocal()
+    {
+        var s = new ShellSession { Kind = SessionKind.Ssh };
+        s.IsRemote = false;
+        Assert.Equal(SessionKind.Local, s.Kind);
+    }
+
+    [Fact]
+    public void IsRemoteSetter_FalseOnWsl_LeavesWsl()
+    {
+        var s = new ShellSession { Kind = SessionKind.Wsl };
+        s.IsRemote = false;
         Assert.Equal(SessionKind.Wsl, s.Kind);
     }
 
@@ -78,10 +107,7 @@ public class ShellSessionMigrationTests
     {
         var original = new ShellSession
         {
-            Kind = SessionKind.Wsl,
-            WslDistro = "Debian",
-            WslUser = "bob",
-            WslWorkingFolder = "/srv/app",
+            Kind = SessionKind.Wsl, WslDistro = "Debian", WslUser = "bob", WslWorkingFolder = "/srv/app",
         };
         string json = JsonSerializer.Serialize(original);
         var revived = JsonSerializer.Deserialize<ShellSession>(json)!;

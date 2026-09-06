@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace CodeShellManager.Models;
 
@@ -42,30 +43,54 @@ public class ShellSession
     public bool IsDormant { get; set; }
 
     /// <summary>
-    /// Authoritative session kind. New code reads this; <see cref="IsRemote"/> is kept
-    /// as a back-compat shim so legacy state.json (which only carried the SSH boolean)
-    /// continues to deserialize: on load, <c>IsRemote=true</c> promotes <c>Kind</c> to
-    /// <see cref="SessionKind.Ssh"/>.
+    /// Authoritative session kind. Everything that branches on session type reads this.
+    /// Legacy state.json files (pre-Kind) only carried <c>IsRemote</c>; see
+    /// <see cref="LegacyIsRemote"/> and <see cref="MigrateLegacyFields"/>.
     /// </summary>
     public SessionKind Kind { get; set; } = SessionKind.Local;
 
-    // SSH / remote session fields
     /// <summary>
-    /// SSH flag — true iff <see cref="Kind"/> is <see cref="SessionKind.Ssh"/>.
-    /// Kept as a property (not just a computed getter) so old state.json files with
-    /// <c>"IsRemote": true</c> and no <c>Kind</c> key still migrate cleanly on
-    /// deserialization. The setter only promotes <c>Local → Ssh</c>; it never clears
-    /// <c>Kind</c>, so a JSON document with both <c>IsRemote</c> and <c>Kind</c>
-    /// (deserialized in any order) lands on the correct value.
+    /// Convenience view of <see cref="Kind"/> for the SSH case. Setting <c>true</c> makes
+    /// the session SSH; setting <c>false</c> on an SSH session makes it Local. It is
+    /// deliberately NOT persisted — <see cref="Kind"/> is — and it carries no migration
+    /// logic. A WSL session is unaffected by <c>IsRemote = false</c>.
     /// </summary>
+    [JsonIgnore]
     public bool IsRemote
     {
         get => Kind == SessionKind.Ssh;
-        set { if (value && Kind == SessionKind.Local) Kind = SessionKind.Ssh; }
+        set
+        {
+            if (value) Kind = SessionKind.Ssh;
+            else if (Kind == SessionKind.Ssh) Kind = SessionKind.Local;
+        }
+    }
+
+    /// <summary>
+    /// Read-only compatibility slot for the pre-<see cref="Kind"/> <c>"IsRemote"</c> JSON
+    /// key. Populated only when an old file is deserialised; <see cref="MigrateLegacyFields"/>
+    /// folds it into <see cref="Kind"/> and nulls it so it is never written back.
+    /// </summary>
+    [JsonPropertyName("IsRemote")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LegacyIsRemote { get; set; }
+
+    /// <summary>
+    /// Folds legacy JSON fields into their current representation. Idempotent. Called by
+    /// <c>StateService.Normalize</c> for every loaded or imported session — the loader is
+    /// the one place that knows it is looking at possibly-old data.
+    /// </summary>
+    public void MigrateLegacyFields()
+    {
+        if (LegacyIsRemote == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
+        LegacyIsRemote = null;
     }
 
     /// <summary>True iff this session runs inside a WSL distro via wsl.exe.</summary>
+    [JsonIgnore]
     public bool IsWsl => Kind == SessionKind.Wsl;
+
+    // SSH / remote session fields
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
@@ -103,11 +128,16 @@ public class ShellSession
     /// </summary>
     public List<RunCommandItem> RunCommands { get; set; } = new();
 
-    // Full command line for display and passthrough.
+    /// <summary>
+    /// Full command line for display. Never throws: an incomplete session (blank SSH host,
+    /// blank WSL distro) shows just the executable — this string is used in error dialogs
+    /// on exactly those paths.
+    /// </summary>
+    [JsonIgnore]
     public string FullCommandLine => Kind switch
     {
-        SessionKind.Ssh => $"ssh {BuildSshArgs()}",
-        SessionKind.Wsl => $"wsl.exe {BuildWslArgs()}",
+        SessionKind.Ssh => string.IsNullOrWhiteSpace(SshHost) ? "ssh" : $"ssh {BuildSshArgs()}",
+        SessionKind.Wsl => string.IsNullOrWhiteSpace(WslDistro) ? "wsl.exe" : $"wsl.exe {BuildWslArgs()}",
         _ => string.IsNullOrWhiteSpace(Args) ? Command : $"{Command} {Args}",
     };
 
@@ -179,6 +209,7 @@ public class ShellSession
     /// Subtitle-line text for the sidebar: a short, kind-appropriate locator.
     /// Local → working folder leaf; Ssh → host; Wsl → <c>distro:linux-leaf</c>.
     /// </summary>
+    [JsonIgnore]
     public string FolderShort => Kind switch
     {
         SessionKind.Ssh => string.IsNullOrWhiteSpace(SshHost) ? "" : SshHost,
@@ -191,6 +222,7 @@ public class ShellSession
     /// <summary>
     /// What to show as the session's label when <see cref="Name"/> is blank.
     /// </summary>
+    [JsonIgnore]
     public string DefaultDisplayName => Kind switch
     {
         SessionKind.Ssh => string.IsNullOrWhiteSpace(SshHost) ? Command : SshHost,
@@ -207,6 +239,7 @@ public class ShellSession
     /// siblings share an accent via the repo-root override done in <see cref="ViewModels.SessionViewModel.AccentColor"/>;
     /// this is the base key when no repo-root is known.
     /// </summary>
+    [JsonIgnore]
     public string AccentKey => Kind switch
     {
         SessionKind.Ssh => string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}",

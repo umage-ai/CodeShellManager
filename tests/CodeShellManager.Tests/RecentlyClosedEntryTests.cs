@@ -104,7 +104,7 @@ public class RecentlyClosedEntryTests
     {
         var e = new RecentlyClosedEntry
         {
-            IsRemote = true,
+            Kind = SessionKind.Ssh,
             SshUser = "bob",
             SshHost = "dev.local",
             WorkingFolder = @"C:\should-be-ignored",
@@ -117,7 +117,7 @@ public class RecentlyClosedEntryTests
     {
         var e = new RecentlyClosedEntry
         {
-            IsRemote = true,
+            Kind = SessionKind.Ssh,
             SshHost = "dev.local",
         };
         Assert.Equal("dev.local", e.Subtitle);

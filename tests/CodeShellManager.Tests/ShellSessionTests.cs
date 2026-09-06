@@ -92,7 +92,7 @@ public class ShellSessionTests
     }
 
     [Fact]
-    public void IsRemote_SetTrue_PromotesKindToSsh()
+    public void IsRemote_SetTrue_SetsKindSsh()
     {
         var s = new ShellSession { IsRemote = true };
         Assert.Equal(SessionKind.Ssh, s.Kind);

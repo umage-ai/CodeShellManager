@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace CodeShellManager.Models;
 
@@ -24,19 +25,26 @@ public class RecentlyClosedEntry
     public string? ColorOverride { get; set; }
 
     /// <summary>
-    /// Kind of the closed session — needed so a reopened WSL session comes back
-    /// as WSL instead of falling back to Local at the UNC path. Mirrors the
-    /// <see cref="ShellSession.IsRemote"/> migration: setting <see cref="IsRemote"/>
-    /// to true promotes <c>Local → Ssh</c>, so legacy state.json entries (which
-    /// only carried IsRemote) still display the right subtitle and reopen as SSH.
+    /// Kind of the closed session, so a reopened WSL or SSH session comes back as the same
+    /// kind instead of Local at a UNC. Legacy entries carried only <c>IsRemote</c>; see
+    /// <see cref="LegacyIsRemote"/>.
     /// </summary>
     public SessionKind Kind { get; set; } = SessionKind.Local;
 
-    public bool IsRemote
+    [JsonIgnore]
+    public bool IsRemote => Kind == SessionKind.Ssh;
+
+    /// <summary>Legacy <c>"IsRemote"</c> JSON slot — see <see cref="ShellSession.LegacyIsRemote"/>.</summary>
+    [JsonPropertyName("IsRemote")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LegacyIsRemote { get; set; }
+
+    public void MigrateLegacyFields()
     {
-        get => Kind == SessionKind.Ssh;
-        set { if (value && Kind == SessionKind.Local) Kind = SessionKind.Ssh; }
+        if (LegacyIsRemote == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
+        LegacyIsRemote = null;
     }
+
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
@@ -75,7 +83,6 @@ public class RecentlyClosedEntry
         GroupId = s.GroupId,
         ColorOverride = s.ColorOverride,
         Kind = s.Kind,
-        IsRemote = s.IsRemote,
         SshUser = s.SshUser,
         SshHost = s.SshHost,
         SshPort = s.SshPort,
@@ -106,6 +113,7 @@ public class RecentlyClosedEntry
     };
 
     /// <summary>Friendly subtitle for the recents UI — kind-specific locator.</summary>
+    [JsonIgnore]
     public string Subtitle => Kind switch
     {
         SessionKind.Ssh => string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}",
