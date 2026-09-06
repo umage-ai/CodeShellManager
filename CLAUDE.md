@@ -78,6 +78,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `CursorShapeMapper` | WT `cursorShape` → xterm.js `cursorStyle` (+ optional forced blink) |
 | `PaddingParser` | WT `padding` shorthand (1/2/4 comma ints) → CSS `Npx` shorthand |
 | `CommandLineSplitter` | Helper — quote-aware split of a Windows commandline into `(exe, args)` |
+| `ShellIntegrationPayload` | WPF-free validation for the OSC 9001 channel: hex-colour check + `#rrggbbaa`→`#aarrggbb`, dirty-flag parse, title/branch sanitising (control chars stripped, 80-char cap). See "Shell Integration (OSC 9001)" |
 
 ## Project Structure
 
@@ -286,11 +287,19 @@ ST may be `BEL` (`\x07`) or `ESC \\` — xterm.js accepts both.
 | `color` | Override the session accent (`#rrggbb` / `#rgb` / `#rrggbbaa`). Repaints sidebar stripe + active ring. 8-digit values use alpha-last (`#rrggbbaa`); CSM converts to WPF's `#aarrggbb` internally. |
 | `git-branch` | Set `SessionViewModel.GitBranch` directly, bypassing `GitService`. |
 | `git-dirty` | `1`/`true` → dirty-marker shown; `0`/anything else → clean. |
-| `title` | Renames the session (calls `vm.Rename`). |
+| `title` | Renames the session (calls `vm.Rename`). Capped at `ShellIntegrationPayload.MaxTitleLength` (80), control chars stripped; empty-after-cleanup is ignored. |
 
-Unknown keys are ignored. Multiple keys can be sent in a single sequence.
+Unknown keys are ignored. Multiple keys can be sent in a single sequence. Values cannot contain `;` (the field separator, no escaping) — documented as a limitation rather than solved.
 
-**Pipeline:** `terminal-init.js` registers an OSC handler via `term.parser.registerOscHandler(9001, …)` (requires `allowProposedApi: true`, already set). It posts `{type: "shellIntegration", fields: {…}}` to WPF. `TerminalBridge` parses it and raises `ShellIntegrationReceived`. `MainWindow.LaunchSessionAsync` subscribes and calls `vm.ApplyShellIntegration(fields)` on the dispatcher, then `SaveStateAsync` so changes persist.
+**Every value is untrusted.** It comes from whatever is printing to the terminal — a remote host, a `cat` of some file, a hook — and `color`/`title` end up in `state.json`. All validation lives in the WPF-free `Services/ShellIntegrationPayload` (`TryNormalizeColor`, `ParseDirty`, `SanitizeTitle`, `SanitizeBranch`) so it is unit-tested (`ShellIntegrationPayloadTests`); `SessionViewModel.ApplyShellIntegration` only applies what that class accepts.
+
+**Git poller stand-down.** Once a session has received `git-branch` or `git-dirty`, `RefreshGitInfoAsync` stops touching `GitBranch`/`GitIsDirty` (`_gitOverriddenByOsc`) — otherwise the local CWD's state would clobber the pushed value every 10s. The flag is per-session-lifetime, not persisted, and `ReloadGitInfoAsync` (folder edit) resets it, since the pushed info described the old folder.
+
+**Colour is sticky, so it is resettable.** OSC 9001 is the only writer of `ShellSession.ColorOverride` and the override survives sleep/wake and restart. The sidebar right-click menu shows **Reset accent color** (→ `vm.ClearColorOverride()`) whenever an override exists.
+
+**AlertDetector must strip both OSC terminators.** Its ANSI regex originally matched only BEL-terminated OSC; every example in `docs/shell-integration.md` uses `ESC \`, which either leaked the payload into prompt matching or lazily swallowed real output up to the next BEL. It now mirrors `OutputIndexer.AnsiPattern` — keep the two in step (`AlertDetectorStripAnsiTests`).
+
+**Pipeline:** `terminal-init.js` registers an OSC handler via `term.parser.registerOscHandler(9001, …)` (requires `allowProposedApi: true`, already set). It posts `{type: "shellIntegration", fields: {…}}` to WPF. `TerminalBridge` parses it and raises `ShellIntegrationReceived`. `MainWindow.LaunchSessionAsync` subscribes and calls `vm.ApplyShellIntegration(fields)` on the dispatcher, then `MainViewModel.SaveStateDebounced()` (500ms idle coalescing — a prompt hook fires on every prompt, and a `state.json` write per emission would be silly). Repainting the stripe and ring is **not** done here: the existing `AccentColor` `PropertyChanged` subscriptions in `BuildSidebarItem` / `BuildTerminalWrapper` already handle it, exactly as they do when `RepoRoot` lands.
 
 The OSC handler returns `true` so xterm consumes the sequence and it doesn't render.
 

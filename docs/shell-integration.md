@@ -139,23 +139,17 @@ func csmUpdate(fields map[string]string) {
 
 **Update on relevant events only.** If a prompt-hook is too coarse — e.g. inside a long-running TUI like `nexus` — call your update function whenever your internal state changes (new repo selected, dirty state changes, branch checked out, etc.).
 
-**Reset on exit.** If your program owns the session's accent for its lifetime, restore the default before exiting:
-
-```bash
-# Clearing color sends the empty string, which CSM treats as "use the default hash"
-# (only true if you've also chosen to clear ColorOverride; currently CSM keeps the
-# last value. To restore the original hash, leave the color key out entirely.)
-```
-
-In the current build, an emitted `color=` is sticky and persists in `state.json` across restarts. If you want it to revert when your program exits, emit nothing extra — but if a different program later runs in the same session, it will inherit your color until it sets its own.
+**Color is sticky.** An emitted `color=` is stored on the session and persists across sleep/wake and app restarts. There is no wire-level "reset" — an empty or invalid value is ignored, not applied. If a different program later runs in the same session it inherits your color until it sets its own. The user can hand the color back to the default folder hash at any time with **Reset accent color** in the session's right-click menu.
 
 ## Limitations
 
 - The protocol is one-way: CSM does not respond to OSC 9001 sequences with any data.
 - There's no acknowledgement that a sequence was parsed. Validate your output with the inspector if you want to be sure (DevTools is enabled in WebView2; press `F12` inside a terminal pane).
 - Color values must be valid CSS hex (`#rgb` / `#rrggbb` / `#rrggbbaa`). Named colors and `rgb()` syntax are rejected.
+- **Values cannot contain `;`** — it is the field separator and there is no escaping. A `title=a;b` is read as `title=a` plus an unknown key `b`. `=` inside a value is fine (only the first `=` splits key from value).
+- **Titles are capped at 80 characters.** Control characters are stripped, whitespace is trimmed, and a title that is empty after that is ignored (the existing name is kept). The same stripping applies to `git-branch`.
 - The terminating byte should be `BEL` or `ESC \`. xterm.js will eventually time out an unterminated OSC, but until then your text appears swallowed.
 
 ## Pipeline (for CSM contributors)
 
-`terminal-init.js` registers the OSC handler via `term.parser.registerOscHandler(9001, …)`. The handler parses the payload, posts `{type: "shellIntegration", fields: {…}}` over the WebView2 message channel, and returns `true` so xterm consumes the sequence. `TerminalBridge.OnWebMessageReceived` raises `ShellIntegrationReceived`. `MainWindow.LaunchSessionAsync` subscribes and dispatches to `SessionViewModel.ApplyShellIntegration(fields)`, then triggers `SaveStateAsync`. Color/title changes propagate through `INotifyPropertyChanged` to repaint the sidebar stripe and active ring; git fields update `GitBranch` / `GitIsDirty`.
+`terminal-init.js` registers the OSC handler via `term.parser.registerOscHandler(9001, …)`. The handler parses the payload, posts `{type: "shellIntegration", fields: {…}}` over the WebView2 message channel, and returns `true` so xterm consumes the sequence. `TerminalBridge.OnWebMessageReceived` raises `ShellIntegrationReceived`. `MainWindow.LaunchSessionAsync` subscribes and dispatches to `SessionViewModel.ApplyShellIntegration(fields)`, then calls `MainViewModel.SaveStateDebounced` (one write per 500ms of quiet, so a chatty prompt hook can't hammer `state.json`). Validation and normalisation of the untrusted values — hex check, `#rrggbbaa` → `#aarrggbb`, title cap, control-character stripping — live in the WPF-free `Services/ShellIntegrationPayload`, which is what the unit tests target. Color/title changes propagate through `INotifyPropertyChanged` to repaint the sidebar stripe and active ring; git fields update `GitBranch` / `GitIsDirty`.
