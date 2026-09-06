@@ -1359,7 +1359,8 @@ public partial class MainWindow : Window
             {
                 _ = _searchService.RecordSessionHistoryAsync(
                     session.Id, session.Name, session.WorkingFolder,
-                    session.Command, session.Args, session.GroupId);
+                    session.Command, session.Args, session.GroupId,
+                    System.Text.Json.JsonSerializer.Serialize(Models.RecentlyClosedEntry.FromSession(session)));
                 if (sessionStartUtc != DateTime.MinValue && !string.IsNullOrEmpty(usageCommandKey))
                 {
                     long secs = (long)(DateTime.UtcNow - sessionStartUtc).TotalSeconds;
@@ -5179,6 +5180,22 @@ public partial class MainWindow : Window
             $"Session '{entry.SessionName}' ({entry.WorkingFolder}) is not currently open.\nRelaunch it?",
             "Relaunch Session?", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (answer != MessageBoxResult.Yes) return;
+
+        // Prefer the full snapshot: it carries Kind and the SSH/WSL fields, so a WSL session
+        // relaunches as WSL instead of Local-at-a-UNC. Rows from before the column exist
+        // without one and fall back to the kind-agnostic columns.
+        Models.RecentlyClosedEntry? snapshot = null;
+        if (!string.IsNullOrEmpty(entry.SnapshotJson))
+        {
+            try { snapshot = System.Text.Json.JsonSerializer.Deserialize<Models.RecentlyClosedEntry>(entry.SnapshotJson); }
+            catch (System.Text.Json.JsonException ex) { Log($"History snapshot unreadable for '{entry.SessionId}': {ex.Message}"); }
+        }
+        if (snapshot != null)
+        {
+            snapshot.MigrateLegacyFields();
+            await ReopenClosedSessionAsync(snapshot);
+            return;
+        }
 
         var newSession = _sessionManager.CreateSession(
             entry.SessionName, entry.WorkingFolder, entry.Command, entry.Args, entry.GroupId);

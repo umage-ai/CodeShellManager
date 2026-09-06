@@ -26,7 +26,8 @@ public record SessionHistoryEntry(
     string Command,
     string Args,
     string GroupId,
-    DateTime ExitedAt);
+    DateTime ExitedAt,
+    string? SnapshotJson = null);
 
 public record UsageStat(
     string Command,
@@ -89,7 +90,8 @@ public class SearchService
                 command        TEXT    NOT NULL,
                 args           TEXT    NOT NULL DEFAULT '',
                 group_id       TEXT    NOT NULL DEFAULT '',
-                exited_at      INTEGER NOT NULL
+                exited_at      INTEGER NOT NULL,
+                snapshot_json  TEXT    NULL
             );
             CREATE INDEX IF NOT EXISTS ix_session_history_sid ON session_history(session_id);
             CREATE INDEX IF NOT EXISTS ix_session_history_folder ON session_history(working_folder);
@@ -103,6 +105,23 @@ public class SearchService
             );
             """;
         await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+
+        // Column added after the first release of session_history; CREATE TABLE IF NOT
+        // EXISTS won't touch an existing table, so upgrade explicitly. Idempotent.
+        bool hasSnapshot = false;
+        await using (var probe = db.CreateCommand())
+        {
+            probe.CommandText = "PRAGMA table_info(session_history)";
+            await using var r = await probe.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+                if (string.Equals(r.GetString(1), "snapshot_json", StringComparison.OrdinalIgnoreCase)) hasSnapshot = true;
+        }
+        if (!hasSnapshot)
+        {
+            await using var alter = db.CreateCommand();
+            alter.CommandText = "ALTER TABLE session_history ADD COLUMN snapshot_json TEXT NULL";
+            await alter.ExecuteNonQueryAsync();
+        }
     }
 
     // ── Project notes ─────────────────────────────────────────────────────────
@@ -228,14 +247,14 @@ public class SearchService
 
     public async Task RecordSessionHistoryAsync(
         string sessionId, string sessionName, string workingFolder,
-        string command, string args, string groupId)
+        string command, string args, string groupId, string? snapshotJson = null)
     {
         using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             INSERT INTO session_history
-                (session_id, session_name, working_folder, command, args, group_id, exited_at)
-            VALUES ($sid, $name, $folder, $cmd, $args, $gid, $ts)
+                (session_id, session_name, working_folder, command, args, group_id, exited_at, snapshot_json)
+            VALUES ($sid, $name, $folder, $cmd, $args, $gid, $ts, $snap)
             """;
         cmd.Parameters.AddWithValue("$sid", sessionId);
         cmd.Parameters.AddWithValue("$name", sessionName);
@@ -244,6 +263,7 @@ public class SearchService
         cmd.Parameters.AddWithValue("$args", args);
         cmd.Parameters.AddWithValue("$gid", groupId);
         cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        cmd.Parameters.AddWithValue("$snap", (object?)snapshotJson ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
@@ -252,7 +272,7 @@ public class SearchService
         using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
-            SELECT session_id, session_name, working_folder, command, args, group_id, exited_at
+            SELECT session_id, session_name, working_folder, command, args, group_id, exited_at, snapshot_json
             FROM session_history WHERE session_id = $sid ORDER BY exited_at DESC LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$sid", sessionId);
@@ -261,7 +281,8 @@ public class SearchService
         return new SessionHistoryEntry(
             r.GetString(0), r.GetString(1), r.GetString(2),
             r.GetString(3), r.GetString(4), r.GetString(5),
-            DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(6)).LocalDateTime);
+            DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(6)).LocalDateTime,
+            r.IsDBNull(7) ? null : r.GetString(7));
     }
 
     public async Task<SessionHistoryEntry?> GetLatestSessionHistoryForFolderAsync(string folderPath)
@@ -269,7 +290,7 @@ public class SearchService
         using var _dbLock = await DbGate.AcquireAsync().ConfigureAwait(false);
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = """
-            SELECT session_id, session_name, working_folder, command, args, group_id, exited_at
+            SELECT session_id, session_name, working_folder, command, args, group_id, exited_at, snapshot_json
             FROM session_history WHERE working_folder = $fp ORDER BY exited_at DESC LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$fp", folderPath);
@@ -278,7 +299,8 @@ public class SearchService
         return new SessionHistoryEntry(
             r.GetString(0), r.GetString(1), r.GetString(2),
             r.GetString(3), r.GetString(4), r.GetString(5),
-            DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(6)).LocalDateTime);
+            DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(6)).LocalDateTime,
+            r.IsDBNull(7) ? null : r.GetString(7));
     }
 
     public async Task DeleteSessionLogsAsync(string sessionId)
