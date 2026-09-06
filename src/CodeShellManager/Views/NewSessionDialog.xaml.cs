@@ -68,6 +68,15 @@ public partial class NewSessionDialog : Window
 
     private readonly IReadOnlyList<WindowsTerminalProfile> _profiles;
     private readonly ShellSession? _editSession;
+    /// <summary>
+    /// Re-entrancy guards for <see cref="Start_Click"/>, which is <c>async void</c> and
+    /// awaits a WSL home probe (up to 3s) with the default button still enabled.
+    /// <c>_submitting</c> blocks a second Enter/click from running a second probe;
+    /// <c>_closed</c> stops the resumed continuation from touching a closed window
+    /// (setting <see cref="Window.DialogResult"/> on it throws).
+    /// </summary>
+    private bool _submitting;
+    private bool _closed;
     private readonly System.Windows.Threading.DispatcherTimer _worktreeDebounce;
     private System.Threading.CancellationTokenSource? _worktreeProbeCts;
     private string? _lastProbedFolder;
@@ -97,6 +106,7 @@ public partial class NewSessionDialog : Window
         ShellSession? editSession = null)
     {
         InitializeComponent();
+        Closed += (_, _) => _closed = true;
         FolderBox.Text = defaultFolder;
         _profiles = profiles ?? Array.Empty<WindowsTerminalProfile>();
         _preselectWslDistro = defaultSourceSession?.IsWsl == true ? defaultSourceSession.WslDistro : "";
@@ -543,6 +553,7 @@ public partial class NewSessionDialog : Window
     {
         string selectedDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
         string seed = await ComputeWslBrowseSeedAsync(selectedDistro, WslUserBox.Text.Trim());
+        if (_closed) return;
 
         // Only InitialDirectory is set: it navigates the dialog to the seed but
         // leaves the bottom "Folder:" textbox empty (the user is about to pick anyway).
@@ -687,6 +698,11 @@ public partial class NewSessionDialog : Window
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
+        if (_submitting) return;
+        _submitting = true;
+        OkButton.IsEnabled = false;
+        try
+        {
         IsRemote = IsRemoteMode;
         IsWsl = IsWslMode;
         SessionName = NameBox.Text.Trim();
@@ -726,6 +742,7 @@ public partial class NewSessionDialog : Window
             if (string.IsNullOrEmpty(WslWorkingFolder))
             {
                 string? home = await WslDiscoveryService.GetDistroHomeAsync(WslDistro, WslUser);
+                if (_closed) return;
                 if (!string.IsNullOrEmpty(home)) WslWorkingFolder = home;
             }
 
@@ -837,6 +854,15 @@ public partial class NewSessionDialog : Window
 
         DialogResult = true;
         Close();
+        }
+        finally
+        {
+            if (!_closed)
+            {
+                _submitting = false;
+                OkButton.IsEnabled = true;
+            }
+        }
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
