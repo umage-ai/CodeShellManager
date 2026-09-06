@@ -1357,10 +1357,16 @@ public partial class MainWindow : Window
         {
             if (_searchService != null)
             {
+                // RunCommands is a plain List mutated on the UI thread (SeedRunCommandsAsync,
+                // the run-commands editor save handler); pty.Exited fires on a background
+                // thread with no marshaling, so snapshot it on the dispatcher rather than
+                // enumerating it from here.
+                string snapshotJson = Dispatcher.Invoke(() =>
+                    System.Text.Json.JsonSerializer.Serialize(Models.RecentlyClosedEntry.FromSession(session)));
                 _ = _searchService.RecordSessionHistoryAsync(
                     session.Id, session.Name, session.WorkingFolder,
                     session.Command, session.Args, session.GroupId,
-                    System.Text.Json.JsonSerializer.Serialize(Models.RecentlyClosedEntry.FromSession(session)));
+                    snapshotJson);
                 if (sessionStartUtc != DateTime.MinValue && !string.IsNullOrEmpty(usageCommandKey))
                 {
                     long secs = (long)(DateTime.UtcNow - sessionStartUtc).TotalSeconds;
