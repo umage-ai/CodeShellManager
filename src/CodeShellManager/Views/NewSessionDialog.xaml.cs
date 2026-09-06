@@ -206,11 +206,16 @@ public partial class NewSessionDialog : Window
                 preselectMatch = item;
             }
         }
-        if (preselectMatch == null && !string.IsNullOrEmpty(_preselectWslDistro))
+        if (IsEditMode && preselectMatch == null && !string.IsNullOrEmpty(_preselectWslDistro))
         {
             // Editing a session whose distro is no longer installed (or WSL itself isn't) —
             // keep it selectable rather than silently falling back to whatever sorts first,
-            // which would wipe the distro on Save.
+            // which would wipe the distro on Save. Edit-mode-only: in create mode
+            // _preselectWslDistro is just a suggestion (e.g. "New session here" copying a
+            // parent's distro), so an unmatched name there should fall back to the first
+            // installed distro, not manufacture a brand-new session targeting one that
+            // doesn't exist (Start_Click's blank-distro validation would miss it, since the
+            // synthetic item's Tag is non-empty).
             preselectMatch = new ComboBoxItem
             {
                 Content = $"{_preselectWslDistro}  (not installed)",
