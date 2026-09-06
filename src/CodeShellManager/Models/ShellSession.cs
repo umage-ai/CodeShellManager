@@ -167,40 +167,64 @@ public class ShellSession
     }
 
     /// <summary>
-    /// Builds the argument string passed to wsl.exe.
-    /// Example: "-d Ubuntu -u alice --cd /home/alice/project -- bash -lc \"claude\""
-    /// The command is wrapped in <c>bash -lc</c> so PATH-resolved tools (nvm-managed
-    /// node, pyenv, etc.) work the same as in a user-launched login shell. Distro,
-    /// user, and working-folder values are passed through <see cref="QuoteForCmd"/>
-    /// so values containing spaces (Linux paths often do) survive Win32 arg parsing.
+    /// Win32 (MSVCRT / CommandLineToArgvW) argument quoting. Space-free, quote-free values
+    /// are returned unchanged unless <paramref name="force"/> is set. Inside quotes, a
+    /// run of n backslashes followed by <c>"</c> becomes 2n+1 backslashes + quote, and a
+    /// trailing run of n backslashes becomes 2n so it cannot eat the closing quote.
+    /// Every value that reaches wsl.exe goes through here — no ad-hoc Replace.
     /// </summary>
-    internal string BuildWslArgs()
+    internal static string QuoteForCmd(string value, bool force = false)
     {
-        if (string.IsNullOrWhiteSpace(WslDistro))
-            throw new InvalidOperationException("WslDistro must be set for WSL sessions.");
-        var sb = new StringBuilder();
-        sb.Append($"-d {QuoteForCmd(WslDistro)}");
-        if (!string.IsNullOrWhiteSpace(WslUser))
-            sb.Append($" -u {QuoteForCmd(WslUser)}");
-        if (!string.IsNullOrWhiteSpace(WslWorkingFolder))
-            sb.Append($" --cd {QuoteForCmd(WslWorkingFolder)}");
-        var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
-        string inner = string.IsNullOrWhiteSpace(Args) ? shell : $"{shell} {Args}";
-        sb.Append($" -- bash -lc \"{inner.Replace("\"", "\\\"")}\"");
+        value ??= "";
+        if (!force && value.Length > 0 && value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0)
+            return value;
+
+        var sb = new StringBuilder(value.Length + 2);
+        sb.Append('"');
+        int backslashes = 0;
+        foreach (char c in value)
+        {
+            if (c == '\\') { backslashes++; continue; }
+            if (c == '"')
+            {
+                sb.Append('\\', backslashes * 2 + 1).Append('"');
+                backslashes = 0;
+                continue;
+            }
+            sb.Append('\\', backslashes).Append(c);
+            backslashes = 0;
+        }
+        sb.Append('\\', backslashes * 2);
+        sb.Append('"');
         return sb.ToString();
     }
 
     /// <summary>
-    /// Conservative Win32 command-line quoting: leaves space-free, quote-free values
-    /// alone (so existing call sites and tests don't regress) and wraps anything else
-    /// in double quotes with embedded <c>"</c> escaped as <c>\"</c>. Used by the WSL
-    /// arg builders (here and in <c>RunInstance</c>) and GitService's wsl.exe routing.
+    /// Builds the argument string passed to wsl.exe:
+    /// <c>-d &lt;distro&gt; [-u &lt;user&gt;] [--cd &lt;linux-folder&gt;] -- bash -lc "&lt;payload&gt;"</c>.
+    /// The payload is <see cref="Command"/> + <see cref="Args"/>, or <paramref name="inner"/>
+    /// when given (run commands). It is wrapped in <c>bash -lc</c> so PATH-resolved tools
+    /// (nvm node, pyenv, …) behave as in a login shell; bash then interprets the payload as
+    /// a shell command line, which is the intent. Throws when <see cref="WslDistro"/> is
+    /// blank — callers validate first (<c>LaunchValidationError</c>, Task 5).
     /// </summary>
-    internal static string QuoteForCmd(string value)
+    internal string BuildWslArgs(string? inner = null)
     {
-        if (string.IsNullOrEmpty(value)) return "\"\"";
-        if (value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0) return value;
-        return "\"" + value.Replace("\"", "\\\"") + "\"";
+        if (string.IsNullOrWhiteSpace(WslDistro))
+            throw new InvalidOperationException("WslDistro must be set for WSL sessions.");
+        var sb = new StringBuilder();
+        sb.Append("-d ").Append(QuoteForCmd(WslDistro));
+        if (!string.IsNullOrWhiteSpace(WslUser))
+            sb.Append(" -u ").Append(QuoteForCmd(WslUser));
+        if (!string.IsNullOrWhiteSpace(WslWorkingFolder))
+            sb.Append(" --cd ").Append(QuoteForCmd(WslWorkingFolder));
+        if (inner is null)
+        {
+            var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
+            inner = string.IsNullOrWhiteSpace(Args) ? shell : $"{shell} {Args}";
+        }
+        sb.Append(" -- bash -lc ").Append(QuoteForCmd(inner, force: true));
+        return sb.ToString();
     }
 
     // ── Display helpers (single source of truth — see MainWindow sidebar / VM) ────

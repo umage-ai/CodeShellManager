@@ -90,40 +90,78 @@ public partial class RunInstance : ObservableObject, IDisposable
         _pty.DataReceived += OnPtyData;
         _pty.Exited += OnPtyExited;
 
-        string command, args, workDir;
-        switch (parent.Kind)
+        try
         {
-            case SessionKind.Ssh:
-                // SSH parents always go through bash — Mode is meaningless for remote runs.
-                command = "ssh";
-                args = BuildSshArgs(parent, CommandLine);
-                workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                break;
-            case SessionKind.Wsl:
-                // WSL parents wrap the command in `wsl.exe … -- bash -lc` —
-                // running pwsh inside WSL is out of scope so Mode is ignored here too.
-                command = "wsl.exe";
-                args = BuildWslArgs(parent, CommandLine);
-                workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                break;
-            default:
-                if (Mode == RunMode.PowerShell)
-                {
-                    command = ResolvePwsh();
-                    args = BuildPwshArgs(CommandLine);
-                }
-                else
-                {
-                    command = "cmd";
-                    args = BuildLocalCmd(CommandLine);
-                }
-                workDir = Directory.Exists(parent.WorkingFolder)
-                    ? parent.WorkingFolder
-                    : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                break;
-        }
+            string command, args, workDir;
+            switch (parent.Kind)
+            {
+                case SessionKind.Ssh:
+                    // SSH parents always go through bash — Mode is meaningless for remote runs.
+                    command = "ssh";
+                    args = BuildSshArgs(parent, CommandLine);
+                    workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    break;
+                case SessionKind.Wsl:
+                    // WSL parents wrap the command in `wsl.exe … -- bash -lc` —
+                    // running pwsh inside WSL is out of scope so Mode is ignored here too.
+                    command = "wsl.exe";
+                    args = BuildWslArgs(parent, CommandLine);
+                    workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    break;
+                default:
+                    if (Mode == RunMode.PowerShell)
+                    {
+                        command = ResolvePwsh();
+                        args = BuildPwshArgs(CommandLine);
+                    }
+                    else
+                    {
+                        command = "cmd";
+                        args = BuildLocalCmd(CommandLine);
+                    }
+                    workDir = Directory.Exists(parent.WorkingFolder)
+                        ? parent.WorkingFolder
+                        : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    break;
+            }
 
-        _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
+            _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
+        }
+        catch (Exception ex)
+        {
+            // A run that can't even build its command line (e.g. blank WslDistro) must
+            // show as a failed chip, not throw out of the toolbar click.
+            AppendText($"Cannot start: {ex.Message}\r\n");
+            ExitCode = -1;
+            EndedAt = DateTime.Now;
+            State = RunState.ExitedFailed;
+            StateChanged?.Invoke();
+            _pty.DataReceived -= OnPtyData;
+            _pty.Exited -= OnPtyExited;
+            _pty.Dispose();
+            _pty = null;
+        }
+    }
+
+    /// <summary>
+    /// Appends text to the ANSI-stripped output buffer under <see cref="_bufLock"/>,
+    /// refreshes <see cref="OutputBuffer"/>, and raises <see cref="OutputChanged"/>.
+    /// </summary>
+    private void AppendText(string text)
+    {
+        string snapshot;
+        lock (_bufLock)
+        {
+            _ansiStripped.Append(text);
+            if (_ansiStripped.Length > MaxBufferChars)
+                _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
+            snapshot = _ansiStripped.ToString();
+        }
+        OutputBuffer = snapshot;
+        // Marshal to UI thread is the consumer's responsibility — OutputChanged
+        // fires from the PTY read loop's thread (or, for the start-failure path,
+        // synchronously from Start).
+        OutputChanged?.Invoke();
     }
 
     public void Stop()
@@ -136,16 +174,9 @@ public partial class RunInstance : ObservableObject, IDisposable
     {
         // Strip ANSI for the readonly drawer view + clipboard. Match the
         // OutputIndexer regex so any visible quirks stay consistent across the app.
-        string stripped = AnsiPattern().Replace(text, "");
-        lock (_bufLock)
-        {
-            _ansiStripped.Append(stripped);
-            if (_ansiStripped.Length > MaxBufferChars)
-                _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
-        }
         // Marshal to UI thread is the consumer's responsibility — OutputChanged
         // fires from the PTY read loop's thread.
-        OutputChanged?.Invoke();
+        AppendText(AnsiPattern().Replace(text, ""));
     }
 
     private void OnPtyExited()
@@ -256,29 +287,12 @@ public partial class RunInstance : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Builds wsl.exe args for a run executed inside the parent's WSL distro. Pattern:
-    ///   -d &lt;distro&gt; [-u &lt;user&gt;] [--cd &lt;folder&gt;] -- bash -lc '&lt;escaped&gt;'
+    /// wsl.exe args for a run inside the parent's distro. One implementation with the
+    /// session launcher — see <see cref="ShellSession.BuildWslArgs"/> — so the two can't
+    /// disagree about quoting or about a blank distro.
     /// </summary>
     internal static string BuildWslArgs(ShellSession parent, string commandLine)
-    {
-        var sb = new StringBuilder();
-        sb.Append($"-d {ShellSession.QuoteForCmd(parent.WslDistro)}");
-        if (!string.IsNullOrWhiteSpace(parent.WslUser))
-            sb.Append($" -u {ShellSession.QuoteForCmd(parent.WslUser)}");
-        if (!string.IsNullOrWhiteSpace(parent.WslWorkingFolder))
-            sb.Append($" --cd {ShellSession.QuoteForCmd(parent.WslWorkingFolder)}");
-        // Use Windows-style double quotes here, NOT POSIX single quotes: wsl.exe is
-        // launched directly by CreateProcess (no outer shell), so Windows command-line
-        // tokenization runs first and only respects "..." for grouping. Single quotes
-        // would leak through literally — `bash -lc 'cargo test'` reaches bash split at
-        // the space into the two args `'cargo` and `test'`, and bash then chokes on
-        // the unbalanced quote. ShellSession.BuildWslArgs uses this same double-quote
-        // shape; we mirror it for parity.
-        sb.Append(" -- bash -lc \"");
-        sb.Append(commandLine.Replace("\"", "\\\""));
-        sb.Append("\"");
-        return sb.ToString();
-    }
+        => parent.BuildWslArgs(commandLine);
 
     /// <summary>
     /// POSIX single-quote escape: wraps in single quotes, replacing any inner
