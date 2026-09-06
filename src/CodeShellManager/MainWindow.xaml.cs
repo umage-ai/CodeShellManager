@@ -202,8 +202,23 @@ public partial class MainWindow : Window
 
     // ── Startup ───────────────────────────────────────────────────────────────
 
+    /// <summary>Resolves PwshLocator.Executable off the UI thread; awaited before restore.</summary>
+    private Task _pwshWarmup = Task.CompletedTask;
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        // Start resolving pwsh-vs-powershell off the UI thread, as early as possible.
+        //
+        // PwshLocator.Executable is a Lazy first forced from PseudoTerminal.BuildCmdLine
+        // inside Start(), which LaunchSessionAsync calls ON THE UI THREAD. That costs a
+        // where.exe spawn and — since the Store-alias disambiguation — possibly a full
+        // PowerShell cold start behind it: up to ~7s of frozen window, exactly the class
+        // of stall #107 and #110 were undoing.
+        //
+        // The task is awaited before the restore loop rather than fire-and-forget; see
+        // there for why starting it here is necessary but not sufficient.
+        _pwshWarmup = Task.Run(() => _ = Services.PwshLocator.Executable);
+
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
         RestoreWindowState();
@@ -271,6 +286,20 @@ public partial class MainWindow : Window
             // the saved-order list (Resolve picks them when no live item exists yet) and
             // applies the active group filter so off-group placeholders are hidden.
             RebuildSidebarOrder();
+
+            // Make sure the pwsh/powershell decision is finished before the first launch.
+            //
+            // Starting the warm task in OnLoaded is not sufficient on its own: PwshLocator's
+            // Lazy uses ExecutionAndPublication, so a UI thread that reaches .Value while
+            // the pool thread is still inside the factory takes the Lazy's monitor and
+            // blocks for the REMAINING factory duration — a raced stall rather than no
+            // stall. PublicationOnly would not help either; the UI thread would simply run
+            // its own copy of the factory and pay the same cost.
+            //
+            // Awaiting here yields instead of blocking, so the window stays responsive.
+            // WhenAny with a ceiling above Resolve's own 7s bound (2s where.exe + 5s alias
+            // probe) so a wedged probe delays restore rather than preventing it.
+            await Task.WhenAny(_pwshWarmup, Task.Delay(8000));
 
             // Launch live sessions sequentially. Stagger consecutive claude launches:
             // claude's CLI does an unlocked read-modify-write on ~/.claude.json at startup,
@@ -4257,6 +4286,12 @@ public partial class MainWindow : Window
         if (!change.AnyChange) return;
 
         bool wasRemote = session.IsRemote;
+        // Apply mutates session.Command in place, so capture what the RUNNING process was
+        // launched with before that happens. RestartSessionAsync needs the OLD command to
+        // decide whether the outgoing process is a Claude that has to be waited out —
+        // reading session.Command there would see the new one and skip the wait on exactly
+        // the claude -> non-claude edit that needs it.
+        string launchedCommand = session.Command;
         Services.SessionConfigEditor.Apply(session, draft);
 
         vm.NotifyConfigChanged();
@@ -4283,7 +4318,7 @@ public partial class MainWindow : Window
             + "this session starts.",
             "Restart session?", MessageBoxButton.YesNo, MessageBoxImage.Question,
             MessageBoxResult.Yes);
-        if (answer == MessageBoxResult.Yes) await RestartSessionAsync(vm);
+        if (answer == MessageBoxResult.Yes) await RestartSessionAsync(vm, launchedCommand);
     }
 
     /// <summary>
@@ -4315,7 +4350,13 @@ public partial class MainWindow : Window
     /// (<see cref="MainViewModel.RegisterSession"/> re-inserts at the SessionManager index),
     /// and it never enters the recently-closed ring.
     /// </summary>
-    private async Task RestartSessionAsync(SessionViewModel vm)
+    /// <param name="launchedCommand">
+    /// The command the RUNNING process was started with. Callers that have already mutated
+    /// <c>session.Command</c> (the edit flow applies the draft before restarting) must pass
+    /// the old value, or a claude → non-claude edit skips the exit wait the outgoing
+    /// process needs. Null means "use the session's current command".
+    /// </param>
+    private async Task RestartSessionAsync(SessionViewModel vm, string? launchedCommand = null)
     {
         var session = vm.Session;
 
@@ -4327,6 +4368,12 @@ public partial class MainWindow : Window
                 TerminalGrid.Children.Remove(ui.terminalWrapper);
             SidebarSessionList.Children.Remove(ui.sidebarItem);
             _sessionUi.Remove(vm.Id);
+            // The layout signature is keyed on session ids plus this counter; ids alone
+            // don't identify visual objects, and this method builds a NEW wrapper for the
+            // SAME id. Safe today only because LaunchSessionAsync bumps on re-add, but a
+            // future path that removes without re-adding would leave the signature stale
+            // and make RefreshTerminalLayout skip a rebuild it needed.
+            _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
@@ -4338,11 +4385,35 @@ public partial class MainWindow : Window
         _vm.Sessions.Remove(vm);
         if (_vm.ActiveSession == vm)
             _vm.ActiveSession = _vm.Sessions.LastOrDefault();
-        vm.Dispose();
 
-        // Placeholder so the row doesn't blink out of the sidebar while WebView2 boots.
+        // Placeholder BEFORE the teardown wait, not after: the sidebar row was removed
+        // above, and a Claude restart can now wait up to 11s. Without this the row is
+        // simply missing for that whole time.
         AddLaunchingSidebarItem(session);
         RebuildSidebarOrder();
+
+        // Wait for the old process to actually exit before starting its replacement.
+        //
+        // For a Claude session this is the same concurrent-config-writer race the launch
+        // stagger and the shutdown loop both exist to prevent: the outgoing claude.exe can
+        // still be flushing its config while the new one reads and rewrites it. It also
+        // makes --resume reliable, since GetLastSessionId is read on the relaunch path and
+        // the outgoing process may not have finalised its session index yet.
+        //
+        // Keyed on the command the running process was LAUNCHED with — see the parameter.
+        //
+        // Non-Claude sessions don't touch that file, so they keep the cheap teardown.
+        if (ClaudeSessionService.IsClaudeCommand(launchedCommand ?? session.Command))
+        {
+            DateTime? cfgBefore = ClaudeConfigGate.LastWriteUtcOrNull(_claudeConfigPath);
+            await DisposeAndWaitForExitAsync(vm, timeoutMs: 10000);
+            await WaitForClaudeConfigQuiesceAsync(
+                cfgBefore, Math.Min(_vm.Settings.ClaudeLaunchStaggerMs, 1000));
+        }
+        else
+        {
+            vm.Dispose();
+        }
 
         try
         {
@@ -5377,7 +5448,17 @@ public partial class MainWindow : Window
     private static async Task DisposeAndWaitForExitAsync(SessionViewModel vm, int timeoutMs)
     {
         var pty = vm.Pty;
-        if (pty == null || !pty.IsRunning)
+
+        // HasExited, not IsRunning. IsRunning only reports "we still hold a handle", and
+        // that handle is released in Dispose — so it stays true for a child that exited
+        // earlier in the run (user typed `exit`, or claude crashed). Waiting on Exited for
+        // one of those burns the full timeout for an event that already fired.
+        //
+        // That mattered more than it looks: with the shutdown budget above, two such stale
+        // panes consume the entire allowance, and every remaining LIVE Claude session is
+        // then force-disposed with no exit wait — losing exactly the ~/.claude.json
+        // serialization this loop exists to provide.
+        if (pty == null || pty.HasExited)
         {
             vm.Dispose();
             return;
@@ -5388,6 +5469,10 @@ public partial class MainWindow : Window
         pty.Exited += OnExit;
         try
         {
+            // Re-check after subscribing: the child can exit in the window between the
+            // guard above and this line, and that firing would otherwise be missed.
+            if (pty.HasExited) { vm.Dispose(); return; }
+
             // Dispose triggers ClosePseudoConsole, which signals the child to shut down.
             // MonitorExitAsync (already running) will fire Exited once the process exits.
             vm.Dispose();

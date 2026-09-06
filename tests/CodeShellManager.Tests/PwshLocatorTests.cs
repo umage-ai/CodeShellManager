@@ -77,4 +77,28 @@ public class PwshLocatorTests : IDisposable
         // Whatever this machine has, the answer must be a name ConPTY can resolve.
         Assert.Contains(PwshLocator.Executable, new[] { "pwsh.exe", "powershell.exe" });
     }
+
+    // ── Store App Execution Alias (issue #104 follow-up) ──────────────────
+
+    [Fact]
+    public void IsRunnable_ZeroByteStub_DoesNotShortCircuitToFalse()
+    {
+        // Regression: an earlier version rejected the alias SHAPE outright. A working
+        // Store install of PowerShell 7 is the same shape as a dead stub — a zero-byte
+        // AppExecLink — so shape alone must not decide. A plain zero-byte file here is
+        // not executable, so the probe correctly says no; the point is that it is the
+        // PROBE saying no, not the length check.
+        Assert.False(PwshLocator.IsRunnable(Make("pwsh.exe", Array.Empty<byte>())));
+    }
+
+    [Fact]
+    public void IsRunnable_RealExecutableWithContent_SkipsTheProbeEntirely()
+    {
+        // The common MSI install must stay on the fast path — non-zero length and not a
+        // reparse point is decided from metadata, with no process spawned.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.True(PwshLocator.IsRunnable(Make("real.exe", new byte[] { 0x4D, 0x5A, 0x90, 0x00 })));
+        Assert.True(sw.ElapsedMilliseconds < 500,
+            $"metadata path should not spawn anything, took {sw.ElapsedMilliseconds}ms");
+    }
 }

@@ -456,8 +456,19 @@ public sealed class TerminalBridge : IDisposable
         if (session.ProfileCursorBlink   != null) opts["cursorBlink"]   = session.ProfileCursorBlink;
         if (session.ProfilePadding       != null) opts["padding"]       = session.ProfilePadding;
         if (session.ProfileRetroEffect   != null) opts["retro"]         = session.ProfileRetroEffect;
+        // Malformed JSON here must not take the session down. This value is normally
+        // produced by SchemeMapper, but ImportExportService will deserialize a whole
+        // AppState from any file the user opens, so it can be arbitrary — and an
+        // unhandled throw on this path aborts the launch of an otherwise fine session.
+        // Dropping the theme degrades to the default palette, which is survivable.
         if (!string.IsNullOrEmpty(session.ProfileColorSchemeJson))
-            opts["theme"] = JsonSerializer.Deserialize<JsonElement>(session.ProfileColorSchemeJson);
+        {
+            try { opts["theme"] = JsonSerializer.Deserialize<JsonElement>(session.ProfileColorSchemeJson); }
+            catch (JsonException ex)
+            {
+                Log($"ignoring malformed ProfileColorSchemeJson for '{session.Name}': {ex.Message}");
+            }
+        }
 
         string json = JsonSerializer.Serialize(new { type = "setOptions", options = opts });
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>

@@ -168,7 +168,30 @@ public sealed class PseudoTerminal : IPseudoTerminal
     public event Action<string>? DataReceived;
     public event Action? Exited;
 
+    /// <summary>
+    /// True while we still hold a process handle. NOT the same as "the child is alive" —
+    /// the handle is only released in <see cref="Dispose"/>, so this stays true after the
+    /// child has exited on its own. Use <see cref="HasExited"/> to ask that question.
+    /// </summary>
     public bool IsRunning => _hProcess != IntPtr.Zero;
+
+    /// <summary>
+    /// Latched once the child has actually exited and <see cref="Exited"/> has been raised.
+    ///
+    /// Callers that wait on <see cref="Exited"/> must check this, because the event may
+    /// already have fired before they subscribed — a session whose child exited earlier in
+    /// the run (user typed `exit`, or the process crashed) would otherwise wait out its
+    /// whole timeout for an event that will never come again. See
+    /// MainWindow.DisposeAndWaitForExitAsync.
+    /// </summary>
+    // volatile-equivalent: written on the monitor thread, read by shutdown on the UI
+    // thread. Today the Exited subscribe/unsubscribe accessors are Interlocked and supply
+    // the fence, but that is a subtle thing to depend on — an explicit field keeps it true
+    // for any future reader that polls without one.
+    private volatile bool _hasExited;
+
+    /// <inheritdoc cref="HasExited"/>
+    public bool HasExited => _hasExited;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -374,19 +397,43 @@ public sealed class PseudoTerminal : IPseudoTerminal
         var safe = new SafeWaitHandle(handle, ownsHandle: false);   // caller closes the handle
         var waitHandle = new ManualResetEvent(false) { SafeWaitHandle = safe };
 
+        // The registration is published through a gate rather than a bare local.
+        //
+        // If the handle is ALREADY signalled — a run-command child that exits immediately —
+        // the callback can run on a pool thread before RegisterWaitForSingleObject has even
+        // returned, so a plain `registration` local is still null when the callback reads
+        // it. The wait would then never be unregistered, and the ManualResetEvent would be
+        // disposed while the pool still held a live registration on it, which is documented
+        // as unsafe.
+        //
+        // The lock makes the callback wait for the assignment; TryUnregister runs exactly
+        // once either way, so a callback that arrives late is a no-op rather than a
+        // double-release.
+        var gate = new object();
         RegisteredWaitHandle? registration = null;
-        registration = ThreadPool.RegisterWaitForSingleObject(
-            waitHandle,
-            (_, _) =>
+        bool unregistered = false;
+
+        void Release()
+        {
+            lock (gate)
             {
-                // Unregister first so the entry is released even if a continuation throws.
+                if (unregistered) return;
+                unregistered = true;
                 registration?.Unregister(null);
-                waitHandle.Dispose();
-                tcs.TrySetResult();
-            },
-            state: null,
-            millisecondsTimeOutInterval: Timeout.Infinite,
-            executeOnlyOnce: true);
+            }
+            waitHandle.Dispose();
+            tcs.TrySetResult();
+        }
+
+        lock (gate)
+        {
+            registration = ThreadPool.RegisterWaitForSingleObject(
+                waitHandle,
+                (_, _) => Release(),
+                state: null,
+                millisecondsTimeOutInterval: Timeout.Infinite,
+                executeOnlyOnce: true);
+        }
 
         return tcs.Task;
     }
@@ -442,6 +489,10 @@ public sealed class PseudoTerminal : IPseudoTerminal
         }
         finally
         {
+            // Latch BEFORE raising, so a subscriber that checks HasExited from inside the
+            // handler — or one that subscribes concurrently — never sees "not exited yet"
+            // for a process that has already gone.
+            _hasExited = true;
             Exited?.Invoke();
         }
     }

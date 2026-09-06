@@ -177,8 +177,9 @@ public partial class NewSessionDialog : Window
 
         if (s.IsRemote)
         {
-            // Checking the radio runs SessionType_Changed, which swaps the panels and
-            // blanks NameBox — so the name is filled back in afterwards.
+            // Checking the radio runs SessionType_Changed, which swaps the panels. It no
+            // longer blanks NameBox — that handler returns early in edit mode — so the
+            // assignment below is the only thing setting the name, not a repair.
             RemoteRadio.IsChecked = true;
             SshHostBox.Text = string.IsNullOrWhiteSpace(s.SshUser)
                 ? s.SshHost
@@ -377,6 +378,14 @@ public partial class NewSessionDialog : Window
             _lastProbedFolder = null;
         }
         CommandLabel.Text = IsRemoteMode ? "Remote Shell" : "Command";
+
+        // Never clear an existing session's name. In create mode the box holds an
+        // auto-filled suggestion and re-deriving it on a mode flip is the point; in edit
+        // mode it holds the user's actual name, and blanking it means SessionConfigEditor
+        // writes Name = "" — silently, because AutoFillName has nothing to refill from
+        // (ForEdit passes no default folder for a remote session).
+        if (IsEditMode) return;
+
         NameBox.Text = "";
         AutoFillName();
     }
@@ -529,6 +538,36 @@ public partial class NewSessionDialog : Window
         else
         {
             SelectedFolder = FolderBox.Text.Trim();
+
+            // Validate the folder in EDIT mode.
+            //
+            // Create mode deliberately tolerates a blank folder — LaunchSessionAsync falls
+            // back to %USERPROFILE% and a brand-new session in your home directory is a
+            // reasonable default. Editing an existing one is different: the same fallback
+            // silently relocates a configured session to the home folder, persists the
+            // empty path, and leaves git info and the accent colour keyed off nothing.
+            // Flipping Remote -> Local hits this every time, because a remote session has
+            // no local folder to pre-fill from.
+            if (IsEditMode)
+            {
+                if (string.IsNullOrWhiteSpace(SelectedFolder))
+                {
+                    System.Windows.MessageBox.Show(
+                        "Please choose a working folder for this session.",
+                        "Working folder required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    FolderBox.Focus();
+                    return;
+                }
+                if (!System.IO.Directory.Exists(SelectedFolder))
+                {
+                    System.Windows.MessageBox.Show(
+                        $"That folder doesn't exist:\n\n{SelectedFolder}\n\n" +
+                        "Pick a folder that exists, or the session will fail to start.",
+                        "Folder not found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    FolderBox.Focus();
+                    return;
+                }
+            }
 
             var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "claude";
             if (selectedTag == "custom")

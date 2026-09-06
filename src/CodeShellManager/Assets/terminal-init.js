@@ -108,15 +108,20 @@
         if (opts.padding       !== undefined) document.getElementById('terminal').style.padding = opts.padding;
         if (opts.retro         !== undefined) document.body.classList.toggle('retro', !!opts.retro);
         fitAddon.fit();
-        // A profile override can switch fontFamily/fontSize to a face that isn't loaded
-        // yet, so the fit above measures the wrong metrics for the same reason the
-        // initial one can. Re-fit once the new face is ready.
+        // A profile override can switch fontFamily/fontSize, so the fit above measures the
+        // old metrics. Re-fit on the next frame, once the new ones are in effect.
+        //
+        // Neither fonts API helps here. document.fonts.ready resolves once at page load
+        // and stays resolved, so a .then() attached now runs synchronously with the stale
+        // metrics — the bug this replaced. document.fonts.load() only matches
+        // CSS-connected FontFace objects (@font-face rules); the families used here are
+        // OS-installed and there are no such rules, so it resolves on the next microtask
+        // having matched nothing. requestAnimationFrame is the honest signal: it fires
+        // after the style change has been applied and measured.
         if (opts.fontFamily !== undefined || opts.fontSize !== undefined) {
-          if (document.fonts && document.fonts.ready) {
-            document.fonts.ready.then(function () {
-              try { fitAddon.fit(); } catch (e) {}
-            });
-          }
+          requestAnimationFrame(function () {
+            try { fitAddon.fit(); } catch (e) {}
+          });
         }
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
