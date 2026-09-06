@@ -58,7 +58,7 @@ public class Win32CommandLineTests
     [InlineData("echo \"hi\"")]
     [InlineData("sed -i 's/\\\"//g' f.txt")]
     [InlineData("cp -r /src /dst\\")]
-    [InlineData("printf '%s\n' \"$HOME\"")]
+    [InlineData("printf '%s\\n' \"$HOME\"")]
     public void RunInstanceBuildWslArgs_BashPayloadArrivesIntact(string commandLine)
     {
         var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu", WslWorkingFolder = "/home/a b" };

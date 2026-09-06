@@ -262,6 +262,32 @@ public class SessionRunnerTests
         Assert.NotNull(inst.EndedAt);
     }
 
+    // ── Graceful start failure ───────────────────────────────────────────────
+
+    [Fact]
+    public void Run_WslParentWithBlankDistro_FailsGracefullyInsteadOfThrowing()
+    {
+        // BuildWslArgs throws InvalidOperationException on a blank WslDistro. Start()
+        // must catch that (and anything else that can go wrong building the command
+        // line) and report a failed run instead of throwing out of the toolbar click.
+        var parent = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "" };
+        var fake = new FakePseudoTerminal();
+        var runner = new SessionRunner(parent, () => fake);
+
+        int changes = 0;
+        runner.InstancesChanged += () => changes++;
+
+        var inst = runner.Run(Item()); // must not throw
+
+        Assert.Equal(RunState.ExitedFailed, inst.State);
+        Assert.Equal(-1, inst.ExitCode);
+        Assert.NotNull(inst.EndedAt);
+        Assert.Contains("Cannot start", inst.OutputBuffer);
+        Assert.Contains("WslDistro", inst.OutputBuffer);
+        Assert.False(fake.StartCalled, "PTY.Start must never be reached when arg-building fails.");
+        Assert.True(changes >= 1, $"InstancesChanged should fire so the chips UI repaints; fired={changes}");
+    }
+
     // ── Output buffer ────────────────────────────────────────────────────────
 
     [Fact]
