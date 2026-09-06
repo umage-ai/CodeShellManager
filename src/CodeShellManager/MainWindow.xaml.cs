@@ -313,6 +313,15 @@ public partial class MainWindow : Window
             // Wall clock for the whole restore, so per-session timings are comparable and
             // the total is visible in crash.log (issue #82).
             var restoreClock = System.Diagnostics.Stopwatch.StartNew();
+
+            // Determinate restore progress. A 25-session restore runs ~131s with
+            // per-session cost swinging 12x, so there is no rate to extrapolate from and
+            // an indeterminate spinner reads the same at session 2 as at session 22.
+            // The rail and the pill are the only aggregate signal; per-session state stays
+            // on the placeholder sidebar rows.
+            int restoreTotal = saved.Count(x => !x.IsDormant), restoreDone = 0;
+            SetRestoreProgress(restoreDone, restoreTotal);
+
             foreach (var s in saved)
             {
                 if (s.IsDormant) continue;
@@ -330,9 +339,10 @@ public partial class MainWindow : Window
                 // with more machinery. Predictable beats occasionally-clever on a path
                 // the user waits through at every launch.
                 //
-                // The gate is still used at SHUTDOWN, where the machine is quiet and it
-                // measures a consistent ~304ms against this same flat 1000ms — see
-                // OnClosing. Different contention, different answer.
+                // #117 removed it from the shutdown path too. The reasoning for keeping it
+                // there — "the machine is quiet at shutdown, so polling is reliable" — was
+                // falsified by measurement: a real run logged cfgSettle=8731ms against a
+                // 1000ms cap. Same disease, same fix. Both paths now use a flat delay.
                 long gateStart = restoreClock.ElapsedMilliseconds;
                 if (isClaude && lastWasClaude && staggerMs > 0)
                     await Task.Delay(staggerMs);
@@ -359,8 +369,14 @@ public partial class MainWindow : Window
                     $"launch={restoreClock.ElapsedMilliseconds - launchStart}ms " +
                     $"total={restoreClock.ElapsedMilliseconds}ms");
 
+                // Counted here, not in the try, so a session that failed to restore still
+                // advances the rail — otherwise one bad session strands it short of full
+                // and it reads as a hang.
+                SetRestoreProgress(++restoreDone, restoreTotal);
+
                 lastWasClaude = isClaude;
             }
+            SetRestoreProgress(restoreTotal, restoreTotal, finished: true);
             if (webView2AccessDenied.Count > 0)
             {
                 MessageBox.Show(
@@ -379,6 +395,166 @@ public partial class MainWindow : Window
                 _sessionManager.RemoveSession(s.Id);
             await _vm.SaveStateAsync();
         }
+    }
+
+    /// <summary>
+    /// Drives the restore rail + toolbar pill. Both are hidden outside a restore, and
+    /// hidden entirely when there is nothing to restore — a rail that flashes full for
+    /// one frame on a single-session start is noise, not feedback.
+    /// </summary>
+    private void SetRestoreProgress(int done, int total, bool finished = false)
+    {
+        if (total <= 0 || finished)
+        {
+            RestoreRail.Visibility = Visibility.Collapsed;
+            RestorePill.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        RestoreRail.Maximum = total;
+        RestoreRail.Value = done;
+        RestoreRail.Visibility = Visibility.Visible;
+        RestorePillText.Text = $"{done} / {total} restoring";
+        RestorePill.Visibility = Visibility.Visible;
+    }
+
+    // ── Shutdown board ──────────────────────────────────────────────────────
+    // Row handles, so each session's line can be updated in place as it closes.
+    private readonly Dictionary<string, (Border Row, TextBlock Glyph, TextBlock Time)> _shutdownRows = new();
+
+    /// <summary>Builds one row per session, all pending, in disposal order.</summary>
+    private void BuildShutdownBoard(IReadOnlyList<SessionViewModel> sessions)
+    {
+        ShutdownList.Children.Clear();
+        _shutdownRows.Clear();
+
+        foreach (var vm in sessions)
+        {
+            var grid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var accent = (Color)ColorConverter.ConvertFromString(vm.AccentColor ?? "#6c7086");
+            var stripe = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0x99, accent.R, accent.G, accent.B)),
+                CornerRadius = new CornerRadius(2),
+                Height = 14
+            };
+            Grid.SetColumn(stripe, 0);
+
+            var glyph = new TextBlock
+            {
+                Text = "·",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 11,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(glyph, 1);
+
+            var name = new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(vm.Name) ? vm.Command : vm.Name,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11.5,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(2, 0, 8, 0)
+            };
+            Grid.SetColumn(name, 2);
+
+            var time = new TextBlock
+            {
+                Text = "",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x58, 0x5b, 0x70)),
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(time, 3);
+
+            grid.Children.Add(stripe);
+            grid.Children.Add(glyph);
+            grid.Children.Add(name);
+            grid.Children.Add(time);
+
+            var row = new Border
+            {
+                Padding = new Thickness(6, 3, 8, 3),
+                CornerRadius = new CornerRadius(4),
+                Background = Brushes.Transparent,
+                Child = grid
+            };
+
+            ShutdownList.Children.Add(row);
+            _shutdownRows[vm.Id] = (row, glyph, time);
+            // Name brush is shared with the glyph lookup below via the row's Tag so
+            // MarkShutdownRow can brighten it without re-walking the visual tree.
+            row.Tag = name;
+        }
+
+        SetShutdownProgress(0, sessions.Count);
+        SetShutdownBudget(0);
+    }
+
+    /// <summary>Updates one session's row in place. Unknown ids are ignored.</summary>
+    private void MarkShutdownRow(string sessionId, string glyph, string hex, string? time, bool active = false)
+    {
+        if (!_shutdownRows.TryGetValue(sessionId, out var r)) return;
+
+        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
+        r.Glyph.Text = glyph;
+        r.Glyph.Foreground = brush;
+        if (time != null) r.Time.Text = time;
+
+        r.Row.Background = active
+            ? new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x39))
+            : Brushes.Transparent;
+
+        if (r.Row.Tag is TextBlock name)
+            name.Foreground = new SolidColorBrush(active
+                ? Color.FromRgb(0xcd, 0xd6, 0xf4)
+                : Color.FromRgb(0xa6, 0xad, 0xc8));
+
+        // Keep the session being waited on visible in a 25-row list.
+        if (active) r.Row.BringIntoView();
+    }
+
+    private void SetShutdownProgress(int done, int total)
+    {
+        ShutdownProgress.Maximum = Math.Max(1, total);
+        ShutdownProgress.Value = done;
+        ShutdownCount.Text = $"{done} / {total}";
+    }
+
+    /// <summary>
+    /// Draws the elapsed share of <see cref="ClaudeShutdownBudgetMs"/>, and escalates the
+    /// hint line with time. The escalation explains *why* the wait is long rather than
+    /// being chatty — it has to still read well on the four-hundredth shutdown.
+    /// </summary>
+    private void SetShutdownBudget(long elapsedMs)
+    {
+        double used = Math.Min(1.0, elapsedMs / (double)ClaudeShutdownBudgetMs);
+        ShutdownBudgetBar.Value = used;
+        ShutdownBudgetBar.Foreground = new SolidColorBrush(
+            used >= 1.0 ? Color.FromRgb(0xf3, 0x8b, 0xa8)
+            : used > 0.6 ? Color.FromRgb(0xfa, 0xb3, 0x87)
+                         : Color.FromRgb(0xa6, 0xe3, 0xa1));
+
+        double left = (ClaudeShutdownBudgetMs - elapsedMs) / 1000.0;
+        ShutdownBudgetLeft.Text = left <= 0 ? "budget spent" : $"{left:0}s left";
+
+        ShutdownHint.Text = elapsedMs switch
+        {
+            < 8000  => "Letting each session exit cleanly…",
+            < 20000 => "Claude writes its session state on exit — worth the wait.",
+            _       => "Some sessions are slow to finish. Closing them shortly."
+        };
     }
 
     // Detects WebView2 user-data folder access-denied, which surfaces as
@@ -5273,26 +5449,52 @@ public partial class MainWindow : Window
         if (_isShuttingDown) return;
         _isShuttingDown = true;
 
-        // Show the shutdown overlay so the user sees progress while sessions tear down.
-        // The yield lets WPF render the overlay before the synchronous disposal below blocks
-        // the UI thread; without it, the overlay would only paint after Close() is reached.
-        ShutdownOverlay.Visibility = Visibility.Visible;
-        await Dispatcher.InvokeAsync(() => { },
-            System.Windows.Threading.DispatcherPriority.Background);
+        var all = _vm.Sessions.ToList();
+
+        // Collapse the terminal area before showing the overlay. This is load-bearing, not
+        // tidying: WebView2 is an HwndHost, and a native child window composites OVER all
+        // WPF-rendered content no matter what Panel.ZIndex claims. The overlay used to be
+        // drawn *behind* every terminal pane, so the centred spinner was invisible and the
+        // only thing that reached the user was scrim leaking through the few-pixel gaps
+        // between panes — which reads as a stray line, not a shutdown indicator.
+        //
+        // Safe to collapse: every pane here is about to be disposed, and a frozen terminal
+        // is worth nothing during shutdown anyway.
+        //
+        // Skipped when there is nothing to close: with no sessions the teardown is
+        // instant, and the board would be a full-window flash showing "0 / 0".
+        if (all.Count > 0)
+        {
+            TerminalGrid.Visibility = Visibility.Collapsed;
+            BuildShutdownBoard(all);
+            ShutdownOverlay.Visibility = Visibility.Visible;
+            // The yield lets WPF render the overlay before the synchronous disposal below
+            // blocks the UI thread; without it the board would only paint at Close().
+            await Dispatcher.InvokeAsync(() => { },
+                System.Windows.Threading.DispatcherPriority.Background);
+        }
 
         _windowStateTimer.Stop();
         if (_windowStateReady)
             _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
         await _vm.SaveStateAsync();
 
-        var all = _vm.Sessions.ToList();
-
         // Non-Claude sessions don't fight over ~/.claude.json — dispose them in parallel.
+        int boardDone = 0, boardTotal = all.Count;
         foreach (var vm in all)
         {
             if (!ClaudeSessionService.IsClaudeCommand(vm.Command))
+            {
                 vm.Dispose();
+                MarkShutdownRow(vm.Id, "✓", "#a6e3a1", "closed");
+                SetShutdownProgress(++boardDone, boardTotal);
+            }
         }
+        // These are synchronous, so nothing has repainted yet — yield once so the board
+        // shows them as closed rather than jumping when the first Claude session lands.
+        if (boardDone > 0)
+            await Dispatcher.InvokeAsync(() => { },
+                System.Windows.Threading.DispatcherPriority.Background);
 
         // Claude rewrites ~/.claude.json on exit without locking, so two claude.exe
         // processes flushing simultaneously can corrupt it. Dispose claude sessions one
@@ -5323,13 +5525,24 @@ public partial class MainWindow : Window
                     $"disposing '{vm.Name}' without waiting");
                 try { vm.Dispose(); } catch { }
                 skippedWait++;
+                // Marked, not hidden. Force-disposal is the case where a user most wants
+                // to know which session didn't get to exit cleanly.
+                MarkShutdownRow(vm.Id, "⨯", "#f38ba8", "forced");
+                SetShutdownProgress(++boardDone, boardTotal);
+                SetShutdownBudget(shutdownClock.ElapsedMilliseconds);
                 continue;
             }
+
+            MarkShutdownRow(vm.Id, "◐", "#fab387", "closing…", active: true);
+            SetShutdownBudget(shutdownClock.ElapsedMilliseconds);
 
             long t0 = shutdownClock.ElapsedMilliseconds;
             await DisposeAndWaitForExitAsync(vm, timeoutMs: Math.Min(10000, remainingBudget));
             long exitMs = shutdownClock.ElapsedMilliseconds - t0;
             disposed++;
+
+            MarkShutdownRow(vm.Id, "✓", "#a6e3a1", $"{exitMs / 1000.0:0.0}s");
+            SetShutdownProgress(++boardDone, boardTotal);
 
             // The exit wait above is on the process handle, but Claude's config write can
             // still be in flight when the handle closes — hence a flat post-exit pause.
@@ -5358,6 +5571,15 @@ public partial class MainWindow : Window
 
         Log($"SHUTDOWN complete: {disposed} waited, {skippedWait} force-disposed, " +
             $"{shutdownClock.ElapsedMilliseconds}ms total");
+
+        // Last paint before the DB close and the reclose below. Without it the board's
+        // final row stays mid-flight on screen for the remainder of teardown.
+        SetShutdownBudget(shutdownClock.ElapsedMilliseconds);
+        ShutdownHint.Text = skippedWait > 0
+            ? $"Closed {disposed}, force-closed {skippedWait}. Saving index…"
+            : "All sessions closed. Saving index…";
+        await Dispatcher.InvokeAsync(() => { },
+            System.Windows.Threading.DispatcherPriority.Background);
 
         // OutputIndexer.Dispose now drains its worker first, but SqliteConnection.Close
         // has been observed to throw NRE internally on shutdown — swallow + log so it

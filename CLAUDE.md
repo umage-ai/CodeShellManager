@@ -143,7 +143,7 @@ The accent comes from the **live VM**, not the `Border.Tag` stashed at build tim
 
 Both (2) and (3) **must come from the page**, and this is the part that is easy to get wrong twice:
 
-- **WebView2 is an `HwndHost`.** Mouse input landing on hosted native content raises **no** WPF routed events, tunnelling `Preview*` ones included. A `PreviewMouseLeftButtonDown` on the host Border only ever fires for the thin ring around the terminal (#108).
+- **WebView2 is an `HwndHost`.** Mouse input landing on hosted native content raises **no** WPF routed events, tunnelling `Preview*` ones included. A `PreviewMouseLeftButtonDown` on the host Border only ever fires for the thin ring around the terminal (#108). The same fact bites on the way out too — WPF content cannot be *drawn* over a pane either, whatever `Panel.ZIndex` says. See "Session Spinners".
 - **xterm's `onData` is not "the user typed".** It also carries replies the terminal generates itself — device attributes (`ESC[?1;2c`), cursor-position reports, OSC colour replies, focus in/out (`ESC[I`/`ESC[O`) — plus mouse reports when the app enables tracking. Filtering those by inspecting the bytes cannot work; a device-attribute reply is not distinguishable from typing by shape. xterm knows internally (`triggerDataEvent`'s `wasUserInput`) but does not expose it on `onData`. `onKey` is the only honest source (#106).
 
 The page-side `mousedown` handler also calls `fitAddon.fit()`, and the initial fit is re-run on `document.fonts.ready`. xterm derives its column count from the *measured advance width* of the font, so a fit that runs before the font loads computes the wrong `cols` and tells the PTY a width that doesn't match what is drawn — text then overlaps mid-line. The `ResizeObserver` cannot catch that, because the element size never changed, only the glyph metrics (#113).
@@ -342,9 +342,46 @@ Two overlays cover launch and shutdown so the user sees progress instead of a bl
 
 **Launch overlay (per session)** lives in `Assets/terminal.html` and `Assets/terminal-transparent.html` as a CSS-animated rotating SVG arc with a phase label. Visible by default; `TerminalBridge` posts `setBootState` after `NavigationCompleted` (label = `Starting {cmd}…` for local, `Connecting to {host}…` for SSH; accent = session color) and `bootDone` on the first PTY byte (via `OnPtyData → PostBootDoneIfNeeded`, race-safe via `Interlocked.CompareExchange`). An 8-second fallback timer scheduled in `NavCompleted` also calls `PostBootDoneIfNeeded` so silent sessions and slow SSH handshakes don't lock the user out of the pane.
 
-**Shutdown overlay (app-level)** is a `Grid x:Name="ShutdownOverlay"` on `MainWindow.xaml` with a `Storyboard`-rotated `Path`. `OnClosing` shows it then `await Dispatcher.InvokeAsync(() => {}, DispatcherPriority.Background)` to force a render pass before the existing synchronous session-disposal loop blocks the UI thread.
+**You cannot draw WPF content over a terminal pane.** WebView2 is an `HwndHost`, and a
+native child window is composited by the OS *on top of* everything WPF renders —
+`Panel.ZIndex` does not enter into it. This is the same `HwndHost` fact recorded under
+"What makes a session active", but for **output** rather than input, and it is the more
+expensive half to rediscover: the code looks correct, the overlay is genuinely in the tree
+with `Panel.ZIndex="100"`, and it simply does not appear.
 
-Full design: `docs/superpowers/specs/2026-05-16-session-spinners-design.md`.
+The original centred shutdown spinner was invisible for exactly this reason. All the user
+ever saw was scrim leaking through the few-pixel gaps *between* panes — reported, fairly, as
+"more like 1 line, hard to see, no spinner". Anything full-window must therefore either
+collapse `TerminalGrid` first (what `OnClosing` does) or live in the toolbar/sidebar chrome,
+which no `HwndHost` covers.
+
+**Restore rail (startup, app-level)** — `RestoreRail` (a 2px `ProgressBar`, `FlatBar` style)
+docked under the toolbar plus a `RestorePill` counter in the toolbar's right stack, both
+driven by `SetRestoreProgress(done, total)` from the `OnLoaded` restore loop and hidden
+outside it. Determinate on purpose: a 25-session restore runs ~131s with per-session cost
+swinging 12×, so there is no rate to extrapolate and a spinner reads identically at session
+2 and session 22. Placed in the toolbar because that is above the airspace problem.
+
+The counter advances *after* the `try`/`catch` around `LaunchSessionAsync`, so a session that
+fails to restore still moves the rail — otherwise one bad session strands it short of full,
+which reads as a hang.
+
+**Shutdown board (app-level)** — `ShutdownOverlay` is now a card listing every session with a
+per-row glyph (`·` pending → `◐` closing → `✓` clean / `⨯` force-disposed), elapsed time, an
+overall `k / N` bar, and a budget bar running against `ClaudeShutdownBudgetMs`. Built by
+`BuildShutdownBoard`, updated in place by `MarkShutdownRow` / `SetShutdownProgress` /
+`SetShutdownBudget`.
+
+Force-disposed sessions are **marked, not hidden** — that is the case a user most wants to
+see, and it used to happen silently. `ShutdownHint` escalates with elapsed time to explain
+*why* the wait is long; keep it explanatory rather than jokey, since it has to still read
+well on the four-hundredth shutdown. The board is skipped entirely when there are no
+sessions, so `--clean` runs don't get a full-window flash of "0 / 0".
+
+Full design: `docs/superpowers/specs/2026-05-16-session-spinners-design.md`. Option
+comparison behind the current design: the "Waiting States" artifact (Quiet Rail for startup,
+Restore Board for shutdown — the two paths deliberately differ, because restore does not
+block the user and shutdown does).
 
 ## Search
 
