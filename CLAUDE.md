@@ -79,6 +79,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `PaddingParser` | WT `padding` shorthand (1/2/4 comma ints) → CSS `Npx` shorthand |
 | `CommandLineSplitter` | Helper — quote-aware split of a Windows commandline into `(exe, args)` |
 | `ShellIntegrationPayload` | WPF-free validation for the OSC 9001 channel: hex-colour check + `#rrggbbaa`→`#aarrggbb`, dirty-flag parse, title/branch sanitising (control chars stripped, 80-char cap). See "Shell Integration (OSC 9001)" |
+| `WslDiscoveryService` | `wsl -l -v` parsing (UTF-16, header skipped, `*` default marker, names with spaces), `GetDistroHomeAsync` (cached `cd ~ && pwd` per distro+user), `ToUncPath` / `TryParseUncPath` — the **only** UNC↔Linux path converters; GitService and NewSessionDialog delegate here |
 
 ## Project Structure
 
@@ -128,7 +129,7 @@ tests/
 - Accent blue: `#89b4fa`, Green: `#a6e3a1`, Alert pink: `#f38ba8`
 - Hover: `#45475a`, Selected: `#585b70`
 
-**Session accent colors** — `ColorService.GetHexColor(key)` uses FNV-1a hash to deterministically assign one of 12 colors. For local sessions the key is `WorkingFolder`; for SSH sessions it is `user@host`. Used as sidebar stripe + terminal toolbar top border.
+**Session accent colors** — `ColorService.GetHexColor(key)` uses FNV-1a hash to deterministically assign one of 12 colors. For local sessions the key is `WorkingFolder`; for SSH sessions `user@host`; for WSL `wsl://<distro><linux-folder>`. Used as sidebar stripe + terminal toolbar top border.
 
 **Active-terminal highlight** — every terminal pane is wrapped in an outer "active ring" Border (constant 2px thickness, transparent by default) so toggling it doesn't shift content. `UpdateActiveTerminalHighlight` (called from `UpdateSidebarActiveState`, which fires on every `MainViewModel.ActiveSession` change) paints the ring of the active session's pane in its accent color and clears all others.
 
@@ -151,8 +152,8 @@ The page-side `mousedown` handler also calls `fitAddon.fit()`, and the initial f
 
 ## Session Lifecycle
 
-1. User clicks **＋ New Session** → `NewSessionDialog` modal (Local or Remote SSH)
-2. `SessionManager.CreateSession()` creates `ShellSession` model; caller copies SSH fields if remote
+1. User clicks **＋ New Session** → `NewSessionDialog` modal (Local, Remote SSH, or WSL)
+2. `SessionManager.CreateSession()` creates `ShellSession` model; caller sets `Kind` and copies SSH or WSL fields; for WSL it also sets `WorkingFolder` to the `\\wsl$\<distro>\<linux path>` UNC mirror (see "WSL Sessions")
 3. `LaunchSessionAsync()` creates: `SessionViewModel` → `WebView2` → `TerminalBridge` → `PseudoTerminal`
 4. `OutputIndexer` indexes all output to SQLite; `AlertDetector` watches for prompts
 5. Termination paths:
@@ -181,32 +182,40 @@ dormant row (edit a sleeping session without waking it).
 - Title becomes "Edit Session", the primary button becomes "Save".
 - "Recently closed" and the sibling-worktree checkbox list are hidden (both are
   create-only concepts); the worktree probe is skipped entirely (`IsEditMode` guard).
-- Local/Remote radio, folder, SSH host/port/remote folder, command (matched against the
-  launch-command list, falling back to `[custom]`), and name are all pre-filled.
+- Local/Remote/WSL radio, folder, SSH host/port/remote folder, WSL distro (pre-selected once
+  the async list loads; a since-uninstalled distro is kept as a `(not installed)` entry so
+  Save cannot wipe it), WSL user and Linux folder are all pre-filled, as is command (matched
+  against the launch-command list, falling back to `[custom]`), and name.
 - **Appearance combobox in edit mode:** when the session already carries profile overrides,
   the list gains a `— keep current appearance —` entry (tag `KeepCurrentAppearanceTag`,
   selected by default so saving never silently resets the look) and the old `— none —`
   entry is relabelled `— clear appearance overrides —`. The panel is shown when there are
   profiles to pick **or** overrides to clear, so overrides remain removable with Windows
-  Terminal import switched off.
+  Terminal import switched off. The appearance panel is shown for Local and WSL, hidden only
+  for SSH.
 
 **Result plumbing** — the dialog's `ToDraft()` returns a `Models.SessionConfigDraft` (a flat,
 UI-free snapshot of every field the form owns). `Services.SessionConfigEditor` then does the
 work, and being WPF-free is what makes the rules unit-testable
 (`tests/CodeShellManager.Tests/SessionConfigEditorTests.cs`):
 
-- `Diff(session, draft)` → `SessionConfigChange(AnyChange, RequiresRelaunch, WorkingFolderChanged, AppearanceChanged)`
+- `Diff(session, draft)` → `SessionConfigChange(AnyChange, RequiresRelaunch, WorkingFolderChanged, AppearanceChanged)`.
+  `WorkingFolderChanged` also fires for a WSL distro/Linux-folder change, not just a local
+  folder edit.
 - `Apply(session, draft)` writes every form-owned field verbatim (blanks included, so
-  clearing in the dialog really clears). Runtime state — `Id`, `GroupId`, `Status`,
+  clearing in the dialog really clears), including `Kind` directly; for WSL it also
+  **re-derives the UNC `WorkingFolder`** from the saved distro + Linux folder rather than
+  trusting whatever the dialog had cached. Runtime state — `Id`, `GroupId`, `Status`,
   `RunCommands`, `IsDormant` — is untouched.
 
-**What needs a restart.** `RequiresRelaunch` is true for: local↔remote flip, command or
+**What needs a restart.** `RequiresRelaunch` is true for: any `Kind` change, command or
 args change, working-folder change (path-normalized compare), any SSH target field change,
-crossing the transparency boundary (opacity `< 1.0` picks a different xterm host page at
-navigation time), and *clearing* an override (`TerminalBridge.ApplyProfileOverrides` only
-ever **sets** options, so it can't push a value back to the global default). SSH fields and
-the working folder are only compared while the session stays in the same mode, so leftovers
-from a previous mode don't read as a change.
+any WSL field change (distro, user, Linux folder), crossing the transparency boundary
+(opacity `< 1.0` picks a different xterm host page at navigation time), and *clearing* an
+override (`TerminalBridge.ApplyProfileOverrides` only ever **sets** options, so it can't push
+a value back to the global default). SSH and WSL fields and the working folder are only
+compared while the session stays in the same kind, so leftovers from a previous mode don't
+read as a change.
 
 Everything else is applied live: `SessionViewModel.NotifyConfigChanged()` re-raises the
 model-mirroring properties so the sidebar row and terminal toolbar repaint in place (no
@@ -228,13 +237,27 @@ Run commands are *not* part of this form; they have their own editor
 
 Remote sessions use the system `ssh` client as the PTY command — no extra library.
 
-- `ShellSession.IsRemote` flag distinguishes remote from local sessions
+- `ShellSession.Kind == SessionKind.Ssh` distinguishes remote sessions from Local/WSL ones.
+  `IsRemote` still exists as a `[JsonIgnore]`d two-way convenience view over `Kind` for the
+  SSH case (not the persisted discriminator — see "WSL Sessions").
 - SSH config fields on `ShellSession`: `SshUser`, `SshHost`, `SshPort` (default 22), `SshRemoteFolder`
 - `ShellSession.BuildSshArgs()` (internal) produces: `-t [–p PORT] user@host "cd 'folder' && shell"`
-- `LaunchSessionAsync()` branches on `IsRemote`: uses `ssh` + `BuildSshArgs()`, skips Claude auto-resume
+- `LaunchSessionAsync()` branches on `Kind`: SSH sessions use `ssh` + `BuildSshArgs()`, skipping Claude auto-resume
 - `PseudoTerminal.BuildCmdLine` passes `ssh` through directly (same as `cmd`/`pwsh`) — not wrapped in PowerShell
 - `SessionViewModel.RefreshGitInfoAsync()` early-returns for remote sessions (no local working folder)
 - SSH fields serialize to `state.json` automatically — sessions restore and relaunch on next startup
+
+## WSL Sessions
+
+`SessionKind.Wsl` launches `wsl.exe -d <distro> [-u <user>] --cd <linux-folder> -- bash -lc "<command args>"` (PR #65, hardened on `feat/wsl-sessions-v2`).
+
+- **`Kind` is the only persisted discriminator.** `IsRemote` is a `[JsonIgnore]`d two-way convenience over `Kind` (`false` on an SSH session makes it Local; a WSL session is untouched). The legacy `"IsRemote"` JSON key lands in `LegacyIsRemote` and `StateService.Normalize` folds it into `Kind` — migration lives in the loader, never in a setter. A promote-only setter was tried first and silently broke "Edit session" (SSH→Local could not demote) and then every save (`FullCommandLine` was serialised and threw); see `ShellSessionMigrationTests`.
+- **UNC mirror invariant.** A WSL session stores `WorkingFolder = WslDiscoveryService.ToUncPath(WslDistro, WslWorkingFolder)` (`\\wsl$\Ubuntu\home\alice\proj`). Explorer, the dormant row, run-command template seeding and `GitService` all work off that path unchanged. The Linux-side path lives on `WslWorkingFolder` and is what `--cd` receives. Every path that creates or edits a WSL session must keep both in step: `MainWindow` session creation, `InheritSessionKindFrom` (duplicate / worktree), `SessionConfigEditor.Apply`, `ReopenClosedSessionAsync`.
+- **GitService routing.** `RunGitFullAsync` detects the UNC and runs `wsl.exe -d <distro> -- git -C <linux> …`, translating `\\wsl$` args to Linux (`TranslateUncArgsToLinux`, with a distro-name boundary so `Ubuntu` never matches `Ubuntu-22.04`) and Linux paths in stdout back to UNC. `SessionViewModel.RefreshGitInfoAsync` runs the probe on the thread pool (a `Directory.Exists` on `\\wsl$` boots a stopped distro and used to freeze the UI), polls WSL sessions every **30 s** (10 s local) and caches a "not a repo" answer for WSL so it does not spawn `wsl.exe` for it forever.
+- **Quoting.** Everything that reaches `wsl.exe` goes through `ShellSession.QuoteForCmd` — MSVCRT rules (backslashes before a quote doubled, trailing backslashes doubled), verified by round-tripping through `CommandLineToArgvW` in `Win32CommandLineTests`. There is one `BuildWslArgs` (`ShellSession.BuildWslArgs(string? inner)`); `RunInstance` delegates to it and turns a build failure into a failed run chip rather than a throw.
+- **Validation before UI.** `ShellSession.LaunchValidationError` (blank distro / blank SSH host) is checked at the top of `LaunchSessionAsync` before any WebView2 exists. `state.json` and imports are untrusted; a bad entry used to leak a pane.
+- **Relaunch paths.** `RecentlyClosedEntry` and the `session_history.snapshot_json` column carry `Kind` + WSL fields, so Ctrl+Shift+T, the "Recently closed" list and relaunch-from-search all restore the right kind.
+- **Known gaps:** WSL Claude sessions do not auto-resume on restore (`--resume` id lookup reads the Windows `~/.claude`); a distro name beginning with `-` is not defended against in `wsl.exe` option parsing.
 
 ## Windows Terminal Profile Import (opt-in)
 
@@ -266,7 +289,7 @@ Closing a session (`Ctrl+W`, sidebar `✕`, or terminal-toolbar close) pushes a 
 
 Sleep/wake doesn't touch the ring (`SleepSession` bypasses `OnSessionCloseRequested`). `--clean` mode clears the ring at startup (full debug isolation) and never persists changes — `SaveStateAsync` is a no-op in clean mode.
 
-The snapshot model is `Models/RecentlyClosedEntry.cs` — a separate POCO from `ShellSession` so PTY/runtime fields (`IsDormant`, `Status`, `LastActivityAt`) don't leak into the ring buffer. `RunCommands` are deep-copied with fresh Ids on both snapshot creation and session recreation, so edits to either side never alias the other.
+The snapshot model is `Models/RecentlyClosedEntry.cs` — a separate POCO from `ShellSession` so PTY/runtime fields (`IsDormant`, `Status`, `LastActivityAt`) don't leak into the ring buffer. `RunCommands` are deep-copied with fresh Ids on both snapshot creation and session recreation, so edits to either side never alias the other. Entries carry `Kind` and the SSH/WSL fields; legacy entries are migrated by `StateService.Normalize` like sessions.
 
 FTS5 scrollback retention is **out of scope** for v1 — restored sessions start with an empty xterm buffer.
 
@@ -325,7 +348,7 @@ Each session can have a list of "run commands" — labelled command lines invoke
 
 **Data:** `ShellSession.RunCommands: List<RunCommandItem> { Id, Label, CommandLine, IsDefault, Mode, PostRunUrl }`. Exactly one item has `IsDefault=true`; see `RunCommandItem.EnsureSingleDefault`. Persisted to `state.json`.
 
-- **`Mode`** (`RunMode.Process` default / `RunMode.PowerShell`) — `Process` runs through `cmd /c` as before; `PowerShell` wraps the command line in `pwsh.exe -NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand <utf16le-b64>` (falls back to `powershell.exe` if `pwsh` isn't on PATH). SSH parents ignore `Mode` — remote runs always go through bash. Use PowerShell when the command relies on pipes (`|`), redirection (`>`), `$env:` variables, or cmdlets.
+- **`Mode`** (`RunMode.Process` default / `RunMode.PowerShell`) — `Process` runs through `cmd /c` as before; `PowerShell` wraps the command line in `pwsh.exe -NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand <utf16le-b64>` (falls back to `powershell.exe` if `pwsh` isn't on PATH). SSH and WSL parents ignore `Mode` — those runs always go through bash (`ssh … bash -c` / `wsl.exe … bash -lc`). Use PowerShell when the command relies on pipes (`|`), redirection (`>`), `$env:` variables, or cmdlets.
 - **`PostRunUrl`** (`string?`, default `null`) — when set and the run exits with code 0, `Process.Start` opens the URL via `UseShellExecute=true` (default browser). No health-check polling. The value is gated by `RunInstance.IsLaunchableUrl` first: **only absolute `http`/`https` URLs are launched.** ShellExecute would otherwise run a local exe, a `.ps1`, a UNC path or any registered protocol handler, and this fires automatically with no confirmation — and `ImportExportService` deserializes a whole `AppState` (run commands included) from any JSON file the user points at, so the stored value is not trusted. Rejections and launch failures both append to `crash.log`; neither pops UI, since this runs on the PTY-exit callback thread. Scheme-less input (`localhost:5173`) is rejected rather than guessed at.
 
 **Templates:** `RunCommandTemplatesService.SeedFor(folder)` detects project type (top-level scan, first-match: dotnet → cargo → node → python → make) and returns a seed list with fresh Ids. Templates are *copied* onto new sessions at creation time; subsequent edits don't propagate back. SSH sessions skip detection (empty list).
