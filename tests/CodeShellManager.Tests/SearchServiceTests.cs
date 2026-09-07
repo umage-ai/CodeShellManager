@@ -282,6 +282,58 @@ public class SearchServiceTests : IDisposable
         Assert.Null(entry);
     }
 
+    [Fact]
+    public async Task SessionHistory_RoundTripsSnapshotJson()
+    {
+        await _svc.RecordSessionHistoryAsync("sid-1", "n", @"\\wsl$\Ubuntu\home\a", "claude", "", "", "{\"Kind\":2}");
+        var e = await _svc.GetSessionHistoryAsync("sid-1");
+        Assert.NotNull(e);
+        Assert.Equal("{\"Kind\":2}", e!.SnapshotJson);
+    }
+
+    [Fact]
+    public async Task SessionHistory_WithoutSnapshot_ReadsNull()
+    {
+        await _svc.RecordSessionHistoryAsync("sid-2", "n", @"C:\p", "claude", "", "");
+        var e = await _svc.GetLatestSessionHistoryForFolderAsync(@"C:\p");
+        Assert.Null(e!.SnapshotJson);
+    }
+
+    [Fact]
+    public async Task InitializeSchema_UpgradesPreSnapshotTable()
+    {
+        // Simulate a database created by the previous release: same table without the column.
+        string path = Path.Combine(Path.GetTempPath(), $"csm-hist-{Guid.NewGuid():N}.db");
+        var db = new SqliteConnection($"Data Source={path}");
+        db.Open();
+        try
+        {
+            await using (var cmd = db.CreateCommand())
+            {
+                cmd.CommandText = """
+                    CREATE TABLE session_history (
+                        id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, session_name TEXT NOT NULL,
+                        working_folder TEXT NOT NULL, command TEXT NOT NULL, args TEXT NOT NULL DEFAULT '',
+                        group_id TEXT NOT NULL DEFAULT '', exited_at INTEGER NOT NULL);
+                    INSERT INTO session_history (session_id, session_name, working_folder, command, exited_at)
+                    VALUES ('old', 'o', 'C:\x', 'bash', 1);
+                    """;
+                await cmd.ExecuteNonQueryAsync();
+            }
+            await SearchService.InitializeSchemaAsync(db);
+            await SearchService.InitializeSchemaAsync(db); // idempotent
+            var svc = new SearchService(db);
+            var e = await svc.GetSessionHistoryAsync("old");
+            Assert.NotNull(e);
+            Assert.Null(e!.SnapshotJson);
+        }
+        finally
+        {
+            db.Close(); db.Dispose(); SqliteConnection.ClearAllPools();
+            try { File.Delete(path); } catch { }
+        }
+    }
+
     // ── Storage management ──────────────────────────────────────────────────
 
     [Fact]

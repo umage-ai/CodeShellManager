@@ -41,31 +41,20 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public string AccentColor => Session.ColorOverride
         ?? ColorService.GetHexColor(
-            Session.IsRemote
-                ? (string.IsNullOrWhiteSpace(Session.SshUser)
-                    ? Session.SshHost
-                    : $"{Session.SshUser}@{Session.SshHost}")
-                // Key on RepoRoot when known so worktree siblings share a color;
-                // fall back to WorkingFolder for non-git sessions.
-                : (string.IsNullOrEmpty(RepoRoot) ? Session.WorkingFolder : RepoRoot));
+            // SSH never gets a RepoRoot override (no local filesystem); for Local + WSL
+            // prefer RepoRoot so worktree siblings share a color, falling back to
+            // the kind-specific accent key.
+            Session.Kind == SessionKind.Ssh
+                ? Session.AccentKey
+                : (string.IsNullOrEmpty(RepoRoot) ? Session.AccentKey : RepoRoot));
 
     partial void OnRepoRootChanged(string? value) => OnPropertyChanged(nameof(AccentColor));
 
     public string DisplayName => string.IsNullOrWhiteSpace(Session.Name)
-        ? (Session.IsRemote
-            ? (string.IsNullOrWhiteSpace(Session.SshHost) ? Session.Command : Session.SshHost)
-            : System.IO.Path.GetFileName(Session.WorkingFolder.TrimEnd('/', '\\')) ?? Session.Command)
+        ? Session.DefaultDisplayName
         : Session.Name;
 
-    public string FolderShort
-    {
-        get
-        {
-            if (string.IsNullOrEmpty(Session.WorkingFolder)) return "";
-            var di = new System.IO.DirectoryInfo(Session.WorkingFolder);
-            return di.Name;
-        }
-    }
+    public string FolderShort => Session.FolderShort;
 
     public event Action<SessionViewModel>? CloseRequested;
 
@@ -88,10 +77,37 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         _ = PollGitInfoAsync(_gitPollCts.Token);
     }
 
+    /// <summary>
+    /// Git poll cadence per kind. WSL probes spawn wsl.exe (much heavier than a local git
+    /// spawn) and defeat WSL2's idle-VM shutdown, so they run a third as often.
+    /// </summary>
+    internal static TimeSpan GitPollIntervalFor(SessionKind kind) =>
+        kind == SessionKind.Wsl ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(10);
+
+    // WSL only: a "not a repo" answer costs a wsl.exe spawn per tick, so remember it.
+    // Local folders keep re-probing (a `git init` should be picked up within a tick).
+    private bool _repoRootProbedNegative;
+
     public async Task RefreshGitInfoAsync()
     {
-        if (Session.IsRemote || _gitOverriddenByOsc) return;
-        var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
+        // SSH sessions have no local working folder to inspect. WSL sessions store
+        // their WorkingFolder as a `\\wsl$\<distro>\...` UNC; GitService detects that
+        // and dispatches to `wsl.exe -- git -C <linuxPath>` internally (Git for
+        // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
+        if (Session.Kind == SessionKind.Ssh || _gitOverriddenByOsc) return;
+
+        // Captured before the probe goes off-thread, not read from _gitPollCts afterwards:
+        // Dispose() cancels (then disposes) that CTS if the session closes while the
+        // Task.Run below is still in flight, and CancellationToken.IsCancellationRequested
+        // never throws even once the source is disposed, so this stays safe either way.
+        var token = _gitPollCts.Token;
+
+        // Off the dispatcher: GitService begins with a synchronous Directory.Exists, and on
+        // a \\wsl$ share that boots a stopped distro (seconds). Continuations return to the
+        // captured UI context, so the property sets below stay on the UI thread.
+        string folder = Session.WorkingFolder;
+        var (branch, isDirty) = await Task.Run(() => GitService.GetGitInfoAsync(folder));
+        if (token.IsCancellationRequested) return; // session closed while the probe was off-thread
         GitBranch = branch;
         GitIsDirty = isDirty;
         GitInfoLoaded = true;
@@ -99,8 +115,13 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // RepoRoot is stable for the life of the session — resolve it once. Don't gate on
         // a non-empty branch: detached HEADs report no branch but are still valid repos
         // that should participate in sibling detection, shared accent color, and clusters.
-        if (RepoRoot == null)
-            RepoRoot = await GitService.GetRepoRootAsync(Session.WorkingFolder);
+        if (RepoRoot == null && !_repoRootProbedNegative)
+        {
+            string? repoRoot = await Task.Run(() => GitService.GetRepoRootAsync(folder));
+            if (token.IsCancellationRequested) return; // session closed while the probe was off-thread
+            RepoRoot = repoRoot;
+            if (RepoRoot == null && Session.Kind == SessionKind.Wsl) _repoRootProbedNegative = true;
+        }
     }
 
     /// <summary>Short repo + branch label shown beneath the session name when sibling worktrees are open.</summary>
@@ -117,7 +138,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     private async Task PollGitInfoAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        using var timer = new PeriodicTimer(GitPollIntervalFor(Session.Kind));
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
@@ -231,6 +252,8 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // pushed git info via OSC 9001 was describing the old one. Let the local poller
         // back in until a program re-declares itself.
         _gitOverriddenByOsc = false;
+        // Same reason: a "not a repo" answer for the old folder doesn't apply to the new one.
+        _repoRootProbedNegative = false;
         return RefreshGitInfoAsync();
     }
 

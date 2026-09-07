@@ -458,7 +458,10 @@ public partial class MainWindow : Window
 
             var name = new TextBlock
             {
-                Text = string.IsNullOrWhiteSpace(vm.Name) ? vm.Command : vm.Name,
+                // DisplayName, not Command: a WSL session can legitimately carry a blank
+                // Command (the dialog stores "" when the shell box is empty, so the login
+                // shell is resolved at launch), which used to render an empty row label.
+                Text = vm.DisplayName,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 11.5,
@@ -644,7 +647,8 @@ public partial class MainWindow : Window
             defaultCommand: parent?.Session.Command,
             defaultArgs: parent?.Session.Args,
             defaultName: null,
-            recentlyClosed: _vm.RecentlyClosed)
+            recentlyClosed: _vm.RecentlyClosed,
+            defaultSourceSession: parent?.Session)
         {
             Owner = this
         };
@@ -693,11 +697,23 @@ public partial class MainWindow : Window
 
         if (dialog.IsRemote)
         {
-            session.IsRemote = true;
+            session.Kind = Models.SessionKind.Ssh;
             session.SshUser = dialog.SshUser;
             session.SshHost = dialog.SshHost;
             session.SshPort = dialog.SshPort;
             session.SshRemoteFolder = dialog.SshRemoteFolder;
+        }
+        else if (dialog.IsWsl)
+        {
+            session.Kind = Models.SessionKind.Wsl;
+            session.WslDistro = dialog.WslDistro;
+            session.WslUser = dialog.WslUser;
+            session.WslWorkingFolder = dialog.WslWorkingFolder;
+            // The session's WorkingFolder stays as a Windows UNC view of the same path
+            // so anything that touches the filesystem (git status, "open in Explorer")
+            // resolves correctly. Empty = unmounted; LaunchSessionAsync falls back.
+            session.WorkingFolder = Services.WslDiscoveryService.ToUncPath(
+                dialog.WslDistro, dialog.WslWorkingFolder);
         }
 
         // Profile overrides come from the dialog (which may have copied from a Windows Terminal
@@ -732,11 +748,18 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(entry.GroupId) ? null : entry.GroupId,
             colorOverride: entry.ColorOverride);
 
-        session.IsRemote = entry.IsRemote;
+        session.Kind = entry.Kind;
         session.SshUser = entry.SshUser;
         session.SshHost = entry.SshHost;
         session.SshPort = entry.SshPort;
         session.SshRemoteFolder = entry.SshRemoteFolder;
+        session.WslDistro = entry.WslDistro;
+        session.WslUser = entry.WslUser;
+        session.WslWorkingFolder = entry.WslWorkingFolder;
+        // A hand-edited or stale RecentlyClosed entry can carry a WorkingFolder that no
+        // longer matches WslDistro/WslWorkingFolder (see CLAUDE.md "WSL Sessions" — the
+        // UNC mirror invariant). Re-derive rather than trust the snapshot's WorkingFolder.
+        Services.WslDiscoveryService.ResyncWslWorkingFolder(session);
 
         session.ProfileFontFamily = entry.ProfileFontFamily;
         session.ProfileFontSize = entry.ProfileFontSize;
@@ -809,6 +832,7 @@ public partial class MainWindow : Window
                 string.IsNullOrEmpty(primary.GroupId) ? null : primary.GroupId,
                 colorOverride: null,
                 afterSessionId: anchorId);
+            InheritSessionKindFrom(sibling, primary);
             // Inherit profile so siblings look identical.
             sibling.ProfileFontFamily = primary.ProfileFontFamily;
             sibling.ProfileFontSize = primary.ProfileFontSize;
@@ -843,14 +867,7 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
             colorOverride: null,
             afterSessionId: parent.Id);
-        if (p.IsRemote)
-        {
-            clone.IsRemote = true;
-            clone.SshUser = p.SshUser;
-            clone.SshHost = p.SshHost;
-            clone.SshPort = p.SshPort;
-            clone.SshRemoteFolder = p.SshRemoteFolder;
-        }
+        InheritSessionKindFrom(clone, p);
         clone.ProfileFontFamily = p.ProfileFontFamily;
         clone.ProfileFontSize = p.ProfileFontSize;
         clone.ProfileFontWeight = p.ProfileFontWeight;
@@ -896,6 +913,55 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Propagates a parent session's <see cref="Models.SessionKind"/> and kind-specific
+    /// fields (SSH host/user/port, WSL distro/user) onto a freshly-created child
+    /// session. For WSL children it also derives <c>WslWorkingFolder</c> from the
+    /// child's <c>WorkingFolder</c>, which the worktree code paths set to a
+    /// <c>\\wsl$\&lt;distro&gt;\…</c> UNC. Without this step a new session spawned
+    /// from a WSL parent (Duplicate, sibling worktree, new worktree) silently falls
+    /// back to <see cref="Models.SessionKind.Local"/> and tries to run the parent's
+    /// command (e.g. <c>claude</c>) inside a Windows PowerShell at the UNC path.
+    /// </summary>
+    private static void InheritSessionKindFrom(Models.ShellSession target, Models.ShellSession source)
+    {
+        target.Kind = source.Kind;
+        if (source.Kind == Models.SessionKind.Ssh)
+        {
+            target.SshUser = source.SshUser;
+            target.SshHost = source.SshHost;
+            target.SshPort = source.SshPort;
+            target.SshRemoteFolder = source.SshRemoteFolder;
+            return;
+        }
+        if (source.Kind == Models.SessionKind.Wsl)
+        {
+            target.WslDistro = source.WslDistro;
+            target.WslUser = source.WslUser;
+
+            var (parsedDistro, parsedLinux) = Services.GitService.TryParseWslUnc(target.WorkingFolder);
+            if (!string.IsNullOrEmpty(parsedDistro))
+            {
+                // Common path: WorkingFolder is a WSL UNC the caller already built.
+                target.WslWorkingFolder = parsedLinux == "/" ? "" : parsedLinux;
+            }
+            else if (!string.IsNullOrEmpty(target.WorkingFolder) && target.WorkingFolder.StartsWith('/'))
+            {
+                // Caller passed a Linux path directly (e.g. typed into a worktree dialog).
+                target.WslWorkingFolder = target.WorkingFolder;
+                target.WorkingFolder = Services.WslDiscoveryService.ToUncPath(
+                    source.WslDistro, target.WslWorkingFolder);
+            }
+            else
+            {
+                // Unknown shape — keep the parent's folder so the child at least lands
+                // somewhere usable instead of in $HOME-by-accident.
+                target.WslWorkingFolder = source.WslWorkingFolder;
+                target.WorkingFolder = source.WorkingFolder;
+            }
+        }
+    }
+
+    /// <summary>
     /// Launches a new session in an existing sibling worktree (path resolved via
     /// `git worktree list`). Inherits the source session's command, group, and profile.
     /// </summary>
@@ -916,6 +982,7 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(p.GroupId) ? null : p.GroupId,
             colorOverride: null,
             afterSessionId: parent.Id);
+        InheritSessionKindFrom(sibling, p);
         sibling.ProfileFontFamily = p.ProfileFontFamily;
         sibling.ProfileFontSize = p.ProfileFontSize;
         sibling.ProfileFontWeight = p.ProfileFontWeight;
@@ -938,7 +1005,12 @@ public partial class MainWindow : Window
     /// </summary>
     private void SeedRunCommandsAsync(Models.ShellSession session)
     {
-        if (session.IsRemote) return;
+        // SSH is out of reach for the synchronous Directory.EnumerateFiles probe.
+        // WSL is reachable via the `\\wsl$\<distro>\…` UNC view — slow on first
+        // access if the distro VM is stopped, but the probe runs on a background
+        // task so the UI doesn't block. RunInstance already wraps run commands in
+        // `wsl.exe -- bash -lc` for WSL parents.
+        if (session.Kind == Models.SessionKind.Ssh) return;
         if (session.RunCommands.Count > 0) return;
         if (string.IsNullOrWhiteSpace(session.WorkingFolder)) return;
 
@@ -1189,6 +1261,61 @@ public partial class MainWindow : Window
         bool removeOnFailure = true)
     {
         Log($"LaunchSession START: cmd='{session.Command}' args='{session.Args}' folder='{session.WorkingFolder}' restoring={restoring}");
+
+        if (session.LaunchValidationError is { } validationError)
+        {
+            Log($"LaunchSession REFUSED: {validationError}");
+            string label = string.IsNullOrWhiteSpace(session.Name) ? session.DefaultDisplayName : session.Name;
+            MessageBox.Show(this, $"Cannot start '{label}'.\n\n{validationError}",
+                "Launch Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            // Mirrors the PTY-failure catch below: dormant fallback is the caller's job.
+            // RestartSessionAsync (the only removeOnFailure: false caller) already checks
+            // _sessionUi after the await and adds the dormant row itself — doing it here
+            // too would leave a second, untracked Border in the sidebar.
+            if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
+            if (_launchingSidebarItems.Remove(session.Id)) RebuildSidebarOrder();
+            return;
+        }
+
+        if (session.Kind == Models.SessionKind.Wsl)
+        {
+            // Resolve before BuildWslArgs runs below — minimal distros (Alpine, BusyBox
+            // images, Docker Desktop's own distro) have no bash, so hardcoding it fails
+            // every launch there. Run commands inherit this via the same ShellSession
+            // instance (RunInstance.BuildWslArgs delegates to session.BuildWslArgs).
+            // Started, not awaited: the home lookup below doesn't depend on it, and each
+            // probe carries its own 3s timeout — serialising them doubled the worst case
+            // on a cold launch, once per session during a restore.
+            var shellTask = WslDiscoveryService.GetLoginShellAsync(session.WslDistro, session.WslUser);
+
+            // Two folder shapes need $HOME resolved. Blank: the dialog resolves it eagerly,
+            // but that probe is capped at 3s and a cold distro (first launch after install)
+            // blows through it, leaving WorkingFolder at the distro ROOT — so git status, the
+            // sidebar subtitle and "Open in Explorer" aimed at / while the shell sat in $HOME.
+            // Leading ~: wsl.exe only special-cases the bare `~` token, so a typed "~/proj"
+            // is treated as an absolute *Windows* path and fails the launch outright. Both
+            // are fixed here, where the distro is starting anyway; GetDistroHomeAsync caches
+            // only successes, so this genuinely re-probes after an earlier timeout.
+            string wslFolder = (session.WslWorkingFolder ?? "").Trim();
+            bool needsHome = wslFolder.Length == 0
+                || wslFolder == "~"
+                || wslFolder.StartsWith("~/", StringComparison.Ordinal);
+            if (needsHome)
+            {
+                string? home = await WslDiscoveryService.GetDistroHomeAsync(session.WslDistro, session.WslUser);
+                if (!string.IsNullOrEmpty(home))
+                {
+                    session.WslWorkingFolder = wslFolder.StartsWith("~/", StringComparison.Ordinal)
+                        ? home.TrimEnd('/') + wslFolder[1..]
+                        : home;
+                    WslDiscoveryService.ResyncWslWorkingFolder(session);
+                    _ = _vm.SaveStateAsync();
+                }
+            }
+
+            session.ResolvedWslShell = await shellTask;
+        }
+
         var vm = new SessionViewModel(session);
 
         // Set up alert detection
@@ -1257,9 +1384,12 @@ public partial class MainWindow : Window
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
         string htmlPath = new Uri(Path.Combine(assetsDir, htmlFile)).AbsoluteUri;
 
-        string bootLabel = session.IsRemote
-            ? $"Connecting to {session.SshHost}…"
-            : $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…";
+        string bootLabel = session.Kind switch
+        {
+            Models.SessionKind.Ssh => $"Connecting to {session.SshHost}…",
+            Models.SessionKind.Wsl => $"Starting {session.WslDistro}…",
+            _ => $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…",
+        };
         bridge.SetBootContext(bootLabel, GetAccentForSession(session));
         await bridge.InitializeAsync(htmlPath);
         bridge.ApplyFontSettings(_vm.Settings);
@@ -1274,9 +1404,16 @@ public partial class MainWindow : Window
         {
             if (_searchService != null)
             {
+                // RunCommands is a plain List mutated on the UI thread (SeedRunCommandsAsync,
+                // the run-commands editor save handler); pty.Exited fires on a background
+                // thread with no marshaling, so snapshot it on the dispatcher rather than
+                // enumerating it from here.
+                string snapshotJson = Dispatcher.Invoke(() =>
+                    System.Text.Json.JsonSerializer.Serialize(Models.RecentlyClosedEntry.FromSession(session)));
                 _ = _searchService.RecordSessionHistoryAsync(
                     session.Id, session.Name, session.WorkingFolder,
-                    session.Command, session.Args, session.GroupId);
+                    session.Command, session.Args, session.GroupId,
+                    snapshotJson);
                 if (sessionStartUtc != DateTime.MinValue && !string.IsNullOrEmpty(usageCommandKey))
                 {
                     long secs = (long)(DateTime.UtcNow - sessionStartUtc).TotalSeconds;
@@ -1294,10 +1431,19 @@ public partial class MainWindow : Window
         string effectiveArgs;
         string workDir;
 
-        if (session.IsRemote)
+        if (session.Kind == Models.SessionKind.Ssh)
         {
             effectiveCommand = "ssh";
             effectiveArgs = session.BuildSshArgs();
+            workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+        else if (session.Kind == Models.SessionKind.Wsl)
+        {
+            // wsl.exe handles its own cwd via --cd inside BuildWslArgs; pass the user
+            // profile as the launching process's cwd so CreateProcess never sees a UNC
+            // path it might reject.
+            effectiveCommand = "wsl.exe";
+            effectiveArgs = session.BuildWslArgs();
             workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
         else
@@ -3061,6 +3207,13 @@ public partial class MainWindow : Window
                 var psItem = new System.Windows.Controls.MenuItem { Header = "Open PowerShell here" };
                 psItem.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
                 menu.Items.Add(psItem);
+
+                if (vm.Session.IsWsl)
+                {
+                    var wslConsoleItem = new System.Windows.Controls.MenuItem { Header = "Open WSL console here" };
+                    wslConsoleItem.Click += (_, _) => LaunchWslConsoleFromSession(vm.Session);
+                    menu.Items.Add(wslConsoleItem);
+                }
             }
 
             menu.Items.Add(new System.Windows.Controls.Separator());
@@ -3248,6 +3401,7 @@ public partial class MainWindow : Window
             source.Session.Args,
             string.IsNullOrEmpty(source.Session.GroupId) ? null : source.Session.GroupId,
             source.Session.ColorOverride);
+        InheritSessionKindFrom(newSession, source.Session);
         newSession.ProfileFontFamily = source.Session.ProfileFontFamily;
         newSession.ProfileFontSize = source.Session.ProfileFontSize;
         newSession.ProfileFontWeight = source.Session.ProfileFontWeight;
@@ -4484,7 +4638,7 @@ public partial class MainWindow : Window
         var change = Services.SessionConfigEditor.Diff(session, draft);
         if (!change.AnyChange) return;
 
-        bool wasRemote = session.IsRemote;
+        var wasKind = session.Kind;
         // Apply mutates session.Command in place, so capture what the RUNNING process was
         // launched with before that happens. RestartSessionAsync needs the OLD command to
         // decide whether the outgoing process is a Claude that has to be waited out —
@@ -4494,7 +4648,7 @@ public partial class MainWindow : Window
         Services.SessionConfigEditor.Apply(session, draft);
 
         vm.NotifyConfigChanged();
-        if (change.WorkingFolderChanged || session.IsRemote != wasRemote)
+        if (change.WorkingFolderChanged || session.Kind != wasKind)
             _ = vm.ReloadGitInfoAsync();
 
         // No-op when the session carries no overrides; re-asserting the global font first
@@ -4785,9 +4939,7 @@ public partial class MainWindow : Window
         var textPanel = new StackPanel { Margin = new Thickness(8, 6, 4, 6) };
 
         string displayName = string.IsNullOrWhiteSpace(session.Name)
-            ? (session.IsRemote
-                ? (string.IsNullOrWhiteSpace(session.SshHost) ? session.Command : session.SshHost)
-                : System.IO.Path.GetFileName(session.WorkingFolder.TrimEnd('/', '\\')) ?? session.Command)
+            ? session.DefaultDisplayName
             : session.Name;
 
         var nameText = new TextBlock
@@ -4799,11 +4951,7 @@ public partial class MainWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis
         };
 
-        string folderShort = session.IsRemote
-            ? (string.IsNullOrWhiteSpace(session.SshHost) ? "" : session.SshHost)
-            : (string.IsNullOrEmpty(session.WorkingFolder)
-                ? ""
-                : new System.IO.DirectoryInfo(session.WorkingFolder).Name);
+        string folderShort = session.FolderShort;
 
         var folderText = new TextBlock
         {
@@ -4880,9 +5028,7 @@ public partial class MainWindow : Window
         var textPanel = new StackPanel { Margin = new Thickness(8, 6, 4, 6) };
 
         string displayName = string.IsNullOrWhiteSpace(session.Name)
-            ? (session.IsRemote
-                ? (string.IsNullOrWhiteSpace(session.SshHost) ? session.Command : session.SshHost)
-                : System.IO.Path.GetFileName(session.WorkingFolder.TrimEnd('/', '\\')) ?? session.Command)
+            ? session.DefaultDisplayName
             : session.Name;
 
         var nameText = new TextBlock
@@ -4894,11 +5040,7 @@ public partial class MainWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis
         };
 
-        string folderShort = session.IsRemote
-            ? (string.IsNullOrWhiteSpace(session.SshHost) ? "" : session.SshHost)
-            : (string.IsNullOrEmpty(session.WorkingFolder)
-                ? ""
-                : new System.IO.DirectoryInfo(session.WorkingFolder).Name);
+        string folderShort = session.FolderShort;
 
         var folderText = new TextBlock
         {
@@ -4996,10 +5138,7 @@ public partial class MainWindow : Window
     }
 
     private static string GetAccentForSession(ShellSession s) =>
-        s.ColorOverride ?? ColorService.GetHexColor(
-            s.IsRemote
-                ? (string.IsNullOrWhiteSpace(s.SshUser) ? s.SshHost : $"{s.SshUser}@{s.SshHost}")
-                : s.WorkingFolder);
+        s.ColorOverride ?? ColorService.GetHexColor(s.AccentKey);
 
     // ── Search ────────────────────────────────────────────────────────────────
 
@@ -5095,6 +5234,22 @@ public partial class MainWindow : Window
             "Relaunch Session?", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (answer != MessageBoxResult.Yes) return;
 
+        // Prefer the full snapshot: it carries Kind and the SSH/WSL fields, so a WSL session
+        // relaunches as WSL instead of Local-at-a-UNC. Rows from before the column exist
+        // without one and fall back to the kind-agnostic columns.
+        Models.RecentlyClosedEntry? snapshot = null;
+        if (!string.IsNullOrEmpty(entry.SnapshotJson))
+        {
+            try { snapshot = System.Text.Json.JsonSerializer.Deserialize<Models.RecentlyClosedEntry>(entry.SnapshotJson); }
+            catch (System.Text.Json.JsonException ex) { Log($"History snapshot unreadable for '{entry.SessionId}': {ex.Message}"); }
+        }
+        if (snapshot != null)
+        {
+            snapshot.MigrateLegacyFields();
+            await ReopenClosedSessionAsync(snapshot);
+            return;
+        }
+
         var newSession = _sessionManager.CreateSession(
             entry.SessionName, entry.WorkingFolder, entry.Command, entry.Args, entry.GroupId);
         SeedRunCommandsAsync(newSession);
@@ -5185,6 +5340,27 @@ public partial class MainWindow : Window
 
         var session = _sessionManager.CreateSession(folderName, workingFolder, cmd, "", groupId);
         SeedRunCommandsAsync(session);
+        _ = LaunchSessionAsync(session);
+    }
+
+    /// <summary>
+    /// WSL counterpart of <see cref="LaunchPowerShellInFolder"/>: spawns a bare bash
+    /// session inside the same distro + Linux folder as <paramref name="parent"/>.
+    /// Used by the "Open WSL console here" context-menu item.
+    /// </summary>
+    private void LaunchWslConsoleFromSession(Models.ShellSession parent)
+    {
+        if (!parent.IsWsl) return;
+        string leaf = string.IsNullOrEmpty(parent.WslWorkingFolder)
+            ? parent.WslDistro
+            : System.IO.Path.GetFileName(parent.WslWorkingFolder.TrimEnd('/'));
+        string name = string.IsNullOrEmpty(leaf) ? "bash" : $"{leaf} (bash)";
+
+        var session = _sessionManager.CreateSession(name, parent.WorkingFolder, "bash", "", parent.GroupId);
+        // session.WorkingFolder is already parent.WorkingFolder — a known-good WSL UNC —
+        // so InheritSessionKindFrom's "common path" branch re-derives WslWorkingFolder from
+        // it, which is a straight subset of the hand-copied assignments this replaces.
+        InheritSessionKindFrom(session, parent);
         _ = LaunchSessionAsync(session);
     }
 

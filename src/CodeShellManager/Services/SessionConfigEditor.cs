@@ -12,7 +12,7 @@ namespace CodeShellManager.Services;
 /// True when the change can only take effect by tearing down and restarting the PTY —
 /// see <see cref="SessionConfigEditor.Diff"/> for the exact rules.
 /// </param>
-/// <param name="WorkingFolderChanged">True when the local working folder moved (git info must be re-resolved).</param>
+/// <param name="WorkingFolderChanged">True when the local folder or WSL distro/Linux folder moved (git info must be re-resolved).</param>
 /// <param name="AppearanceChanged">True when any per-session appearance override differs.</param>
 public readonly record struct SessionConfigChange(
     bool AnyChange,
@@ -29,18 +29,25 @@ public static class SessionConfigEditor
 {
     public static SessionConfigChange Diff(ShellSession s, SessionConfigDraft d)
     {
-        bool modeChanged = d.IsRemote != s.IsRemote;
+        bool modeChanged = d.Kind != s.Kind;
 
-        // Only meaningful while the session stays local — a mode flip already forces a
-        // relaunch, and stale ssh/folder leftovers from the other mode shouldn't count.
-        bool folderChanged = !d.IsRemote && !s.IsRemote
+        // Kind-specific fields only count while the kind is unchanged — a kind flip already
+        // forces a relaunch, and leftovers from a previous kind must not read as edits.
+        bool sameKind = !modeChanged;
+        bool folderChanged = sameKind && s.Kind == SessionKind.Local
             && !PathsEqual(d.WorkingFolder, s.WorkingFolder);
 
-        bool sshChanged = d.IsRemote && s.IsRemote
+        bool sshChanged = sameKind && s.Kind == SessionKind.Ssh
             && (!Eq(d.SshUser, s.SshUser)
                 || !Eq(d.SshHost, s.SshHost)
                 || d.SshPort != s.SshPort
                 || !Eq(d.SshRemoteFolder, s.SshRemoteFolder));
+
+        bool wslFolderChanged = sameKind && s.Kind == SessionKind.Wsl
+            && (!Eq(d.WslDistro, s.WslDistro)
+                || !LinuxPathsEqual(d.WslWorkingFolder, s.WslWorkingFolder));
+        bool wslChanged = wslFolderChanged
+            || (sameKind && s.Kind == SessionKind.Wsl && !Eq(d.WslUser, s.WslUser));
 
         bool launchChanged = !Eq(d.Command, s.Command) || !Eq(d.Args, s.Args);
 
@@ -73,13 +80,13 @@ public static class SessionConfigEditor
             || Cleared(d.ProfileRetroEffect, s.ProfileRetroEffect)
             || Cleared(d.ProfileColorSchemeJson, s.ProfileColorSchemeJson);
 
-        bool anyChange = modeChanged || folderChanged || sshChanged || launchChanged
+        bool anyChange = modeChanged || folderChanged || sshChanged || wslChanged || launchChanged
             || appearanceChanged || !Eq(d.Name, s.Name);
 
-        bool requiresRelaunch = modeChanged || folderChanged || sshChanged || launchChanged
+        bool requiresRelaunch = modeChanged || folderChanged || sshChanged || wslChanged || launchChanged
             || transparencyChanged || overridesCleared;
 
-        return new SessionConfigChange(anyChange, requiresRelaunch, folderChanged, appearanceChanged);
+        return new SessionConfigChange(anyChange, requiresRelaunch, folderChanged || wslFolderChanged, appearanceChanged);
     }
 
     /// <summary>
@@ -92,12 +99,26 @@ public static class SessionConfigEditor
         s.Name = d.Name;
         s.Command = d.Command;
         s.Args = d.Args;
-        s.IsRemote = d.IsRemote;
-        s.WorkingFolder = d.WorkingFolder;
+        s.Kind = d.Kind;
         s.SshUser = d.SshUser;
         s.SshHost = d.SshHost;
         s.SshPort = d.SshPort;
         s.SshRemoteFolder = d.SshRemoteFolder;
+        s.WslDistro = d.WslDistro.Trim();
+        s.WslUser = d.WslUser;
+        s.WslWorkingFolder = d.WslWorkingFolder.Trim();
+        // WSL sessions keep WorkingFolder as the \\wsl$ UNC mirror of the Linux path so
+        // Explorer, git polling and the sidebar need no special-casing (see CLAUDE.md
+        // "WSL Sessions"). Derive it here so the two can never drift apart — shared with
+        // every other path that creates/edits a WSL session (ResyncWslWorkingFolder).
+        if (d.Kind == SessionKind.Wsl)
+        {
+            WslDiscoveryService.ResyncWslWorkingFolder(s);
+        }
+        else
+        {
+            s.WorkingFolder = d.WorkingFolder;
+        }
 
         s.ProfileFontFamily = d.ProfileFontFamily;
         s.ProfileFontSize = d.ProfileFontSize;
@@ -117,6 +138,10 @@ public static class SessionConfigEditor
     private static bool Cleared<T>(T? now, T? before) => now is null && before is not null;
     private static bool Cleared(string? now, string? before) =>
         string.IsNullOrEmpty(now) && !string.IsNullOrEmpty(before);
+
+    /// <summary>Linux path compare: exact, trailing-slash tolerant, case-sensitive (ext4 is).</summary>
+    internal static bool LinuxPathsEqual(string a, string b) =>
+        string.Equals((a ?? "").Trim().TrimEnd('/'), (b ?? "").Trim().TrimEnd('/'), StringComparison.Ordinal);
 
     /// <summary>Case-insensitive path compare that tolerates trailing slashes and bad input.</summary>
     internal static bool PathsEqual(string a, string b)

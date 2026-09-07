@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace CodeShellManager.Models;
 
@@ -23,11 +24,46 @@ public class RecentlyClosedEntry
     public string GroupId { get; set; } = "";
     public string? ColorOverride { get; set; }
 
-    public bool IsRemote { get; set; }
+    /// <summary>
+    /// Kind of the closed session, so a reopened WSL or SSH session comes back as the same
+    /// kind instead of Local at a UNC. Legacy entries carried only <c>IsRemote</c>; see
+    /// <see cref="LegacyIsRemote"/>.
+    /// </summary>
+    public SessionKind Kind { get; set; } = SessionKind.Local;
+
+    [JsonIgnore]
+    public bool IsRemote => Kind == SessionKind.Ssh;
+
+    /// <summary>
+    /// Legacy <c>"IsRemote"</c> JSON slot — same computed-getter / backing-field-setter
+    /// split as <see cref="ShellSession.LegacyIsRemote"/> (see there for the full rationale):
+    /// written as <c>true</c> for an SSH entry, omitted for Local/Wsl, so a rollback reading
+    /// this file still sees SSH entries as remote.
+    /// </summary>
+    [JsonPropertyName("IsRemote")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LegacyIsRemote
+    {
+        get => Kind == SessionKind.Ssh ? true : (bool?)null;
+        set => _legacyIsRemoteIncoming = value;
+    }
+
+    private bool? _legacyIsRemoteIncoming;
+
+    public void MigrateLegacyFields()
+    {
+        if (_legacyIsRemoteIncoming == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
+        _legacyIsRemoteIncoming = null;
+    }
+
     public string SshUser { get; set; } = "";
     public string SshHost { get; set; } = "";
     public int SshPort { get; set; } = 22;
     public string SshRemoteFolder { get; set; } = "";
+
+    public string WslDistro { get; set; } = "";
+    public string WslUser { get; set; } = "";
+    public string WslWorkingFolder { get; set; } = "";
 
     public string? ProfileFontFamily { get; set; }
     public int? ProfileFontSize { get; set; }
@@ -57,11 +93,14 @@ public class RecentlyClosedEntry
         Args = s.Args,
         GroupId = s.GroupId,
         ColorOverride = s.ColorOverride,
-        IsRemote = s.IsRemote,
+        Kind = s.Kind,
         SshUser = s.SshUser,
         SshHost = s.SshHost,
         SshPort = s.SshPort,
         SshRemoteFolder = s.SshRemoteFolder,
+        WslDistro = s.WslDistro,
+        WslUser = s.WslUser,
+        WslWorkingFolder = s.WslWorkingFolder,
         ProfileFontFamily = s.ProfileFontFamily,
         ProfileFontSize = s.ProfileFontSize,
         ProfileFontWeight = s.ProfileFontWeight,
@@ -84,8 +123,14 @@ public class RecentlyClosedEntry
         ClosedAt = DateTime.UtcNow,
     };
 
-    /// <summary>Friendly subtitle for the recents UI — folder or user@host.</summary>
-    public string Subtitle => IsRemote
-        ? (string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}")
-        : WorkingFolder;
+    /// <summary>Friendly subtitle for the recents UI — kind-specific locator.</summary>
+    [JsonIgnore]
+    public string Subtitle => Kind switch
+    {
+        SessionKind.Ssh => string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}",
+        SessionKind.Wsl => string.IsNullOrEmpty(WslWorkingFolder)
+            ? WslDistro
+            : $"{WslDistro}: {WslWorkingFolder}",
+        _ => WorkingFolder,
+    };
 }
