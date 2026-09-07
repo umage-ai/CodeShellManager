@@ -716,157 +716,157 @@ public partial class NewSessionDialog : Window
         OkButton.IsEnabled = false;
         try
         {
-        IsRemote = IsRemoteMode;
-        IsWsl = IsWslMode;
-        SessionName = NameBox.Text.Trim();
+            IsRemote = IsRemoteMode;
+            IsWsl = IsWslMode;
+            SessionName = NameBox.Text.Trim();
 
-        if (IsLocalMode && WorktreesPanel.Visibility == Visibility.Visible)
-        {
-            AdditionalWorktreePaths = WorktreesList.Children.OfType<System.Windows.Controls.CheckBox>()
-                .Where(c => c.IsChecked == true)
-                .Select(c => c.Tag as string)
-                .Where(p => !string.IsNullOrEmpty(p))
-                .Select(p => p!)
-                .ToList();
-        }
-
-        if (IsWsl)
-        {
-            WslDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
-            if (string.IsNullOrWhiteSpace(WslDistro))
+            if (IsLocalMode && WorktreesPanel.Visibility == Visibility.Visible)
             {
-                System.Windows.MessageBox.Show(
-                    "Please select a WSL distro.",
-                    "Distro required", MessageBoxButton.OK, MessageBoxImage.Warning);
-                WslDistroCombo.Focus();
+                AdditionalWorktreePaths = WorktreesList.Children.OfType<System.Windows.Controls.CheckBox>()
+                    .Where(c => c.IsChecked == true)
+                    .Select(c => c.Tag as string)
+                    .Where(p => !string.IsNullOrEmpty(p))
+                    .Select(p => p!)
+                    .ToList();
+            }
+
+            if (IsWsl)
+            {
+                WslDistro = (WslDistroCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+                if (string.IsNullOrWhiteSpace(WslDistro))
+                {
+                    System.Windows.MessageBox.Show(
+                        "Please select a WSL distro.",
+                        "Distro required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    WslDistroCombo.Focus();
+                    return;
+                }
+
+                WslUser = WslUserBox.Text.Trim();
+                WslWorkingFolder = WslWorkingFolderBox.Text.Trim();
+
+                // If the user left the Linux folder blank, resolve $HOME eagerly so the
+                // session's WorkingFolder UNC and its Linux path stay in sync. Otherwise
+                // git status runs against the distro root (\\wsl$\<distro> → "/") while
+                // the shell actually starts in $HOME — and the sidebar branch info goes
+                // missing for repos under home. Best-effort: silent fallback to blank
+                // (the existing "land in $HOME, no git info" behavior) when WSL is
+                // unreachable.
+                if (string.IsNullOrEmpty(WslWorkingFolder))
+                {
+                    string? home = await WslDiscoveryService.GetDistroHomeAsync(WslDistro, WslUser);
+                    if (_closed) return;
+                    if (!string.IsNullOrEmpty(home)) WslWorkingFolder = home;
+                }
+
+                var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
+                string raw = selectedTag == "custom" ? CustomArgsBox.Text.Trim() : selectedTag;
+                var (exe, args) = CommandLineSplitter.Split(raw);
+                SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+                SelectedArgs = args;
+
+                SelectedFolder = "";
+                DialogResult = true;
+                Close();
                 return;
             }
 
-            WslUser = WslUserBox.Text.Trim();
-            WslWorkingFolder = WslWorkingFolderBox.Text.Trim();
-
-            // If the user left the Linux folder blank, resolve $HOME eagerly so the
-            // session's WorkingFolder UNC and its Linux path stay in sync. Otherwise
-            // git status runs against the distro root (\\wsl$\<distro> → "/") while
-            // the shell actually starts in $HOME — and the sidebar branch info goes
-            // missing for repos under home. Best-effort: silent fallback to blank
-            // (the existing "land in $HOME, no git info" behavior) when WSL is
-            // unreachable.
-            if (string.IsNullOrEmpty(WslWorkingFolder))
+            if (IsRemote)
             {
-                string? home = await WslDiscoveryService.GetDistroHomeAsync(WslDistro, WslUser);
-                if (_closed) return;
-                if (!string.IsNullOrEmpty(home)) WslWorkingFolder = home;
+                if (string.IsNullOrWhiteSpace(SshHostBox.Text))
+                {
+                    System.Windows.MessageBox.Show(
+                        "Please enter a host (e.g. user@hostname).",
+                        "Host required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    SshHostBox.Focus();
+                    return;
+                }
+
+                var hostRaw = SshHostBox.Text.Trim();
+                var atIdx = hostRaw.IndexOf('@');
+                if (atIdx > 0)
+                {
+                    SshUser = hostRaw[..atIdx];
+                    SshHost = hostRaw[(atIdx + 1)..];
+                }
+                else
+                {
+                    SshUser = "";
+                    SshHost = hostRaw;
+                }
+
+                SshPort = int.TryParse(SshPortBox.Text.Trim(), out int port) && port is > 0 and <= 65535
+                    ? port : 22;
+
+                SshRemoteFolder = SshRemoteFolderBox.Text.Trim();
+
+                var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
+                if (selectedTag == "custom")
+                {
+                    var (exe, args) = CommandLineSplitter.Split(CustomArgsBox.Text.Trim());
+                    SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+                    SelectedArgs = args;
+                }
+                else
+                {
+                    var (exe, args) = CommandLineSplitter.Split(selectedTag);
+                    SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+                    SelectedArgs = args;
+                }
+
+                SelectedFolder = "";
+            }
+            else
+            {
+                SelectedFolder = FolderBox.Text.Trim();
+
+                // Validate the folder in EDIT mode.
+                //
+                // Create mode deliberately tolerates a blank folder — LaunchSessionAsync falls
+                // back to %USERPROFILE% and a brand-new session in your home directory is a
+                // reasonable default. Editing an existing one is different: the same fallback
+                // silently relocates a configured session to the home folder, persists the
+                // empty path, and leaves git info and the accent colour keyed off nothing.
+                // Flipping Remote -> Local hits this every time, because a remote session has
+                // no local folder to pre-fill from.
+                if (IsEditMode)
+                {
+                    if (string.IsNullOrWhiteSpace(SelectedFolder))
+                    {
+                        System.Windows.MessageBox.Show(
+                            "Please choose a working folder for this session.",
+                            "Working folder required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        FolderBox.Focus();
+                        return;
+                    }
+                    if (!System.IO.Directory.Exists(SelectedFolder))
+                    {
+                        System.Windows.MessageBox.Show(
+                            $"That folder doesn't exist:\n\n{SelectedFolder}\n\n" +
+                            "Pick a folder that exists, or the session will fail to start.",
+                            "Folder not found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        FolderBox.Focus();
+                        return;
+                    }
+                }
+
+                var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "claude";
+                if (selectedTag == "custom")
+                {
+                    var (exe, args) = CommandLineSplitter.Split(CustomArgsBox.Text.Trim());
+                    SelectedCommand = string.IsNullOrEmpty(exe) ? "claude" : exe;
+                    SelectedArgs = args;
+                }
+                else
+                {
+                    var (exe, args) = CommandLineSplitter.Split(selectedTag);
+                    SelectedCommand = string.IsNullOrEmpty(exe) ? "claude" : exe;
+                    SelectedArgs = args;
+                }
             }
 
-            var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
-            string raw = selectedTag == "custom" ? CustomArgsBox.Text.Trim() : selectedTag;
-            var (exe, args) = CommandLineSplitter.Split(raw);
-            SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
-            SelectedArgs = args;
-
-            SelectedFolder = "";
             DialogResult = true;
             Close();
-            return;
-        }
-
-        if (IsRemote)
-        {
-            if (string.IsNullOrWhiteSpace(SshHostBox.Text))
-            {
-                System.Windows.MessageBox.Show(
-                    "Please enter a host (e.g. user@hostname).",
-                    "Host required", MessageBoxButton.OK, MessageBoxImage.Warning);
-                SshHostBox.Focus();
-                return;
-            }
-
-            var hostRaw = SshHostBox.Text.Trim();
-            var atIdx = hostRaw.IndexOf('@');
-            if (atIdx > 0)
-            {
-                SshUser = hostRaw[..atIdx];
-                SshHost = hostRaw[(atIdx + 1)..];
-            }
-            else
-            {
-                SshUser = "";
-                SshHost = hostRaw;
-            }
-
-            SshPort = int.TryParse(SshPortBox.Text.Trim(), out int port) && port is > 0 and <= 65535
-                ? port : 22;
-
-            SshRemoteFolder = SshRemoteFolderBox.Text.Trim();
-
-            var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
-            if (selectedTag == "custom")
-            {
-                var (exe, args) = CommandLineSplitter.Split(CustomArgsBox.Text.Trim());
-                SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
-                SelectedArgs = args;
-            }
-            else
-            {
-                var (exe, args) = CommandLineSplitter.Split(selectedTag);
-                SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
-                SelectedArgs = args;
-            }
-
-            SelectedFolder = "";
-        }
-        else
-        {
-            SelectedFolder = FolderBox.Text.Trim();
-
-            // Validate the folder in EDIT mode.
-            //
-            // Create mode deliberately tolerates a blank folder — LaunchSessionAsync falls
-            // back to %USERPROFILE% and a brand-new session in your home directory is a
-            // reasonable default. Editing an existing one is different: the same fallback
-            // silently relocates a configured session to the home folder, persists the
-            // empty path, and leaves git info and the accent colour keyed off nothing.
-            // Flipping Remote -> Local hits this every time, because a remote session has
-            // no local folder to pre-fill from.
-            if (IsEditMode)
-            {
-                if (string.IsNullOrWhiteSpace(SelectedFolder))
-                {
-                    System.Windows.MessageBox.Show(
-                        "Please choose a working folder for this session.",
-                        "Working folder required", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    FolderBox.Focus();
-                    return;
-                }
-                if (!System.IO.Directory.Exists(SelectedFolder))
-                {
-                    System.Windows.MessageBox.Show(
-                        $"That folder doesn't exist:\n\n{SelectedFolder}\n\n" +
-                        "Pick a folder that exists, or the session will fail to start.",
-                        "Folder not found", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    FolderBox.Focus();
-                    return;
-                }
-            }
-
-            var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "claude";
-            if (selectedTag == "custom")
-            {
-                var (exe, args) = CommandLineSplitter.Split(CustomArgsBox.Text.Trim());
-                SelectedCommand = string.IsNullOrEmpty(exe) ? "claude" : exe;
-                SelectedArgs = args;
-            }
-            else
-            {
-                var (exe, args) = CommandLineSplitter.Split(selectedTag);
-                SelectedCommand = string.IsNullOrEmpty(exe) ? "claude" : exe;
-                SelectedArgs = args;
-            }
-        }
-
-        DialogResult = true;
-        Close();
         }
         finally
         {
