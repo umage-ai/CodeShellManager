@@ -1,4 +1,5 @@
 using System.Linq;
+using CodeShellManager.Models;
 using CodeShellManager.Services;
 using Xunit;
 
@@ -107,6 +108,7 @@ public class WslDiscoveryServiceTests
     [InlineData(@"//wsl$/Ubuntu/home/alice", "Ubuntu", "/home/alice")]
     [InlineData(@"\\wsl$\Ubuntu", "Ubuntu", "/")]
     [InlineData(@"\\wsl$\", null, "")]
+    [InlineData(@"\\wsl$\\home\alice", null, "")]
     [InlineData(@"C:\proj", null, "")]
     [InlineData("", null, "")]
     public void TryParseUncPath_KnownShapes(string path, string? distro, string linux)
@@ -114,5 +116,38 @@ public class WslDiscoveryServiceTests
         var (d, l) = WslDiscoveryService.TryParseUncPath(path);
         Assert.Equal(distro, d);
         Assert.Equal(linux, l);
+    }
+
+    [Fact]
+    public void ResyncWslWorkingFolder_MismatchedWorkingFolder_ReDerivesFromDistroAndLinuxFolder()
+    {
+        // Simulates a hand-edited / stale RecentlyClosed entry: WorkingFolder points
+        // somewhere unrelated to WslDistro + WslWorkingFolder (see CLAUDE.md "WSL
+        // Sessions" — the UNC mirror invariant that ReopenClosedSessionAsync must uphold).
+        var session = new ShellSession
+        {
+            Kind = SessionKind.Wsl,
+            WslDistro = "Ubuntu",
+            WslWorkingFolder = "/home/alice/proj",
+            WorkingFolder = @"C:\Windows",
+        };
+
+        WslDiscoveryService.ResyncWslWorkingFolder(session);
+
+        Assert.Equal(@"\\wsl$\Ubuntu\home\alice\proj", session.WorkingFolder);
+    }
+
+    [Fact]
+    public void ResyncWslWorkingFolder_NonWslSession_LeavesWorkingFolderAlone()
+    {
+        var session = new ShellSession
+        {
+            Kind = SessionKind.Local,
+            WorkingFolder = @"C:\src\web",
+        };
+
+        WslDiscoveryService.ResyncWslWorkingFolder(session);
+
+        Assert.Equal(@"C:\src\web", session.WorkingFolder);
     }
 }

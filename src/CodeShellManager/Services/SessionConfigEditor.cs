@@ -104,15 +104,21 @@ public static class SessionConfigEditor
         s.SshHost = d.SshHost;
         s.SshPort = d.SshPort;
         s.SshRemoteFolder = d.SshRemoteFolder;
-        s.WslDistro = d.WslDistro;
+        s.WslDistro = d.WslDistro.Trim();
         s.WslUser = d.WslUser;
         s.WslWorkingFolder = d.WslWorkingFolder.Trim();
         // WSL sessions keep WorkingFolder as the \\wsl$ UNC mirror of the Linux path so
         // Explorer, git polling and the sidebar need no special-casing (see CLAUDE.md
-        // "WSL Sessions"). Derive it here so the two can never drift apart.
-        s.WorkingFolder = d.Kind == SessionKind.Wsl
-            ? WslDiscoveryService.ToUncPath(d.WslDistro, s.WslWorkingFolder)
-            : d.WorkingFolder;
+        // "WSL Sessions"). Derive it here so the two can never drift apart — shared with
+        // every other path that creates/edits a WSL session (ResyncWslWorkingFolder).
+        if (d.Kind == SessionKind.Wsl)
+        {
+            WslDiscoveryService.ResyncWslWorkingFolder(s);
+        }
+        else
+        {
+            s.WorkingFolder = d.WorkingFolder;
+        }
 
         s.ProfileFontFamily = d.ProfileFontFamily;
         s.ProfileFontSize = d.ProfileFontSize;

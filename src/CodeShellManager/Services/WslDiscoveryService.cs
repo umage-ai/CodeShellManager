@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using CodeShellManager.Models;
 
 namespace CodeShellManager.Services;
 
@@ -196,6 +197,22 @@ public static class WslDiscoveryService
     }
 
     /// <summary>
+    /// Re-derives <see cref="ShellSession.WorkingFolder"/> from
+    /// <see cref="ShellSession.WslDistro"/> + <see cref="ShellSession.WslWorkingFolder"/> when
+    /// the session is WSL — the "UNC mirror invariant" (see CLAUDE.md "WSL Sessions"). A no-op
+    /// for Local/Ssh sessions. One shared helper so every path that creates or edits a WSL
+    /// session — dialog creation, duplicate/worktree, session-config edit, reopen-from-history —
+    /// derives <see cref="ShellSession.WorkingFolder"/> the same way instead of trusting a value
+    /// that may have been hand-edited or copied from a stale source (e.g. state.json,
+    /// RecentlyClosed, an import file).
+    /// </summary>
+    public static void ResyncWslWorkingFolder(ShellSession session)
+    {
+        if (session.Kind != SessionKind.Wsl) return;
+        session.WorkingFolder = ToUncPath((session.WslDistro ?? "").Trim(), session.WslWorkingFolder);
+    }
+
+    /// <summary>
     /// Splits a WSL UNC (<c>\\wsl$\Ubuntu\home\alice</c> or <c>\\wsl.localhost\…</c>, either
     /// slash direction) into (distro, linuxPath). linuxPath is "/" for the distro root.
     /// Returns (null, "") for anything that isn't a WSL UNC. The single parser for the
@@ -212,6 +229,7 @@ public static class WslDiscoveryService
             if (string.IsNullOrEmpty(rest)) return (null, "");
             int slash = rest.IndexOf('\\');
             string distro = slash < 0 ? rest : rest[..slash];
+            if (string.IsNullOrEmpty(distro)) return (null, "");
             string linuxRest = slash < 0 ? "" : rest[(slash + 1)..];
             return (distro, string.IsNullOrEmpty(linuxRest) ? "/" : "/" + linuxRest.Replace('\\', '/'));
         }

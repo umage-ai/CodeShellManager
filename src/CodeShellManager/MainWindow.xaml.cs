@@ -753,6 +753,10 @@ public partial class MainWindow : Window
         session.WslDistro = entry.WslDistro;
         session.WslUser = entry.WslUser;
         session.WslWorkingFolder = entry.WslWorkingFolder;
+        // A hand-edited or stale RecentlyClosed entry can carry a WorkingFolder that no
+        // longer matches WslDistro/WslWorkingFolder (see CLAUDE.md "WSL Sessions" — the
+        // UNC mirror invariant). Re-derive rather than trust the snapshot's WorkingFolder.
+        Services.WslDiscoveryService.ResyncWslWorkingFolder(session);
 
         session.ProfileFontFamily = entry.ProfileFontFamily;
         session.ProfileFontSize = entry.ProfileFontSize;
@@ -1258,7 +1262,8 @@ public partial class MainWindow : Window
         if (session.LaunchValidationError is { } validationError)
         {
             Log($"LaunchSession REFUSED: {validationError}");
-            MessageBox.Show(this, $"Cannot start '{session.Name}'.\n\n{validationError}",
+            string label = string.IsNullOrWhiteSpace(session.Name) ? session.DefaultDisplayName : session.Name;
+            MessageBox.Show(this, $"Cannot start '{label}'.\n\n{validationError}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             // Mirrors the PTY-failure catch below: dormant fallback is the caller's job.
             // RestartSessionAsync (the only removeOnFailure: false caller) already checks
@@ -5310,10 +5315,10 @@ public partial class MainWindow : Window
         string name = string.IsNullOrEmpty(leaf) ? "bash" : $"{leaf} (bash)";
 
         var session = _sessionManager.CreateSession(name, parent.WorkingFolder, "bash", "", parent.GroupId);
-        session.Kind = Models.SessionKind.Wsl;
-        session.WslDistro = parent.WslDistro;
-        session.WslUser = parent.WslUser;
-        session.WslWorkingFolder = parent.WslWorkingFolder;
+        // session.WorkingFolder is already parent.WorkingFolder — a known-good WSL UNC —
+        // so InheritSessionKindFrom's "common path" branch re-derives WslWorkingFolder from
+        // it, which is a straight subset of the hand-copied assignments this replaces.
+        InheritSessionKindFrom(session, parent);
         _ = LaunchSessionAsync(session);
     }
 

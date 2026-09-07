@@ -25,7 +25,10 @@ public class ShellSessionMigrationTests
         var s = LoadState(legacy).Sessions[0];
         Assert.Equal(SessionKind.Ssh, s.Kind);
         Assert.True(s.IsRemote);
-        Assert.Null(s.LegacyIsRemote);
+        // LegacyIsRemote is now a computed getter (Fix 4) — it doesn't "clear" after
+        // migration the way a plain nullable field did. Once Kind is Ssh it correctly
+        // reads true again; what matters is that migration actually happened (Kind).
+        Assert.True(s.LegacyIsRemote);
     }
 
     [Fact]
@@ -60,19 +63,29 @@ public class ShellSessionMigrationTests
         const string legacy = """{ "RecentlyClosed": [ { "IsRemote": true, "SshHost": "h" } ] }""";
         var e = LoadState(legacy).RecentlyClosed[0];
         Assert.Equal(SessionKind.Ssh, e.Kind);
-        Assert.Null(e.LegacyIsRemote);
+        // Same computed-getter caveat as above — true again post-migration, not null.
+        Assert.True(e.LegacyIsRemote);
     }
 
     [Fact]
     public void Serialize_DoesNotWriteLegacyIsRemoteOrComputedProperties()
     {
+        // Fix 4: origin/main persists only "IsRemote" and has no Kind at all — an older
+        // build reading a state.json this one wrote must still see an SSH session as
+        // remote, so "IsRemote":true IS written for Ssh. Local/Wsl omit the key entirely.
         var s = new ShellSession { Kind = SessionKind.Ssh, SshHost = "h" };
         string json = JsonSerializer.Serialize(s);
-        Assert.DoesNotContain("\"IsRemote\"", json);
+        Assert.Contains("\"IsRemote\":true", json);
         Assert.DoesNotContain("FullCommandLine", json);
         Assert.DoesNotContain("FolderShort", json);
         Assert.DoesNotContain("AccentKey", json);
         Assert.Contains("\"Kind\":1", json);
+
+        var local = new ShellSession { Kind = SessionKind.Local };
+        Assert.DoesNotContain("\"IsRemote\"", JsonSerializer.Serialize(local));
+
+        var wsl = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" };
+        Assert.DoesNotContain("\"IsRemote\"", JsonSerializer.Serialize(wsl));
     }
 
     [Fact]
@@ -100,6 +113,23 @@ public class ShellSessionMigrationTests
         var s = new ShellSession { Kind = SessionKind.Wsl };
         s.IsRemote = false;
         Assert.Equal(SessionKind.Wsl, s.Kind);
+    }
+
+    [Fact]
+    public void Roundtrip_SshSession_ThroughComputedLegacyIsRemote_KindStaysSsh()
+    {
+        // serialize -> deserialize -> Normalize -> same Kind, going through the
+        // computed LegacyIsRemote getter/setter split from Fix 4.
+        var original = new ShellSession { Kind = SessionKind.Ssh, SshHost = "dev.example.com" };
+        string sessionJson = JsonSerializer.Serialize(original);
+        Assert.Contains("\"IsRemote\":true", sessionJson);
+
+        string wrapped = "{ \"Sessions\": [ " + sessionJson + " ] }";
+        var revived = LoadState(wrapped).Sessions[0];
+
+        Assert.Equal(SessionKind.Ssh, revived.Kind);
+        Assert.True(revived.IsRemote);
+        Assert.Equal("dev.example.com", revived.SshHost);
     }
 
     [Fact]

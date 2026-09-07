@@ -176,7 +176,20 @@ public partial class RunInstance : ObservableObject, IDisposable
         // OutputIndexer regex so any visible quirks stay consistent across the app.
         // Marshal to UI thread is the consumer's responsibility — OutputChanged
         // fires from the PTY read loop's thread.
-        AppendText(AnsiPattern().Replace(text, ""));
+        //
+        // Deliberately NOT routed through AppendText: the PTY read loop hands us
+        // 4KB chunks, and AppendText's OutputBuffer = ToString() snapshot would be
+        // a full copy of the (up to 1MB) buffer per chunk — LOH churn plus a
+        // PropertyChanged per chunk on a hot path. OutputBuffer has no consumers
+        // in the app (only tests) — the app reads SnapshotOutput() on demand.
+        string stripped = AnsiPattern().Replace(text, "");
+        lock (_bufLock)
+        {
+            _ansiStripped.Append(stripped);
+            if (_ansiStripped.Length > MaxBufferChars)
+                _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
+        }
+        OutputChanged?.Invoke();
     }
 
     private void OnPtyExited()

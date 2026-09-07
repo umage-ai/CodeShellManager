@@ -182,11 +182,24 @@ public partial class NewSessionDialog : Window
         {
             // The distro list is needed in every mode the WSL radio can be reached from,
             // including edit mode — otherwise editing a WSL session shows an empty combo.
-            await PopulateWslDistrosAsync();
+            // Started here without awaiting: the sibling-worktree probe below does not
+            // depend on it, and `wsl -l -v` carries its own ~3s timeout — awaiting it
+            // first made every create-mode dialog wait on a spawn the checkbox list
+            // never needed.
+            var distrosTask = PopulateWslDistrosAsync();
+
             // Sibling-worktree fan-out only makes sense when creating sessions.
-            if (IsEditMode) return;
-            if (IsLocalMode && !string.IsNullOrWhiteSpace(FolderBox.Text))
-                await ProbeSiblingWorktreesAsync(FolderBox.Text.Trim());
+            if (IsEditMode)
+            {
+                await distrosTask;
+                return;
+            }
+
+            System.Threading.Tasks.Task worktreeTask = IsLocalMode && !string.IsNullOrWhiteSpace(FolderBox.Text)
+                ? ProbeSiblingWorktreesAsync(FolderBox.Text.Trim())
+                : System.Threading.Tasks.Task.CompletedTask;
+
+            await System.Threading.Tasks.Task.WhenAll(distrosTask, worktreeTask);
         };
     }
 

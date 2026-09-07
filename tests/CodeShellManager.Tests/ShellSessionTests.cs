@@ -230,4 +230,15 @@ public class ShellSessionTests
     [Fact]
     public void LaunchValidationError_WslWithDistro_IsNull() =>
         Assert.Null(new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" }.LaunchValidationError);
+
+    [Fact]
+    public void FolderShort_LocalWorkingFolderWithEmbeddedNul_DoesNotThrow()
+    {
+        // DirectoryInfo(...).Name throws ArgumentException on a path containing an embedded
+        // NUL — reachable from state.json during sidebar construction on the restore path.
+        // Path.GetFileName (what DefaultDisplayName already uses) tolerates it.
+        var s = new ShellSession { Kind = SessionKind.Local, WorkingFolder = "C:\\src\\web\u0000oops" };
+        var ex = Record.Exception(() => s.FolderShort);
+        Assert.Null(ex);
+    }
 }

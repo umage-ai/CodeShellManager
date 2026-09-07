@@ -390,4 +390,23 @@ public class SessionConfigEditorTests
         d.WslDistro = "";
         Assert.False(SessionConfigEditor.Diff(s, d).AnyChange);
     }
+
+    [Fact]
+    public void Diff_StaleSshFieldsOnWslSession_DoNotCount()
+    {
+        // Mirror of Diff_StaleWslFieldsOnLocalSession_DoNotCount: SSH fields only count
+        // while the session stays SSH (see Diff's "sameKind" guards), so leftovers from
+        // a previous Local/Ssh mode blanked in the draft must not read as a change either.
+        var s = WslSession();
+        s.SshUser = "leftover";
+        s.SshHost = "leftover.example.com";
+        s.SshPort = 2222;
+        s.SshRemoteFolder = "/leftover";
+        var d = SessionConfigDraft.FromSession(s);
+        d.SshUser = "";
+        d.SshHost = "";
+        d.SshPort = 22;
+        d.SshRemoteFolder = "";
+        Assert.False(SessionConfigEditor.Diff(s, d).AnyChange);
+    }
 }

@@ -282,8 +282,8 @@ public class SessionRunnerTests
         Assert.Equal(RunState.ExitedFailed, inst.State);
         Assert.Equal(-1, inst.ExitCode);
         Assert.NotNull(inst.EndedAt);
-        Assert.Contains("Cannot start", inst.OutputBuffer);
-        Assert.Contains("WslDistro", inst.OutputBuffer);
+        Assert.Contains("Cannot start", inst.SnapshotOutput());
+        Assert.Contains("WslDistro", inst.SnapshotOutput());
         Assert.False(fake.StartCalled, "PTY.Start must never be reached when arg-building fails.");
         Assert.True(changes >= 1, $"InstancesChanged should fire so the chips UI repaints; fired={changes}");
     }
@@ -335,6 +335,24 @@ public class SessionRunnerTests
 
         string snap = inst.SnapshotOutput();
         Assert.Equal(1_000_000, snap.Length);
+    }
+
+    [Fact]
+    public void OnPtyData_DoesNotTouchObservableOutputBuffer()
+    {
+        // Fix 1: OnPtyData must append directly to the ANSI-stripped buffer and raise
+        // OutputChanged WITHOUT routing through AppendText (which would do a full
+        // ToString() copy + OutputBuffer PropertyChanged per 4KB PTY chunk — LOH churn
+        // on a hot path). OutputBuffer has no consumers in the app — SnapshotOutput()
+        // is what the drawer/toolbar read — so it should stay at its Start()-time value.
+        var fake = new FakePseudoTerminal();
+        var inst = new RunInstance(Item(), () => fake);
+        inst.Start(LocalSession());
+
+        fake.EmitData("hello world\n");
+
+        Assert.Equal("hello world\n", inst.SnapshotOutput());
+        Assert.Equal("", inst.OutputBuffer);
     }
 
     // ── Internal accessor for the private _pty field via reflection ──────────

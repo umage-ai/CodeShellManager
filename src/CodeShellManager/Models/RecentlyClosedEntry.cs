@@ -34,15 +34,26 @@ public class RecentlyClosedEntry
     [JsonIgnore]
     public bool IsRemote => Kind == SessionKind.Ssh;
 
-    /// <summary>Legacy <c>"IsRemote"</c> JSON slot — see <see cref="ShellSession.LegacyIsRemote"/>.</summary>
+    /// <summary>
+    /// Legacy <c>"IsRemote"</c> JSON slot — same computed-getter / backing-field-setter
+    /// split as <see cref="ShellSession.LegacyIsRemote"/> (see there for the full rationale):
+    /// written as <c>true</c> for an SSH entry, omitted for Local/Wsl, so a rollback reading
+    /// this file still sees SSH entries as remote.
+    /// </summary>
     [JsonPropertyName("IsRemote")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public bool? LegacyIsRemote { get; set; }
+    public bool? LegacyIsRemote
+    {
+        get => Kind == SessionKind.Ssh ? true : (bool?)null;
+        set => _legacyIsRemoteIncoming = value;
+    }
+
+    private bool? _legacyIsRemoteIncoming;
 
     public void MigrateLegacyFields()
     {
-        if (LegacyIsRemote == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
-        LegacyIsRemote = null;
+        if (_legacyIsRemoteIncoming == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
+        _legacyIsRemoteIncoming = null;
     }
 
     public string SshUser { get; set; } = "";

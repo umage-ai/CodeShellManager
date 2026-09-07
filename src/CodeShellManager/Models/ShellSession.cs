@@ -67,13 +67,29 @@ public class ShellSession
     }
 
     /// <summary>
-    /// Read-only compatibility slot for the pre-<see cref="Kind"/> <c>"IsRemote"</c> JSON
-    /// key. Populated only when an old file is deserialised; <see cref="MigrateLegacyFields"/>
-    /// folds it into <see cref="Kind"/> and nulls it so it is never written back.
+    /// Compatibility slot for the pre-<see cref="Kind"/> <c>"IsRemote"</c> JSON key.
+    /// <c>origin/main</c> persists only this key and has no <see cref="Kind"/> at all — an
+    /// older build reading a <c>state.json</c> written by this one must still see an SSH
+    /// session as remote, so the getter is computed from <see cref="Kind"/> rather than
+    /// left write-only: <c>true</c> for <see cref="SessionKind.Ssh"/>, otherwise <c>null</c>
+    /// (omitted from the JSON entirely via <see cref="JsonIgnoreCondition.WhenWritingNull"/>
+    /// — Local/Wsl sessions never carry this key).
+    ///
+    /// The setter does NOT share storage with the getter: during deserialization of an old
+    /// file it only records the incoming legacy value into <see cref="_legacyIsRemoteIncoming"/>;
+    /// <see cref="MigrateLegacyFields"/> folds that into <see cref="Kind"/> and clears it. A
+    /// computed getter has no state to "null itself out" after migration — once Kind is Ssh,
+    /// this property reads true again, which is correct (nothing left to migrate).
     /// </summary>
     [JsonPropertyName("IsRemote")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public bool? LegacyIsRemote { get; set; }
+    public bool? LegacyIsRemote
+    {
+        get => Kind == SessionKind.Ssh ? true : (bool?)null;
+        set => _legacyIsRemoteIncoming = value;
+    }
+
+    private bool? _legacyIsRemoteIncoming;
 
     /// <summary>
     /// Folds legacy JSON fields into their current representation. Idempotent. Called by
@@ -82,8 +98,8 @@ public class ShellSession
     /// </summary>
     public void MigrateLegacyFields()
     {
-        if (LegacyIsRemote == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
-        LegacyIsRemote = null;
+        if (_legacyIsRemoteIncoming == true && Kind == SessionKind.Local) Kind = SessionKind.Ssh;
+        _legacyIsRemoteIncoming = null;
     }
 
     /// <summary>True iff this session runs inside a WSL distro via wsl.exe.</summary>
@@ -254,7 +270,10 @@ public class ShellSession
         SessionKind.Wsl => BuildWslFolderShort(),
         _ => string.IsNullOrEmpty(WorkingFolder)
             ? ""
-            : new System.IO.DirectoryInfo(WorkingFolder).Name,
+            // DirectoryInfo(...).Name throws ArgumentException on a path containing an
+            // embedded NUL — reachable from state.json on the restore path. Path.GetFileName
+            // (what DefaultDisplayName already uses) tolerates it.
+            : System.IO.Path.GetFileName(WorkingFolder.TrimEnd('/', '\\')),
     };
 
     /// <summary>
