@@ -273,8 +273,14 @@ public class ShellSession
         sb.Append("-d ").Append(QuoteForCmd(WslDistro));
         if (!string.IsNullOrWhiteSpace(WslUser))
             sb.Append(" -u ").Append(QuoteForCmd(WslUser));
-        if (!string.IsNullOrWhiteSpace(WslWorkingFolder))
-            sb.Append(" --cd ").Append(QuoteForCmd(WslWorkingFolder));
+        // A blank folder means "the user's home" — that is what the dialog's "(optional)"
+        // label promises. `--cd ~` is wsl.exe's own spelling for it and honours -u. Omitting
+        // --cd entirely does NOT do this: wsl then inherits the launching *Windows* process's
+        // cwd and lands the session in /mnt/c/... on the slow 9p mount. Pass ~ unquoted;
+        // quoting it would make it a literal directory name.
+        sb.Append(" --cd ").Append(string.IsNullOrWhiteSpace(WslWorkingFolder)
+            ? "~"
+            : QuoteForCmd(WslWorkingFolder));
         if (inner is null)
         {
             var shell = string.IsNullOrWhiteSpace(Command) ? loginShell : Command;

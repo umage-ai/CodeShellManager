@@ -95,11 +95,11 @@ public class RunInstanceTests
     }
 
     [Fact]
-    public void BuildWslArgs_NoUserOrFolder_OmitsFlags()
+    public void BuildWslArgs_NoUserOrFolder_RunsInHome()
     {
         var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Debian" };
         string args = RunInstance.BuildWslArgs(p, "ls");
-        Assert.Equal("-d Debian -e bash -lc \"ls\"", args);
+        Assert.Equal("-d Debian --cd ~ -e bash -lc \"ls\"", args);
     }
 
     [Fact]
@@ -113,7 +113,7 @@ public class RunInstanceTests
             Kind = SessionKind.Wsl, WslDistro = "docker-desktop", ResolvedWslShell = "sh",
         };
         string args = RunInstance.BuildWslArgs(p, "echo hi");
-        Assert.Equal("-d docker-desktop -e sh -lc \"echo hi\"", args);
+        Assert.Equal("-d docker-desktop --cd ~ -e sh -lc \"echo hi\"", args);
     }
 
     [Fact]

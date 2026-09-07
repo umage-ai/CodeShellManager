@@ -132,13 +132,25 @@ public class ShellSessionTests
     }
 
     [Fact]
-    public void BuildWslArgs_NoWorkingFolder_OmitsCdFlag()
+    public void BuildWslArgs_NoWorkingFolder_FallsBackToHomeTilde()
     {
+        // "(optional)" in the dialog means "your home directory". Omitting --cd would
+        // instead inherit the launching Windows process's cwd (/mnt/c/...), which is both
+        // surprising and on the slow 9p mount.
         var s = new ShellSession
         {
             Kind = SessionKind.Wsl, WslDistro = "Ubuntu", Command = "bash",
         };
-        Assert.Equal("-d Ubuntu -e bash -lc \"bash\"", s.BuildWslArgs());
+        Assert.Equal("-d Ubuntu --cd ~ -e bash -lc \"bash\"", s.BuildWslArgs());
+    }
+
+    [Fact]
+    public void BuildWslArgs_HomeTildeIsUnquoted_SoWslExpandsIt()
+    {
+        // Quoting ~ would make it a literal directory name rather than the home shorthand.
+        var s = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu" };
+        Assert.Contains(" --cd ~ ", s.BuildWslArgs());
+        Assert.DoesNotContain("--cd \"~\"", s.BuildWslArgs());
     }
 
     [Fact]
@@ -165,14 +177,14 @@ public class ShellSessionTests
             Kind = SessionKind.Wsl, WslDistro = "docker-desktop", Command = "ls",
             ResolvedWslShell = "sh",
         };
-        Assert.Equal("-d docker-desktop -e sh -lc \"ls\"", s.BuildWslArgs());
+        Assert.Equal("-d docker-desktop --cd ~ -e sh -lc \"ls\"", s.BuildWslArgs());
     }
 
     [Fact]
     public void BuildWslArgs_ResolvedWslShellUnset_DefaultsToBash()
     {
         var s = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu", Command = "ls" };
-        Assert.Equal("-d Ubuntu -e bash -lc \"ls\"", s.BuildWslArgs());
+        Assert.Equal("-d Ubuntu --cd ~ -e bash -lc \"ls\"", s.BuildWslArgs());
     }
 
     [Fact]
@@ -186,7 +198,7 @@ public class ShellSessionTests
             Kind = SessionKind.Wsl, WslDistro = "docker-desktop", Command = "",
             ResolvedWslShell = "sh",
         };
-        Assert.Equal("-d docker-desktop -e sh -lc \"sh\"", s.BuildWslArgs());
+        Assert.Equal("-d docker-desktop --cd ~ -e sh -lc \"sh\"", s.BuildWslArgs());
     }
 
     [Fact]

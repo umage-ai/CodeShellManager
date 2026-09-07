@@ -458,7 +458,10 @@ public partial class MainWindow : Window
 
             var name = new TextBlock
             {
-                Text = string.IsNullOrWhiteSpace(vm.Name) ? vm.Command : vm.Name,
+                // DisplayName, not Command: a WSL session can legitimately carry a blank
+                // Command (the dialog stores "" when the shell box is empty, so the login
+                // shell is resolved at launch), which used to render an empty row label.
+                Text = vm.DisplayName,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x6c, 0x70, 0x86)),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 11.5,
@@ -1281,6 +1284,24 @@ public partial class MainWindow : Window
             // every launch there. Run commands inherit this via the same ShellSession
             // instance (RunInstance.BuildWslArgs delegates to session.BuildWslArgs).
             session.ResolvedWslShell = await WslDiscoveryService.GetLoginShellAsync(session.WslDistro, session.WslUser);
+
+            // The dialog resolves $HOME eagerly when the Linux folder is left blank, but that
+            // probe is capped at 3s and a cold distro (first launch after install) blows
+            // through it — leaving the folder blank and WorkingFolder pointing at the distro
+            // ROOT, so git status, the sidebar subtitle and "Open in Explorer" all aimed at /
+            // while the shell itself sat in $HOME. Retry here, where the distro is being
+            // started anyway, and re-derive the UNC mirror when it lands. GetDistroHomeAsync
+            // only caches successes, so this really does re-probe.
+            if (string.IsNullOrWhiteSpace(session.WslWorkingFolder))
+            {
+                string? home = await WslDiscoveryService.GetDistroHomeAsync(session.WslDistro, session.WslUser);
+                if (!string.IsNullOrEmpty(home))
+                {
+                    session.WslWorkingFolder = home;
+                    WslDiscoveryService.ResyncWslWorkingFolder(session);
+                    _ = _vm.SaveStateAsync();
+                }
+            }
         }
 
         var vm = new SessionViewModel(session);
