@@ -63,7 +63,7 @@ public class Win32CommandLineTests
     {
         var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Ubuntu", WslWorkingFolder = "/home/a b" };
         string[] argv = Split(RunInstance.BuildWslArgs(p, commandLine));
-        Assert.Equal(new[] { "-d", "Ubuntu", "--cd", "/home/a b", "--", "bash", "-lc", commandLine }, argv);
+        Assert.Equal(new[] { "-d", "Ubuntu", "--cd", "/home/a b", "-e", "bash", "-lc", commandLine }, argv);
     }
 
     [Fact]
@@ -75,7 +75,7 @@ public class Win32CommandLineTests
             WslWorkingFolder = "/home/alice", Command = "claude", Args = "--prompt \"fix the \\\"foo\\\" bug\"",
         };
         string[] argv = Split(s.BuildWslArgs());
-        Assert.Equal(new[] { "-d", "My Distro", "-u", "alice", "--cd", "/home/alice", "--", "bash", "-lc",
+        Assert.Equal(new[] { "-d", "My Distro", "-u", "alice", "--cd", "/home/alice", "-e", "bash", "-lc",
             "claude --prompt \"fix the \\\"foo\\\" bug\"" }, argv);
     }
 

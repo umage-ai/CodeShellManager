@@ -120,6 +120,19 @@ public class ShellSession
     /// <summary>Linux-style working folder inside the distro, e.g. "/home/alice/project". Empty = the user's home.</summary>
     public string WslWorkingFolder { get; set; } = "";
 
+    /// <summary>
+    /// Runtime-only cache of the distro's login shell ("bash" or "sh"), resolved by
+    /// <see cref="Services.WslDiscoveryService.GetLoginShellAsync"/> in
+    /// <c>MainWindow.LaunchSessionAsync</c> before <see cref="BuildWslArgs"/> is called.
+    /// Deliberately NOT persisted — a distro's available shells can change between runs
+    /// (e.g. a minimal image gains bash after an update), so this is always re-probed at
+    /// launch rather than trusted from a prior session. Run commands share this via the
+    /// same <see cref="ShellSession"/> instance, so they never re-probe. Null until resolved,
+    /// in which case <see cref="BuildWslArgs"/> falls back to "bash".
+    /// </summary>
+    [JsonIgnore]
+    internal string? ResolvedWslShell { get; set; }
+
     // Per-session appearance overrides (typically populated from a Windows
     // Terminal profile via NewSessionDialog). All nullable — null means "use the
     // global terminal settings". Persisted to state.json so a session relaunches
@@ -231,17 +244,31 @@ public class ShellSession
 
     /// <summary>
     /// Builds the argument string passed to wsl.exe:
-    /// <c>-d &lt;distro&gt; [-u &lt;user&gt;] [--cd &lt;linux-folder&gt;] -- bash -lc "&lt;payload&gt;"</c>.
+    /// <c>-d &lt;distro&gt; [-u &lt;user&gt;] [--cd &lt;linux-folder&gt;] -e &lt;shell&gt; -lc "&lt;payload&gt;"</c>.
     /// The payload is <see cref="Command"/> + <see cref="Args"/>, or <paramref name="inner"/>
-    /// when given (run commands). It is wrapped in <c>bash -lc</c> so PATH-resolved tools
-    /// (nvm node, pyenv, …) behave as in a login shell; bash then interprets the payload as
-    /// a shell command line, which is the intent. Throws when <see cref="WslDistro"/> is
-    /// blank — callers validate first (<see cref="LaunchValidationError"/>).
+    /// when given (run commands). It is wrapped in <c>&lt;shell&gt; -lc</c> so PATH-resolved
+    /// tools (nvm node, pyenv, …) behave as in a login shell; the shell then interprets the
+    /// payload as a shell command line, which is the intent. Shell is
+    /// <see cref="ResolvedWslShell"/> when set (probed per-distro by
+    /// <see cref="Services.WslDiscoveryService.GetLoginShellAsync"/>), else "bash".
+    ///
+    /// <c>-e</c> (not <c>--</c>) is deliberate: <c>wsl.exe &lt;cmd&gt; -- …</c> runs the
+    /// trailing command through the distro's *default* login shell before anything after
+    /// <c>--</c> ever runs, so a payload built for our shell gets expanded twice — once by
+    /// that default shell (in the wrong environment) and once by ours. <c>-e</c>/<c>--exec</c>
+    /// executes the given program directly, skipping that first pass. <c>--</c> looks more
+    /// natural here — resist the urge to change it back; verified empirically:
+    /// <c>wsl -d Ubuntu -- bash -lc 'for t in a b; do echo "L=$t"; done'</c> printed
+    /// "L=" / "L=" (mangled) while the same command with <c>-e bash</c> printed "L=a" / "L=b".
+    ///
+    /// Throws when <see cref="WslDistro"/> is blank — callers validate first
+    /// (<see cref="LaunchValidationError"/>).
     /// </summary>
     internal string BuildWslArgs(string? inner = null)
     {
         if (string.IsNullOrWhiteSpace(WslDistro))
             throw new InvalidOperationException("WslDistro must be set for WSL sessions.");
+        string loginShell = ResolvedWslShell ?? "bash";
         var sb = new StringBuilder();
         sb.Append("-d ").Append(QuoteForCmd(WslDistro));
         if (!string.IsNullOrWhiteSpace(WslUser))
@@ -250,10 +277,10 @@ public class ShellSession
             sb.Append(" --cd ").Append(QuoteForCmd(WslWorkingFolder));
         if (inner is null)
         {
-            var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
+            var shell = string.IsNullOrWhiteSpace(Command) ? loginShell : Command;
             inner = string.IsNullOrWhiteSpace(Args) ? shell : $"{shell} {Args}";
         }
-        sb.Append(" -- bash -lc ").Append(QuoteForCmd(inner, force: true));
+        sb.Append(" -e ").Append(QuoteForCmd(loginShell)).Append(" -lc ").Append(QuoteForCmd(inner, force: true));
         return sb.ToString();
     }
 

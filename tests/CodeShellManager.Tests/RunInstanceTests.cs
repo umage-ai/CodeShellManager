@@ -91,7 +91,7 @@ public class RunInstanceTests
         string args = RunInstance.BuildWslArgs(p, "cargo test");
         // Double quotes (Windows-side grouping) — single quotes would leak through
         // Windows command-line tokenization and reach bash as broken token pieces.
-        Assert.Equal("-d Ubuntu -u alice --cd /home/alice/proj -- bash -lc \"cargo test\"", args);
+        Assert.Equal("-d Ubuntu -u alice --cd /home/alice/proj -e bash -lc \"cargo test\"", args);
     }
 
     [Fact]
@@ -99,7 +99,21 @@ public class RunInstanceTests
     {
         var p = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "Debian" };
         string args = RunInstance.BuildWslArgs(p, "ls");
-        Assert.Equal("-d Debian -- bash -lc \"ls\"", args);
+        Assert.Equal("-d Debian -e bash -lc \"ls\"", args);
+    }
+
+    [Fact]
+    public void BuildWslArgs_ParentResolvedShell_RunCommandInheritsIt()
+    {
+        // Run commands delegate to ShellSession.BuildWslArgs on the same parent instance, so
+        // a shell resolved for the interactive session (e.g. "sh" on a bash-less distro) must
+        // be used for its run commands too, without a second probe.
+        var p = new ShellSession
+        {
+            Kind = SessionKind.Wsl, WslDistro = "docker-desktop", ResolvedWslShell = "sh",
+        };
+        string args = RunInstance.BuildWslArgs(p, "echo hi");
+        Assert.Equal("-d docker-desktop -e sh -lc \"echo hi\"", args);
     }
 
     [Fact]

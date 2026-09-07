@@ -759,10 +759,14 @@ public partial class NewSessionDialog : Window
                     if (!string.IsNullOrEmpty(home)) WslWorkingFolder = home;
                 }
 
-                var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "bash";
+                var selectedTag = (CommandCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
                 string raw = selectedTag == "custom" ? CustomArgsBox.Text.Trim() : selectedTag;
                 var (exe, args) = CommandLineSplitter.Split(raw);
-                SelectedCommand = string.IsNullOrEmpty(exe) ? "bash" : exe;
+                // Blank stays blank rather than hardcoding "bash": a minimal distro (Alpine,
+                // Docker Desktop's own distro) has no bash, so persisting the literal name
+                // fails there. ShellSession.BuildWslArgs falls back to the resolved login
+                // shell (ResolvedWslShell, probed at launch) when Command is empty.
+                SelectedCommand = exe;
                 SelectedArgs = args;
 
                 SelectedFolder = "";

@@ -115,10 +115,24 @@ public static class WslDiscoveryService
         }
         // Stable ordering: default first, then alphabetical.
         return results
+            .Where(d => !IsDockerInternalDistro(d.Name))
             .OrderByDescending(d => d.IsDefault)
             .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
+
+    /// <summary>
+    /// True for Docker Desktop's own internal distros ("docker-desktop" and, on older
+    /// versions, "docker-desktop-data") — BusyBox-based plumbing that Docker rebuilds on
+    /// its own updates, not a user environment. They have no bash (and are root-only), so
+    /// offering them in the picker just hands the user a confusing "bash: not found" the
+    /// first time they try to use one — which is exactly what happened during manual
+    /// testing here. Exact, case-insensitive match only: a user-imported distro that merely
+    /// *contains* the phrase (e.g. "my-docker-desktop-clone") must still be offered.
+    /// </summary>
+    private static bool IsDockerInternalDistro(string name) =>
+        string.Equals(name, "docker-desktop", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "docker-desktop-data", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Resolves the home directory inside a WSL distro for the given user (or the distro's
@@ -181,6 +195,65 @@ public static class WslDiscoveryService
     }
 
     private static readonly Dictionary<string, string> _homeCache = new();
+
+    /// <summary>
+    /// Resolves the login shell to use inside a WSL distro — "bash" when it's present,
+    /// "sh" otherwise (minimal distros like Alpine/BusyBox images or Docker Desktop's own
+    /// "docker-desktop" distro have no bash, so hardcoding it fails every session and run
+    /// command there). Cached per (distro, user) exactly like <see cref="GetDistroHomeAsync"/>.
+    /// Never throws; any failure (WSL not running, timeout, non-zero exit) returns "bash" —
+    /// that preserves today's behaviour rather than silently downgrading a distro that
+    /// actually works.
+    /// </summary>
+    public static async Task<string> GetLoginShellAsync(string distro, string? user = null)
+    {
+        if (string.IsNullOrWhiteSpace(distro)) return "bash";
+        string normalizedUser = user?.Trim() ?? "";
+        string key = $"{distro}|{normalizedUser}";
+        lock (_shellCache)
+        {
+            if (_shellCache.TryGetValue(key, out var cached)) return cached;
+        }
+
+        try
+        {
+            string args = $"-d {Models.ShellSession.QuoteForCmd(distro)}";
+            if (!string.IsNullOrEmpty(normalizedUser))
+                args += $" -u {Models.ShellSession.QuoteForCmd(normalizedUser)}";
+            // -e (not --) for the same reason BuildWslArgs uses it — see ShellSession.
+            args += " -e sh -c \"command -v bash >/dev/null 2>&1 && echo bash || echo sh\"";
+
+            var psi = new ProcessStartInfo("wsl.exe")
+            {
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+            using var process = Process.Start(psi);
+            if (process is null) return "bash";
+
+            // Drain both streams — see GetDistroHomeAsync for why stderr must be read too.
+            var outTask = process.StandardOutput.ReadToEndAsync();
+            var errTask = process.StandardError.ReadToEndAsync();
+            var bothTask = Task.WhenAll(outTask, errTask);
+            var completed = await Task.WhenAny(bothTask, Task.Delay(3000));
+            if (completed != bothTask) { try { process.Kill(); } catch { } return "bash"; }
+            try { await process.WaitForExitAsync(); } catch { }
+            if (process.ExitCode != 0) return "bash";
+
+            string result = outTask.Result.Trim();
+            string shell = result == "sh" ? "sh" : "bash";
+            lock (_shellCache) _shellCache[key] = shell;
+            return shell;
+        }
+        catch (Exception) { return "bash"; }
+    }
+
+    private static readonly Dictionary<string, string> _shellCache = new();
 
     /// <summary>
     /// Converts a WSL distro + Linux-style path to the Windows UNC view of that path

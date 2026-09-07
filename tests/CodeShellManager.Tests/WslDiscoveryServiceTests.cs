@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Threading.Tasks;
 using CodeShellManager.Models;
 using CodeShellManager.Services;
 using Xunit;
@@ -149,5 +150,68 @@ public class WslDiscoveryServiceTests
         WslDiscoveryService.ResyncWslWorkingFolder(session);
 
         Assert.Equal(@"C:\src\web", session.WorkingFolder);
+    }
+
+    // ── Docker Desktop internal distros (Parse filter) ─────────────────────────────
+
+    [Fact]
+    public void Parse_FiltersDockerDesktopDistro()
+    {
+        const string raw =
+            "  NAME                   STATE           VERSION\n" +
+            "* Ubuntu                 Running         2\n" +
+            "  docker-desktop         Running         2\n";
+        var result = WslDiscoveryService.Parse(raw);
+        Assert.Single(result);
+        Assert.Equal("Ubuntu", result[0].Name);
+    }
+
+    [Fact]
+    public void Parse_FiltersDockerDesktopDataDistro_CaseInsensitive()
+    {
+        // Older Docker Desktop versions also install "docker-desktop-data"; casing is
+        // matched loosely since wsl -l -v's own casing isn't something we control.
+        const string raw =
+            "  NAME                       STATE           VERSION\n" +
+            "  DOCKER-DESKTOP-DATA        Running         2\n";
+        var result = WslDiscoveryService.Parse(raw);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void Parse_KeepsDistroNameThatOnlyContainsDockerDesktopPhrase()
+    {
+        // Exact match only — a user-imported distro that merely contains the phrase
+        // must still be offered in the picker.
+        const string raw =
+            "  NAME                       STATE           VERSION\n" +
+            "  my-docker-desktop-clone    Running         2\n";
+        var result = WslDiscoveryService.Parse(raw);
+        Assert.Single(result);
+        Assert.Equal("my-docker-desktop-clone", result[0].Name);
+    }
+
+    [Fact]
+    public void Parse_OnlyDockerDistros_YieldsEmptyList()
+    {
+        // So the dialog falls through to its existing "No WSL distros found" hint.
+        const string raw =
+            "  NAME                       STATE           VERSION\n" +
+            "* docker-desktop             Running         2\n" +
+            "  docker-desktop-data        Stopped         2\n";
+        var result = WslDiscoveryService.Parse(raw);
+        Assert.Empty(result);
+    }
+
+    // ── GetLoginShellAsync ──────────────────────────────────────────────────────────
+    // Only the no-spawn short-circuit is testable without a live WSL distro (CI has
+    // none); the probe/cache path itself needs wsl.exe and is verified manually — see
+    // the fix report.
+
+    [Fact]
+    public async Task GetLoginShellAsync_BlankDistro_ReturnsBashWithoutSpawning()
+    {
+        Assert.Equal("bash", await WslDiscoveryService.GetLoginShellAsync(""));
+        Assert.Equal("bash", await WslDiscoveryService.GetLoginShellAsync("   "));
     }
 }

@@ -1274,6 +1274,15 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (session.Kind == Models.SessionKind.Wsl)
+        {
+            // Resolve before BuildWslArgs runs below — minimal distros (Alpine, BusyBox
+            // images, Docker Desktop's own distro) have no bash, so hardcoding it fails
+            // every launch there. Run commands inherit this via the same ShellSession
+            // instance (RunInstance.BuildWslArgs delegates to session.BuildWslArgs).
+            session.ResolvedWslShell = await WslDiscoveryService.GetLoginShellAsync(session.WslDistro, session.WslUser);
+        }
+
         var vm = new SessionViewModel(session);
 
         // Set up alert detection
