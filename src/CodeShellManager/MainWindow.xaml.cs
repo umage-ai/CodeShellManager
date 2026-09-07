@@ -1283,25 +1283,37 @@ public partial class MainWindow : Window
             // images, Docker Desktop's own distro) have no bash, so hardcoding it fails
             // every launch there. Run commands inherit this via the same ShellSession
             // instance (RunInstance.BuildWslArgs delegates to session.BuildWslArgs).
-            session.ResolvedWslShell = await WslDiscoveryService.GetLoginShellAsync(session.WslDistro, session.WslUser);
+            // Started, not awaited: the home lookup below doesn't depend on it, and each
+            // probe carries its own 3s timeout — serialising them doubled the worst case
+            // on a cold launch, once per session during a restore.
+            var shellTask = WslDiscoveryService.GetLoginShellAsync(session.WslDistro, session.WslUser);
 
-            // The dialog resolves $HOME eagerly when the Linux folder is left blank, but that
-            // probe is capped at 3s and a cold distro (first launch after install) blows
-            // through it — leaving the folder blank and WorkingFolder pointing at the distro
-            // ROOT, so git status, the sidebar subtitle and "Open in Explorer" all aimed at /
-            // while the shell itself sat in $HOME. Retry here, where the distro is being
-            // started anyway, and re-derive the UNC mirror when it lands. GetDistroHomeAsync
-            // only caches successes, so this really does re-probe.
-            if (string.IsNullOrWhiteSpace(session.WslWorkingFolder))
+            // Two folder shapes need $HOME resolved. Blank: the dialog resolves it eagerly,
+            // but that probe is capped at 3s and a cold distro (first launch after install)
+            // blows through it, leaving WorkingFolder at the distro ROOT — so git status, the
+            // sidebar subtitle and "Open in Explorer" aimed at / while the shell sat in $HOME.
+            // Leading ~: wsl.exe only special-cases the bare `~` token, so a typed "~/proj"
+            // is treated as an absolute *Windows* path and fails the launch outright. Both
+            // are fixed here, where the distro is starting anyway; GetDistroHomeAsync caches
+            // only successes, so this genuinely re-probes after an earlier timeout.
+            string wslFolder = (session.WslWorkingFolder ?? "").Trim();
+            bool needsHome = wslFolder.Length == 0
+                || wslFolder == "~"
+                || wslFolder.StartsWith("~/", StringComparison.Ordinal);
+            if (needsHome)
             {
                 string? home = await WslDiscoveryService.GetDistroHomeAsync(session.WslDistro, session.WslUser);
                 if (!string.IsNullOrEmpty(home))
                 {
-                    session.WslWorkingFolder = home;
+                    session.WslWorkingFolder = wslFolder.StartsWith("~/", StringComparison.Ordinal)
+                        ? home.TrimEnd('/') + wslFolder[1..]
+                        : home;
                     WslDiscoveryService.ResyncWslWorkingFolder(session);
                     _ = _vm.SaveStateAsync();
                 }
             }
+
+            session.ResolvedWslShell = await shellTask;
         }
 
         var vm = new SessionViewModel(session);
