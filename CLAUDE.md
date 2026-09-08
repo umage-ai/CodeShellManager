@@ -225,6 +225,33 @@ fail against the pre-fix code.
 The same fix removed a plain bug: `--format=%(refname:short)` is a bash syntax error once a
 login shell sees it, so `ListBranchesAsync` could never have worked under WSL.
 
+**Verified empirically against a real distro**, because two rounds of reasoning about this
+had already been wrong:
+
+```
+$ wsl -d Ubuntu -- echo '$(id)'                              # the v0.7.0 form
+uid=1000(thraen) gid=1000(thraen) groups=1000(thraen),4(adm),…    ← executed
+
+$ wsl -d Ubuntu -e sh -lc 'exec "$0" "$@"' echo '$(id)'      # the current form
+$(id)                                                             ← data
+```
+
+Backticks behave the same way. The form is `-e sh -lc 'exec "$0" "$@"' git …` rather than a
+bare `-e git` for one reason: `-e git` skips the login shell, and the login shell is where
+`~/.local/bin` and friends enter PATH —
+
+```
+-e sh -c  (no login):  /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:…
+-e sh -lc (login):     /home/thraen/.local/bin:/usr/local/sbin:/usr/local/bin:…
+```
+
+so anyone whose git comes from nix, asdf, pipx or linuxbrew would have silently lost WSL git,
+reported as "not a git repo". Also confirmed on the real distro: `exec` preserves git's exit
+code (0 and 128 both propagate), arguments beginning with `-` pass through as data, and a
+clean profile adds nothing to stdout. If a *chatty* `~/.profile` ever does contaminate
+stdout, that is the one known weakness of this form — the symptom would be a garbage branch
+name in the sidebar, and the fix would be to strip non-git lines, not to go back to `--`.
+
 Guarded by `tests/CodeShellManager.Tests/GitServiceThreadingTests.cs`, which calls
 `GitService` from a thread whose `SynchronizationContext` never runs work: if any await
 captures it the call never completes and the test times out. All three tests fail against

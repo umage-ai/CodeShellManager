@@ -244,6 +244,18 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // null is normal: a plain folder, or a platform that refused the watch. Poll only.
     }
 
+    /// <summary>Releases the current watcher and acquires one for the session's folder.</summary>
+    private void RestartGitWatcher()
+    {
+        if (_gitWatcher != null)
+        {
+            _gitWatcher.Changed -= OnGitDirChanged;
+            GitRepoWatcher.Release(_gitWatcher);
+            _gitWatcher = null;
+        }
+        StartGitWatcher();
+    }
+
     private void OnGitDirChanged()
     {
         if (_gitPollCts.IsCancellationRequested) return;
@@ -390,6 +402,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         _gitOverriddenByOsc = false;
         // Same reason: a "not a repo" answer for the old folder doesn't apply to the new one.
         _repoRootProbedNegative = false;
+        // And the watcher is still pointed at the OLD repo's .git. Without this, moving a
+        // session to another repo silently degraded it to poll-only — up to 120s stale in
+        // the background — while appearing to work.
+        RestartGitWatcher();
         return RefreshGitInfoAsync();
     }
 

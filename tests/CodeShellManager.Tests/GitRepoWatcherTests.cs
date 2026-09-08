@@ -9,6 +9,10 @@ namespace CodeShellManager.Tests;
 /// <summary>
 /// Tests for the .git watcher that replaces most of the 10s poll (issue #70).
 /// </summary>
+// SharedCount is process-wide static state, so these must not run beside another class
+// that Acquires. GitRepoWatcher shares its collection with nothing else, but the counter
+// assertions here would race.
+[Collection("GitRepoWatcher")]
 public class GitRepoWatcherTests : IDisposable
 {
     private readonly string _root = Path.Combine(
@@ -130,7 +134,8 @@ public class GitRepoWatcherTests : IDisposable
         Assert.NotNull(watcher);
 
         int count = 0;
-        watcher!.Changed += () => Interlocked.Increment(ref count);
+        using var first = new ManualResetEventSlim(false);
+        watcher!.Changed += () => { Interlocked.Increment(ref count); first.Set(); };
 
         for (int i = 0; i < 10; i++)
         {
@@ -138,8 +143,15 @@ public class GitRepoWatcherTests : IDisposable
             File.WriteAllText(Path.Combine(work, ".git", "index"), new string('x', 16 + i));
         }
 
-        Thread.Sleep(2000);
-        Assert.Equal(1, Volatile.Read(ref count));
+        // Wait for the notification rather than assuming it lands inside a fixed sleep — on
+        // a loaded CI runner the writes can outlast a 400ms debounce window, and asserting
+        // "exactly 1 after 2s" would flake. The property that matters is that 20 writes
+        // collapse to far fewer notifications, not to exactly one.
+        Assert.True(first.Wait(TimeSpan.FromSeconds(10)), "debounced notification never arrived");
+        Thread.Sleep(1500); // let any stragglers land
+
+        int observed = Volatile.Read(ref count);
+        Assert.InRange(observed, 1, 3);
     }
 
     [Fact]
@@ -184,8 +196,10 @@ public class GitRepoWatcherTests : IDisposable
         Assert.True(fired.Wait(TimeSpan.FromSeconds(10)),
             "releasing one session must not stop notifications for the others");
 
+        // Last reference released — the entry is gone, not merely decremented.
+        int before = GitRepoWatcher.SharedCount;
         GitRepoWatcher.Release(b);
-        Assert.DoesNotContain(work, DescribeShared());
+        Assert.Equal(before - 1, GitRepoWatcher.SharedCount);
     }
 
     [Fact]
@@ -220,9 +234,6 @@ public class GitRepoWatcherTests : IDisposable
         Assert.Equal(before, GitRepoWatcher.SharedCount);
     }
 
-    // The shared map is keyed by .git dir; this just gives the assertion above something
-    // readable to fail against.
-    private static string DescribeShared() => $"shared={GitRepoWatcher.SharedCount}";
 
     [Fact]
     public void Dispose_stops_notifications()

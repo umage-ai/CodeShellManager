@@ -116,7 +116,7 @@ public class GitServiceInjectionTests
         Assert.Equal("sh", argv[e + 1]);
         Assert.Equal("-lc", argv[e + 2]);
         // The script must contain no interpolated data — only positional expansion.
-        Assert.Equal("exec \"$0\" \"$@\"", argv[e + 3]);
+        Assert.Equal(GitService.WslGitScript, argv[e + 3]);
         Assert.Equal("git", argv[e + 4]);
     }
 
@@ -130,8 +130,75 @@ public class GitServiceInjectionTests
 
         string[] argv = Win32CommandLineTests.Split(cmd);
 
-        Assert.Single(argv, a => a == "exec \"$0\" \"$@\"");
-        Assert.Equal("exec \"$0\" \"$@\"", argv[argv.ToList().IndexOf("-lc") + 1]);
+        Assert.Single(argv, a => a == GitService.WslGitScript);
+        Assert.Equal(GitService.WslGitScript, argv[argv.ToList().IndexOf("-lc") + 1]);
+    }
+
+    [Fact]
+    public void ProfileNoiseBeforeTheSentinelIsStripped()
+    {
+        // `sh -l` sources /etc/profile and ~/.profile before running anything. A profile
+        // that echoes would otherwise become the "branch name" — and would make
+        // `status --porcelain` non-empty, pinning every WSL repo to dirty forever.
+        string withBanner =
+            "Welcome to Ubuntu\nsome motd" + GitService.WslOutputSentinel + "main\n";
+
+        Assert.Equal("main\n", GitService.StripWslProfileNoise(withBanner));
+    }
+
+    [Fact]
+    public void EverythingAfterTheMarkerIsKept()
+    {
+        Assert.Equal("main\n",
+            GitService.StripWslProfileNoise(GitService.WslOutputSentinel + "main\n"));
+    }
+
+    [Fact]
+    public void OutputWithNoSentinelIsReturnedIntact()
+    {
+        // No marker means the exec never happened — wsl.exe itself failed, the distro is
+        // missing. That text is an error message the caller logs, not git output to trim.
+        const string wslError = "There is no distribution with the supplied name.";
+
+        Assert.Equal(wslError, GitService.StripWslProfileNoise(wslError));
+        Assert.Equal("", GitService.StripWslProfileNoise(""));
+    }
+
+    [Fact]
+    public void OnlyTheFirstMarkerSplits()
+    {
+        // The marker is distinctive enough that a collision from either side is
+        // implausible, so the first occurrence is unambiguously the one our script printed.
+        string s = "noise" + GitService.WslOutputSentinel + "real";
+
+        Assert.Equal("real", GitService.StripWslProfileNoise(s));
+    }
+
+    [Fact]
+    public void StatusPorcelainStaysEmptyWhenAProfileIsChatty()
+    {
+        // The concrete user-visible bug this prevents: empty porcelain output means "clean".
+        // A banner would make it non-empty and every WSL repo would show as dirty forever.
+        string stdout = "MOTD line one\nMOTD line two\n" + GitService.WslOutputSentinel;
+
+        Assert.True(string.IsNullOrWhiteSpace(GitService.StripWslProfileNoise(stdout)));
+    }
+
+    [Fact]
+    public void TheScriptHandedToTheLoginShellIsStillFreeOfInterpolatedData()
+    {
+        // The sentinel was added to the script; it must remain a constant.
+        string a = GitService.BuildWslGitCommandLine("Ubuntu", "/a", new[] { "status" });
+        string b = GitService.BuildWslGitCommandLine("Debian", "/b$(id)", new[] { "log", "`id`" });
+
+        string ScriptOf(string cmd)
+        {
+            string[] argv = Win32CommandLineTests.Split(cmd);
+            return argv[argv.ToList().IndexOf("-lc") + 1];
+        }
+
+        Assert.Equal(ScriptOf(a), ScriptOf(b));
+        Assert.DoesNotContain("id", ScriptOf(b));
     }
 
     [Fact]

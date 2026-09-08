@@ -8,3 +8,10 @@ namespace CodeShellManager.Tests;
 /// </summary>
 [CollectionDefinition("DiagnosticTrace", DisableParallelization = true)]
 public class DiagnosticTraceCollection { }
+
+/// <summary>
+/// GitRepoWatcher keeps a process-wide shared map; the SharedCount assertions in its tests
+/// would race with any parallel class that Acquires.
+/// </summary>
+[CollectionDefinition("GitRepoWatcher", DisableParallelization = true)]
+public class GitRepoWatcherCollection { }

@@ -409,13 +409,39 @@ public sealed class TerminalBridge : IDisposable
         foreach (string fp in paths)
         {
             if (string.IsNullOrEmpty(fp)) continue;
+
+            // Control characters are rejected, not escaped. Win32 forbids them in filenames,
+            // so nothing legitimate is lost, and rejection has no escaping bug to get wrong.
             if (fp.Any(char.IsControl)) continue;
 
-            quoted.Add(fp.Contains(' ') || fp.Contains('"')
-                ? "\"" + fp.Replace("\"", "\\\"") + "\""
-                : fp);
+            // A `"` cannot appear in a real Windows path either, and there is no quoting
+            // that is simultaneously correct for cmd.exe, PowerShell and POSIX shells — the
+            // session could be any of them. Rejecting is the only answer that is right in
+            // all three.
+            if (fp.Contains('"')) continue;
+
+            quoted.Add(NeedsQuoting(fp) ? "\"" + fp + "\"" : fp);
         }
         return string.Join(" ", quoted);
+    }
+
+    /// <summary>
+    /// True when a path must be wrapped in quotes before being typed into a shell.
+    ///
+    /// Not just spaces. The pane may be running cmd.exe, PowerShell, bash or a TUI, and each
+    /// treats a different set of characters as syntax. A perfectly legal Windows filename
+    /// like <c>a&amp;calc.txt</c> contains no space, so quoting only on space handed cmd.exe a
+    /// bare <c>&amp;</c> — a command separator. Quoting on any shell metacharacter of any of
+    /// them is the conservative union; over-quoting a path is harmless in all of them.
+    /// </summary>
+    private static bool NeedsQuoting(string path)
+    {
+        foreach (char c in path)
+        {
+            if (char.IsWhiteSpace(c)) return true;
+            if ("&|<>^();,=!%$`'{}[]".IndexOf(c) >= 0) return true;
+        }
+        return false;
     }
 
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)

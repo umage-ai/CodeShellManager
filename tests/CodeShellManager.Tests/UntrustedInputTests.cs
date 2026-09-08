@@ -1,3 +1,4 @@
+using System.Linq;
 using CodeShellManager.Models;
 using CodeShellManager.Services;
 using Xunit;
@@ -30,10 +31,17 @@ public class UntrustedInputTests
 
         string args = session.BuildSshArgs();
 
-        // The escaped form is '…' with every inner ' rendered as '\'' — so after the opening
-        // quote, no bare ' can appear that would end the string early.
-        Assert.Contains(ShellSession.PosixSingleQuote(folder), args);
-        Assert.DoesNotContain($"cd '{folder}'", args.Replace(ShellSession.PosixSingleQuote(folder), ""));
+        // The builder must route the folder through the escaper rather than interpolating
+        // it raw. PosixSingleQuote's own correctness is pinned separately below with exact
+        // expected strings — a quote-counting heuristic would be wrong here, since the
+        // correct escaping of `/x'` is `'/x'\'''`, which contains an odd number of quotes.
+        Assert.Contains("cd " + ShellSession.PosixSingleQuote(folder), args);
+
+        // The raw-interpolation form must be absent — but only meaningfully so when the
+        // folder actually contains a quote; without one the escaped and raw forms are the
+        // same string, and asserting they differ would just be false.
+        if (folder.Contains('\''))
+            Assert.DoesNotContain($"cd '{folder}' &&", args);
     }
 
     [Fact]

@@ -121,20 +121,28 @@ public sealed class GitRepoWatcher : IDisposable
         try { candidate = new GitRepoWatcher(gitDir); }
         catch { return null; }
 
+        GitRepoWatcher? loser = null;
+        GitRepoWatcher result;
         lock (SharedLock)
         {
             // Someone may have won the race while we were constructing. Keep theirs.
             if (Shared.TryGetValue(gitDir, out var raced))
             {
                 Shared[gitDir] = (raced.Watcher, raced.RefCount + 1);
-                candidate.Dispose();
-                return raced.Watcher;
+                loser = candidate;
+                result = raced.Watcher;
             }
-
-            candidate._sharedKey = gitDir;
-            Shared[gitDir] = (candidate, 1);
-            return candidate;
+            else
+            {
+                candidate._sharedKey = gitDir;
+                Shared[gitDir] = (candidate, 1);
+                result = candidate;
+            }
         }
+
+        // Outside the lock: Dispose tears down a kernel watch handle.
+        loser?.Dispose();
+        return result;
     }
 
     /// <summary>Drops one reference; disposes the watcher when the last session lets go.</summary>
@@ -143,6 +151,7 @@ public sealed class GitRepoWatcher : IDisposable
         if (watcher is null) return;
         if (watcher._sharedKey is not string key) { watcher.Dispose(); return; }
 
+        GitRepoWatcher? toDispose = null;
         lock (SharedLock)
         {
             if (!Shared.TryGetValue(key, out var entry)) return;
@@ -150,6 +159,11 @@ public sealed class GitRepoWatcher : IDisposable
             // Identity check. A stale double-Release must not decrement — or dispose — the
             // *replacement* watcher registered for the same .git dir after this one was
             // torn down, which would silently kill events for a live session.
+            //
+            // A double-Release of the *same* live watcher would still over-decrement. It is
+            // unreachable today because SessionViewModel.Dispose is idempotent and nulls its
+            // field, which is the invariant callers must keep: Release exactly once per
+            // successful Acquire.
             if (!ReferenceEquals(entry.Watcher, watcher)) return;
 
             if (entry.RefCount > 1)
@@ -160,8 +174,12 @@ public sealed class GitRepoWatcher : IDisposable
 
             Shared.Remove(key);
             entry.Watcher._sharedKey = null;
-            entry.Watcher.Dispose();
+            toDispose = entry.Watcher;
         }
+
+        // Outside the lock: Dispose tears down a kernel watch handle, and SharedLock is
+        // global — holding it across that stalls every other session's Acquire/Release.
+        toDispose?.Dispose();
     }
 
     /// <summary>Live shared-watcher count. Tests only.</summary>

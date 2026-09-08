@@ -196,8 +196,13 @@ public class ShellSession
         if (SshPort != 22)
             sb.Append($"-p {SshPort} ");
         sb.Append("-t ");
+        // Quoted so it stays ONE argv element. Unquoted, an SshHost of
+        // `h -oProxyCommand=calc` split into extra *ssh options* — and ProxyCommand runs
+        // locally, so a crafted state.json got code execution on the user's own machine
+        // before any connection was attempted. Worse than the SshRemoteFolder case, because
+        // it doesn't need a remote host to exist. Both come from the same untrusted file.
         var userAtHost = string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}";
-        sb.Append(userAtHost);
+        sb.Append(QuoteForCmd(userAtHost));
         sb.Append(" \"");
         if (!string.IsNullOrWhiteSpace(SshRemoteFolder))
             // Escaped, not raw. This lands inside single quotes in a remote shell command,

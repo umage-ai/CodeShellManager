@@ -46,13 +46,31 @@ public class DroppedPathsTests
     }
 
     [Fact]
-    public void AQuoteInAPathCannotEscapeTheQuoting()
+    public void AQuoteInAPathIsRejected()
     {
         // `"` is legal in a URI-derived string even though Win32 forbids it in a filename.
-        // Escaped rather than rejected, so the quoting below can't be broken out of.
-        string payload = TerminalBridge.BuildDroppedPathsPayload(new[] { "C:\\a\"b c" });
+        // There is no escaping that is simultaneously correct for cmd.exe, PowerShell and
+        // POSIX shells — and the pane could be running any of them — so it is rejected.
+        // Escaping it as \" was cmd-wrong: cmd ends the quoted region there, leaving the
+        // rest of the payload bare.
+        Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(new[] { "C:\\a\"b c" }));
+        Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(new[] { "x\"&calc&\".txt" }));
+    }
 
-        Assert.Equal("\"C:\\a\\\"b c\"", payload);
+    [Theory]
+    [InlineData(@"C:\tmp\a&calc.txt")]      // legal filename; cmd would run calc unquoted
+    [InlineData(@"C:\tmp\a;b.txt")]
+    [InlineData(@"C:\tmp\a|b.txt")]
+    [InlineData(@"C:\tmp\(x).txt")]
+    [InlineData(@"C:\tmp\a$b.txt")]
+    [InlineData(@"C:\tmp\a`b.txt")]
+    public void ShellMetacharactersForceQuoting(string path)
+    {
+        // Quoting only on space was POSIX-shaped thinking. Sessions are commonly cmd.exe or
+        // PowerShell, where `&`, `;`, `|`, `(` and friends are syntax in an unquoted word.
+        string payload = TerminalBridge.BuildDroppedPathsPayload(new[] { path });
+
+        Assert.Equal("\"" + path + "\"", payload);
     }
 
     [Fact]

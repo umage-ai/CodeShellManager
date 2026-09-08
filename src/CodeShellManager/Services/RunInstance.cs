@@ -306,9 +306,13 @@ public partial class RunInstance : ObservableObject, IDisposable
         var sb = new StringBuilder();
         if (parent.SshPort != 22) sb.Append($"-p {parent.SshPort} ");
         sb.Append("-t ");
-        sb.Append(string.IsNullOrWhiteSpace(parent.SshUser)
-            ? parent.SshHost
-            : $"{parent.SshUser}@{parent.SshHost}");
+        // Quoted for the same reason as ShellSession.BuildSshArgs: an unquoted host
+        // containing ` -oProxyCommand=…` becomes extra ssh options, and ProxyCommand runs
+        // locally. See there.
+        sb.Append(ShellSession.QuoteForCmd(
+            string.IsNullOrWhiteSpace(parent.SshUser)
+                ? parent.SshHost
+                : $"{parent.SshUser}@{parent.SshHost}"));
         sb.Append(" \"");
         if (!string.IsNullOrWhiteSpace(parent.SshRemoteFolder))
             // Escaped for the same reason the command below is — the folder was the one

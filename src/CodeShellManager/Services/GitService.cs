@@ -193,6 +193,40 @@ public static class GitService
     /// it can be round-tripped through the real Win32 tokenizer in tests — see
     /// <c>GitServiceInjectionTests</c>.
     /// </summary>
+    /// <summary>
+    /// ASCII Record Separator, printed by the login shell immediately before it execs git.
+    /// Everything up to and including it is profile noise, not git output.
+    /// </summary>
+    internal const string WslOutputSentinel = "CSM-GIT";
+
+    /// <summary>
+    /// The fixed script handed to <c>sh -lc</c>. Contains no interpolated data — that is
+    /// the entire basis of the injection safety, so it is a constant, not a format string.
+    ///
+    /// The sentinel exists because <c>-l</c> sources <c>/etc/profile</c> and
+    /// <c>~/.profile</c> first, and a profile that echoes prepends its output to git's.
+    /// Callers parse that output: a banner would become the "branch name", and — worse —
+    /// would make <c>status --porcelain</c> non-empty, pinning every WSL repo to "dirty"
+    /// forever. The old <c>--</c> form had the identical exposure; WSL sessions are new in
+    /// this release, so this would have been its debut rather than a regression.
+    /// </summary>
+    internal const string WslGitScript = "printf '\\036CSM-GIT\\036'; exec \"$0\" \"$@\"";
+
+    /// <summary>
+    /// Strips profile output emitted before the sentinel. No sentinel means the command
+    /// never reached the exec (wsl.exe itself failed, distro missing), so the text is an
+    /// error message and is returned untouched for the caller to log.
+    /// </summary>
+    internal static string StripWslProfileNoise(string stdout)
+    {
+        if (string.IsNullOrEmpty(stdout)) return stdout;
+
+        // First occurrence: the marker is distinctive enough that a collision from either
+        // the profile or git's own output is implausible, so the first one is ours.
+        int i = stdout.IndexOf(WslOutputSentinel, StringComparison.Ordinal);
+        return i < 0 ? stdout : stdout[(i + WslOutputSentinel.Length)..];
+    }
+
     internal static string BuildWslGitCommandLine(
         string distro, string cwd, IReadOnlyList<string> gitArgs)
     {
@@ -211,7 +245,7 @@ public static class GitService
         // a branch name is data, not code.
         var argv = new List<string>
         {
-            "-d", distro, "-e", "sh", "-lc", "exec \"$0\" \"$@\"", "git", "-C", cwd
+            "-d", distro, "-e", "sh", "-lc", WslGitScript, "git", "-C", cwd
         };
         foreach (string a in gitArgs) argv.Add(TranslateUncArgToLinux(a, distro));
         return JoinArgv(argv);
@@ -342,7 +376,10 @@ public static class GitService
 
         string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
         string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
-        stdout = TranslateLinuxPathsToUnc(stdout, distro);
+        // Drop anything the login shell's profile wrote before git started, then map Linux
+        // paths back to UNC. Order matters: the sentinel must go before path translation,
+        // or a banner containing a slash would be rewritten as if it were a git path.
+        stdout = TranslateLinuxPathsToUnc(StripWslProfileNoise(stdout), distro);
         return (stdout, stderr, process.HasExited ? process.ExitCode : -1);
     }
 
