@@ -227,7 +227,7 @@ public partial class MainWindow : Window
 
         // Unattributed UI-thread latency baseline (issue #70). Started after settings load
         // so it shares the live AppSettings ref and honours DebugTerminalTrace toggled at
-        // runtime; the timer itself is cheap enough to leave running either way.
+        // runtime. SyncToSettings starts or stops it, so a session with tracing off pays nothing.
         _uiHeartbeat = new Diagnostics.UiThreadHeartbeat(_vm.Settings);
         _uiHeartbeat.SyncToSettings();
 

@@ -134,7 +134,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     {
         // SSH sessions have no local working folder to inspect. WSL sessions store
         // their WorkingFolder as a `\\wsl$\<distro>\...` UNC; GitService detects that
-        // and dispatches to `wsl.exe -- git -C <linuxPath>` internally (Git for
+        // and dispatches to `wsl.exe -d <distro> -e sh -lc ... git -C <linuxPath>` internally (Git for
         // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
         if (Session.Kind == SessionKind.Ssh || _gitOverriddenByOsc) return;
 
@@ -401,8 +401,17 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         IsWaitingForApproval = false;
     }
 
+    private bool _disposed;
+
     public void Dispose()
     {
+        // Idempotent. MainWindow disposes a session VM from several paths (close, sleep,
+        // restart, shutdown) and some of them can both run for one session; a second call
+        // used to throw ObjectDisposedException on the CTS below, *before* reaching the
+        // watcher release — leaking a shared watcher reference on the way out.
+        if (_disposed) return;
+        _disposed = true;
+
         Runner.Dispose();
         _gitPollCts.Cancel();
         _gitPollCts.Dispose();

@@ -389,6 +389,35 @@ public sealed class TerminalBridge : IDisposable
         _coalescer.Append(rawData);
     }
 
+    /// <summary>
+    /// Turns dropped file paths into the text written to the PTY. Extracted so the filtering
+    /// is testable without a WebView2 — see <c>DroppedPathsTests</c>.
+    ///
+    /// Paths from a drop are UNTRUSTED: the page derives them from the drag payload's
+    /// text/uri-list with <c>decodeURIComponent</c>, so a drag source that controls that
+    /// payload (a hostile page's dragstart, a crafted .url, another local app) can put any
+    /// character in them percent-escaped. <c>%0A</c> decodes to a newline, and a newline
+    /// written to a PTY is the user pressing Enter — one drop would have run a command in
+    /// the focused session with no keystroke and no confirmation.
+    ///
+    /// Control characters are rejected rather than escaped: Win32 forbids them in filenames,
+    /// so nothing legitimate is lost, and rejection has no escaping bug to get wrong later.
+    /// </summary>
+    internal static string BuildDroppedPathsPayload(IEnumerable<string> paths)
+    {
+        var quoted = new List<string>();
+        foreach (string fp in paths)
+        {
+            if (string.IsNullOrEmpty(fp)) continue;
+            if (fp.Any(char.IsControl)) continue;
+
+            quoted.Add(fp.Contains(' ') || fp.Contains('"')
+                ? "\"" + fp.Replace("\"", "\\\"") + "\""
+                : fp);
+        }
+        return string.Join(" ", quoted);
+    }
+
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
     {
         AcceleratorKeyPressed?.Invoke(this, e);
@@ -502,18 +531,29 @@ public sealed class TerminalBridge : IDisposable
                     break;
 
                 case "filesDropped":
-                    // JS sends full paths via text/uri-list (file:// URIs from Explorer)
+                    // JS sends full paths via text/uri-list (file:// URIs from Explorer).
+                    //
+                    // These are UNTRUSTED. The page derives them from the drag payload with
+                    // decodeURIComponent, so a drag source that controls text/uri-list — a
+                    // hostile page's dragstart, a crafted .url shortcut, another local app —
+                    // can put ANY character in them, percent-escaped. `%0A` decodes to a
+                    // newline, and a newline written to a PTY is the user pressing Enter:
+                    // one drop would have run a command in the focused session with no
+                    // keystroke and no confirmation.
+                    //
+                    // Control characters are rejected outright rather than escaped. No real
+                    // Windows path contains one (the Win32 API forbids them in filenames),
+                    // so nothing legitimate is lost, and "reject" has no escaping bug to get
+                    // wrong later. Embedded quotes are escaped so the quoting below can't be
+                    // broken out of either.
                     if (root.TryGetProperty("paths", out var pathsEl))
                     {
-                        var pathsList = new System.Collections.Generic.List<string>();
+                        var raw = new System.Collections.Generic.List<string>();
                         foreach (var p in pathsEl.EnumerateArray())
-                        {
-                            string fp = p.GetString() ?? "";
-                            if (!string.IsNullOrEmpty(fp))
-                                pathsList.Add(fp.Contains(' ') ? $"\"{fp}\"" : fp);
-                        }
-                        if (pathsList.Count > 0)
-                            _pty?.Write(string.Join(" ", pathsList));
+                            raw.Add(p.GetString() ?? "");
+
+                        string payload = BuildDroppedPathsPayload(raw);
+                        if (payload.Length > 0) _pty?.Write(payload);
                     }
                     break;
             }

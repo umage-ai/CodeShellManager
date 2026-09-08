@@ -53,6 +53,18 @@ jobs:
       - name: Restore & Build
         run: dotnet build src/CodeShellManager/CodeShellManager.csproj -c Release
 
+      # CI had never run the test suite — it built the app and went straight to
+      # packaging, so every test only ever ran on a developer's machine. Found in the
+      # v0.8.0 pre-release review, and it matters more than usual now: the regression
+      # guards for the WSL command-injection fix (GitServiceInjectionTests) and for the
+      # git-off-the-UI-thread fix (GitServiceThreadingTests) live in here.
+      #
+      # Unit tests only. CodeShellManager.UITests drives the real app through FlaUI and
+      # needs an interactive desktop session, which a hosted runner does not reliably
+      # provide; adding it here would buy flakiness rather than coverage.
+      - name: Test
+        run: dotnet test tests/CodeShellManager.Tests/CodeShellManager.Tests.csproj -c Release --nologo
+
       # ════════════════════════════════════════════════════════════════════════
       # Everything below only runs when a version tag is pushed (e.g. v1.2.3)
       # ════════════════════════════════════════════════════════════════════════

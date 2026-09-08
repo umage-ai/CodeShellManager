@@ -153,9 +153,13 @@ public static class GitService
         // backticks. Interpolated into a command line that reached a shell, that was remote
         // code execution from opening a hostile repo; interpolated into the local path it
         // still injected extra git argv via a `"`.
+        // `--` terminates option parsing. git uses permuting parse_options, so without it a
+        // ref legitimately named `--force` or `--detach` sitting in refs/heads is consumed
+        // as an option rather than as the commit-ish. Not execution, but it is a repo
+        // deciding which git flags we run.
         string[] args = createBranch
-            ? new[] { "worktree", "add", "-b", branchOrRef, targetPath }
-            : new[] { "worktree", "add", targetPath, branchOrRef };
+            ? new[] { "worktree", "add", "-b", branchOrRef, "--", targetPath }
+            : new[] { "worktree", "add", "--", targetPath, branchOrRef };
 
         var (output, stderr, exit) = await RunGitFullAsync(repoRoot, args, timeoutMs: 30_000).ConfigureAwait(false);
         if (exit == 0) return (true, "");
@@ -192,7 +196,23 @@ public static class GitService
     internal static string BuildWslGitCommandLine(
         string distro, string cwd, IReadOnlyList<string> gitArgs)
     {
-        var argv = new List<string> { "-d", distro, "-e", "git", "-C", cwd };
+        // `-e sh -lc 'exec "$0" "$@"' git …` rather than a bare `-e git`.
+        //
+        // Plain `-e git` is injection-safe but changed behaviour: it execs git directly, so
+        // the login shell never runs and PATH is the bare default. Anyone whose git comes
+        // from nix, linuxbrew or asdf — i.e. PATH set in a shell profile — would silently
+        // lose WSL git entirely, and the symptom would be "not a git repo" rather than
+        // anything pointing at PATH. The old `--` form ran a login shell, so that PATH was
+        // previously present.
+        //
+        // This restores it without reopening the hole: the script text is a fixed literal
+        // and every untrusted value arrives as a positional parameter. `"$0"`/`"$@"` expand
+        // to those parameters verbatim — the shell does not re-parse them — so a `$(…)` in
+        // a branch name is data, not code.
+        var argv = new List<string>
+        {
+            "-d", distro, "-e", "sh", "-lc", "exec \"$0\" \"$@\"", "git", "-C", cwd
+        };
         foreach (string a in gitArgs) argv.Add(TranslateUncArgToLinux(a, distro));
         return JoinArgv(argv);
     }
@@ -272,7 +292,7 @@ public static class GitService
     }
 
     /// <summary>
-    /// Runs <c>wsl.exe -d &lt;distro&gt; -- git -C &lt;linuxPath&gt; &lt;arguments&gt;</c>.
+    /// Runs <c>wsl.exe -d &lt;distro&gt; -e sh -lc 'exec "$0" "$@"' git -C &lt;linuxPath&gt; …</c> — <c>-e</c>, never <c>--</c>. See BuildWslGitCommandLine.
     /// Translates any WSL UNC paths in <paramref name="arguments"/> to Linux form
     /// before invocation (so things like <c>worktree add "\\wsl$\Ubuntu\…"</c> reach
     /// git as a normal Linux path), and translates absolute Linux paths in stdout

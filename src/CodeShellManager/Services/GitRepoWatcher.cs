@@ -98,9 +98,17 @@ public sealed class GitRepoWatcher : IDisposable
         {
             gitDir = ResolveGitDir(workingFolder);
             if (gitDir == null || !Directory.Exists(gitDir)) return null;
+            // Normalize before it becomes a dictionary key: C:/repo/.git and C:\repo\.git
+            // are the same directory and must not get two watchers.
+            gitDir = Path.GetFullPath(gitDir);
         }
         catch { return null; }
 
+        // Construct OUTSIDE the lock. SharedLock is global and this is called from the UI
+        // thread; creating a FileSystemWatcher touches the kernel and, on a slow or offline
+        // path, can block. Holding a global lock across that would stall every other
+        // session's Acquire/Release behind one bad repo.
+        GitRepoWatcher? candidate = null;
         lock (SharedLock)
         {
             if (Shared.TryGetValue(gitDir, out var existing))
@@ -108,31 +116,50 @@ public sealed class GitRepoWatcher : IDisposable
                 Shared[gitDir] = (existing.Watcher, existing.RefCount + 1);
                 return existing.Watcher;
             }
+        }
 
-            GitRepoWatcher created;
-            try { created = new GitRepoWatcher(gitDir); }
-            catch { return null; }
+        try { candidate = new GitRepoWatcher(gitDir); }
+        catch { return null; }
 
-            created._sharedKey = gitDir;
-            Shared[gitDir] = (created, 1);
-            return created;
+        lock (SharedLock)
+        {
+            // Someone may have won the race while we were constructing. Keep theirs.
+            if (Shared.TryGetValue(gitDir, out var raced))
+            {
+                Shared[gitDir] = (raced.Watcher, raced.RefCount + 1);
+                candidate.Dispose();
+                return raced.Watcher;
+            }
+
+            candidate._sharedKey = gitDir;
+            Shared[gitDir] = (candidate, 1);
+            return candidate;
         }
     }
 
     /// <summary>Drops one reference; disposes the watcher when the last session lets go.</summary>
     public static void Release(GitRepoWatcher? watcher)
     {
-        if (watcher?._sharedKey is not string key) { watcher?.Dispose(); return; }
+        if (watcher is null) return;
+        if (watcher._sharedKey is not string key) { watcher.Dispose(); return; }
 
         lock (SharedLock)
         {
             if (!Shared.TryGetValue(key, out var entry)) return;
+
+            // Identity check. A stale double-Release must not decrement — or dispose — the
+            // *replacement* watcher registered for the same .git dir after this one was
+            // torn down, which would silently kill events for a live session.
+            if (!ReferenceEquals(entry.Watcher, watcher)) return;
+
             if (entry.RefCount > 1)
             {
                 Shared[key] = (entry.Watcher, entry.RefCount - 1);
                 return;
             }
+
             Shared.Remove(key);
+            entry.Watcher._sharedKey = null;
             entry.Watcher.Dispose();
         }
     }
