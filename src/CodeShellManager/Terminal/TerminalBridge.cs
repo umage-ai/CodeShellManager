@@ -677,7 +677,35 @@ public sealed class TerminalBridge : IDisposable
         || s.ProfilePadding != null || s.ProfileRetroEffect != null
         || !string.IsNullOrEmpty(s.ProfileColorSchemeJson);
 
+    /// <summary>
+    /// Writes text to the PTY exactly as typed. Only for text WE construct — a keystroke, a
+    /// fixed command from a preset. Every newline in it is an Enter.
+    /// </summary>
     public void SendToTerminal(string text) => _pty?.Write(text);
+
+    /// <summary>
+    /// Delivers text as a PASTE rather than as keystrokes, going through the page so xterm
+    /// wraps it in bracketed-paste markers when the running program has enabled them.
+    ///
+    /// Use this for anything the app did not author — run-command output, clipboard content,
+    /// dropped paths. A raw <see cref="SendToTerminal"/> of multi-line text submits at every
+    /// newline; the same primitive that made a dropped filename containing <c>%0A</c> a
+    /// command-execution bug. Falls back to a plain write when the page isn't up yet, which
+    /// is no worse than the direct write it replaces.
+    /// </summary>
+    public void PasteToTerminal(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+
+        if (!_ready) { _pty?.Write(text); return; }
+
+        string json = JsonSerializer.Serialize(new { type = "paste", data = text });
+        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
+            catch { }
+        });
+    }
 
     public void FitTerminal()
     {

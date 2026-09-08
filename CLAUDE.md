@@ -225,6 +225,20 @@ fail against the pre-fix code.
 The same fix removed a plain bug: `--format=%(refname:short)` is a bash syntax error once a
 login shell sees it, so `ListBranchesAsync` could never have worked under WSL.
 
+**Two escaping layers, and a value can cross both.** `SshRemoteFolder` was POSIX-escaped in
+one round and *still* exploitable in the next, because the remote command was additionally
+hand-wrapped in `" … "` for Windows argv — and `PosixSingleQuote` escapes `'`, not `"`. A `"`
+in the folder therefore broke out at the **Windows** layer, and text after it became separate
+ssh arguments; ssh honours options after the host, and `ProxyCommand` runs *locally*. Both
+ssh builders now assemble the remote command and pass it through `QuoteForCmd(force: true)`
+as a single argv element. When a value crosses layers, ask which layer each escaper defends.
+
+**`SendToTerminal` types; `PasteToTerminal` pastes.** A raw PTY write submits at every
+newline — that is what made a dropped filename containing `%0A` a command-execution bug.
+`SendToTerminal` is only for text the app authored (a keystroke, a fixed preset command).
+Anything the app did not write — run-command output, clipboard, dropped paths — goes through
+`PasteToTerminal`, which routes via the page so xterm applies bracketed-paste markers.
+
 **Verified empirically against a real distro**, because two rounds of reasoning about this
 had already been wrong:
 

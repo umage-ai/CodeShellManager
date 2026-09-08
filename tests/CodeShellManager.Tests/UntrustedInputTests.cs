@@ -92,6 +92,39 @@ public class UntrustedInputTests
         Assert.DoesNotContain(argv, a => a.StartsWith("-o"));
     }
 
+    [Theory]
+    // The two escaping layers nest: POSIX single-quoting inside the remote command, Windows
+    // argv quoting around the whole of it. These values exercise both at once — a quote for
+    // the inner layer, a double-quote and a trailing backslash for the outer one, which is
+    // where MSVCRT's 2n/2n+1 backslash rules bite.
+    [InlineData("/it's/here")]
+    [InlineData("/a\"b")]
+    [InlineData("/a'b\"c")]
+    [InlineData("/trailing\\")]
+    [InlineData("/a'b\"c\\")]
+    [InlineData("/x'; id; :'")]
+    public void BothEscapingLayersNestCorrectly(string folder)
+    {
+        var session = new ShellSession
+        {
+            Kind = SessionKind.Ssh,
+            SshHost = "example.invalid",
+            SshRemoteFolder = folder,
+            Command = "bash",
+        };
+
+        string[] argv = Win32CommandLineTests.Split(session.BuildSshArgs());
+
+        // Outer layer: exactly three arguments reach ssh, whatever the value contains.
+        Assert.Equal(3, argv.Length);
+        Assert.Equal("example.invalid", argv[1]);
+
+        // Inner layer: the remote command ssh receives carries the POSIX-escaped folder
+        // verbatim. Its correctness against a real /bin/sh is verified separately — every
+        // case here was round-tripped through `sh -c 'printf %s …'` in a WSL distro.
+        Assert.Equal($"cd {ShellSession.PosixSingleQuote(folder)} && bash", argv[2]);
+    }
+
     [Fact]
     public void PosixSingleQuote_EscapesEveryQuote()
     {

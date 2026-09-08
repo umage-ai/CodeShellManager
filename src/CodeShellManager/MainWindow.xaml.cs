@@ -1241,7 +1241,10 @@ public partial class MainWindow : Window
             string exit = inst.ExitCode is { } code ? $" (exit code {code})" : "";
             // No trailing \r — leave it in Claude's input box for the user to submit.
             string wrapped = $"\nOutput of `{inst.CommandLine}`{exit}:\n```\n{text}\n```\n";
-            vm.Bridge.SendToTerminal(wrapped);
+            // Paste, not type. `text` is whatever the run command printed — arbitrary tool
+            // output — and a raw PTY write submits at every newline in it. Bracketed paste
+            // is what the clipboard path already uses; this is the same class of content.
+            vm.Bridge.PasteToTerminal(wrapped);
             ToastHelper.Show("Sent to Claude", $"{text.Length} chars wrapped in fence");
         }
         else
@@ -5335,9 +5338,20 @@ public partial class MainWindow : Window
 
     private void UpdateBadge_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (_updateReleaseUrl == null) return;
-        System.Diagnostics.Process.Start(
-            new System.Diagnostics.ProcessStartInfo(_updateReleaseUrl) { UseShellExecute = true });
+        // Same guard as RunCommandItem.PostRunUrl, for the same reason: ShellExecute will
+        // launch a local exe, a .ps1, a UNC path or any registered protocol handler, and
+        // this value arrives from a GitHub API response via a cache file under AppData.
+        // Low risk on its own — but an unguarded ShellExecute sitting next to a guarded one
+        // is how the guard stops being the rule.
+        if (!Services.RunInstance.TryGetLaunchableUrl(_updateReleaseUrl, out string? safeUrl))
+            return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(safeUrl!) { UseShellExecute = true });
+        }
+        catch (Exception ex) { Log($"UpdateBadge launch failed: {ex.Message}"); }
     }
 
     private void UpdateBadgeDismiss_Click(object sender, RoutedEventArgs e)
