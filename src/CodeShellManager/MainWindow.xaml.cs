@@ -1239,11 +1239,16 @@ public partial class MainWindow : Window
         if (isClaude && vm.Bridge != null)
         {
             string exit = inst.ExitCode is { } code ? $" (exit code {code})" : "";
-            // No trailing \r — leave it in Claude's input box for the user to submit.
+            // The intent has always been "leave it in Claude's input box for the user to
+            // submit", but the old comment claimed that was achieved by having no trailing
+            // \r — while the string ends in \n, which a raw PTY write delivers as Enter just
+            // the same. So it submitted, and every newline inside `text` submitted too.
             string wrapped = $"\nOutput of `{inst.CommandLine}`{exit}:\n```\n{text}\n```\n";
+
             // Paste, not type. `text` is whatever the run command printed — arbitrary tool
-            // output — and a raw PTY write submits at every newline in it. Bracketed paste
-            // is what the clipboard path already uses; this is the same class of content.
+            // output — and bracketed paste is what the clipboard path already uses for the
+            // same class of content. This finally makes the behaviour match the intent
+            // above: the fenced block lands in the input box and waits for the user.
             vm.Bridge.PasteToTerminal(wrapped);
             ToastHelper.Show("Sent to Claude", $"{text.Length} chars wrapped in fence");
         }
