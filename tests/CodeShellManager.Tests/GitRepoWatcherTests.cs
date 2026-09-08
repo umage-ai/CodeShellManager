@@ -143,6 +143,88 @@ public class GitRepoWatcherTests : IDisposable
     }
 
     [Fact]
+    public void Acquire_shares_one_watcher_across_sessions_in_the_same_repo()
+    {
+        // Several sessions in one repo is the normal case — that is what the worktree
+        // sibling feature is for. One FileSystemWatcher per session meant N kernel handles
+        // and N buffers on the same directory.
+        string work = MakeRepo("shared");
+        int before = GitRepoWatcher.SharedCount;
+
+        var a = GitRepoWatcher.Acquire(work);
+        var b = GitRepoWatcher.Acquire(work);
+        try
+        {
+            Assert.NotNull(a);
+            Assert.Same(a, b);
+            Assert.Equal(before + 1, GitRepoWatcher.SharedCount);
+        }
+        finally
+        {
+            GitRepoWatcher.Release(a);
+            GitRepoWatcher.Release(b);
+        }
+    }
+
+    [Fact]
+    public void Release_keeps_the_watcher_alive_until_the_last_session_lets_go()
+    {
+        string work = MakeRepo("refcount");
+        var a = GitRepoWatcher.Acquire(work);
+        var b = GitRepoWatcher.Acquire(work);
+        Assert.NotNull(a);
+
+        using var fired = new ManualResetEventSlim(false);
+        a!.Changed += () => fired.Set();
+
+        // First session closes. The watcher must survive for the second.
+        GitRepoWatcher.Release(a);
+
+        File.WriteAllText(Path.Combine(work, ".git", "HEAD"), "ref: refs/heads/still-live\n");
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(10)),
+            "releasing one session must not stop notifications for the others");
+
+        GitRepoWatcher.Release(b);
+        Assert.DoesNotContain(work, DescribeShared());
+    }
+
+    [Fact]
+    public void Different_repos_get_different_watchers()
+    {
+        string one = MakeRepo("repo-one");
+        string two = MakeRepo("repo-two");
+
+        var a = GitRepoWatcher.Acquire(one);
+        var b = GitRepoWatcher.Acquire(two);
+        try
+        {
+            Assert.NotNull(a);
+            Assert.NotNull(b);
+            Assert.NotSame(a, b);
+        }
+        finally
+        {
+            GitRepoWatcher.Release(a);
+            GitRepoWatcher.Release(b);
+        }
+    }
+
+    [Fact]
+    public void Acquire_outside_a_repo_returns_null_and_registers_nothing()
+    {
+        string plain = Path.Combine(_root, "plain-acquire");
+        Directory.CreateDirectory(plain);
+        int before = GitRepoWatcher.SharedCount;
+
+        Assert.Null(GitRepoWatcher.Acquire(plain));
+        Assert.Equal(before, GitRepoWatcher.SharedCount);
+    }
+
+    // The shared map is keyed by .git dir; this just gives the assertion above something
+    // readable to fail against.
+    private static string DescribeShared() => $"shared={GitRepoWatcher.SharedCount}";
+
+    [Fact]
     public void Dispose_stops_notifications()
     {
         string work = MakeRepo("disposed");

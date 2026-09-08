@@ -229,7 +229,7 @@ public partial class MainWindow : Window
         // so it shares the live AppSettings ref and honours DebugTerminalTrace toggled at
         // runtime; the timer itself is cheap enough to leave running either way.
         _uiHeartbeat = new Diagnostics.UiThreadHeartbeat(_vm.Settings);
-        _uiHeartbeat.Start();
+        _uiHeartbeat.SyncToSettings();
 
         // Stamp the UI thread and mirror the trace flag for WPF-free services (GitService).
         Diagnostics.DiagnosticTrace.UiThreadId = Environment.CurrentManagedThreadId;
@@ -527,7 +527,7 @@ public partial class MainWindow : Window
         if (time != null) r.Time.Text = time;
 
         r.Row.Background = active
-            ? new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x39))
+            ? new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44))
             : Brushes.Transparent;
 
         if (r.Row.Tag is TextBlock name)
@@ -5445,6 +5445,7 @@ public partial class MainWindow : Window
             // automatically — but the page half is push-only and would stay dark on panes
             // that are already running. Toggling the setting has to reach them (issue #70).
             Diagnostics.DiagnosticTrace.Enabled = edited.DebugTerminalTrace;
+            _uiHeartbeat?.SyncToSettings();
             foreach (var s in _vm.Sessions)
                 s.Bridge?.SetPageDiagnostics(edited.DebugTerminalTrace);
 

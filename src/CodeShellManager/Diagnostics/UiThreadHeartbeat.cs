@@ -42,10 +42,27 @@ public sealed class UiThreadHeartbeat
         _timer.Tick += OnTick;
     }
 
+    /// <summary>
+    /// Starts ticking only when tracing is on. Call again whenever the setting changes.
+    ///
+    /// The timer used to run unconditionally and check the flag inside the tick, which put
+    /// four Normal-priority dispatcher items per second on the UI thread forever — in the
+    /// app whose headline bug (issue #70) was UI-thread saturation. Small, but it is exactly
+    /// the kind of always-on cost this diagnostic exists to find.
+    /// </summary>
+    public void SyncToSettings()
+    {
+        if (_settings.DebugTerminalTrace == true) Start();
+        else Stop();
+    }
+
     public void Start()
     {
+        if (_timer.IsEnabled) return;
         _expectedNextMs = Environment.TickCount64 + IntervalMs;
         _lastSummaryMs = Environment.TickCount64;
+        _overCount = 0;
+        _worstMs = 0;
         _timer.Start();
     }
 

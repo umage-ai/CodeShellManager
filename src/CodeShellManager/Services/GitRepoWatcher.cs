@@ -55,6 +55,10 @@ public sealed class GitRepoWatcher : IDisposable
     /// Creates a watcher for the repo containing <paramref name="workingFolder"/>, or null
     /// if it isn't in a repo or the platform refuses the watch. Callers treat null as
     /// "poll only" rather than an error — a session in a plain folder is perfectly valid.
+    ///
+    /// Prefer <see cref="Acquire"/>: several sessions commonly sit in the same repo (that is
+    /// the entire point of the worktree-sibling feature) and each would otherwise get its
+    /// own FileSystemWatcher on the same directory.
     /// </summary>
     public static GitRepoWatcher? TryCreate(string workingFolder)
     {
@@ -69,6 +73,72 @@ public sealed class GitRepoWatcher : IDisposable
             return null;
         }
     }
+
+    // ── Sharing ───────────────────────────────────────────────────────────────
+    // One watcher per .git directory, reference-counted, rather than one per session.
+    // At 47 sessions across ~20 repos that is 20 kernel watch handles and 20 buffers
+    // instead of 47 of each, and a single git operation wakes one watcher rather than
+    // every session that happens to share the repo.
+
+    private static readonly object SharedLock = new();
+    private static readonly Dictionary<string, (GitRepoWatcher Watcher, int RefCount)> Shared =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private string? _sharedKey;
+
+    /// <summary>
+    /// Returns the shared watcher for this folder's repo, creating it on first use.
+    /// Release it with <see cref="Release"/> — never <c>Dispose</c> a shared instance
+    /// directly, or the other sessions in that repo stop receiving events.
+    /// </summary>
+    public static GitRepoWatcher? Acquire(string workingFolder)
+    {
+        string? gitDir;
+        try
+        {
+            gitDir = ResolveGitDir(workingFolder);
+            if (gitDir == null || !Directory.Exists(gitDir)) return null;
+        }
+        catch { return null; }
+
+        lock (SharedLock)
+        {
+            if (Shared.TryGetValue(gitDir, out var existing))
+            {
+                Shared[gitDir] = (existing.Watcher, existing.RefCount + 1);
+                return existing.Watcher;
+            }
+
+            GitRepoWatcher created;
+            try { created = new GitRepoWatcher(gitDir); }
+            catch { return null; }
+
+            created._sharedKey = gitDir;
+            Shared[gitDir] = (created, 1);
+            return created;
+        }
+    }
+
+    /// <summary>Drops one reference; disposes the watcher when the last session lets go.</summary>
+    public static void Release(GitRepoWatcher? watcher)
+    {
+        if (watcher?._sharedKey is not string key) { watcher?.Dispose(); return; }
+
+        lock (SharedLock)
+        {
+            if (!Shared.TryGetValue(key, out var entry)) return;
+            if (entry.RefCount > 1)
+            {
+                Shared[key] = (entry.Watcher, entry.RefCount - 1);
+                return;
+            }
+            Shared.Remove(key);
+            entry.Watcher.Dispose();
+        }
+    }
+
+    /// <summary>Live shared-watcher count. Tests only.</summary>
+    internal static int SharedCount { get { lock (SharedLock) return Shared.Count; } }
 
     /// <summary>
     /// Walks up from <paramref name="startFolder"/> looking for <c>.git</c>. A directory is

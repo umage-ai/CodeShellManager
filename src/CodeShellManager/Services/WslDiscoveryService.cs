@@ -50,21 +50,10 @@ public static class WslDiscoveryService
                 StandardErrorEncoding = Encoding.Unicode,
             };
 
-            using var process = Process.Start(psi);
-            if (process is null) return Array.Empty<WslDistro>();
+            var (stdout, _, exit) = await RunWslCaptureAsync(psi, 3000).ConfigureAwait(false);
+            if (exit != 0) return Array.Empty<WslDistro>();
 
-            var outTask = process.StandardOutput.ReadToEndAsync();
-            var bothTask = Task.WhenAll(outTask, process.StandardError.ReadToEndAsync());
-            var completed = await Task.WhenAny(bothTask, Task.Delay(3000));
-            if (completed != bothTask)
-            {
-                try { process.Kill(); } catch { }
-                return Array.Empty<WslDistro>();
-            }
-            try { await process.WaitForExitAsync(); } catch { }
-            if (process.ExitCode != 0) return Array.Empty<WslDistro>();
-
-            return Parse(outTask.Result);
+            return Parse(stdout);
         }
         catch (Exception)
         {
@@ -109,7 +98,12 @@ public static class WslDiscoveryService
             int stateIdx = tokens.Length - 2;
             string name = string.Join(' ', tokens, firstNameIdx, stateIdx - firstNameIdx);
             string state = tokens[stateIdx];
-            int.TryParse(tokens[versionIdx], out int version);
+
+            // A real row's VERSION column is always an integer. The header's is the word
+            // "VERSION" — which the literal "NAME" check above only catches on an English
+            // Windows; a localized header would otherwise land here as a phantom distro
+            // with Version = 0. Requiring a parseable version is language-independent.
+            if (!int.TryParse(tokens[versionIdx], out int version)) continue;
 
             results.Add(new WslDistro(name, version, isDefault, state));
         }
@@ -159,7 +153,10 @@ public static class WslDiscoveryService
             string args = $"-d {Models.ShellSession.QuoteForCmd(distro)}";
             if (!string.IsNullOrEmpty(normalizedUser))
                 args += $" -u {Models.ShellSession.QuoteForCmd(normalizedUser)}";
-            args += " -- sh -c \"cd ~ && pwd\"";
+            // -e (not --) for the same reason BuildWslArgs and GetLoginShellAsync use it:
+            // `--` runs the tail through the distro's default login shell first, expanding
+            // the payload twice. See ShellSession.BuildWslArgs.
+            args += " -e sh -c \"cd ~ && pwd\"";
 
             var psi = new ProcessStartInfo("wsl.exe")
             {
@@ -171,22 +168,10 @@ public static class WslDiscoveryService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
-            using var process = Process.Start(psi);
-            if (process is null) return null;
+            var (stdout, _, exit) = await RunWslCaptureAsync(psi, 3000).ConfigureAwait(false);
+            if (exit != 0) return null;
 
-            // Drain BOTH stdout and stderr. If we only awaited stdout, a chatty
-            // wsl.exe error (e.g. distro stopped, transient init message) could
-            // fill the stderr pipe buffer and block the child — the stdout await
-            // would never complete and we'd silently fall through to the timeout.
-            var outTask = process.StandardOutput.ReadToEndAsync();
-            var errTask = process.StandardError.ReadToEndAsync();
-            var bothTask = Task.WhenAll(outTask, errTask);
-            var completed = await Task.WhenAny(bothTask, Task.Delay(3000));
-            if (completed != bothTask) { try { process.Kill(); } catch { } return null; }
-            try { await process.WaitForExitAsync(); } catch { }
-            if (process.ExitCode != 0) return null;
-
-            string home = outTask.Result.Trim();
+            string home = stdout.Trim();
             if (string.IsNullOrEmpty(home)) return null;
             lock (_homeCache) _homeCache[key] = home;
             return home;
@@ -233,19 +218,10 @@ public static class WslDiscoveryService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
-            using var process = Process.Start(psi);
-            if (process is null) return "bash";
+            var (stdout, _, exit) = await RunWslCaptureAsync(psi, 3000).ConfigureAwait(false);
+            if (exit != 0) return "bash";
 
-            // Drain both streams — see GetDistroHomeAsync for why stderr must be read too.
-            var outTask = process.StandardOutput.ReadToEndAsync();
-            var errTask = process.StandardError.ReadToEndAsync();
-            var bothTask = Task.WhenAll(outTask, errTask);
-            var completed = await Task.WhenAny(bothTask, Task.Delay(3000));
-            if (completed != bothTask) { try { process.Kill(); } catch { } return "bash"; }
-            try { await process.WaitForExitAsync(); } catch { }
-            if (process.ExitCode != 0) return "bash";
-
-            string result = outTask.Result.Trim();
+            string result = stdout.Trim();
             string shell = result == "sh" ? "sh" : "bash";
             lock (_shellCache) _shellCache[key] = shell;
             return shell;
@@ -254,6 +230,45 @@ public static class WslDiscoveryService
     }
 
     private static readonly Dictionary<string, string> _shellCache = new();
+
+    /// <summary>
+    /// Runs a prepared wsl.exe probe and captures both streams, entirely off the calling
+    /// thread. Returns exit -1 for "did not run or did not finish in time".
+    ///
+    /// Task.Run is the point of this helper. Process.Start is synchronous and sits before
+    /// the first await, so without it process creation ran on whichever thread called in —
+    /// and every caller here is the UI thread (the New Session dialog's Loaded/Start
+    /// handlers, and LaunchSessionAsync inside the restore loop). That is the exact defect
+    /// issue #70 fixed in GitService, and wsl.exe is the worse offender: it can boot a
+    /// stopped distro VM, which is seconds, not milliseconds. See CLAUDE.md, "Never spawn a
+    /// process on the UI thread".
+    ///
+    /// Both streams are always drained: awaiting only stdout lets a chatty stderr fill its
+    /// pipe buffer and wedge the child until the timeout.
+    /// </summary>
+    private static Task<(string stdout, string stderr, int exit)> RunWslCaptureAsync(
+        ProcessStartInfo psi, int timeoutMs) => Task.Run(async () =>
+    {
+        using var process = Process.Start(psi);
+        if (process is null) return ("", "", -1);
+
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errTask = process.StandardError.ReadToEndAsync();
+        var bothTask = Task.WhenAll(outTask, errTask);
+
+        var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs)).ConfigureAwait(false);
+        if (completed != bothTask)
+        {
+            try { process.Kill(); } catch { }
+            return ("", "", -1);
+        }
+
+        try { await process.WaitForExitAsync().ConfigureAwait(false); } catch { }
+
+        string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
+        string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
+        return (stdout, stderr, process.HasExited ? process.ExitCode : -1);
+    });
 
     /// <summary>
     /// Converts a WSL distro + Linux-style path to the Windows UNC view of that path

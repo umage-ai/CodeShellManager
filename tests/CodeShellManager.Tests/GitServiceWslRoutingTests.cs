@@ -25,29 +25,27 @@ public class GitServiceWslRoutingTests
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_MatchingDistro_Substitutes()
+    public void TranslateUncArgToLinux_MatchingDistro_Substitutes()
     {
-        string args = "worktree add \"\\\\wsl$\\Ubuntu\\home\\alice\\proj-foo\" main";
-        string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
-        Assert.Contains("/home/alice/proj-foo", translated);
-        Assert.DoesNotContain(@"\\wsl$\Ubuntu", translated);
+        string translated = GitService.TranslateUncArgToLinux(
+            @"\\wsl$\Ubuntu\home\alice\proj-foo", "Ubuntu");
+        Assert.Equal("/home/alice/proj-foo", translated);
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_DifferentDistro_LeftAlone()
+    public void TranslateUncArgToLinux_DifferentDistro_LeftAlone()
     {
         // We're running git inside Ubuntu — a UNC pointing at Debian is a real
         // mistake and should NOT be silently rewritten to look like a local path.
-        string args = @"worktree add \\wsl$\Debian\home\alice\proj main";
-        string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
-        Assert.Equal(args, translated);
+        string arg = @"\\wsl$\Debian\home\alice\proj";
+        Assert.Equal(arg, GitService.TranslateUncArgToLinux(arg, "Ubuntu"));
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_NoUncs_Passthrough()
+    public void TranslateUncArgToLinux_NonPathArgs_Passthrough()
     {
-        string args = "branch --show-current";
-        Assert.Equal(args, GitService.TranslateUncArgsToLinux(args, "Ubuntu"));
+        Assert.Equal("--show-current", GitService.TranslateUncArgToLinux("--show-current", "Ubuntu"));
+        Assert.Equal("branch", GitService.TranslateUncArgToLinux("branch", "Ubuntu"));
     }
 
     [Fact]
@@ -87,22 +85,19 @@ public class GitServiceWslRoutingTests
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_QuotedUncWithSpaces_TranslatedWholeAndReQuoted()
+    public void TranslateUncArgToLinux_PathWithSpaces_TranslatedWhole()
     {
-        // Regression: the unquoted regex stops at whitespace, so a quoted UNC
-        // containing a space (worktree add target) used to be half-translated.
-        string args = "worktree add \"\\\\wsl$\\Ubuntu\\home\\alice\\my repo\" main";
-        string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
-        Assert.Contains("\"/home/alice/my repo\"", translated);
-        Assert.DoesNotContain(@"\\wsl$\Ubuntu", translated);
+        // The old whole-command-line regex needed a separate quoted pass for this; a path
+        // with a space used to come back half-translated. Per-argument, spaces are just
+        // characters in the argument.
+        Assert.Equal("/home/alice/my repo",
+            GitService.TranslateUncArgToLinux(@"\\wsl$\Ubuntu\home\alice\my repo", "Ubuntu"));
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_QuotedUncRoot_BecomesQuotedRoot()
+    public void TranslateUncArgToLinux_DistroRoot_BecomesSlash()
     {
-        string args = "rev-parse \"\\\\wsl$\\Ubuntu\"";
-        string translated = GitService.TranslateUncArgsToLinux(args, "Ubuntu");
-        Assert.Equal("rev-parse \"/\"", translated);
+        Assert.Equal("/", GitService.TranslateUncArgToLinux(@"\\wsl$\Ubuntu", "Ubuntu"));
     }
 
     [Fact]
@@ -117,18 +112,19 @@ public class GitServiceWslRoutingTests
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_PrefixCollidingDistro_LeftAlone()
+    public void TranslateUncArgToLinux_PrefixCollidingDistro_LeftAlone()
     {
         // `Ubuntu` must not match `Ubuntu-22.04` — the default `wsl --install` naming.
-        string args = "worktree add \"\\\\wsl$\\Ubuntu-22.04\\home\\alice\\x\" main";
-        Assert.Equal(args, GitService.TranslateUncArgsToLinux(args, "Ubuntu"));
-        string bare = "worktree add \\\\wsl$\\Ubuntu-22.04\\home\\alice\\x main";
-        Assert.Equal(bare, GitService.TranslateUncArgsToLinux(bare, "Ubuntu"));
+        // Previously enforced by a regex lookahead; now it falls out of TryParseWslUnc
+        // returning the real distro name and an ordinal-ignore-case comparison.
+        string arg = @"\\wsl$\Ubuntu-22.04\home\alice\x";
+        Assert.Equal(arg, GitService.TranslateUncArgToLinux(arg, "Ubuntu"));
     }
 
     [Fact]
-    public void TranslateUncArgsToLinux_DistroRootUnquoted_BecomesSlash()
+    public void TranslateUncArgToLinux_CaseInsensitiveDistroMatch()
     {
-        Assert.Equal("-C / status", GitService.TranslateUncArgsToLinux("-C \\\\wsl$\\Ubuntu status", "Ubuntu"));
+        Assert.Equal("/home/alice",
+            GitService.TranslateUncArgToLinux(@"\\wsl$\ubuntu\home\alice", "Ubuntu"));
     }
 }

@@ -239,7 +239,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // `\\wsl$\...` UNC — watching that keeps the distro's 9p server busy and defeats
         // the idle-VM shutdown the WSL cadence above exists to protect.
         if (Session.Kind != SessionKind.Local) return;
-        _gitWatcher = GitRepoWatcher.TryCreate(Session.WorkingFolder);
+        _gitWatcher = GitRepoWatcher.Acquire(Session.WorkingFolder);
         if (_gitWatcher != null) _gitWatcher.Changed += OnGitDirChanged;
         // null is normal: a plain folder, or a platform that refused the watch. Poll only.
     }
@@ -409,7 +409,9 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         if (_gitWatcher != null)
         {
             _gitWatcher.Changed -= OnGitDirChanged;
-            _gitWatcher.Dispose();
+            // Release, not Dispose — the watcher is shared with any other session in the
+            // same repo and only the last one out disposes it.
+            GitRepoWatcher.Release(_gitWatcher);
             _gitWatcher = null;
         }
         AlertDetector?.Dispose();

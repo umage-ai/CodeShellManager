@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -16,11 +17,11 @@ public static class GitService
 
         try
         {
-            string? branch = await RunGitAsync(folderPath, "branch --show-current").ConfigureAwait(false);
+            string? branch = await RunGitAsync(folderPath, "branch", "--show-current").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(branch))
                 return (null, false);
 
-            string? statusOutput = await RunGitAsync(folderPath, "status --porcelain").ConfigureAwait(false);
+            string? statusOutput = await RunGitAsync(folderPath, "status", "--porcelain").ConfigureAwait(false);
             bool isDirty = !string.IsNullOrWhiteSpace(statusOutput);
 
             return (branch.Trim(), isDirty);
@@ -45,7 +46,7 @@ public static class GitService
             return null;
         try
         {
-            string? commonDir = await RunGitAsync(folderPath, "rev-parse --git-common-dir").ConfigureAwait(false);
+            string? commonDir = await RunGitAsync(folderPath, "rev-parse", "--git-common-dir").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(commonDir)) return null;
             string trimmed = commonDir.Trim();
 
@@ -82,7 +83,7 @@ public static class GitService
             return Array.Empty<WorktreeInfo>();
         try
         {
-            string? raw = await RunGitAsync(folderPath, "worktree list --porcelain").ConfigureAwait(false);
+            string? raw = await RunGitAsync(folderPath, "worktree", "list", "--porcelain").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<WorktreeInfo>();
 
             // Output is blank-line separated stanzas:
@@ -125,7 +126,7 @@ public static class GitService
             return Array.Empty<string>();
         try
         {
-            string? raw = await RunGitAsync(folderPath, "for-each-ref --format=%(refname:short) refs/heads").ConfigureAwait(false);
+            string? raw = await RunGitAsync(folderPath, "for-each-ref", "--format=%(refname:short)", "refs/heads").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
             var lines = raw.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
             return lines;
@@ -147,9 +148,14 @@ public static class GitService
         if (string.IsNullOrWhiteSpace(branchOrRef))
             return (false, "Branch is required.");
 
-        string args = createBranch
-            ? $"worktree add -b \"{branchOrRef}\" \"{targetPath}\""
-            : $"worktree add \"{targetPath}\" \"{branchOrRef}\"";
+        // argv, not an interpolated string. branchOrRef comes from ListBranchesAsync — i.e.
+        // from the cloned repo — and git ref names legally contain `$ ( ) ; & |` and
+        // backticks. Interpolated into a command line that reached a shell, that was remote
+        // code execution from opening a hostile repo; interpolated into the local path it
+        // still injected extra git argv via a `"`.
+        string[] args = createBranch
+            ? new[] { "worktree", "add", "-b", branchOrRef, targetPath }
+            : new[] { "worktree", "add", targetPath, branchOrRef };
 
         var (output, stderr, exit) = await RunGitFullAsync(repoRoot, args, timeoutMs: 30_000).ConfigureAwait(false);
         if (exit == 0) return (true, "");
@@ -159,33 +165,64 @@ public static class GitService
         return (false, err.Trim());
     }
 
-    private static async Task<string?> RunGitAsync(string workingDir, string arguments)
+    private static async Task<string?> RunGitAsync(string workingDir, params string[] args)
     {
-        var (stdout, _, exit) = await RunGitFullAsync(workingDir, arguments, timeoutMs: 3000).ConfigureAwait(false);
+        var (stdout, _, exit) = await RunGitFullAsync(workingDir, args, timeoutMs: 3000).ConfigureAwait(false);
         return exit == 0 ? stdout : null;
     }
+
+    /// <summary>
+    /// Joins argv into a Windows command line, quoting each element with the MSVCRT rules.
+    ///
+    /// Every git invocation is built this way rather than by string interpolation. The old
+    /// shape — <c>$"-C \"{workingDir}\" {arguments}"</c> — meant any caller interpolating a
+    /// branch name or path into <c>arguments</c> was one <c>"</c> away from injecting extra
+    /// argv, and on the WSL path (which passed through a login shell) one <c>$(…)</c> away
+    /// from arbitrary command execution. Argv in, argv out: there is no string for a
+    /// metacharacter to be a metacharacter in.
+    /// </summary>
+    private static string JoinArgv(IEnumerable<string> args) =>
+        string.Join(" ", args.Select(a => Models.ShellSession.QuoteForCmd(a)));
+
+    /// <summary>
+    /// Builds the wsl.exe command line for one git invocation inside a distro. Extracted so
+    /// it can be round-tripped through the real Win32 tokenizer in tests — see
+    /// <c>GitServiceInjectionTests</c>.
+    /// </summary>
+    internal static string BuildWslGitCommandLine(
+        string distro, string cwd, IReadOnlyList<string> gitArgs)
+    {
+        var argv = new List<string> { "-d", distro, "-e", "git", "-C", cwd };
+        foreach (string a in gitArgs) argv.Add(TranslateUncArgToLinux(a, distro));
+        return JoinArgv(argv);
+    }
+
+    /// <summary>Builds the local git command line. Extracted for the same reason.</summary>
+    internal static string BuildLocalGitCommandLine(
+        string workingDir, IReadOnlyList<string> gitArgs) =>
+        JoinArgv(new[] { "-C", workingDir }.Concat(gitArgs));
 
     /// <summary>
     /// Runs one git command. The body is wrapped in <see cref="Task.Run"/> deliberately —
     /// see the note on <c>Process.Start</c> below (issue #70).
     /// </summary>
     private static Task<(string stdout, string stderr, int exit)> RunGitFullAsync(
-        string workingDir, string arguments, int timeoutMs)
-        => Task.Run(() => RunGitCoreAsync(workingDir, arguments, timeoutMs));
+        string workingDir, IReadOnlyList<string> args, int timeoutMs)
+        => Task.Run(() => RunGitCoreAsync(workingDir, args, timeoutMs));
 
     private static async Task<(string stdout, string stderr, int exit)> RunGitCoreAsync(
-        string workingDir, string arguments, int timeoutMs)
+        string workingDir, IReadOnlyList<string> args, int timeoutMs)
     {
         // WSL working folders (\\wsl$\<distro>\…) get routed through wsl.exe so git
         // runs inside the distro. Git for Windows trips on WSL UNCs (dubious-ownership
         // checks, .git symlink quirks) and reports "not a git repo" for valid repos.
         var (wslDistro, linuxPath) = TryParseWslUnc(workingDir);
         if (wslDistro != null)
-            return await RunGitInWslAsync(wslDistro, linuxPath, arguments, timeoutMs);
+            return await RunGitInWslAsync(wslDistro, linuxPath, args, timeoutMs).ConfigureAwait(false);
 
         var psi = new ProcessStartInfo("git")
         {
-            Arguments = $"-C \"{workingDir}\" {arguments}",
+            Arguments = BuildLocalGitCommandLine(workingDir, args),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -214,7 +251,7 @@ public static class GitService
         if (Diagnostics.DiagnosticTrace.Enabled)
             Diagnostics.DiagnosticTrace.Write("DEBUG-tt", "git",
                 $"GIT-SPAWN on-ui={onUi} spawn={Environment.TickCount64 - spawnStart}ms " +
-                $"args='{arguments}'");
+                $"args='{string.Join(" ", args)}'");
 
         if (process is null) return ("", "", -1);
 
@@ -242,13 +279,25 @@ public static class GitService
     /// back to UNC form so callers receive Windows-shaped paths.
     /// </summary>
     private static async Task<(string stdout, string stderr, int exit)> RunGitInWslAsync(
-        string distro, string linuxPath, string arguments, int timeoutMs)
+        string distro, string linuxPath, IReadOnlyList<string> gitArgs, int timeoutMs)
     {
-        string translatedArgs = TranslateUncArgsToLinux(arguments, distro);
-        // QuoteForCmd handles spaces in both the distro name (rare) and the cwd
-        // (Linux paths often have them) without disturbing the simple-name case.
         string cwd = string.IsNullOrEmpty(linuxPath) ? "/" : linuxPath;
-        string args = $"-d {Models.ShellSession.QuoteForCmd(distro)} -- git -C {Models.ShellSession.QuoteForCmd(cwd)} {translatedArgs}";
+
+        // `-e`, NOT `--`. This is the same rule ShellSession.BuildWslArgs documents and for
+        // the same reason, but here it is a security boundary rather than a correctness one:
+        // `wsl.exe … -- <tail>` runs the tail through the distro's DEFAULT LOGIN SHELL, so a
+        // `$(…)`, backtick, `;` or `|` anywhere in the working folder or in a git argument
+        // executed inside the distro. QuoteForCmd is MSVCRT *argv* quoting and does not — and
+        // cannot — neutralise shell metacharacters.
+        //
+        // Reachable before this fix: a branch name from a cloned repo (git permits `$ ( ) ; &`
+        // and backticks in refs) flowing into `worktree add -b`, and a working-folder path
+        // reached automatically by the git poll. `-e` executes git directly with no shell
+        // pass, which makes argv quoting both correct and sufficient.
+        //
+        // It also fixes a plain bug: `--format=%(refname:short)` was a bash syntax error once
+        // the login shell saw it, so ListBranchesAsync could never have worked under WSL.
+        string args = BuildWslGitCommandLine(distro, cwd, gitArgs);
 
         var psi = new ProcessStartInfo("wsl.exe")
         {
@@ -286,39 +335,6 @@ public static class GitService
     internal static (string? distro, string linuxPath) TryParseWslUnc(string path)
         => WslDiscoveryService.TryParseUncPath(path);
 
-    /// <summary>
-    /// Replaces WSL UNC tokens in a git arg string with their Linux equivalents.
-    /// Only translates UNCs that belong to <paramref name="distro"/> — a UNC for a
-    /// different distro is passed through unchanged (so the caller sees the eventual
-    /// "no such directory" error rather than silently aiming at the wrong tree).
-    /// </summary>
-    internal static string TranslateUncArgsToLinux(string arguments, string distro)
-    {
-        if (string.IsNullOrEmpty(arguments)) return arguments;
-        string esc = Regex.Escape(distro);
-        // Lookahead: the distro name must be followed by a separator, a quote, whitespace or
-        // end-of-string — otherwise `Ubuntu` also matches `Ubuntu-22.04`.
-        string body = $@"\\\\wsl(?:\$|\.localhost)\\{esc}(?=[\\""\s]|$)";
-
-        // Pass 1: quoted UNCs ("\\wsl$\<distro>\..."). The tail may contain spaces
-        // and runs until the closing quote — without this pass, the unquoted regex
-        // below would stop at the first space and produce a half-translated path.
-        arguments = Regex.Replace(arguments, $@"""({body}(?:\\[^""]*)?)""", m =>
-        {
-            var (_, linux) = TryParseWslUnc(m.Groups[1].Value);
-            return "\"" + (string.IsNullOrEmpty(linux) ? "/" : linux) + "\"";
-        }, RegexOptions.IgnoreCase);
-
-        // Pass 2: unquoted UNCs. The tail runs to whitespace; if a path needed
-        // spaces it would have been quoted and handled above.
-        arguments = Regex.Replace(arguments, $@"{body}(?:\\[^""\s]*)?", m =>
-        {
-            var (_, linux) = TryParseWslUnc(m.Value);
-            return string.IsNullOrEmpty(linux) ? "/" : linux;
-        }, RegexOptions.IgnoreCase);
-
-        return arguments;
-    }
 
     /// <summary>
     /// Replaces absolute Linux paths in <paramref name="text"/> (typically git stdout)
@@ -326,6 +342,29 @@ public static class GitService
     /// paths. Conservative — only matches tokens at start-of-line or after whitespace
     /// to avoid mangling text that happens to contain a slash.
     /// </summary>
+    /// <summary>
+    /// Translates ONE argument: a <c>\\wsl$\&lt;distro&gt;\…</c> path becomes its Linux
+    /// equivalent, anything else is returned unchanged. A UNC belonging to a *different*
+    /// distro is passed through untouched, so the caller sees the eventual "no such
+    /// directory" rather than silently aiming at the wrong tree.
+    ///
+    /// Replaced a whole-command-line regex that needed two passes (quoted and unquoted)
+    /// purely because arguments had been pre-joined into a string. Now that argv stays
+    /// argv, an argument either is a UNC or is not — no quote handling, and no way for a
+    /// path containing spaces to end up half-translated.
+    /// </summary>
+    internal static string TranslateUncArgToLinux(string argument, string distro)
+    {
+        if (string.IsNullOrEmpty(argument)) return argument;
+
+        var (parsedDistro, linux) = TryParseWslUnc(argument);
+        if (parsedDistro == null) return argument;
+        if (!string.Equals(parsedDistro, distro, StringComparison.OrdinalIgnoreCase))
+            return argument;
+
+        return string.IsNullOrEmpty(linux) ? "/" : linux;
+    }
+
     internal static string TranslateLinuxPathsToUnc(string text, string distro)
     {
         if (string.IsNullOrEmpty(text)) return text;
