@@ -54,6 +54,15 @@ public sealed class TerminalBridge : IDisposable
     public string? DebugSessionId { get; set; }
     private long _lastOutputTickMs;
 
+    // Set when a coalesced flush is queued, read when it runs, so the gap between the two
+    // is the dispatcher queue latency — the number that says whether the UI pump is the
+    // bottleneck. OutputCoalescer guarantees at most one flush in flight per bridge, so a
+    // single field is sufficient. Restored here after 71e1294 removed the original along
+    // with the per-chunk post it was attached to (issue #70).
+    private long _flushEnqueuedAtMs;
+    private bool _flushQueuedAsForeground;
+    private long _lastInputTickMs;
+
     public event Action<string>? RawOutputReceived;
 
     /// <summary>
@@ -114,19 +123,14 @@ public sealed class TerminalBridge : IDisposable
         catch { }
     }
 
+    // Queues the line; the disk write happens on a background drain. This used to open,
+    // append to and close crash.log inline on whichever thread was tracing — the PTY reader
+    // for output, the UI thread for the flush. At the session count this issue reproduces
+    // at, that made the tracer a cause of the latency it was measuring (issue #70).
     private void Trace(string msg)
     {
         if (DebugSettings?.DebugTerminalTrace != true) return;
-        try
-        {
-            string path = System.IO.Path.Combine(
-                System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
-                "CodeShellManager", "crash.log");
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
-            System.IO.File.AppendAllText(path,
-                $"[{DateTime.Now:HH:mm:ss.fff}] [DEBUG-tt] {DebugSessionId ?? "?"} {msg}\n");
-        }
-        catch { }
+        Diagnostics.DiagnosticTrace.Write("DEBUG-tt", DebugSessionId, msg);
     }
 
     // Posts a one-shot bootDone message to the WebView2. Safe to call from any thread.
@@ -152,8 +156,20 @@ public sealed class TerminalBridge : IDisposable
     {
         var dispatcher = WpfApplication.Current?.Dispatcher;
         if (dispatcher == null) return;
+
+        // Read once, so the priority recorded in the trace is provably the one used for
+        // the post. IsForeground is written from the UI thread while this runs on the PTY
+        // thread, and a stale read here is itself a candidate explanation for the stall.
+        bool foreground = IsForeground;
+
+        if (DebugSettings?.DebugTerminalTrace == true)
+        {
+            System.Threading.Volatile.Write(ref _flushEnqueuedAtMs, Environment.TickCount64);
+            _flushQueuedAsForeground = foreground;
+        }
+
         dispatcher.BeginInvoke(
-            IsForeground
+            foreground
                 ? System.Windows.Threading.DispatcherPriority.Normal
                 : System.Windows.Threading.DispatcherPriority.Background,
             flush);
@@ -162,11 +178,47 @@ public sealed class TerminalBridge : IDisposable
     // Runs on the UI thread. One WebView2 post per coalesced batch.
     private void PostOutput(string data)
     {
+        bool tracing = DebugSettings?.DebugTerminalTrace == true;
+        long enqueuedAt = tracing
+            ? System.Threading.Interlocked.Exchange(ref _flushEnqueuedAtMs, 0)
+            : 0;
+
         string json = JsonSerializer.Serialize(new { type = "output", data });
         try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
         catch { }
-        if (DebugSettings?.DebugTerminalTrace == true)
-            Trace($"OUTPUT flush len={data.Length}");
+
+        if (!tracing) return;
+
+        long now = Environment.TickCount64;
+        long lastInput = System.Threading.Volatile.Read(ref _lastInputTickMs);
+
+        // dispatcher-latency: queued on the PTY thread -> ran on the UI thread. Large values
+        //   mean the UI pump is the bottleneck. Read it together with prio: for a bg batch a
+        //   large value may just be Background priority yielding correctly, which is why the
+        //   UI-STALL heartbeat is logged separately and unattributed.
+        // since-input: how long before this batch the user last typed. When a stall is
+        //   reported, this is what ties a late flush to the keystroke it failed to echo.
+        Trace($"OUTPUT flush len={data.Length} " +
+              $"dispatcher-latency={(enqueuedAt == 0 ? -1 : now - enqueuedAt)}ms " +
+              $"prio={(_flushQueuedAsForeground ? "fg" : "bg")} " +
+              $"since-input={(lastInput == 0 ? -1 : now - lastInput)}ms");
+    }
+
+    /// <summary>
+    /// Turns page-side timing probes on or off for a pane that is already running.
+    /// Without this, toggling the trace setting mid-session would enable the host-side
+    /// numbers while the page half stayed dark — and the renderer is exactly the component
+    /// the host cannot see (issue #70).
+    /// </summary>
+    public void SetPageDiagnostics(bool on)
+    {
+        if (!_ready) return; // NavigationCompleted posts the initial state itself
+        try
+        {
+            _webView.CoreWebView2?.PostWebMessageAsString(
+                JsonSerializer.Serialize(new { type = "setDiag", on }));
+        }
+        catch { }
     }
 
     /// <summary>
@@ -254,6 +306,19 @@ public sealed class TerminalBridge : IDisposable
                     accentHex = _bootAccentHex
                 });
                 try { _webView.CoreWebView2?.PostWebMessageAsString(bootJson); }
+                catch { }
+            }
+
+            // Turn on page-side timing when tracing is enabled. The host cannot see past
+            // PostWebMessageAsString: if the renderer process is the thing that's starved,
+            // every host-side number looks healthy and the stall is still real (issue #70).
+            if (DebugSettings?.DebugTerminalTrace == true)
+            {
+                try
+                {
+                    _webView.CoreWebView2?.PostWebMessageAsString(
+                        JsonSerializer.Serialize(new { type = "setDiag", on = true }));
+                }
                 catch { }
             }
 
@@ -348,6 +413,7 @@ public sealed class TerminalBridge : IDisposable
                     if (DebugSettings?.DebugTerminalTrace == true)
                     {
                         long t0 = Environment.TickCount64;
+                        System.Threading.Volatile.Write(ref _lastInputTickMs, t0);
                         Trace($"INPUT len={data.Length}");
                         _pty?.Write(data);
                         Trace($"PTY-WROTE elapsed={Environment.TickCount64 - t0}ms");
@@ -372,6 +438,20 @@ public sealed class TerminalBridge : IDisposable
                 case "activate":
                     PaneActivated?.Invoke();
                     break;
+
+                // Page-side timing, only sent while setDiag is on and only when a threshold
+                // is crossed — see terminal-init.js. Reports what happens after the host's
+                // last visibility point: how long term.write blocked, and how long the
+                // renderer then took to produce a frame.
+                case "diag":
+                {
+                    if (DebugSettings?.DebugTerminalTrace != true) break;
+                    string what = root.TryGetProperty("what", out var w) ? w.GetString() ?? "?" : "?";
+                    double ms = root.TryGetProperty("ms", out var m) ? m.GetDouble() : -1;
+                    int len = root.TryGetProperty("len", out var l) ? l.GetInt32() : -1;
+                    Trace($"PAGE {what}={ms:0}ms len={len}");
+                    break;
+                }
 
                 case "resize":
                 {

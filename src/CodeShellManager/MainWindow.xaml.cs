@@ -204,6 +204,7 @@ public partial class MainWindow : Window
 
     /// <summary>Resolves PwshLocator.Executable off the UI thread; awaited before restore.</summary>
     private Task _pwshWarmup = Task.CompletedTask;
+    private Diagnostics.UiThreadHeartbeat? _uiHeartbeat;
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
@@ -223,6 +224,16 @@ public partial class MainWindow : Window
         await _vm.LoadStateAsync();
         RestoreWindowState();
         _windowStateReady = true;
+
+        // Unattributed UI-thread latency baseline (issue #70). Started after settings load
+        // so it shares the live AppSettings ref and honours DebugTerminalTrace toggled at
+        // runtime; the timer itself is cheap enough to leave running either way.
+        _uiHeartbeat = new Diagnostics.UiThreadHeartbeat(_vm.Settings);
+        _uiHeartbeat.Start();
+
+        // Stamp the UI thread and mirror the trace flag for WPF-free services (GitService).
+        Diagnostics.DiagnosticTrace.UiThreadId = Environment.CurrentManagedThreadId;
+        Diagnostics.DiagnosticTrace.Enabled = _vm.Settings.DebugTerminalTrace;
 
         // Build the group strip (it'll only show once there are groups + the setting is on).
         RebuildGroupStrip();
@@ -1927,9 +1938,10 @@ public partial class MainWindow : Window
                                 ? Visibility.Visible : Visibility.Collapsed;
                         break;
 
-                    case nameof(SessionViewModel.GitBranch):
-                    case nameof(SessionViewModel.GitIsDirty):
-                    case nameof(SessionViewModel.GitInfoLoaded):
+                    // One notification covers branch + dirty + loaded, however they were set
+                    // (poll, OSC 9001, or folder edit). Previously three separate events
+                    // rebuilt this row three times per poll (issue #70).
+                    case nameof(SessionViewModel.GitInfoVersion):
                         UpdateGitText(gitText, vm);
                         UpdateWorktreeText();
                         break;
@@ -2060,7 +2072,12 @@ public partial class MainWindow : Window
         // background session posts at Background priority and can't sit ahead of the
         // active pane's rendering or its keystrokes (issue #70).
         foreach (var s in _vm.Sessions)
+        {
             if (s.Bridge != null) s.Bridge.IsForeground = s.Id == activeId;
+            // Same signal drives git poll cadence: the visible pane polls every 10s, the
+            // rest back off to 2 minutes and rely on the .git watcher (issue #70).
+            s.IsForegroundSession = s.Id == activeId;
+        }
 
         foreach (var (id, ui) in _sessionUi)
         {
@@ -5423,6 +5440,14 @@ public partial class MainWindow : Window
             _vm.Settings.TerminalLetterSpacing = edited.TerminalLetterSpacing;
             _vm.Settings.TerminalLineHeight = edited.TerminalLineHeight;
             _vm.Settings.DebugTerminalTrace = edited.DebugTerminalTrace;
+
+            // Bridges share the live AppSettings ref, so host-side tracing follows this
+            // automatically — but the page half is push-only and would stay dark on panes
+            // that are already running. Toggling the setting has to reach them (issue #70).
+            Diagnostics.DiagnosticTrace.Enabled = edited.DebugTerminalTrace;
+            foreach (var s in _vm.Sessions)
+                s.Bridge?.SetPageDiagnostics(edited.DebugTerminalTrace);
+
             _ = _vm.SaveStateAsync();
 
             // Push font settings to all active terminal sessions
