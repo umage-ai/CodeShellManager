@@ -203,19 +203,29 @@ public class ShellSession
         // it doesn't need a remote host to exist. Both come from the same untrusted file.
         var userAtHost = string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}";
         sb.Append(QuoteForCmd(userAtHost));
-        sb.Append(" \"");
+        sb.Append(' ');
+
+        // TWO separate escaping layers, and both matter:
+        //
+        //  1. POSIX, inside the remote command — PosixSingleQuote stops a `'` in the folder
+        //     closing the quote and running the rest on the remote host.
+        //  2. Windows argv, around the whole remote command — QuoteForCmd below. Hand-writing
+        //     `" … "` here was not enough: PosixSingleQuote escapes `'` and not `"`, so a `"`
+        //     in the folder terminated the wrapper at the *Windows* layer and everything after
+        //     it became separate ssh arguments. ssh honours options after the host, so
+        //     `-oProxyCommand=…` there executes LOCALLY — the same escalation fixed for
+        //     SshHost, reached through a different field.
+        //
+        // Command/Args are arbitrary remote execution by design; becoming *local* execution
+        // is not, which is why they sit inside the quoted element too.
+        var remote = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(SshRemoteFolder))
-            // Escaped, not raw. This lands inside single quotes in a remote shell command,
-            // and SshRemoteFolder comes from state.json — which this file's own header notes
-            // is untrusted input. A `'` in the value closed the quote and ran the remainder
-            // on the remote host. Command/Args below are arbitrary by design; the folder is
-            // not meant to be.
-            sb.Append($"cd {PosixSingleQuote(SshRemoteFolder)} && ");
-        var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
-        sb.Append(shell);
+            remote.Append($"cd {PosixSingleQuote(SshRemoteFolder)} && ");
+        remote.Append(string.IsNullOrWhiteSpace(Command) ? "bash" : Command);
         if (!string.IsNullOrWhiteSpace(Args))
-            sb.Append($" {Args}");
-        sb.Append("\"");
+            remote.Append($" {Args}");
+
+        sb.Append(QuoteForCmd(remote.ToString(), force: true));
         return sb.ToString();
     }
 

@@ -247,6 +247,11 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     /// <summary>Releases the current watcher and acquires one for the session's folder.</summary>
     private void RestartGitWatcher()
     {
+        // Never re-acquire after Dispose. ReloadGitInfoAsync is reachable from an edit that
+        // races a close, and acquiring there would take a reference on the shared watcher
+        // that nothing ever releases.
+        if (_disposed) return;
+
         if (_gitWatcher != null)
         {
             _gitWatcher.Changed -= OnGitDirChanged;

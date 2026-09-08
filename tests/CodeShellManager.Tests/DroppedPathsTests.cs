@@ -86,4 +86,39 @@ public class DroppedPathsTests
         Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(new string[0]));
         Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(new[] { "", "" }));
     }
+
+    [Fact]
+    public void BidiAndFormatCharactersAreRejected()
+    {
+        // char.IsControl misses Unicode category Cf. U+202E (RIGHT-TO-LEFT OVERRIDE)
+        // reverses how the rest of the path renders, so the user reads one thing and
+        // presses Enter on another. Note these paths contain NO C0/C1 control character —
+        // otherwise the test would pass for the wrong reason.
+        Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(
+            new[] { "C:\\tmp\\a\u202Ecxe.txt" }));
+        Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(
+            new[] { "C:\\tmp\\a\u200Bb.txt" }));   // zero-width space
+    }
+
+    [Fact]
+    public void ThePathListIsBounded()
+    {
+        // The page controls this array; a drag payload advertising thousands of URIs would
+        // otherwise be typed into the session in a single write.
+        var many = new string[500];
+        for (int i = 0; i < many.Length; i++) many[i] = $"C:\\tmp\\f{i}.txt";
+
+        string payload = TerminalBridge.BuildDroppedPathsPayload(many);
+
+        Assert.Equal(64, payload.Split(' ').Length);
+        Assert.StartsWith(@"C:\tmp\f0.txt ", payload);
+    }
+
+    [Fact]
+    public void AbsurdlyLongPathsAreSkipped()
+    {
+        string huge = @"C:\tmp\" + new string('x', 5000);
+
+        Assert.Equal("", TerminalBridge.BuildDroppedPathsPayload(new[] { huge }));
+    }
 }

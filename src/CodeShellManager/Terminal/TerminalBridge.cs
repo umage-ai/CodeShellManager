@@ -405,14 +405,27 @@ public sealed class TerminalBridge : IDisposable
     /// </summary>
     internal static string BuildDroppedPathsPayload(IEnumerable<string> paths)
     {
+        // Bounded. The page controls this array, and a drag payload advertising thousands of
+        // URIs would otherwise be typed into the session in one write. Nobody drops 64 files
+        // deliberately, and the cap fails safe by truncating rather than rejecting.
+        const int MaxPaths = 64;
+        const int MaxPathLength = 1024;
+
         var quoted = new List<string>();
         foreach (string fp in paths)
         {
-            if (string.IsNullOrEmpty(fp)) continue;
+            if (quoted.Count >= MaxPaths) break;
+            if (string.IsNullOrEmpty(fp) || fp.Length > MaxPathLength) continue;
 
             // Control characters are rejected, not escaped. Win32 forbids them in filenames,
             // so nothing legitimate is lost, and rejection has no escaping bug to get wrong.
-            if (fp.Any(char.IsControl)) continue;
+            // Control characters AND Unicode format characters (category Cf). char.IsControl
+            // catches C0/C1 — the newline that made this a command-execution bug — but not
+            // U+202E and friends, which reorder how the path renders. The user is about to
+            // read this text and press Enter, so a path that displays as something other
+            // than what it is matters here.
+            if (fp.Any(c => char.IsControl(c) || char.GetUnicodeCategory(c)
+                    == System.Globalization.UnicodeCategory.Format)) continue;
 
             // A `"` cannot appear in a real Windows path either, and there is no quoting
             // that is simultaneously correct for cmd.exe, PowerShell and POSIX shells — the

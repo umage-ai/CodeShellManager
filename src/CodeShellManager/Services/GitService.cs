@@ -197,7 +197,7 @@ public static class GitService
     /// ASCII Record Separator, printed by the login shell immediately before it execs git.
     /// Everything up to and including it is profile noise, not git output.
     /// </summary>
-    internal const string WslOutputSentinel = "CSM-GIT";
+    internal const string WslOutputSentinel = "\u001eCSM-GIT\u001e";
 
     /// <summary>
     /// The fixed script handed to <c>sh -lc</c>. Contains no interpolated data — that is

@@ -313,14 +313,19 @@ public partial class RunInstance : ObservableObject, IDisposable
             string.IsNullOrWhiteSpace(parent.SshUser)
                 ? parent.SshHost
                 : $"{parent.SshUser}@{parent.SshHost}"));
-        sb.Append(" \"");
+        sb.Append(' ');
+
+        // Two escaping layers — POSIX inside, Windows argv outside. See
+        // ShellSession.BuildSshArgs for why the outer QuoteForCmd is a security boundary and
+        // not cosmetic: SingleQuoteEscape handles `'` but not `"`, and a `"` in the folder
+        // used to break the hand-written wrapper and inject ssh options, which run locally.
+        var remote = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(parent.SshRemoteFolder))
-            // Escaped for the same reason the command below is — the folder was the one
-            // value here that wasn't, and it comes from state.json. See ShellSession.BuildSshArgs.
-            sb.Append($"cd {SingleQuoteEscape(parent.SshRemoteFolder)} && ");
-        sb.Append("bash -c ");
-        sb.Append(SingleQuoteEscape(commandLine));
-        sb.Append("\"");
+            remote.Append($"cd {SingleQuoteEscape(parent.SshRemoteFolder)} && ");
+        remote.Append("bash -c ");
+        remote.Append(SingleQuoteEscape(commandLine));
+
+        sb.Append(ShellSession.QuoteForCmd(remote.ToString(), force: true));
         return sb.ToString();
     }
 

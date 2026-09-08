@@ -264,4 +264,33 @@ public class GitServiceInjectionTests
         string[] argv = Win32CommandLineTests.Split(cmd);
         Assert.Equal("/home/alice/my repo", argv[^1]);
     }
+
+    [Fact]
+    public void TheSentinelAndTheScriptAgreeOnTheMarkerBytes()
+    {
+        // Two reviewers independently reported this as broken, because the constant used to
+        // hold RAW 0x1E bytes that their file reads normalised away. It was correct — but a
+        // value invisible to tooling is one "cleanup" away from silently breaking every WSL
+        // repo: a stray 0x1E makes `status --porcelain` non-empty, so every repo reads dirty
+        // forever. The constant is now written with  escapes, and this pins it against
+        // what the shell script actually prints so drift fails here rather than in the field.
+        string sentinel = GitService.WslOutputSentinel;
+
+        Assert.Equal(0x1E, sentinel[0]);
+        Assert.Equal(0x1E, sentinel[^1]);
+        Assert.Equal("CSM-GIT", sentinel[1..^1]);
+
+        // printf's octal 036 is 0x1E. One on each side of the same text.
+        Assert.Contains("036CSM-GIT", GitService.WslGitScript);
+        Assert.Equal(2, GitService.WslGitScript.Split("036").Length - 1);
+    }
+
+    [Fact]
+    public void TheSentinelIsNotWhitespace()
+    {
+        // The failure mode if a byte ever leaks through the strip: IsNullOrWhiteSpace is
+        // false for 0x1E, so a clean repo would be reported as dirty.
+        Assert.False(string.IsNullOrWhiteSpace(GitService.WslOutputSentinel));
+        Assert.Equal("", GitService.StripWslProfileNoise(GitService.WslOutputSentinel));
+    }
 }

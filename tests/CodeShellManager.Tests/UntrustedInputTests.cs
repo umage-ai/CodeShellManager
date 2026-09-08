@@ -44,6 +44,54 @@ public class UntrustedInputTests
             Assert.DoesNotContain($"cd '{folder}' &&", args);
     }
 
+    [Theory]
+    // A `"` is the escape that PosixSingleQuote does NOT handle, so before the outer
+    // QuoteForCmd it terminated the hand-written Windows wrapper and everything after it
+    // became separate ssh arguments. ssh honours options after the host, and ProxyCommand
+    // runs LOCALLY — the same escalation as the SshHost bug, via a different field.
+    [InlineData("/t\" -oProxyCommand=calc \"x")]
+    [InlineData("/t\" -oPermitLocalCommand=yes \"x")]
+    [InlineData("/plain")]
+    public void TheWholeRemoteCommandStaysOneWindowsArgument(string folder)
+    {
+        var session = new ShellSession
+        {
+            Kind = SessionKind.Ssh,
+            SshHost = "example.invalid",
+            SshRemoteFolder = folder,
+            Command = "bash",
+        };
+
+        string[] argv = Win32CommandLineTests.Split(session.BuildSshArgs());
+
+        // ssh <-t> <host> <one remote command>. Anything more means the value escaped into
+        // ssh's own option parsing.
+        Assert.Equal(3, argv.Length);
+        Assert.Equal("-t", argv[0]);
+        Assert.Equal("example.invalid", argv[1]);
+        Assert.StartsWith("cd ", argv[2]);
+        Assert.DoesNotContain(argv, a => a.StartsWith("-o"));
+    }
+
+    [Theory]
+    [InlineData("h -oProxyCommand=calc")]
+    [InlineData("h\" -oProxyCommand=calc \"x")]
+    public void AHostileHostStaysOneWindowsArgument(string host)
+    {
+        var session = new ShellSession
+        {
+            Kind = SessionKind.Ssh,
+            SshHost = host,
+            Command = "bash",
+        };
+
+        string[] argv = Win32CommandLineTests.Split(session.BuildSshArgs());
+
+        Assert.Equal(3, argv.Length);
+        Assert.Equal(host, argv[1]);
+        Assert.DoesNotContain(argv, a => a.StartsWith("-o"));
+    }
+
     [Fact]
     public void PosixSingleQuote_EscapesEveryQuote()
     {
