@@ -16,13 +16,13 @@ namespace CodeShellManager.Tests;
 public class SessionViewModelGitInfoTests
 {
     private static SessionViewModel MakeVm() =>
-        // IsRemote short-circuits RefreshGitInfoAsync, so constructing one of these spawns
-        // no git processes and starts no watcher — the test stays hermetic.
+        // SessionKind.Ssh short-circuits RefreshGitInfoAsync and skips StartGitWatcher, so
+        // constructing one of these spawns no git processes — the tests stay hermetic.
         new(new ShellSession
         {
             Id = "test-session",
             Name = "test",
-            IsRemote = true,
+            Kind = SessionKind.Ssh,
             SshHost = "example.invalid"
         });
 

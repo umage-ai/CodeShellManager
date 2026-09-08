@@ -262,6 +262,32 @@ public class SessionRunnerTests
         Assert.NotNull(inst.EndedAt);
     }
 
+    // ── Graceful start failure ───────────────────────────────────────────────
+
+    [Fact]
+    public void Run_WslParentWithBlankDistro_FailsGracefullyInsteadOfThrowing()
+    {
+        // BuildWslArgs throws InvalidOperationException on a blank WslDistro. Start()
+        // must catch that (and anything else that can go wrong building the command
+        // line) and report a failed run instead of throwing out of the toolbar click.
+        var parent = new ShellSession { Kind = SessionKind.Wsl, WslDistro = "" };
+        var fake = new FakePseudoTerminal();
+        var runner = new SessionRunner(parent, () => fake);
+
+        int changes = 0;
+        runner.InstancesChanged += () => changes++;
+
+        var inst = runner.Run(Item()); // must not throw
+
+        Assert.Equal(RunState.ExitedFailed, inst.State);
+        Assert.Equal(-1, inst.ExitCode);
+        Assert.NotNull(inst.EndedAt);
+        Assert.Contains("Cannot start", inst.SnapshotOutput());
+        Assert.Contains("WslDistro", inst.SnapshotOutput());
+        Assert.False(fake.StartCalled, "PTY.Start must never be reached when arg-building fails.");
+        Assert.True(changes >= 1, $"InstancesChanged should fire so the chips UI repaints; fired={changes}");
+    }
+
     // ── Output buffer ────────────────────────────────────────────────────────
 
     [Fact]
@@ -309,6 +335,24 @@ public class SessionRunnerTests
 
         string snap = inst.SnapshotOutput();
         Assert.Equal(1_000_000, snap.Length);
+    }
+
+    [Fact]
+    public void OnPtyData_DoesNotTouchObservableOutputBuffer()
+    {
+        // Fix 1: OnPtyData must append directly to the ANSI-stripped buffer and raise
+        // OutputChanged WITHOUT routing through AppendText (which would do a full
+        // ToString() copy + OutputBuffer PropertyChanged per 4KB PTY chunk — LOH churn
+        // on a hot path). OutputBuffer has no consumers in the app — SnapshotOutput()
+        // is what the drawer/toolbar read — so it should stay at its Start()-time value.
+        var fake = new FakePseudoTerminal();
+        var inst = new RunInstance(Item(), () => fake);
+        inst.Start(LocalSession());
+
+        fake.EmitData("hello world\n");
+
+        Assert.Equal("hello world\n", inst.SnapshotOutput());
+        Assert.Equal("", inst.OutputBuffer);
     }
 
     // ── Internal accessor for the private _pty field via reflection ──────────

@@ -70,8 +70,9 @@ public partial class RunInstance : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Spawns the child PTY. Builds the command line based on whether the parent
-    /// is local or remote — see <see cref="BuildLocalCmd"/> / <see cref="BuildSshArgs"/>.
+    /// Spawns the child PTY. Builds the command line based on the parent's
+    /// <see cref="ShellSession.Kind"/> — see <see cref="BuildLocalCmd"/>,
+    /// <see cref="BuildSshArgs"/>, and <see cref="BuildWslArgs"/>.
     /// </summary>
     public void Start(ShellSession parent)
     {
@@ -89,32 +90,78 @@ public partial class RunInstance : ObservableObject, IDisposable
         _pty.DataReceived += OnPtyData;
         _pty.Exited += OnPtyExited;
 
-        string command, args, workDir;
-        if (parent.IsRemote)
+        try
         {
-            // SSH parents always go through bash — Mode is meaningless for remote runs.
-            command = "ssh";
-            args = BuildSshArgs(parent, CommandLine);
-            workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-        else if (Mode == RunMode.PowerShell)
-        {
-            command = ResolvePwsh();
-            args = BuildPwshArgs(CommandLine);
-            workDir = Directory.Exists(parent.WorkingFolder)
-                ? parent.WorkingFolder
-                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-        else
-        {
-            command = "cmd";
-            args = BuildLocalCmd(CommandLine);
-            workDir = Directory.Exists(parent.WorkingFolder)
-                ? parent.WorkingFolder
-                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
+            string command, args, workDir;
+            switch (parent.Kind)
+            {
+                case SessionKind.Ssh:
+                    // SSH parents always go through bash — Mode is meaningless for remote runs.
+                    command = "ssh";
+                    args = BuildSshArgs(parent, CommandLine);
+                    workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    break;
+                case SessionKind.Wsl:
+                    // WSL parents wrap the command in `wsl.exe … -- bash -lc` —
+                    // running pwsh inside WSL is out of scope so Mode is ignored here too.
+                    command = "wsl.exe";
+                    args = BuildWslArgs(parent, CommandLine);
+                    workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    break;
+                default:
+                    if (Mode == RunMode.PowerShell)
+                    {
+                        command = ResolvePwsh();
+                        args = BuildPwshArgs(CommandLine);
+                    }
+                    else
+                    {
+                        command = "cmd";
+                        args = BuildLocalCmd(CommandLine);
+                    }
+                    workDir = Directory.Exists(parent.WorkingFolder)
+                        ? parent.WorkingFolder
+                        : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    break;
+            }
 
-        _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
+            _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
+        }
+        catch (Exception ex)
+        {
+            // A run that can't even build its command line (e.g. blank WslDistro) must
+            // show as a failed chip, not throw out of the toolbar click.
+            AppendText($"Cannot start: {ex.Message}\r\n");
+            ExitCode = -1;
+            EndedAt = DateTime.Now;
+            State = RunState.ExitedFailed;
+            StateChanged?.Invoke();
+            _pty.DataReceived -= OnPtyData;
+            _pty.Exited -= OnPtyExited;
+            _pty.Dispose();
+            _pty = null;
+        }
+    }
+
+    /// <summary>
+    /// Appends text to the ANSI-stripped output buffer under <see cref="_bufLock"/>,
+    /// refreshes <see cref="OutputBuffer"/>, and raises <see cref="OutputChanged"/>.
+    /// </summary>
+    private void AppendText(string text)
+    {
+        string snapshot;
+        lock (_bufLock)
+        {
+            _ansiStripped.Append(text);
+            if (_ansiStripped.Length > MaxBufferChars)
+                _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
+            snapshot = _ansiStripped.ToString();
+        }
+        OutputBuffer = snapshot;
+        // Marshal to UI thread is the consumer's responsibility — OutputChanged
+        // fires from the PTY read loop's thread (or, for the start-failure path,
+        // synchronously from Start).
+        OutputChanged?.Invoke();
     }
 
     public void Stop()
@@ -127,6 +174,14 @@ public partial class RunInstance : ObservableObject, IDisposable
     {
         // Strip ANSI for the readonly drawer view + clipboard. Match the
         // OutputIndexer regex so any visible quirks stay consistent across the app.
+        // Marshal to UI thread is the consumer's responsibility — OutputChanged
+        // fires from the PTY read loop's thread.
+        //
+        // Deliberately NOT routed through AppendText: the PTY read loop hands us
+        // 4KB chunks, and AppendText's OutputBuffer = ToString() snapshot would be
+        // a full copy of the (up to 1MB) buffer per chunk — LOH churn plus a
+        // PropertyChanged per chunk on a hot path. OutputBuffer has no consumers
+        // in the app (only tests) — the app reads SnapshotOutput() on demand.
         string stripped = AnsiPattern().Replace(text, "");
         lock (_bufLock)
         {
@@ -134,8 +189,6 @@ public partial class RunInstance : ObservableObject, IDisposable
             if (_ansiStripped.Length > MaxBufferChars)
                 _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
         }
-        // Marshal to UI thread is the consumer's responsibility — OutputChanged
-        // fires from the PTY read loop's thread.
         OutputChanged?.Invoke();
     }
 
@@ -245,6 +298,14 @@ public partial class RunInstance : ObservableObject, IDisposable
         sb.Append("\"");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// wsl.exe args for a run inside the parent's distro. One implementation with the
+    /// session launcher — see <see cref="ShellSession.BuildWslArgs"/> — so the two can't
+    /// disagree about quoting or about a blank distro.
+    /// </summary>
+    internal static string BuildWslArgs(ShellSession parent, string commandLine)
+        => parent.BuildWslArgs(commandLine);
 
     /// <summary>
     /// POSIX single-quote escape: wraps in single quotes, replacing any inner

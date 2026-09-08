@@ -96,6 +96,10 @@ public class StateService
         s.RecentlyClosed ??= [];
         s.GroupLayouts ??= new();
         s.Settings ??= new();
+        // Legacy-field migration lives here, in the loader, so the models stay free of
+        // deserialisation-order tricks. Import goes through this too (ImportExportService).
+        foreach (var session in s.Sessions) session.MigrateLegacyFields();
+        foreach (var entry in s.RecentlyClosed) entry.MigrateLegacyFields();
         return s;
     }
 
