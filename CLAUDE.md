@@ -59,7 +59,8 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `StateService` | JSON persistence → `%AppData%/CodeShellManager/state.json`. Writes are **atomic**: serialize to `.tmp`, then `File.Replace` into place, rotating the previous file to `.bak`. `LoadAsync` falls back to `.bak` when the primary won't parse, and logs every step to `crash.log` rather than silently starting empty. A static `SemaphoreSlim` serializes saves — 29 of the ~32 `SaveStateAsync` call sites are fire-and-forget, and overlapping saves would otherwise race on the shared temp file. See issue #88. |
 | `SearchService` | SQLite FTS5 search of all terminal output; also owns the `project_notes` table |
 | `ColorService` | FNV-1a hash of folder path → 12-color palette |
-| `GitService` | Async `git branch --show-current` + `git status --porcelain` |
+| `GitService` | Async `git branch --show-current` + `git status --porcelain`. **Every await is `ConfigureAwait(false)` and `RunGitFullAsync` is `Task.Run`-wrapped — do not "simplify" either away.** See "Never spawn a process on the UI thread" below |
+| `GitRepoWatcher` | `FileSystemWatcher` on a repo's `.git/HEAD` + `index`, debounced 400ms. Lets git state refresh on checkout/commit/stage instead of by polling. Resolves the `gitdir:` indirection so a linked worktree watches its own HEAD, not the main repo's. Returns null outside a repo — callers treat that as "poll only", not an error |
 | `AlertDetector` | Pattern matching for Claude prompts/approvals |
 | `CommandPresetsService` | Launch presets + in-session shortcuts |
 | `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
@@ -133,6 +134,58 @@ tests/
 **Active-terminal highlight** — every terminal pane is wrapped in an outer "active ring" Border (constant 2px thickness, transparent by default) so toggling it doesn't shift content. `UpdateActiveTerminalHighlight` (called from `UpdateSidebarActiveState`, which fires on every `MainViewModel.ActiveSession` change) paints the ring of the active session's pane in its accent color and clears all others.
 
 The accent comes from the **live VM**, not the `Border.Tag` stashed at build time: `RepoRoot` is populated asynchronously by `GitService` and `AccentColor` changes when it lands, so a cached Tag goes stale and stops matching the sidebar ring. The Tag survives only as a fallback. `SetBorderColor` also assigns only when the colour actually differs — it previously allocated a fresh brush and reassigned every pane on every call, which was invisible at one call per switch and a visible flicker storm when something called it rapidly.
+
+## Never spawn a process on the UI thread
+
+An `async` method runs everything **before its first `await` synchronously on the calling
+thread**. `GitService.RunGitFullAsync` had `Process.Start` there, and the git poll chain
+starts in `SessionViewModel`'s constructor — which `MainWindow.LaunchSessionAsync` runs on
+the UI thread. The WPF `SynchronizationContext` was therefore captured, every continuation
+returned to the UI thread, and git process creation happened *on* it.
+
+At 47 sessions polling every 10s that was ~94 synchronous `Process.Start` calls per cycle on
+the UI thread. Traced live (issue #70): **42 UI stalls, worst 28.5s**, with foreground panes
+accumulating output and flushing it in one blob — `dispatcher-latency=12781ms len=3350`. That
+is the "I type and nothing appears, then it all appears at once" report.
+
+Measured on this hardware, and the numbers are the argument:
+
+| | |
+|---|---|
+| `cmd /c exit` | 21 ms — Windows baseline process creation |
+| `git --version` | 42 ms — git startup, **zero** repo access |
+| `git branch --show-current` | 41 ms — indistinguishable from doing nothing |
+| `git status --porcelain` | 48–65 ms — only 6–23 ms of it is the tree walk |
+| `Process.Start` alone | ~15 ms — the part that lands on the calling thread |
+
+**~85-90% of any git call is process startup, not git.** There is no faster query to switch
+to, so the only fixes are to not be on the UI thread and to not spawn at all.
+
+Three rules, all load-bearing:
+
+1. **`GitService` must never depend on the caller's thread.** `RunGitFullAsync` is
+   `Task.Run`-wrapped so `Process.Start` cannot run inline, and every await is
+   `ConfigureAwait(false)` so no continuation can climb back. Both halves are needed:
+   `ConfigureAwait` alone would not have moved `Process.Start`.
+2. **Long-lived loops started from the UI thread must be `Task.Run`-wrapped.**
+   `SessionViewModel`'s constructor does this for the git poll. A bare `_ = SomeAsync()` in a
+   constructor that runs on the UI thread silently pins the whole chain to it.
+3. **Don't poll what you can watch.** `GitRepoWatcher` catches checkout/commit/stage
+   immediately; the poll only survives for working-tree edits, which dirty `status` without
+   touching `.git`. Foreground sessions poll at 10s, background at 120s, and switching to a
+   pane forces an immediate refresh via `SessionViewModel.IsForegroundSession`.
+
+Guarded by `tests/CodeShellManager.Tests/GitServiceThreadingTests.cs`, which calls
+`GitService` from a thread whose `SynchronizationContext` never runs work: if any await
+captures it the call never completes and the test times out. All three tests fail against
+the pre-fix code — verify that still holds before trusting a change here.
+
+**`GitBranch` / `GitIsDirty` / `GitInfoLoaded` are hand-written properties, not
+`[ObservableProperty]`.** They share one notification, `GitInfoVersion`, because three
+generated setters meant three PropertyChanged events per poll per session — 141 sidebar
+rebuilds per cycle at 47 sessions. `ApplyGitInfo` also returns early when the result is
+unchanged, which is almost always: a branch changes maybe once an hour. Bind to
+`GitInfoVersion`; the individual properties raise nothing of their own.
 
 ## What makes a session "active"
 
@@ -491,13 +544,48 @@ The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` fl
 
 ```bash
 # 1. wait for CI / Release to finish and the GitHub Release to exist
-# 2. then dispatch BOTH mirrors by hand
+# 2. then dispatch the mirrors by hand
 gh workflow run winget.yml     -f tag=vX.Y.Z
-gh workflow run chocolatey.yml -f tag=vX.Y.Z
-# 3. watch both — they fail independently of CI and nothing else will tell you
+gh workflow run chocolatey.yml -f tag=vX.Y.Z   # ONLY if not blocked — see below
+# 3. watch them — they fail independently of CI and nothing else will tell you
 ```
 
 To make it genuinely automatic, CI / Release would have to create the Release with a PAT rather than `GITHUB_TOKEN`.
+
+**Chocolatey is currently blocked on moderation — do not dispatch it.** The v0.5.0
+submission is still awaiting *human* review on community.chocolatey.org. Automated
+verification passes (last resubmission 03 Sep 2026, the #112 icon-CDN + WebView2 round), but
+until a moderator approves it, newer versions cannot be submitted on top of it. Dispatching
+`chocolatey.yml` for v0.6.0 or v0.7.0 does not queue them behind the review — it fails.
+
+Two consequences worth knowing before reading the numbers:
+
+- `community.chocolatey.org/packages/codeshellmanager` still serves **v0.5.0**, and will
+  keep doing so however many tags get pushed here.
+- A package under moderation is not listed in search and cannot be installed without an
+  explicit `--version`, so its download counter reflects the moderation pipeline more than
+  it reflects users.
+
+Check the package page for the "awaiting moderation" banner before dispatching. Once it
+clears, the backlog is submitted per tag.
+
+### Download counts: GitHub's number already contains the other two
+
+There is no per-channel breakdown, and it is easy to add the three up and get a wrong total.
+Both mirrors resolve to **the GitHub Release MSI asset**: the winget manifest's
+`InstallerUrl` points straight at it, and `.chocolatey/tools/chocolateyinstall.ps1` has its
+`__URL64__` placeholder substituted with the same URL at pack time.
+
+So the MSI `download_count` on the GitHub Release is the **union** of GitHub-direct, winget
+and Chocolatey installs — not the GitHub-only slice — and Chocolatey's own counter is a
+subset of it, not an addition. It also includes the winget-pkgs validation pipeline's
+download of each submitted MSI.
+
+Winget publishes no install statistics at all (Microsoft doesn't expose them, and the
+unofficial `api.winget.run` index doesn't carry this package). Separating the channels would
+mean publishing a byte-identical second MSI per release and pointing `winget.yml`'s
+`installers-regex` at it — same SHA256, so winget-pkgs validation is unaffected — and that
+only works going forward.
 
 ### winget: the `CreateRef` error names the wrong culprit
 
