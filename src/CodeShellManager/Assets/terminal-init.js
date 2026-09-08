@@ -104,11 +104,49 @@
     window.chrome.webview.postMessage(JSON.stringify({ type: 'resize', cols, rows }));
   });
 
+  // ── Page-side diagnostics (issue #70) ──────────────────────────────────────
+  // The host's timing ends at PostWebMessageAsString. If the renderer process is the
+  // starved component — plausible at 25 panes, where 60+ WebView2 processes were measured
+  // — every host-side number reads healthy while typing still stalls. These two probes
+  // cover that blind spot. Off unless the host sends setDiag, and each reports only when
+  // it crosses a threshold, so a healthy session produces no traffic at all.
+  var diagOn = false;
+  var lastPaintProbeMs = 0;
+
+  function diagReport(what, ms, len) {
+    try {
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'diag', what: what, ms: ms, len: len
+      }));
+    } catch (e) {}
+  }
+
+  function diagWrite(data) {
+    if (!diagOn) { term.write(data); return; }
+
+    var t0 = performance.now();
+    term.write(data);
+    var t1 = performance.now();
+    if (t1 - t0 > 50) diagReport('write-blocked', t1 - t0, data.length);
+
+    // How long until the renderer actually produces a frame after this write. Sampled at
+    // most once a second: an rAF per output chunk across every pane would itself be load,
+    // and an instrument that changes the measurement is worth nothing here.
+    if (t1 - lastPaintProbeMs > 1000) {
+      lastPaintProbeMs = t1;
+      requestAnimationFrame(function () {
+        var lag = performance.now() - t1;
+        if (lag > 100) diagReport('paint-lag', lag, data.length);
+      });
+    }
+  }
+
   // ── Messages from WPF ──────────────────────────────────────────────────────
   window.chrome.webview.addEventListener('message', e => {
     try {
       const msg = JSON.parse(e.data);
-      if      (msg.type === 'output')         term.write(msg.data);
+      if      (msg.type === 'output')         diagWrite(msg.data);
+      else if (msg.type === 'setDiag')        diagOn = !!msg.on;
       else if (msg.type === 'clear')          term.clear();
       else if (msg.type === 'focus')          { term.focus(); fitAddon.fit(); }
       else if (msg.type === 'fit')            { fitAddon.fit(); term.focus(); }

@@ -18,9 +18,29 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isActive;
     [ObservableProperty] private bool _isWaitingForInput;
     [ObservableProperty] private bool _isWaitingForApproval;
-    [ObservableProperty] private string? _gitBranch;
-    [ObservableProperty] private bool _gitIsDirty;
-    [ObservableProperty] private bool _gitInfoLoaded;
+    // Hand-written rather than [ObservableProperty] so all three share ONE change
+    // notification, GitInfoVersion. As generated properties they raised three events per
+    // poll per session — 141 sidebar rebuilds per cycle at 47 sessions (issue #70).
+    private string? _gitBranch;
+    public string? GitBranch
+    {
+        get => _gitBranch;
+        set { if (_gitBranch != value) { _gitBranch = value; BumpGitInfo(); } }
+    }
+
+    private bool _gitIsDirty;
+    public bool GitIsDirty
+    {
+        get => _gitIsDirty;
+        set { if (_gitIsDirty != value) { _gitIsDirty = value; BumpGitInfo(); } }
+    }
+
+    private bool _gitInfoLoaded;
+    public bool GitInfoLoaded
+    {
+        get => _gitInfoLoaded;
+        set { if (_gitInfoLoaded != value) { _gitInfoLoaded = value; BumpGitInfo(); } }
+    }
     /// <summary>Absolute path to the session's repo top-level, or null if the working folder is not in a git repo.</summary>
     [ObservableProperty] private string? _repoRoot;
     /// <summary>Set by MainWindow whenever another live session shares this session's RepoRoot.</summary>
@@ -84,23 +104,107 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     {
         Session = session;
         Runner = new SessionRunner(session);
-        _ = RefreshGitInfoAsync();
-        _ = PollGitInfoAsync(_gitPollCts.Token);
+
+        // Task.Run so the WPF SynchronizationContext is NOT captured. This constructor runs
+        // on the UI thread (MainWindow.LaunchSessionAsync), and without this every await in
+        // the git chain resumed there — including the synchronous Process.Start ahead of the
+        // first await. That put ~94 process creations per poll cycle on the UI thread at 47
+        // sessions. GitService is hardened independently; this is the other half (issue #70).
+        _ = Task.Run(() => RefreshGitInfoAsync());
+        _ = Task.Run(() => PollGitInfoAsync(_gitPollCts.Token));
+        StartGitWatcher();
     }
 
     public async Task RefreshGitInfoAsync()
     {
         if (Session.IsRemote || _gitOverriddenByOsc) return;
-        var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder);
-        GitBranch = branch;
-        GitIsDirty = isDirty;
-        GitInfoLoaded = true;
+        var (branch, isDirty) = await GitService.GetGitInfoAsync(Session.WorkingFolder)
+            .ConfigureAwait(false);
+        ApplyGitInfo(branch, isDirty);
 
         // RepoRoot is stable for the life of the session — resolve it once. Don't gate on
         // a non-empty branch: detached HEADs report no branch but are still valid repos
         // that should participate in sibling detection, shared accent color, and clusters.
         if (RepoRoot == null)
-            RepoRoot = await GitService.GetRepoRootAsync(Session.WorkingFolder);
+            RepoRoot = await GitService.GetRepoRootAsync(Session.WorkingFolder)
+                .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Applies a git poll result as ONE change notification instead of three (issue #70).
+    ///
+    /// GitBranch, GitIsDirty and GitInfoLoaded are three <c>[ObservableProperty]</c> writes,
+    /// so every poll raised three PropertyChanged events per session, each crossing a
+    /// blocking Dispatcher.Invoke and rebuilding the sidebar row's WPF inlines — 141 rebuilds
+    /// per cycle at 47 sessions, to redraw text that almost never differs.
+    ///
+    /// The early-out matters more than the coalescing: a branch changes maybe once an hour,
+    /// so the overwhelmingly common poll result is "identical to last time", and that now
+    /// costs no UI work at all.
+    /// </summary>
+    public void ApplyGitInfo(string? branch, bool isDirty)
+    {
+        if (_gitInfoLoaded && _gitBranch == branch && _gitIsDirty == isDirty) return;
+
+        // Backing fields directly — the generated setters would raise one event each.
+        _gitBranch = branch;
+        _gitIsDirty = isDirty;
+        _gitInfoLoaded = true;
+
+        BumpGitInfo();
+    }
+
+    /// <summary>
+    /// The single change notification for git state. Watch this rather than GitBranch /
+    /// GitIsDirty / GitInfoLoaded, none of which raise events of their own.
+    /// </summary>
+    public int GitInfoVersion => _gitInfoVersion;
+    private int _gitInfoVersion;
+
+    private void BumpGitInfo()
+    {
+        _gitInfoVersion++;
+        OnPropertyChanged(nameof(GitInfoVersion));
+    }
+
+    /// <summary>
+    /// True while this session's pane is the active one. Set by MainWindow alongside
+    /// <c>TerminalBridge.IsForeground</c>. Governs poll cadence, and forces an immediate
+    /// refresh on activation so switching to a pane shows current git state at once rather
+    /// than up to <see cref="BackgroundPollMs"/> later.
+    /// </summary>
+    public bool IsForegroundSession
+    {
+        get => _isForegroundSession;
+        set
+        {
+            if (_isForegroundSession == value) return;
+            _isForegroundSession = value;
+            if (value) _ = Task.Run(() => RefreshGitInfoAsync());
+        }
+    }
+    private bool _isForegroundSession;
+
+    // The pane you're looking at keeps the old cadence. Everything else backs off hard: the
+    // watcher catches real git operations immediately, so this slow poll only has to catch
+    // working-tree edits that dirty the tree without touching anything under .git.
+    private const int ForegroundPollMs = 10_000;
+    private const int BackgroundPollMs = 120_000;
+
+    private GitRepoWatcher? _gitWatcher;
+
+    private void StartGitWatcher()
+    {
+        if (Session.IsRemote) return; // no local .git to watch
+        _gitWatcher = GitRepoWatcher.TryCreate(Session.WorkingFolder);
+        if (_gitWatcher != null) _gitWatcher.Changed += OnGitDirChanged;
+        // null is normal: a plain folder, or a platform that refused the watch. Poll only.
+    }
+
+    private void OnGitDirChanged()
+    {
+        if (_gitPollCts.IsCancellationRequested) return;
+        _ = Task.Run(() => RefreshGitInfoAsync());
     }
 
     /// <summary>Short repo + branch label shown beneath the session name when sibling worktrees are open.</summary>
@@ -117,11 +221,16 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     private async Task PollGitInfoAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
         try
         {
-            while (await timer.WaitForNextTickAsync(ct))
-                await RefreshGitInfoAsync();
+            while (!ct.IsCancellationRequested)
+            {
+                // Interval is read each iteration, so promoting a session to the foreground
+                // speeds up its next poll without having to restart the loop.
+                int delay = IsForegroundSession ? ForegroundPollMs : BackgroundPollMs;
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+                await RefreshGitInfoAsync().ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) { }
     }
@@ -247,6 +356,12 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         Runner.Dispose();
         _gitPollCts.Cancel();
         _gitPollCts.Dispose();
+        if (_gitWatcher != null)
+        {
+            _gitWatcher.Changed -= OnGitDirChanged;
+            _gitWatcher.Dispose();
+            _gitWatcher = null;
+        }
         AlertDetector?.Dispose();
         OutputIndexer?.Dispose();
         Bridge?.Dispose();

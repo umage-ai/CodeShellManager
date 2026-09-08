@@ -14,11 +14,11 @@ public static class GitService
 
         try
         {
-            string? branch = await RunGitAsync(folderPath, "branch --show-current");
+            string? branch = await RunGitAsync(folderPath, "branch --show-current").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(branch))
                 return (null, false);
 
-            string? statusOutput = await RunGitAsync(folderPath, "status --porcelain");
+            string? statusOutput = await RunGitAsync(folderPath, "status --porcelain").ConfigureAwait(false);
             bool isDirty = !string.IsNullOrWhiteSpace(statusOutput);
 
             return (branch.Trim(), isDirty);
@@ -43,7 +43,7 @@ public static class GitService
             return null;
         try
         {
-            string? commonDir = await RunGitAsync(folderPath, "rev-parse --git-common-dir");
+            string? commonDir = await RunGitAsync(folderPath, "rev-parse --git-common-dir").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(commonDir)) return null;
             string trimmed = commonDir.Trim();
 
@@ -80,7 +80,7 @@ public static class GitService
             return Array.Empty<WorktreeInfo>();
         try
         {
-            string? raw = await RunGitAsync(folderPath, "worktree list --porcelain");
+            string? raw = await RunGitAsync(folderPath, "worktree list --porcelain").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<WorktreeInfo>();
 
             // Output is blank-line separated stanzas:
@@ -123,7 +123,7 @@ public static class GitService
             return Array.Empty<string>();
         try
         {
-            string? raw = await RunGitAsync(folderPath, "for-each-ref --format=%(refname:short) refs/heads");
+            string? raw = await RunGitAsync(folderPath, "for-each-ref --format=%(refname:short) refs/heads").ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
             var lines = raw.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
             return lines;
@@ -149,7 +149,7 @@ public static class GitService
             ? $"worktree add -b \"{branchOrRef}\" \"{targetPath}\""
             : $"worktree add \"{targetPath}\" \"{branchOrRef}\"";
 
-        var (output, stderr, exit) = await RunGitFullAsync(repoRoot, args, timeoutMs: 30_000);
+        var (output, stderr, exit) = await RunGitFullAsync(repoRoot, args, timeoutMs: 30_000).ConfigureAwait(false);
         if (exit == 0) return (true, "");
         string err = string.IsNullOrWhiteSpace(stderr)
             ? (string.IsNullOrWhiteSpace(output) ? "git worktree add failed." : output)
@@ -159,11 +159,19 @@ public static class GitService
 
     private static async Task<string?> RunGitAsync(string workingDir, string arguments)
     {
-        var (stdout, _, exit) = await RunGitFullAsync(workingDir, arguments, timeoutMs: 3000);
+        var (stdout, _, exit) = await RunGitFullAsync(workingDir, arguments, timeoutMs: 3000).ConfigureAwait(false);
         return exit == 0 ? stdout : null;
     }
 
-    private static async Task<(string stdout, string stderr, int exit)> RunGitFullAsync(
+    /// <summary>
+    /// Runs one git command. The body is wrapped in <see cref="Task.Run"/> deliberately —
+    /// see the note on <c>Process.Start</c> below (issue #70).
+    /// </summary>
+    private static Task<(string stdout, string stderr, int exit)> RunGitFullAsync(
+        string workingDir, string arguments, int timeoutMs)
+        => Task.Run(() => RunGitCoreAsync(workingDir, arguments, timeoutMs));
+
+    private static async Task<(string stdout, string stderr, int exit)> RunGitCoreAsync(
         string workingDir, string arguments, int timeoutMs)
     {
         var psi = new ProcessStartInfo("git")
@@ -175,19 +183,42 @@ public static class GitService
             CreateNoWindow = true
         };
 
+        // Process.Start is synchronous and sits BEFORE this method's first await, so without
+        // the Task.Run above it ran on whatever thread called in. Every caller chain here
+        // starts in SessionViewModel's constructor on the UI thread, so its
+        // SynchronizationContext was captured, every continuation returned there, and
+        // process creation landed on the UI thread — 94 spawns per 10s poll at 47 sessions.
+        //
+        // Measured on an idle machine: Process.Start alone is ~15ms (9-20ms), so that was
+        // ~1.4s of hard UI-thread block per cycle before contention, which is what produced
+        // the multi-second typing freezes traced in issue #70. Note the cost is almost
+        // entirely process creation, not git: `git --version` measures 42ms against
+        // `branch --show-current` at 41ms, so there is no faster query to switch to.
+        //
+        // Every await below is ConfigureAwait(false) so no continuation can climb back onto
+        // the UI thread even if a future caller invokes this from there directly.
+        bool onUi = Diagnostics.DiagnosticTrace.OnUiThread;
+        long spawnStart = Environment.TickCount64;
+
         using var process = Process.Start(psi);
+
+        if (Diagnostics.DiagnosticTrace.Enabled)
+            Diagnostics.DiagnosticTrace.Write("DEBUG-tt", "git",
+                $"GIT-SPAWN on-ui={onUi} spawn={Environment.TickCount64 - spawnStart}ms " +
+                $"args='{arguments}'");
+
         if (process is null) return ("", "", -1);
 
         var outTask = process.StandardOutput.ReadToEndAsync();
         var errTask = process.StandardError.ReadToEndAsync();
         var bothTask = Task.WhenAll(outTask, errTask);
-        var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs));
+        var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs)).ConfigureAwait(false);
 
         if (completed != bothTask)
         {
             try { process.Kill(); } catch { }
         }
-        try { await process.WaitForExitAsync(); } catch { }
+        try { await process.WaitForExitAsync().ConfigureAwait(false); } catch { }
 
         string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
         string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
