@@ -115,8 +115,8 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- Restore counter — paired with RestoreRail; both live only for the
                          duration of the restore loop in OnLoaded. -->
-                    <Border x:Name="RestorePill" Background="#1c2438" CornerRadius="10"
-                            BorderBrush="#2f4368" BorderThickness="1"
+                    <Border x:Name="RestorePill" Background="#181825" CornerRadius="10"
+                            BorderBrush="#313244" BorderThickness="1"
                             Padding="8,2" Margin="0,0,8,0" VerticalAlignment="Center"
                             Visibility="Collapsed">
                         <TextBlock x:Name="RestorePillText" Text="restoring…" Foreground="#89b4fa"

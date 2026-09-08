@@ -389,6 +389,74 @@ public sealed class TerminalBridge : IDisposable
         _coalescer.Append(rawData);
     }
 
+    /// <summary>
+    /// Turns dropped file paths into the text written to the PTY. Extracted so the filtering
+    /// is testable without a WebView2 — see <c>DroppedPathsTests</c>.
+    ///
+    /// Paths from a drop are UNTRUSTED: the page derives them from the drag payload's
+    /// text/uri-list with <c>decodeURIComponent</c>, so a drag source that controls that
+    /// payload (a hostile page's dragstart, a crafted .url, another local app) can put any
+    /// character in them percent-escaped. <c>%0A</c> decodes to a newline, and a newline
+    /// written to a PTY is the user pressing Enter — one drop would have run a command in
+    /// the focused session with no keystroke and no confirmation.
+    ///
+    /// Control characters are rejected rather than escaped: Win32 forbids them in filenames,
+    /// so nothing legitimate is lost, and rejection has no escaping bug to get wrong later.
+    /// </summary>
+    internal static string BuildDroppedPathsPayload(IEnumerable<string> paths)
+    {
+        // Bounded. The page controls this array, and a drag payload advertising thousands of
+        // URIs would otherwise be typed into the session in one write. Nobody drops 64 files
+        // deliberately, and the cap fails safe by truncating rather than rejecting.
+        const int MaxPaths = 64;
+        const int MaxPathLength = 1024;
+
+        var quoted = new List<string>();
+        foreach (string fp in paths)
+        {
+            if (quoted.Count >= MaxPaths) break;
+            if (string.IsNullOrEmpty(fp) || fp.Length > MaxPathLength) continue;
+
+            // Control characters are rejected, not escaped. Win32 forbids them in filenames,
+            // so nothing legitimate is lost, and rejection has no escaping bug to get wrong.
+            // Control characters AND Unicode format characters (category Cf). char.IsControl
+            // catches C0/C1 — the newline that made this a command-execution bug — but not
+            // U+202E and friends, which reorder how the path renders. The user is about to
+            // read this text and press Enter, so a path that displays as something other
+            // than what it is matters here.
+            if (fp.Any(c => char.IsControl(c) || char.GetUnicodeCategory(c)
+                    == System.Globalization.UnicodeCategory.Format)) continue;
+
+            // A `"` cannot appear in a real Windows path either, and there is no quoting
+            // that is simultaneously correct for cmd.exe, PowerShell and POSIX shells — the
+            // session could be any of them. Rejecting is the only answer that is right in
+            // all three.
+            if (fp.Contains('"')) continue;
+
+            quoted.Add(NeedsQuoting(fp) ? "\"" + fp + "\"" : fp);
+        }
+        return string.Join(" ", quoted);
+    }
+
+    /// <summary>
+    /// True when a path must be wrapped in quotes before being typed into a shell.
+    ///
+    /// Not just spaces. The pane may be running cmd.exe, PowerShell, bash or a TUI, and each
+    /// treats a different set of characters as syntax. A perfectly legal Windows filename
+    /// like <c>a&amp;calc.txt</c> contains no space, so quoting only on space handed cmd.exe a
+    /// bare <c>&amp;</c> — a command separator. Quoting on any shell metacharacter of any of
+    /// them is the conservative union; over-quoting a path is harmless in all of them.
+    /// </summary>
+    private static bool NeedsQuoting(string path)
+    {
+        foreach (char c in path)
+        {
+            if (char.IsWhiteSpace(c)) return true;
+            if ("&|<>^();,=!%$`'{}[]".IndexOf(c) >= 0) return true;
+        }
+        return false;
+    }
+
     private void OnAcceleratorKeyPressed(object? sender, WpfKeyEventArgs e)
     {
         AcceleratorKeyPressed?.Invoke(this, e);
@@ -502,18 +570,29 @@ public sealed class TerminalBridge : IDisposable
                     break;
 
                 case "filesDropped":
-                    // JS sends full paths via text/uri-list (file:// URIs from Explorer)
+                    // JS sends full paths via text/uri-list (file:// URIs from Explorer).
+                    //
+                    // These are UNTRUSTED. The page derives them from the drag payload with
+                    // decodeURIComponent, so a drag source that controls text/uri-list — a
+                    // hostile page's dragstart, a crafted .url shortcut, another local app —
+                    // can put ANY character in them, percent-escaped. `%0A` decodes to a
+                    // newline, and a newline written to a PTY is the user pressing Enter:
+                    // one drop would have run a command in the focused session with no
+                    // keystroke and no confirmation.
+                    //
+                    // Control characters are rejected outright rather than escaped. No real
+                    // Windows path contains one (the Win32 API forbids them in filenames),
+                    // so nothing legitimate is lost, and "reject" has no escaping bug to get
+                    // wrong later. Embedded quotes are escaped so the quoting below can't be
+                    // broken out of either.
                     if (root.TryGetProperty("paths", out var pathsEl))
                     {
-                        var pathsList = new System.Collections.Generic.List<string>();
+                        var raw = new System.Collections.Generic.List<string>();
                         foreach (var p in pathsEl.EnumerateArray())
-                        {
-                            string fp = p.GetString() ?? "";
-                            if (!string.IsNullOrEmpty(fp))
-                                pathsList.Add(fp.Contains(' ') ? $"\"{fp}\"" : fp);
-                        }
-                        if (pathsList.Count > 0)
-                            _pty?.Write(string.Join(" ", pathsList));
+                            raw.Add(p.GetString() ?? "");
+
+                        string payload = BuildDroppedPathsPayload(raw);
+                        if (payload.Length > 0) _pty?.Write(payload);
                     }
                     break;
             }
@@ -598,7 +677,35 @@ public sealed class TerminalBridge : IDisposable
         || s.ProfilePadding != null || s.ProfileRetroEffect != null
         || !string.IsNullOrEmpty(s.ProfileColorSchemeJson);
 
+    /// <summary>
+    /// Writes text to the PTY exactly as typed. Only for text WE construct — a keystroke, a
+    /// fixed command from a preset. Every newline in it is an Enter.
+    /// </summary>
     public void SendToTerminal(string text) => _pty?.Write(text);
+
+    /// <summary>
+    /// Delivers text as a PASTE rather than as keystrokes, going through the page so xterm
+    /// wraps it in bracketed-paste markers when the running program has enabled them.
+    ///
+    /// Use this for anything the app did not author — run-command output, clipboard content,
+    /// dropped paths. A raw <see cref="SendToTerminal"/> of multi-line text submits at every
+    /// newline; the same primitive that made a dropped filename containing <c>%0A</c> a
+    /// command-execution bug. Falls back to a plain write when the page isn't up yet, which
+    /// is no worse than the direct write it replaces.
+    /// </summary>
+    public void PasteToTerminal(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+
+        if (!_ready) { _pty?.Write(text); return; }
+
+        string json = JsonSerializer.Serialize(new { type = "paste", data = text });
+        WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
+            catch { }
+        });
+    }
 
     public void FitTerminal()
     {

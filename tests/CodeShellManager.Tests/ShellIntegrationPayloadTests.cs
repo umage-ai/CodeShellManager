@@ -1,3 +1,4 @@
+using System.Linq;
 using CodeShellManager.Services;
 using Xunit;
 
@@ -99,4 +100,41 @@ public class ShellIntegrationPayloadTests
     [InlineData("a\u001bb", "ab")]
     public void SanitizeBranch(string input, string? expected)
         => Assert.Equal(expected, ShellIntegrationPayload.SanitizeBranch(input));
+
+    [Fact]
+    public void SanitizeBranch_LongBranch_IsCapped()
+    {
+        // Found in the v0.8.0 pre-release review: titles were capped, branches were not.
+        // The value comes from whatever printed to the terminal and is rendered into a
+        // sidebar row, so an unbounded branch let any program wedge the UI.
+        string huge = new('b', 100_000);
+
+        string? result = ShellIntegrationPayload.SanitizeBranch(huge);
+
+        Assert.NotNull(result);
+        Assert.Equal(ShellIntegrationPayload.MaxBranchLength, result!.Length);
+    }
+
+    [Fact]
+    public void SanitizeBranch_RealBranchNames_AreNeverTruncated()
+    {
+        // The cap bounds a hostile emitter; it must not police legitimate refs.
+        string realistic = "feature/some-quite-long-but-entirely-reasonable-branch-name-v2";
+
+        Assert.Equal(realistic, ShellIntegrationPayload.SanitizeBranch(realistic));
+    }
+
+    [Fact]
+    public void SanitizeBranch_CapDoesNotSplitASurrogatePair()
+    {
+        // Same surrogate-safety the title path already had — cutting mid-pair would emit a
+        // lone surrogate into the UI string.
+        string emoji = string.Concat(Enumerable.Repeat("😀", 500));
+
+        string? result = ShellIntegrationPayload.SanitizeBranch(emoji);
+
+        Assert.NotNull(result);
+        Assert.False(char.IsHighSurrogate(result![^1]),
+            "a trailing high surrogate means the cap split a character");
+    }
 }

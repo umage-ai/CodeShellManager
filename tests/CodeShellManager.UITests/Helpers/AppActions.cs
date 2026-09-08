@@ -20,11 +20,24 @@ public static class AppActions
             () => window.FindFirstDescendant(cf => cf.ByAutomationId(automationId)),
             timeout ?? DefaultTimeout);
 
-        if (!result.Success)
+        if (!result.Success || result.Result is null)
             throw new TimeoutException(
                 $"Element with AutomationId '{automationId}' not found within timeout.");
         return result.Result;
     }
+
+    /// <summary>
+    /// Finds a descendant by AutomationId, or throws naming the id that was missing.
+    ///
+    /// FlaUI's FindFirstDescendant returns null when nothing matches, and the call sites
+    /// here dereference the result immediately. Silencing that with <c>!</c> would turn a
+    /// missing-element bug into a NullReferenceException with no indication of *which*
+    /// element — strictly worse than the warning it hides. See issue #92.
+    /// </summary>
+    internal static AutomationElement Require(this AutomationElement parent, string automationId)
+        => parent.FindFirstDescendant(cf => cf.ByAutomationId(automationId))
+           ?? throw new InvalidOperationException(
+               $"UI element with AutomationId '{automationId}' was not found.");
 
     /// <summary>
     /// Opens the New Session dialog, fills folder and name, and clicks Start Session.
@@ -48,18 +61,15 @@ public static class AppActions
         var dialog = dialogResult.Result!;
 
         // Fill folder
-        var folderBox = dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionFolderBox")).AsTextBox();
+        var folderBox = dialog.Require("NewSessionFolderBox").AsTextBox();
         folderBox.Text = folder;
 
         // Fill name
-        var nameBox = dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionNameBox")).AsTextBox();
+        var nameBox = dialog.Require("NewSessionNameBox").AsTextBox();
         nameBox.Text = name;
 
         // Click Start Session
-        dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionOkBtn")).AsButton().Click();
+        dialog.Require("NewSessionOkBtn").AsButton().Click();
 
         // Wait for dialog to close
         Retry.WhileFalse(
@@ -111,22 +121,18 @@ public static class AppActions
         var dialog = dialogResult.Result!;
 
         // Switch to Remote mode
-        dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionRemoteRadio")).AsRadioButton().Click();
+        dialog.Require("NewSessionRemoteRadio").AsRadioButton().Click();
 
         // Fill SSH host
-        var hostBox = dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionSshHostBox")).AsTextBox();
+        var hostBox = dialog.Require("NewSessionSshHostBox").AsTextBox();
         hostBox.Text = host;
 
         // Fill session name
-        var nameBox = dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionNameBox")).AsTextBox();
+        var nameBox = dialog.Require("NewSessionNameBox").AsTextBox();
         nameBox.Text = name;
 
         // Click Start Session
-        dialog.FindFirstDescendant(
-            cf => cf.ByAutomationId("NewSessionOkBtn")).AsButton().Click();
+        dialog.Require("NewSessionOkBtn").AsButton().Click();
 
         Retry.WhileFalse(
             () => app.GetAllTopLevelWindows(automation)

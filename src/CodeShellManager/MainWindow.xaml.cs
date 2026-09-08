@@ -227,9 +227,9 @@ public partial class MainWindow : Window
 
         // Unattributed UI-thread latency baseline (issue #70). Started after settings load
         // so it shares the live AppSettings ref and honours DebugTerminalTrace toggled at
-        // runtime; the timer itself is cheap enough to leave running either way.
+        // runtime. SyncToSettings starts or stops it, so a session with tracing off pays nothing.
         _uiHeartbeat = new Diagnostics.UiThreadHeartbeat(_vm.Settings);
-        _uiHeartbeat.Start();
+        _uiHeartbeat.SyncToSettings();
 
         // Stamp the UI thread and mirror the trace flag for WPF-free services (GitService).
         Diagnostics.DiagnosticTrace.UiThreadId = Environment.CurrentManagedThreadId;
@@ -527,7 +527,7 @@ public partial class MainWindow : Window
         if (time != null) r.Time.Text = time;
 
         r.Row.Background = active
-            ? new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x39))
+            ? new SolidColorBrush(Color.FromRgb(0x31, 0x32, 0x44))
             : Brushes.Transparent;
 
         if (r.Row.Tag is TextBlock name)
@@ -1239,9 +1239,17 @@ public partial class MainWindow : Window
         if (isClaude && vm.Bridge != null)
         {
             string exit = inst.ExitCode is { } code ? $" (exit code {code})" : "";
-            // No trailing \r — leave it in Claude's input box for the user to submit.
+            // The intent has always been "leave it in Claude's input box for the user to
+            // submit", but the old comment claimed that was achieved by having no trailing
+            // \r — while the string ends in \n, which a raw PTY write delivers as Enter just
+            // the same. So it submitted, and every newline inside `text` submitted too.
             string wrapped = $"\nOutput of `{inst.CommandLine}`{exit}:\n```\n{text}\n```\n";
-            vm.Bridge.SendToTerminal(wrapped);
+
+            // Paste, not type. `text` is whatever the run command printed — arbitrary tool
+            // output — and bracketed paste is what the clipboard path already uses for the
+            // same class of content. This finally makes the behaviour match the intent
+            // above: the fenced block lands in the input box and waits for the user.
+            vm.Bridge.PasteToTerminal(wrapped);
             ToastHelper.Show("Sent to Claude", $"{text.Length} chars wrapped in fence");
         }
         else
@@ -5335,9 +5343,20 @@ public partial class MainWindow : Window
 
     private void UpdateBadge_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (_updateReleaseUrl == null) return;
-        System.Diagnostics.Process.Start(
-            new System.Diagnostics.ProcessStartInfo(_updateReleaseUrl) { UseShellExecute = true });
+        // Same guard as RunCommandItem.PostRunUrl, for the same reason: ShellExecute will
+        // launch a local exe, a .ps1, a UNC path or any registered protocol handler, and
+        // this value arrives from a GitHub API response via a cache file under AppData.
+        // Low risk on its own — but an unguarded ShellExecute sitting next to a guarded one
+        // is how the guard stops being the rule.
+        if (!Services.RunInstance.TryGetLaunchableUrl(_updateReleaseUrl, out string? safeUrl))
+            return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(safeUrl!) { UseShellExecute = true });
+        }
+        catch (Exception ex) { Log($"UpdateBadge launch failed: {ex.Message}"); }
     }
 
     private void UpdateBadgeDismiss_Click(object sender, RoutedEventArgs e)
@@ -5445,6 +5464,7 @@ public partial class MainWindow : Window
             // automatically — but the page half is push-only and would stay dark on panes
             // that are already running. Toggling the setting has to reach them (issue #70).
             Diagnostics.DiagnosticTrace.Enabled = edited.DebugTerminalTrace;
+            _uiHeartbeat?.SyncToSettings();
             foreach (var s in _vm.Sessions)
                 s.Bridge?.SetPageDiagnostics(edited.DebugTerminalTrace);
 

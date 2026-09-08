@@ -59,8 +59,10 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `StateService` | JSON persistence → `%AppData%/CodeShellManager/state.json`. Writes are **atomic**: serialize to `.tmp`, then `File.Replace` into place, rotating the previous file to `.bak`. `LoadAsync` falls back to `.bak` when the primary won't parse, and logs every step to `crash.log` rather than silently starting empty. A static `SemaphoreSlim` serializes saves — 29 of the ~32 `SaveStateAsync` call sites are fire-and-forget, and overlapping saves would otherwise race on the shared temp file. See issue #88. |
 | `SearchService` | SQLite FTS5 search of all terminal output; also owns the `project_notes` table |
 | `ColorService` | FNV-1a hash of folder path → 12-color palette |
-| `GitService` | Async `git branch --show-current` + `git status --porcelain`. **Every await is `ConfigureAwait(false)` and `RunGitFullAsync` is `Task.Run`-wrapped — do not "simplify" either away.** See "Never spawn a process on the UI thread" below |
-| `GitRepoWatcher` | `FileSystemWatcher` on a repo's `.git/HEAD` + `index`, debounced 400ms. Lets git state refresh on checkout/commit/stage instead of by polling. Resolves the `gitdir:` indirection so a linked worktree watches its own HEAD, not the main repo's. Returns null outside a repo — callers treat that as "poll only", not an error |
+| `GitService` | Async `git branch --show-current` + `git status --porcelain`. **Every await is `ConfigureAwait(false)`, `RunGitFullAsync` is `Task.Run`-wrapped, and command lines are built as argv via `JoinArgv` — do not "simplify" any of the three away.** WSL repos are dispatched through `wsl.exe -d <distro> -e git …`; `-e` is a security boundary, see "Never interpolate a value into a command line" |
+| `GitRepoWatcher` | Shared, reference-counted `FileSystemWatcher` on a repo's `.git/HEAD` + `index`, debounced 400ms. Lets git state refresh on checkout/commit/stage instead of by polling. Resolves the `gitdir:` indirection so a linked worktree watches its own HEAD, not the main repo's. Acquire/Release per session — one watcher per `.git` dir, however many sessions share it. Returns null outside a repo — callers treat that as "poll only", not an error |
+| `WslDiscoveryService` | `wsl.exe` probes for distro list, `$HOME` and login shell, each cached per (distro, user) and capped at 3s. All three go through `RunWslCaptureAsync`, which is `Task.Run`-wrapped — **never call `Process.Start` inline here**, `wsl.exe` can boot a stopped distro VM |
+| `ShellIntegrationPayload` | WPF-free validation for OSC 9001. Every field is untrusted: colour is strict hex, dirty is an allowlist, title and branch strip control characters and are length-capped (`MaxTitleLength` 80, `MaxBranchLength` 200) |
 | `AlertDetector` | Pattern matching for Claude prompts/approvals |
 | `CommandPresetsService` | Launch presets + in-session shortcuts |
 | `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
@@ -101,10 +103,17 @@ src/CodeShellManager/
 │   ├── GitService.cs               # Git branch + dirty detection
 │   ├── AlertDetector.cs            # PTY output pattern matching
 │   ├── CommandPresetsService.cs    # Launch presets + in-session shortcuts
+│   ├── GitRepoWatcher.cs           # .git HEAD/index watcher; replaces most git polling
+│   ├── WslDiscoveryService.cs      # wsl.exe probes: distros, $HOME, login shell
+│   ├── ShellIntegrationPayload.cs  # OSC 9001 validation (WPF-free, all values untrusted)
 │   └── ToastHelper.cs              # Tray balloon notifications
+├── Diagnostics/
+│   ├── DiagnosticTrace.cs          # Buffered [DEBUG-tt] writer (never blocks the caller)
+│   └── UiThreadHeartbeat.cs        # UI-thread lateness, attributed to no session
 ├── Terminal/
 │   ├── PseudoTerminal.cs           # ConPTY P/Invoke wrapper
 │   ├── TerminalBridge.cs           # WebView2 ↔ PTY bridge
+│   ├── OutputCoalescer.cs          # Collapses PTY chunks into one dispatcher post
 │   └── OutputIndexer.cs            # Async ANSI-stripped SQLite writer
 ├── ViewModels/
 │   ├── MainViewModel.cs            # App-level state
@@ -162,7 +171,14 @@ Measured on this hardware, and the numbers are the argument:
 **~85-90% of any git call is process startup, not git.** There is no faster query to switch
 to, so the only fixes are to not be on the UI thread and to not spawn at all.
 
-Three rules, all load-bearing:
+**This has now been got wrong twice.** The v0.8.0 pre-release review found
+`WslDiscoveryService` doing exactly the same thing in a new service — three `Process.Start`
+calls ahead of the first `await`, every caller on the UI thread including `LaunchSessionAsync`
+inside the restore loop — and `wsl.exe` is the worse offender, because it can boot a stopped
+distro VM. All three now go through `RunWslCaptureAsync`, which is `Task.Run`-wrapped. When
+adding a service that shells out, this is the pattern to copy.
+
+Four rules, all load-bearing:
 
 1. **`GitService` must never depend on the caller's thread.** `RunGitFullAsync` is
    `Task.Run`-wrapped so `Process.Start` cannot run inline, and every await is
@@ -174,7 +190,81 @@ Three rules, all load-bearing:
 3. **Don't poll what you can watch.** `GitRepoWatcher` catches checkout/commit/stage
    immediately; the poll only survives for working-tree edits, which dirty `status` without
    touching `.git`. Foreground sessions poll at 10s, background at 120s, and switching to a
-   pane forces an immediate refresh via `SessionViewModel.IsForegroundSession`.
+   pane forces an immediate refresh via `SessionViewModel.IsForegroundSession`. Acquire it
+   with `GitRepoWatcher.Acquire`/`Release`, never `new` — watchers are shared and
+   reference-counted per `.git` directory, because several sessions in one repo is the
+   normal case.
+4. **Build command lines as argv, never by interpolation.** `GitService` composes every
+   invocation through `JoinArgv`, which quotes each element with the MSVCRT rules. This is a
+   security boundary, not a style rule — see below.
+
+## Never interpolate a value into a command line
+
+`wsl.exe … -- <tail>` runs the tail **through the distro's default login shell**; `-e` execs
+the program directly. That distinction is documented for *correctness* under
+`ShellSession.BuildWslArgs` (double expansion mangles payloads), but in `GitService` it was a
+**command-injection vector**, found in the v0.8.0 pre-release review:
+
+```csharp
+// before — every value below reached a shell
+$"-d {QuoteForCmd(distro)} -- git -C {QuoteForCmd(cwd)} {arguments}"
+```
+
+`QuoteForCmd` is MSVCRT **argv** quoting. It does not, and cannot, neutralise `$(…)`,
+backticks, `;`, `|` or `&`. Two live paths: a branch name from a cloned repo flowing into
+`worktree add -b` (git ref names legally contain all of those), and the session's working
+folder, reached **unattended** by the git poll. Opening a hostile repository was enough.
+
+The rule: values go in as argv elements, and the process is exec'd directly. No shell, so
+argv quoting is both correct and sufficient. `GitService.BuildWslGitCommandLine` and
+`BuildLocalGitCommandLine` are the only places that build these, and
+`GitServiceInjectionTests` round-trips hostile payloads through the real
+`CommandLineToArgvW` to prove each survives as exactly one argument — 18 of its 27 cases
+fail against the pre-fix code.
+
+The same fix removed a plain bug: `--format=%(refname:short)` is a bash syntax error once a
+login shell sees it, so `ListBranchesAsync` could never have worked under WSL.
+
+**Two escaping layers, and a value can cross both.** `SshRemoteFolder` was POSIX-escaped in
+one round and *still* exploitable in the next, because the remote command was additionally
+hand-wrapped in `" … "` for Windows argv — and `PosixSingleQuote` escapes `'`, not `"`. A `"`
+in the folder therefore broke out at the **Windows** layer, and text after it became separate
+ssh arguments; ssh honours options after the host, and `ProxyCommand` runs *locally*. Both
+ssh builders now assemble the remote command and pass it through `QuoteForCmd(force: true)`
+as a single argv element. When a value crosses layers, ask which layer each escaper defends.
+
+**`SendToTerminal` types; `PasteToTerminal` pastes.** A raw PTY write submits at every
+newline — that is what made a dropped filename containing `%0A` a command-execution bug.
+`SendToTerminal` is only for text the app authored (a keystroke, a fixed preset command).
+Anything the app did not write — run-command output, clipboard, dropped paths — goes through
+`PasteToTerminal`, which routes via the page so xterm applies bracketed-paste markers.
+
+**Verified empirically against a real distro**, because two rounds of reasoning about this
+had already been wrong:
+
+```
+$ wsl -d Ubuntu -- echo '$(id)'                              # the v0.7.0 form
+uid=1000(thraen) gid=1000(thraen) groups=1000(thraen),4(adm),…    ← executed
+
+$ wsl -d Ubuntu -e sh -lc 'exec "$0" "$@"' echo '$(id)'      # the current form
+$(id)                                                             ← data
+```
+
+Backticks behave the same way. The form is `-e sh -lc 'exec "$0" "$@"' git …` rather than a
+bare `-e git` for one reason: `-e git` skips the login shell, and the login shell is where
+`~/.local/bin` and friends enter PATH —
+
+```
+-e sh -c  (no login):  /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:…
+-e sh -lc (login):     /home/thraen/.local/bin:/usr/local/sbin:/usr/local/bin:…
+```
+
+so anyone whose git comes from nix, asdf, pipx or linuxbrew would have silently lost WSL git,
+reported as "not a git repo". Also confirmed on the real distro: `exec` preserves git's exit
+code (0 and 128 both propagate), arguments beginning with `-` pass through as data, and a
+clean profile adds nothing to stdout. If a *chatty* `~/.profile` ever does contaminate
+stdout, that is the one known weakness of this form — the symptom would be a garbage branch
+name in the sidebar, and the fix would be to strip non-git lines, not to go back to `--`.
 
 Guarded by `tests/CodeShellManager.Tests/GitServiceThreadingTests.cs`, which calls
 `GitService` from a thread whose `SynchronizationContext` never runs work: if any await
@@ -405,7 +495,7 @@ Each session can have a list of "run commands" — labelled command lines invoke
 
 **Data:** `ShellSession.RunCommands: List<RunCommandItem> { Id, Label, CommandLine, IsDefault, Mode, PostRunUrl }`. Exactly one item has `IsDefault=true`; see `RunCommandItem.EnsureSingleDefault`. Persisted to `state.json`.
 
-- **`Mode`** (`RunMode.Process` default / `RunMode.PowerShell`) — `Process` runs through `cmd /c` as before; `PowerShell` wraps the command line in `pwsh.exe -NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand <utf16le-b64>` (falls back to `powershell.exe` if `pwsh` isn't on PATH). SSH and WSL parents ignore `Mode` — those runs always go through bash (`ssh … bash -c` / `wsl.exe … bash -lc`). Use PowerShell when the command relies on pipes (`|`), redirection (`>`), `$env:` variables, or cmdlets.
+- **`Mode`** (`RunMode.Process` default / `RunMode.PowerShell`) — `Process` runs through `cmd /c` as before; `PowerShell` wraps the command line in `pwsh.exe -NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand <utf16le-b64>` (falls back to `powershell.exe` if `pwsh` isn't on PATH). SSH and WSL parents ignore `Mode` — those runs always go through a POSIX shell (`ssh … bash -c` / `wsl.exe … -e <shell> -lc`, where the WSL shell is probed per-distro and falls back to `sh` where bash is absent). Use PowerShell when the command relies on pipes (`|`), redirection (`>`), `$env:` variables, or cmdlets.
 - **`PostRunUrl`** (`string?`, default `null`) — when set and the run exits with code 0, `Process.Start` opens the URL via `UseShellExecute=true` (default browser). No health-check polling. The value is gated by `RunInstance.IsLaunchableUrl` first: **only absolute `http`/`https` URLs are launched.** ShellExecute would otherwise run a local exe, a `.ps1`, a UNC path or any registered protocol handler, and this fires automatically with no confirmation — and `ImportExportService` deserializes a whole `AppState` (run commands included) from any JSON file the user points at, so the stored value is not trusted. Rejections and launch failures both append to `crash.log`; neither pops UI, since this runs on the PTY-exit callback thread. Scheme-less input (`localhost:5173`) is rejected rather than guessed at.
 
 **Templates:** `RunCommandTemplatesService.SeedFor(folder)` detects project type (top-level scan, first-match: dotnet → cargo → node → python → make) and returns a seed list with fresh Ids. Templates are *copied* onto new sessions at creation time; subsequent edits don't propagate back. SSH sessions skip detection (empty list).

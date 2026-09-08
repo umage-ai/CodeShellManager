@@ -20,6 +20,12 @@ public static class ShellIntegrationPayload
     public const int MaxTitleLength = 80;
 
     /// <summary>
+    /// Cap for an OSC 9001 <c>git-branch</c> value. Generous next to any real ref name —
+    /// this bounds a hostile or buggy emitter, it does not police legitimate branches.
+    /// </summary>
+    public const int MaxBranchLength = 200;
+
+    /// <summary>
     /// Accepts <c>#rgb</c>, <c>#rrggbb</c> and <c>#rrggbbaa</c>. Returns the string in the
     /// form WPF's <c>ColorConverter</c> expects: 3- and 6-digit values unchanged, 8-digit
     /// values reordered from the integrator convention (alpha last) to <c>#aarrggbb</c>
@@ -60,9 +66,26 @@ public static class ShellIntegrationPayload
         return clean[..cut].TrimEnd();
     }
 
-    /// <summary>Strips control characters and trims. Returns <c>null</c> for an empty result,
-    /// which the caller treats as "no branch" (detached HEAD, not a repo).</summary>
-    public static string? SanitizeBranch(string? input) => StripControls(input);
+    /// <summary>
+    /// Strips control characters, trims, and caps length. Returns <c>null</c> for an empty
+    /// result, which the caller treats as "no branch" (detached HEAD, not a repo).
+    ///
+    /// The cap is not cosmetic. This value comes from whatever printed to the terminal, and
+    /// it is rendered into a sidebar row; an unbounded branch let any program wedge the UI
+    /// with a megabyte-long "branch name". Titles were already capped — branches were not.
+    /// Git's own ref names are far below this limit, so nothing legitimate is truncated.
+    /// </summary>
+    public static string? SanitizeBranch(string? input)
+    {
+        string? clean = StripControls(input);
+        if (clean is null) return null;
+        if (clean.Length <= MaxBranchLength) return clean;
+
+        int cut = MaxBranchLength;
+        if (char.IsHighSurrogate(clean[cut - 1])) cut--;
+        string trimmed = clean[..cut].TrimEnd();
+        return trimmed.Length == 0 ? null : trimmed;
+    }
 
     private static string? StripControls(string? input)
     {

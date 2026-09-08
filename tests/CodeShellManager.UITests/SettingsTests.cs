@@ -32,13 +32,11 @@ public sealed class SettingsTests : IClassFixture<AppFixture>
         var settingsWindow = settingsResult.Result!;
 
         // Set Max Search Results to 42
-        var maxResultsBox = settingsWindow.FindFirstDescendant(
-            cf => cf.ByAutomationId("MaxSearchResultsBox")).AsTextBox();
+        var maxResultsBox = settingsWindow.Require("MaxSearchResultsBox").AsTextBox();
         maxResultsBox.Text = "42";
 
         // Click Save
-        settingsWindow.FindFirstDescendant(
-            cf => cf.ByAutomationId("SettingsSaveBtn")).AsButton().Click();
+        settingsWindow.Require("SettingsSaveBtn").AsButton().Click();
         Thread.Sleep(500);
 
         // Reopen Settings and verify value persisted
@@ -54,13 +52,11 @@ public sealed class SettingsTests : IClassFixture<AppFixture>
 
         var settingsWindow2 = settingsResult2.Result!;
 
-        var maxResultsBox2 = settingsWindow2.FindFirstDescendant(
-            cf => cf.ByAutomationId("MaxSearchResultsBox")).AsTextBox();
+        var maxResultsBox2 = settingsWindow2.Require("MaxSearchResultsBox").AsTextBox();
 
         Assert.Equal("42", maxResultsBox2.Text);
 
         // Close settings
-        settingsWindow2.FindFirstDescendant(
-            cf => cf.ByAutomationId("SettingsSaveBtn")).AsButton().Click();
+        settingsWindow2.Require("SettingsSaveBtn").AsButton().Click();
     }
 }

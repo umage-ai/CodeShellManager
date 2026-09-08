@@ -13,7 +13,7 @@
          AssemblyVersion and FileVersion deliberately left unset so they derive from
          this and stay in step; pinning them shipped binaries reporting 0.3.4.0 for
          every release up to and including v0.5.0. -->
-    <Version>0.6.0</Version>
+    <Version>0.8.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 

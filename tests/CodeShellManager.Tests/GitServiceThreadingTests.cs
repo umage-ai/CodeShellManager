@@ -65,10 +65,16 @@ public class GitServiceThreadingTests
 
         // The repo itself — a real git repo, so the call does real work rather than
         // short-circuiting on the not-a-directory guard.
+        //
+        // The assertion is COMPLETION, not the branch name. `branch --show-current` prints
+        // nothing on a detached HEAD, and actions/checkout leaves exactly that for tag
+        // pushes and PR merge refs — asserting a non-empty branch would have failed CI on
+        // the two events the test step exists for, aborting the release job behind it.
         string repo = TestRepoPath();
-        var (branch, _) = await OnDeadContextAsync(() => GitService.GetGitInfoAsync(repo), ctx);
 
-        Assert.False(string.IsNullOrWhiteSpace(branch));
+        // Completion IS the assertion — OnDeadContextAsync fails if the call never returns,
+        // which is what a captured context would cause.
+        await OnDeadContextAsync(() => GitService.GetGitInfoAsync(repo), ctx);
     }
 
     [Fact]
@@ -94,10 +100,24 @@ public class GitServiceThreadingTests
         string log = Path.Combine(Path.GetTempPath(), $"csm-gitspawn-{Guid.NewGuid():N}.log");
         DiagnosticTrace.ResetForTests(log);
         DiagnosticTrace.Enabled = true;
-        DiagnosticTrace.UiThreadId = Environment.CurrentManagedThreadId;
         try
         {
-            await GitService.GetGitInfoAsync(TestRepoPath());
+            // Driven from a DEDICATED thread, not the xunit one. xunit runs tests on the
+            // thread pool, and Task.Run is free to reuse the calling pool thread — so
+            // designating the test's own thread as "the UI thread" made this pass or fail
+            // by luck. A dedicated thread is one the pool can never hand back.
+            Exception? failure = null;
+            var driver = new Thread(() =>
+            {
+                DiagnosticTrace.UiThreadId = Environment.CurrentManagedThreadId;
+                try { GitService.GetGitInfoAsync(TestRepoPath()).GetAwaiter().GetResult(); }
+                catch (Exception ex) { failure = ex; }
+            });
+            driver.IsBackground = true;
+            driver.Start();
+            Assert.True(driver.Join(TimeSpan.FromSeconds(30)), "git call did not finish in time");
+            Assert.Null(failure);
+
             DiagnosticTrace.DrainOnce();
 
             string content = File.ReadAllText(log);
@@ -110,6 +130,7 @@ public class GitServiceThreadingTests
             DiagnosticTrace.UiThreadId = 0;
             try { File.Delete(log); } catch { }
         }
+        await Task.CompletedTask;
     }
 
     private static string TestRepoPath()

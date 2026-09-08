@@ -204,12 +204,19 @@ public partial class RunInstance : ObservableObject, IDisposable
         // so failures are logged to crash.log for diagnosability rather than silenced.
         if (State == RunState.ExitedOk && !string.IsNullOrWhiteSpace(PostRunUrl))
         {
-            if (!IsLaunchableUrl(PostRunUrl))
+            if (!TryGetLaunchableUrl(PostRunUrl, out string? safeUrl))
             {
                 LogPostRunUrl(PostRunUrl, "rejected — only http and https URLs are opened");
                 return;
             }
-            try { Process.Start(new ProcessStartInfo(PostRunUrl) { UseShellExecute = true }); }
+            // safeUrl, not PostRunUrl: launch the string the validator actually inspected.
+            // Uri.TryCreate accepts and internally escapes characters that the raw string
+            // still contains — a quote or space survives into ShellExecute, which expands it
+            // into the handler's registered `shell\open\command` template. Modern browsers
+            // pass --single-argument and are unaffected; other registered handlers may not
+            // be. Validating one string and launching a different one is the bug class,
+            // regardless of who is currently immune to it.
+            try { Process.Start(new ProcessStartInfo(safeUrl!) { UseShellExecute = true }); }
             catch (Exception ex) { LogPostRunUrl(PostRunUrl, ex.Message); }
         }
     }
@@ -227,9 +234,21 @@ public partial class RunInstance : ObservableObject, IDisposable
     /// Scheme-less input like "localhost:5173" is rejected too: Uri parses it as scheme
     /// "localhost", and guessing http:// on the user's behalf would defeat the check.
     /// </summary>
-    internal static bool IsLaunchableUrl(string? url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
-        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    internal static bool IsLaunchableUrl(string? url) => TryGetLaunchableUrl(url, out _);
+
+    /// <summary>
+    /// Validates and returns the exact string to launch — <see cref="Uri.AbsoluteUri"/>,
+    /// the normalized form, so the value inspected and the value launched are identical.
+    /// </summary>
+    internal static bool TryGetLaunchableUrl(string? url, out string? safeUrl)
+    {
+        safeUrl = null;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+
+        safeUrl = uri.AbsoluteUri;
+        return true;
+    }
 
     private static void LogPostRunUrl(string url, string detail)
     {
@@ -287,15 +306,26 @@ public partial class RunInstance : ObservableObject, IDisposable
         var sb = new StringBuilder();
         if (parent.SshPort != 22) sb.Append($"-p {parent.SshPort} ");
         sb.Append("-t ");
-        sb.Append(string.IsNullOrWhiteSpace(parent.SshUser)
-            ? parent.SshHost
-            : $"{parent.SshUser}@{parent.SshHost}");
-        sb.Append(" \"");
+        // Quoted for the same reason as ShellSession.BuildSshArgs: an unquoted host
+        // containing ` -oProxyCommand=…` becomes extra ssh options, and ProxyCommand runs
+        // locally. See there.
+        sb.Append(ShellSession.QuoteForCmd(
+            string.IsNullOrWhiteSpace(parent.SshUser)
+                ? parent.SshHost
+                : $"{parent.SshUser}@{parent.SshHost}"));
+        sb.Append(' ');
+
+        // Two escaping layers — POSIX inside, Windows argv outside. See
+        // ShellSession.BuildSshArgs for why the outer QuoteForCmd is a security boundary and
+        // not cosmetic: SingleQuoteEscape handles `'` but not `"`, and a `"` in the folder
+        // used to break the hand-written wrapper and inject ssh options, which run locally.
+        var remote = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(parent.SshRemoteFolder))
-            sb.Append($"cd '{parent.SshRemoteFolder}' && ");
-        sb.Append("bash -c ");
-        sb.Append(SingleQuoteEscape(commandLine));
-        sb.Append("\"");
+            remote.Append($"cd {SingleQuoteEscape(parent.SshRemoteFolder)} && ");
+        remote.Append("bash -c ");
+        remote.Append(SingleQuoteEscape(commandLine));
+
+        sb.Append(ShellSession.QuoteForCmd(remote.ToString(), force: true));
         return sb.ToString();
     }
 

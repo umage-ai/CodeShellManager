@@ -196,16 +196,36 @@ public class ShellSession
         if (SshPort != 22)
             sb.Append($"-p {SshPort} ");
         sb.Append("-t ");
+        // Quoted so it stays ONE argv element. Unquoted, an SshHost of
+        // `h -oProxyCommand=calc` split into extra *ssh options* — and ProxyCommand runs
+        // locally, so a crafted state.json got code execution on the user's own machine
+        // before any connection was attempted. Worse than the SshRemoteFolder case, because
+        // it doesn't need a remote host to exist. Both come from the same untrusted file.
         var userAtHost = string.IsNullOrWhiteSpace(SshUser) ? SshHost : $"{SshUser}@{SshHost}";
-        sb.Append(userAtHost);
-        sb.Append(" \"");
+        sb.Append(QuoteForCmd(userAtHost));
+        sb.Append(' ');
+
+        // TWO separate escaping layers, and both matter:
+        //
+        //  1. POSIX, inside the remote command — PosixSingleQuote stops a `'` in the folder
+        //     closing the quote and running the rest on the remote host.
+        //  2. Windows argv, around the whole remote command — QuoteForCmd below. Hand-writing
+        //     `" … "` here was not enough: PosixSingleQuote escapes `'` and not `"`, so a `"`
+        //     in the folder terminated the wrapper at the *Windows* layer and everything after
+        //     it became separate ssh arguments. ssh honours options after the host, so
+        //     `-oProxyCommand=…` there executes LOCALLY — the same escalation fixed for
+        //     SshHost, reached through a different field.
+        //
+        // Command/Args are arbitrary remote execution by design; becoming *local* execution
+        // is not, which is why they sit inside the quoted element too.
+        var remote = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(SshRemoteFolder))
-            sb.Append($"cd '{SshRemoteFolder}' && ");
-        var shell = string.IsNullOrWhiteSpace(Command) ? "bash" : Command;
-        sb.Append(shell);
+            remote.Append($"cd {PosixSingleQuote(SshRemoteFolder)} && ");
+        remote.Append(string.IsNullOrWhiteSpace(Command) ? "bash" : Command);
         if (!string.IsNullOrWhiteSpace(Args))
-            sb.Append($" {Args}");
-        sb.Append("\"");
+            remote.Append($" {Args}");
+
+        sb.Append(QuoteForCmd(remote.ToString(), force: true));
         return sb.ToString();
     }
 
@@ -216,6 +236,14 @@ public class ShellSession
     /// trailing run of n backslashes becomes 2n so it cannot eat the closing quote.
     /// Every value that reaches wsl.exe goes through here — no ad-hoc Replace.
     /// </summary>
+    /// <summary>
+    /// Wraps a value in POSIX single quotes, escaping any embedded quote as <c>'\''</c>.
+    /// For values interpolated into a *remote shell* command line (ssh), where Windows
+    /// argv quoting is the wrong tool entirely. Mirrors RunInstance.SingleQuoteEscape.
+    /// </summary>
+    internal static string PosixSingleQuote(string value)
+        => "'" + (value ?? "").Replace("'", "'\\''") + "'";
+
     internal static string QuoteForCmd(string value, bool force = false)
     {
         value ??= "";

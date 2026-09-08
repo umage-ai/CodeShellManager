@@ -134,7 +134,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     {
         // SSH sessions have no local working folder to inspect. WSL sessions store
         // their WorkingFolder as a `\\wsl$\<distro>\...` UNC; GitService detects that
-        // and dispatches to `wsl.exe -- git -C <linuxPath>` internally (Git for
+        // and dispatches to `wsl.exe -d <distro> -e sh -lc ... git -C <linuxPath>` internally (Git for
         // Windows itself trips on those UNCs — dubious-ownership / .git symlinks).
         if (Session.Kind == SessionKind.Ssh || _gitOverriddenByOsc) return;
 
@@ -239,9 +239,26 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // `\\wsl$\...` UNC — watching that keeps the distro's 9p server busy and defeats
         // the idle-VM shutdown the WSL cadence above exists to protect.
         if (Session.Kind != SessionKind.Local) return;
-        _gitWatcher = GitRepoWatcher.TryCreate(Session.WorkingFolder);
+        _gitWatcher = GitRepoWatcher.Acquire(Session.WorkingFolder);
         if (_gitWatcher != null) _gitWatcher.Changed += OnGitDirChanged;
         // null is normal: a plain folder, or a platform that refused the watch. Poll only.
+    }
+
+    /// <summary>Releases the current watcher and acquires one for the session's folder.</summary>
+    private void RestartGitWatcher()
+    {
+        // Never re-acquire after Dispose. ReloadGitInfoAsync is reachable from an edit that
+        // races a close, and acquiring there would take a reference on the shared watcher
+        // that nothing ever releases.
+        if (_disposed) return;
+
+        if (_gitWatcher != null)
+        {
+            _gitWatcher.Changed -= OnGitDirChanged;
+            GitRepoWatcher.Release(_gitWatcher);
+            _gitWatcher = null;
+        }
+        StartGitWatcher();
     }
 
     private void OnGitDirChanged()
@@ -390,6 +407,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         _gitOverriddenByOsc = false;
         // Same reason: a "not a repo" answer for the old folder doesn't apply to the new one.
         _repoRootProbedNegative = false;
+        // And the watcher is still pointed at the OLD repo's .git. Without this, moving a
+        // session to another repo silently degraded it to poll-only — up to 120s stale in
+        // the background — while appearing to work.
+        RestartGitWatcher();
         return RefreshGitInfoAsync();
     }
 
@@ -401,15 +422,26 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         IsWaitingForApproval = false;
     }
 
+    private bool _disposed;
+
     public void Dispose()
     {
+        // Idempotent. MainWindow disposes a session VM from several paths (close, sleep,
+        // restart, shutdown) and some of them can both run for one session; a second call
+        // used to throw ObjectDisposedException on the CTS below, *before* reaching the
+        // watcher release — leaking a shared watcher reference on the way out.
+        if (_disposed) return;
+        _disposed = true;
+
         Runner.Dispose();
         _gitPollCts.Cancel();
         _gitPollCts.Dispose();
         if (_gitWatcher != null)
         {
             _gitWatcher.Changed -= OnGitDirChanged;
-            _gitWatcher.Dispose();
+            // Release, not Dispose — the watcher is shared with any other session in the
+            // same repo and only the last one out disposes it.
+            GitRepoWatcher.Release(_gitWatcher);
             _gitWatcher = null;
         }
         AlertDetector?.Dispose();

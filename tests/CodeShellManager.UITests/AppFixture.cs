@@ -30,7 +30,13 @@ public sealed class AppFixture : IDisposable
 
         Automation = new UIA3Automation();
         App = Application.Launch(psi);
-        MainWindow = App.GetMainWindow(Automation, TimeSpan.FromSeconds(15));
+
+        // GetMainWindow returns null if the window never appears. Failing here names the
+        // real problem — the app didn't start — instead of every test in the class dying on
+        // a NullReferenceException later (issue #92).
+        MainWindow = App.GetMainWindow(Automation, TimeSpan.FromSeconds(15))
+            ?? throw new InvalidOperationException(
+                "CodeShellManager main window did not appear within 15s of launch.");
     }
 
     public void Dispose()
