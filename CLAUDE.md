@@ -663,28 +663,33 @@ The tag value overrides the csproj `<Version>` at publish time (`-p:Version=` fl
 # 1. wait for CI / Release to finish and the GitHub Release to exist
 # 2. then dispatch the mirrors by hand
 gh workflow run winget.yml     -f tag=vX.Y.Z
-gh workflow run chocolatey.yml -f tag=vX.Y.Z   # ONLY if not blocked — see below
+gh workflow run chocolatey.yml -f tag=vX.Y.Z
 # 3. watch them — they fail independently of CI and nothing else will tell you
 ```
 
 To make it genuinely automatic, CI / Release would have to create the Release with a PAT rather than `GITHUB_TOKEN`.
 
-**Chocolatey is currently blocked on moderation — do not dispatch it.** The v0.5.0
-submission is still awaiting *human* review on community.chocolatey.org. Automated
-verification passes (last resubmission 03 Sep 2026, the #112 icon-CDN + WebView2 round), but
-until a moderator approves it, newer versions cannot be submitted on top of it. Dispatching
-`chocolatey.yml` for v0.6.0 or v0.7.0 does not queue them behind the review — it fails.
+**Chocolatey moderation: cleared 08 Sep 2026.** The v0.5.0 submission — the package's first —
+sat in the human review queue from May, which is why the listing stayed on 0.5.0 through two
+releases and why its download counter (44) reflects the moderation pipeline more than users:
+a package under moderation isn't listed in search and can't be installed without an explicit
+`--version`.
 
-Two consequences worth knowing before reading the numbers:
+That is now resolved and dispatching works normally. Two things learned from that first
+submission, both worth keeping:
 
-- `community.chocolatey.org/packages/codeshellmanager` still serves **v0.5.0**, and will
-  keep doing so however many tags get pushed here.
-- A package under moderation is not listed in search and cannot be installed without an
-  explicit `--version`, so its download counter reflects the moderation pipeline more than
-  it reflects users.
+- **A first submission to a new package id goes to human review, and can take months.** Only
+  the *first* one; subsequent versions from a maintainer with an approved package auto-verify.
+  Plan the first release of any new id accordingly.
+- **Don't back-fill skipped versions.** Only the newest matters to `choco install`; submitting
+  0.6.0 and 0.7.0 now would be pure churn. Go straight to the current tag.
 
-Check the package page for the "awaiting moderation" banner before dispatching. Once it
-clears, the backlog is submitted per tag.
+The moderator explicitly endorsed the WebView2 approach from #112 — probing all three
+EdgeUpdate registry keys and *warning* with a symptom and remedy rather than hard-failing or
+force-installing. They floated `<dependency id="webview2-runtime" />` as an alternative and
+then argued against it themselves, since it forces an install on machines that already have
+the runtime (all of Windows 11). Keep the warning; do not add the dependency unless
+blank-terminal reports actually show up.
 
 ### Download counts: GitHub's number already contains the other two
 

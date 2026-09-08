@@ -36,6 +36,10 @@
 
 * Windows 10 (1903+) or Windows 11
 * [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (pre-installed on Windows 11)
+
+## License
+
+CodeShellManager is open source under the [MIT License](https://github.com/umage-ai/CodeShellManager/blob/main/LICENSE).
 ]]></description>
     <releaseNotes>https://github.com/umage-ai/CodeShellManager/releases/tag/v__VERSION__</releaseNotes>
   </metadata>
