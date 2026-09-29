@@ -105,6 +105,10 @@ public partial class MainWindow : Window
     private bool _isShuttingDown = false;
     private bool _shutdownComplete = false;
 
+    // Guards RestartSessionsAsync so two restart loops can't interleave — see the comment
+    // there for why restarts have to stay strictly sequential.
+    private bool _restartInProgress = false;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -3359,6 +3363,18 @@ public partial class MainWindow : Window
         menu.Items.Add(removeFrom);
 
         menu.Items.Add(new System.Windows.Controls.Separator());
+
+        // Restart — close and reopen in place, keeping the session's Id, group, run commands
+        // and sidebar slot. The reason this exists: picking up a new build of the CLI (a
+        // `claude` update) without losing the session or its conversation.
+        var restartItem = new System.Windows.Controls.MenuItem
+        {
+            Header = isMulti ? $"Restart{countSuffix}…" : "Restart",
+            ToolTip = "Stop and relaunch the terminal; Claude sessions resume their conversation",
+        };
+        restartItem.Click += async (_, _) => await RestartSessionsAsync(targetIds);
+        menu.Items.Add(restartItem);
+
         var sleepItem = new System.Windows.Controls.MenuItem { Header = $"Sleep{countSuffix}" };
         sleepItem.Click += (_, _) =>
         {
@@ -4719,6 +4735,55 @@ public partial class MainWindow : Window
         AddDormantSidebarItem(session);
         RebuildSidebarOrder();
         _ = _vm.SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Restarts every session in <paramref name="sessionIds"/>, one after another. Sequential
+    /// by design: <see cref="RestartSessionAsync"/> waits for a Claude process to actually
+    /// exit before starting its replacement, and running those waits concurrently would put
+    /// several claude.exe instances back on the shared config file at once — the race the
+    /// wait exists to prevent. The cost is time, so a multi-target restart asks first.
+    /// </summary>
+    private async Task RestartSessionsAsync(IReadOnlyList<string> sessionIds)
+    {
+        // Overlapping restart loops would defeat the staggering above just as thoroughly as
+        // a parallel loop would, so a second invocation is dropped rather than queued.
+        if (_restartInProgress) return;
+
+        var targets = sessionIds
+            .Select(id => _vm.Sessions.FirstOrDefault(s => s.Id == id))
+            .Where(v => v != null)
+            .Select(v => v!.Id)
+            .ToList();
+        if (targets.Count == 0) return;
+
+        if (targets.Count > 1)
+        {
+            var r = MessageBox.Show(this,
+                $"Restart {targets.Count} sessions?" + Environment.NewLine + Environment.NewLine +
+                "Each running process is terminated and relaunched in turn; Claude sessions "
+                + "resume their conversation. They restart one at a time, so this can take a "
+                + "while.",
+                "Restart sessions", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                MessageBoxResult.Yes);
+            if (r != MessageBoxResult.Yes) return;
+        }
+
+        _restartInProgress = true;
+        try
+        {
+            foreach (var id in targets)
+            {
+                // Re-resolve per iteration: each restart replaces the SessionViewModel for
+                // that id, and an earlier one in this loop may have failed into dormant.
+                var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
+                if (vm != null) await RestartSessionAsync(vm);
+            }
+        }
+        finally
+        {
+            _restartInProgress = false;
+        }
     }
 
     /// <summary>
