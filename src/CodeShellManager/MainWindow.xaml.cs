@@ -4794,8 +4794,15 @@ public partial class MainWindow : Window
         IReadOnlyList<string> sessionIds, string? confirmHeadline = null)
     {
         // Overlapping restart loops would defeat the staggering above just as thoroughly as
-        // a parallel loop would, so a second invocation is dropped rather than queued.
-        if (_restartInProgress) return;
+        // a parallel loop would, so a second invocation is dropped rather than queued. The
+        // toast is the only feedback there would otherwise be: a bulk restart runs for
+        // minutes, and a click that does nothing at all just reads as a broken button.
+        if (_restartInProgress)
+        {
+            Services.ToastHelper.Show("Restart busy",
+                "Another restart is still running — try again when it finishes.");
+            return;
+        }
 
         var targets = sessionIds
             .Select(id => _vm.Sessions.FirstOrDefault(s => s.Id == id))
@@ -4807,13 +4814,16 @@ public partial class MainWindow : Window
         if (confirmHeadline != null || targets.Count > 1)
         {
             string headline = confirmHeadline ?? $"Restart {targets.Count} sessions?";
+            // Defaults to No, like "Close all…" — this terminates every running process and
+            // any in-flight run commands, and a stray Enter shouldn't start a minute-scale
+            // operation there's no way to stop.
             var r = MessageBox.Show(this,
                 headline + Environment.NewLine + Environment.NewLine +
-                "Each running process is terminated and relaunched in turn; Claude sessions "
-                + "resume their conversation. They restart one at a time, so this can take a "
-                + "while.",
+                "Each running process is terminated and relaunched in turn, and any running "
+                + "session commands are stopped. Claude sessions resume their conversation. "
+                + "They restart one at a time, so this can take a while.",
                 "Restart sessions", MessageBoxButton.YesNo, MessageBoxImage.Question,
-                MessageBoxResult.Yes);
+                MessageBoxResult.No);
             if (r != MessageBoxResult.Yes) return;
         }
 
@@ -4832,8 +4842,11 @@ public partial class MainWindow : Window
 
                 // Re-resolve per iteration: each restart replaces the SessionViewModel for
                 // that id, and an earlier one in this loop may have failed into dormant.
+                //
+                // Core, not RestartSessionAsync: this loop already holds _restartInProgress,
+                // and the guarded entry point would reject its own iterations.
                 var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
-                if (vm != null) await RestartSessionAsync(vm);
+                if (vm != null) await RestartSessionCoreAsync(vm);
             }
         }
         finally
@@ -4857,7 +4870,32 @@ public partial class MainWindow : Window
     /// </param>
     private async Task RestartSessionAsync(SessionViewModel vm, string? launchedCommand = null)
     {
+        // The single-session entry point, so it carries the guard. RestartSessionsAsync
+        // holds the same flag across its whole loop and calls the core directly, which is
+        // why the guard can't live in the core itself.
+        if (_restartInProgress)
+        {
+            Services.ToastHelper.Show("Restart busy",
+                "Another restart is still running — try again when it finishes.");
+            return;
+        }
+        _restartInProgress = true;
+        try { await RestartSessionCoreAsync(vm, launchedCommand); }
+        finally { _restartInProgress = false; }
+    }
+
+    /// <summary>
+    /// The restart itself, with no re-entrancy guard of its own — every caller must already
+    /// hold <see cref="_restartInProgress"/>.
+    /// </summary>
+    private async Task RestartSessionCoreAsync(SessionViewModel vm, string? launchedCommand = null)
+    {
         var session = vm.Session;
+        // Restored after the relaunch: the teardown below hands ActiveSession to whatever
+        // sits last in the list, and LaunchSessionAsync never claims it back. Without this,
+        // restarting the session you're looking at swaps the visible pane in Single layout
+        // and silently retargets Ctrl+W / F5 at an unrelated session.
+        bool wasActive = ReferenceEquals(_vm.ActiveSession, vm);
 
         vm.Runner.StopAll();
         if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
@@ -4914,6 +4952,22 @@ public partial class MainWindow : Window
             vm.Dispose();
         }
 
+        // Don't relaunch into a closing app. This has to sit AFTER the waits above, not
+        // just between queued restarts: the VM was removed from _vm.Sessions before them,
+        // so OnClosing's `var all = _vm.Sessions.ToList()` snapshot can't see a session
+        // that is mid-restart. Relaunching past that point starts a ConPTY child that
+        // nothing will ever dispose — and session PTYs (unlike run commands) are started
+        // with useJobObject: false, so no job object kills the tree either. The result is
+        // an orphaned claude.exe outliving the app.
+        //
+        // Returning here leaves the ShellSession in the SessionManager, so it is still in
+        // state.json and simply starts again on the next launch.
+        if (_isShuttingDown)
+        {
+            Log($"Restart of '{session.Name}' abandoned — app is shutting down.");
+            return;
+        }
+
         try
         {
             // restoring: true so a Claude session resumes its conversation instead of
@@ -4946,6 +5000,19 @@ public partial class MainWindow : Window
             AddDormantSidebarItem(session);
             RebuildSidebarOrder();
             _ = _vm.SaveStateAsync();
+            return;
+        }
+
+        // Give focus back to the session that had it. The relaunch produced a NEW
+        // SessionViewModel, so this re-resolves by id rather than reusing the old one.
+        if (wasActive)
+        {
+            var revived = _vm.Sessions.FirstOrDefault(s => s.Id == session.Id);
+            if (revived != null)
+            {
+                _vm.ActiveSession = revived;
+                UpdateSidebarActiveState();
+            }
         }
     }
 
