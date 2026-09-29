@@ -2337,6 +2337,16 @@ public partial class MainWindow : Window
         };
         bulkActions.Items.Add(wakeAllDormant);
 
+        // Restart every live session — the "I just updated the claude CLI" button.
+        // Dormant sessions are left alone; they pick the new binary up when woken.
+        var restartAllGlobal = new System.Windows.Controls.MenuItem { Header = "Restart all…" };
+        restartAllGlobal.Click += async (_, _) =>
+        {
+            var ids = _vm.Sessions.Select(v => v.Id).ToList();
+            await RestartSessionsAsync(ids, $"Restart all {ids.Count} live session(s)?");
+        };
+        bulkActions.Items.Add(restartAllGlobal);
+
         var sleepAllGlobal = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
         sleepAllGlobal.Click += (_, _) =>
         {
@@ -2998,6 +3008,16 @@ public partial class MainWindow : Window
         };
         menu.Items.Add(remoteControl);
 
+        var restartAll = new System.Windows.Controls.MenuItem { Header = "Restart all…" };
+        restartAll.Click += async (_, _) =>
+        {
+            var ids = _vm.Sessions.Where(v => v.Session.GroupId == groupId)
+                                  .Select(v => v.Id).ToList();
+            await RestartSessionsAsync(ids,
+                $"Restart {ids.Count} session(s) in group '{groupName}'?");
+        };
+        menu.Items.Add(restartAll);
+
         var sleepAll = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
         sleepAll.Click += (_, _) =>
         {
@@ -3038,6 +3058,7 @@ public partial class MainWindow : Window
             int liveCount = _vm.Sessions.Count(v => v.Session.GroupId == groupId);
             int dormantCount = _sessionManager.Sessions.Count(s => s.GroupId == groupId && s.IsDormant);
             remoteControl.IsEnabled = liveCount > 0;
+            restartAll.IsEnabled = liveCount > 0;
             sleepAll.IsEnabled = liveCount > 0;
             wakeAll.IsEnabled = dormantCount > 0;
             closeAll.IsEnabled = liveCount > 0;
@@ -4336,6 +4357,23 @@ public partial class MainWindow : Window
         };
         editBtn.Click += async (_, _) => await EditSessionAsync(vm);
 
+        // Restart — stop and relaunch this session's terminal in place. Routed through
+        // RestartSessionsAsync (rather than RestartSessionAsync directly) so it shares the
+        // re-entrancy guard with the menu paths; a single target skips the confirmation.
+        var restartBtn = new WpfButton
+        {
+            Content = "↻",
+            ToolTip = "Restart session (stop and relaunch the terminal)",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+        restartBtn.Click += async (_, _) => await RestartSessionsAsync(new[] { vm.Id });
+
         // Sleep (dormant) button — keeps the session in the sidebar but stops the PTY
         var sleepBtn = new WpfButton
         {
@@ -4375,6 +4413,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
+        DockPanel.SetDock(restartBtn, Dock.Right);
         DockPanel.SetDock(editBtn, Dock.Right);
         DockPanel.SetDock(chevronBtn, Dock.Right);
         DockPanel.SetDock(playBtn, Dock.Right);
@@ -4388,6 +4427,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
+        toolbarContent.Children.Add(restartBtn);
         toolbarContent.Children.Add(editBtn);
         toolbarContent.Children.Add(chevronBtn);
         toolbarContent.Children.Add(playBtn);
@@ -4744,7 +4784,14 @@ public partial class MainWindow : Window
     /// several claude.exe instances back on the shared config file at once — the race the
     /// wait exists to prevent. The cost is time, so a multi-target restart asks first.
     /// </summary>
-    private async Task RestartSessionsAsync(IReadOnlyList<string> sessionIds)
+    /// <param name="confirmHeadline">
+    /// First line of the confirmation prompt. When null, the prompt is shown only for 2+
+    /// targets with a generic headline — right for the context menu, where a single
+    /// "Restart" should just go. The bulk entry points ("Restart all") pass a scope-naming
+    /// headline instead and so always confirm, matching their "Close all…" siblings.
+    /// </param>
+    private async Task RestartSessionsAsync(
+        IReadOnlyList<string> sessionIds, string? confirmHeadline = null)
     {
         // Overlapping restart loops would defeat the staggering above just as thoroughly as
         // a parallel loop would, so a second invocation is dropped rather than queued.
@@ -4757,10 +4804,11 @@ public partial class MainWindow : Window
             .ToList();
         if (targets.Count == 0) return;
 
-        if (targets.Count > 1)
+        if (confirmHeadline != null || targets.Count > 1)
         {
+            string headline = confirmHeadline ?? $"Restart {targets.Count} sessions?";
             var r = MessageBox.Show(this,
-                $"Restart {targets.Count} sessions?" + Environment.NewLine + Environment.NewLine +
+                headline + Environment.NewLine + Environment.NewLine +
                 "Each running process is terminated and relaunched in turn; Claude sessions "
                 + "resume their conversation. They restart one at a time, so this can take a "
                 + "while.",

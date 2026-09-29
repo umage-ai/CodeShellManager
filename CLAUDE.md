@@ -303,22 +303,33 @@ The page-side `mousedown` handler also calls `fitAddon.fit()`, and the initial f
    - **Close** (`vm.CloseCommand`) → `MainViewModel.OnSessionCloseRequested` → `vm.Dispose()` + remove from `Sessions` + `SessionManager.RemoveSession()`. Session is gone from `state.json`.
    - **Sleep** (`SleepSession(vm)`) → `vm.Dispose()` + remove from `Sessions` but **keep** the `ShellSession` in `SessionManager` with `IsDormant = true`. A muted dormant sidebar entry replaces the active one.
    - **Wake** (`WakeSessionAsync(session)`) → re-runs `LaunchSessionAsync(session, restoring: true)` — same path as restore-on-startup.
-   - **Restart** (`RestartSessionAsync(vm)`) → sleep-style teardown *without* the dormant bookkeeping, then `LaunchSessionAsync(session, restoring: true, removeOnFailure: false)`. The `ShellSession` stays in `SessionManager` (so Id, group, run commands and sidebar slot survive) and never enters the recently-closed ring. Reachable from **"Restart" in the sidebar right-click menu** (see below) and from "Edit session…" — see below. Both non-default arguments matter: `restoring: true` makes a Claude session resume rather than start a fresh conversation (matching Wake — a restart tears down the same way, so it must recover the same way), and `removeOnFailure: false` stops a bad edit from *deleting* the session, since `LaunchSessionAsync`'s PTY-failure path calls `SessionManager.RemoveSession` — correct for a session that never started, destructive for a relaunch. If the relaunch fails either way, the session falls back to dormant so the row stays visible and fixable instead of leaving a launching placeholder that never resolves.
+   - **Restart** (`RestartSessionAsync(vm)`) → sleep-style teardown *without* the dormant bookkeeping, then `LaunchSessionAsync(session, restoring: true, removeOnFailure: false)`. The `ShellSession` stays in `SessionManager` (so Id, group, run commands and sidebar slot survive) and never enters the recently-closed ring. Reachable from the **↻ toolbar button and the "Restart" menu entries** (see "Restarting sessions" below) and from "Edit session…". Both non-default arguments matter: `restoring: true` makes a Claude session resume rather than start a fresh conversation (matching Wake — a restart tears down the same way, so it must recover the same way), and `removeOnFailure: false` stops a bad edit from *deleting* the session, since `LaunchSessionAsync`'s PTY-failure path calls `SessionManager.RemoveSession` — correct for a session that never started, destructive for a relaunch. If the relaunch fails either way, the session falls back to dormant so the row stays visible and fixable instead of leaving a launching placeholder that never resolves.
 
      A Claude restart also **waits for the old process to actually exit** (`DisposeAndWaitForExitAsync` + a config quiesce) before relaunching. Without that it recreates the concurrent-config-writer race the launch stagger and the shutdown loop both exist to prevent, and `--resume` can read a session index the outgoing process hasn't finalised. Non-Claude sessions skip the wait — they don't touch that file.
 
-### Restarting sessions from the sidebar
-
-**"Restart"** in the per-session right-click menu (`BuildSessionContextMenu`, above Sleep / Close) closes and reopens a session in place. The use case is picking up a new build of the CLI — `claude` updated on disk — without losing the session, its group, its run commands or its conversation.
-
-Multi-select works the same way as Sleep / Close: right-clicking a selection shows **"Restart (N)…"** and `MainViewModel.ResolveActionTargets` resolves the targets. The menu is rebuilt on `ContextMenuOpening`, so the count always reflects the live selection.
-
-`RestartSessionsAsync(sessionIds)` is the multi-target wrapper, and it runs **strictly sequentially** — `RestartSessionAsync` waits for each Claude process to exit before starting its replacement, and awaiting those in parallel would put several `claude.exe` instances back on the shared config file at once, which is the race the wait exists to prevent. A `_restartInProgress` flag drops (rather than queues) an overlapping invocation for the same reason. Because sequential restarts of several Claude sessions take real time, N > 1 asks for confirmation first; a single restart doesn't. Each target is re-resolved per iteration, since every restart replaces the `SessionViewModel` for that id and an earlier one in the loop may have failed into dormant.
+6. On app close: `_vm.SaveStateAsync()` flushes `_sessionManager.Sessions` (live + dormant) to `state.json` (unless `--clean`).
 
 **Waiting for a PTY to exit.** Check `PseudoTerminal.HasExited`, never `IsRunning`. `IsRunning` is `_hProcess != IntPtr.Zero` and the handle is only released in `Dispose`, so it stays true for a child that exited on its own — subscribing to `Exited` for one of those waits out the full timeout for an event that already fired. `HasExited` is latched immediately before `Exited` is raised. This is not academic: combined with `ClaudeShutdownBudgetMs`, two stale panes consumed the entire shutdown budget and every remaining *live* Claude session was then force-disposed with no exit wait — the exact opposite of what the budget was for.
 
 **`ClaudeShutdownBudgetMs` is sized from measurement (30s).** The original 15s came from the only data available at the time — idle sessions exiting in 460–770ms. Real shutdowns of *busy* sessions measure **2.3–4.7s each**, so nine of them need roughly 30s, and 15s meant force-disposing more than half the fleet on an ordinary close. Waiting is the right trade: a clean exit lets Claude finish writing its config, and `ShutdownOverlay` is already on screen telling the user why. The budget exists to bound a genuinely wedged session, not to hurry a healthy one. If you shrink it, re-measure `exit=` in `crash.log` first — the summary line alone can't distinguish "slow exits" from "waits that aren't returning".
-6. On app close: `_vm.SaveStateAsync()` flushes `_sessionManager.Sessions` (live + dormant) to `state.json` (unless `--clean`).
+
+### Restarting sessions
+
+Restart closes and reopens a session in place. The use case is picking up a new build of the CLI — `claude` updated on disk — without losing the session, its group, its run commands or its conversation. Five entry points, all routed through `RestartSessionsAsync`:
+
+| Entry point | Scope | Confirms? |
+|---|---|---|
+| **↻** on the terminal toolbar (between ⚙ and 💤) | the one session | no |
+| **"Restart"** in the per-session right-click menu (above Sleep / Close) | the one session | no |
+| **"Restart (N)…"** — same menu, with 2+ sidebar rows selected | the selection | yes |
+| **"Restart all…"** in the group right-click menu, next to Sleep all / Close all | live sessions in that group | yes |
+| **"Restart all…"** under Bulk actions in the sidebar quick-menu | every live session | yes |
+
+Multi-select resolves through `MainViewModel.ResolveActionTargets`, exactly like Sleep / Close. The per-session menu is rebuilt on `ContextMenuOpening`, so the count always reflects the live selection.
+
+Confirmation is driven by the `confirmHeadline` parameter rather than a count test: **null** (the toolbar button and the per-session menu) prompts only for 2+ targets with a generic headline, so a single "Restart" just goes; the bulk entry points pass a scope-naming headline and therefore always prompt, matching their "Close all…" siblings. Dormant sessions are filtered out everywhere — they want Wake, and they pick up a new binary when woken anyway.
+
+`RestartSessionsAsync` runs its targets **strictly sequentially** — `RestartSessionAsync` waits for each Claude process to exit before starting its replacement, and awaiting those in parallel would put several `claude.exe` instances back on the shared config file at once, which is the race the wait exists to prevent. A `_restartInProgress` flag drops (rather than queues) an overlapping invocation for the same reason. That sequencing is also why the bulk entry points confirm: restarting a fleet of Claude sessions is a minute-scale operation, not an instant one. Each target is re-resolved per iteration, since every restart replaces the `SessionViewModel` for that id and an earlier one in the loop may have failed into dormant.
 
 ## Editing a Session's Configuration
 
