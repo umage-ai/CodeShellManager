@@ -4822,6 +4822,14 @@ public partial class MainWindow : Window
         {
             foreach (var id in targets)
             {
+                // Abandon the rest of the queue once the window is closing. OnClosing
+                // snapshots _vm.Sessions and disposes exactly that set, so a relaunch that
+                // lands after the snapshot spawns a ConPTY child nothing will ever dispose —
+                // an orphaned claude.exe outliving the app. A bulk restart is minute-scale
+                // and full of await points, which makes closing the window part-way through
+                // it an ordinary thing to do rather than a corner case.
+                if (_isShuttingDown) break;
+
                 // Re-resolve per iteration: each restart replaces the SessionViewModel for
                 // that id, and an earlier one in this loop may have failed into dormant.
                 var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
