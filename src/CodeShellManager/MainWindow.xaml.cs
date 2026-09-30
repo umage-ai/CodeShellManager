@@ -109,6 +109,16 @@ public partial class MainWindow : Window
     // there for why restarts have to stay strictly sequential.
     private bool _restartInProgress = false;
 
+    // Set by the ⏹ on the restart pill. Read at the top of each loop iteration, so the
+    // session currently mid-restart always finishes — abandoning one after its teardown
+    // would leave it with no terminal, which is the dormant failure path, not a stop.
+    private bool _restartCancelRequested = false;
+
+    // Last values handed to SetRestartProgress, so the stop button can repaint the pill
+    // without the loop having to hand them to it again.
+    private int _restartDone = 0;
+    private int _restartTotal = 0;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -431,6 +441,76 @@ public partial class MainWindow : Window
         RestoreRail.Visibility = Visibility.Visible;
         RestorePillText.Text = $"{done} / {total} restoring";
         RestorePill.Visibility = Visibility.Visible;
+    }
+
+    // Frozen so the pill can repaint on every step without allocating. Peach while the
+    // queue runs, yellow once a stop has been asked for, muted for the disabled ⏹.
+    private static SolidColorBrush FrozenBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();   // frozen brushes skip change-tracking and are cheaper to render
+        return brush;
+    }
+
+    private static readonly SolidColorBrush RestartPeach = FrozenBrush(0xfa, 0xb3, 0x87);
+    private static readonly SolidColorBrush RestartYellow = FrozenBrush(0xf9, 0xe2, 0xaf);
+    private static readonly SolidColorBrush RestartMuted = FrozenBrush(0x6c, 0x70, 0x86);
+
+    /// <summary>
+    /// Drives the bulk-restart rail + toolbar pill, the mirror of
+    /// <see cref="SetRestoreProgress"/>.
+    ///
+    /// Hidden for a single target: the toolbar ↻ and the one-session menu entry restart
+    /// in seconds, and a rail that appears and vanishes is noise. The pill exists for the
+    /// "Restart all" case, which is minute-scale.
+    /// </summary>
+    private void SetRestartProgress(int done, int total, bool finished = false)
+    {
+        _restartDone = done;
+        _restartTotal = total;
+
+        if (total <= 1 || finished)
+        {
+            RestartRail.Visibility = Visibility.Collapsed;
+            RestartPill.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        RestartRail.Maximum = total;
+        RestartRail.Value = done;
+        RestartRail.Visibility = Visibility.Visible;
+
+        if (_restartCancelRequested)
+        {
+            // The queue is already stopping, so the button has nothing left to do. Saying
+            // so beats leaving a live-looking control that silently ignores clicks.
+            RestartPillText.Text = $"{done} / {total} · stopping after this one";
+            RestartPillText.Foreground = RestartYellow;
+            RestartRail.Foreground = RestartYellow;
+            RestartStopBtn.Foreground = RestartMuted;
+            RestartStopBtn.IsEnabled = false;
+        }
+        else
+        {
+            RestartPillText.Text = $"{done} / {total} restarting";
+            RestartPillText.Foreground = RestartPeach;
+            RestartRail.Foreground = RestartPeach;
+            RestartStopBtn.Foreground = RestartPeach;
+            RestartStopBtn.IsEnabled = true;
+        }
+
+        RestartPill.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// ⏹ on the restart pill — abandon the rest of the queue. The session currently
+    /// restarting is left to finish; see <see cref="_restartCancelRequested"/>.
+    /// </summary>
+    private void RestartStop_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_restartInProgress) return;
+        _restartCancelRequested = true;
+        SetRestartProgress(_restartDone, _restartTotal);
     }
 
     // ── Shutdown board ──────────────────────────────────────────────────────
@@ -4823,24 +4903,43 @@ public partial class MainWindow : Window
         if (confirmHeadline != null || targets.Count > 1)
         {
             string headline = confirmHeadline ?? $"Restart {targets.Count} sessions?";
+            // Claude sessions are what make the queue slow — they wait for the outgoing
+            // process to exit — so the estimate is driven by how many of the targets are
+            // one, not by the raw count.
+            int claudeCount = targets.Count(id =>
+                _vm.Sessions.FirstOrDefault(s => s.Id == id) is { } v
+                && ClaudeSessionService.IsClaudeCommand(v.Session.Command));
+
             // Defaults to No, like "Close all…" — this terminates every running process and
             // any in-flight run commands, and a stray Enter shouldn't start a minute-scale
-            // operation there's no way to stop.
+            // operation.
             var r = MessageBox.Show(this,
-                headline + Environment.NewLine + Environment.NewLine +
-                "Each running process is terminated and relaunched in turn, and any running "
-                + "session commands are stopped. Claude sessions resume their conversation. "
-                + "They restart one at a time, so this can take a while.",
+                Services.BulkRestartEstimate.BuildConfirmText(headline, targets.Count, claudeCount),
                 "Restart sessions", MessageBoxButton.YesNo, MessageBoxImage.Question,
                 MessageBoxResult.No);
             if (r != MessageBoxResult.Yes) return;
         }
 
         _restartInProgress = true;
+        _restartCancelRequested = false;
+        int done = 0;
+        SetRestartProgress(done, targets.Count);
         try
         {
             foreach (var id in targets)
             {
+                // The ⏹ on the toolbar pill. Checked at the TOP of the iteration, so the
+                // session already mid-restart is never abandoned: its VM is gone from
+                // _vm.Sessions and its PTY is down by then, and returning early there
+                // would strand it as dormant rather than stop anything.
+                if (_restartCancelRequested)
+                {
+                    Services.ToastHelper.Show("Restart stopped",
+                        $"Finished {done} of {targets.Count}. The remaining "
+                        + $"{targets.Count - done} session(s) were left running.");
+                    break;
+                }
+
                 // Abandon the rest of the queue once the window is closing. OnClosing
                 // snapshots _vm.Sessions and disposes exactly that set, so a relaunch that
                 // lands after the snapshot spawns a ConPTY child nothing will ever dispose —
@@ -4856,11 +4955,18 @@ public partial class MainWindow : Window
                 // and the guarded entry point would reject its own iterations.
                 var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
                 if (vm != null) await RestartSessionCoreAsync(vm);
+
+                // Advanced even when the session had vanished, exactly as the restore rail
+                // advances past a session that failed to restore: a counter that stalls
+                // short of its total reads as a hang.
+                SetRestartProgress(++done, targets.Count);
             }
         }
         finally
         {
             _restartInProgress = false;
+            _restartCancelRequested = false;
+            SetRestartProgress(done, targets.Count, finished: true);
         }
     }
 
