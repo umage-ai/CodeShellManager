@@ -86,10 +86,49 @@ public class BulkRestartEstimateTests
     {
         // The stop affordance is the answer to "I clicked Yes on 55 by mistake". If the
         // dialog doesn't mention it, the user has no reason to look for the toolbar pill.
+        //
+        // Asserting on "stop the queue", not on "stop": the body always ends "...any
+        // running session commands are stopped", so the looser substring was satisfied by
+        // text that says nothing about the affordance, and deleting the sentence entirely
+        // left this test green.
         string text = BulkRestartEstimate.BuildConfirmText(
             "Restart all 55 live sessions?", totalTargets: 55, claudeTargets: 52);
 
-        Assert.Contains("stop", text, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("stop the queue", text);
+    }
+
+    [Fact]
+    public void ConfirmText_SingleTarget_DoesNotPromiseAStopControl()
+    {
+        // The bulk entry points confirm whatever the count, but SetRestartProgress hides
+        // the rail and pill for a single target — so at exactly one session the dialog was
+        // pointing the user at a control that is never rendered.
+        string text = BulkRestartEstimate.BuildConfirmText(
+            "Restart all 1 live session(s)?", totalTargets: 1, claudeTargets: 1);
+
+        Assert.DoesNotContain("stop the queue", text);
+        Assert.DoesNotContain("toolbar", text);
+    }
+
+    [Fact]
+    public void MoreClaudeTargetsThanTargets_IsClampedNotCompounded()
+    {
+        // Public surface: nothing in MainWindow can pass this today (claudeCount is a
+        // subset count of targets), but an uncapped claude count invented duration out of
+        // nothing — DescribeDuration(3, 10) quoted 40-80 seconds for three sessions.
+        string clamped = BulkRestartEstimate.DescribeDuration(totalTargets: 3, claudeTargets: 10);
+        string honest = BulkRestartEstimate.DescribeDuration(totalTargets: 3, claudeTargets: 3);
+
+        Assert.Equal(honest, clamped);
+    }
+
+    [Fact]
+    public void NegativeTargets_DoNotThrowOrInventTime()
+    {
+        string text = BulkRestartEstimate.DescribeDuration(totalTargets: -5, claudeTargets: -2);
+
+        Assert.Contains("0", text);
+        Assert.Contains("seconds", text);
     }
 
     [Fact]

@@ -46,8 +46,13 @@ public static class BulkRestartEstimate
     /// </summary>
     public static string DescribeDuration(int totalTargets, int claudeTargets)
     {
-        int claude = Math.Max(0, claudeTargets);
-        int others = Math.Max(0, totalTargets - claude);
+        // Clamped at both ends. `others` was already floored at 0, but an uncapped claude
+        // count invented duration out of nothing — (3 targets, 10 Claude) quoted 40–80
+        // seconds for three sessions. Not reachable from MainWindow, where claudeCount is
+        // a subset count of the same list, but this is public and cheap to make honest.
+        int total = Math.Max(0, totalTargets);
+        int claude = Math.Min(total, Math.Max(0, claudeTargets));
+        int others = total - claude;
 
         int lowSeconds = ClaudeLowSeconds * claude + OtherLowSeconds * others;
         int highSeconds = ClaudeHighSeconds * claude + OtherHighSeconds * others;
@@ -90,7 +95,13 @@ public static class BulkRestartEstimate
                 + "session commands are stopped.");
         if (claude > 0)
             sb.Append(" Claude sessions resume their conversation.");
-        sb.Append(" You can stop the queue from the toolbar once it starts.");
+
+        // Only when there is actually a queue to stop. The bulk entry points confirm
+        // whatever the count, but SetRestartProgress hides the rail and pill at
+        // totalTargets <= 1 — so at exactly one session this sentence was pointing the
+        // user at a control that never appears.
+        if (totalTargets > 1)
+            sb.Append(" You can stop the queue from the toolbar once it starts.");
 
         return sb.ToString();
     }

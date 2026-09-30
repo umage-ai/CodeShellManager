@@ -114,6 +114,12 @@ public partial class MainWindow : Window
     // would leave it with no terminal, which is the dormant failure path, not a stop.
     private bool _restartCancelRequested = false;
 
+    // True while OnLoaded's restore loop is launching sessions. A bulk restart refuses to
+    // start during it: both loops spawn claude.exe and neither one's stagger can see the
+    // other's launches, which is the concurrent-config-writer race the stagger exists to
+    // prevent. The quick menu is clickable throughout a restore, so this is reachable.
+    private bool _restoreInProgress = false;
+
     // Last values handed to SetRestartProgress, so the stop button can repaint the pill
     // without the loop having to hand them to it again.
     private int _restartDone = 0;
@@ -339,6 +345,14 @@ public partial class MainWindow : Window
             // the total is visible in crash.log (issue #82).
             var restoreClock = System.Diagnostics.Stopwatch.StartNew();
 
+            // Both this loop and RestartSessionsAsync spawn claude.exe, and neither one's
+            // stagger can see the other's launches — so a "Restart all…" started while this
+            // is still running recreates the unlocked read-modify-write on ~/.claude.json
+            // that the stagger exists to prevent. The quick menu stays clickable throughout
+            // a restore (this loop awaits per session), so that is an ordinary click, not a
+            // corner case. Restart refuses while this is set; see RestartSessionsAsync.
+            _restoreInProgress = true;
+
             // Determinate restore progress. A 25-session restore runs ~131s with
             // per-session cost swinging 12x, so there is no rate to extrapolate from and
             // an indeterminate spinner reads the same at session 2 as at session 22.
@@ -402,6 +416,11 @@ public partial class MainWindow : Window
                 lastWasClaude = isClaude;
             }
             SetRestoreProgress(restoreTotal, restoreTotal, finished: true);
+            // Cleared here rather than in a finally: the only awaited call in the loop
+            // above is already inside its own try/catch, so nothing can escape between
+            // the two assignments. OnLoaded is async void — anything that did escape
+            // would take the app down, which makes a stranded flag moot.
+            _restoreInProgress = false;
             if (webView2AccessDenied.Count > 0)
             {
                 MessageBox.Show(
@@ -508,7 +527,12 @@ public partial class MainWindow : Window
     /// </summary>
     private void RestartStop_Click(object sender, RoutedEventArgs e)
     {
-        if (!_restartInProgress) return;
+        // _restartTotal > 1, not just _restartInProgress: that flag is held by the
+        // single-session RestartSessionAsync too, and _restartDone/_restartTotal keep the
+        // PREVIOUS bulk run's values after the finally clears it. A Collapsed pill neither
+        // hit-tests nor takes focus, so this is not reachable today — but that makes the
+        // handler's correctness rest on a visibility property rather than on state.
+        if (!_restartInProgress || _restartTotal <= 1) return;
         _restartCancelRequested = true;
         SetRestartProgress(_restartDone, _restartTotal);
     }
@@ -4893,6 +4917,17 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Same reason, different loop. The startup restore also spawns claude.exe and its
+        // stagger cannot see launches this loop makes, so running both at once is the
+        // concurrent-config-writer race on ~/.claude.json that the stagger exists to
+        // prevent. Dropped rather than queued, like the guard above.
+        if (_restoreInProgress)
+        {
+            Services.ToastHelper.Show("Restart unavailable",
+                "Sessions are still being restored — try again once that finishes.");
+            return;
+        }
+
         var targets = sessionIds
             .Select(id => _vm.Sessions.FirstOrDefault(s => s.Id == id))
             .Where(v => v != null)
@@ -4920,10 +4955,15 @@ public partial class MainWindow : Window
             if (r != MessageBoxResult.Yes) return;
         }
 
-        _restartInProgress = true;
         _restartCancelRequested = false;
         int done = 0;
+        // Counted separately from `done`, which advances past a target that vanished mid-run.
+        // That is right for the rail and wrong for the toast: a user who closes three
+        // not-yet-reached sessions and then stops would be told those three were "finished".
+        int restarted = 0;
         SetRestartProgress(done, targets.Count);
+        // Last statement before the try, so nothing above it can strand the flag set.
+        _restartInProgress = true;
         try
         {
             foreach (var id in targets)
@@ -4934,9 +4974,11 @@ public partial class MainWindow : Window
                 // would strand it as dormant rather than stop anything.
                 if (_restartCancelRequested)
                 {
+                    // "Not restarted" rather than "left running": a target an earlier
+                    // failed restart dropped to dormant is neither restarted nor running.
                     Services.ToastHelper.Show("Restart stopped",
-                        $"Finished {done} of {targets.Count}. The remaining "
-                        + $"{targets.Count - done} session(s) were left running.");
+                        $"Restarted {restarted} of {targets.Count}. The remaining "
+                        + $"{targets.Count - done} session(s) were not restarted.");
                     break;
                 }
 
@@ -4954,7 +4996,11 @@ public partial class MainWindow : Window
                 // Core, not RestartSessionAsync: this loop already holds _restartInProgress,
                 // and the guarded entry point would reject its own iterations.
                 var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
-                if (vm != null) await RestartSessionCoreAsync(vm);
+                if (vm != null)
+                {
+                    await RestartSessionCoreAsync(vm);
+                    restarted++;
+                }
 
                 // Advanced even when the session had vanished, exactly as the restore rail
                 // advances past a session that failed to restore: a counter that stalls
@@ -4992,6 +5038,14 @@ public partial class MainWindow : Window
         {
             Services.ToastHelper.Show("Restart busy",
                 "Another restart is still running — try again when it finishes.");
+            return;
+        }
+        // One session is enough to lose the race: this relaunch and a restoring session
+        // can both be starting claude.exe against ~/.claude.json at the same moment.
+        if (_restoreInProgress)
+        {
+            Services.ToastHelper.Show("Restart unavailable",
+                "Sessions are still being restored — try again once that finishes.");
             return;
         }
         _restartInProgress = true;
@@ -5099,7 +5153,12 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log($"Restart FAILED for '{session.Name}': {ex}");
-            MessageBox.Show($"Failed to restart '{session.Name}': {ex.Message}",
+            // Owned. The owner-less overload passes IntPtr.Zero and the dialog can end up
+            // BEHIND the main window — and the bulk loop is blocked in this modal call, so
+            // the rail freezes at k/N with the pill still saying "restarting" and nothing
+            // visible to explain it. That is precisely the "reads as a hang" the rail was
+            // added to prevent.
+            MessageBox.Show(this, $"Failed to restart '{session.Name}': {ex.Message}",
                 "Restart Error", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
