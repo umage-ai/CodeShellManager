@@ -3754,8 +3754,38 @@ public partial class MainWindow : Window
             return s.GroupId == activeGroupId;
         }
 
+        // Dormant rows matching a predicate, in SessionManager order — so sleeping rows
+        // follow the same drag-reorder as live ones instead of _dormantSidebarItems'
+        // insertion order. They have no VM, so they render as plain rows.
+        List<Border> DormantWhere(Func<ShellSession, bool> predicate)
+        {
+            var list = new List<Border>();
+            foreach (var s in _sessionManager.Sessions)
+            {
+                if (!s.IsDormant || !predicate(s)) continue;
+                if (_dormantSidebarItems.TryGetValue(s.Id, out var item)) list.Add(item);
+            }
+            return list;
+        }
+
+        void AppendDormant(List<Border> rows)
+        {
+            foreach (var row in rows) SidebarSessionList.Children.Add(row);
+        }
+
         if (inlineMode)
         {
+            // A GroupId naming a group that no longer exists buckets as ungrouped, so the row
+            // still renders somewhere. RemoveGroup clears GroupId, so this cannot arise in-app
+            // — but ImportExportService deserializes an arbitrary AppState and nothing
+            // reconciles orphan ids, and a dormant row that renders nowhere still suppresses
+            // EmptyState via _dormantSidebarItems.Count, which is an unreachable session.
+            // (Live sessions have the same gap below; fixing that means normalizing on load.)
+            var knownGroupIds = new HashSet<string>(
+                _sessionManager.Groups.Select(g => g.Id), StringComparer.Ordinal);
+            bool IsUngrouped(ShellSession s) =>
+                string.IsNullOrEmpty(s.GroupId) || !knownGroupIds.Contains(s.GroupId);
+
             // Ungrouped section first (only shown when it has members or there are groups).
             var ungrouped = _sessionManager.Sessions
                 .Where(s => string.IsNullOrEmpty(s.GroupId) && !s.IsDormant)
@@ -3763,11 +3793,17 @@ public partial class MainWindow : Window
                 .Where(r => r.HasValue)
                 .Select(r => r!.Value)
                 .ToList();
-            if (ungrouped.Count > 0)
+            var ungroupedDormant = DormantWhere(IsUngrouped);
+            if (ungrouped.Count + ungroupedDormant.Count > 0)
             {
                 bool ungroupedExpanded = _vm.Settings.UngroupedSectionExpanded;
-                SidebarSessionList.Children.Add(BuildInlineGroupHeader(null, ungrouped.Count, ungroupedExpanded));
-                if (ungroupedExpanded) AppendSessionsWithClusters(ungrouped);
+                SidebarSessionList.Children.Add(BuildInlineGroupHeader(
+                    null, ungrouped.Count + ungroupedDormant.Count, ungroupedExpanded));
+                if (ungroupedExpanded)
+                {
+                    AppendSessionsWithClusters(ungrouped);
+                    AppendDormant(ungroupedDormant);
+                }
             }
             // Each user group, in SortOrder.
             foreach (var g in _sessionManager.Groups.OrderBy(g => g.SortOrder))
@@ -3778,8 +3814,14 @@ public partial class MainWindow : Window
                     .Where(r => r.HasValue)
                     .Select(r => r!.Value)
                     .ToList();
-                SidebarSessionList.Children.Add(BuildInlineGroupHeader(g, members.Count, g.IsExpanded));
-                if (g.IsExpanded) AppendSessionsWithClusters(members);
+                var dormantMembers = DormantWhere(s => s.GroupId == g.Id);
+                SidebarSessionList.Children.Add(BuildInlineGroupHeader(
+                    g, members.Count + dormantMembers.Count, g.IsExpanded));
+                if (g.IsExpanded)
+                {
+                    AppendSessionsWithClusters(members);
+                    AppendDormant(dormantMembers);
+                }
             }
         }
         else
@@ -3795,13 +3837,15 @@ public partial class MainWindow : Window
                 if (r.HasValue) visible.Add(r.Value);
             }
             AppendSessionsWithClusters(visible);
+
+            // Dormant entries still trail the live ones, but they obey the same group
+            // filter: a filtered tab that went on listing every sleeping session read as a
+            // leak, not as "kept reachable". "All" — and GroupDisplayMode.None, which has
+            // no strip to filter by — still shows every one of them.
+            AppendDormant(DormantWhere(s =>
+                mode != Models.GroupDisplayMode.FilterStrip || MatchesActiveGroupForSession(s)));
         }
 
-        // Dormant entries always render at the bottom of the sidebar regardless of filter
-        // or display mode so they remain reachable (and a user filtering by category isn't
-        // surprised by missing entries).
-        foreach (var item in _dormantSidebarItems.Values)
-            SidebarSessionList.Children.Add(item);
         UpdateSidebarActiveState();
         RefreshTerminalLayout();
     }
@@ -5065,7 +5109,9 @@ public partial class MainWindow : Window
 
         AddDormantSidebarItem(session);
 
-        RefreshTerminalLayout();
+        // RebuildSidebarOrder, not a bare RefreshTerminalLayout: it is what places the new
+        // dormant row (and it ends in RefreshTerminalLayout itself).
+        RebuildSidebarOrder();
         UpdateAlertBadge();
         EmptyState.Visibility = _vm.Sessions.Count == 0 && _dormantSidebarItems.Count == 0
             ? Visibility.Visible : Visibility.Collapsed;
@@ -5096,17 +5142,23 @@ public partial class MainWindow : Window
             // Restore the dormant entry so the user doesn't lose access to the session
             session.IsDormant = true;
             AddDormantSidebarItem(session);
+            RebuildSidebarOrder();
             MessageBox.Show($"Failed to wake '{session.Name}': {ex.Message}",
                 "Wake Error", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         _ = _vm.SaveStateAsync();
     }
 
+    /// <summary>
+    /// Builds and registers the muted sidebar row for a dormant session. The row is NOT
+    /// added to the visual tree here: where it belongs — which group section, or whether it
+    /// shows at all under the active filter — is <see cref="RebuildSidebarOrder"/>'s call.
+    /// Every caller must run that once it has finished staging rows.
+    /// </summary>
     private void AddDormantSidebarItem(ShellSession session)
     {
         var item = BuildDormantSidebarItem(session);
         _dormantSidebarItems[session.Id] = item;
-        SidebarSessionList.Children.Add(item);
         EmptyState.Visibility = Visibility.Collapsed;
     }
 
@@ -5296,9 +5348,12 @@ public partial class MainWindow : Window
                 "Delete session", MessageBoxButton.YesNo, MessageBoxImage.Question,
                 MessageBoxResult.No);
             if (result != MessageBoxResult.Yes) return;
-            SidebarSessionList.Children.Remove(container);
             _dormantSidebarItems.Remove(session.Id);
             _sessionManager.RemoveSession(session.Id);
+            // Rebuild rather than removing the Border in place: inline group headers count
+            // dormant members, so an in-place removal leaves a stale badge over the section
+            // — or an empty header, when this was its last occupant.
+            RebuildSidebarOrder();
             if (_vm.Sessions.Count == 0 && _dormantSidebarItems.Count == 0)
                 EmptyState.Visibility = Visibility.Visible;
             _ = _vm.SaveStateAsync();
