@@ -593,13 +593,14 @@ Sessions can be put to sleep instead of closed — the PTY is torn down but the 
 
 **UI:**
 - 💤 button appears in both the sidebar action panel (next to ✕) and the terminal toolbar.
-- Dormant entries render at the bottom of the sidebar with a muted (55% opacity) appearance. Clicking anywhere on a dormant entry wakes it; the small ✕ on a dormant entry permanently deletes (with confirmation).
+- Dormant entries render with a muted (55% opacity) appearance, trailing the live rows. Clicking anywhere on a dormant entry wakes it; the small ✕ on a dormant entry permanently deletes (with confirmation).
+- **Dormant rows obey the group filter too.** In `FilterStrip` mode a group tab lists only its own sleeping sessions ("All" and `GroupDisplayMode.None` list every one); in `InlineHeaders` mode each sleeping row sits at the end of its own group section and counts toward that header's badge, so it collapses with the group. They used to be appended unconditionally at the very bottom — the comment there called it "kept reachable", but on a filtered tab it read as a leak, and a sleeping session already stays reachable one click away on "All".
 
 **Implementation (`MainWindow.xaml.cs`):**
 - `SleepSession(vm)` — sets `session.IsDormant = true`, removes from `_vm.Sessions` directly (bypassing `CloseCommand` so the `ShellSession` is **not** removed from `SessionManager`), disposes the VM, and calls `AddDormantSidebarItem(session)`.
 - `WakeSessionAsync(session)` — clears `IsDormant`, removes the dormant sidebar entry, then `await LaunchSessionAsync(session, restoring: true)`. On launch failure it restores the dormant entry.
 - `BuildDormantSidebarItem(ShellSession)` — builds a static (no-VM) sidebar Border with muted accent stripe + 💤 icon. Click handler resolves to `WakeSessionAsync`.
-- Dormant entries are tracked in `_dormantSidebarItems: Dictionary<string, Border>` so `RebuildSidebarOrder` (called after drag-reorder) can re-append them at the bottom.
+- Dormant entries are tracked in `_dormantSidebarItems: Dictionary<string, Border>`. `AddDormantSidebarItem` only *registers* the row — it deliberately does **not** add it to the visual tree, because its placement depends on the display mode and the active filter. `RebuildSidebarOrder` is the single placer, and it walks `_sessionManager.Sessions` (not the dictionary) so sleeping rows follow drag-reorder like live ones. Every caller that stages a dormant row must run `RebuildSidebarOrder` afterwards — `SleepSession` and the wake-failure path do so in place of their old bare `RefreshTerminalLayout`.
 - `OnLoaded` partitions saved sessions: dormant ones go through `AddDormantSidebarItem`; live ones through `LaunchSessionAsync`.
 - The empty-state placeholder hides whenever `_vm.Sessions.Count > 0` **or** `_dormantSidebarItems.Count > 0`.
 
