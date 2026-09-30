@@ -1414,6 +1414,14 @@ public partial class MainWindow : Window
         bridge.ApplyFontSettings(_vm.Settings);
         bridge.ApplyProfileOverrides(session);
 
+        // Both calls above can change the font, and xterm derives its column count from the
+        // measured advance width — so the ConPTY must be created from a size measured with
+        // them already applied, not merely from the first size the page happened to report.
+        // WaitForInitialSizeAsync gates on the token those two calls stamp, so this is a
+        // happens-after relationship and not a sleep; it returns immediately when the page
+        // has already acknowledged. Bounded, so a page that never reports still launches.
+        await bridge.WaitForInitialSizeAsync();
+
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
         vm.Pty = pty;

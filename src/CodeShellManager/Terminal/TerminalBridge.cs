@@ -22,7 +22,24 @@ public sealed class TerminalBridge : IDisposable
     private bool _ready;
     // Last terminal size reported by xterm.js — applied immediately on PTY attach
     // so the PTY starts at the right dimensions even if resize fired before AttachPty.
-    private (int cols, int rows) _lastSize = (80, 24);
+    //
+    // The initializer is a placeholder for "the page hasn't measured itself yet", and it
+    // deliberately matches PseudoTerminal.Start's own cols/rows defaults. It used to be
+    // (80, 24), which meant the one path WaitForInitialSizeAsync cannot rescue — a
+    // navigation failure, a wedged renderer — created the ConPTY at the narrowest
+    // plausible width, i.e. straight back into the symptom. A full-pane guess degrades
+    // far better than an 80-column one.
+    private (int cols, int rows) _lastSize = (220, 50);
+
+    // ── Size handshake ────────────────────────────────────────────────────────────────
+    // Each setOptions message carries an incrementing token, which the page echoes on
+    // every size report. That is what lets WaitForInitialSizeAsync distinguish a size
+    // measured WITH the font we asked for from one measured before it.
+    private readonly object _sizeLock = new();
+    private int _optionsToken;          // last token stamped on a setOptions message
+    private int _reportedToken = -1;    // highest token seen on a size report
+    private int _sizeWaiterToken;       // token the pending waiter needs to see
+    private TaskCompletionSource<bool>? _sizeWaiter;
 
     // Boot overlay — set by MainWindow before InitializeAsync; posted as setBootState after
     // navigation completes, and hidden via bootDone on the first PTY byte (see OnPtyData).
@@ -355,6 +372,72 @@ public sealed class TerminalBridge : IDisposable
     /// <summary>Last terminal size reported by xterm.js. Use this to start the PTY at the right size.</summary>
     public (int cols, int rows) TerminalSize => _lastSize;
 
+    /// <summary>
+    /// Records the highest options token the page has acknowledged and releases a pending
+    /// <see cref="WaitForInitialSizeAsync"/> once it is new enough. Returns whether this
+    /// call is what released it, for the trace.
+    /// </summary>
+    private bool NoteOptionsToken(int token)
+    {
+        TaskCompletionSource<bool>? waiter = null;
+        lock (_sizeLock)
+        {
+            if (token > _reportedToken) _reportedToken = token;
+            if (_sizeWaiter != null && _reportedToken >= _sizeWaiterToken)
+            {
+                waiter = _sizeWaiter;
+                _sizeWaiter = null;
+            }
+        }
+        waiter?.TrySetResult(true);
+        return waiter != null;
+    }
+
+    /// <summary>
+    /// Waits for the page to report a size it measured with every option posted so far
+    /// already applied, so a caller can create the ConPTY at the right dimensions instead
+    /// of at <see cref="TerminalSize"/>'s placeholder.
+    ///
+    /// NavigationCompleted is not a sufficient signal on its own. The page posts its size
+    /// during load, but that message reaches the host as a separate dispatcher item — so
+    /// <see cref="InitializeAsync"/> can return, and the PTY be created, before it is
+    /// processed. The PTY then starts at the placeholder and is corrected a frame later,
+    /// which a TUI that has already painted its first frame (Claude Code) renders at the
+    /// wrong width until something forces a full redraw.
+    ///
+    /// **Waiting for merely the FIRST report is also not enough**, and that is the subtle
+    /// half. <see cref="ApplyFontSettings"/> and <see cref="ApplyProfileOverrides"/> post
+    /// their setOptions through <c>Dispatcher.BeginInvoke</c>, and cols is derived from the
+    /// measured advance width — so a first-report wait would return on the size measured
+    /// with the DEFAULT font. Worse, it would usually return synchronously (the report has
+    /// already arrived), never yielding the UI thread, so the queued BeginInvoke could not
+    /// even have run. A session with a profile font override would then get its ConPTY
+    /// created at the wrong column count: the exact failure this all exists to prevent.
+    ///
+    /// So the wait is gated on the options token instead of on arrival order. It resolves
+    /// only once the page has echoed a token at least as new as the last setOptions we
+    /// stamped, which is a happens-after relationship rather than a timing guess. The page
+    /// force-reports after applying options even when the column count is unchanged, so
+    /// the token is always acknowledged.
+    ///
+    /// Bounded on purpose: a page that never reports — a navigation failure, a wedged
+    /// renderer — must not block the launch, so the timeout falls through to whatever
+    /// size is known and the "resize" handler corrects it whenever it does arrive.
+    /// </summary>
+    public async Task WaitForInitialSizeAsync(int timeoutMs = 1500)
+    {
+        TaskCompletionSource<bool> tcs;
+        lock (_sizeLock)
+        {
+            int needed = _optionsToken;
+            if (_reportedToken >= needed) return;
+            _sizeWaiterToken = needed;
+            _sizeWaiter = tcs = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+    }
+
     public void AttachPty(PseudoTerminal pty)
     {
         _pty = pty;
@@ -525,8 +608,29 @@ public sealed class TerminalBridge : IDisposable
                 {
                     int cols = root.GetProperty("cols").GetInt32();
                     int rows = root.GetProperty("rows").GetInt32();
+                    int token = root.TryGetProperty("token", out var tk) ? tk.GetInt32() : 0;
                     _lastSize = (cols, rows);
+
+                    bool released = NoteOptionsToken(token);
+
+                    // Traced because the absence of this message is exactly how the pane
+                    // stayed at 80x24: the page reported its size once, before anything
+                    // was listening, and every later fit was a no-op that reported nothing.
+                    Trace($"RESIZE cols={cols} rows={rows} token={token} " +
+                          $"released={released} pty={(_pty != null)}");
                     _pty?.Resize(cols, rows);
+                    break;
+                }
+
+                // The page finished applying a setOptions and re-fitted. Posted separately
+                // from the size because the page declines to report an UNMEASURABLE pane
+                // (0x0 container, cell metrics not computed yet) — without its own ack, a
+                // launch waiting on that token would just burn the full timeout.
+                case "optionsApplied":
+                {
+                    int token = root.TryGetProperty("token", out var otk) ? otk.GetInt32() : 0;
+                    bool released = NoteOptionsToken(token);
+                    Trace($"OPTIONS-APPLIED token={token} released={released}");
                     break;
                 }
 
@@ -614,7 +718,13 @@ public sealed class TerminalBridge : IDisposable
             letterSpacing = settings.TerminalLetterSpacing,
             lineHeight    = settings.TerminalLineHeight,
         };
-        string json = JsonSerializer.Serialize(new { type = "setOptions", options = opts });
+        // Stamped synchronously, BEFORE the BeginInvoke below: WaitForInitialSizeAsync
+        // reads _optionsToken on the caller's turn, so incrementing it inside the queued
+        // closure would let the wait resolve against a pre-options size.
+        int sizeToken;
+        lock (_sizeLock) { sizeToken = ++_optionsToken; }
+        string json = JsonSerializer.Serialize(
+            new { type = "setOptions", options = opts, token = sizeToken });
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
         {
             try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
@@ -650,7 +760,13 @@ public sealed class TerminalBridge : IDisposable
             }
         }
 
-        string json = JsonSerializer.Serialize(new { type = "setOptions", options = opts });
+        // Stamped synchronously, BEFORE the BeginInvoke below: WaitForInitialSizeAsync
+        // reads _optionsToken on the caller's turn, so incrementing it inside the queued
+        // closure would let the wait resolve against a pre-options size.
+        int sizeToken;
+        lock (_sizeLock) { sizeToken = ++_optionsToken; }
+        string json = JsonSerializer.Serialize(
+            new { type = "setOptions", options = opts, token = sizeToken });
         WpfApplication.Current?.Dispatcher.BeginInvoke(() =>
         {
             try { _webView.CoreWebView2?.PostWebMessageAsString(json); }

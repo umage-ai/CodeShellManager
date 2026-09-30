@@ -291,7 +291,79 @@ Both (2) and (3) **must come from the page**, and this is the part that is easy 
 - **WebView2 is an `HwndHost`.** Mouse input landing on hosted native content raises **no** WPF routed events, tunnelling `Preview*` ones included. A `PreviewMouseLeftButtonDown` on the host Border only ever fires for the thin ring around the terminal (#108). The same fact bites on the way out too — WPF content cannot be *drawn* over a pane either, whatever `Panel.ZIndex` says. See "Session Spinners".
 - **xterm's `onData` is not "the user typed".** It also carries replies the terminal generates itself — device attributes (`ESC[?1;2c`), cursor-position reports, OSC colour replies, focus in/out (`ESC[I`/`ESC[O`) — plus mouse reports when the app enables tracking. Filtering those by inspecting the bytes cannot work; a device-attribute reply is not distinguishable from typing by shape. xterm knows internally (`triggerDataEvent`'s `wasUserInput`) but does not expose it on `onData`. `onKey` is the only honest source (#106).
 
-The page-side `mousedown` handler also calls `fitAddon.fit()`, and the initial fit is re-run on `document.fonts.ready`. xterm derives its column count from the *measured advance width* of the font, so a fit that runs before the font loads computes the wrong `cols` and tells the PTY a width that doesn't match what is drawn — text then overlaps mid-line. The `ResizeObserver` cannot catch that, because the element size never changed, only the glyph metrics (#113).
+The page-side `mousedown` handler also calls `doFit()`, and the initial fit is re-run on `document.fonts.ready`. xterm derives its column count from the *measured advance width* of the font, so a fit that runs before the font loads computes the wrong `cols` and tells the PTY a width that doesn't match what is drawn — text then overlaps mid-line. The `ResizeObserver` cannot catch that, because the element size never changed, only the glyph metrics (#113).
+
+## A fit that changes nothing must still report the size
+
+Every fit in `terminal-init.js` goes through `doFit()`, which calls `fitAddon.fit()` and
+then `postSize()`. **Do not call `fitAddon.fit()` directly** — that is the shape that
+loses the size report, and it cost a new session three quarters of its pane.
+
+Two library facts combine into the trap, and neither is visible at the call site:
+
+| | |
+|---|---|
+| `FitAddon.fit()` | skips `term.resize()` entirely when the proposed dimensions already match |
+| `Terminal.resize(c, r)` | early-returns when `c === this.cols && r === this.rows` |
+
+So `onResize` fires **only on a change**. `new Terminal()` starts at xterm's default 80x24,
+which means the *initial* fit is the one call that genuinely changes the size — and
+`term.onResize` used to be registered some seventy lines below it. The host therefore never
+learned the size at all, and every later fit was a silent no-op: the 50ms/250ms timeouts,
+`document.fonts.ready`, the `ResizeObserver`, and `TerminalBridge.FitTerminal`'s own `fit`
+message included. `_lastSize` stayed at its `(80, 24)` placeholder, `pty.Start` created the
+ConPTY 80 columns wide, and `AttachPty`'s `_pty.Resize(_lastSize)` re-applied the same wrong
+value.
+
+xterm drew ~220x55 while the program believed it had 80x24, so Claude Code painted its frame
+into roughly a sixth of the pane. The only thing that ever fixed it was a real change in
+**element** size — resizing the window or switching layout — which is why the bug presented
+as "a new session needs a resize before it uses the full screen".
+
+Moving the registration above the first fit is necessary but **not sufficient**: it fixes
+only the first fit, and leaves every subsequent one unable to correct a size the host got
+wrong. `postSize()` reports `term.cols`/`term.rows` directly and dedupes against the last
+pair, so a no-op fit re-syncs the host exactly once and a genuine one is not reported twice.
+
+**Only report a size that was actually measured.** `FitAddon.proposeDimensions()` returns
+`undefined` when the cell metrics are still 0, and otherwise clamps to `Math.max(2, …)` /
+`Math.max(1, …)`. So a pane whose container is 0×0 — the case the 50ms/250ms fallbacks exist
+for — yields either xterm's untouched 80×24 default or a **2×1** clamp. `doFit()` therefore
+declines to report at all in that state. This matters much more now that the host *creates*
+the ConPTY from the first size it is told: pre-fix those bogus reports were simply dropped.
+
+**`bridge.TerminalSize` is a placeholder until the page reports**, and its initializer
+deliberately matches `PseudoTerminal.Start`'s own `cols = 220, rows = 50` defaults. It was
+`(80, 24)`, which meant the one path the wait cannot rescue — navigation failure, wedged
+renderer — created the ConPTY at the narrowest plausible width, straight back into the
+symptom.
+
+**The wait is gated on an options token, not on arrival order.** `LaunchSessionAsync` awaits
+`TerminalBridge.WaitForInitialSizeAsync()` after `ApplyFontSettings` / `ApplyProfileOverrides`
+and before `pty.Start`. Waiting for merely the *first* size report is not enough, and this is
+the subtle part: both of those post their `setOptions` through `Dispatcher.BeginInvoke`, and
+cols derives from the measured advance width, so a first-report wait resolves on the size
+measured with the **default** font — and usually resolves *synchronously*, never yielding the
+UI thread, so the queued `BeginInvoke` cannot even have run. A session with a profile font
+override would get its ConPTY created at the wrong column count: the very failure this
+exists to prevent.
+
+So each `setOptions` carries an incrementing token (stamped **synchronously**, before the
+`BeginInvoke` — inside the closure would reintroduce the race), the page echoes it on every
+size report, and the wait resolves only once an echo is at least as new as the last token
+stamped. That is a happens-after relationship rather than a timing guess.
+
+The page also posts a separate `optionsApplied` ack, and that split is load-bearing in both
+directions: `doFit()` may legitimately decline to report an unmeasurable pane, and without an
+ack of its own a launch waiting on that token would burn the full 1.5s timeout per session.
+The host adopts a size only from `resize`, and releases the wait from either.
+`NavigationCompleted` is not a substitute for any of this — the page posts its size during
+load, but that message reaches the host as a separate dispatcher item, so `InitializeAsync`
+can return first.
+
+The wait is bounded (1.5s) so a wedged renderer cannot block a launch; the `resize` handler
+still corrects the size whenever it arrives. It traces `RESIZE cols= rows= token= released=`
+under `DebugTerminalTrace` — the *absence* of that line is the signature of this bug.
 
 ## Session Lifecycle
 

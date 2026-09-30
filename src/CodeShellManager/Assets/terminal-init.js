@@ -29,8 +29,81 @@
 
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
+
+  // ── Size reporting: registered BEFORE the first fit, and never only via onResize ──
+  //
+  // Both halves below are load-bearing, and the second is the non-obvious one.
+  //
+  //   * onResize used to be registered ~70 lines further down, AFTER the initial
+  //     fit(). That fit is the one call that genuinely changes the size — xterm is
+  //     constructed at its 80x24 default and fit() measures the real pane — so it
+  //     fired the event with no listener attached, and the host never learned the
+  //     size at all.
+  //
+  //   * Moving the registration up is still not sufficient. FitAddon.fit() skips
+  //     term.resize() outright when the proposed dimensions already match, and
+  //     Terminal.resize() early-returns on an unchanged size. So once the first fit
+  //     has landed, EVERY later fit is a silent no-op: the 50ms/250ms timeouts,
+  //     document.fonts.ready, the ResizeObserver, and the host's own "fit" message
+  //     included. Only a real change in ELEMENT size — resizing the window,
+  //     switching layout — ever produced another event.
+  //
+  // Left at the host's (80, 24) initializer, the ConPTY was created 80 columns wide
+  // while xterm drew ~220, so a full-screen TUI like Claude Code painted its frame
+  // into roughly a sixth of the pane and stayed that way until the user resized
+  // something by hand. postSize() reports the measured size directly and dedupes
+  // against the last pair, so a no-op fit still re-syncs the host exactly once.
+  var lastPostedCols = -1, lastPostedRows = -1;
+
+  // Mirrors the token the host stamps on each setOptions message, and is echoed back on
+  // every size report. It is how the host can tell "the size measured with the font you
+  // just asked for" from "the size measured before it" — see WaitForInitialSizeAsync.
+  var optionsToken = 0;
+
+  // force: report even when the size is unchanged. Needed to ACK an options token, since
+  // a font change that happens not to alter the column count would otherwise be silent
+  // and leave the host waiting for a report that never comes.
+  function postSize(force) {
+    if (!force && term.cols === lastPostedCols && term.rows === lastPostedRows) return;
+    try {
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'resize', cols: term.cols, rows: term.rows, token: optionsToken
+      }));
+    } catch (e) {
+      // Leave the dedupe pair unset so the next fit retries. Recording a size we failed
+      // to deliver is the same "host never learns the size" bug with a narrower trigger.
+      return;
+    }
+    lastPostedCols = term.cols;
+    lastPostedRows = term.rows;
+  }
+
+  // Every fit in this file goes through doFit(). Resist calling fitAddon.fit()
+  // directly — that is the shape that loses the size report.
+  //
+  // The measurability guard is not optional. FitAddon.proposeDimensions() bails out
+  // when the cell metrics are still 0 (nothing rendered yet) and otherwise clamps its
+  // answer to Math.max(2, …) / Math.max(1, …). So on a pane whose container is 0x0 —
+  // exactly the case the 50ms/250ms fallbacks below exist for — a fit does nothing and
+  // a report would hand the host either xterm's untouched 80x24 default or a 2x1 clamp.
+  // Since the host now CREATES the ConPTY from the first size it is told, reporting
+  // either would be worse than reporting nothing: pre-fix those were merely dropped.
+  function doFit(force) {
+    var dims = null;
+    try { dims = fitAddon.proposeDimensions(); } catch (e) {}
+    if (!dims || isNaN(dims.cols) || isNaN(dims.rows)) return;
+    var parent = term.element && term.element.parentElement;
+    if (parent && (parent.clientWidth < 1 || parent.clientHeight < 1)) return;
+    try { fitAddon.fit(); } catch (e) {}
+    postSize(force);
+  }
+
+  // Still worth keeping alongside doFit(): a resize can also originate inside the
+  // terminal (CSI 8 t) rather than from a fit of ours.
+  term.onResize(postSize);
+
   term.open(document.getElementById('terminal'));
-  fitAddon.fit();
+  doFit();
 
   // ── Shell integration: OSC 9001;key=value;key=value;ST ─────────────────────
   // A program inside the terminal can push session state up to CSM by emitting:
@@ -95,14 +168,9 @@
     var now = Date.now();
     if (now - lastActivate < 300) return;
     lastActivate = now;
-    try { fitAddon.fit(); } catch (e) {}
+    doFit();
     window.chrome.webview.postMessage(JSON.stringify({ type: 'activate' }));
   }, { capture: true });
-
-  // ── Resize notification ────────────────────────────────────────────────────
-  term.onResize(({ cols, rows }) => {
-    window.chrome.webview.postMessage(JSON.stringify({ type: 'resize', cols, rows }));
-  });
 
   // ── Page-side diagnostics (issue #70) ──────────────────────────────────────
   // The host's timing ends at PostWebMessageAsString. If the renderer process is the
@@ -145,11 +213,12 @@
   window.chrome.webview.addEventListener('message', e => {
     try {
       const msg = JSON.parse(e.data);
+      if (typeof msg.token === 'number') optionsToken = msg.token;
       if      (msg.type === 'output')         diagWrite(msg.data);
       else if (msg.type === 'setDiag')        diagOn = !!msg.on;
       else if (msg.type === 'clear')          term.clear();
-      else if (msg.type === 'focus')          { term.focus(); fitAddon.fit(); }
-      else if (msg.type === 'fit')            { fitAddon.fit(); term.focus(); }
+      else if (msg.type === 'focus')          { term.focus(); doFit(); }
+      else if (msg.type === 'fit')            { doFit(); term.focus(); }
       else if (msg.type === 'paste')          term.paste(msg.data);
       else if (msg.type === 'setOptions')     {
         const opts = msg.options;
@@ -164,7 +233,7 @@
         if (opts.cursorBlink   !== undefined) term.options.cursorBlink   = opts.cursorBlink;
         if (opts.padding       !== undefined) document.getElementById('terminal').style.padding = opts.padding;
         if (opts.retro         !== undefined) document.body.classList.toggle('retro', !!opts.retro);
-        fitAddon.fit();
+        doFit();
         // A profile override can switch fontFamily/fontSize, so the fit above measures the
         // old metrics. Re-fit on the next frame, once the new ones are in effect.
         //
@@ -175,11 +244,22 @@
         // OS-installed and there are no such rules, so it resolves on the next microtask
         // having matched nothing. requestAnimationFrame is the honest signal: it fires
         // after the style change has been applied and measured.
-        if (opts.fontFamily !== undefined || opts.fontSize !== undefined) {
-          requestAnimationFrame(function () {
-            try { fitAddon.fit(); } catch (e) {}
-          });
-        }
+        // Unconditional now, and forced, so a font change that does not happen to alter
+        // the column count is still reported rather than silently deduped away.
+        //
+        // The ack is posted separately and never skipped. doFit() declines to report an
+        // unmeasurable pane (0x0 container, cell metrics not computed yet), and a host
+        // waiting on this token would then have nothing to wait for but its own timeout —
+        // 1.5s of dead launch per session. Splitting them keeps both properties: the host
+        // only ever adopts a size it actually measured, and the wait always ends promptly.
+        requestAnimationFrame(function () {
+          doFit(true);
+          try {
+            window.chrome.webview.postMessage(JSON.stringify({
+              type: 'optionsApplied', token: optionsToken
+            }));
+          } catch (e) {}
+        });
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
       else if (msg.type === 'setBootState') {
@@ -323,15 +403,15 @@
   });
 
   // ── Fit on resize ──────────────────────────────────────────────────────────
-  const resizeObserver = new ResizeObserver(() => {
-    try { fitAddon.fit(); } catch {}
-  });
+  // Wrapped, not passed by reference: ResizeObserver hands its callback the entries
+  // array, which would arrive as doFit's truthy `force`.
+  const resizeObserver = new ResizeObserver(function () { doFit(); });
   resizeObserver.observe(document.getElementById('terminal'));
 
   // Initial fit may have run while the WebView2 container was Collapsed (0×0).
   // Re-fit after a short delay so xterm picks up the real dimensions once visible.
-  setTimeout(() => { try { fitAddon.fit(); term.focus(); } catch {} }, 50);
-  setTimeout(() => { try { fitAddon.fit(); } catch {} }, 250);
+  setTimeout(() => { doFit(); try { term.focus(); } catch {} }, 50);
+  setTimeout(function () { doFit(); }, 250);
 
   // Re-fit once the font has actually loaded.
   //
@@ -349,9 +429,8 @@
   // easily too early during a heavy restore with many WebView2s initialising. They
   // stay as a fallback for the 0x0 case; this is the real signal.
   if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(function () {
-      try { fitAddon.fit(); } catch (e) {}
-    });
+    // Wrapped: .then() would pass the FontFaceSet as doFit's `force`.
+    document.fonts.ready.then(function () { doFit(); });
   }
 
   term.focus();
