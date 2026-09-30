@@ -22,7 +22,13 @@ public sealed class TerminalBridge : IDisposable
     private bool _ready;
     // Last terminal size reported by xterm.js — applied immediately on PTY attach
     // so the PTY starts at the right dimensions even if resize fired before AttachPty.
+    // The initializer is a placeholder only; treat it as "the page hasn't measured
+    // itself yet" rather than as a real size, and see WaitForInitialSizeAsync.
     private (int cols, int rows) _lastSize = (80, 24);
+
+    // Completed by the first "resize" message. See WaitForInitialSizeAsync.
+    private readonly TaskCompletionSource<bool> _initialSizeReported =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Boot overlay — set by MainWindow before InitializeAsync; posted as setBootState after
     // navigation completes, and hidden via bootDone on the first PTY byte (see OnPtyData).
@@ -355,6 +361,28 @@ public sealed class TerminalBridge : IDisposable
     /// <summary>Last terminal size reported by xterm.js. Use this to start the PTY at the right size.</summary>
     public (int cols, int rows) TerminalSize => _lastSize;
 
+    /// <summary>
+    /// Waits for the page to report the size it actually measured, so a caller can create
+    /// the ConPTY at the right dimensions instead of at <see cref="TerminalSize"/>'s
+    /// placeholder initializer.
+    ///
+    /// NavigationCompleted is not a sufficient signal on its own. The page posts its size
+    /// during load, but that message is delivered to the host as a separate dispatcher
+    /// item — so <see cref="InitializeAsync"/> can return, and the PTY be created, before
+    /// it is processed. The PTY then starts at 80x24 and is corrected a frame later, which
+    /// a TUI that has already painted its first frame (Claude Code) renders at the wrong
+    /// width until something forces a full redraw.
+    ///
+    /// Bounded on purpose: a page that never reports — a navigation failure, a wedged
+    /// renderer — must not block the launch, so the timeout falls through to the
+    /// placeholder and the "resize" handler fixes the size whenever it does arrive.
+    /// </summary>
+    public async Task WaitForInitialSizeAsync(int timeoutMs = 1500)
+    {
+        if (_initialSizeReported.Task.IsCompleted) return;
+        await Task.WhenAny(_initialSizeReported.Task, Task.Delay(timeoutMs));
+    }
+
     public void AttachPty(PseudoTerminal pty)
     {
         _pty = pty;
@@ -525,7 +553,12 @@ public sealed class TerminalBridge : IDisposable
                 {
                     int cols = root.GetProperty("cols").GetInt32();
                     int rows = root.GetProperty("rows").GetInt32();
+                    bool first = _initialSizeReported.TrySetResult(true);
                     _lastSize = (cols, rows);
+                    // Traced because the absence of this message is exactly how the pane
+                    // stayed at 80x24: the page reported its size once, before anything
+                    // was listening, and every later fit was a no-op that reported nothing.
+                    Trace($"RESIZE cols={cols} rows={rows} first={first} pty={(_pty != null)}");
                     _pty?.Resize(cols, rows);
                     break;
                 }

@@ -1414,6 +1414,14 @@ public partial class MainWindow : Window
         bridge.ApplyFontSettings(_vm.Settings);
         bridge.ApplyProfileOverrides(session);
 
+        // Both calls above can change the font, and xterm derives its column count from
+        // the measured advance width — so wait here, after them, for the size the page
+        // actually measured. bridge.TerminalSize is a placeholder until that arrives, and
+        // creating the ConPTY at it means a full-screen TUI paints its first frame 80
+        // columns wide inside a pane that draws ~220. Bounded, so a page that never
+        // reports still launches.
+        await bridge.WaitForInitialSizeAsync();
+
         // Start PTY now that bridge is ready
         var pty = new PseudoTerminal();
         vm.Pty = pty;
