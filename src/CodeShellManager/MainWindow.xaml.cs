@@ -2451,6 +2451,7 @@ public partial class MainWindow : Window
             int liveCount = _vm.Sessions.Count;
             int dormantCount = _sessionManager.Sessions.Count(s => s.IsDormant);
             wakeAllDormant.IsEnabled = dormantCount > 0;
+            restartAllGlobal.IsEnabled = liveCount > 0;
             sleepAllGlobal.IsEnabled = liveCount > 0;
             closeAllGlobal.IsEnabled = liveCount > 0;
             bulkActions.IsEnabled    = liveCount > 0 || dormantCount > 0;
