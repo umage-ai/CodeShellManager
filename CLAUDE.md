@@ -353,6 +353,23 @@ So each `setOptions` carries an incrementing token (stamped **synchronously**, b
 size report, and the wait resolves only once an echo is at least as new as the last token
 stamped. That is a happens-after relationship rather than a timing guess.
 
+**The page promotes that token late, in `settle()`, not when the message arrives.** Stamping
+it on arrival is the same bug wearing the fix's clothes: the `doFit()` that runs immediately
+after the option assignments still measures the *old* metrics, and any `fit`/`focus` message
+landing before the next frame does too — so those reports carry the new token, `NoteOptionsToken`
+sees an echo new enough, and the wait releases on a pre-font measurement. Only a report made
+after the new metrics are in effect may carry the new token.
+
+**And `settle()` must not depend on a frame.** It runs from `requestAnimationFrame` *or* a
+250ms timer, whichever comes first, because WebView2 suspends rAF whenever the control isn't
+rendering — window minimized, or the wrapper detached by `RefreshTerminalLayout`'s
+`TerminalGrid.Children.Clear()` while a launch sits in its `await`. In that state every other
+release path is already gated off (`doFit` declines an unmeasurable pane, the `ResizeObserver`
+needs a size *change*, and the 50ms/250ms one-shots fired long ago at page load), so nothing
+acked the token and each affected launch burned the full 1.5s — roughly +37s across a
+25-session restore. rAF still wins whenever frames are running, so the measured-metrics path
+is unchanged in the normal case.
+
 The page also posts a separate `optionsApplied` ack, and that split is load-bearing in both
 directions: `doFit()` may legitimately decline to report an unmeasurable pane, and without an
 ack of its own a launch waiting on that token would burn the full 1.5s timeout per session.
