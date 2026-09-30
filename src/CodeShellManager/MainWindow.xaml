@@ -113,6 +113,46 @@
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Bulk-restart counter — paired with RestartRail, and a SEPARATE pair
+                         from the restore one below rather than a shared rail: the two are
+                         driven by unrelated loops with unrelated lifetimes, and one shared
+                         rail would need a precedence rule for no gain.
+
+                         Note the two rails are NOT expected on screen together: a restart
+                         refuses to start while the restore loop is running, because both
+                         spawn claude.exe and neither stagger can see the other's launches
+                         (see _restoreInProgress). An earlier version of this comment cited
+                         the overlap as the reason for separate pairs, which quietly wrote
+                         down a config-writer race as a layout question.
+
+                         Peach rather than the restore blue because peach is already the
+                         shutdown board's "closing…" colour — it reads as teardown in
+                         progress. -->
+                    <Border x:Name="RestartPill" Background="#181825" CornerRadius="10"
+                            BorderBrush="#313244" BorderThickness="1"
+                            Margin="0,0,8,0" VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                        <DockPanel>
+                            <!-- ToolBtn, not the default Button template. This is the only
+                                 button in the app that is ever disabled, and Aero2's stock
+                                 template has an IsEnabled=false trigger that sets its
+                                 Background/BorderBrush/Foreground with TargetName — which
+                                 outranks both the Transparent TemplateBinding and the muted
+                                 Foreground set in SetRestartProgress. The ⏹ would render as
+                                 a light-grey #F4F4F4 box inside the dark pill. ToolBtn's
+                                 template has no disabled trigger, so the code-set brush
+                                 actually applies. -->
+                            <Button x:Name="RestartStopBtn" DockPanel.Dock="Right" Content="⏹"
+                                    Style="{StaticResource ToolBtn}"
+                                    Foreground="#fab387" FontSize="10" Padding="4,2,8,2"
+                                    ToolTip="Stop once the session currently restarting finishes"
+                                    Click="RestartStop_Click"/>
+                            <TextBlock x:Name="RestartPillText" Text="restarting…" Foreground="#fab387"
+                                       FontSize="11" FontWeight="SemiBold" Padding="9,2,4,2"
+                                       VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
                     <!-- Restore counter — paired with RestoreRail; both live only for the
                          duration of the restore loop in OnLoaded. -->
                     <Border x:Name="RestorePill" Background="#181825" CornerRadius="10"
@@ -195,6 +235,22 @@
              few places an indicator is guaranteed to be visible. -->
         <ProgressBar x:Name="RestoreRail" DockPanel.Dock="Top" Height="2"
                      Style="{StaticResource FlatBar}" Background="Transparent"
+                     Minimum="0" Maximum="1" Value="0" Visibility="Collapsed"/>
+
+        <!-- ── Bulk-restart rail ────────────────────────────────────────────
+             Same reasoning as the restore rail above — an HwndHost composites over any
+             overlay, so the toolbar strip is where an indicator is guaranteed to show.
+             A restart queue is strictly sequential and each Claude session waits for its
+             old process to exit, so "Restart all" on a large fleet runs for minutes; this
+             is the only thing on screen that says so while it does.
+
+             NOT the shutdown board: that only works because OnClosing collapses
+             TerminalGrid first, and doing that here would black out every live pane for
+             the whole run. A bulk restart does not block the user; the restore rail is
+             the right precedent. -->
+        <ProgressBar x:Name="RestartRail" DockPanel.Dock="Top" Height="2"
+                     Style="{StaticResource FlatBar}" Background="Transparent"
+                     Foreground="#fab387"
                      Minimum="0" Maximum="1" Value="0" Visibility="Collapsed"/>
 
         <!-- ── Command helper panel ─────────────────────────────────────── -->
