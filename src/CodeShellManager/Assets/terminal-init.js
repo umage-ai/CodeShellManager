@@ -58,6 +58,9 @@
   // Mirrors the token the host stamps on each setOptions message, and is echoed back on
   // every size report. It is how the host can tell "the size measured with the font you
   // just asked for" from "the size measured before it" — see WaitForInitialSizeAsync.
+  // Promoted in settle() once the new metrics are the ones being measured, NOT when the
+  // message arrives: stamping it on arrival makes every report in between claim a font it
+  // was not measured with, which is the whole failure the token exists to catch.
   var optionsToken = 0;
 
   // force: report even when the size is unchanged. Needed to ACK an options token, since
@@ -213,7 +216,6 @@
   window.chrome.webview.addEventListener('message', e => {
     try {
       const msg = JSON.parse(e.data);
-      if (typeof msg.token === 'number') optionsToken = msg.token;
       if      (msg.type === 'output')         diagWrite(msg.data);
       else if (msg.type === 'setDiag')        diagOn = !!msg.on;
       else if (msg.type === 'clear')          term.clear();
@@ -244,22 +246,50 @@
         // OS-installed and there are no such rules, so it resolves on the next microtask
         // having matched nothing. requestAnimationFrame is the honest signal: it fires
         // after the style change has been applied and measured.
-        // Unconditional now, and forced, so a font change that does not happen to alter
-        // the column count is still reported rather than silently deduped away.
+        // Unconditional, and forced, so a font change that does not happen to alter the
+        // column count is still reported rather than silently deduped away.
         //
         // The ack is posted separately and never skipped. doFit() declines to report an
         // unmeasurable pane (0x0 container, cell metrics not computed yet), and a host
         // waiting on this token would then have nothing to wait for but its own timeout —
         // 1.5s of dead launch per session. Splitting them keeps both properties: the host
         // only ever adopts a size it actually measured, and the wait always ends promptly.
-        requestAnimationFrame(function () {
+        //
+        // **The token is promoted HERE, not on arrival.** It used to be stamped at the top
+        // of this handler, which handed the whole mechanism back its own bug: the doFit()
+        // above — and any 'fit'/'focus' message landing before the frame — would post a
+        // size measured with the OLD font carrying the NEW token, the host's
+        // NoteOptionsToken would see an echo at least as new as it was waiting for, and
+        // WaitForInitialSizeAsync would release on a pre-font measurement. That is the
+        // exact failure the token exists to prevent. Promoting inside settle() means a
+        // report can only carry the new token once the new metrics are the ones measured.
+        // max() rather than assignment so two setOptions in flight (ApplyFontSettings then
+        // ApplyProfileOverrides) can never walk the token backwards.
+        //
+        // **settle() must not depend on a frame.** WebView2 suspends rAF whenever the
+        // control is not rendering — window minimized, or the wrapper detached by
+        // RefreshTerminalLayout's TerminalGrid.Children.Clear() while a launch sits in its
+        // await. Every other release path is gated off in that state (doFit declines an
+        // unmeasurable pane, the ResizeObserver needs a size CHANGE, and the 50ms/250ms
+        // one-shots were scheduled at page load and have long since fired), so nothing
+        // acked and every affected launch burned the full 1.5s — ~37s across a 25-session
+        // restore. The timer is the backstop; rAF still wins whenever frames are running,
+        // so the measured-metrics path is unchanged in the normal case.
+        const newToken = (typeof msg.token === 'number') ? msg.token : optionsToken;
+        let settled = false;
+        const settle = function () {
+          if (settled) return;
+          settled = true;
+          if (newToken > optionsToken) optionsToken = newToken;
           doFit(true);
           try {
             window.chrome.webview.postMessage(JSON.stringify({
-              type: 'optionsApplied', token: optionsToken
+              type: 'optionsApplied', token: newToken
             }));
           } catch (e) {}
-        });
+        };
+        requestAnimationFrame(settle);
+        setTimeout(settle, 250);
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
       else if (msg.type === 'setBootState') {
