@@ -105,6 +105,10 @@ public partial class MainWindow : Window
     private bool _isShuttingDown = false;
     private bool _shutdownComplete = false;
 
+    // Guards RestartSessionsAsync so two restart loops can't interleave — see the comment
+    // there for why restarts have to stay strictly sequential.
+    private bool _restartInProgress = false;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -2341,6 +2345,16 @@ public partial class MainWindow : Window
         };
         bulkActions.Items.Add(wakeAllDormant);
 
+        // Restart every live session — the "I just updated the claude CLI" button.
+        // Dormant sessions are left alone; they pick the new binary up when woken.
+        var restartAllGlobal = new System.Windows.Controls.MenuItem { Header = "Restart all…" };
+        restartAllGlobal.Click += async (_, _) =>
+        {
+            var ids = _vm.Sessions.Select(v => v.Id).ToList();
+            await RestartSessionsAsync(ids, $"Restart all {ids.Count} live session(s)?");
+        };
+        bulkActions.Items.Add(restartAllGlobal);
+
         var sleepAllGlobal = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
         sleepAllGlobal.Click += (_, _) =>
         {
@@ -2445,6 +2459,7 @@ public partial class MainWindow : Window
             int liveCount = _vm.Sessions.Count;
             int dormantCount = _sessionManager.Sessions.Count(s => s.IsDormant);
             wakeAllDormant.IsEnabled = dormantCount > 0;
+            restartAllGlobal.IsEnabled = liveCount > 0;
             sleepAllGlobal.IsEnabled = liveCount > 0;
             closeAllGlobal.IsEnabled = liveCount > 0;
             bulkActions.IsEnabled    = liveCount > 0 || dormantCount > 0;
@@ -3002,6 +3017,16 @@ public partial class MainWindow : Window
         };
         menu.Items.Add(remoteControl);
 
+        var restartAll = new System.Windows.Controls.MenuItem { Header = "Restart all…" };
+        restartAll.Click += async (_, _) =>
+        {
+            var ids = _vm.Sessions.Where(v => v.Session.GroupId == groupId)
+                                  .Select(v => v.Id).ToList();
+            await RestartSessionsAsync(ids,
+                $"Restart {ids.Count} session(s) in group '{groupName}'?");
+        };
+        menu.Items.Add(restartAll);
+
         var sleepAll = new System.Windows.Controls.MenuItem { Header = "Sleep all" };
         sleepAll.Click += (_, _) =>
         {
@@ -3042,6 +3067,7 @@ public partial class MainWindow : Window
             int liveCount = _vm.Sessions.Count(v => v.Session.GroupId == groupId);
             int dormantCount = _sessionManager.Sessions.Count(s => s.GroupId == groupId && s.IsDormant);
             remoteControl.IsEnabled = liveCount > 0;
+            restartAll.IsEnabled = liveCount > 0;
             sleepAll.IsEnabled = liveCount > 0;
             wakeAll.IsEnabled = dormantCount > 0;
             closeAll.IsEnabled = liveCount > 0;
@@ -3367,6 +3393,18 @@ public partial class MainWindow : Window
         menu.Items.Add(removeFrom);
 
         menu.Items.Add(new System.Windows.Controls.Separator());
+
+        // Restart — close and reopen in place, keeping the session's Id, group, run commands
+        // and sidebar slot. The reason this exists: picking up a new build of the CLI (a
+        // `claude` update) without losing the session or its conversation.
+        var restartItem = new System.Windows.Controls.MenuItem
+        {
+            Header = isMulti ? $"Restart{countSuffix}…" : "Restart",
+            ToolTip = "Stop and relaunch the terminal; Claude sessions resume their conversation",
+        };
+        restartItem.Click += async (_, _) => await RestartSessionsAsync(targetIds);
+        menu.Items.Add(restartItem);
+
         var sleepItem = new System.Windows.Controls.MenuItem { Header = $"Sleep{countSuffix}" };
         sleepItem.Click += (_, _) =>
         {
@@ -4328,6 +4366,23 @@ public partial class MainWindow : Window
         };
         editBtn.Click += async (_, _) => await EditSessionAsync(vm);
 
+        // Restart — stop and relaunch this session's terminal in place. Routed through
+        // RestartSessionsAsync (rather than RestartSessionAsync directly) so it shares the
+        // re-entrancy guard with the menu paths; a single target skips the confirmation.
+        var restartBtn = new WpfButton
+        {
+            Content = "↻",
+            ToolTip = "Restart session (stop and relaunch the terminal)",
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xa6, 0xad, 0xc8)),
+            FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0, 0, 4, 0)
+        };
+        restartBtn.Click += async (_, _) => await RestartSessionsAsync(new[] { vm.Id });
+
         // Sleep (dormant) button — keeps the session in the sidebar but stops the PTY
         var sleepBtn = new WpfButton
         {
@@ -4367,6 +4422,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
+        DockPanel.SetDock(restartBtn, Dock.Right);
         DockPanel.SetDock(editBtn, Dock.Right);
         DockPanel.SetDock(chevronBtn, Dock.Right);
         DockPanel.SetDock(playBtn, Dock.Right);
@@ -4380,6 +4436,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
+        toolbarContent.Children.Add(restartBtn);
         toolbarContent.Children.Add(editBtn);
         toolbarContent.Children.Add(chevronBtn);
         toolbarContent.Children.Add(playBtn);
@@ -4730,6 +4787,84 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Restarts every session in <paramref name="sessionIds"/>, one after another. Sequential
+    /// by design: <see cref="RestartSessionAsync"/> waits for a Claude process to actually
+    /// exit before starting its replacement, and running those waits concurrently would put
+    /// several claude.exe instances back on the shared config file at once — the race the
+    /// wait exists to prevent. The cost is time, so a multi-target restart asks first.
+    /// </summary>
+    /// <param name="confirmHeadline">
+    /// First line of the confirmation prompt. When null, the prompt is shown only for 2+
+    /// targets with a generic headline — right for the context menu, where a single
+    /// "Restart" should just go. The bulk entry points ("Restart all") pass a scope-naming
+    /// headline instead and so always confirm, matching their "Close all…" siblings.
+    /// </param>
+    private async Task RestartSessionsAsync(
+        IReadOnlyList<string> sessionIds, string? confirmHeadline = null)
+    {
+        // Overlapping restart loops would defeat the staggering above just as thoroughly as
+        // a parallel loop would, so a second invocation is dropped rather than queued. The
+        // toast is the only feedback there would otherwise be: a bulk restart runs for
+        // minutes, and a click that does nothing at all just reads as a broken button.
+        if (_restartInProgress)
+        {
+            Services.ToastHelper.Show("Restart busy",
+                "Another restart is still running — try again when it finishes.");
+            return;
+        }
+
+        var targets = sessionIds
+            .Select(id => _vm.Sessions.FirstOrDefault(s => s.Id == id))
+            .Where(v => v != null)
+            .Select(v => v!.Id)
+            .ToList();
+        if (targets.Count == 0) return;
+
+        if (confirmHeadline != null || targets.Count > 1)
+        {
+            string headline = confirmHeadline ?? $"Restart {targets.Count} sessions?";
+            // Defaults to No, like "Close all…" — this terminates every running process and
+            // any in-flight run commands, and a stray Enter shouldn't start a minute-scale
+            // operation there's no way to stop.
+            var r = MessageBox.Show(this,
+                headline + Environment.NewLine + Environment.NewLine +
+                "Each running process is terminated and relaunched in turn, and any running "
+                + "session commands are stopped. Claude sessions resume their conversation. "
+                + "They restart one at a time, so this can take a while.",
+                "Restart sessions", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (r != MessageBoxResult.Yes) return;
+        }
+
+        _restartInProgress = true;
+        try
+        {
+            foreach (var id in targets)
+            {
+                // Abandon the rest of the queue once the window is closing. OnClosing
+                // snapshots _vm.Sessions and disposes exactly that set, so a relaunch that
+                // lands after the snapshot spawns a ConPTY child nothing will ever dispose —
+                // an orphaned claude.exe outliving the app. A bulk restart is minute-scale
+                // and full of await points, which makes closing the window part-way through
+                // it an ordinary thing to do rather than a corner case.
+                if (_isShuttingDown) break;
+
+                // Re-resolve per iteration: each restart replaces the SessionViewModel for
+                // that id, and an earlier one in this loop may have failed into dormant.
+                //
+                // Core, not RestartSessionAsync: this loop already holds _restartInProgress,
+                // and the guarded entry point would reject its own iterations.
+                var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
+                if (vm != null) await RestartSessionCoreAsync(vm);
+            }
+        }
+        finally
+        {
+            _restartInProgress = false;
+        }
+    }
+
+    /// <summary>
     /// Tears down a live session's PTY/terminal and relaunches it from the same
     /// <see cref="ShellSession"/> — the sleep/wake teardown without the dormant bookkeeping.
     /// The session keeps its Id, group, run commands and sidebar slot
@@ -4744,7 +4879,32 @@ public partial class MainWindow : Window
     /// </param>
     private async Task RestartSessionAsync(SessionViewModel vm, string? launchedCommand = null)
     {
+        // The single-session entry point, so it carries the guard. RestartSessionsAsync
+        // holds the same flag across its whole loop and calls the core directly, which is
+        // why the guard can't live in the core itself.
+        if (_restartInProgress)
+        {
+            Services.ToastHelper.Show("Restart busy",
+                "Another restart is still running — try again when it finishes.");
+            return;
+        }
+        _restartInProgress = true;
+        try { await RestartSessionCoreAsync(vm, launchedCommand); }
+        finally { _restartInProgress = false; }
+    }
+
+    /// <summary>
+    /// The restart itself, with no re-entrancy guard of its own — every caller must already
+    /// hold <see cref="_restartInProgress"/>.
+    /// </summary>
+    private async Task RestartSessionCoreAsync(SessionViewModel vm, string? launchedCommand = null)
+    {
         var session = vm.Session;
+        // Restored after the relaunch: the teardown below hands ActiveSession to whatever
+        // sits last in the list, and LaunchSessionAsync never claims it back. Without this,
+        // restarting the session you're looking at swaps the visible pane in Single layout
+        // and silently retargets Ctrl+W / F5 at an unrelated session.
+        bool wasActive = ReferenceEquals(_vm.ActiveSession, vm);
 
         vm.Runner.StopAll();
         if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
@@ -4801,6 +4961,22 @@ public partial class MainWindow : Window
             vm.Dispose();
         }
 
+        // Don't relaunch into a closing app. This has to sit AFTER the waits above, not
+        // just between queued restarts: the VM was removed from _vm.Sessions before them,
+        // so OnClosing's `var all = _vm.Sessions.ToList()` snapshot can't see a session
+        // that is mid-restart. Relaunching past that point starts a ConPTY child that
+        // nothing will ever dispose — and session PTYs (unlike run commands) are started
+        // with useJobObject: false, so no job object kills the tree either. The result is
+        // an orphaned claude.exe outliving the app.
+        //
+        // Returning here leaves the ShellSession in the SessionManager, so it is still in
+        // state.json and simply starts again on the next launch.
+        if (_isShuttingDown)
+        {
+            Log($"Restart of '{session.Name}' abandoned — app is shutting down.");
+            return;
+        }
+
         try
         {
             // restoring: true so a Claude session resumes its conversation instead of
@@ -4833,6 +5009,19 @@ public partial class MainWindow : Window
             AddDormantSidebarItem(session);
             RebuildSidebarOrder();
             _ = _vm.SaveStateAsync();
+            return;
+        }
+
+        // Give focus back to the session that had it. The relaunch produced a NEW
+        // SessionViewModel, so this re-resolves by id rather than reusing the old one.
+        if (wasActive)
+        {
+            var revived = _vm.Sessions.FirstOrDefault(s => s.Id == session.Id);
+            if (revived != null)
+            {
+                _vm.ActiveSession = revived;
+                UpdateSidebarActiveState();
+            }
         }
     }
 
