@@ -325,16 +325,45 @@ only the first fit, and leaves every subsequent one unable to correct a size the
 wrong. `postSize()` reports `term.cols`/`term.rows` directly and dedupes against the last
 pair, so a no-op fit re-syncs the host exactly once and a genuine one is not reported twice.
 
-**`bridge.TerminalSize` is a placeholder until the page reports.** `LaunchSessionAsync`
-awaits `TerminalBridge.WaitForInitialSizeAsync()` after `ApplyFontSettings` /
-`ApplyProfileOverrides` (both can change the font, and cols is derived from the measured
-advance width) and before `pty.Start`, so the ConPTY is *created* at the right size.
-`NavigationCompleted` alone is not that signal — the page posts its size during load, but
-that message reaches the host as a separate dispatcher item, so `InitializeAsync` can return
-first. The wait is bounded (1.5s) so a wedged renderer cannot block a launch; the `resize`
-handler still fixes the size whenever it arrives. That handler also traces
-`RESIZE cols= rows= first=` under `DebugTerminalTrace` — the *absence* of that line is the
-signature of this bug.
+**Only report a size that was actually measured.** `FitAddon.proposeDimensions()` returns
+`undefined` when the cell metrics are still 0, and otherwise clamps to `Math.max(2, …)` /
+`Math.max(1, …)`. So a pane whose container is 0×0 — the case the 50ms/250ms fallbacks exist
+for — yields either xterm's untouched 80×24 default or a **2×1** clamp. `doFit()` therefore
+declines to report at all in that state. This matters much more now that the host *creates*
+the ConPTY from the first size it is told: pre-fix those bogus reports were simply dropped.
+
+**`bridge.TerminalSize` is a placeholder until the page reports**, and its initializer
+deliberately matches `PseudoTerminal.Start`'s own `cols = 220, rows = 50` defaults. It was
+`(80, 24)`, which meant the one path the wait cannot rescue — navigation failure, wedged
+renderer — created the ConPTY at the narrowest plausible width, straight back into the
+symptom.
+
+**The wait is gated on an options token, not on arrival order.** `LaunchSessionAsync` awaits
+`TerminalBridge.WaitForInitialSizeAsync()` after `ApplyFontSettings` / `ApplyProfileOverrides`
+and before `pty.Start`. Waiting for merely the *first* size report is not enough, and this is
+the subtle part: both of those post their `setOptions` through `Dispatcher.BeginInvoke`, and
+cols derives from the measured advance width, so a first-report wait resolves on the size
+measured with the **default** font — and usually resolves *synchronously*, never yielding the
+UI thread, so the queued `BeginInvoke` cannot even have run. A session with a profile font
+override would get its ConPTY created at the wrong column count: the very failure this
+exists to prevent.
+
+So each `setOptions` carries an incrementing token (stamped **synchronously**, before the
+`BeginInvoke` — inside the closure would reintroduce the race), the page echoes it on every
+size report, and the wait resolves only once an echo is at least as new as the last token
+stamped. That is a happens-after relationship rather than a timing guess.
+
+The page also posts a separate `optionsApplied` ack, and that split is load-bearing in both
+directions: `doFit()` may legitimately decline to report an unmeasurable pane, and without an
+ack of its own a launch waiting on that token would burn the full 1.5s timeout per session.
+The host adopts a size only from `resize`, and releases the wait from either.
+`NavigationCompleted` is not a substitute for any of this — the page posts its size during
+load, but that message reaches the host as a separate dispatcher item, so `InitializeAsync`
+can return first.
+
+The wait is bounded (1.5s) so a wedged renderer cannot block a launch; the `resize` handler
+still corrects the size whenever it arrives. It traces `RESIZE cols= rows= token= released=`
+under `DebugTerminalTrace` — the *absence* of that line is the signature of this bug.
 
 ## Session Lifecycle
 

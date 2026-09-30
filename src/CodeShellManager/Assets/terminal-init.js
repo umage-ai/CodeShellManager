@@ -55,22 +55,47 @@
   // against the last pair, so a no-op fit still re-syncs the host exactly once.
   var lastPostedCols = -1, lastPostedRows = -1;
 
-  function postSize() {
-    if (term.cols === lastPostedCols && term.rows === lastPostedRows) return;
-    lastPostedCols = term.cols;
-    lastPostedRows = term.rows;
+  // Mirrors the token the host stamps on each setOptions message, and is echoed back on
+  // every size report. It is how the host can tell "the size measured with the font you
+  // just asked for" from "the size measured before it" — see WaitForInitialSizeAsync.
+  var optionsToken = 0;
+
+  // force: report even when the size is unchanged. Needed to ACK an options token, since
+  // a font change that happens not to alter the column count would otherwise be silent
+  // and leave the host waiting for a report that never comes.
+  function postSize(force) {
+    if (!force && term.cols === lastPostedCols && term.rows === lastPostedRows) return;
     try {
       window.chrome.webview.postMessage(JSON.stringify({
-        type: 'resize', cols: term.cols, rows: term.rows
+        type: 'resize', cols: term.cols, rows: term.rows, token: optionsToken
       }));
-    } catch (e) {}
+    } catch (e) {
+      // Leave the dedupe pair unset so the next fit retries. Recording a size we failed
+      // to deliver is the same "host never learns the size" bug with a narrower trigger.
+      return;
+    }
+    lastPostedCols = term.cols;
+    lastPostedRows = term.rows;
   }
 
   // Every fit in this file goes through doFit(). Resist calling fitAddon.fit()
   // directly — that is the shape that loses the size report.
-  function doFit() {
+  //
+  // The measurability guard is not optional. FitAddon.proposeDimensions() bails out
+  // when the cell metrics are still 0 (nothing rendered yet) and otherwise clamps its
+  // answer to Math.max(2, …) / Math.max(1, …). So on a pane whose container is 0x0 —
+  // exactly the case the 50ms/250ms fallbacks below exist for — a fit does nothing and
+  // a report would hand the host either xterm's untouched 80x24 default or a 2x1 clamp.
+  // Since the host now CREATES the ConPTY from the first size it is told, reporting
+  // either would be worse than reporting nothing: pre-fix those were merely dropped.
+  function doFit(force) {
+    var dims = null;
+    try { dims = fitAddon.proposeDimensions(); } catch (e) {}
+    if (!dims || isNaN(dims.cols) || isNaN(dims.rows)) return;
+    var parent = term.element && term.element.parentElement;
+    if (parent && (parent.clientWidth < 1 || parent.clientHeight < 1)) return;
     try { fitAddon.fit(); } catch (e) {}
-    postSize();
+    postSize(force);
   }
 
   // Still worth keeping alongside doFit(): a resize can also originate inside the
@@ -188,6 +213,7 @@
   window.chrome.webview.addEventListener('message', e => {
     try {
       const msg = JSON.parse(e.data);
+      if (typeof msg.token === 'number') optionsToken = msg.token;
       if      (msg.type === 'output')         diagWrite(msg.data);
       else if (msg.type === 'setDiag')        diagOn = !!msg.on;
       else if (msg.type === 'clear')          term.clear();
@@ -218,9 +244,22 @@
         // OS-installed and there are no such rules, so it resolves on the next microtask
         // having matched nothing. requestAnimationFrame is the honest signal: it fires
         // after the style change has been applied and measured.
-        if (opts.fontFamily !== undefined || opts.fontSize !== undefined) {
-          requestAnimationFrame(doFit);
-        }
+        // Unconditional now, and forced, so a font change that does not happen to alter
+        // the column count is still reported rather than silently deduped away.
+        //
+        // The ack is posted separately and never skipped. doFit() declines to report an
+        // unmeasurable pane (0x0 container, cell metrics not computed yet), and a host
+        // waiting on this token would then have nothing to wait for but its own timeout —
+        // 1.5s of dead launch per session. Splitting them keeps both properties: the host
+        // only ever adopts a size it actually measured, and the wait always ends promptly.
+        requestAnimationFrame(function () {
+          doFit(true);
+          try {
+            window.chrome.webview.postMessage(JSON.stringify({
+              type: 'optionsApplied', token: optionsToken
+            }));
+          } catch (e) {}
+        });
       }
       else if (msg.type === 'dropOverlayClear') overlay.classList.remove('active');
       else if (msg.type === 'setBootState') {
@@ -364,13 +403,15 @@
   });
 
   // ── Fit on resize ──────────────────────────────────────────────────────────
-  const resizeObserver = new ResizeObserver(doFit);
+  // Wrapped, not passed by reference: ResizeObserver hands its callback the entries
+  // array, which would arrive as doFit's truthy `force`.
+  const resizeObserver = new ResizeObserver(function () { doFit(); });
   resizeObserver.observe(document.getElementById('terminal'));
 
   // Initial fit may have run while the WebView2 container was Collapsed (0×0).
   // Re-fit after a short delay so xterm picks up the real dimensions once visible.
   setTimeout(() => { doFit(); try { term.focus(); } catch {} }, 50);
-  setTimeout(doFit, 250);
+  setTimeout(function () { doFit(); }, 250);
 
   // Re-fit once the font has actually loaded.
   //
@@ -388,7 +429,8 @@
   // easily too early during a heavy restore with many WebView2s initialising. They
   // stay as a fallback for the 0x0 case; this is the real signal.
   if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(doFit);
+    // Wrapped: .then() would pass the FontFaceSet as doFit's `force`.
+    document.fonts.ready.then(function () { doFit(); });
   }
 
   term.focus();
