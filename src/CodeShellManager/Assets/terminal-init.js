@@ -103,7 +103,13 @@
 
   // Still worth keeping alongside doFit(): a resize can also originate inside the
   // terminal (CSI 8 t) rather than from a fit of ours.
-  term.onResize(postSize);
+  //
+  // Wrapped, for the same reason the ResizeObserver, requestAnimationFrame and
+  // document.fonts.ready sites are: xterm hands the listener a {cols, rows} object, which
+  // as a bare reference arrives as postSize's `force` and is truthy — so this one call
+  // site silently bypassed the duplicate-size check that force exists to override only
+  // for an options ack.
+  term.onResize(function () { postSize(); });
 
   term.open(document.getElementById('terminal'));
   doFit();
