@@ -792,7 +792,9 @@ gh workflow run chocolatey.yml -f tag=vX.Y.Z
 # 3. watch them — they fail independently of CI and nothing else will tell you
 ```
 
-To make it genuinely automatic, CI / Release would have to create the Release with a PAT rather than `GITHUB_TOKEN`.
+**Budget for winget needing a second dispatch.** It has required manual intervention on three consecutive releases (v0.6.0, v0.7.0, v0.9.0) — a different cause each time, which is why it keeps getting rediagnosed from scratch. Chocolatey has been reliable. See "winget: the `CreateRef` error names the wrong culprit" for how to tell this release's cause from the last one's; the short version is **read the error text and check whether the sync step passed before touching anything**.
+
+To make it genuinely automatic, CI / Release would have to create the Release with a PAT rather than `GITHUB_TOKEN`. That is also what would close the sync→submit race, since the mirrors would no longer be dispatched as a separate step minutes later — worth doing before v1.0.
 
 **Chocolatey moderation: cleared 08 Sep 2026.** The v0.5.0 submission — the package's first —
 sat in the human review queue from May, which is why the listing stayed on 0.5.0 through two
@@ -850,12 +852,33 @@ When it fails you will see:
 1. **The fork is stale.** komac creates its branch in `umage-ai/winget-pkgs`; upstream lands dozens of commits a day, so a fork untouched since the last release is always too far behind for GitHub to accept a new branch.
 2. **`WINGET_TOKEN` is missing the `workflow` scope**, so the automatic sync that would have fixed (1) *cannot* run — `merge-upstream` returns HTTP 422 because upstream winget-pkgs contains `.github/workflows/*.yml` and syncing means writing them. The fork stays stale and you land back at (1).
 
+**As of v0.9.0 both of those are fixed, and a third cause has taken over — read the error text before assuming either.** The failure now looks like this instead, with **no** mention of permissions or of a user:
+
+```
+0: Ref cannot be created.
+1: failed to create branch UmageAI.CodeShellManager-<version>-<hash>
+```
+
+That shape is a **race, not staleness**. Measured on the v0.9.0 release (2026-09-30): the workflow's sync step *succeeded* at 18:51:46, the submit failed at 18:52:23, and at the moment of failure the fork was behind upstream by exactly **5 commits** — everything winget-pkgs had landed in those 34 seconds. komac resolves the upstream HEAD at submit time and branches from it, so a commit that arrived inside the gap is one the fork does not have yet and the ref cannot be created. Re-running `merge-upstream` by hand (clean fast-forward to 0/0) and dispatching immediately succeeded with no other change.
+
+So **diagnose by the error text and the sync step's own conclusion, in that order**:
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `…does not have the correct permissions to execute CreateRef`, **sync step failed** | token missing `workflow` | fix the scope |
+| same message, **sync step succeeded**, fork far behind | stale fork the sync could not close | `merge-upstream`, re-dispatch |
+| `Ref cannot be created.`, **sync step succeeded**, fork behind by a handful | the sync→submit race | `merge-upstream`, re-dispatch **immediately** |
+
+**Check the direction when you compare forks.** `gh api repos/umage-ai/winget-pkgs/compare/master...microsoft:winget-pkgs:master` takes the fork as *base* and upstream as *head*, so `ahead_by` is how far **upstream is ahead of the fork** and `behind_by` is the fork's own extra commits. Reading it the natural way round turns "5 behind upstream" into "5 ahead of it" and sends you looking for a divergence that isn't there.
+
+Expect this to recur: the window is as wide as the gap between the sync step and the submit step, against a repository that commits dozens of times a day. Closing it properly means syncing inside the submit step rather than ahead of it — or removing the manual dispatch entirely (see the `GITHUB_TOKEN` note above), which removes the gap with it.
+
 Two traps that cost real time across v0.6.0 and v0.7.0:
 
-- **Sync the fork under the org, `umage-ai/winget-pkgs`** — komac uses the fork owned by the same account as this repo. A maintainer's *personal* fork (`AThraen/winget-pkgs`) may also exist and is a red herring; syncing it changes nothing.
+- **Sync the fork under the org, `umage-ai/winget-pkgs`** — komac uses the fork owned by the same account as this repo. A maintainer's *personal* fork (`AThraen/winget-pkgs`) may also exist and is a red herring; syncing it changes nothing. Re-tested at v0.9.0, because the original error names `AThraen` and the personal fork is an obvious suspect: it sat **19,108 commits behind** upstream, untouched since 2026-08-19 — and v0.7.0 and v0.8.0 both published successfully in September while it was already that stale. komac is not using it. Don't re-open this one.
 - **`public_repo` alone is not enough — the token also needs `workflow`.** This was recorded backwards here through v0.6.0 ("`public_repo` is sufficient"), which is why the same failure was rediagnosed three releases running. It is still true that widening to *full* `repo` is wrong and does not help: that grants CI write access to every private repo the owner can reach. `public_repo` + `workflow`, nothing more.
 
-`winget.yml` syncs the org fork automatically before submitting, and that step is deliberately **not** `continue-on-error` — it used to be, which is exactly how a failing sync stayed invisible and only the misleading `CreateRef` error was ever seen. If the sync fails, fix the token scope; to unblock a release in the meantime, sync by hand and re-dispatch:
+`winget.yml` syncs the org fork automatically before submitting, and that step is deliberately **not** `continue-on-error` — it used to be, which is exactly how a failing sync stayed invisible and only the misleading `CreateRef` error was ever seen. That change earned its keep at v0.9.0: the sync step passing is what ruled out both historical causes in one glance. If the sync fails, fix the token scope; to unblock a release in the meantime, sync by hand and re-dispatch:
 
 ```bash
 gh api -X POST repos/umage-ai/winget-pkgs/merge-upstream -f branch=master
