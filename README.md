@@ -16,11 +16,49 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 
 ---
 
+## Why CodeShellManager
+
+Most multi-agent tools are task orchestrators: a chat UI around one vendor's agent, a handful of parallel tasks, a diff to review. CodeShellManager is built for a different job. It hosts **many long-lived agent sessions as real terminals**, and helps you keep track of all of them.
+
+- **The real CLI, nothing lost.** Each session is the actual `claude` (or `codex`, `copilot`, `gemini`, `pwsh`…) running in a real pseudo-terminal, through your own PowerShell profile. Hooks, plugins, slash commands, status lines and profile functions all work exactly as in Windows Terminal. Chat-style wrappers lose some of these, especially in WSL.
+- **Search everything every session ever printed.** All output is indexed to SQLite FTS5. Find the session that printed that error, URL or decision, even after it was closed, and relaunch it from the result.
+- **Built for fleets, not a handful.** Up to 18 panes on screen, groups with bulk actions, sleep/wake to park projects without killing them, restart-all to pick up a new CLI build, and staggered Claude launches that avoid config corruption. Tested at 50+ sessions.
+- **Know who needs you.** Sessions waiting for input or tool approval get a green/orange dot and a tray notification.
+- **Run commands beside the agent.** F5 runs tests or a build in a separate background process with output in a drawer, then pastes the result to the agent in one click. The agent's terminal is never touched.
+- **A native Windows app.** WPF + ConPTY. No Electron, Python, daemon, tmux or WSL required. Local, SSH and WSL sessions side by side. Install with winget or Chocolatey; no account; MIT.
+
+## How it compares
+
+A condensed view, as of October 2026. Tools without a Windows build (Conductor, Superset, cmux) are left out. See [docs/comparison.md](docs/comparison.md) for the full matrix, more tools and sources.
+
+✅ has it · ◐ partial · ❌ doesn't · ? unconfirmed
+
+| | **CodeShellManager** | Claude Code Desktop | Nimbalyst | Orca | Herdr | Claude Squad |
+|---|---|---|---|---|---|---|
+| Windows | ✅ native | ✅ native | ✅ native | ✅ native | ◐ beta | ◐ WSL only |
+| Real terminal per session | ✅ | ❌ chat UI | ❌ chat UI | ◐ | ✅ | ✅ |
+| Any CLI agent or shell | ✅ | ❌ Claude only | ◐ 2–4 agents | ◐ 4 agents | ✅ | ◐ |
+| Full-text search across all session output | ✅ | ❌ | ◐ task search | ❌ | ❌ | ❌ |
+| Sessions visible at once | ✅ 18 | ◐ 2 | ? | ? | ✅ panes | ◐ |
+| Sleep a session, keep its slot | ✅ | ◐ archive | ❌ | ❌ | ❌ | ◐ pause |
+| Waiting / approval detection | ✅ | ◐ on finish | ✅ | ? | ✅ | ◐ |
+| SSH + WSL sessions | ✅ | ✅ | ◐ | ◐ SSH | ◐ SSH | ❌ |
+| Per-session run commands | ✅ | ◐ preview servers | ❌ | ❌ | ❌ | ❌ |
+| Git worktrees | ◐ manual | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Diff / review view | ❌ [#148](https://github.com/umage-ai/CodeShellManager/issues/148) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Agents keep running with the window closed | ❌ [#149](https://github.com/umage-ai/CodeShellManager/issues/149) | ✅ cloud | ? | ? | ✅ | ✅ |
+| Licence | MIT | Proprietary | MIT | MIT | AGPL-3.0 | AGPL-3.0 |
+
+Spotted something out of date? Competitors move fast. [Open an issue](https://github.com/umage-ai/CodeShellManager/issues) and we'll correct it.
+
 ## Features
 
 - **Multi-terminal grid** — run up to 18 sessions simultaneously in configurable layouts (1, 2, 3, 4, 6 columns; 2×2, 6×2, 6×3 grids); the active pane is highlighted with a 2px accent ring so it's easy to spot
 - **Sidebar groups** — organise sessions into named groups with their own color and filter strip; bulk actions (sleep / close / re-group) operate on the active group
 - **Sleep & wake** — 💤 button parks a session: PTY torn down, but the session (and its notes) stays in the sidebar so you can wake it later from where you left off. Great when you have many long-running projects but only need a few live at once.
+- **Restart sessions** — ↻ restarts a session in place (Claude conversations resume), or restart a whole group or every session to pick up a new CLI build; bulk restarts show progress and can be stopped
+- **Git worktrees** — start a new session in a fresh worktree from any session's branch; sibling worktrees can be grouped together in the sidebar
+- **Edit session** — change a session's folder, command, SSH/WSL target or appearance after it was created
 - **Recently closed** — Ctrl+Shift+T reopens the last-closed session (browser convention); the New Session dialog also lists the last 10 closed sessions for one-click revival
 - **Per-session run commands** — define a list of labelled commands per session (Test, Build, Watch…); ▶ runs the default, F5 / Shift+F5 run/stop it, output streams into a side drawer without touching the parent terminal. Optional post-run URL opens in your browser on exit code 0.
 - **Full-text search** — all terminal output indexed to SQLite FTS5; instant search across every session, ever
@@ -37,7 +75,7 @@ Built with WPF + [xterm.js](https://xtermjs.org/) + Windows ConPTY for full pseu
 - **Session history** — clicking a search result from a closed session offers to relaunch it
 - **Configurable launch commands** — customise the commands available in the New Session dialog
 - **Claude badge** — sessions running `claude` commands get a visual indicator
-- **Tray icon** — minimises to system tray; balloon notifications for alerts
+- **Tray icon** — balloon notifications for alerts; double-click to bring the window forward
 - **Settings window** — all options configurable; persisted as JSON
 
 ## Requirements
