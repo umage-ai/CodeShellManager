@@ -729,15 +729,6 @@ public partial class MainWindow : Window
 
     private void NewSession_Click(object sender, RoutedEventArgs e) => OpenNewSessionDialog();
 
-    private void BroadcastRemoteControl_Click(object sender, RoutedEventArgs e)
-    {
-        foreach (var session in _vm.Sessions)
-        {
-            session.Bridge?.SendToTerminal("/remote-control\r");
-            session.AlertDetector?.NotifyUserInteracted();
-        }
-    }
-
     private void OpenNewSessionDialog(string defaultFolder = "")
         => OpenNewSessionDialogCore(defaultFolder, parent: null);
 
@@ -2440,6 +2431,21 @@ public partial class MainWindow : Window
 
         // Global bulk actions — operate on every live or dormant session, not just one group.
         var bulkActions = new System.Windows.Controls.MenuItem { Header = "Bulk actions" };
+
+        // Lived on the toolbar as a large "⊕ RC All" button next to "＋ New Session", where it
+        // was easy to hit by mistake for something rarely wanted. Mirrors the per-group
+        // "Remote control all in group" entry.
+        var remoteControlAll = new System.Windows.Controls.MenuItem { Header = "Remote control all" };
+        remoteControlAll.Click += (_, _) =>
+        {
+            foreach (var vm in _vm.Sessions.ToList())
+            {
+                vm.Bridge?.SendToTerminal("/remote-control\r");
+                vm.AlertDetector?.NotifyUserInteracted();
+            }
+        };
+        bulkActions.Items.Add(remoteControlAll);
+
         var wakeAllDormant = new System.Windows.Controls.MenuItem { Header = "Wake all dormant" };
         wakeAllDormant.Click += async (_, _) =>
         {
@@ -2562,6 +2568,7 @@ public partial class MainWindow : Window
 
             int liveCount = _vm.Sessions.Count;
             int dormantCount = _sessionManager.Sessions.Count(s => s.IsDormant);
+            remoteControlAll.IsEnabled = liveCount > 0;
             wakeAllDormant.IsEnabled = dormantCount > 0;
             restartAllGlobal.IsEnabled = liveCount > 0;
             sleepAllGlobal.IsEnabled = liveCount > 0;
