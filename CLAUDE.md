@@ -69,6 +69,8 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `UpdateService` | GitHub Releases version check; caches result for 24h at `%AppData%/CodeShellManager/update-cache.json` |
 | `ImportExportService` | Read/write a full `AppState` to a JSON file (settings + sessions backup) |
 | `SessionConfigEditor` | Diffs/applies a `SessionConfigDraft` onto a `ShellSession`; decides whether the change needs a PTY restart |
+| `SidebarDropResolver` | WPF-free: maps a drop Y over the rendered sidebar rows to "before / after session X" (+ the group, in inline-headers mode) and the Y of the insertion line. See "Sidebar order and drag-and-drop" |
+| `SessionOrder` | WPF-free order helpers: id-relative moves, re-aligning the grid to the sidebar order, and where a new worktree sibling should be placed. See "Sidebar order and drag-and-drop" |
 | `DbGate` | Serializes every use of the shared `output.db` `SqliteConnection`. That one connection is handed to `SearchService` *and* to every `OutputIndexer`, and it is not thread-safe — concurrent create/dispose corrupts its internal command list. Acquire as `using var _ = await DbGate.AcquireAsync();` at the top of anything touching it. See issue #102 |
 | `PwshLocator` | Single answer to "pwsh or powershell?", shared by `RunInstance` (run commands) and `PseudoTerminal.BuildCmdLine` (session wrapper) so they can't disagree. Resolves via `where.exe`. An ordinary executable is accepted from metadata alone (no spawn). A **zero-byte reparse point is ambiguous, not bad**: that shape is a Store App Execution Alias, and a *working* Store install of PowerShell 7 looks identical to a stub left by an uninstalled app — so only that case is settled by actually probing execution. Rejecting the shape outright silently downgraded Store-PS7 users to 5.1 on every session launch |
 | `ToastHelper` | Tray balloon notifications |
@@ -613,6 +615,47 @@ Sessions can be put to sleep instead of closed — the PTY is torn down but the 
 - Dormant entries are tracked in `_dormantSidebarItems: Dictionary<string, Border>`. `AddDormantSidebarItem` only *registers* the row — it deliberately does **not** add it to the visual tree, because its placement depends on the display mode and the active filter. `RebuildSidebarOrder` is the single placer, and it walks `_sessionManager.Sessions` (not the dictionary) so sleeping rows follow drag-reorder like live ones. Every caller that stages a dormant row must run `RebuildSidebarOrder` afterwards — `SleepSession` and the wake-failure path do so in place of their old bare `RefreshTerminalLayout`.
 - `OnLoaded` partitions saved sessions: dormant ones go through `AddDormantSidebarItem`; live ones through `LaunchSessionAsync`.
 - The empty-state placeholder hides whenever `_vm.Sessions.Count > 0` **or** `_dormantSidebarItems.Count > 0`.
+
+## Sidebar order and drag-and-drop
+
+**`SessionManager.Sessions` order is the one source of truth.** It is what the sidebar renders
+and what `state.json` persists. `_vm.Sessions` (the pane grid) is *derived* from it, via
+`MainViewModel.SyncSessionOrderFromManager` → `SessionOrder.AlignTo`.
+
+**Never carry an index from one list to another.** The two lists hold different sessions —
+the manager's includes dormant ones and every group, the view model's only live ones — and
+the visible sidebar rows are a third list again (cluster headers, group headers, dormant rows,
+and in FilterStrip mode only one group). Doing exactly that was the "a dragged session
+doesn't land where I want it" bug, and it had five separate causes, each reproduced by a
+simulation of the old code before it was fixed:
+
+1. The drop index counted the visible rows, so a `⎇` worktree cluster header shifted it.
+2. In FilterStrip mode, an index into the *filtered* rows was applied to the unfiltered list.
+3. A `_vm.Sessions` index was applied to `SessionManager`, which also holds dormant sessions.
+4. One index moved both lists, so the grid and the sidebar diverged.
+5. Remove-then-insert at the pre-removal index made every downward move overshoot by one.
+
+So a drop now resolves to an **anchor id** (`SidebarDropResolver`: before X / after Y), which
+means the same slot in every list, and `SessionManager.MoveSessionRelative` finds the anchor
+*after* removing the moved session. There is deliberately no index-based move left. The
+insertion line drawn while dragging (`Views/InsertionLineAdorner`) is computed from that same
+resolved target, so it cannot disagree with where the drop lands. `RegisterSession` (new,
+woken or restarted sessions joining the grid) inserts by relative position for the same reason.
+
+Dropping onto an inline **group header** assigns that group and lands the session at the top
+of it, directly under the header. Dormant rows are never drop anchors; they always render
+after their section's live rows.
+
+**Auto-clustering places new sessions once and never re-sorts.** "Open PowerShell here" makes
+a `<folder> (PS)` session in the same repo as its Claude session; `PlaceNewSessionsInClusters`
+moves it next to its sibling when its repo root resolves. Only sessions launched with
+`restoring: false` are eligible (`_clusterOnRepoResolve`), and a drag removes a session from
+that set. The previous `ApplyClusteredOrder` re-sorted *every* sibling on any Add/Remove and
+on every restore, so a PS session dragged away from its Claude session snapped back the next
+time anything opened or closed, and the saved order was rewritten on each launch.
+
+Covered by `SidebarDropResolverTests`, `SessionOrderTests` and `SidebarReorderScenarioTests`
+(the end-to-end scenarios, each of which misplaced the session before the fix).
 
 ## Per-Session Run Commands
 

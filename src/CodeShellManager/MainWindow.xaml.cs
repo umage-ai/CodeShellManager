@@ -51,6 +51,10 @@ public partial class MainWindow : Window
     // user sees the full set of icons immediately, each with a "loading" indicator.
     // Items are removed once LaunchSessionAsync registers the real sidebar item.
     private readonly Dictionary<string, Border> _launchingSidebarItems = [];
+
+    // Sessions created in this run that still need placing next to their worktree siblings
+    // once their repo root resolves. See PlaceNewSessionsInClusters.
+    private readonly HashSet<string> _clusterOnRepoResolve = [];
     /// <summary>
     /// Per-session references to the run-related controls inside the terminal wrapper.
     /// Used by RefreshTerminalRunControls() to update the play button / chips strip
@@ -1389,6 +1393,11 @@ public partial class MainWindow : Window
     {
         Log($"LaunchSession START: cmd='{session.Command}' args='{session.Args}' folder='{session.WorkingFolder}' restoring={restoring}");
 
+        // A session created in this run joins its worktree siblings once its repo root
+        // resolves. Restored, woken and restarted sessions (restoring: true) keep their saved
+        // slot — that order is the user's. See PlaceNewSessionsInClusters.
+        if (!restoring) _clusterOnRepoResolve.Add(session.Id);
+
         if (session.LaunchValidationError is { } validationError)
         {
             Log($"LaunchSession REFUSED: {validationError}");
@@ -1946,6 +1955,7 @@ public partial class MainWindow : Window
             {
                 dragPending = false;
                 System.Windows.DragDrop.DoDragDrop(container, vm.Id, System.Windows.DragDropEffects.Move);
+                HideDropIndicator();   // however it ended: dropped, cancelled, or released elsewhere
             }
         };
 
@@ -3084,7 +3094,17 @@ public partial class MainWindow : Window
             {
                 string sessionId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
                 var targets = _vm.ResolveActionTargets(sessionId);
+                // Land directly under the header it was dropped on: the top of the group.
+                // Assigning alone left it wherever its old global position happened to fall
+                // among the new group's members — usually somewhere in the middle.
+                string groupKey = group?.Id ?? "";
+                var firstMember = _sessionManager.Sessions.FirstOrDefault(s =>
+                    !s.IsDormant && s.Id != sessionId && (s.GroupId ?? "") == groupKey);
+                _clusterOnRepoResolve.Remove(sessionId);
+                if (firstMember != null)
+                    _vm.MoveSessionRelative(sessionId, firstMember.Id, after: false);
                 _vm.AssignSessionsToGroup(targets, group?.Id);
+                RebuildSidebarOrder();
                 e.Handled = true;
                 return;
             }
@@ -3253,70 +3273,54 @@ public partial class MainWindow : Window
             }
         }
 
-        // Auto-cluster: pull every session in a multi-sibling repo next to its anchor so
-        // siblings always group up, even when added/removed out of order or imported from
-        // a non-worktree creation path. This runs on Add/Remove/Reset and on RepoRoot
-        // resolve — but NOT on Move (the CollectionChanged filter skips it) so user
-        // drag-reorder is preserved.
-        bool reordered = ApplyClusteredOrder();
+        // Place freshly created sessions next to their worktree siblings — once, and only those.
+        bool reordered = PlaceNewSessionsInClusters();
 
-        if ((anyChanged || reordered) && _vm.Settings.ShowWorktreeClusters)
+        // A reorder changes the sidebar whether or not cluster headers are shown.
+        if (reordered || (anyChanged && _vm.Settings.ShowWorktreeClusters))
             RebuildSidebarOrder();
         if (reordered)
             _ = _vm.SaveStateAsync();
     }
 
     /// <summary>
-    /// Reorders <see cref="MainViewModel.Sessions"/> (and the underlying SessionManager
-    /// list) so every session sharing a RepoRoot sits adjacent to its first-seen anchor.
-    /// First-occurrence order is preserved between clusters and for solo sessions, so a
-    /// non-worktree session never gets shuffled past unrelated ones. Returns true when
-    /// at least one Move happened.
+    /// Places each session created in this run next to its worktree siblings — once, when its
+    /// repo root first resolves — so "Open PowerShell here" or a new worktree shows up beside
+    /// the session it belongs with. Returns true when anything moved.
+    ///
+    /// It deliberately does NOT re-sort the list. It used to: every Add/Remove anywhere, and
+    /// every repo root resolving (i.e. every restore), pulled ALL siblings back together. So a
+    /// PS session dragged away from its Claude session snapped back the next time anything
+    /// opened or closed, and the saved order was rewritten on every launch — the drag never
+    /// stuck. It also moved SessionManager by a _vm.Sessions index, which counts no dormant
+    /// sessions, so it shuffled the sidebar too. Now only sessions launched with
+    /// <c>restoring: false</c> are ever placed, and a drag removes a session from the set
+    /// even before its root resolves: the user's order always wins.
     /// </summary>
-    private bool ApplyClusteredOrder()
+    private bool PlaceNewSessionsInClusters()
     {
-        if (_vm.Sessions.Count < 2) return false;
+        if (_clusterOnRepoResolve.Count == 0) return false;
 
-        // Compute the desired order: stable group-by RepoRoot, anchored at first occurrence.
-        var desired = new List<SessionViewModel>(_vm.Sessions.Count);
-        var anchorIdx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        static string ClusterKey(SessionViewModel s) =>
-            s.RepoRoot is { Length: > 0 } root ? root : "__solo:" + s.Id;
+        var liveById = new Dictionary<string, SessionViewModel>(_vm.Sessions.Count);
+        foreach (var v in _vm.Sessions) liveById[v.Id] = v;
 
-        foreach (var s in _vm.Sessions)
-        {
-            string key = ClusterKey(s);
-            if (!anchorIdx.TryGetValue(key, out _))
-            {
-                anchorIdx[key] = desired.Count;
-                desired.Add(s);
-            }
-            else
-            {
-                // Insert immediately after the last existing member of this cluster.
-                int insertAt = anchorIdx[key];
-                for (int i = anchorIdx[key]; i < desired.Count; i++)
-                {
-                    if (ClusterKey(desired[i]) == key) insertAt = i + 1;
-                }
-                desired.Insert(insertAt, s);
-            }
-        }
-
-        // Apply minimal Move operations to align current order with desired.
         bool moved = false;
-        for (int i = 0; i < desired.Count; i++)
+        foreach (var vm in _vm.Sessions.ToList())
         {
-            if (_vm.Sessions[i].Id == desired[i].Id) continue;
-            int j = -1;
-            for (int k = i + 1; k < _vm.Sessions.Count; k++)
-                if (_vm.Sessions[k].Id == desired[i].Id) { j = k; break; }
-            if (j <= i) continue;
-            // Mirror in the SessionManager model so state.json persists the new order.
-            _sessionManager.MoveSession(_vm.Sessions[j].Id, i);
-            _vm.Sessions.Move(j, i);
-            moved = true;
+            if (!_clusterOnRepoResolve.Contains(vm.Id) || string.IsNullOrEmpty(vm.RepoRoot)) continue;
+            _clusterOnRepoResolve.Remove(vm.Id);
+
+            // Rebuilt per session: an earlier placement in this loop changes the order.
+            var placements = _sessionManager.Sessions
+                .Select(s => liveById.TryGetValue(s.Id, out var live)
+                    ? new SessionPlacement(s.Id, s.GroupId ?? "", !s.IsDormant, live.RepoRoot)
+                    : new SessionPlacement(s.Id, s.GroupId ?? "", false, null))
+                .ToList();
+            if (SessionOrder.ClusterAnchorFor(placements, vm.Id) is { } anchor
+                && _sessionManager.MoveSessionRelative(vm.Id, anchor, after: true))
+                moved = true;
         }
+        if (moved) _vm.SyncSessionOrderFromManager();
         return moved;
     }
 
@@ -3594,59 +3598,75 @@ public partial class MainWindow : Window
 
     // ── Sidebar drag-and-drop ─────────────────────────────────────────────────
 
+    // Where a dragged session lands is decided in ONE place — SidebarDropResolver, fed the
+    // rows exactly as rendered — and the insertion line (DragOver) and the drop itself both use
+    // that one answer, so the line shows precisely where the session will go.
+    //
+    // It used to be an index, which is what made drops land elsewhere: computed among the
+    // visible rows (cluster headers, dormant rows and a filtered group included), then applied
+    // to SessionManager.Sessions (dormant sessions, every group) and _vm.Sessions (neither),
+    // with a remove-then-insert that overshot every downward move by one. The result is an
+    // anchor id instead, which means the same slot in every list.
+    private Views.InsertionLineAdorner? _insertionLine;
+
     // Called once from constructor after SidebarSessionList is accessible.
     private void SetupSidebarDrop()
     {
         SidebarSessionList.AllowDrop = true;
-        SidebarSessionList.DragOver += (_, e) =>
+
+        // handledEventsToo: an inline group header handles DragOver for its own drop (assign to
+        // that group, land at its top) and highlights itself; the line must then be hidden
+        // rather than left behind at its last position.
+        SidebarSessionList.AddHandler(System.Windows.UIElement.DragOverEvent,
+            new System.Windows.DragEventHandler((_, e) =>
+            {
+                if (e.Handled) { HideDropIndicator(); return; }
+
+                if (IsSessionDragPayload(e.Data))
+                {
+                    if (ResolveSessionDrop(e.GetPosition(SidebarSessionList).Y) is { } target)
+                        ShowDropIndicator(target.IndicatorY);
+                    else
+                        HideDropIndicator();
+                    e.Effects = System.Windows.DragDropEffects.Move;
+                    e.Handled = true;
+                    return;
+                }
+
+                HideDropIndicator();
+                bool inlineMode = _vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.InlineHeaders;
+                e.Effects = inlineMode && IsGroupDragPayload(e.Data)
+                    ? System.Windows.DragDropEffects.Move
+                    : System.Windows.DragDropEffects.None;
+                e.Handled = true;
+            }), handledEventsToo: true);
+
+        // DragLeave also fires when the cursor merely crosses from the panel onto one of its own
+        // rows, so only hide once it has genuinely left the list. A drag that ends anywhere else
+        // (Esc, dropped outside) is covered by the drag source hiding it when DoDragDrop returns.
+        SidebarSessionList.DragLeave += (_, e) =>
         {
-            bool inlineMode = _vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.InlineHeaders;
-            bool ok = IsSessionDragPayload(e.Data)
-                || (inlineMode && IsGroupDragPayload(e.Data));
-            e.Effects = ok
-                ? System.Windows.DragDropEffects.Move
-                : System.Windows.DragDropEffects.None;
-            e.Handled = true;
+            var p = e.GetPosition(SidebarSessionList);
+            if (p.X < 0 || p.Y < 0
+                || p.X >= SidebarSessionList.ActualWidth || p.Y >= SidebarSessionList.ActualHeight)
+                HideDropIndicator();
         };
+
         SidebarSessionList.Drop += (_, e) =>
         {
-            var mode = _vm.Settings.GroupDisplayMode;
+            HideDropIndicator();
 
             if (IsSessionDragPayload(e.Data))
             {
                 string draggedId = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
-                var pos = e.GetPosition(SidebarSessionList);
-
-                // Inline mode: detect which group section the cursor fell in. If different
-                // from the dragged session's current group, reassign — otherwise the move
-                // would just "snap back" once RebuildSidebarOrder regrouped by GroupId.
-                if (mode == Models.GroupDisplayMode.InlineHeaders
-                    && _sessionManager.Groups.Count > 0)
-                {
-                    var (targetGroupId, sessionsIndex) = ResolveInlineSessionDropTarget(pos.Y);
-                    string normalizedTarget = targetGroupId ?? "";
-                    var dragged = _vm.Sessions.FirstOrDefault(s => s.Id == draggedId);
-                    if (dragged != null && (dragged.GroupId ?? "") != normalizedTarget)
-                    {
-                        // Apply the cross-section reassign to the whole selection set when
-                        // the dragged session is part of one — mirrors the header-drop UX.
-                        var targets = _vm.ResolveActionTargets(draggedId);
-                        _vm.AssignSessionsToGroup(targets, targetGroupId);
-                    }
-                    _vm.MoveSession(draggedId, sessionsIndex);
-                    RebuildSidebarOrder();
-                    return;
-                }
-
-                int targetIndex = GetSidebarDropIndex(pos);
-                _vm.MoveSession(draggedId, targetIndex);
-                RebuildSidebarOrder();
+                if (ResolveSessionDrop(e.GetPosition(SidebarSessionList).Y) is { } target)
+                    ApplySessionDrop(draggedId, target);
                 return;
             }
             // Inline mode: group reorder drops onto the sidebar resolve to a position
             // among the visible group headers. The fixed FilterStrip's own drop handler
             // is in SetupGroupStripDrop — that's the path when the strip is showing.
-            if (mode == Models.GroupDisplayMode.InlineHeaders
+            if (_vm.Settings.GroupDisplayMode == Models.GroupDisplayMode.InlineHeaders
                 && IsGroupDragPayload(e.Data))
             {
                 string payload = (string)e.Data.GetData(System.Windows.DataFormats.StringFormat);
@@ -3657,98 +3677,76 @@ public partial class MainWindow : Window
         };
     }
 
-    private int GetSidebarDropIndex(System.Windows.Point pos)
-    {
-        var children = SidebarSessionList.Children.OfType<Border>().ToList();
-        for (int i = 0; i < children.Count; i++)
-        {
-            var itemPos = children[i].TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
-            double midY = itemPos.Y + children[i].ActualHeight / 2;
-            if (pos.Y < midY) return i;
-        }
-        return children.Count;
-    }
-
     /// <summary>
-    /// In inline-headers mode, maps a drop Y to (target group, _vm.Sessions index).
-    /// Walks SidebarSessionList in order: each "groupheader:" item switches the current
-    /// section; session items inside the section define insertion midpoints. If the drop
-    /// falls past every section's midline, the session lands at the end of whatever
-    /// section the cursor was last inside.
+    /// Measures the sidebar rows as rendered and asks <see cref="SidebarDropResolver"/> where a
+    /// session dropped at <paramref name="y"/> goes. Rows are measured as layout SLOTS (margins
+    /// included) so neighbouring rows share one boundary — the insertion line sits exactly in
+    /// the gap between them.
     /// </summary>
-    private (string? targetGroupId, int sessionsIndex) ResolveInlineSessionDropTarget(double y)
+    private SidebarDropTarget? ResolveSessionDrop(double y)
     {
-        // Pass 1: build per-section bounds + session lists by walking the visible children.
-        // A section's vertical bounds are [its-header-bottom .. next-header-top] (or [0..]/[..MaxValue]
-        // for the Ungrouped implicit section / the final section).
-        var sections = new List<(string? groupId, double endY, List<Border> sessions)>();
-        string? currentGroupId = null;
-        double currentEndY = double.MaxValue;
-        var currentSessions = new List<Border>();
-
+        var rows = new List<SidebarRow>(SidebarSessionList.Children.Count);
         foreach (System.Windows.UIElement child in SidebarSessionList.Children)
         {
-            if (child is not Border item) continue;
-            string? tag = item.Tag as string;
-            if (tag == null) continue;
-            var itemPos = item.TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
+            if (child is not FrameworkElement fe || fe.Visibility != Visibility.Visible) continue;
+            if (fe.Tag is not string tag) continue;
 
+            SidebarRowKind kind;
+            string? id;
             if (tag.StartsWith("groupheader:"))
             {
-                // Close out the current section at the new header's top.
-                currentEndY = itemPos.Y;
-                // Skip empty sections: if no sessions appeared before this header
-                // (e.g. drop above the first header in a no-ungrouped sidebar), an
-                // empty entry would let Pass 2 match the section but fall through to
-                // the "past every session" tail and silently retarget to ungrouped.
-                if (currentSessions.Count > 0)
-                    sections.Add((currentGroupId, currentEndY, currentSessions));
-                // Start a new section.
-                string id = tag.Substring("groupheader:".Length);
-                currentGroupId = id == GroupFilter.Ungrouped ? null : id;
-                currentSessions = new List<Border>();
-                continue;
+                kind = SidebarRowKind.GroupHeader;
+                id = tag.Substring("groupheader:".Length);
+                if (id == GroupFilter.Ungrouped) id = null;
             }
-            if (tag.StartsWith("cluster:") || tag.StartsWith("dormant:")) continue;
-            currentSessions.Add(item);
+            else if (tag.StartsWith("cluster:")) { kind = SidebarRowKind.ClusterHeader; id = null; }
+            else if (tag.StartsWith("dormant:")) { kind = SidebarRowKind.Dormant; id = tag.Substring("dormant:".Length); }
+            else if (tag.StartsWith("launching:")) { kind = SidebarRowKind.Session; id = tag.Substring("launching:".Length); }
+            else { kind = SidebarRowKind.Session; id = tag; }   // live rows are tagged with the session id
+
+            double top = fe.TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList).Y - fe.Margin.Top;
+            rows.Add(new SidebarRow(kind, id, top, fe.ActualHeight + fe.Margin.Top + fe.Margin.Bottom));
         }
-        if (currentSessions.Count > 0)
-            sections.Add((currentGroupId, double.MaxValue, currentSessions));
-
-        // Pass 2: find the section whose end-Y is past the drop Y, then resolve the
-        // insertion point within it.
-        foreach (var sec in sections)
-        {
-            if (y >= sec.endY) continue;
-
-            foreach (var sItem in sec.sessions)
-            {
-                var sp = sItem.TranslatePoint(new System.Windows.Point(0, 0), SidebarSessionList);
-                if (y < sp.Y + sItem.ActualHeight / 2)
-                {
-                    string? sid = sItem.Tag as string;
-                    if (!string.IsNullOrEmpty(sid))
-                    {
-                        for (int j = 0; j < _vm.Sessions.Count; j++)
-                            if (_vm.Sessions[j].Id == sid) return (sec.groupId, j);
-                    }
-                }
-            }
-
-            // Past every session in this section — insert at the section's tail, i.e. just
-            // after the last existing member of this group in _vm.Sessions.
-            int lastIdx = -1;
-            for (int j = 0; j < _vm.Sessions.Count; j++)
-            {
-                if ((_vm.Sessions[j].GroupId ?? "") == (sec.groupId ?? ""))
-                    lastIdx = j;
-            }
-            return (sec.groupId, lastIdx < 0 ? _vm.Sessions.Count : lastIdx + 1);
-        }
-
-        // Past every section (shouldn't normally happen — last section's endY is MaxValue).
-        return (currentGroupId, _vm.Sessions.Count);
+        return SidebarDropResolver.Resolve(rows, y);
     }
+
+    private void ApplySessionDrop(string draggedId, SidebarDropTarget target)
+    {
+        // A drag is the user saying where this session goes, so it is never auto-clustered
+        // afterwards — see PlaceNewSessionsInClusters.
+        _clusterOnRepoResolve.Remove(draggedId);
+
+        if (target.BeforeSessionId is { } beforeId)
+            _vm.MoveSessionRelative(draggedId, beforeId, after: false);
+        else if (target.AfterSessionId is { } afterId)
+            _vm.MoveSessionRelative(draggedId, afterId, after: true);
+
+        // Inline headers: the section under the cursor is the group. A multi-selection moves
+        // group together, mirroring the header drop.
+        if (target.AssignsGroup)
+        {
+            var dragged = _sessionManager.Sessions.FirstOrDefault(s => s.Id == draggedId);
+            if (dragged != null && (dragged.GroupId ?? "") != (target.GroupId ?? ""))
+                _vm.AssignSessionsToGroup(_vm.ResolveActionTargets(draggedId), target.GroupId);
+        }
+        RebuildSidebarOrder();
+    }
+
+    private void ShowDropIndicator(double y)
+    {
+        if (_insertionLine == null)
+        {
+            // The sidebar sits in a ScrollViewer, whose content presenter supplies the layer —
+            // so the line scrolls with the rows and is clipped to the viewport.
+            var layer = System.Windows.Documents.AdornerLayer.GetAdornerLayer(SidebarSessionList);
+            if (layer == null) return;
+            _insertionLine = new Views.InsertionLineAdorner(SidebarSessionList);
+            layer.Add(_insertionLine);
+        }
+        _insertionLine.ShowAt(y);
+    }
+
+    private void HideDropIndicator() => _insertionLine?.Hide();
 
     /// <summary>
     /// In inline-headers mode, maps a Y coordinate within SidebarSessionList to a user-group

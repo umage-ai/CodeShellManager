@@ -363,12 +363,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         // Mirror SessionManager order so insert-after-parent (CreateSession with afterSessionId)
         // also lands the VM at the matching slot — otherwise the model order would be correct
-        // but the sidebar would still show the new entry at the bottom.
-        int idx = -1;
-        for (int i = 0; i < _sessionManager.Sessions.Count; i++)
-            if (_sessionManager.Sessions[i].Id == vm.Id) { idx = i; break; }
-        if (idx >= 0 && idx <= Sessions.Count) Sessions.Insert(idx, vm);
-        else Sessions.Add(vm);
+        // but the sidebar would still show the new entry at the bottom. Insert by RELATIVE
+        // position, not by the manager's index: that list also holds dormant sessions, so its
+        // index is a different slot here (a wake used to land at the wrong grid position).
+        Sessions.Insert(
+            SessionOrder.InsertionIndex(Sessions, ManagerOrder(), s => s.Id, vm.Id), vm);
         ActiveSession = vm;
         _ = SaveStateAsync();
     }
@@ -473,16 +472,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public SessionViewModel? GetSlotSession(int slot) =>
         slot < Sessions.Count ? Sessions[slot] : null;
 
-    public void MoveSession(string sessionId, int newIndex)
+    /// <summary>
+    /// Moves a session to sit immediately before (or after) another — the only way the sidebar
+    /// reorders. The SessionManager list is moved by id, and the grid order is then re-derived
+    /// from it rather than moved by the same index: the two lists hold different sessions
+    /// (dormant ones live only in the manager), so an index is a different slot in each.
+    /// </summary>
+    public void MoveSessionRelative(string sessionId, string anchorId, bool after)
     {
-        _sessionManager.MoveSession(sessionId, newIndex);
-        var vm = Sessions.FirstOrDefault(s => s.Id == sessionId);
-        if (vm == null) return;
-        int cur = Sessions.IndexOf(vm);
-        newIndex = Math.Clamp(newIndex, 0, Sessions.Count - 1);
-        if (cur != newIndex) Sessions.Move(cur, newIndex);
+        if (!_sessionManager.MoveSessionRelative(sessionId, anchorId, after)) return;
+        SyncSessionOrderFromManager();
         _ = SaveStateAsync();
     }
+
+    /// <summary>
+    /// Re-aligns <see cref="Sessions"/> (the pane grid) to the SessionManager's order (the
+    /// sidebar and state.json). Raises only Move notifications, which MainWindow's
+    /// CollectionChanged handler deliberately ignores. Returns true when anything moved.
+    /// </summary>
+    public bool SyncSessionOrderFromManager() =>
+        SessionOrder.AlignTo(Sessions, ManagerOrder(), s => s.Id);
+
+    private List<string> ManagerOrder() => _sessionManager.Sessions.Select(s => s.Id).ToList();
 
     partial void OnLayoutChanged(LayoutMode value)
     {
