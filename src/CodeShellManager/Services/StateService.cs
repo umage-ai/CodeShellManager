@@ -25,6 +25,9 @@ public class StateService
     /// <summary>Serializes concurrent saves — see SaveAsync.</summary>
     private static readonly SemaphoreSlim SaveGate = new(1, 1);
 
+    /// <summary>Order in which snapshots were taken, and the newest one on disk (read/written under SaveGate).</summary>
+    private static long _saveSeq, _writtenSeq;
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -113,19 +116,42 @@ public class StateService
     /// </summary>
     public async Task SaveAsync(AppState state)
     {
+        // Serialize HERE, on the caller's thread, and do the file work on the pool.
+        //
+        // Callers are almost all on the UI thread, and the AppState graph is mutated there
+        // too, so the snapshot has to be taken there — serializing on another thread could
+        // walk a session list mid-edit. The I/O is a different matter: the temp write and
+        // File.Replace used to run on the UI thread as well (no ConfigureAwait, and
+        // File.Replace is synchronous), and antivirus or a synced folder can make that swap
+        // take a visible while. Every OSC 9001 prompt hook, window move and git RepoRoot
+        // landing triggers a save.
+        long seq = Interlocked.Increment(ref _saveSeq);
+        byte[] json;
+        try { json = JsonSerializer.SerializeToUtf8Bytes(state, Options); }
+        catch (Exception ex) { Log($"save failed: {ex.Message}"); return; }
+
+        await Task.Run(() => WriteAsync(json, seq)).ConfigureAwait(false);
+    }
+
+    private static async Task WriteAsync(byte[] json, long seq)
+    {
         // Serialize saves. 29 of the ~32 SaveStateAsync call sites are fire-and-forget,
         // so overlapping writes are routine rather than exotic. Without this gate two
         // saves race on the same temp file, and one can File.Replace the other's
         // half-written content into the live file — manufacturing exactly the torn
         // state this method exists to prevent.
-        await SaveGate.WaitAsync();
+        await SaveGate.WaitAsync().ConfigureAwait(false);
         var path = StatePath;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            string json = JsonSerializer.Serialize(state, Options);
+            // The gate doesn't promise FIFO order, and snapshots are now taken before
+            // waiting on it — so an older snapshot can reach this point after a newer
+            // one has already been written. Writing it would roll state back.
+            if (seq <= _writtenSeq) return;
 
-            await File.WriteAllTextAsync(TempPath, json);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            await File.WriteAllBytesAsync(TempPath, json).ConfigureAwait(false);
 
             if (File.Exists(path))
                 // Atomic on NTFS, and rotates the old file into .bak in one step.
@@ -133,6 +159,8 @@ public class StateService
                 File.Replace(TempPath, path, BackupPath, ignoreMetadataErrors: true);
             else
                 File.Move(TempPath, path);   // first write — nothing to back up or replace
+
+            _writtenSeq = seq;
         }
         catch (Exception ex)
         {

@@ -308,6 +308,57 @@ public class SessionRunnerTests
     }
 
     [Fact]
+    public void Runner_OutputFiresOutputChangedButNotInstancesChanged()
+    {
+        // Output is per 4KB PTY chunk; InstancesChanged rebuilds the chips. Sharing one
+        // event made a chatty run rebuild its chips for every chunk.
+        var fake = new FakePseudoTerminal();
+        var runner = new SessionRunner(LocalSession(), () => fake);
+        runner.Run(Item());
+
+        int instances = 0, output = 0;
+        runner.InstancesChanged += () => instances++;
+        runner.OutputChanged += () => output++;
+
+        fake.EmitData("a");
+        fake.EmitData("b");
+
+        Assert.Equal(0, instances);
+        Assert.Equal(2, output);
+    }
+
+    [Fact]
+    public void RunInstance_ReadSinceReturnsOnlyTheNewTail()
+    {
+        var fake = new FakePseudoTerminal();
+        var inst = new RunInstance(Item(), () => fake);
+        inst.Start(LocalSession());
+
+        fake.EmitData("hello ");
+        Assert.Equal("hello ", inst.SnapshotOutput(out long pos));
+
+        fake.EmitData("world");
+        Assert.Equal("world", inst.ReadSince(pos, out pos));
+        Assert.Equal("", inst.ReadSince(pos, out _));
+    }
+
+    [Fact]
+    public void RunInstance_ReadSinceReturnsNullOnceTheHeadIsTrimmedPastIt()
+    {
+        // The drawer must re-snapshot rather than append a tail that no longer joins up.
+        var fake = new FakePseudoTerminal();
+        var inst = new RunInstance(Item(), () => fake);
+        inst.Start(LocalSession());
+
+        fake.EmitData("start");
+        inst.SnapshotOutput(out long pos);
+
+        fake.EmitData(new string('x', 1_000_010));   // trims "start" and then some
+
+        Assert.Null(inst.ReadSince(pos, out _));
+    }
+
+    [Fact]
     public void RunInstance_OutputBufferStripsAnsiEscapeSequences()
     {
         var fake = new FakePseudoTerminal();

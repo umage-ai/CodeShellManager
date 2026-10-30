@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using CodeShellManager.Models;
 using CodeShellManager.Services;
@@ -101,6 +102,52 @@ public class StateServiceTests : IDisposable
         var loaded = await _svc.LoadAsync();
         Assert.Single(loaded.Sessions);
         Assert.StartsWith("s", loaded.Sessions[0].Id);
+    }
+
+    [Fact]
+    public async Task Save_ManyConcurrentSaves_TheNewestSnapshotWins()
+    {
+        // Snapshots are taken before the save gate is acquired, and the gate isn't FIFO,
+        // so an older snapshot can reach the disk after a newer one. It must be dropped,
+        // not written over the newer state.
+        var saves = new List<Task>();
+        for (int i = 0; i < 40; i++)
+            saves.Add(_svc.SaveAsync(WithSessions($"s{i}")));
+
+        await Task.WhenAll(saves).WaitAsync(TimeSpan.FromSeconds(30));
+
+        var loaded = await _svc.LoadAsync();
+        Assert.Equal("s39", Assert.Single(loaded.Sessions).Id);
+    }
+
+    /// <summary>Records Posts but never runs them — stands in for a busy UI thread.</summary>
+    private sealed class DeadSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state) { }
+        public override void Send(SendOrPostCallback d, object? state) { }
+    }
+
+    [Fact]
+    public async Task Save_NeverNeedsTheCallersContextToFinish()
+    {
+        // The file write and File.Replace used to continue on the caller's context — the
+        // WPF UI thread, for nearly every caller. If any await still captures it, the
+        // continuation is handed to a context that never runs it and the save never ends.
+        var tcs = new TaskCompletionSource<Task>();
+        var thread = new Thread(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new DeadSynchronizationContext());
+            tcs.SetResult(_svc.SaveAsync(WithSessions("ui")));
+        }) { IsBackground = true };
+        thread.Start();
+
+        Task save = await tcs.Task;
+        Task done = await Task.WhenAny(save, Task.Delay(TimeSpan.FromSeconds(20)));
+        Assert.True(ReferenceEquals(done, save),
+            "SaveAsync did not complete on a caller whose SynchronizationContext never runs work.");
+
+        var loaded = await _svc.LoadAsync();
+        Assert.Equal("ui", Assert.Single(loaded.Sessions).Id);
     }
 
     // ── recovery ─────────────────────────────────────────────────────────────
