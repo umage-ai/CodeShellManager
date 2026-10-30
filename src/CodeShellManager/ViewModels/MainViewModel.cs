@@ -361,13 +361,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             };
         }
 
-        // Mirror SessionManager order so insert-after-parent (CreateSession with afterSessionId)
-        // also lands the VM at the matching slot — otherwise the model order would be correct
-        // but the sidebar would still show the new entry at the bottom.
-        int idx = -1;
-        for (int i = 0; i < _sessionManager.Sessions.Count; i++)
-            if (_sessionManager.Sessions[i].Id == vm.Id) { idx = i; break; }
-        if (idx >= 0 && idx <= Sessions.Count) Sessions.Insert(idx, vm);
+        // Mirror SessionManager order so insert-after-parent (CreateSession with afterSessionId),
+        // restart and wake all land the VM at the slot matching its sidebar row. The model
+        // index can't be used directly — see SessionOrder.LiveInsertIndex.
+        int idx = SessionOrder.LiveInsertIndex(
+            _sessionManager.Sessions.Select(s => s.Id).ToList(),
+            Sessions.Select(s => s.Id).ToList(),
+            vm.Id);
+        if (idx >= 0) Sessions.Insert(idx, vm);
         else Sessions.Add(vm);
         ActiveSession = vm;
         _ = SaveStateAsync();
