@@ -14,7 +14,7 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 | **Claude Code Desktop** | Anthropic's official app: chat-style UI for Claude, with panes, diffs and previews | Native | Proprietary |
 | **Nimbalyst** | Desktop workspace with Claude Code and Codex sessions on a kanban board, plus editors | Native | MIT |
 | **Orca** | Sends one prompt to several agents, each in its own git worktree, and compares results | Native | MIT |
-| **Herdr** | Rust terminal multiplexer that tracks whether each agent is working, blocked or idle | Beta | AGPL-3.0 |
+| **Herdr** | Rust terminal multiplexer that tracks whether each agent is working, blocked or idle | Beta | Apache-2.0 |
 | **Claude Squad** | Go terminal UI on top of tmux and git worktrees | WSL only | AGPL-3.0 |
 | **GridVibe** | Python grid of agent, SSH and WSL panes, with offline voice input | Native (needs Python) | ? |
 
@@ -33,6 +33,7 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 | Notes per project | ✅ searchable | ❌ | ✅ docs | ❌ | ❌ | ❌ | ❌ |
 | **Attention and scale** | | | | | | | |
 | Waiting / needs-approval detection | ✅ dots + tray | ◐ on finish only | ✅ iOS push | ? | ✅ | ◐ | ✅ |
+| Working / idle state per agent | ❌ ([#154](https://github.com/umage-ai/CodeShellManager/issues/154)) | ? | ? | ? | ✅ working · blocked · done · idle | ? | ? |
 | Sleep a session (free resources, keep its slot) | ✅ | ◐ archive | ❌ | ❌ | ❌ | ◐ pause | ❌ |
 | Restore and resume Claude on startup | ✅ auto `--resume` | ✅ | ✅ | ? | ✅ detach/attach | ◐ | ✅ |
 | **Remote and environments** | | | | | | | |
@@ -41,8 +42,8 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 | Agents keep running with the window closed | ❌ ([#149](https://github.com/umage-ai/CodeShellManager/issues/149)) | ✅ cloud | ? | ? | ✅ | ✅ tmux | ❌ |
 | Mobile or remote control | ❌ | ✅ Dispatch | ✅ iOS | ✅ | ✅ SSH attach | ❌ | ❌ |
 | **Review and workflow** | | | | | | | |
-| Git worktree creation | ◐ manual | ✅ per session | ✅ | ✅ core feature | ❌ | ✅ | ? |
-| Diff / review view | ❌ ([#148](https://github.com/umage-ai/CodeShellManager/issues/148)) | ✅ | ✅ | ✅ | ❌ | ✅ | ◐ git sidebar |
+| Git worktree creation | ◐ manual | ✅ per session | ✅ | ✅ core feature | ◐ via plugins | ✅ | ? |
+| Diff / review view | ❌ ([#148](https://github.com/umage-ai/CodeShellManager/issues/148)) | ✅ | ✅ | ✅ | ◐ via plugin | ✅ | ◐ git sidebar |
 | Browser / app preview | ❌ post-run URL only | ✅ | ✅ | ? | ❌ | ❌ | ✅ |
 | Per-session run commands (F5, background output) | ✅ | ◐ preview servers | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Install** | | | | | | | |
@@ -64,6 +65,7 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 
 ## Where it lags
 
+- **No "agent is working" state.** CSM knows when a session is waiting for you, but not when it's busy. Herdr tracks working, blocked, done and idle for about 25 agents: [#154](https://github.com/umage-ai/CodeShellManager/issues/154).
 - **No diff or review view** yet: [#148](https://github.com/umage-ai/CodeShellManager/issues/148).
 - **Closing the window ends the sessions.** Close-to-tray with live status is planned: [#149](https://github.com/umage-ai/CodeShellManager/issues/149).
 - **Worktrees are manual.** Orca, Claude Code Desktop and Nimbalyst make one worktree per task the default.
@@ -75,6 +77,7 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 - [Claude Code Desktop documentation](https://code.claude.com/docs/en/desktop)
 - [Nimbalyst](https://nimbalyst.com/) and its [session-manager comparison](https://nimbalyst.com/blog/best-session-managers-for-claude-code-and-codex/)
 - [Orca (stablyai/orca)](https://github.com/stablyai/orca)
+- [Herdr (herdrdev/herdr)](https://github.com/herdrdev/herdr), its [agent-state docs](https://herdr.dev/docs/agents/), and the plugins [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr) and [herdr-projects](https://github.com/eliasstravik/herdr-projects)
 - [Herdr review (bitdoze)](https://www.bitdoze.com/herdr-agent-multiplexer/) and [guide (Better Stack)](https://betterstack.com/community/guides/ai/herdr-ai-agent/)
 - [Claude Squad](https://github.com/smtg-ai/claude-squad)
 - [GridVibe](https://gitblind.noratr.app/JSstudent/gridvibe)
