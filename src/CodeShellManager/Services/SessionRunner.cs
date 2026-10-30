@@ -20,6 +20,13 @@ public class SessionRunner : IDisposable
     /// <summary>Fires when any instance is added, replaced, or removed, or any state changes.</summary>
     public event Action? InstancesChanged;
 
+    /// <summary>
+    /// Fires when any instance produced output — once per PTY chunk, from the PTY reader
+    /// thread. Kept separate from <see cref="InstancesChanged"/> so the UI can throttle the
+    /// high-rate output path without delaying chip state changes.
+    /// </summary>
+    public event Action? OutputChanged;
+
     public SessionRunner(ShellSession session) { _session = session; }
 
     /// <summary>
@@ -107,7 +114,7 @@ public class SessionRunner : IDisposable
     }
 
     private void OnInstanceStateChanged() => InstancesChanged?.Invoke();
-    private void OnInstanceOutputChanged() => InstancesChanged?.Invoke();
+    private void OnInstanceOutputChanged() => OutputChanged?.Invoke();
 
     public void Dispose() => StopAll();
 }

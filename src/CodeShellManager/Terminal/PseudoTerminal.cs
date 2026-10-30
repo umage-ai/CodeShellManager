@@ -320,7 +320,18 @@ public sealed class PseudoTerminal : IPseudoTerminal
         _stdin = new FileStream(_inputWrite!, FileAccess.Write, 4096, false);
         _stdout = new FileStream(_outputRead!, FileAccess.Read, 4096, false);
 
-        _ = Task.Run(ReadLoopAsync);
+        // A dedicated thread, not the pool: this read blocks for the whole life of the
+        // session. On the pool that meant one permanently parked pool thread per PTY —
+        // 55 of them measured at ~60 sessions, against a pool minimum of one per core.
+        // Past the minimum the pool only adds threads gradually, so any burst of other
+        // pool work (git polls, timers, save I/O) queued — including the next read of the
+        // active pane, which looks exactly like a keystroke that doesn't echo.
+        // Same reasoning as MonitorExitAsync's RegisterWaitForSingleObject below.
+        new Thread(ReadLoop)
+        {
+            IsBackground = true,
+            Name = "PTY reader",
+        }.Start();
         _ = Task.Run(MonitorExitAsync);
     }
 
@@ -353,7 +364,7 @@ public sealed class PseudoTerminal : IPseudoTerminal
         catch { }
     }
 
-    private async Task ReadLoopAsync()
+    private void ReadLoop()
     {
         var buffer = new byte[4096];
         try
@@ -361,12 +372,11 @@ public sealed class PseudoTerminal : IPseudoTerminal
             while (!_cts.IsCancellationRequested)
             {
                 // Anonymous pipes are synchronous — ReadAsync stalls on Windows.
-                // Use blocking Read() on a thread-pool thread instead.
-                int read = await Task.Run(() =>
-                {
-                    try { return _stdout!.Read(buffer, 0, buffer.Length); }
-                    catch { return 0; }
-                }, _cts.Token);
+                // Blocking Read() on this dedicated thread instead; it returns 0 when
+                // the pipe closes (process exit, or Dispose closing the pseudoconsole).
+                int read;
+                try { read = _stdout!.Read(buffer, 0, buffer.Length); }
+                catch { read = 0; }
 
                 if (read == 0) break;
                 // Send raw bytes as Latin-1 so xterm.js can interpret VT sequences correctly
