@@ -139,10 +139,11 @@
   // Parsing and validation are on the C# side (ProgramStatusPayload) — this only routes.
   //
   // Claude Code sends the query at startup and, with no reply, never reports status. The
-  // host decides whether to answer (OFF by default — AppSettings.AnswerProgramStatusProbe):
-  // under the inbox ConPTY the answer always loses to conhost's own CSI c reply, so it
-  // would only reach the program as late, unsolicited input. See CLAUDE.md "Program status
-  // (OSC 7501)". Reports are always forwarded.
+  // host decides whether to answer: yes on the bundled ConPTY, no on the inbox one (where
+  // conhost answers the program's CSI c sentinel itself, first). ORDER MATTERS: this post
+  // happens synchronously inside the parser, so it reaches the host before the 'input'
+  // message carrying xterm's answer to the CSI c the program sends right after the query.
+  // See CLAUDE.md "Program status (OSC 7501)". Reports are always forwarded.
   term.parser.registerOscHandler(7501, data => {
     try {
       const s = String(data);

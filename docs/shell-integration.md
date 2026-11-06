@@ -11,11 +11,12 @@ Programs running inside a CodeShellManager terminal can push session state up to
 > 7501 record, CSM's own screen-scraping prompt detection stands down for it ("Clear status" in
 > the session's right-click menu hands it back). Status is runtime-only — never saved.
 >
-> **Send reports without querying first.** CSM does not answer the `OSC 7501 ; ? ST` feature
-> query by default: under the Windows inbox ConPTY a reply cannot arrive before conhost's own
-> answer to the `CSI c` query programs send right after it, so it would only reach the program
-> as late, unsolicited input. The spec makes detection optional; just report. (Claude Code
-> probes and therefore does not report under the inbox ConPTY yet.)
+> **Feature query.** CSM answers `OSC 7501 ; ? ST` with `OSC 7501 ; ? ST` (default lists) on its
+> bundled ConPTY, which is the default — Claude Code's status reporting works there. If a user has
+> switched back to the Windows inbox ConPTY (`UseBundledConPty: false`), the query is not
+> answered: the inbox conhost answers the `CSI c` query programs send right after it itself, so a
+> reply could only arrive late, as unsolicited input. Either way the spec makes detection
+> optional — a program that reports without querying first works everywhere.
 
 ## Wire format
 

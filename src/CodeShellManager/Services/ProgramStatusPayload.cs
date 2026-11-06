@@ -74,8 +74,9 @@ public static class ProgramStatusPayload
     /// <para>
     /// Claude Code sends the query at startup and, if it gets no reply before its
     /// device-attributes sentinel, logs <c>probe: no reply to OSC 7501 ; ?</c> and never reports.
-    /// Under the inbox ConPTY that sentinel is answered by conhost first, so the reply is OFF by
-    /// default and gated (<see cref="ProgramStatusProbeGate"/>).
+    /// This raw form is what the bundled ConPTY delivers intact and in order; under the inbox
+    /// ConPTY conhost answers that sentinel itself first, so there the reply is off by default
+    /// (<see cref="ProgramStatusProbeGate"/>).
     /// </para>
     /// </summary>
     public const string ProbeReply = "\x1b]7501;?\x1b\\";
