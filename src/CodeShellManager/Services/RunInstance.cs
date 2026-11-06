@@ -45,6 +45,9 @@ public partial class RunInstance : ObservableObject, IDisposable
     private readonly Func<IPseudoTerminal> _ptyFactory;
     private readonly StringBuilder _ansiStripped = new();
     private readonly object _bufLock = new();
+    // Characters ever appended, including any since trimmed from the head. Lets the drawer
+    // append only what is new instead of re-assigning up to 1MB per refresh — see ReadSince.
+    private long _totalAppended;
     private bool _disposed;
 
     public event Action? OutputChanged;
@@ -78,7 +81,7 @@ public partial class RunInstance : ObservableObject, IDisposable
     {
         if (_pty != null) throw new InvalidOperationException("Already started — call Dispose() first.");
 
-        lock (_bufLock) { _ansiStripped.Clear(); }
+        lock (_bufLock) { _ansiStripped.Clear(); _totalAppended = 0; }
         OutputBuffer = "";
         ExitCode = null;
         StartedAt = DateTime.Now;
@@ -152,9 +155,7 @@ public partial class RunInstance : ObservableObject, IDisposable
         string snapshot;
         lock (_bufLock)
         {
-            _ansiStripped.Append(text);
-            if (_ansiStripped.Length > MaxBufferChars)
-                _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
+            AppendLocked(text);
             snapshot = _ansiStripped.ToString();
         }
         OutputBuffer = snapshot;
@@ -183,13 +184,17 @@ public partial class RunInstance : ObservableObject, IDisposable
         // PropertyChanged per chunk on a hot path. OutputBuffer has no consumers
         // in the app (only tests) — the app reads SnapshotOutput() on demand.
         string stripped = AnsiPattern().Replace(text, "");
-        lock (_bufLock)
-        {
-            _ansiStripped.Append(stripped);
-            if (_ansiStripped.Length > MaxBufferChars)
-                _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
-        }
+        lock (_bufLock) AppendLocked(stripped);
         OutputChanged?.Invoke();
+    }
+
+    /// <summary>Caller holds <see cref="_bufLock"/>.</summary>
+    private void AppendLocked(string text)
+    {
+        _ansiStripped.Append(text);
+        _totalAppended += text.Length;
+        if (_ansiStripped.Length > MaxBufferChars)
+            _ansiStripped.Remove(0, _ansiStripped.Length - MaxBufferChars);
     }
 
     private void OnPtyExited()
@@ -270,6 +275,36 @@ public partial class RunInstance : ObservableObject, IDisposable
     public string SnapshotOutput()
     {
         lock (_bufLock) return _ansiStripped.ToString();
+    }
+
+    /// <summary>
+    /// Snapshots the buffer together with the append position it reflects, so a later
+    /// <see cref="ReadSince"/> can continue from exactly there. Thread-safe.
+    /// </summary>
+    public string SnapshotOutput(out long position)
+    {
+        lock (_bufLock)
+        {
+            position = _totalAppended;
+            return _ansiStripped.ToString();
+        }
+    }
+
+    /// <summary>
+    /// Text appended after <paramref name="position"/> (a value from an earlier read), or
+    /// null when the head has since been trimmed past it and the caller must re-snapshot.
+    /// <paramref name="newPosition"/> is where the next read continues from. Thread-safe.
+    /// </summary>
+    public string? ReadSince(long position, out long newPosition)
+    {
+        lock (_bufLock)
+        {
+            newPosition = _totalAppended;
+            long headPosition = _totalAppended - _ansiStripped.Length;
+            if (position < headPosition || position > _totalAppended) return null;
+            int start = (int)(position - headPosition);
+            return _ansiStripped.ToString(start, _ansiStripped.Length - start);
+        }
     }
 
     /// <summary>

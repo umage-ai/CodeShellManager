@@ -68,6 +68,12 @@ public partial class MainWindow : Window
         WpfButton drawerCopyBtn,
         WpfButton drawerSendBtn)> _runControls = new();
     private readonly Dictionary<string, string> _drawerItemBySession = new();
+    /// <summary>
+    /// What each session's drawer TextBox currently holds: which run, the append position
+    /// it reflects, and how many characters it contains. Lets RefreshRunDrawer append only
+    /// the new tail rather than re-assigning up to 1MB of text per refresh.
+    /// </summary>
+    private readonly Dictionary<string, (RunInstance inst, long position, int length)> _drawerShown = new();
     // Per-session sidebar action button panels — kept so SettingsButton_Click
     // can flip every row to a new SidebarActionIconsMode without rebuilding sidebar items.
     private readonly Dictionary<string, StackPanel> _sidebarActionPanels = new();
@@ -1189,24 +1195,62 @@ public partial class MainWindow : Window
         }
         c.chipsStrip.Visibility = instances.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        // Update drawer if a viewed item exists.
+        RefreshRunDrawer(sessionId);
+    }
+
+    /// <summary>
+    /// Updates the run-output drawer only — header, text, stop button. This is the part
+    /// output changes need, and it runs throttled from <c>Runner.OutputChanged</c>.
+    /// </summary>
+    private void RefreshRunDrawer(string sessionId)
+    {
+        if (!_runControls.TryGetValue(sessionId, out var c)) return;
+        var vm = _vm.Sessions.FirstOrDefault(s => s.Id == sessionId);
+        if (vm == null) return;
+
         if (_drawerItemBySession.TryGetValue(sessionId, out var viewedItemId) &&
             vm.Runner.GetInstance(viewedItemId) is { } viewedInst)
         {
             c.drawerHeader.Text = $"{viewedInst.Label} — {DescribeState(viewedInst)}";
-            c.drawerText.Text = viewedInst.SnapshotOutput();
+            c.drawerStopBtn.IsEnabled = viewedInst.State == RunState.Running;
+
+            // Append only the new tail. Re-assigning the whole buffer (up to 1MB) per
+            // refresh made the TextBox re-lay-out everything on the UI thread each time.
+            // Fall back to a full snapshot when the drawer shows a different run, the
+            // buffer's head was trimmed past what is shown, or the box has grown well
+            // beyond the buffer cap (AppendText never trims).
+            string? tail = null;
+            long position = 0;
+            if (_drawerShown.TryGetValue(sessionId, out var shown) && ReferenceEquals(shown.inst, viewedInst))
+                tail = viewedInst.ReadSince(shown.position, out position);
+
+            if (tail != null && shown.length + tail.Length <= RunDrawerMaxChars)
+            {
+                if (tail.Length > 0) c.drawerText.AppendText(tail);
+                _drawerShown[sessionId] = (viewedInst, position, shown.length + tail.Length);
+            }
+            else
+            {
+                string text = viewedInst.SnapshotOutput(out position);
+                c.drawerText.Text = text;
+                _drawerShown[sessionId] = (viewedInst, position, text.Length);
+            }
+
             // Auto-scroll to the end while the run is active.
             if (viewedInst.State == RunState.Running)
                 c.drawerText.ScrollToEnd();
-            c.drawerStopBtn.IsEnabled = viewedInst.State == RunState.Running;
         }
         else
         {
             // Viewed item disappeared (was dismissed). Hide the drawer.
             c.drawer.Visibility = Visibility.Collapsed;
             _drawerItemBySession.Remove(sessionId);
+            _drawerShown.Remove(sessionId);
         }
     }
+
+    /// <summary>Drawer text ceiling before a full re-snapshot: 1.5× RunInstance's buffer cap.</summary>
+    private const int RunDrawerMaxChars = 1_500_000;
 
     private static string DescribeState(RunInstance inst) => inst.State switch
     {
@@ -4798,7 +4842,22 @@ public partial class MainWindow : Window
         _runControls[vm.Id] = (playBtn, chevronBtn, chipsStrip, chipsPanel, drawer,
             drawerText, drawerHeader, drawerStopBtn, drawerCopyBtn, drawerSendBtn);
 
-        vm.Runner.InstancesChanged += () => Dispatcher.Invoke(() => RefreshTerminalRunControls(vm.Id));
+        // Never Dispatcher.Invoke from here: state changes can arrive on a PTY thread, and a
+        // synchronous Invoke parks that thread until the UI thread gets round to it.
+        vm.Runner.InstancesChanged += () =>
+        {
+            if (Dispatcher.CheckAccess()) RefreshTerminalRunControls(vm.Id);
+            else Dispatcher.BeginInvoke(() => RefreshTerminalRunControls(vm.Id));
+        };
+        // Output fires once per 4KB PTY chunk. It used to share the event above, so every
+        // chunk of a chatty dev server rebuilt the chips and re-assigned the whole drawer
+        // through a synchronous Invoke. Now: drawer only, at most ~4 times a second, below
+        // input priority so it never delays a keystroke.
+        var drawerRefresh = new ThrottledSignal(
+            TimeSpan.FromMilliseconds(250),
+            action => Dispatcher.BeginInvoke(action, System.Windows.Threading.DispatcherPriority.Background),
+            () => RefreshRunDrawer(vm.Id));
+        vm.Runner.OutputChanged += drawerRefresh.Signal;
 
         // RepoRoot lands async after GitService probes — when AccentColor shifts, repaint
         // the top stripe and refresh the active-ring lookup so terminal and sidebar agree.
@@ -4833,6 +4892,7 @@ public partial class MainWindow : Window
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
+        _drawerShown.Remove(vm.Id);
         _sidebarActionPanels.Remove(vm.Id);
         _sidebarRenameActions.Remove(vm.Id);
         if (_selectionAnchorId == vm.Id) _selectionAnchorId = null;
@@ -5127,6 +5187,7 @@ public partial class MainWindow : Window
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
+        _drawerShown.Remove(vm.Id);
         _sidebarActionPanels.Remove(vm.Id);
         _sidebarRenameActions.Remove(vm.Id);
 
@@ -5262,6 +5323,7 @@ public partial class MainWindow : Window
         }
         _runControls.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
+        _drawerShown.Remove(vm.Id);
         _sidebarActionPanels.Remove(vm.Id);
         _sidebarRenameActions.Remove(vm.Id);
 
