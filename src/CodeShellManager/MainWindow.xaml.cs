@@ -1100,6 +1100,11 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task LaunchSessionInSiblingWorktreeAsync(SessionViewModel parent, string worktreePath)
     {
+        // The path comes from `git worktree list`, which prints forward slashes. Stored as-is it
+        // became the session's WorkingFolder, and "Open in Explorer" then opened Documents —
+        // so store the Windows form. (WSL worktrees arrive as \\wsl$ UNC paths; this keeps
+        // them UNC, only fixing the separators.)
+        worktreePath = Services.FolderOpener.WindowsPath(worktreePath);
         if (!System.IO.Directory.Exists(worktreePath))
         {
             MessageBox.Show(this, $"Worktree folder '{worktreePath}' does not exist.",
@@ -5751,8 +5756,7 @@ public partial class MainWindow : Window
         // Note results: open folder in Explorer
         if (result.IsNote)
         {
-            if (!string.IsNullOrEmpty(result.FolderPath) && Directory.Exists(result.FolderPath))
-                System.Diagnostics.Process.Start("explorer.exe", result.FolderPath);
+            _ = Services.FolderOpener.OpenAsync(result.FolderPath);
             return;
         }
 
