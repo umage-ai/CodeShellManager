@@ -305,7 +305,7 @@
         <!-- Custom args (shown when custom selected) -->
         <StackPanel Grid.Row="5" x:Name="CustomArgsPanel" Visibility="Collapsed" Margin="0,0,0,12">
             <TextBlock Text="Custom Command + Args" Style="{StaticResource Label}"/>
-            <TextBox x:Name="CustomArgsBox" Tag="e.g. claude --model claude-haiku-4-5"/>
+            <TextBox x:Name="CustomArgsBox" AutomationProperties.AutomationId="NewSessionCustomArgsBox" Tag="e.g. claude --model claude-haiku-4-5"/>
         </StackPanel>
 
         <!-- Session Name -->

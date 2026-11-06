@@ -211,6 +211,9 @@
                 <CheckBox x:Name="AutoFocusTerminalOnSelectCheck" Content="Auto-focus terminal when selecting a session"
                           Margin="0,4,0,0"
                           ToolTip="When clicking a session in the sidebar (or cycling with Ctrl+Tab), move keyboard focus into the terminal so you can start typing immediately."/>
+                <CheckBox x:Name="WarnOnCloseWhenBusyCheck" Content="Warn before closing sessions that are still running"
+                          Margin="0,4,0,0"
+                          ToolTip="Lists the sessions that are working, waiting mid-task, producing output or running a run command, and asks before closing."/>
 
                 <StackPanel Margin="0,10,0,0">
                     <TextBlock Text="Claude launch / shutdown stagger (ms)" Style="{StaticResource Label}"/>

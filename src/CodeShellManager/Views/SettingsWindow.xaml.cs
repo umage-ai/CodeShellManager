@@ -33,6 +33,7 @@ public partial class SettingsWindow : Window
             AutoResumeClaude = current.AutoResumeClaude,
             ClaudeLaunchStaggerMs = current.ClaudeLaunchStaggerMs,
             AutoFocusTerminalOnSelect = current.AutoFocusTerminalOnSelect,
+            WarnOnCloseWhenBusy = current.WarnOnCloseWhenBusy,
             ShowToastNotifications = current.ShowToastNotifications,
             ShowNotificationSound = current.ShowNotificationSound,
             AnthropicApiKey = current.AnthropicApiKey,
@@ -70,6 +71,7 @@ public partial class SettingsWindow : Window
         AutoResumeClaudeCheck.IsChecked = _edited.AutoResumeClaude;
         ClaudeLaunchStaggerBox.Text = _edited.ClaudeLaunchStaggerMs.ToString();
         AutoFocusTerminalOnSelectCheck.IsChecked = _edited.AutoFocusTerminalOnSelect;
+        WarnOnCloseWhenBusyCheck.IsChecked = _edited.WarnOnCloseWhenBusy;
         ShowToastCheck.IsChecked = _edited.ShowToastNotifications;
         ShowNotificationSoundCheck.IsChecked = _edited.ShowNotificationSound;
         ShowGitBranchCheck.IsChecked = _edited.ShowGitBranch;
@@ -179,6 +181,7 @@ public partial class SettingsWindow : Window
         if (int.TryParse(ClaudeLaunchStaggerBox.Text, out int staggerMs) && staggerMs >= 0)
             _edited.ClaudeLaunchStaggerMs = staggerMs;
         _edited.AutoFocusTerminalOnSelect = AutoFocusTerminalOnSelectCheck.IsChecked == true;
+        _edited.WarnOnCloseWhenBusy = WarnOnCloseWhenBusyCheck.IsChecked == true;
         _edited.ShowToastNotifications = ShowToastCheck.IsChecked == true;
         _edited.ShowNotificationSound = ShowNotificationSoundCheck.IsChecked == true;
         _edited.ShowGitBranch = ShowGitBranchCheck.IsChecked == true;

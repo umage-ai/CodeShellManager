@@ -62,6 +62,37 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     public OutputIndexer? OutputIndexer { get; set; }
     public SessionRunner Runner { get; }
 
+    // UTC ticks of the last PTY output chunk; 0 = none yet. Written from the PTY reader
+    // thread on every chunk, read on the UI thread at app close — hence a plain long with
+    // Volatile access rather than a property with change notification.
+    private long _lastOutputTicks;
+
+    /// <summary>Called from the PTY output path (any thread). Allocation-free.</summary>
+    public void NoteOutput() => Volatile.Write(ref _lastOutputTicks, DateTime.UtcNow.Ticks);
+
+    /// <summary>When the session last produced PTY output, or null if it never has.</summary>
+    public DateTime? LastOutputUtc
+    {
+        get
+        {
+            long t = Volatile.Read(ref _lastOutputTicks);
+            return t == 0 ? null : new DateTime(t, DateTimeKind.Utc);
+        }
+    }
+
+    /// <summary>
+    /// Why closing the app now would interrupt this session, or null when it is idle.
+    /// See <see cref="SessionBusyRules"/>.
+    /// </summary>
+    public string? BusyReason(DateTime nowUtc)
+    {
+        int running = 0;
+        foreach (var inst in Runner.Instances.Values)
+            if (inst.State == RunState.Running) running++;
+        return SessionBusyRules.Reason(HasProgramStatus, AgentState, WorkProgress,
+            running, LastOutputUtc, nowUtc);
+    }
+
     public string Id => Session.Id;
     public string Name => Session.Name;
     public string WorkingFolder => Session.WorkingFolder;
