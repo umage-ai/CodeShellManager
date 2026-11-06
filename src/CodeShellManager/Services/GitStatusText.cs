@@ -18,9 +18,12 @@ public static class GitStatusText
 
     /// <summary>
     /// The disabled first line of the menu, e.g. "main → origin/main · ↑2 ↓5 · 3 changed"
-    /// or "main · no upstream · clean".
+    /// or "main · no upstream · clean". In a linked worktree, <paramref name="worktreeOf"/>
+    /// (the main repo's name) adds " · worktree of X" — otherwise two panes on one repo
+    /// differ only by their folder path.
     /// </summary>
-    public static string MenuHeader(string? branch, string? upstream, int? ahead, int? behind, int changeCount)
+    public static string MenuHeader(string? branch, string? upstream, int? ahead, int? behind, int changeCount,
+        string? worktreeOf = null)
     {
         string head = string.IsNullOrEmpty(branch) ? "detached HEAD" : branch;
         string track = string.IsNullOrEmpty(upstream) ? " · no upstream" : $" → {upstream}";
@@ -35,7 +38,8 @@ public static class GitStatusText
             1 => "1 changed",
             _ => $"{changeCount} changed",
         };
-        return $"{head}{track}" + (sync.Length > 0 ? $" · {sync}" : "") + $" · {changes}";
+        return $"{head}{track}" + (sync.Length > 0 ? $" · {sync}" : "") + $" · {changes}"
+               + (string.IsNullOrEmpty(worktreeOf) ? "" : $" · worktree of {worktreeOf}");
     }
 
     /// <summary>Toast text after a successful fetch, from the freshly re-read status.</summary>
@@ -59,6 +63,23 @@ public static class GitStatusText
     {
         string o = output ?? "";
         bool Has(string s) => o.Contains(s, StringComparison.OrdinalIgnoreCase);
+
+        // Worktree refusals first — their wording overlaps the generic cases below. Each was
+        // captured from git 2.54; see GitWorktreeRepoTests.
+        if (Has("is already used by worktree at") || Has("is already checked out at"))
+            return "That branch is checked out in another worktree. Open that worktree instead (Worktrees ▸).";
+        if (Has("contains modified or untracked files"))
+            return "The worktree has uncommitted or untracked files. Commit or stash them first.";
+        if (Has("cannot remove a locked working tree"))
+            return "The worktree is locked. Unlock it with 'git worktree unlock' first.";
+        if (Has("is a main working tree"))
+            return "That is the repository's main checkout, which can't be removed as a worktree.";
+        if (Has("is not fully merged"))
+            return "The branch has commits that aren't merged anywhere, so it was kept.";
+        if (Has("failed to delete") && Has("Permission denied"))
+            return "Something still has files open in that folder — an editor, a terminal or a dev " +
+                   "server. Close it, then finish in a terminal with 'git worktree remove --force <folder>'. " +
+                   "Everything in it was committed.";
 
         if (Has("Not possible to fast-forward") || Has("diverging branches") || Has("have diverged"))
             return "The branch has diverged from its upstream, so it can't fast-forward. Merge or rebase in a terminal.";

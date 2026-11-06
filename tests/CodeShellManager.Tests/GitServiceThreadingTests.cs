@@ -135,9 +135,13 @@ public class GitServiceThreadingTests
 
     private static string TestRepoPath()
     {
-        // Walk up from the test binary to the repo root (the folder containing .git).
+        // Walk up from the test binary to the repo root (the folder containing .git). In a
+        // linked worktree .git is a FILE ("gitdir: …"), so accept either — otherwise these
+        // tests fail in every worktree checkout, which is how this repo is mostly worked on.
         var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null && !System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, ".git")))
+        while (dir != null
+               && !System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, ".git"))
+               && !System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, ".git")))
             dir = dir.Parent;
 
         Assert.NotNull(dir);

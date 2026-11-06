@@ -141,8 +141,51 @@ public static class GitService
     public static Task<GitOpResult> StatusTextAsync(string folderPath) =>
         RunOpAsync(folderPath, new[] { "-c", "color.status=false", "status" }, timeoutMs: 10_000, readOnly: true);
 
-    private static async Task<GitOpResult> RunOpAsync(
-        string folderPath, string[] args, int timeoutMs, bool readOnly = false)
+    /// <summary>
+    /// <c>git worktree remove -- &lt;path&gt;</c>, deliberately WITHOUT <c>--force</c>: git then
+    /// refuses a worktree with modified or untracked files, and a locked one, which is the
+    /// guard that makes this safe to offer in a menu. Ignored files (build output) are deleted.
+    /// </summary>
+    /// <param name="runFrom">
+    /// A folder of the same repo OUTSIDE the worktree being removed — the main worktree. On
+    /// Windows a process whose cwd is inside the folder locks it, and git then fails half-way
+    /// with "failed to delete … Permission denied" (verified against git 2.54 by running the
+    /// remove from inside the worktree itself). The same is true of every terminal open there,
+    /// which is why the caller closes those sessions first.
+    /// </param>
+    public static Task<GitOpResult> RemoveWorktreeAsync(string runFrom, string worktreePath) =>
+        RunOpAsync(runFrom, RemoveWorktreeArgs(worktreePath), timeoutMs: 60_000);
+
+    internal static string[] RemoveWorktreeArgs(string worktreePath) =>
+        new[] { "worktree", "remove", "--", worktreePath };
+
+    /// <summary>
+    /// <c>git branch -d -- &lt;branch&gt;</c> — lower-case <c>-d</c>, so git refuses a branch
+    /// that is not fully merged. <c>--</c> because the name comes from the repo.
+    /// </summary>
+    public static Task<GitOpResult> DeleteMergedBranchAsync(string runFrom, string branch) =>
+        RunOpAsync(runFrom, DeleteMergedBranchArgs(branch), timeoutMs: 30_000);
+
+    internal static string[] DeleteMergedBranchArgs(string branch) =>
+        new[] { "branch", "-d", "--", branch };
+
+    /// <summary>
+    /// <c>git worktree prune</c>: forgets worktrees whose folder no longer exists. Only ever
+    /// removes git's own bookkeeping under <c>.git/worktrees</c>, never a working tree.
+    /// </summary>
+    public static Task<GitOpResult> PruneWorktreesAsync(string folderPath) =>
+        RunOpAsync(folderPath, new[] { "worktree", "prune" }, timeoutMs: 30_000);
+
+    private static Task<GitOpResult> RunOpAsync(
+        string folderPath, string[] args, int timeoutMs, bool readOnly = false) =>
+        // Task.Run so the Directory.Exists below can't run on the caller's thread: these are
+        // called from the UI thread, and for a WSL session the folder is a \\wsl$ path, where
+        // even an existence check can block on the distro. See "Never spawn a process on the
+        // UI thread" in CLAUDE.md.
+        Task.Run(() => RunOpCoreAsync(folderPath, args, timeoutMs, readOnly));
+
+    private static async Task<GitOpResult> RunOpCoreAsync(
+        string folderPath, string[] args, int timeoutMs, bool readOnly)
     {
         if (string.IsNullOrWhiteSpace(folderPath) || !System.IO.Directory.Exists(folderPath))
             return new GitOpResult(false, "Folder does not exist.", TimedOut: false);

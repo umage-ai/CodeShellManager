@@ -17,6 +17,7 @@ using WpfTextBox = System.Windows.Controls.TextBox;
 using Clipboard   = System.Windows.Clipboard;
 using ContextMenu = System.Windows.Controls.ContextMenu;
 using MenuItem    = System.Windows.Controls.MenuItem;
+using MessageBox  = System.Windows.MessageBox;
 
 namespace CodeShellManager;
 
@@ -38,6 +39,8 @@ public partial class MainWindow
         public required Border Panel;
         public required TextBlock PanelHeader;
         public required WpfTextBox PanelText;
+        /// <summary>Main repo's name when this pane is in a LINKED worktree, else null.</summary>
+        public string? WorktreeOf;
     }
 
     private readonly Dictionary<string, GitPaneUi> _gitPanes = [];
@@ -155,9 +158,32 @@ public partial class MainWindow
         {
             if (e.PropertyName is nameof(SessionViewModel.GitInfoVersion) or nameof(SessionViewModel.RepoRoot))
                 Dispatcher.Invoke(() => UpdateGitChip(vm));
+            if (e.PropertyName is nameof(SessionViewModel.RepoRoot))
+                ProbeLinkedWorktree(vm);
         };
         UpdateGitChip(vm);
+        ProbeLinkedWorktree(vm);
         return (chip, panel);
+    }
+
+    /// <summary>
+    /// Works out, off the UI thread, whether this pane is in a linked worktree — a few file
+    /// reads walking up from the folder, which for a WSL session means \\wsl$ I/O.
+    /// </summary>
+    private void ProbeLinkedWorktree(SessionViewModel vm)
+    {
+        if (vm.Session.Kind == SessionKind.Ssh || string.IsNullOrEmpty(vm.RepoRoot)) return;
+        string folder = vm.WorkingFolder, root = vm.RepoRoot;
+        _ = Task.Run(() => GitWorktrees.LinkedWorktreeOf(folder, root)).ContinueWith(t =>
+        {
+            if (!t.IsCompletedSuccessfully) return;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!_gitPanes.TryGetValue(vm.Id, out var ui) || ui.WorktreeOf == t.Result) return;
+                ui.WorktreeOf = t.Result;
+                UpdateGitChip(vm);
+            });
+        }, TaskScheduler.Default);
     }
 
     /// <summary>Repaints one pane's chip from the VM. Cheap; called on every git notification.</summary>
@@ -186,7 +212,7 @@ public partial class MainWindow
         if (sync.Length > 0) t.Inlines.Add(new Run(" " + sync) { Foreground = GitSync });
 
         ui.Chip.ToolTip = GitStatusText.MenuHeader(
-            vm.GitBranch, vm.GitUpstream, vm.GitAhead, vm.GitBehind, vm.GitChangeCount);
+            vm.GitBranch, vm.GitUpstream, vm.GitAhead, vm.GitBehind, vm.GitChangeCount, ui.WorktreeOf);
     }
 
     private void UpdateGitChipsForRepo(string repoKey)
@@ -214,7 +240,8 @@ public partial class MainWindow
         {
             Header = new TextBlock
             {
-                Text = GitStatusText.MenuHeader(vm.GitBranch, vm.GitUpstream, vm.GitAhead, vm.GitBehind, vm.GitChangeCount),
+                Text = GitStatusText.MenuHeader(vm.GitBranch, vm.GitUpstream, vm.GitAhead, vm.GitBehind, vm.GitChangeCount,
+                    _gitPanes.TryGetValue(vm.Id, out var paneUi) ? paneUi.WorktreeOf : null),
             },
             IsEnabled = false,
         });
@@ -246,7 +273,14 @@ public partial class MainWindow
         {
             if (loaded) return;
             loaded = true;
-            var branches = await GitService.ListBranchesAsync(vm.WorkingFolder);
+            string folder = vm.WorkingFolder;
+            var branchesTask = Task.Run(() => GitService.ListBranchesAsync(folder));
+            var worktreesTask = LoadWorktreesAsync(folder);
+            var branches = await branchesTask;
+            var (worktrees, here) = await worktreesTask;
+            // A branch checked out in another worktree can't be switched to here — git allows
+            // it in one worktree at a time. Offer to go to that worktree instead.
+            var elsewhere = GitWorktrees.BranchesElsewhere(worktrees, GitWorktrees.Containing(worktrees, here));
             switchMenu.Items.Clear();
             if (branches.Count == 0)
             {
@@ -256,6 +290,20 @@ public partial class MainWindow
             foreach (string b in branches)
             {
                 bool current = b == vm.GitBranch;
+                string target = b;
+                if (!current && elsewhere.TryGetValue(b, out var wt))
+                {
+                    var go = new MenuItem
+                    {
+                        Header = new TextBlock { Text = $"{b} — in {GitWorktrees.Name(wt.Path)}" },
+                        ToolTip = $"Checked out in {wt.Path}. Git allows a branch in only one worktree " +
+                                  "at a time, so this opens that worktree instead of switching.",
+                    };
+                    string path = wt.Path;
+                    go.Click += async (_, _) => await GoToWorktreeAsync(vm, path);
+                    switchMenu.Items.Add(go);
+                    continue;
+                }
                 var mi = new MenuItem
                 {
                     Header = new TextBlock { Text = b },
@@ -263,12 +311,13 @@ public partial class MainWindow
                     IsChecked = current,
                     IsEnabled = !current,
                 };
-                string target = b;
                 mi.Click += async (_, _) => await SwitchBranchAsync(vm, target);
                 switchMenu.Items.Add(mi);
             }
         };
         menu.Items.Add(switchMenu);
+
+        menu.Items.Add(BuildWorktreesMenu(vm, busy));
 
         menu.Items.Add(new Separator());
 
@@ -345,6 +394,273 @@ public partial class MainWindow
             ToastHelper.Show($"git {verb} failed", hint ?? "See the git panel for details.");
         }
         return result;
+    }
+
+    // ── worktrees ───────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// "Worktrees ▸": every worktree of the repo with its branch and state, go-to on click,
+    /// then New / Prune / Remove. Filled when it opens — one `worktree list` plus one status
+    /// per worktree, in parallel — so an unopened menu costs nothing.
+    /// </summary>
+    private MenuItem BuildWorktreesMenu(SessionViewModel vm, bool busy)
+    {
+        var wtMenu = new MenuItem { Header = "Worktrees" };
+        wtMenu.Items.Add(new MenuItem { Header = "Loading…", IsEnabled = false });
+        bool loaded = false;
+        wtMenu.SubmenuOpened += async (_, _) =>
+        {
+            if (loaded) return;
+            loaded = true;
+            var (worktrees, here) = await LoadWorktreesAsync(vm.WorkingFolder);
+            var current = GitWorktrees.Containing(worktrees, here);
+            var live = worktrees.Where(w => !w.IsBare && !w.IsPrunable).ToList();
+            var statuses = await Task.WhenAll(live.Select(w => Task.Run(() => GitService.GetStatusAsync(w.Path))));
+            var statusOf = live.Zip(statuses).ToDictionary(p => p.First.Path, p => p.Second);
+
+            wtMenu.Items.Clear();
+            foreach (var w in worktrees)
+            {
+                if (w.IsBare) continue;
+                bool isCurrent = current != null && GitWorktrees.Normalize(w.Path)
+                    .Equals(GitWorktrees.Normalize(current.Path), StringComparison.OrdinalIgnoreCase);
+                var mi = new MenuItem
+                {
+                    Header = new TextBlock { Text = GitWorktrees.Label(w, statusOf.GetValueOrDefault(w.Path)) },
+                    IsChecked = isCurrent,
+                    IsEnabled = !isCurrent && !w.IsPrunable,
+                    ToolTip = w.IsPrunable ? $"{w.Path} no longer exists — prune to forget it." : w.Path,
+                };
+                ToolTipService.SetShowOnDisabled(mi, true);
+                string path = w.Path;
+                mi.Click += async (_, _) => await GoToWorktreeAsync(vm, path);
+                wtMenu.Items.Add(mi);
+            }
+
+            wtMenu.Items.Add(new Separator());
+            var add = new MenuItem { Header = "New worktree from this branch…" };
+            add.Click += async (_, _) => await OpenNewWorktreeDialogAsync(vm);
+            wtMenu.Items.Add(add);
+
+            int prunable = worktrees.Count(w => w.IsPrunable);
+            if (prunable > 0)
+            {
+                var prune = new MenuItem
+                {
+                    Header = prunable == 1 ? "Prune 1 missing worktree" : $"Prune {prunable} missing worktrees",
+                    IsEnabled = !busy,
+                    ToolTip = "Forgets worktrees whose folder was deleted. Only git's own bookkeeping is removed.",
+                };
+                prune.Click += async (_, _) => await PruneWorktreesAsync(vm, prunable);
+                wtMenu.Items.Add(prune);
+            }
+
+            if (current != null && !GitWorktrees.IsMain(worktrees, current))
+            {
+                var remove = new MenuItem
+                {
+                    Header = "Remove this worktree…",
+                    IsEnabled = !busy && !current.IsLocked,
+                    ToolTip = current.IsLocked
+                        ? "This worktree is locked (git worktree unlock)."
+                        : "Closes the sessions in it and deletes the folder. Git refuses if anything is uncommitted.",
+                };
+                ToolTipService.SetShowOnDisabled(remove, true);
+                string mainPath = worktrees[0].Path;
+                var target = current;
+                remove.Click += async (_, _) =>
+                    await RemoveWorktreeAsync(vm, target, mainPath, statusOf.GetValueOrDefault(target.Path));
+                wtMenu.Items.Add(remove);
+            }
+        };
+        return wtMenu;
+    }
+
+    /// <summary>
+    /// `git worktree list` with every path canonicalized, plus <paramref name="folder"/>'s own
+    /// canonical path — both off the UI thread, since canonicalizing touches the disk.
+    /// </summary>
+    private static Task<(IReadOnlyList<GitService.WorktreeInfo> worktrees, string here)> LoadWorktreesAsync(string folder) =>
+        Task.Run(async () =>
+        {
+            var raw = await GitService.ListWorktreesAsync(folder).ConfigureAwait(false);
+            return (GitWorktrees.Canonicalize(raw), GitWorktrees.Canonical(folder));
+        });
+
+    /// <summary>
+    /// Live and sleeping sessions whose folder is inside <paramref name="worktreePath"/>
+    /// (already canonical). Folders are canonicalized off the UI thread — see
+    /// <see cref="GitWorktrees.Canonical"/> for why a string compare is not enough.
+    /// </summary>
+    private async Task<(List<SessionViewModel> live, List<ShellSession> dormant)> SessionsInWorktreeAsync(string worktreePath)
+    {
+        var live = _vm.Sessions.Select(s => (s, s.WorkingFolder)).ToList();
+        var dormant = _sessionManager.Sessions.Where(s => s.IsDormant).Select(s => (s, s.WorkingFolder)).ToList();
+        return await Task.Run(() => (
+            live.Where(x => GitWorktrees.IsInside(GitWorktrees.Canonical(x.WorkingFolder), worktreePath)).Select(x => x.s).ToList(),
+            dormant.Where(x => GitWorktrees.IsInside(GitWorktrees.Canonical(x.WorkingFolder), worktreePath)).Select(x => x.s).ToList()));
+    }
+
+    /// <summary>
+    /// Takes the user to a worktree: its live session if there is one, else wakes a sleeping
+    /// one, else opens a new session there (same command, group and profile as this one).
+    /// </summary>
+    private async Task GoToWorktreeAsync(SessionViewModel from, string worktreePath)
+    {
+        var (liveHere, dormantHere) = await SessionsInWorktreeAsync(worktreePath);
+        var live = liveHere.FirstOrDefault();
+        if (live != null)
+        {
+            _vm.FocusSessionCommand.Execute(live);
+            return;
+        }
+        var dormant = dormantHere.FirstOrDefault();
+        if (dormant != null)
+        {
+            await WakeSessionAsync(dormant);
+            return;
+        }
+        await LaunchSessionInSiblingWorktreeAsync(from, worktreePath);
+    }
+
+    private async Task PruneWorktreesAsync(SessionViewModel vm, int count)
+    {
+        var r = await RunGitOpAsync(vm, "worktree prune", GitService.PruneWorktreesAsync);
+        if (r is not { Ok: true }) return;
+        ToastHelper.Show("git worktree prune",
+            count == 1 ? "Forgot 1 worktree whose folder was gone." : $"Forgot {count} worktrees whose folders were gone.");
+    }
+
+    /// <summary>
+    /// The one write in this menu beyond pull/switch, so it is guarded three ways: refused up
+    /// front when the worktree has changes, confirmed with the exact folder and the sessions it
+    /// will close, and run as `git worktree remove` WITHOUT --force so git refuses anything
+    /// uncommitted or untracked itself. Sessions in the folder are closed and their processes
+    /// waited for before git runs: on Windows a process whose cwd is inside the folder locks it,
+    /// and git then fails half-way through deleting it.
+    /// </summary>
+    private async Task RemoveWorktreeAsync(
+        SessionViewModel vm, GitService.WorktreeInfo wt, string mainPath, GitRepoStatus? status)
+    {
+        string name = GitWorktrees.Name(wt.Path);
+        if (status is { IsDirty: true })
+        {
+            MessageBox.Show(this,
+                $"'{name}' has {status.Changes.Count} uncommitted or untracked change(s).\n\n" +
+                "Commit or stash them first — removing the worktree would delete them.",
+                "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var (liveHere, dormantHere) = await SessionsInWorktreeAsync(wt.Path);
+
+        var msg = new System.Text.StringBuilder();
+        msg.AppendLine($"Remove the worktree '{name}'" + (string.IsNullOrEmpty(wt.Branch) ? "?" : $" (branch {wt.Branch})?"));
+        msg.AppendLine();
+        msg.AppendLine($"Folder: {wt.Path}");
+        msg.AppendLine();
+        msg.AppendLine("The folder is deleted. Git refuses if anything in it is uncommitted or untracked; " +
+                       "ignored files such as build output are deleted with it. The branch itself is kept " +
+                       "unless you choose to delete it next.");
+        if (liveHere.Count > 0)
+        {
+            msg.AppendLine();
+            msg.AppendLine("These sessions will be closed:");
+            foreach (var s in liveHere) msg.AppendLine($"  • {s.DisplayName}");
+        }
+        if (dormantHere.Count > 0)
+        {
+            msg.AppendLine();
+            msg.AppendLine("These sleeping sessions will be deleted:");
+            foreach (var s in dormantHere) msg.AppendLine($"  • {(string.IsNullOrWhiteSpace(s.Name) ? s.DefaultDisplayName : s.Name)}");
+        }
+        if (MessageBox.Show(this, msg.ToString().TrimEnd(), "Remove worktree",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+            return;
+
+        string key = GitRepoKey(vm);
+        if (!_gitBusyRepos.Add(key))
+        {
+            ToastHelper.Show("Git busy", "A git operation is already running for this repository.");
+            return;
+        }
+        UpdateGitChipsForRepo(key);
+        try
+        {
+            // Close first and wait for the processes to exit — see the summary for why.
+            var exits = new List<Task>();
+            foreach (var s in liveHere)
+            {
+                var pty = s.Pty;
+                s.CloseCommand.Execute(null);
+                if (pty != null) exits.Add(WaitForPtyExitAsync(pty, timeoutMs: 10_000));
+            }
+            await Task.WhenAll(exits);
+            foreach (var d in dormantHere)
+            {
+                _dormantSidebarItems.Remove(d.Id);
+                _sessionManager.RemoveSession(d.Id);
+            }
+            if (dormantHere.Count > 0)
+            {
+                RebuildSidebarOrder();
+                _ = _vm.SaveStateAsync();
+            }
+
+            var r = await GitService.RemoveWorktreeAsync(mainPath, wt.Path);
+            if (!r.Ok)
+            {
+                string? hint = GitStatusText.FailureHint(r.Output);
+                MessageBox.Show(this,
+                    $"git worktree remove failed{(hint is null ? "." : $": {hint}")}\n\n{r.Output}" +
+                    (liveHere.Count > 0 ? "\n\nThe sessions that were in it are closed; Ctrl+Shift+T reopens them." : ""),
+                    "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            string removed = $"Removed worktree {name}.";
+            if (!string.IsNullOrEmpty(wt.Branch) &&
+                MessageBox.Show(this,
+                    $"Worktree '{name}' removed.\n\nAlso delete the branch '{wt.Branch}'?\n\n" +
+                    "Git only deletes it if it is fully merged; otherwise it is kept and nothing changes.",
+                    "Delete branch", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+                == MessageBoxResult.Yes)
+            {
+                var b = await GitService.DeleteMergedBranchAsync(mainPath, wt.Branch);
+                if (b.Ok) removed += $" Deleted branch {wt.Branch}.";
+                else
+                    MessageBox.Show(this,
+                        $"The branch '{wt.Branch}' was kept: {GitStatusText.FailureHint(b.Output) ?? b.Output}",
+                        "Delete branch", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            ToastHelper.Show("git worktree remove", removed);
+        }
+        finally
+        {
+            _gitBusyRepos.Remove(key);
+            var peers = _vm.Sessions
+                .Where(s => string.Equals(GitRepoKey(s), key, StringComparison.OrdinalIgnoreCase)).ToList();
+            await Task.WhenAll(peers.Select(s => s.RefreshGitInfoAsync()));
+            UpdateGitChipsForRepo(key);
+        }
+    }
+
+    /// <summary>
+    /// Waits for a closed session's process to exit, bounded. HasExited, not IsRunning — see
+    /// "Waiting for a PTY to exit" in CLAUDE.md.
+    /// </summary>
+    private static async Task WaitForPtyExitAsync(Terminal.PseudoTerminal pty, int timeoutMs)
+    {
+        if (pty.HasExited) return;
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnExit() => tcs.TrySetResult();
+        pty.Exited += OnExit;
+        try
+        {
+            if (pty.HasExited) return;
+            await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+        }
+        finally { pty.Exited -= OnExit; }
     }
 
     private async Task ShowGitStatusAsync(SessionViewModel vm)
