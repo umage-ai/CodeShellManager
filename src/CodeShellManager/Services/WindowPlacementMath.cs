@@ -45,10 +45,9 @@ public static class WindowPlacementMath
     /// </summary>
     /// <param name="placement">Physical-pixel bounds saved by this build. Preferred.</param>
     /// <param name="legacy">
-    /// DIP bounds saved by an older build. Pre-v0.10 builds were system-DPI aware, so those
-    /// DIPs were scaled by the primary monitor's DPI at the time; the primary's DPI now is
-    /// the best available guess. A wrong guess only misplaces the window by the scale ratio,
-    /// and the visibility rules below still guarantee it ends up reachable.
+    /// DIP bounds saved by an older build, in an unknown scale — see <see cref="FromLegacyDips"/>.
+    /// A wrong guess only misplaces the window by the scale ratio, and the visibility rules
+    /// below still guarantee it ends up reachable.
     /// </param>
     public static (PixelRect Rect, MonitorArea Monitor)? Resolve(
         WindowPlacementState? placement, WindowBounds? legacy,
@@ -68,20 +67,11 @@ public static class WindowPlacementMath
                  && IsFinite(legacy.Width) && IsFinite(legacy.Height)
                  && legacy.Width > 0 && legacy.Height > 0)
         {
-            double s = primary.Dpi / 96.0;
-            rect = new PixelRect(Round(legacy.Left * s), Round(legacy.Top * s),
-                                 Round(legacy.Width * s), Round(legacy.Height * s));
-            savedDpi = primary.Dpi;
+            (rect, savedDpi) = FromLegacyDips(legacy, monitors, primary);
         }
         else return null;
 
-        // The monitor the rectangle is (mostly) on — what Windows itself would pick.
-        var home = monitors
-            .Select(m => (m, area: rect.Intersect(m.Bounds).Area))
-            .Where(x => x.area > 0)
-            .OrderByDescending(x => x.area)
-            .Select(x => x.m)
-            .FirstOrDefault();
+        var home = Home(rect, monitors);
 
         var target = home ?? Nearest(rect, monitors) ?? primary;
 
@@ -100,6 +90,84 @@ public static class WindowPlacementMath
         rect = EnsureMinSize(rect, target, minWidthDip, minHeightDip);
         return (ClampInto(rect, target.Work), target);
     }
+
+    /// <summary>
+    /// Legacy DIP bounds → physical pixels. The scale they were saved at is unknown:
+    /// v0.10.0 (per-monitor v2, the usual upgrade source) saved pixels ÷ the DPI of the
+    /// monitor the window was on; older system-DPI builds saved pixels ÷ the primary's DPI at
+    /// the time. So each monitor's DPI is tried as the scale, and a candidate is consistent
+    /// when the scaled rect's own monitor (<see cref="Home"/>) is the monitor whose DPI was
+    /// used — v0.10.0's rule, and also the system-DPI rule whenever the window was on the
+    /// primary. Several can be consistent (a small window near a shared edge); the primary
+    /// wins that tie, then the largest share of the rect on its monitor. If none is, the
+    /// primary's scale is used and the visibility rules in <see cref="Resolve"/> take over.
+    /// </summary>
+    public static (PixelRect Rect, int Dpi) FromLegacyDips(
+        WindowBounds legacy, IReadOnlyList<MonitorArea> monitors, MonitorArea primary)
+    {
+        PixelRect Scaled(int dpi)
+        {
+            double s = dpi / 96.0;
+            return new PixelRect(Round(legacy.Left * s), Round(legacy.Top * s),
+                                 Round(legacy.Width * s), Round(legacy.Height * s));
+        }
+
+        var best = monitors
+            .Select(m => (m, r: Scaled(m.Dpi)))
+            .Where(x => ReferenceEquals(Home(x.r, monitors), x.m))
+            .OrderByDescending(x => x.m.IsPrimary)
+            .ThenByDescending(x => (double)x.r.Intersect(x.m.Bounds).Area / Math.Max(1, x.r.Area))
+            .Select(x => ((PixelRect, int)?)(x.r, x.m.Dpi))
+            .FirstOrDefault();
+        return best ?? (Scaled(primary.Dpi), primary.Dpi);
+    }
+
+    /// <summary>
+    /// The monitor a screen rect is (mostly) on — largest overlap, as Windows picks it — or
+    /// null when it overlaps none.
+    /// </summary>
+    public static MonitorArea? Home(PixelRect rect, IReadOnlyList<MonitorArea> monitors) =>
+        monitors
+            .Select(m => (m, area: rect.Intersect(m.Bounds).Area))
+            .Where(x => x.area > 0)
+            .OrderByDescending(x => x.area)
+            .Select(x => x.m)
+            .FirstOrDefault();
+
+    /// <summary>
+    /// What to save for a normal-state window: its screen rect (GetWindowRect) and the DPI of
+    /// the monitor that RECT is on — not of whatever monitor the window reports, which is the
+    /// question that goes wrong for a snapped or spanning window.
+    /// </summary>
+    public static WindowPlacementState? SaveFromScreen(PixelRect screen, IReadOnlyList<MonitorArea> monitors)
+    {
+        if (screen.Width <= 0 || screen.Height <= 0 || monitors.Count == 0) return null;
+        var m = Home(screen, monitors) ?? Nearest(screen, monitors)!;
+        return ToState(screen, m);
+    }
+
+    /// <summary>
+    /// What to save for a maximized/minimized window: its normal rect from GetWindowPlacement
+    /// (workspace coordinates). Each monitor's work-area offset is tried, and the one under
+    /// which the rect lands most on that same monitor is taken — the rect's own monitor, which
+    /// need not be the one the (maximized) window is on now. That monitor supplies the DPI.
+    /// </summary>
+    public static WindowPlacementState? SaveFromWorkspace(PixelRect workspace, IReadOnlyList<MonitorArea> monitors)
+    {
+        if (workspace.Width <= 0 || workspace.Height <= 0 || monitors.Count == 0) return null;
+        var hit = monitors
+            .Select(m => (m, s: WorkspaceToScreen(workspace, m)))
+            .Select(x => (x.m, x.s, area: x.s.Intersect(x.m.Bounds).Area))
+            .Where(x => x.area > 0)
+            .OrderByDescending(x => x.area)
+            .FirstOrDefault();
+        if (hit.m is not null) return ToState(hit.s, hit.m);
+        var m = Nearest(workspace, monitors)!;
+        return ToState(WorkspaceToScreen(workspace, m), m);
+    }
+
+    private static WindowPlacementState ToState(PixelRect r, MonitorArea m) =>
+        new() { Left = r.Left, Top = r.Top, Width = r.Width, Height = r.Height, Dpi = m.Dpi };
 
     /// <summary>
     /// True when the top strip of the window (where the caption is) overlaps some monitor's

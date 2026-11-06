@@ -304,27 +304,52 @@ public static class GitService
         try
         {
             string? commonDir = await RunGitAsync(folderPath, "rev-parse", "--git-common-dir").ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(commonDir)) return null;
-            string trimmed = commonDir.Trim();
+            string? root = RepoRootFromCommonDir(commonDir, folderPath);
+            // One spelling per repo: from the main checkout git answers relative to the cwd
+            // (so an 8.3 or junction spelling of the session folder survives), from a linked
+            // worktree with whatever `worktree add` recorded. RepoRoot keys the git busy slot,
+            // sibling detection and the accent colour, so both must agree. Canonical touches
+            // the disk; we are past a ConfigureAwait(false), i.e. on the pool.
+            return root is null ? null : GitWorktrees.Canonical(root);
+        }
+        catch { return null; }
+    }
 
+    /// <summary>
+    /// Turns <c>rev-parse --git-common-dir</c> output into the main working tree's root. Pure.
+    ///
+    /// git prints a path relative to the cwd from the main worktree (<c>.git</c>) but an
+    /// absolute one from a linked worktree — and under WSL that absolute path is a LINUX path.
+    /// <see cref="RunGitInWslAsync"/> normally maps it to <c>\\wsl$\…</c> already, but if one
+    /// ever got through, <c>Path.IsPathRooted("/home/u/repo")</c> is true on Windows and the
+    /// root would come back as <c>/home/u/repo</c>, while the main worktree's comes back as
+    /// UNC: two worktrees of one repo with different git busy-slot keys (#181). So a
+    /// Linux-absolute result for a WSL folder is mapped to UNC here, unconditionally.
+    /// </summary>
+    internal static string? RepoRootFromCommonDir(string? commonDir, string folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(commonDir)) return null;
+        string trimmed = commonDir.Trim();
+
+        var (distro, _) = TryParseWslUnc(folderPath);
+        string absolute;
+        if (distro != null && trimmed.StartsWith('/'))
+            absolute = WslDiscoveryService.ToUncPath(distro, trimmed);
+        else
             // git may return a path relative to the cwd (e.g. ".git" for a plain repo)
             // or an absolute path (e.g. "C:/repo/.git" when called from a worktree).
-            // Resolve to an absolute path either way.
-            string absolute = System.IO.Path.IsPathRooted(trimmed)
+            absolute = System.IO.Path.IsPathRooted(trimmed)
                 ? trimmed
                 : System.IO.Path.GetFullPath(trimmed, folderPath);
 
-            // Strip the trailing ".git" segment to get the repo's working tree root.
-            string normalized = absolute.Replace('\\', '/').TrimEnd('/');
-            if (normalized.EndsWith("/.git", StringComparison.OrdinalIgnoreCase))
-                normalized = normalized[..^"/.git".Length];
-            else if (normalized.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
-                && !normalized.EndsWith("/.git", StringComparison.OrdinalIgnoreCase))
-                normalized = normalized[..^".git".Length].TrimEnd('/');
+        // Strip the trailing ".git" segment to get the repo's working tree root.
+        string normalized = absolute.Replace('\\', '/').TrimEnd('/');
+        if (normalized.EndsWith("/.git", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^"/.git".Length];
+        else if (normalized.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^".git".Length].TrimEnd('/');
 
-            return string.IsNullOrEmpty(normalized) ? null : normalized;
-        }
-        catch { return null; }
+        return string.IsNullOrEmpty(normalized) ? null : normalized;
     }
 
     /// <summary>Describes one git worktree as reported by `git worktree list --porcelain`.</summary>

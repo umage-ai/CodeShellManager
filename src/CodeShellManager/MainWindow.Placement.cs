@@ -84,12 +84,31 @@ public partial class MainWindow
         // second call is what stops the size drifting run to run in a mixed-DPI setup.
         if (GetDpiForWindow(hwnd) != dpiBefore)
             SetWindowPlacement(hwnd, ref wp);
+
+        // A normal window was saved from GetWindowRect, i.e. in true screen coordinates. The
+        // workspace conversion above is exact on the primary, but how Windows offsets
+        // workspace coordinates on a secondary with its own top/left taskbar is not something
+        // to bet on — so check where it actually landed and correct with screen coordinates.
+        if (!saved.WindowMaximized && GetWindowRect(hwnd, out var actual)
+            && (actual.Left != rect.Left || actual.Top != rect.Top
+                || actual.Right != rect.Right || actual.Bottom != rect.Bottom))
+            SetWindowPos(hwnd, IntPtr.Zero, rect.Left, rect.Top, rect.Width, rect.Height,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
 
     /// <summary>
     /// Pushes the current bounds into the view model: the DIP fields for older builds, and
-    /// the physical normal rectangle from GetWindowPlacement — which is right even while the
-    /// window is maximized or minimized, where Left/Top/Width/Height are not.
+    /// the physical normal rectangle.
+    ///
+    /// Normal state saves <c>GetWindowRect</c>, not <c>rcNormalPosition</c>: for a snapped
+    /// window WPF reports Normal but <c>rcNormalPosition</c> is the pre-snap floating rect —
+    /// possibly on another monitor at another DPI. Saving what is on screen keeps the old
+    /// behaviour (the snapped area comes back) and keeps rect and DPI from the same monitor.
+    /// Both APIs use the same frame convention — the full window rect, invisible resize
+    /// borders included (not the DWM extended-frame bounds) — so the round trip through
+    /// <c>SetWindowPlacement</c> is exact. Maximized/minimized save <c>rcNormalPosition</c>,
+    /// the only place the restore size still exists. Either way the monitor (offset and DPI)
+    /// is the one the RECT is on, chosen by <see cref="WindowPlacementMath"/>.
     /// </summary>
     private void CaptureWindowState()
     {
@@ -98,25 +117,21 @@ public partial class MainWindow
         try
         {
             var hwnd = new WindowInteropHelper(this).Handle;
-            var wp = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
-            if (hwnd != IntPtr.Zero && GetWindowPlacement(hwnd, ref wp))
+            if (hwnd != IntPtr.Zero)
             {
-                var ws = new PixelRect(wp.rcNormalPosition.Left, wp.rcNormalPosition.Top,
-                    wp.rcNormalPosition.Right - wp.rcNormalPosition.Left,
-                    wp.rcNormalPosition.Bottom - wp.rcNormalPosition.Top);
-                var monitor = MonitorAreaFor(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST));
-                if (monitor != null && ws.Width > 0 && ws.Height > 0)
+                var monitors = EnumerateMonitors();
+                var wp = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+                bool haveWp = GetWindowPlacement(hwnd, ref wp);
+                if (WindowState == WindowState.Normal)
                 {
-                    var screen = WindowPlacementMath.WorkspaceToScreen(ws, monitor);
-                    placement = new WindowPlacementState
-                    {
-                        Left = screen.Left, Top = screen.Top, Width = screen.Width, Height = screen.Height,
-                        // The DPI the rect's pixel size belongs to: the window's monitor, which
-                        // is also where its normal rect lives (a window maximizes in place).
-                        Dpi = monitor.Dpi,
-                    };
+                    if (GetWindowRect(hwnd, out var r))
+                        placement = WindowPlacementMath.SaveFromScreen(ToPixelRect(r), monitors);
                 }
-                if (WindowState == WindowState.Minimized)
+                else if (haveWp)
+                {
+                    placement = WindowPlacementMath.SaveFromWorkspace(ToPixelRect(wp.rcNormalPosition), monitors);
+                }
+                if (haveWp && WindowState == WindowState.Minimized)
                     maximized = (wp.flags & WPF_RESTORETOMAXIMIZED) != 0;
             }
         }
@@ -154,7 +169,7 @@ public partial class MainWindow
     private const int SW_SHOWNORMAL = 1;
     private const int SW_SHOWMAXIMIZED = 3;
     private const int WPF_RESTORETOMAXIMIZED = 0x2;
-    private const uint MONITOR_DEFAULTTONEAREST = 2;
+    private const uint SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_NOOWNERZORDER = 0x0200;
     private const uint MONITORINFOF_PRIMARY = 1;
     private const int MDT_EFFECTIVE_DPI = 0;
 
@@ -198,7 +213,12 @@ public partial class MainWindow
     private static extern uint GetDpiForWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -127,4 +127,31 @@ public class GitServiceWslRoutingTests
         Assert.Equal("/home/alice",
             GitService.TranslateUncArgToLinux(@"\\wsl$\ubuntu\home\alice", "Ubuntu"));
     }
+
+    // ── repo root from `rev-parse --git-common-dir` (#181) ───────────────────
+
+    [Fact]
+    public void RepoRoot_WslMainAndLinkedWorktree_ShareOneBusyKey()
+    {
+        // Main checkout: git answers relative to the cwd.
+        string? main = GitService.RepoRootFromCommonDir(".git\n", @"\\wsl$\Ubuntu\home\u\repo");
+        // Linked worktree, Linux-absolute (as git prints it inside the distro).
+        string? linkedRaw = GitService.RepoRootFromCommonDir("/home/u/repo/.git\n", @"\\wsl$\Ubuntu\home\u\repo-wt");
+        // Linked worktree, already mapped to UNC by RunGitInWslAsync's stdout translation.
+        string? linkedUnc = GitService.RepoRootFromCommonDir(@"\\wsl$\Ubuntu\home\u\repo\.git", @"\\wsl.localhost\Ubuntu\home\u\repo-wt");
+
+        Assert.Equal("//wsl$/Ubuntu/home/u/repo", main);
+        Assert.Equal(main, linkedRaw);
+        Assert.Equal(main, linkedUnc);
+        Assert.Equal(GitWorktrees.BusyKey(main, null), GitWorktrees.BusyKey(linkedRaw, null));
+    }
+
+    [Theory]
+    [InlineData(".git", @"C:\src\app", "C:/src/app")]
+    [InlineData("C:/src/app/.git", @"C:\src\app-wt", "C:/src/app")]
+    [InlineData(@"C:\src\bare.git", @"C:\src\bare.git", "C:/src/bare")]
+    [InlineData("", @"C:\src\app", null)]
+    [InlineData(null, @"C:\src\app", null)]
+    public void RepoRoot_LocalShapes(string? commonDir, string folder, string? expected) =>
+        Assert.Equal(expected, GitService.RepoRootFromCommonDir(commonDir, folder));
 }

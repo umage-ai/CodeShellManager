@@ -427,6 +427,12 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         if (!string.IsNullOrEmpty(RepoRoot) || Session.Kind == SessionKind.Ssh) return RepoRoot;
         string folder = Session.WorkingFolder;
         string? root = await Task.Run(() => GitService.GetRepoRootAsync(folder));
+        // The folder may have been edited during the await (ReloadGitInfoAsync clears RepoRoot):
+        // then this answer describes the OLD folder, and storing it would stick — nothing
+        // re-probes a non-null RepoRoot. Probe again for the folder as it is now (a folder
+        // edit is a user action, so this cannot spin).
+        if (!string.Equals(Session.WorkingFolder, folder, StringComparison.Ordinal))
+            return await EnsureRepoRootAsync();
         if (!string.IsNullOrEmpty(root) && string.IsNullOrEmpty(RepoRoot)) RepoRoot = root;
         return string.IsNullOrEmpty(RepoRoot) ? root : RepoRoot;
     }

@@ -200,6 +200,34 @@ public sealed class GitWorktreeRepoTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_panes_of_one_repo_claim_the_same_busy_slot_before_RepoRoot_lands()
+    {
+        // #181: the busy slot used to be keyed by the folder until the poll set RepoRoot, so a
+        // pane in the main checkout and one in a linked worktree held different keys.
+        AddWorktree("wt-feat", "feat");
+        string wt = WtPath("wt-feat");
+        Assert.NotEqual(GitWorktrees.BusyKey(null, Main), GitWorktrees.BusyKey(null, wt));
+
+        var a = new CodeShellManager.ViewModels.SessionViewModel(
+            new CodeShellManager.Models.ShellSession { Id = "a", WorkingFolder = Main, Command = "cmd" });
+        var b = new CodeShellManager.ViewModels.SessionViewModel(
+            new CodeShellManager.Models.ShellSession { Id = "b", WorkingFolder = wt, Command = "cmd" });
+        try
+        {
+            // What MainWindow.ResolveGitRepoKeyAsync does before claiming the slot.
+            string ka = GitWorktrees.BusyKey(await a.EnsureRepoRootAsync(), a.WorkingFolder);
+            string kb = GitWorktrees.BusyKey(await b.EnsureRepoRootAsync(), b.WorkingFolder);
+            Assert.Equal(ka, kb);
+            Assert.Equal(GitWorktrees.BusyKey(Main, null), ka);
+        }
+        finally
+        {
+            a.Dispose();
+            b.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task Listing_maps_branches_to_worktrees_and_finds_the_current_one()
     {
         AddWorktree("wt-feat", "feat");

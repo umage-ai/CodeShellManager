@@ -446,9 +446,18 @@ Now the constructor reads only the window fields of `state.json` synchronously
 If that lands on a monitor of a different DPI, WPF applies Windows' scaled suggested rect, so
 the placement is **applied twice** when `GetDpiForWindow` changed: the second call is what
 makes the saved size exact. `AppState.LastPlacement` is the normal rect in physical screen
-pixels plus the DPI it was saved at; `LastNormalBounds` (DIPs) is still written for older
-builds and read only when `LastPlacement` is absent, scaled by the primary's current DPI
-(pre-v0.10 builds were system-DPI aware). Which monitor, whether the caption is still
+pixels plus the DPI it was saved at. A **Normal** window saves `GetWindowRect`, not
+`rcNormalPosition`: a snapped window reports Normal while `rcNormalPosition` is its pre-snap
+floating rect, possibly on another monitor at another DPI (both APIs use the same frame
+convention, invisible resize borders included, so the round trip is exact). Maximized and
+minimized save `rcNormalPosition`. Either way the offset and the DPI come from the monitor
+the *rect* is on, never `MonitorFromWindow`. On restore a Normal window's landing spot is
+checked with `GetWindowRect` and corrected with `SetWindowPos`, so how Windows offsets
+workspace coordinates on a secondary monitor cannot move it. `LastNormalBounds` (DIPs) is
+still written for older builds and read only when `LastPlacement` is absent. Its scale is
+unknown: v0.10.0 saved pixels ÷ the DPI of *the window's* monitor, older system-DPI builds
+pixels ÷ the primary's. So each monitor's DPI is tried, and the one whose scaled rect lands
+on that same monitor wins, with the primary as tie-break (`FromLegacyDips`). Which monitor, whether the caption is still
 reachable on some *work area*, and the fallback when it isn't (monitor unplugged: fit into
 the nearest monitor and move to its nearest edge) are decided by the WPF-free
 `WindowPlacementMath`, covered by `WindowPlacementMathTests`. A reachable window — even one
@@ -819,7 +828,11 @@ repo share the slot); the chip shows `⟳` meanwhile. The slot is **claimed** wi
 `SessionViewModel.EnsureRepoRootAsync`) when the poll hasn't landed it yet — falling back to
 the folder there let two panes of one repo hold different keys for the first seconds after
 launch and run git concurrently (#181). Keys go through `GitWorktrees.BusyKey`, which folds
-case and slashes per Windows/WSL rules. Afterwards *every* live pane on that repo
+case and slashes per Windows/WSL rules. For one repo to give one key, `GetRepoRootAsync`
+returns one spelling: the result is canonicalised (`GitWorktrees.Canonical`, so an 8.3 or
+junction session folder in the main checkout matches git's long path from a worktree), and
+`RepoRootFromCommonDir` maps a Linux-absolute `--git-common-dir` from a WSL worktree back to
+`\\wsl$\<distro>\…`. Afterwards *every* live pane on that repo
 re-reads git state explicitly: a fetch moves only remote refs, which `GitRepoWatcher` (HEAD +
 index) never sees. Success → a toast; failure → the git panel (docked under the toolbar, like
 notes) opens with git's own output plus the recognised hint.
