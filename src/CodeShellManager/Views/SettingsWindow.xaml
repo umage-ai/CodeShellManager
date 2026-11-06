@@ -350,6 +350,25 @@
                              FontFamily="Consolas" FontSize="12"/>
                 </StackPanel>
 
+                <!-- Open with (issue #178) -->
+                <TextBlock Text="OPEN WITH" Style="{StaticResource SectionHeader}"/>
+                <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>
+
+                <StackPanel Margin="0,8,0,0">
+                    <TextBlock Text="Editors and IDEs offered by the terminal toolbar's { } ▼ and the sidebar's &quot;Open with&quot; menu. The starred one is the default."
+                               Foreground="#6c7086" FontSize="10" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="OpenWithSummary" Grid.Column="0" FontSize="12" TextWrapping="Wrap"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <Button Grid.Column="1" Content="Edit…" Style="{StaticResource Btn}"
+                                Padding="10,5" FontSize="12" Click="EditOpenWith_Click"/>
+                    </Grid>
+                </StackPanel>
+
                 <!-- Storage -->
                 <TextBlock Text="STORAGE" Style="{StaticResource SectionHeader}"/>
                 <Border BorderBrush="#313244" BorderThickness="0,0,0,1" Margin="0,4,0,0"/>

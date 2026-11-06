@@ -29,6 +29,17 @@ public enum SidebarActionIconsMode
     Always
 }
 
+/// <summary>When to answer the OSC 7501 feature query — see <c>AppSettings.ProgramStatusProbe</c>.</summary>
+public enum ProgramStatusProbeMode
+{
+    /// <summary>Answer on the bundled ConPTY (raw reply, in time); not on the inbox one.</summary>
+    Auto = 0,
+    /// <summary>Answer on both (inbox: experiments only — the reply arrives late there).</summary>
+    On = 1,
+    /// <summary>Never answer.</summary>
+    Off = 2,
+}
+
 public class AppSettings
 {
     public bool AutoRestoreSessions { get; set; } = true;
@@ -115,6 +126,20 @@ public class AppSettings
     /// </summary>
     public bool UseBundledConPty { get; set; } = true;
 
+    /// <summary>
+    /// Whether to answer a program's OSC 7501 feature query (<c>OSC 7501 ; ? ST</c>). No UI;
+    /// stored as a number in state.json (0 = Auto, 1 = On, 2 = Off).
+    /// <para>
+    /// Deliberately a NEW name: development builds saved a plain-bool
+    /// <c>"AnswerProgramStatusProbe": false</c> meaning "experimental, off", which under the
+    /// later nullable meaning would have read as "force off". The old key is now simply
+    /// ignored, and everyone starts on <see cref="ProgramStatusProbeMode.Auto"/>.
+    /// </para>
+    /// Replies are always gated (<see cref="Services.ProgramStatusProbeGate"/>). Incoming 7501
+    /// REPORTS are always parsed. See CLAUDE.md "Program status (OSC 7501)".
+    /// </summary>
+    public ProgramStatusProbeMode ProgramStatusProbe { get; set; } = ProgramStatusProbeMode.Auto;
+
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";
     public int TerminalFontSize { get; set; } = 14;
@@ -122,6 +147,15 @@ public class AppSettings
     public string TerminalFontWeight { get; set; } = "normal";
     public double TerminalLetterSpacing { get; set; } = 0;
     public double TerminalLineHeight { get; set; } = 1.0;
+
+    /// <summary>
+    /// "Open with…" editors / IDEs (issue #178). Seeded once by auto-detection — gated on
+    /// <see cref="OpenWithSeeded"/>, not on the list being empty, so a user who deletes
+    /// every entry is not re-seeded behind their back.
+    /// </summary>
+    public List<OpenWithEntry> OpenWith { get; set; } = [];
+    /// <summary>True once auto-detection has seeded <see cref="OpenWith"/>. False on any state.json older than #178.</summary>
+    public bool OpenWithSeeded { get; set; } = false;
 
     public List<string> LaunchCommands { get; set; } =
     [

@@ -256,6 +256,7 @@ public partial class MainWindow : Window
         // Before any terminal starts: PseudoTerminal resolves its ConPTY implementation once,
         // on the first Start, from this flag. See "Bundled ConPTY" in CLAUDE.md.
         Terminal.PseudoTerminal.PreferBundledConPty = _vm.Settings.UseBundledConPty;
+        EnsureOpenWithSeeded();   // first run after #178: detect editors once, off the UI thread
         // Window bounds were already applied before the window was shown
         // (MainWindow.Placement.cs); only start saving them from here on.
         _windowStateReady = true;
@@ -1539,6 +1540,14 @@ public partial class MainWindow : Window
             _vm.SaveStateDebounced();
         };
 
+        // OSC 7501 program status (Claude Code reports working / blocked / done through it
+        // once the probe is answered — TerminalBridge does that). Runtime-only: no save.
+        // WebMessageReceived already runs on the UI thread, so Invoke runs inline.
+        bridge.ProgramStatusReceived += payload =>
+            Dispatcher.Invoke(() => _vm.ApplyProgramStatus(vm, payload));
+        bridge.PromptStarted += () =>
+            Dispatcher.Invoke(() => _vm.DropTransientProgramStatus(vm));
+
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
         bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
@@ -1567,6 +1576,7 @@ public partial class MainWindow : Window
             TerminalGrid.Children.Remove(terminalWrapper);
             // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
             _runControls.Remove(vm.Id);
+            RemoveOpenWithControls(vm.Id);
             _gitPanes.Remove(vm.Id);
             vm.Dispose();
             if (_launchingSidebarItems.Remove(session.Id))
@@ -1618,6 +1628,8 @@ public partial class MainWindow : Window
             Dispatcher.Invoke(() =>
             {
                 _sessionManager.UpdateStatus(session.Id, SessionStatus.Exited);
+                // OSC 7501 lifetime: working/blocked records die with the process.
+                _vm.OnProgramProcessExited(vm);
                 RefreshSidebarItem(session.Id);
             });
         };
@@ -1702,6 +1714,7 @@ public partial class MainWindow : Window
             TerminalGrid.Children.Remove(terminalWrapper);
             // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
             _runControls.Remove(vm.Id);
+            RemoveOpenWithControls(vm.Id);
             _gitPanes.Remove(vm.Id);
             MessageBox.Show($"Failed to start '{session.FullCommandLine}':\n{ex.Message}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -1944,6 +1957,10 @@ public partial class MainWindow : Window
         textPanel.Children.Add(folderText);
         textPanel.Children.Add(gitText);
         textPanel.Children.Add(worktreeText);
+        // OSC 7501 "working" — built collapsed, shown only while the program reports working.
+        var workText = BuildWorkingIndicator(new Thickness(0, 1, 0, 0));
+        UpdateWorkingIndicator(workText, vm, compact: false);
+        textPanel.Children.Add(workText);
         textPanel.Children.Add(alertBadge);
 
         // Status dot (waiting indicator)
@@ -2133,6 +2150,11 @@ public partial class MainWindow : Window
                     case nameof(SessionViewModel.GitInfoVersion):
                         UpdateGitText(gitText, vm);
                         UpdateWorktreeText();
+                        break;
+
+                    // One notification for working + progress + message (OSC 7501).
+                    case nameof(SessionViewModel.ProgramStatusVersion):
+                        UpdateWorkingIndicator(workText, vm, compact: false);
                         break;
 
                     case nameof(SessionViewModel.RepoRoot):
@@ -3436,6 +3458,20 @@ public partial class MainWindow : Window
                 menu.Items.Add(resetColor);
             }
 
+            // OSC 7501: the way out of a status that got stuck (a program that died mid-turn
+            // without clearing). Drops every record and hands the session back to the
+            // heuristic until the program reports again. Runtime-only, so no save.
+            if (vm.HasProgramStatus)
+            {
+                var clearStatus = new System.Windows.Controls.MenuItem
+                {
+                    Header = "Clear status",
+                    ToolTip = "Forget the state this program reported (working / waiting / done)"
+                };
+                clearStatus.Click += (_, _) => _vm.ClearProgramStatus(vm);
+                menu.Items.Add(clearStatus);
+            }
+
             // Folder actions — only when there's a local working folder to open.
             if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
             {
@@ -3447,13 +3483,6 @@ public partial class MainWindow : Window
                 psItem.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
                 menu.Items.Add(psItem);
 
-                if (IsVsCodeAvailable())
-                {
-                    var codeItem = new System.Windows.Controls.MenuItem { Header = "Open in VS Code" };
-                    codeItem.Click += (_, _) => OpenInVsCode(vm.WorkingFolder);
-                    menu.Items.Add(codeItem);
-                }
-
                 if (vm.Session.IsWsl)
                 {
                     var wslConsoleItem = new System.Windows.Controls.MenuItem { Header = "Open WSL console here" };
@@ -3461,6 +3490,11 @@ public partial class MainWindow : Window
                     menu.Items.Add(wslConsoleItem);
                 }
             }
+
+            // "Open with ▸" (MainWindow.OpenIn.cs) — local, WSL and SSH alike; entries
+            // without a template for this session's kind are hidden.
+            if (BuildOpenWithSubmenu(vm) is { } openWithItem)
+                menu.Items.Add(openWithItem);
 
             menu.Items.Add(new System.Windows.Controls.Separator());
 
@@ -4515,8 +4549,9 @@ public partial class MainWindow : Window
         };
         explorerBtn.Click += (_, _) => vm.OpenInExplorerCommand.Execute(null);
 
-        // { } — open the folder in VS Code (MainWindow.OpenIn.cs). Hidden unless found.
-        var vsCodeBtn = BuildVsCodeButton(vm);
+        // { } ▼ — open the folder with an editor from the "Open with" list
+        // (MainWindow.OpenIn.cs). Hidden when no entry applies to this session's kind.
+        var openWithBtns = BuildOpenWithButtons(vm);
 
         // PowerShell quick-launch button
         var toolbarPsBtn = new WpfButton
@@ -4653,7 +4688,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(closeBtn, Dock.Right);
         DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
-        DockPanel.SetDock(vsCodeBtn, Dock.Right);
+        DockPanel.SetDock(openWithBtns, Dock.Right);
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
@@ -4662,6 +4697,11 @@ public partial class MainWindow : Window
         DockPanel.SetDock(chevronBtn, Dock.Right);
         DockPanel.SetDock(playBtn, Dock.Right);
         DockPanel.SetDock(gitChip, Dock.Right);
+        // OSC 7501 working indicator, just left of the git chip. Toolbar chrome, never over
+        // the pane — WebView2 is an HwndHost and would cover any WPF overlay.
+        var workChip = BuildWorkingIndicator(new Thickness(0, 0, 8, 0));
+        UpdateWorkingIndicator(workChip, vm, compact: true);
+        DockPanel.SetDock(workChip, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
         // Dock.Right children are stacked right-to-left in declaration order, so this
@@ -4669,7 +4709,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(closeBtn);
         toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
-        toolbarContent.Children.Add(vsCodeBtn);
+        toolbarContent.Children.Add(openWithBtns);
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
@@ -4678,6 +4718,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(chevronBtn);
         toolbarContent.Children.Add(playBtn);
         toolbarContent.Children.Add(gitChip);
+        toolbarContent.Children.Add(workChip);
         toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
         toolbarContent.Children.Add(folderBlock);
@@ -4848,6 +4889,11 @@ public partial class MainWindow : Window
         // Subscribe to waiting state changes for the status dot
         vm.PropertyChanged += (_, args) =>
         {
+            if (args.PropertyName == nameof(SessionViewModel.ProgramStatusVersion))
+            {
+                Dispatcher.Invoke(() => UpdateWorkingIndicator(workChip, vm, compact: true));
+                return;
+            }
             if (args.PropertyName is nameof(SessionViewModel.IsWaitingForInput)
                                   or nameof(SessionViewModel.IsWaitingForApproval))
             {
@@ -4939,6 +4985,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5235,6 +5282,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5372,6 +5420,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5997,6 +6046,12 @@ public partial class MainWindow : Window
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
             _vm.Settings.ImportWindowsTerminalProfiles = edited.ImportWindowsTerminalProfiles;
             _vm.Settings.LaunchCommands = edited.LaunchCommands;
+            if (dialog.OpenWithEdited)
+            {
+                _vm.Settings.OpenWith = edited.OpenWith;
+                _vm.Settings.OpenWithSeeded = true;
+                RefreshOpenWithButtons();
+            }
             _vm.Settings.TerminalFontFamily = edited.TerminalFontFamily;
             _vm.Settings.TerminalFontSize = edited.TerminalFontSize;
             _vm.Settings.TerminalFontLigatures = edited.TerminalFontLigatures;
@@ -6123,6 +6178,29 @@ public partial class MainWindow : Window
         _vm.Settings.MaxSearchResults = s.MaxSearchResults;
         _vm.Settings.ShowTerminalStatusDot = s.ShowTerminalStatusDot;
         _vm.Settings.LaunchCommands = s.LaunchCommands;
+        // "Open with" entries are programs that run on a click, and a backup is any file the
+        // user was handed. ImportExportService filtered it (no batch files, shells, network or
+        // %SystemRoot% programs), but no filter can recognise a renamed program — so the list
+        // is never adopted silently: show every command and ask, defaulting to keeping ours.
+        // A backup from before #178 carries no list; keep ours without asking.
+        if (s.OpenWithSeeded && !OpenWithService.SameCommands(s.OpenWith, _vm.Settings.OpenWith))
+        {
+            string listing = s.OpenWith.Count == 0
+                ? "(an empty list)\n"
+                : OpenWithService.DescribeForReview(s.OpenWith);
+            var adopt = MessageBox.Show(
+                "The backup contains its own \"Open with\" editor list. These programs would run when you " +
+                "use { } or Open with:\n\n" + listing +
+                "\nReplace your current list with this one?\n\nChoose No to keep your current list (recommended " +
+                "unless you made this backup yourself).",
+                "Import \"Open with\" list", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            if (adopt == MessageBoxResult.Yes)
+            {
+                _vm.Settings.OpenWith = s.OpenWith;
+                _vm.Settings.OpenWithSeeded = true;
+                RefreshOpenWithButtons();
+            }
+        }
         _vm.Settings.TerminalFontFamily = s.TerminalFontFamily;
         _vm.Settings.TerminalFontSize = s.TerminalFontSize;
         _vm.Settings.TerminalFontLigatures = s.TerminalFontLigatures;

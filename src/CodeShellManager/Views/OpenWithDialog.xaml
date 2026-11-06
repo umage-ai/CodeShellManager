@@ -1,0 +1,173 @@
+<Window x:Class="CodeShellManager.Views.OpenWithDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Open with"
+        Width="900" Height="640"
+        MinWidth="720" MinHeight="480"
+        WindowStartupLocation="CenterOwner"
+        Background="#1e1e2e"
+        Foreground="#cdd6f4"
+        FontFamily="Segoe UI"
+        ResizeMode="CanResizeWithGrip">
+    <Window.Resources>
+        <Style x:Key="Label" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#a6adc8"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="0,10,0,3"/>
+        </Style>
+        <Style x:Key="Preview" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#6c7086"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#313244"/>
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="BorderBrush" Value="#45475a"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="CaretBrush" Value="#cdd6f4"/>
+        </Style>
+        <Style x:Key="Btn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#cdd6f4"/>
+            <Setter Property="BorderBrush" Value="#45475a"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style x:Key="IconBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#a6adc8"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel Margin="18,16,18,14">
+        <TextBlock DockPanel.Dock="Top" Text="Open with" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock DockPanel.Dock="Top" FontSize="11" Foreground="#6c7086" Margin="0,0,0,14" TextWrapping="Wrap"
+                   Text="Editors and IDEs a session's folder can be opened in. The starred entry is the toolbar { } default; ▼ lists every entry that has arguments for the session's kind. Leave a kind's arguments blank to hide the entry for it. Programs are started directly — never through a shell — and each placeholder becomes exactly one argument."/>
+
+        <!-- Bottom: Add / Detect (left), Cancel / Save (right) -->
+        <Grid DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button Grid.Column="0" Content="+ Add" Style="{StaticResource Btn}" Click="Add_Click"/>
+            <Button Grid.Column="1" x:Name="DetectBtn" Content="Detect installed editors" Style="{StaticResource Btn}"
+                    Margin="8,0,0,0" Click="Detect_Click"
+                    ToolTip="Look for VS Code (stable, Insiders), Cursor, Windsurf, VSCodium, Visual Studio, JetBrains IDEs, Zed, Sublime Text and Notepad++, and add any that aren't in the list yet."/>
+            <StackPanel Grid.Column="3" Orientation="Horizontal">
+                <Button Content="Cancel" Width="84" Margin="0,0,8,0" Padding="0,5"
+                        Style="{StaticResource Btn}" Click="Cancel_Click"/>
+                <Button Content="Save" Width="84" Padding="0,5" IsDefault="True"
+                        Background="#89b4fa" Foreground="#1e1e2e" BorderThickness="0"
+                        Cursor="Hand" Click="Save_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="230"/>
+                <ColumnDefinition Width="16"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Master list -->
+            <DockPanel Grid.Column="0">
+                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                    <Button Content="▲" Style="{StaticResource IconBtn}" Click="MoveUp_Click" ToolTip="Move up"/>
+                    <Button Content="▼" Style="{StaticResource IconBtn}" Click="MoveDown_Click" ToolTip="Move down"/>
+                    <Button Content="★" Style="{StaticResource IconBtn}" Foreground="#f9e2af" Click="MakeDefault_Click"
+                            ToolTip="Make default (toolbar { } button)"/>
+                    <Button Content="🗑" Style="{StaticResource IconBtn}" Click="Delete_Click" ToolTip="Delete"/>
+                </StackPanel>
+                <ListBox x:Name="EntriesList" Background="#181825" BorderBrush="#313244" BorderThickness="1"
+                         Foreground="#cdd6f4" SelectionChanged="EntriesList_SelectionChanged"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Padding" Value="8,5"/>
+                            <Setter Property="Foreground" Value="#cdd6f4"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#45475a"/>
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#585b70"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="★" Foreground="#f9e2af" Width="16" Visibility="{Binding StarVisibility}"/>
+                                <TextBlock Text="" Width="16" Visibility="{Binding NoStarVisibility}"/>
+                                <TextBlock Text="{Binding DisplayLabel}" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text=" ⚠" Foreground="#f38ba8" Visibility="{Binding ProblemVisibility}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+
+            <!-- Detail -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="DetailPanel">
+                    <TextBlock Text="Label" Style="{StaticResource Label}" Margin="0,0,0,3"/>
+                    <TextBox x:Name="LabelBox" TextChanged="Field_Changed"/>
+
+                    <TextBlock Text="Program (.exe)" Style="{StaticResource Label}"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="ExeBox" Grid.Column="0" Margin="0,0,6,0" FontFamily="Consolas" FontSize="12"
+                                 TextChanged="Field_Changed"/>
+                        <Button Grid.Column="1" Content="Browse…" Style="{StaticResource Btn}" Padding="10,4"
+                                Click="Browse_Click"/>
+                    </Grid>
+                    <TextBlock x:Name="ExeStatus" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
+
+                    <TextBlock Text="Arguments — local sessions   ({folder})" Style="{StaticResource Label}"/>
+                    <TextBox x:Name="LocalArgsBox" FontFamily="Consolas" FontSize="12" TextChanged="Field_Changed"/>
+                    <TextBlock x:Name="LocalPreview" Style="{StaticResource Preview}"/>
+
+                    <TextBlock Text="Arguments — WSL sessions   ({distro} {linuxPath} {folder} = \\wsl$ path)" Style="{StaticResource Label}"/>
+                    <TextBox x:Name="WslArgsBox" FontFamily="Consolas" FontSize="12" TextChanged="Field_Changed"/>
+                    <TextBlock x:Name="WslPreview" Style="{StaticResource Preview}"/>
+
+                    <TextBlock Text="Arguments — SSH sessions   ({userAtHost} {user} {host} {port} {remoteFolder})" Style="{StaticResource Label}"/>
+                    <TextBox x:Name="SshArgsBox" FontFamily="Consolas" FontSize="12" TextChanged="Field_Changed"/>
+                    <TextBlock x:Name="SshPreview" Style="{StaticResource Preview}"/>
+
+                    <TextBlock FontSize="10" Foreground="#6c7086" Margin="0,14,0,0" TextWrapping="Wrap"
+                               Text="Arguments are split on spaces; wrap text containing spaces in double quotes. Each placeholder is substituted inside its own argument, so a folder name can never turn into extra arguments. Every template must use at least one placeholder. Add :uri (e.g. {linuxPath:uri}) to percent-encode a value spliced into a URI. A placeholder may not start an argument with - or / — Electron editors read /name=value as a switch — so a Linux path goes inside a larger argument such as --folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}. The previews show exactly what will be run, with sample session values."/>
+                </StackPanel>
+            </ScrollViewer>
+            <TextBlock x:Name="EmptyHint" Grid.Column="2" Foreground="#6c7086" FontSize="12" TextWrapping="Wrap"
+                       VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed"
+                       Text="No editors. Click + Add, or Detect installed editors."/>
+        </Grid>
+    </DockPanel>
+</Window>

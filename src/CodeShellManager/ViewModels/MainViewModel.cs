@@ -336,7 +336,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Clicking into a pane must promote it too. This can only come from the page —
             // see TerminalBridge.PaneActivated for why WPF never sees the click.
             vm.Bridge.PaneActivated += Promote;
-            vm.Bridge.UserInput += () => vm.AlertDetector?.NotifyUserInteracted();
+            // UserInput is every onData, which includes xterm's own automatic replies
+            // (device attributes, cursor reports, focus in/out). For the heuristic that has
+            // always been the "interaction" signal; for an OSC 7501 session it must not be,
+            // or a terminal auto-reply would acknowledge a done the user never saw.
+            vm.Bridge.UserInput += () =>
+            {
+                if (!vm.HasProgramStatus) vm.AlertDetector?.NotifyUserInteracted();
+            };
+            // A real key event (onKey) acknowledges a 7501 done/error. The guard is
+            // allocation-free and false on almost every keystroke.
+            vm.Bridge.KeyboardInput += () =>
+            {
+                if (!vm.HasUnacknowledgedProgramStatus) return;
+                vm.ClearAlert();
+                RaiseAlertCountIfChanged();
+            };
         }
 
         if (vm.AlertDetector != null)
@@ -348,6 +363,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 App.Current.Dispatcher.BeginInvoke(() =>
                 {
+                    // Queued before the first OSC 7501 report landed: the reported state
+                    // wins, and the heuristic's toast must not fire either.
+                    if (vm.HasProgramStatus) return;
                     vm.RaiseAlert(alert.Message, alert.Type);
                     RaiseAlertCountIfChanged();
                     if (Settings.ShowToastNotifications)
@@ -373,6 +391,40 @@ public partial class MainViewModel : ObservableObject, IDisposable
             SessionOrder.InsertionIndex(Sessions, ManagerOrder(), s => s.Id, vm.Id), vm);
         ActiveSession = vm;
         _ = SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Applies one OSC 7501 payload to a session (UI thread). Badge/dot/working state are
+    /// set by the VM; the alert count and the — rate-limited — toast are handled here,
+    /// mirroring what the heuristic AlertRaised path does.
+    /// </summary>
+    public void ApplyProgramStatus(SessionViewModel vm, string payload)
+    {
+        var notice = vm.ApplyProgramStatus(payload, DateTime.UtcNow);
+        RaiseAlertCountIfChanged();
+        if (notice != null && !string.IsNullOrEmpty(notice.Message) && Settings.ShowToastNotifications)
+            ToastHelper.Show(vm.DisplayName, notice.Message, Settings.ShowNotificationSound);
+    }
+
+    /// <summary>A new prompt began (OSC 133 A): drop live 7501 records.</summary>
+    public void DropTransientProgramStatus(SessionViewModel vm)
+    {
+        vm.DropTransientProgramStatus();
+        RaiseAlertCountIfChanged();
+    }
+
+    /// <summary>The session's PTY exited: drop live 7501 records and ignore late live reports.</summary>
+    public void OnProgramProcessExited(SessionViewModel vm)
+    {
+        vm.OnProcessExited();
+        RaiseAlertCountIfChanged();
+    }
+
+    /// <summary>Sidebar "Clear status": drop every 7501 record and re-arm the heuristic.</summary>
+    public void ClearProgramStatus(SessionViewModel vm)
+    {
+        vm.ClearProgramStatus();
+        RaiseAlertCountIfChanged();
     }
 
     private void OnSessionCloseRequested(SessionViewModel vm)

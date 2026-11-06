@@ -66,7 +66,10 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `GitStatusText` | WPF-free wording for the toolbar git chip and menu: ↑/↓ counts, the menu header line, the post-fetch toast, and a short hint recognised from git's own failure text. See "Git tools on the terminal toolbar" |
 | `WslDiscoveryService` | `wsl.exe` probes for distro list, `$HOME` and login shell, each cached per (distro, user) and capped at 3s. All three go through `RunWslCaptureAsync`, which is `Task.Run`-wrapped — **never call `Process.Start` inline here**, `wsl.exe` can boot a stopped distro VM |
 | `ShellIntegrationPayload` | WPF-free validation for OSC 9001. Every field is untrusted: colour is strict hex, dirty is an allowlist, title and branch strip control characters and are length-capped (`MaxTitleLength` 80, `MaxBranchLength` 200) |
-| `AlertDetector` | Pattern matching for Claude prompts/approvals |
+| `AlertDetector` | Pattern matching for Claude prompts/approvals. `StandDown()` silences it once a session speaks OSC 7501 |
+| `ProgramStatusPayload` | WPF-free OSC 7501 report parser/validator + the probe reply (win32-input-mode encoded for ConPTY). See "Program status (OSC 7501)" |
+| `ProgramStatusProbeGate` | Per-session gate on answering the 7501 probe: setting on (default off), win32-input-mode requested, 1 per 5s, 3 per session |
+| `ProgramStatusRecords` | WPF-free OSC 7501 record tree: replace, `clear`, 256-cap eviction, exit lifetime, acknowledge, and the blocked > working > error > done > idle aggregate |
 | `CommandPresetsService` | Launch presets + in-session shortcuts |
 | `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
 | `UpdateService` | GitHub Releases version check; caches result for 24h at `%AppData%/CodeShellManager/update-cache.json` |
@@ -78,6 +81,8 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `DbGate` | Serializes every use of the shared `output.db` `SqliteConnection`. That one connection is handed to `SearchService` *and* to every `OutputIndexer`, and it is not thread-safe — concurrent create/dispose corrupts its internal command list. Acquire as `using var _ = await DbGate.AcquireAsync();` at the top of anything touching it. See issue #102 |
 | `PwshLocator` | Single answer to "pwsh or powershell?", shared by `RunInstance` (run commands) and `PseudoTerminal.BuildCmdLine` (session wrapper) so they can't disagree. Resolves via `where.exe`. An ordinary executable is accepted from metadata alone (no spawn). A **zero-byte reparse point is ambiguous, not bad**: that shape is a Store App Execution Alias, and a *working* Store install of PowerShell 7 looks identical to a stub left by an uninstalled app — so only that case is settled by actually probing execution. Rejecting the shape outright silently downgraded Store-PS7 users to 5.1 on every session launch |
 | `ToastHelper` | Tray balloon notifications |
+| `OpenWithService` | WPF-free "Open with…": template tokenise/substitute (one placeholder → one argv element), program/value validation, BatBadBut refusal, sanitising state.json/imports, launch. See "Open with…" |
+| `OpenWithDetector` | One-time seeding of the Open with list (VS Code family, Visual Studio via vswhere, JetBrains, Zed, Sublime, Notepad++). Disk/registry/spawn — `Task.Run` only |
 | `SessionRunner` | Per-session owner of `RunInstance` dictionary (run commands runtime) |
 | `RunInstance` | One headless PTY-backed run with ANSI-stripped output buffer |
 | `RunCommandTemplatesService` | Detects project type (dotnet/cargo/node/python/make) → seed run-command list |
@@ -767,6 +772,143 @@ Unknown keys are ignored. Multiple keys can be sent in a single sequence. Values
 
 The OSC handler returns `true` so xterm consumes the sequence and it doesn't render.
 
+## Program status (OSC 7501)
+
+Programs report their own state through the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status):
+`ESC ] 7501 ; state=working:progress=40:id=build:app=cargo:msg=<base64> ST`. Claude Code
+(checked: 2.1.319) implements it — root record `working` while busy, `blocked` +
+`kind=permission|question|auth` when waiting, `done` after a completed turn, `error` on a failed
+one, child records per background task, and `state=clear` on exit — **but only after its
+startup query `OSC 7501 ; ?` is answered**. Unanswered, it logs `probe: no reply to OSC 7501 ; ?`
+and never reports.
+
+**It works on the bundled ConPTY (the default); on the inbox ConPTY Claude Code does not report,
+while programs that report without probing still do.** Measured with the real `claude` behind
+the bundled ConPTY: the debug log says `programStatus=yes (probe: OSC 7501 reply)`, and a
+trivial prompt produced `state=idle` → `state=working` → `state=done` → `state=done:msg=…`
+reports. On the inbox ConPTY the reply cannot win the race (see "Bundled ConPTY" and the
+measured subsection below), so there it stays off by default.
+
+**Pipeline.** `terminal-init.js` registers `registerOscHandler(7501, …)`: an exact `?` posts
+`programStatusProbe`, a report posts `programStatus` with the raw payload (pre-capped at 4096).
+It also observes OSC 133 `A` and posts `promptStart` (returns `false` — observe only).
+Reports are always parsed. Whether the probe is answered follows `AppSettings.ProgramStatusProbe`
+(enum `ProgramStatusProbeMode`, no UI, stored as a number: 0 Auto, 1 On, 2 Off): **Auto
+(default) — answered when the session's PTY runs on the bundled ConPTY
+(`PseudoTerminal.UsesBundledConPty`), not on the inbox one**; On forces it on (inbox: experiments
+only), Off off. It is deliberately not called `AnswerProgramStatusProbe`: development builds
+saved that key as a plain `false` meaning "experimental, off", which a nullable reading would
+have turned into "force off" — the old key is now ignored. `Services/ProgramStatusProbeGate` then allows at most
+one reply per 5s and 3 per session, and on the inbox ConPTY additionally requires that the
+session's ConPTY requested win32-input-mode (`ESC[?9001h` seen on output, `?9001l` turns it off).
+The reply is fixed, app-authored bytes — so a raw PTY write is correct, and it deliberately
+does **not** raise `UserInput`: the raw `ESC ] 7501 ; ? ESC \` on the bundled ConPTY,
+`ProbeReplyForConPty` (win32-input-mode key events) on inbox.
+
+**The reply is written synchronously on the UI thread, deliberately.** Claude sends DA1
+(`CSI c`) right after its query and treats the answer as "no more replies". On the bundled ConPTY
+xterm.js answers that DA1, and its answer is written to the PTY by the *next* `input` message,
+synchronously on the same thread. The page posts the probe synchronously from inside the parser,
+so it is handled first — but only if the reply is written right there; a thread-pool write
+(as the inbox-only experimental version had) races xterm's answer, and losing is exactly
+`probe: no reply`. It is one small write, at most three times per session — the keystroke
+path's cost. On the inbox ConPTY the guard exists for a different reason: the reply always
+arrives after conhost's own DA1 answer, i.e. as late unsolicited stdin starting with ESC, which
+a TUI can take for an Escape keypress. `TerminalBridge` raises `ProgramStatusReceived` / `PromptStarted`. `MainViewModel.ApplyProgramStatus`
+→ `SessionViewModel.ApplyProgramStatus` parses (`Services/ProgramStatusPayload`), stores
+(`Services/ProgramStatusRecords`) and maps; the alert count and a toast are handled in
+`MainViewModel`. All WPF-free logic is tested in `ProgramStatusPayloadTests`,
+`ProgramStatusRecordsTests`, `ProgramStatusProbeGateTests` and `SessionViewModelProgramStatusTests`.
+Nothing is persisted.
+
+**Validation is the spec's, and strict.** Keys `[a-z]+`, values `[A-Za-z0-9_.,+/=-]*`,
+malformed pairs skipped, last repeat wins. A report is dropped *whole* on a missing/unknown
+state, an invalid id (segments `[A-Za-z0-9_.+-]{1,32}`, ≤8 deep, ≤128 bytes — never written to
+the root instead), a limit (sequence 4096, key 16, title 256→192, msg 2732→2048 bytes), bad
+base64, invalid UTF-8, or any control character or line/paragraph separator (U+2028/U+2029) in
+decoded text. Unicode format characters (bidi overrides, zero-width, the supplementary tag
+block U+E0001/U+E0020–E007F) are stripped by rune, not rejected — the spec asks for them to be
+neutralised. An `app` that isn't `[A-Za-z0-9_.+-]{1,32}` and an out-of-range `progress` are
+treated as absent, not as reasons to drop the report.
+
+**Records and precedence.** One record per id (root = no id); each report replaces its record
+wholesale; `clear` removes the id and its children, or everything without an id; 256 records,
+least-recently-updated evicted. The session shows one aggregate state:
+**blocked > working > error > done > idle**, ties to the root, then most recent. Working
+outranks error/done on purpose: those two persist until acknowledged, so ranking them higher
+would let a stale child result hide live work forever.
+
+| Aggregate | Session |
+|---|---|
+| `working` (+`progress`) | `IsWorking` / `WorkProgress` → pulsing `⟳ working · 40%` in the sidebar row and `⟳ 40%` on the toolbar (accent blue, 10 fps opacity pulse, chrome only — HwndHost) |
+| `blocked` + `permission` | `IsWaitingForApproval` (orange) |
+| `blocked` + `question` / `auth` / no kind | `IsWaitingForInput` (green) |
+| any record **entering** `blocked` / `done` / `error` | `NeedsAttention` badge + toast |
+| `idle` / none | indicators cleared |
+
+**Attention is judged per record, not from the aggregate.** A long-lived working child (a
+background task) outranks the root, so the root's turn-end `done` would never change the
+aggregate — judged on the aggregate, the user got no badge. So `ProgramStatusRecords.Apply`
+reports whether *that record* entered blocked/done/error (new, or a different state or kind);
+a report restating the same state with new progress or msg does not. The badge is cleared only
+once **no** record is in an attention state, so child work cannot wipe an unseen result, while
+the working indicator keeps showing the child. Toasts are further limited to one per session
+per `ProgramStatusToastInterval` (5s).
+
+**Fallback rule.** The first *valid* report sets `HasProgramStatus` and calls
+`AlertDetector.StandDown()` (same pattern as `_gitOverriddenByOsc`); `RaiseAlert` and the queued
+`AlertRaised` handler both ignore late heuristic alerts. The heuristic is **re-armed**
+(`AlertDetector.Rearm()`, `HasProgramStatus = false`) when the store becomes empty through a
+`clear`, through `DropTransient` (prompt start / exit) leaving nothing, or through the sidebar
+right-click **"Clear status"** item (shown while program status is present) — the user's way out
+of a status that got stuck because a program died mid-turn. It is deliberately *not* re-armed
+when acknowledging empties the store: a Claude session whose `done` was just seen would have the
+regex guess at its prompt again. A time-based "stale working" rule was considered and rejected —
+Claude thinking for minutes without a new report is normal, and any timeout would fight it.
+Sessions that never send 7501 behave exactly as before.
+
+**User interaction acknowledges, it does not clear.** Only a *real* key event (`KeyboardInput`,
+xterm's `onKey`) or focusing the session acknowledges — not `UserInput`, which is every `onData`
+and so includes xterm's own automatic replies (DA, cursor reports, focus in/out); for a 7501
+session `UserInput` no longer reaches `NotifyUserInteracted` at all. Acknowledging clears the badge
+and retires `done`/`error` records but leaves the waiting dots and the working indicator alone:
+they describe what the program is doing now, and it will report its next state itself. The
+per-keystroke guard `HasUnacknowledgedProgramStatus` is allocation-free and false on almost
+every key.
+
+**Lifetime.** PTY exit and OSC 133 `A` call `DropTransient`: working, blocked and idle records go;
+done and error stay until acknowledged. After the PTY has exited, working/blocked/idle reports
+still in flight (web messages queued behind the exit) are ignored, so a late `working` cannot
+stick forever; results and clears are still honoured. A full reset (`RIS`) is not tracked. Note
+the PTY is usually `pwsh -NoExit -Command claude`, so "process exit" is the wrapper's — Claude's
+own `state=clear` on exit is what normally retires its records.
+
+**The pulse runs only while seen.** The indicator's animation starts and stops on
+`IsVisibleChanged` (a filtered-out sidebar row, a pane not in the layout), Loaded/Unloaded, and
+the window's minimize/restore.
+
+### The probe reply cannot win under the inbox ConPTY (measured)
+
+Two conhost behaviours, both measured on 10.0.26100 with a raw-mode echo program behind the
+app's own `PseudoTerminal` and against the real `claude`:
+
+1. **Conhost drops OSC on the input side.** Writing `ESC ] 7501 ; ? ST` (either terminator) — or
+   any OSC, e.g. an OSC 11 colour reply — to the ConPTY input never reaches the program; CSI and
+   DCS replies do. Hence `ProbeReplyForConPty`: the same bytes sent as win32-input-mode key events
+   (`ESC [ 0;0;<char>;1;0;1 _` per character), which conhost turns back into exactly those
+   characters. Verified: the program receives `ESC ] 7501 ; ? ESC \` intact.
+2. **Conhost answers `CSI c` (DA1) itself.** The query never reaches xterm.js; conhost injects
+   `ESC [ ? 61;6;7;… c` into the input immediately. Claude sends DA1 straight after its 7501
+   query as a "no more replies" sentinel, so conhost's answer always arrives *before* ours can
+   make the round trip through the page and back — Claude logs "no reply" and settles to off.
+
+So with Claude 2.1.319 on the inbox ConPTY, **no reports arrive** — and a reply that cannot be
+on time is only late stdin, which is why it is off by default there. The fix that was taken is
+the bundled ConPTY ("Bundled ConPTY"): `Microsoft.Windows.Console.ConPTY`'s OpenConsole passes
+OSC input through and forwards DA1, measured to turn Claude's probe result from `no` to `yes`.
+Pre-seeding the reply before the program asks was rejected — in a non-probing program it would
+be stray keystrokes in the shell.
+
 ## Sleep / Wake (Dormant Sessions)
 
 Sessions can be put to sleep instead of closed — the PTY is torn down but the `ShellSession` is kept in `state.json` (`IsDormant = true`) so it can be relaunched from the sidebar later. Useful when you have many long-running projects but only need a few live at once.
@@ -860,13 +1002,8 @@ and **Copy branch name**. The UI is in `MainWindow.Git.cs`; git calls are in `Gi
 Hidden for SSH sessions — an OSC 9001 branch is display-only, there is no local folder to run
 git in.
 
-**"Open in VS Code" is not in this menu** — it is not a git action and must work for a folder
-that isn't a repo. It lives in `MainWindow.OpenIn.cs`: a `{ }` button beside 📁 / >_ on the
-terminal toolbar, and an item after "Open PowerShell here" in the sidebar right-click menu.
-Both appear only when VS Code was found (`code.cmd` on PATH → its `Code.exe`, launched
-directly with the folder as one argv element, never through `code.cmd`/`cmd.exe`) and the
-session has a local folder. A configurable "Open with…" for other editors and installs is
-tracked in #178.
+**Opening the folder in an editor is not in this menu** — it is not a git action and must work
+for a folder that isn't a repo. See "Open with…" below.
 
 **Deliberately read-mostly: no commit, push or merge.** A Claude session is usually editing
 that same working tree, and a one-click history write from outside its conversation is both a
@@ -1005,6 +1142,99 @@ spellings. Adding `--force` to the remove fails 3 tests; dropping `--` from the 
 fails 2. The full flow was also run end to end in the app with a terminal open inside the
 worktree: session closed, folder deleted, merged branch deleted. `GitServiceThreadingTests`
 now also find the repo root from a worktree checkout, where `.git` is a file.
+
+## Open with… (editors and IDEs)
+
+`{ }` ▼ on the terminal toolbar (beside 📁 / >_) and **Open with ▸** in the sidebar right-click
+menu open the session's folder in an editor from a user-owned list (#178). The button opens the
+default; ▼ lists every entry that has a template for the session's kind, plus **Edit…** (also
+right-click on `{ }`, and Settings → Open with). UI in `MainWindow.OpenIn.cs` and
+`Views/OpenWithDialog`; every rule is in the WPF-free `Services/OpenWithService` (tested in
+`OpenWithServiceTests` / `OpenWithHardeningTests` / `OpenWithDetectorTests`).
+
+**Model.** `AppSettings.OpenWith: List<OpenWithEntry> { Label, Executable, LocalArgs, WslArgs,
+SshArgs, IsDefault }`. A blank template hides the entry for that kind; a non-blank one must use
+at least one placeholder (an entry opens the session's location — a template of only literal
+arguments would be a fixed command line behind a friendly label). Placeholders: local
+`{folder}`; WSL `{folder}` (the `\\wsl$` mirror), `{distro}`, `{linuxPath}` (a blank or `~`
+Linux folder is resolved to `$HOME` at click time); SSH `{user}`, `{host}`, `{userAtHost}`,
+`{port}`, `{remoteFolder}`. Any other `{name}` is an error, not literal text. `{name:uri}`
+percent-encodes the value for splicing into a URI (path placeholders keep `/`; `@` in
+`{userAtHost:uri}` becomes `%40` so it can't read as URI user-info).
+
+**Seeded once, then the user's.** `OpenWithDetector` runs on each launch whose state has
+`OpenWithSeeded == false` (every state.json from before #178), and the flag is set only when it
+found something — so a machine with nothing installed keeps the old zero-config behaviour:
+install VS Code later and `{ }` appears on the next launch. Once seeded, deleting every entry
+sticks. It finds VS Code stable/Insiders, Cursor, Windsurf and VSCodium (PATH shim → exe, App
+Paths, `%LOCALAPPDATA%\Programs`, Program Files, Scoop; all with
+`--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}` and
+`--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}`), Visual Studio via
+`vswhere` (`devenv.exe {folder}`, local only), JetBrains IDEs (standalone, Toolbox 1.x `apps\…`
+and 2.x `Programs\…` — the `*64.exe`, never the Toolbox `.cmd` scripts), Zed, Sublime Text and
+Notepad++. **It is disk, registry and a vswhere spawn: always `Task.Run`.** The PATH `code.cmd`
+lookup comes first, so the zero-config default is what it was before #178. "Detect installed
+editors" in the editor re-runs it and adds only new programs.
+
+**Launch rules — all load-bearing:**
+
+- **Split, then substitute.** The template is tokenised first (whitespace; `"…"` groups), and
+  placeholders are substituted inside their own token, so a value can never become a second
+  argument. The process is `UseShellExecute = false` + `ArgumentList` — no shell, no
+  interpolated command line. `OpenWithHardeningTests.ArgumentList_RealProcess_*` proves it
+  against what .NET really sends: it spawns a child (Windows PowerShell `-File`, echoing
+  `[Environment]::CommandLine`) with the same `ArgumentList` and splits the raw command line
+  with `CommandLineToArgvW`. The other round-trip tests use `ShellSession.QuoteForCmd`, which
+  is the *display* form (preview, tooltips) — the same MSVCRT rules, not the same code.
+- **No argument may look like a switch.** A value that *starts* an argv element may not begin
+  with `-` or `/` (`-` is refused anywhere in a value). The `/` rule is not theoretical —
+  **verified against Code.exe 1.143.1 on this machine**: launched with an isolated
+  `--user-data-dir` and the argument `/js-flags=--stack-size=987`, the renderer process came up
+  with `--js-flags=--stack-size=987`, i.e. Chromium parsed the slash form as a switch and
+  propagated it (the `--` control behaved identically; `/force-device-scale-factor=` did too).
+  Every Electron editor inherits this. That is why the seeded VS Code remote forms are a single
+  `--folder-uri vscode-remote://…` token and not `--remote wsl+X <linux path>`: a bare Linux
+  path is exactly a `/`-led argument.
+- **Values are untrusted** (state.json, imports): control characters are refused; host / user /
+  distro may not contain whitespace; a local `{folder}` must be an existing directory
+  (`FolderOpener.Target`, which also normalises forward slashes). A token that is only an empty
+  placeholder is dropped; an empty value inside a larger token (an SSH session with no remote
+  folder, in the `--folder-uri` form) is a clear error rather than a different target.
+- **Validate before side effects.** `PrepareAsync` checks the program, template and values
+  first, then the program on disk, and only then probes WSL `$HOME` — never spawn `wsl.exe` for
+  a command that was going to be refused.
+- **Never a batch file if it can be avoided.** `.cmd`/`.bat` run through `cmd.exe`, which
+  re-parses arguments — `%` expands even inside quotes, `&` chains a command (BatBadBut,
+  CVE-2024-24576). Detection and Browse… resolve shims to the real exe (`ResolveShim` — a known
+  VS Code-family layout, or exactly one quoted `.exe` in the script; several is ambiguous and
+  refused). If the user insists on a batch file, every argument containing a cmd metacharacter
+  (`%!&|<>^"(),;=`) is **refused, never escaped**.
+- **Programs.** Pure check (`ValidateExecutable`): an absolute local `.exe` (no relative, UNC
+  or device path), **nothing under `%SystemRoot%`** (no editor lives there, and much there runs
+  commands from its arguments — `ssh -oProxyCommand`, `pcalua -a`, `wmic process call create`,
+  `MSBuild`, `hh`, `mmc`, `explorer <url>`), and not a known shell/script host by name. A name
+  check alone is bypassable, so `ValidateExecutableOnDisk` (import, launch, editor — always off
+  the UI thread) re-checks the **real** path via `GetFinalPathNameByHandle` (8.3 names like
+  `POWERS~1.EXE`, junctions, symlinks, subst), refuses network drives (final path UNC, or
+  `DriveType.Network`), and checks the PE `OriginalFilename`/`InternalName`, so a renamed copy of
+  `powershell.exe` is caught. None of that recognises an arbitrary renamed program — which is
+  why imports are confirmed by the user.
+
+**Import trust.** An imported backup controls both the program and the literal template, so
+filtering can only narrow it. `StateService.Normalize` sanitises the list on every load
+(`OpenWithService.Sanitize`, pure: drops bad programs, clears bad templates, one default, fresh
+ids); `ImportExportService` re-sanitises with `SanitizeImported` (on-disk checks, batch files
+disallowed). Then **`Import_Click` never adopts the list silently**: if it differs from the
+current one, a dialog spells out every entry's program and argument template per kind
+(`DescribeForReview`) and asks, defaulting to **No — keep the current list**. Imported entries
+therefore can't become the default without that confirmation. In the app, every menu item shows
+the program's file name in its header and the fully resolved command for that session as its
+tooltip (`OpenWithService.Describe`), as does `{ }`, so a disguised label can't hide what runs.
+Importing a pre-#178 backup (`OpenWithSeeded` false) keeps the current list without asking.
+
+**Toolbar state.** Per-pane controls live in `_openWithControls`, re-evaluated on the session
+VM's `WorkingFolder`/`DisplayName` changes (edit session, a WSL `$HOME` landing), and removed —
+with their `PropertyChanged` handler — at every teardown site that drops `_runControls`.
 
 ## Opening a folder in Explorer
 

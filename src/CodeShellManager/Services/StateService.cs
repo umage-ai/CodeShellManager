@@ -136,6 +136,11 @@ public class StateService
         // deserialisation-order tricks. Import goes through this too (ImportExportService).
         foreach (var session in s.Sessions) session.MigrateLegacyFields();
         foreach (var entry in s.RecentlyClosed) entry.MigrateLegacyFields();
+        // "Open with" entries launch a program on a click, and state.json is not trusted
+        // input. Batch files are allowed here because the user may have chosen one in the
+        // editor (launch then refuses cmd metacharacters); an import is stricter — see
+        // ImportExportService.
+        s.Settings.OpenWith = OpenWithService.Sanitize(s.Settings.OpenWith, allowBatch: true, OpenWithService.Log);
         return s;
     }
 

@@ -384,8 +384,201 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(AccentColor));
     }
 
+    // ── OSC 7501 program status ────────────────────────────────────────────────
+    // Runtime-only: never persisted. A relaunch builds a new VM, so everything here —
+    // including the AlertDetector stand-down — resets naturally on restart / wake.
+
+    private readonly ProgramStatusRecords _programStatus = new();
+    private ProgramStatusSummary _programSummary = ProgramStatusSummary.Empty;
+    private DateTime _lastProgramToastUtc = DateTime.MinValue;
+    private int _programStatusVersion;
+
+    /// <summary>
+    /// Minimum gap between two program-status toasts for one session. The spec asks terminals
+    /// to rate-limit external effects; a program flipping blocked → working → blocked must not
+    /// produce a balloon per flip.
+    /// </summary>
+    internal static readonly TimeSpan ProgramStatusToastInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// True once the program has sent any valid OSC 7501 report. From then on the reported
+    /// state is authoritative and <see cref="AlertDetector"/>'s heuristic stands down.
+    /// </summary>
+    public bool HasProgramStatus { get; private set; }
+
+    /// <summary>The aggregate reported state, or null when no records are held.</summary>
+    public ProgramState? AgentState => _programSummary.State;
+
+    /// <summary>The program reports it is working (the aggregate state is <c>working</c>).</summary>
+    public bool IsWorking => _programSummary.State == ProgramState.Working;
+
+    /// <summary>0–100 while working with a known progress; null when indeterminate or not working.</summary>
+    public int? WorkProgress => IsWorking ? _programSummary.Progress : null;
+
+    /// <summary>The program's decoded <c>msg</c> for the winning record, already sanitised.</summary>
+    public string? ProgramStatusMessage => _programSummary.Message;
+
+    /// <summary>
+    /// One notification for <see cref="IsWorking"/>, <see cref="WorkProgress"/>,
+    /// <see cref="AgentState"/> and <see cref="ProgramStatusMessage"/> — same reasoning as
+    /// <see cref="GitInfoVersion"/>: one row repaint per change, not one per property.
+    /// </summary>
+    public int ProgramStatusVersion => _programStatusVersion;
+
+    /// <summary>
+    /// Applies one raw OSC 7501 payload. Invalid reports are ignored entirely (and do not
+    /// count as "the program speaks 7501"). Returns a toast-worthy notice when the session
+    /// just entered an attention state (blocked / done / error) and the per-session rate
+    /// limit allows one; otherwise null.
+    /// </summary>
+    public ProgramStatusNotice? ApplyProgramStatus(string payload, DateTime utcNow)
+    {
+        var report = ProgramStatusPayload.TryParse(payload);
+        if (report is null) return null;
+
+        // Exit race: web messages queued behind the PTY's exit describe a process that is
+        // gone. A live state from it would never be retired (no heartbeat, no further exit),
+        // leaving a stuck working/blocked indicator. Results and clears are still honoured.
+        if (_processExited && report.State is ProgramState.Working or ProgramState.Blocked or ProgramState.Idle)
+            return null;
+
+        bool first = !HasProgramStatus;
+        if (first)
+        {
+            HasProgramStatus = true;
+            AlertDetector?.StandDown();
+        }
+        _programStatus.Apply(report, out bool entered);
+        string? enteredMessage = entered
+            ? DescribeProgramStatus(report.State, report.Kind, report.Message)
+            : null;
+        SyncProgramStatus(force: first, enteredMessage);
+
+        // A clear that emptied the store hands the session back to the heuristic.
+        if (report.State == ProgramState.Clear && _programStatus.Count == 0) RearmHeuristic();
+
+        if (!entered) return null;
+        if (utcNow - _lastProgramToastUtc < ProgramStatusToastInterval) return null;
+        _lastProgramToastUtc = utcNow;
+        return new ProgramStatusNotice(enteredMessage!);
+    }
+
+    /// <summary>
+    /// A new shell prompt began (OSC 133 A), or the process exited. Drops the live records
+    /// per the spec's lifetime rule; done/error survive until acknowledged. If nothing is
+    /// left, the heuristic is re-armed.
+    /// </summary>
+    public void DropTransientProgramStatus()
+    {
+        if (!HasProgramStatus) return;
+        if (_programStatus.DropTransient()) SyncProgramStatus(force: false, enteredMessage: null);
+        if (_programStatus.Count == 0) RearmHeuristic();
+    }
+
+    /// <summary>
+    /// The session's PTY exited. From here on, live-state reports still in flight are ignored
+    /// (see <see cref="ApplyProgramStatus"/>).
+    /// </summary>
+    public void OnProcessExited()
+    {
+        _processExited = true;
+        DropTransientProgramStatus();
+    }
+
+    /// <summary>
+    /// "Clear status" from the sidebar menu: the user's way out of a state that got stuck
+    /// (a program that died mid-turn without a clear, say). Drops every record and hands the
+    /// session back to the heuristic until the program reports again.
+    /// </summary>
+    public void ClearProgramStatus()
+    {
+        if (!HasProgramStatus) return;
+        _programStatus.Apply(new ProgramStatusReport(ProgramState.Clear));
+        SyncProgramStatus(force: false, enteredMessage: null);
+        RearmHeuristic();
+    }
+
+    /// <summary>
+    /// True when a keystroke has something to acknowledge (a badge or a done/error record).
+    /// Allocation-free — MainViewModel checks it on every key event.
+    /// </summary>
+    public bool HasUnacknowledgedProgramStatus =>
+        HasProgramStatus && (NeedsAttention || _programStatus.HasUnacknowledgedResults);
+
+    private bool _processExited;
+
+    /// <summary>
+    /// Undo the stand-down: the program no longer holds any record, so the screen heuristic
+    /// is the only source again. Not done on acknowledge — a Claude session whose <c>done</c>
+    /// was just seen would otherwise have the regex guess at its prompt again.
+    /// </summary>
+    private void RearmHeuristic()
+    {
+        if (!HasProgramStatus) return;
+        HasProgramStatus = false;
+        AlertDetector?.Rearm();
+    }
+
+    /// <summary>
+    /// Re-derives the session's indicators from the records. The dots and the working
+    /// indicator follow the aggregate. The badge is raised from <paramref name="enteredMessage"/>
+    /// — a RECORD that just entered blocked/done/error, so a root <c>done</c> still badges
+    /// while a child keeps the aggregate at working — and cleared only once no record is in
+    /// an attention state, so that child work does not wipe an unseen result.
+    /// </summary>
+    private void SyncProgramStatus(bool force, string? enteredMessage)
+    {
+        var prev = _programSummary;
+        var next = _programStatus.Summarize();
+        bool summaryChanged = force || next != prev;
+        if (!summaryChanged && enteredMessage is null) return;
+        _programSummary = next;
+
+        bool blocked = next.State == ProgramState.Blocked;
+        IsWaitingForApproval = blocked && next.Kind == BlockedKind.Permission;
+        // question, auth, and a blocked report with no kind all mean "your turn to type".
+        IsWaitingForInput = blocked && next.Kind != BlockedKind.Permission;
+
+        if (enteredMessage is not null)
+        {
+            NeedsAttention = true;
+            AlertMessage = enteredMessage;
+        }
+        else if (!_programStatus.HasAttentionRecord)
+        {
+            // Nothing needs the user any more.
+            NeedsAttention = false;
+            AlertMessage = "";
+        }
+
+        if (!summaryChanged) return;
+        _programStatusVersion++;
+        OnPropertyChanged(nameof(ProgramStatusVersion));
+    }
+
+    /// <summary>Short one-liner for the badge tooltip / toast. <c>msg</c> is already sanitised.</summary>
+    internal static string DescribeProgramStatus(ProgramStatusSummary s) =>
+        DescribeProgramStatus(s.State, s.Kind, s.Message);
+
+    internal static string DescribeProgramStatus(ProgramState? state, BlockedKind kind, string? message)
+    {
+        string text = message ?? (state, kind) switch
+        {
+            (ProgramState.Blocked, BlockedKind.Permission) => "Needs permission",
+            (ProgramState.Blocked, BlockedKind.Auth) => "Sign-in required",
+            (ProgramState.Blocked, _) => "Waiting for your input",
+            (ProgramState.Done, _) => "Finished",
+            (ProgramState.Error, _) => "Failed",
+            _ => "",
+        };
+        return text.Length > 100 ? text[..100] + "…" : text;
+    }
+
     public void RaiseAlert(string message, AlertType alertType = AlertType.InputRequired)
     {
+        // A heuristic alert can already be queued on the dispatcher when the first OSC 7501
+        // report lands; once the program reports its own state, the guess must not win.
+        if (HasProgramStatus) return;
         NeedsAttention = true;
         AlertMessage = message;
         IsWaitingForInput = alertType == AlertType.InputRequired;
@@ -468,6 +661,19 @@ public partial class SessionViewModel : ObservableObject, IDisposable
 
     public void ClearAlert()
     {
+        if (HasProgramStatus)
+        {
+            // The user has seen the session (focus, keystroke). Clear the badge, and retire
+            // done/error records — they mean "a result you haven't looked at". The waiting
+            // dots and the working indicator are NOT cleared: they describe what the program
+            // is doing right now, and it will report the next state itself. Clearing them
+            // here would blank an orange "needs permission" dot on the first keystroke.
+            NeedsAttention = false;
+            AlertMessage = "";
+            if (_programStatus.Acknowledge()) SyncProgramStatus(force: false, enteredMessage: null);
+            return;
+        }
+
         NeedsAttention = false;
         AlertMessage = "";
         IsWaitingForInput = false;
