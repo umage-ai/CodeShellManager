@@ -436,41 +436,102 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         var report = ProgramStatusPayload.TryParse(payload);
         if (report is null) return null;
 
+        // Exit race: web messages queued behind the PTY's exit describe a process that is
+        // gone. A live state from it would never be retired (no heartbeat, no further exit),
+        // leaving a stuck working/blocked indicator. Results and clears are still honoured.
+        if (_processExited && report.State is ProgramState.Working or ProgramState.Blocked or ProgramState.Idle)
+            return null;
+
         bool first = !HasProgramStatus;
         if (first)
         {
             HasProgramStatus = true;
             AlertDetector?.StandDown();
         }
-        _programStatus.Apply(report);
-        bool entered = SyncProgramStatus(force: first);
+        _programStatus.Apply(report, out bool entered);
+        string? enteredMessage = entered
+            ? DescribeProgramStatus(report.State, report.Kind, report.Message)
+            : null;
+        SyncProgramStatus(force: first, enteredMessage);
+
+        // A clear that emptied the store hands the session back to the heuristic.
+        if (report.State == ProgramState.Clear && _programStatus.Count == 0) RearmHeuristic();
 
         if (!entered) return null;
         if (utcNow - _lastProgramToastUtc < ProgramStatusToastInterval) return null;
         _lastProgramToastUtc = utcNow;
-        return new ProgramStatusNotice(AlertMessage);
+        return new ProgramStatusNotice(enteredMessage!);
     }
 
     /// <summary>
-    /// The session's process exited, or a new shell prompt began (OSC 133 A). Drops the live
-    /// records per the spec's lifetime rule; done/error survive until acknowledged.
+    /// A new shell prompt began (OSC 133 A), or the process exited. Drops the live records
+    /// per the spec's lifetime rule; done/error survive until acknowledged. If nothing is
+    /// left, the heuristic is re-armed.
     /// </summary>
     public void DropTransientProgramStatus()
     {
         if (!HasProgramStatus) return;
-        if (_programStatus.DropTransient()) SyncProgramStatus(force: false);
+        if (_programStatus.DropTransient()) SyncProgramStatus(force: false, enteredMessage: null);
+        if (_programStatus.Count == 0) RearmHeuristic();
     }
 
     /// <summary>
-    /// Re-derives the session's indicators from the records. Returns true when the session
-    /// just ENTERED an attention state — the only moment worth a badge and a toast. A report
-    /// that merely restates the current state (a new progress value, a new msg) is not one.
+    /// The session's PTY exited. From here on, live-state reports still in flight are ignored
+    /// (see <see cref="ApplyProgramStatus"/>).
     /// </summary>
-    private bool SyncProgramStatus(bool force)
+    public void OnProcessExited()
+    {
+        _processExited = true;
+        DropTransientProgramStatus();
+    }
+
+    /// <summary>
+    /// "Clear status" from the sidebar menu: the user's way out of a state that got stuck
+    /// (a program that died mid-turn without a clear, say). Drops every record and hands the
+    /// session back to the heuristic until the program reports again.
+    /// </summary>
+    public void ClearProgramStatus()
+    {
+        if (!HasProgramStatus) return;
+        _programStatus.Apply(new ProgramStatusReport(ProgramState.Clear));
+        SyncProgramStatus(force: false, enteredMessage: null);
+        RearmHeuristic();
+    }
+
+    /// <summary>
+    /// True when a keystroke has something to acknowledge (a badge or a done/error record).
+    /// Allocation-free — MainViewModel checks it on every key event.
+    /// </summary>
+    public bool HasUnacknowledgedProgramStatus =>
+        HasProgramStatus && (NeedsAttention || _programStatus.HasUnacknowledgedResults);
+
+    private bool _processExited;
+
+    /// <summary>
+    /// Undo the stand-down: the program no longer holds any record, so the screen heuristic
+    /// is the only source again. Not done on acknowledge — a Claude session whose <c>done</c>
+    /// was just seen would otherwise have the regex guess at its prompt again.
+    /// </summary>
+    private void RearmHeuristic()
+    {
+        if (!HasProgramStatus) return;
+        HasProgramStatus = false;
+        AlertDetector?.Rearm();
+    }
+
+    /// <summary>
+    /// Re-derives the session's indicators from the records. The dots and the working
+    /// indicator follow the aggregate. The badge is raised from <paramref name="enteredMessage"/>
+    /// — a RECORD that just entered blocked/done/error, so a root <c>done</c> still badges
+    /// while a child keeps the aggregate at working — and cleared only once no record is in
+    /// an attention state, so that child work does not wipe an unseen result.
+    /// </summary>
+    private void SyncProgramStatus(bool force, string? enteredMessage)
     {
         var prev = _programSummary;
         var next = _programStatus.Summarize();
-        if (!force && next == prev) return false;
+        bool summaryChanged = force || next != prev;
+        if (!summaryChanged && enteredMessage is null) return;
         _programSummary = next;
 
         bool blocked = next.State == ProgramState.Blocked;
@@ -478,29 +539,30 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // question, auth, and a blocked report with no kind all mean "your turn to type".
         IsWaitingForInput = blocked && next.Kind != BlockedKind.Permission;
 
-        bool entered = next.WantsAttention
-                       && (force || prev.State != next.State || prev.Kind != next.Kind);
-        if (entered)
+        if (enteredMessage is not null)
         {
             NeedsAttention = true;
-            AlertMessage = DescribeProgramStatus(next);
+            AlertMessage = enteredMessage;
         }
-        else if (!next.WantsAttention)
+        else if (!_programStatus.HasAttentionRecord)
         {
-            // Working or idle again: the moment that needed the user has passed.
+            // Nothing needs the user any more.
             NeedsAttention = false;
             AlertMessage = "";
         }
 
+        if (!summaryChanged) return;
         _programStatusVersion++;
         OnPropertyChanged(nameof(ProgramStatusVersion));
-        return entered;
     }
 
     /// <summary>Short one-liner for the badge tooltip / toast. <c>msg</c> is already sanitised.</summary>
-    internal static string DescribeProgramStatus(ProgramStatusSummary s)
+    internal static string DescribeProgramStatus(ProgramStatusSummary s) =>
+        DescribeProgramStatus(s.State, s.Kind, s.Message);
+
+    internal static string DescribeProgramStatus(ProgramState? state, BlockedKind kind, string? message)
     {
-        string text = s.Message ?? (s.State, s.Kind) switch
+        string text = message ?? (state, kind) switch
         {
             (ProgramState.Blocked, BlockedKind.Permission) => "Needs permission",
             (ProgramState.Blocked, BlockedKind.Auth) => "Sign-in required",
@@ -587,7 +649,7 @@ public partial class SessionViewModel : ObservableObject, IDisposable
             // here would blank an orange "needs permission" dot on the first keystroke.
             NeedsAttention = false;
             AlertMessage = "";
-            if (_programStatus.Acknowledge()) SyncProgramStatus(force: false);
+            if (_programStatus.Acknowledge()) SyncProgramStatus(force: false, enteredMessage: null);
             return;
         }
 
