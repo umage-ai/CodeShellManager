@@ -75,16 +75,18 @@ public class SessionManager
         SessionsChanged?.Invoke();
     }
 
-    public void MoveSession(string sessionId, int newIndex)
+    /// <summary>
+    /// Moves a session to sit immediately before (or after) another, by id. Deliberately no
+    /// index-based overload: this list holds dormant sessions and every group, so an index
+    /// computed anywhere else (the visible sidebar rows, <c>MainViewModel.Sessions</c>) means
+    /// a different slot here — which is how a dragged session used to land elsewhere.
+    /// Returns true when the order changed.
+    /// </summary>
+    public bool MoveSessionRelative(string sessionId, string anchorId, bool after)
     {
-        var session = _sessions.FirstOrDefault(s => s.Id == sessionId);
-        if (session == null) return;
-        int cur = _sessions.IndexOf(session);
-        newIndex = Math.Clamp(newIndex, 0, _sessions.Count - 1);
-        if (cur == newIndex) return;
-        _sessions.RemoveAt(cur);
-        _sessions.Insert(newIndex, session);
+        if (!SessionOrder.MoveRelative(_sessions, s => s.Id, sessionId, anchorId, after)) return false;
         SessionsChanged?.Invoke();
+        return true;
     }
 
     public void UpdateStatus(string sessionId, SessionStatus status)
