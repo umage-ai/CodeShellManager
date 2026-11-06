@@ -48,12 +48,28 @@
                       GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
   </ItemGroup>
 
+  <!-- Which architecture's ConPTY to ship. In order: an explicit RuntimeIdentifier (CI
+       publishes win-x64), then PlatformTarget, then the BUILD machine's OS architecture —
+       an AnyCPU build with no RID runs natively, so on an arm64 dev box that is arm64.
+       Defaults to x64. The package lays the two files out differently:
+       runtimes\win-<arch>\native\conpty.dll and build\native\runtimes\<arch>\OpenConsole.exe. -->
+  <PropertyGroup>
+    <_ConPtyArch Condition="'$(RuntimeIdentifier)' == 'win-arm64'">arm64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(RuntimeIdentifier)' == 'win-x86'">x86</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(RuntimeIdentifier)' == 'win-x64'">x64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(PlatformTarget)' == 'ARM64'">arm64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(PlatformTarget)' == 'x86'">x86</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(PlatformTarget)' == 'x64'">x64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">arm64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == ''">x64</_ConPtyArch>
+  </PropertyGroup>
+
   <ItemGroup>
-    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\runtimes\win-x64\native\conpty.dll"
+    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\runtimes\win-$(_ConPtyArch)\native\conpty.dll"
           Link="conpty.dll" Visible="false"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" />
-    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\build\native\runtimes\x64\OpenConsole.exe"
+    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\build\native\runtimes\$(_ConPtyArch)\OpenConsole.exe"
           Link="OpenConsole.exe" Visible="false"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" />

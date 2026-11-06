@@ -99,11 +99,46 @@ public class ConPtyApiTests : IDisposable
         Assert.True(File.Exists(Path.Combine(AppContext.BaseDirectory, "OpenConsole.exe")),
             "OpenConsole.exe missing from build output");
 
+        // The build picks the package's architecture from the build machine; only assert that
+        // it binds when that matches this test process (an x64-emulated test host on an arm64
+        // box is a legitimate mismatch — the app then falls back to inbox, which another test
+        // covers).
+        if (PeMachine(dll) != ExpectedMachine()) return;
+
         var api = ConPtyApi.TryBindBundled(dll, out var reason);
         Assert.True(api != null, reason);
         Assert.Equal(ConPtyKind.Bundled, api!.Kind);
         Assert.Equal(ConPtyKind.Bundled, PseudoTerminal.SelectApi(true, AppContext.BaseDirectory).Kind);
     }
+
+    [Fact]
+    public void A_single_bundled_failure_does_not_demote_three_in_a_row_do()
+    {
+        var p = new BundledFailurePolicy();
+        Assert.False(p.RecordFailure(out var c1));
+        Assert.Equal(1, c1);
+        p.RecordSuccess();                                // a success resets the run
+        Assert.False(p.RecordFailure(out _));
+        Assert.False(p.RecordFailure(out _));
+        Assert.True(p.RecordFailure(out var c3));
+        Assert.Equal(BundledFailurePolicy.FailuresBeforeDemotion, c3);
+    }
+
+    private static ushort PeMachine(string path)
+    {
+        using var fs = File.OpenRead(path);
+        using var br = new BinaryReader(fs);
+        fs.Position = 0x3C;
+        fs.Position = br.ReadInt32() + 4;                 // "PE\0\0", then IMAGE_FILE_HEADER.Machine
+        return br.ReadUInt16();
+    }
+
+    private static ushort ExpectedMachine() => System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture switch
+    {
+        System.Runtime.InteropServices.Architecture.Arm64 => 0xAA64,
+        System.Runtime.InteropServices.Architecture.X86 => 0x014C,
+        _ => 0x8664,
+    };
 
     [Fact]
     public void Inbox_binds_from_System32()

@@ -22,6 +22,27 @@ internal struct ConPtyCoord
 }
 
 /// <summary>
+/// When repeated bundled CreatePseudoConsole failures switch the process to inbox: after
+/// <see cref="FailuresBeforeDemotion"/> in a row; a success resets the count. One transient
+/// failure (resource pressure, an antivirus scan racing OpenConsole.exe) should not cost the
+/// rest of the run the bundled ConPTY. Not thread-safe — the caller holds its lock.
+/// </summary>
+internal sealed class BundledFailurePolicy
+{
+    public const int FailuresBeforeDemotion = 3;
+    private int _consecutive;
+
+    /// <summary>Records a failure; true when this one reaches the demotion threshold.</summary>
+    public bool RecordFailure(out int consecutive)
+    {
+        consecutive = ++_consecutive;
+        return consecutive >= FailuresBeforeDemotion;
+    }
+
+    public void RecordSuccess() => _consecutive = 0;
+}
+
+/// <summary>
 /// WPF-free decision: should the bundled ConPTY be tried at all? Pure, so the rules are
 /// unit-tested (<c>ConPtyApiTests</c>). Whether it then actually LOADS is a separate step.
 /// </summary>

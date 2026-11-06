@@ -191,15 +191,29 @@ public sealed class PseudoTerminal : IPseudoTerminal
         return ConPtyApi.Inbox;
     }
 
-    /// <summary>The bundled CreatePseudoConsole failed: use the inbox one from now on.</summary>
-    private static void DemoteToInbox(string reason)
+    private static readonly BundledFailurePolicy s_bundledFailures = new();
+
+    /// <summary>
+    /// A bundled CreatePseudoConsole failed (this terminal retries on inbox regardless). Only
+    /// <see cref="BundledFailurePolicy.FailuresBeforeDemotion"/> failures IN A ROW switch every
+    /// later terminal to inbox — see <see cref="BundledFailurePolicy"/>.
+    /// </summary>
+    private static void NoteBundledFailure(string reason)
     {
+        bool demote;
+        int count;
         lock (s_apiLock)
         {
-            if (s_selectedApi?.Kind != ConPtyKind.Bundled) return;
-            s_selectedApi = ConPtyApi.Inbox;
+            demote = s_bundledFailures.RecordFailure(out count) && s_selectedApi?.Kind == ConPtyKind.Bundled;
+            if (demote) s_selectedApi = ConPtyApi.Inbox;
         }
-        Log($"ConPTY: inbox from now on — {reason}");
+        Log($"ConPTY: {reason} (consecutive failure {count}/{BundledFailurePolicy.FailuresBeforeDemotion}) — this terminal falls back to inbox");
+        if (demote) Log("ConPTY: inbox from now on — bundled failed repeatedly");
+    }
+
+    private static void NoteBundledSuccess()
+    {
+        lock (s_apiLock) s_bundledFailures.RecordSuccess();
     }
 
     /// <summary>
@@ -228,7 +242,16 @@ public sealed class PseudoTerminal : IPseudoTerminal
     // (box-drawing chars, emoji, etc.) split at buffer boundaries decode correctly.
     private readonly Decoder _utf8 = Encoding.UTF8.GetDecoder();
 
-    public event Action<string>? DataReceived;
+    // Output read before the first subscriber attaches is kept and handed over in order —
+    // sessions attach their bridge only AFTER Start, and the bundled ConPTY's first bytes
+    // (ESC[1t ESC[c ESC[?1004h ESC[?9001h) must not be lost. See EarlyOutputBuffer.
+    private readonly EarlyOutputBuffer _output = new();
+
+    public event Action<string>? DataReceived
+    {
+        add => _output.Add(value);
+        remove => _output.Remove(value);
+    }
     public event Action? Exited;
 
     /// <summary>
@@ -288,13 +311,21 @@ public sealed class PseudoTerminal : IPseudoTerminal
         var size = new ConPtyCoord { X = (short)cols, Y = (short)rows };
         var api = AllowBundledConPty ? SelectedApi : ConPtyApi.Inbox;
         int hr = api.Create(size, _inputRead, _outputWrite, 0, out _hPC);
-        if (hr != 0 && api.Kind == ConPtyKind.Bundled)
+        if (api.Kind == ConPtyKind.Bundled)
         {
-            // Never leave a user without a terminal over the bundled copy: fall back for this
-            // one and for every later one. Failure leaves the pipe handles untouched.
-            DemoteToInbox($"bundled CreatePseudoConsole failed: 0x{hr:X}");
-            api = ConPtyApi.Inbox;
-            hr = api.Create(size, _inputRead, _outputWrite, 0, out _hPC);
+            if (hr == 0)
+            {
+                NoteBundledSuccess();
+            }
+            else
+            {
+                // Never leave a user without a terminal over the bundled copy: this one retries
+                // on inbox, and repeated failures switch later ones too. Failure leaves the
+                // pipe handles untouched.
+                NoteBundledFailure($"bundled CreatePseudoConsole failed: 0x{hr:X}");
+                api = ConPtyApi.Inbox;
+                hr = api.Create(size, _inputRead, _outputWrite, 0, out _hPC);
+            }
         }
         if (hr != 0) throw new InvalidOperationException($"CreatePseudoConsole failed: 0x{hr:X}");
         _api = api;
@@ -458,7 +489,7 @@ public sealed class PseudoTerminal : IPseudoTerminal
                 char[] chars = new char[charCount];
                 _utf8.GetChars(buffer, 0, read, chars, 0);
                 string text = new string(chars);
-                DataReceived?.Invoke(text);
+                _output.Deliver(text);
             }
         }
         catch (OperationCanceledException) { }

@@ -466,13 +466,33 @@ on the inbox ConPTY and `programStatus=yes (probe: OSC 7501 reply)` on the bundl
   assets are excluded — they are for C++ projects and would land in `runtimes\win-x64\native\`).
 - An HPCON is only valid with the implementation that created it, so each `PseudoTerminal`
   remembers its `ConPtyApi` and sends Resize/Close to the same one.
+- **Architecture:** the csproj picks the package's files from `RuntimeIdentifier`, then
+  `PlatformTarget`, then the build machine's OS architecture, defaulting to x64 (CI publishes
+  `win-x64`). The package lays them out as `runtimes\win-<arch>\native\conpty.dll` and
+  `build\native\runtimes\<arch>\OpenConsole.exe`. A process/DLL mismatch simply fails the load
+  and falls back to inbox.
+
+**The first output must not be dropped.** Sessions start the PTY and attach the bridge
+afterwards (`pty.Start` → `bridge.AttachPty`), and the reader thread starts at the end of
+`Start`. With a plain event, whatever the reader got in between had no subscriber and was
+lost — and the bundled ConPTY's first bytes are `ESC[1t ESC[c ESC[?1004h ESC[?9001h`. Losing
+`ESC[c` means xterm never answers OpenConsole's own DA1 query, and OpenConsole then consumes the
+next DA1 answer — the one meant for the program (Claude's probe sentinel). So
+`PseudoTerminal.DataReceived` is backed by `Terminal/EarlyOutputBuffer`: output read before the
+first subscriber is held (capped at 1M chars) and flushed to that subscriber, under the same lock
+the reader uses to pick a handler, so no later chunk overtakes it (`EarlyOutputBufferTests`,
+including a concurrent subscribe-mid-stream test). `RunInstance` subscribes before `Start` and is
+unaffected.
 
 **Fallback to inbox** — never "no terminal": the setting is off; a file is missing; the load
 or an export lookup fails (wrong architecture, corrupt file); or the bundled
-`CreatePseudoConsole` returns a failure HRESULT, in which case that terminal retries on inbox and
-every later one stays there. The outcome and reason are logged once to `crash.log`
-(`PTY ConPTY: bundled (loaded …)` / `PTY ConPTY: inbox — …`). `PseudoTerminal.ActiveConPty` and the
-per-instance `ConPtyKind` / `UsesBundledConPty` say which one is in use.
+`CreatePseudoConsole` returns a failure HRESULT. In that last case that terminal retries on inbox,
+every failure is logged, and only **3 consecutive** failures (`BundledFailurePolicy`, reset by a
+success) switch every later terminal to inbox for the rest of the run — one transient failure
+should not cost the whole run the bundled ConPTY. The selection and its reason are logged once to
+`crash.log` (`PTY ConPTY: bundled (loaded …)` / `PTY ConPTY: inbox — …`).
+`PseudoTerminal.ActiveConPty` and the per-instance `ConPtyKind` / `UsesBundledConPty` say which
+one is in use.
 
 **Run commands stay on the inbox ConPTY** (`RunInstance` constructs
 `new PseudoTerminal { AllowBundledConPty = false }`). Measured: OpenConsole opens every PTY by
