@@ -256,6 +256,7 @@ public partial class MainWindow : Window
         // on the first Start, from this flag. See "Bundled ConPTY" in CLAUDE.md.
         Terminal.PseudoTerminal.PreferBundledConPty = _vm.Settings.UseBundledConPty;
         RestoreWindowState();
+        EnsureOpenWithSeeded();   // first run after #178: detect editors once, off the UI thread
         _windowStateReady = true;
 
         // Unattributed UI-thread latency baseline (issue #70). Started after settings load
@@ -1599,6 +1600,7 @@ public partial class MainWindow : Window
             TerminalGrid.Children.Remove(terminalWrapper);
             // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
             _runControls.Remove(vm.Id);
+            RemoveOpenWithControls(vm.Id);
             _gitPanes.Remove(vm.Id);
             vm.Dispose();
             if (_launchingSidebarItems.Remove(session.Id))
@@ -1736,6 +1738,7 @@ public partial class MainWindow : Window
             TerminalGrid.Children.Remove(terminalWrapper);
             // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
             _runControls.Remove(vm.Id);
+            RemoveOpenWithControls(vm.Id);
             _gitPanes.Remove(vm.Id);
             MessageBox.Show($"Failed to start '{session.FullCommandLine}':\n{ex.Message}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -3504,13 +3507,6 @@ public partial class MainWindow : Window
                 psItem.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
                 menu.Items.Add(psItem);
 
-                if (IsVsCodeAvailable())
-                {
-                    var codeItem = new System.Windows.Controls.MenuItem { Header = "Open in VS Code" };
-                    codeItem.Click += (_, _) => OpenInVsCode(vm.WorkingFolder);
-                    menu.Items.Add(codeItem);
-                }
-
                 if (vm.Session.IsWsl)
                 {
                     var wslConsoleItem = new System.Windows.Controls.MenuItem { Header = "Open WSL console here" };
@@ -3518,6 +3514,11 @@ public partial class MainWindow : Window
                     menu.Items.Add(wslConsoleItem);
                 }
             }
+
+            // "Open with ▸" (MainWindow.OpenIn.cs) — local, WSL and SSH alike; entries
+            // without a template for this session's kind are hidden.
+            if (BuildOpenWithSubmenu(vm) is { } openWithItem)
+                menu.Items.Add(openWithItem);
 
             menu.Items.Add(new System.Windows.Controls.Separator());
 
@@ -4572,8 +4573,9 @@ public partial class MainWindow : Window
         };
         explorerBtn.Click += (_, _) => vm.OpenInExplorerCommand.Execute(null);
 
-        // { } — open the folder in VS Code (MainWindow.OpenIn.cs). Hidden unless found.
-        var vsCodeBtn = BuildVsCodeButton(vm);
+        // { } ▼ — open the folder with an editor from the "Open with" list
+        // (MainWindow.OpenIn.cs). Hidden when no entry applies to this session's kind.
+        var openWithBtns = BuildOpenWithButtons(vm);
 
         // PowerShell quick-launch button
         var toolbarPsBtn = new WpfButton
@@ -4710,7 +4712,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(closeBtn, Dock.Right);
         DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
-        DockPanel.SetDock(vsCodeBtn, Dock.Right);
+        DockPanel.SetDock(openWithBtns, Dock.Right);
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
@@ -4731,7 +4733,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(closeBtn);
         toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
-        toolbarContent.Children.Add(vsCodeBtn);
+        toolbarContent.Children.Add(openWithBtns);
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
@@ -5007,6 +5009,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5303,6 +5306,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5440,6 +5444,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -6065,6 +6070,12 @@ public partial class MainWindow : Window
             _vm.Settings.ShowTerminalStatusDot = edited.ShowTerminalStatusDot;
             _vm.Settings.ImportWindowsTerminalProfiles = edited.ImportWindowsTerminalProfiles;
             _vm.Settings.LaunchCommands = edited.LaunchCommands;
+            if (dialog.OpenWithEdited)
+            {
+                _vm.Settings.OpenWith = edited.OpenWith;
+                _vm.Settings.OpenWithSeeded = true;
+                RefreshOpenWithButtons();
+            }
             _vm.Settings.TerminalFontFamily = edited.TerminalFontFamily;
             _vm.Settings.TerminalFontSize = edited.TerminalFontSize;
             _vm.Settings.TerminalFontLigatures = edited.TerminalFontLigatures;
@@ -6191,6 +6202,29 @@ public partial class MainWindow : Window
         _vm.Settings.MaxSearchResults = s.MaxSearchResults;
         _vm.Settings.ShowTerminalStatusDot = s.ShowTerminalStatusDot;
         _vm.Settings.LaunchCommands = s.LaunchCommands;
+        // "Open with" entries are programs that run on a click, and a backup is any file the
+        // user was handed. ImportExportService filtered it (no batch files, shells, network or
+        // %SystemRoot% programs), but no filter can recognise a renamed program — so the list
+        // is never adopted silently: show every command and ask, defaulting to keeping ours.
+        // A backup from before #178 carries no list; keep ours without asking.
+        if (s.OpenWithSeeded && !OpenWithService.SameCommands(s.OpenWith, _vm.Settings.OpenWith))
+        {
+            string listing = s.OpenWith.Count == 0
+                ? "(an empty list)\n"
+                : OpenWithService.DescribeForReview(s.OpenWith);
+            var adopt = MessageBox.Show(
+                "The backup contains its own \"Open with\" editor list. These programs would run when you " +
+                "use { } or Open with:\n\n" + listing +
+                "\nReplace your current list with this one?\n\nChoose No to keep your current list (recommended " +
+                "unless you made this backup yourself).",
+                "Import \"Open with\" list", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            if (adopt == MessageBoxResult.Yes)
+            {
+                _vm.Settings.OpenWith = s.OpenWith;
+                _vm.Settings.OpenWithSeeded = true;
+                RefreshOpenWithButtons();
+            }
+        }
         _vm.Settings.TerminalFontFamily = s.TerminalFontFamily;
         _vm.Settings.TerminalFontSize = s.TerminalFontSize;
         _vm.Settings.TerminalFontLigatures = s.TerminalFontLigatures;

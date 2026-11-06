@@ -31,7 +31,16 @@ public static class ImportExportService
             // cover an ABSENT key — an explicit "Sessions": null deserializes to a real
             // null. This is the untrusted path (any file the user points at), and the
             // caller dereferences Settings immediately, outside its own try block.
-            return state is null ? null : StateService.Normalize(state);
+            if (state is null) return null;
+            StateService.Normalize(state);
+            // An imported "Open with" list is a list of programs to launch, from a file the
+            // user didn't necessarily write. Stricter than state.json: no batch files, and each
+            // program is checked against its real path on disk (8.3 names, links, network
+            // drives, renamed shells). Even then it is only a filter — the caller must still
+            // show the list and ask before adopting it (MainWindow.Import_Click).
+            var imported = state.Settings.OpenWith;
+            state.Settings.OpenWith = await Task.Run(() => OpenWithService.SanitizeImported(imported, OpenWithService.Log));
+            return state;
         }
         catch
         {

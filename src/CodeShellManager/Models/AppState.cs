@@ -148,6 +148,15 @@ public class AppSettings
     public double TerminalLetterSpacing { get; set; } = 0;
     public double TerminalLineHeight { get; set; } = 1.0;
 
+    /// <summary>
+    /// "Open with…" editors / IDEs (issue #178). Seeded once by auto-detection — gated on
+    /// <see cref="OpenWithSeeded"/>, not on the list being empty, so a user who deletes
+    /// every entry is not re-seeded behind their back.
+    /// </summary>
+    public List<OpenWithEntry> OpenWith { get; set; } = [];
+    /// <summary>True once auto-detection has seeded <see cref="OpenWith"/>. False on any state.json older than #178.</summary>
+    public bool OpenWithSeeded { get; set; } = false;
+
     public List<string> LaunchCommands { get; set; } =
     [
         "claude",
