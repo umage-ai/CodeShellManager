@@ -701,7 +701,7 @@ public sealed class TerminalBridge : IDisposable
                 // Inbox ConPTY: off by default — conhost answers DA1 itself, first, so the reply
                 // would only arrive late, as unsolicited input starting with ESC; when forced on
                 // it is win32-input-mode encoded (conhost drops plain OSC input).
-                // AppSettings.AnswerProgramStatusProbe overrides (null = that automatic rule);
+                // AppSettings.ProgramStatusProbe overrides (Auto = that automatic rule);
                 // ProgramStatusProbeGate adds a 5s interval and a 3-per-session cap.
                 //
                 // Written synchronously, on this (UI) thread, ON PURPOSE: it must reach the
@@ -714,7 +714,7 @@ public sealed class TerminalBridge : IDisposable
                     var pty = _pty;
                     bool bundled = pty?.UsesBundledConPty == true;
                     bool enabled = Services.ProgramStatusProbeGate.IsEnabled(
-                        DebugSettings?.AnswerProgramStatusProbe, bundled);
+                        DebugSettings?.ProgramStatusProbe ?? Models.ProgramStatusProbeMode.Auto, bundled);
                     if (pty == null || !_probeGate.TryAcquire(enabled, DateTime.UtcNow, bundled))
                     {
                         Trace($"OSC7501 probe not answered (enabled={enabled} bundled={bundled} w32={_probeGate.Win32InputMode})");

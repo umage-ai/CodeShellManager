@@ -1,4 +1,5 @@
 using System;
+using CodeShellManager.Models;
 using CodeShellManager.Services;
 using Xunit;
 
@@ -62,12 +63,33 @@ public class ProgramStatusProbeGateTests
     }
 
     [Theory]
-    [InlineData(null, true, true)]     // automatic: bundled ConPTY answers
-    [InlineData(null, false, false)]   // automatic: inbox ConPTY does not
-    [InlineData(true, false, true)]    // forced on (inbox experiments)
-    [InlineData(false, true, false)]   // forced off
-    public void IsEnabled_follows_the_setting_then_the_ConPty(bool? setting, bool bundled, bool expected) =>
-        Assert.Equal(expected, ProgramStatusProbeGate.IsEnabled(setting, bundled));
+    [InlineData(ProgramStatusProbeMode.Auto, true, true)]    // bundled ConPTY answers
+    [InlineData(ProgramStatusProbeMode.Auto, false, false)]  // inbox ConPTY does not
+    [InlineData(ProgramStatusProbeMode.On, false, true)]     // forced on (inbox experiments)
+    [InlineData(ProgramStatusProbeMode.Off, true, false)]    // forced off
+    public void IsEnabled_follows_the_mode_then_the_ConPty(ProgramStatusProbeMode mode, bool bundled, bool expected) =>
+        Assert.Equal(expected, ProgramStatusProbeGate.IsEnabled(mode, bundled));
+
+    [Fact]
+    public void A_stale_dev_build_key_is_ignored_and_the_mode_defaults_to_Auto()
+    {
+        // Earlier development builds saved "AnswerProgramStatusProbe": false (a plain bool
+        // meaning "experimental, off"). The setting was renamed so that key cannot be read as
+        // a deliberate "force off".
+        const string json = "{\"AnswerProgramStatusProbe\": false, \"UseBundledConPty\": true}";
+        var settings = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(json)!;
+        Assert.Equal(ProgramStatusProbeMode.Auto, settings.ProgramStatusProbe);
+        Assert.True(ProgramStatusProbeGate.IsEnabled(settings.ProgramStatusProbe, bundledConPty: true));
+    }
+
+    [Fact]
+    public void The_mode_round_trips_through_state_json()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new AppSettings { ProgramStatusProbe = ProgramStatusProbeMode.Off });
+        Assert.Contains("\"ProgramStatusProbe\":2", json);
+        Assert.Equal(ProgramStatusProbeMode.Off,
+            System.Text.Json.JsonSerializer.Deserialize<AppSettings>(json)!.ProgramStatusProbe);
+    }
 
     [Fact]
     public void Bundled_ConPty_needs_no_win32_input_mode_and_gets_the_raw_reply()
