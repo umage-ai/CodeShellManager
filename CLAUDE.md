@@ -1014,7 +1014,13 @@ Persisted in `state.json`. Key settings:
 | `tests/CodeShellManager.Tests/` | Unit tests (xunit) | `dotnet test tests/CodeShellManager.Tests/` |
 | `tests/CodeShellManager.UITests/` | FlaUI UI tests | `dotnet test tests/CodeShellManager.UITests/` |
 
-Unit tests cover model logic (`ShellSession`, etc.) and run headless. UI tests require the app running on a live Windows desktop.
+Unit tests cover model logic (`ShellSession`, etc.) and run headless. UI tests launch the Debug build (`src/CodeShellManager/bin/Debug/…`, so build it first) with `CSM_STATE_PATH` pointed at a temp file.
+
+**Writing UI tests: three things that silently break them.** All ten were failing for these reasons before they were fixed; nothing runs them in CI, so they drift.
+
+- **Layout elements are invisible to UI Automation.** `Border`, `StackPanel` and `Grid` have no automation peer, so an `AutomationId` set on one is ignored and `FindFirstDescendant` never finds it. Anything a test must find uses `Views/UiaElements` (`UiaBorder` / `UiaStackPanel` / `UiaGrid`: the same element plus a Group peer). Current ids: `SidebarSessionList`, `SidebarSessionRow`, `SidebarDormantRow`, `TerminalGrid`, `TerminalPane`, `TerminalCloseBtn`, `EmptyState`.
+- **Dialogs are owned windows.** UI Automation lists them under the main window, not at the top level. Use `AppActions.FindDialog` / `WaitForDialog`, not `GetAllTopLevelWindows`.
+- **Press, don't click or type.** `AppActions.Press` uses the Invoke pattern. Mouse clicks move the user's real cursor, and synthesized keystrokes fail with "Access is denied" on a locked or remote-disconnected desktop; with Invoke the suite passes on a locked screen. Avoid descendant searches inside a terminal pane, which walk into the WebView2 page tree.
 
 `ShellSession.BuildSshArgs()` is `internal` — accessible from tests via `[assembly: InternalsVisibleTo("CodeShellManager.Tests")]` in `AssemblyInfo.cs`.
 
