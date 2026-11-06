@@ -9,9 +9,10 @@ using FontFamily = System.Windows.Media.FontFamily;
 namespace CodeShellManager.Views;
 
 /// <summary>
-/// "N sessions are still running — close anyway?" Shown by <c>MainWindow.OnClosing</c> when
-/// any live session is busy (<see cref="Services.SessionBusyRules"/>). Defaults to keeping
-/// the app open: Enter and Esc both cancel, closing takes a deliberate click.
+/// "N sessions are still running — close anyway?" Shown when closing the app, or closing
+/// sessions (Ctrl+W, the ✕ buttons, Close / Close all… menus), while any of them is busy
+/// (<see cref="Services.SessionBusyRules"/>). Defaults to keeping them running: Enter and
+/// Esc both cancel, closing takes a deliberate click.
 /// </summary>
 public partial class BusySessionsDialog : Window
 {
@@ -20,9 +21,10 @@ public partial class BusySessionsDialog : Window
     /// <summary>True when the user ticked "Don't warn me again" and then chose to close.</summary>
     public bool DontAskAgain { get; private set; }
 
-    public BusySessionsDialog(IReadOnlyList<Row> rows)
+    public BusySessionsDialog(IReadOnlyList<Row> rows, string detail)
     {
         InitializeComponent();
+        DetailText.Text = detail;
         HeadlineText.Text = rows.Count == 1
             ? "1 session is still running"
             : $"{rows.Count} sessions are still running";
@@ -30,10 +32,10 @@ public partial class BusySessionsDialog : Window
         Loaded += (_, _) => CancelBtn.Focus();
     }
 
-    /// <summary>Modal helper. True = close the app.</summary>
-    public static bool Confirm(Window owner, IReadOnlyList<Row> rows, out bool dontAskAgain)
+    /// <summary>Modal helper. True = close anyway.</summary>
+    public static bool Confirm(Window owner, IReadOnlyList<Row> rows, string detail, out bool dontAskAgain)
     {
-        var dlg = new BusySessionsDialog(rows) { Owner = owner };
+        var dlg = new BusySessionsDialog(rows, detail) { Owner = owner };
         bool close = dlg.ShowDialog() == true;
         dontAskAgain = close && dlg.DontAskAgain;
         return close;

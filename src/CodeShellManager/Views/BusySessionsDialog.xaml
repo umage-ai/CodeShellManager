@@ -14,8 +14,7 @@
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
             <TextBlock x:Name="HeadlineText" Foreground="#cdd6f4" FontSize="13" FontWeight="SemiBold"
                        TextWrapping="Wrap"/>
-            <TextBlock Foreground="#a6adc8" FontSize="11.5" Margin="0,4,0,0" TextWrapping="Wrap"
-                       Text="Closing now stops them. Claude sessions are asked to exit cleanly; run commands and other programs are ended."/>
+            <TextBlock x:Name="DetailText" Foreground="#a6adc8" FontSize="11.5" Margin="0,4,0,0" TextWrapping="Wrap"/>
         </StackPanel>
 
         <StackPanel DockPanel.Dock="Bottom">

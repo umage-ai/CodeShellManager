@@ -53,8 +53,9 @@ public class AppSettings
     public int ClaudeLaunchStaggerMs { get; set; } = 2000;
     public bool AutoFocusTerminalOnSelect { get; set; } = true;
     /// <summary>
-    /// Ask before closing the app while any session is busy (working, mid-task, producing
-    /// output, or running a run command). See <c>Services/SessionBusyRules</c>.
+    /// Ask before closing the app — or closing sessions (Ctrl+W, ✕, Close / Close all…) — while
+    /// any of them is busy (working, mid-task, producing output, or running a run command).
+    /// See <c>Services/SessionBusyRules</c>.
     /// </summary>
     public bool WarnOnCloseWhenBusy { get; set; } = true;
     public bool ShowToastNotifications { get; set; } = false;

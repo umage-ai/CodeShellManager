@@ -15,7 +15,7 @@ namespace CodeShellManager.UITests;
 [Collection("UITests")]
 public sealed class CloseWarningTests : IClassFixture<AppFixture>
 {
-    private const string DialogTitle = "Sessions still running";
+    private const string DialogTitle = AppActions.BusyDialogTitle;
     private readonly AppFixture _f;
 
     public CloseWarningTests(AppFixture fixture) => _f = fixture;
@@ -34,6 +34,17 @@ public sealed class CloseWarningTests : IClassFixture<AppFixture>
 
         // Give pwsh + ping time to start printing.
         Thread.Sleep(5000);
+
+        // Closing the session itself (its toolbar ✕) asks too; keep it.
+        var pane = AppActions.WaitForElement(_f.MainWindow, "TerminalGrid")
+            .FindFirstChild(cf => cf.ByAutomationId("TerminalPane"));
+        AppActions.Press(pane.Require("TerminalCloseBtn"));
+        var ask = AppActions.WaitForDialog(_f.App, _f.MainWindow, _f.Automation, DialogTitle,
+            TimeSpan.FromSeconds(10));
+        AppActions.Press(ask.Require("BusyKeepRunningBtn"));
+        AppActions.WaitForDialogClosed(_f.App, _f.MainWindow, _f.Automation, DialogTitle);
+        Thread.Sleep(500);
+        Assert.Equal(1, AppActions.GetSidebarSessionCount(_f.MainWindow));
 
         // Close through UI Automation's WindowPattern. Off-thread: the close handler shows a
         // modal dialog, and the pattern call may not return until it is answered.

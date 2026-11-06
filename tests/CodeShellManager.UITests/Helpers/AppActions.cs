@@ -139,8 +139,21 @@ public static class AppActions
             .FindFirstChild(cf => cf.ByAutomationId("TerminalPane"));
         if (pane is null) return false;
         Press(pane.Require("TerminalCloseBtn"));
+        // A session still printing (e.g. claude starting up) makes the app ask first
+        // ("Sessions still running"). These tests mean to close it, so confirm.
+        var busy = Retry.WhileNull(() => FindOwnedDialog(window, BusyDialogTitle),
+            TimeSpan.FromSeconds(1)).Result;
+        if (busy != null) Press(busy.Require("BusyCloseAnywayBtn"));
         return true;
     }
+
+    /// <summary>Title of the "close anyway?" dialog shown for busy sessions.</summary>
+    public const string BusyDialogTitle = "Sessions still running";
+
+    private static Window? FindOwnedDialog(Window main, string title)
+        => main.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window))
+               .Select(e => e.AsWindow())
+               .FirstOrDefault(w => w.Title == title);
 
     /// <summary>Clicks a layout button by its AutomationId (e.g. "Layout_Two").</summary>
     public static void SetLayout(Window window, string layoutAutomationId)

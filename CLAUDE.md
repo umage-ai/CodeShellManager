@@ -909,7 +909,7 @@ OSC input through and forwards DA1, measured to turn Claude's probe result from 
 Pre-seeding the reply before the program asks was rejected — in a non-probing program it would
 be stray keystrokes in the shell.
 
-## Closing the app while sessions are busy
+## Closing busy sessions (app close, Ctrl+W, ✕, Close menus)
 
 `OnClosing` first calls `ConfirmCloseWithBusySessions`: if any live session is busy, an owned
 `Views/BusySessionsDialog` lists each one (accent stripe, name, why) and asks — **Keep running**
@@ -923,10 +923,18 @@ board, because asking must not collapse `TerminalGrid` (HwndHost — see "Sessio
   `SessionViewModel.NoteOutput` stamps every PTY chunk (lock-free, any thread);
 - a running run command is busy either way.
 
+**Closing sessions asks the same question.** Ctrl+W, the sidebar and toolbar ✕, the per-session
+"Close (N)" menu and both "Close all…" items go through `RequestCloseSession` /
+`RequestCloseSessions` → `ConfirmCloseBusy`, never straight to `vm.CloseCommand`. A "Close all…"
+asks *one* question: the busy dialog when something is busy, else its old plain Yes/No.
+Worktree removal calls `CloseCommand` directly — it has its own confirmation naming the sessions.
+New UI close paths must use the `Request…` helpers.
+
 Skipped when `AppSettings.WarnOnCloseWhenBusy` is off (Settings, or the dialog's "Don't warn me
 again"), and when Windows is logging off (`Application.SessionEnding`) — the OS would otherwise
-show "this app is preventing shutdown" over it. `CloseWarningTests` (UI) runs `ping -t` and
-checks both answers.
+show "this app is preventing shutdown" over it (app close only). `CloseWarningTests` (UI) runs
+`ping -t` and checks the pane ✕ and both app-close answers; `AppActions.CloseFirstSession`
+confirms the dialog when it appears, since a test session may still be printing.
 
 ## Sleep / Wake (Dormant Sessions)
 
@@ -1357,7 +1365,7 @@ block the user and shutdown does).
 
 Persisted in `state.json`. Key settings:
 - `AutoRestoreSessions` — restore open sessions on next launch
-- `WarnOnCloseWhenBusy` (default true) — ask before closing the app while a session is busy; see "Closing the app while sessions are busy".
+- `WarnOnCloseWhenBusy` (default true) — ask before closing the app or a session while it is busy; see "Closing the app while sessions are busy".
 - `AutoResumeClaude` — when restoring, append `--resume <sessionId>` to claude commands so the prior conversation is picked up. Toggle off if you want fresh sessions on restart.
 - `ClaudeLaunchStaggerMs` (default 2000) — flat delay between consecutive Claude launches, and the cap on the post-exit settle at shutdown. The Claude CLI rewrites its config unlocked on startup and exit, so two `claude.exe` doing it at once can lose each other's updates. Evidence this is real: a machine here had two orphaned `.claude.json.tmp.<pid>.<hash>` files with the same timestamp and different pids.
 

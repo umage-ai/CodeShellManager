@@ -1997,7 +1997,7 @@ public partial class MainWindow : Window
         var spawnBtn = MakeMiniButton("➕", "New session here (inherits group + profile)",
                             () => OpenNewSessionDialogFromParent(vm));
         var sleepBtn = MakeMiniButton("💤", "Sleep session (keep it but stop the terminal)", () => SleepSession(vm));
-        var closeBtn = MakeMiniButton("✕", "Close session", () => vm.CloseCommand.Execute(null));
+        var closeBtn = MakeMiniButton("✕", "Close session", () => RequestCloseSession(vm));
 
         btnPanel.Children.Add(spawnBtn);
         btnPanel.Children.Add(sleepBtn);
@@ -2582,13 +2582,10 @@ public partial class MainWindow : Window
         closeAllGlobal.Click += (_, _) =>
         {
             var targets = _vm.Sessions.ToList();
-            if (targets.Count == 0) return;
-            var r = MessageBox.Show(
+            RequestCloseSessions(targets, () => MessageBox.Show(
                 $"Close all {targets.Count} live session(s)? They will be removed permanently.",
-                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-            if (r != MessageBoxResult.Yes) return;
-            foreach (var vm in targets)
-                vm.CloseCommand.Execute(null);
+                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+                == MessageBoxResult.Yes);
         };
         bulkActions.Items.Add(closeAllGlobal);
         menu.Items.Add(bulkActions);
@@ -3276,13 +3273,10 @@ public partial class MainWindow : Window
         closeAll.Click += (_, _) =>
         {
             var targets = _vm.Sessions.Where(v => v.Session.GroupId == groupId).ToList();
-            if (targets.Count == 0) return;
-            var r = MessageBox.Show(
+            RequestCloseSessions(targets, () => MessageBox.Show(
                 $"Close {targets.Count} session(s) in group '{groupName}'? They will be removed permanently.",
-                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-            if (r != MessageBoxResult.Yes) return;
-            foreach (var vm in targets)
-                vm.CloseCommand.Execute(null);
+                "Close all", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+                == MessageBoxResult.Yes);
         };
         menu.Items.Add(closeAll);
 
@@ -3647,11 +3641,11 @@ public partial class MainWindow : Window
         var closeItem = new System.Windows.Controls.MenuItem { Header = $"Close{countSuffix}" };
         closeItem.Click += (_, _) =>
         {
-            foreach (var id in targetIds.ToArray())
-            {
-                var target = _vm.Sessions.FirstOrDefault(s => s.Id == id);
-                target?.CloseCommand.Execute(null);
-            }
+            var targets = targetIds
+                .Select(id => _vm.Sessions.FirstOrDefault(s => s.Id == id))
+                .OfType<SessionViewModel>()
+                .ToList();
+            RequestCloseSessions(targets);
         };
         menu.Items.Add(closeItem);
 
@@ -4691,7 +4685,7 @@ public partial class MainWindow : Window
             Margin = new Thickness(0)
         };
         System.Windows.Automation.AutomationProperties.SetAutomationId(closeBtn, "TerminalCloseBtn");
-        closeBtn.Click += (_, _) => vm.CloseCommand.Execute(null);
+        closeBtn.Click += (_, _) => RequestCloseSession(vm);
 
         DockPanel.SetDock(closeBtn, Dock.Right);
         DockPanel.SetDock(termStatusDot, Dock.Right);
@@ -6263,7 +6257,7 @@ public partial class MainWindow : Window
             if (_vm.ActiveSession != null) _ = DuplicateSessionAsync(_vm.ActiveSession);
             return true;
         }
-        if (key == Key.W && mods == ModifierKeys.Control) { _vm.ActiveSession?.CloseCommand.Execute(null); return true; }
+        if (key == Key.W && mods == ModifierKeys.Control) { RequestCloseSession(_vm.ActiveSession); return true; }
         if (key == Key.F && mods == ModifierKeys.Control) { ToggleSearch_Click(this, new RoutedEventArgs()); return true; }
         if (key == Key.Tab && mods == ModifierKeys.Control) { CycleSession(forward: true); return true; }
         if (key == Key.Tab && mods == (ModifierKeys.Control | ModifierKeys.Shift)) { CycleSession(forward: false); return true; }
@@ -6314,25 +6308,71 @@ public partial class MainWindow : Window
     /// </summary>
     private bool ConfirmCloseWithBusySessions()
     {
-        if (_osSessionEnding || !_vm.Settings.WarnOnCloseWhenBusy) return true;
+        if (_osSessionEnding) return true;
+        return ConfirmCloseBusy(_vm.Sessions,
+            "Closing now stops them. Claude sessions are asked to exit cleanly; run commands and other programs are ended.",
+            out _);
+    }
+
+    /// <summary>
+    /// The shared "still running — close anyway?" check for app close and session close.
+    /// True = go ahead. <paramref name="anyBusy"/> says whether the dialog was shown, so a
+    /// bulk "Close all…" can skip its own plain Yes/No when this already asked.
+    /// </summary>
+    private bool ConfirmCloseBusy(IEnumerable<SessionViewModel> targets, string detail, out bool anyBusy)
+    {
+        anyBusy = false;
+        if (!_vm.Settings.WarnOnCloseWhenBusy) return true;
 
         var now = DateTime.UtcNow;
         var rows = new List<Views.BusySessionsDialog.Row>();
-        foreach (var vm in _vm.Sessions)
+        foreach (var vm in targets)
         {
             if (vm.BusyReason(now) is { } reason)
                 rows.Add(new Views.BusySessionsDialog.Row(vm.DisplayName, vm.AccentColor, reason));
         }
         if (rows.Count == 0) return true;
+        anyBusy = true;
 
         // A minimized window would centre the dialog on nothing visible.
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();
 
-        bool close = Views.BusySessionsDialog.Confirm(this, rows, out bool dontAskAgain);
+        bool close = Views.BusySessionsDialog.Confirm(this, rows, detail, out bool dontAskAgain);
         if (close && dontAskAgain)
-            _vm.Settings.WarnOnCloseWhenBusy = false;   // persisted by the SaveStateAsync that follows
+        {
+            _vm.Settings.WarnOnCloseWhenBusy = false;
+            _ = _vm.SaveStateAsync();
+        }
         return close;
+    }
+
+    private const string SessionCloseDetail =
+        "Closing stops what is running and removes the session. Ctrl+Shift+T reopens the most recently closed one.";
+
+    /// <summary>
+    /// Close one session from the UI (Ctrl+W, the sidebar and toolbar ✕) — asks first when
+    /// it is busy. Programmatic closes (worktree removal, which confirms on its own) call
+    /// <c>CloseCommand</c> directly.
+    /// </summary>
+    private void RequestCloseSession(SessionViewModel? vm)
+    {
+        if (vm == null) return;
+        if (!ConfirmCloseBusy(new[] { vm }, SessionCloseDetail, out _)) return;
+        vm.CloseCommand.Execute(null);
+    }
+
+    /// <summary>
+    /// Close several sessions from a menu. <paramref name="plainConfirm"/> is the Yes/No a
+    /// bulk "Close all…" asks when nothing is busy; when something is, the busy dialog is the
+    /// one question asked.
+    /// </summary>
+    private void RequestCloseSessions(IReadOnlyList<SessionViewModel> targets, Func<bool>? plainConfirm = null)
+    {
+        if (targets.Count == 0) return;
+        if (!ConfirmCloseBusy(targets, SessionCloseDetail, out bool asked)) return;
+        if (!asked && plainConfirm != null && !plainConfirm()) return;
+        foreach (var vm in targets) vm.CloseCommand.Execute(null);
     }
 
     protected override async void OnClosing(System.ComponentModel.CancelEventArgs e)
