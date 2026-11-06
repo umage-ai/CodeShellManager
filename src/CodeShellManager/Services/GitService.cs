@@ -10,26 +10,177 @@ namespace CodeShellManager.Services;
 
 public static class GitService
 {
+    /// <summary>
+    /// Branch + dirty, as the sidebar and the git poll have always consumed them. A detached
+    /// HEAD reports (null, false), exactly as the old <c>branch --show-current</c> pair did.
+    /// </summary>
     public static async Task<(string? branch, bool isDirty)> GetGitInfoAsync(string folderPath)
     {
-        if (string.IsNullOrWhiteSpace(folderPath) || !System.IO.Directory.Exists(folderPath))
+        var status = await GetStatusAsync(folderPath).ConfigureAwait(false);
+        if (status is null || status.IsDetached || string.IsNullOrEmpty(status.Branch))
             return (null, false);
+        return (status.Branch, status.IsDirty);
+    }
 
+    /// <summary>
+    /// Branch, upstream, ahead/behind and changed files in ONE git spawn
+    /// (<c>status --porcelain=v2 --branch</c>). The poll used to spend two spawns on
+    /// <c>branch --show-current</c> + <c>status --porcelain</c>, and a spawn is ~all of the
+    /// cost (see "Never spawn a process on the UI thread"), so this is cheaper as well as
+    /// richer. Null when the folder isn't in a repo or git failed.
+    ///
+    /// Runs with <c>GIT_OPTIONAL_LOCKS=0</c>: this is a background read, and a plain
+    /// <c>git status</c> opportunistically takes <c>index.lock</c> to refresh stat data — which
+    /// is how a poll makes a git command the user (or Claude) runs at the same moment fail with
+    /// "index.lock exists".
+    /// </summary>
+    public static async Task<GitRepoStatus?> GetStatusAsync(string folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath) || !System.IO.Directory.Exists(folderPath))
+            return null;
         try
         {
-            string? branch = await RunGitAsync(folderPath, "branch", "--show-current").ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(branch))
-                return (null, false);
-
-            string? statusOutput = await RunGitAsync(folderPath, "status", "--porcelain").ConfigureAwait(false);
-            bool isDirty = !string.IsNullOrWhiteSpace(statusOutput);
-
-            return (branch.Trim(), isDirty);
+            var (stdout, _, exit) = await RunGitFullAsync(folderPath,
+                new[] { "-c", "core.quotePath=false", "status", "--porcelain=v2", "--branch" },
+                timeoutMs: 3000, readOnly: true).ConfigureAwait(false);
+            return exit == 0 ? ParseStatusV2(stdout) : null;
         }
-        catch
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Parses <c>git status --porcelain=v2 --branch</c>. Pure, so it is unit-tested against
+    /// captured output rather than a live repo.
+    /// </summary>
+    internal static GitRepoStatus ParseStatusV2(string output)
+    {
+        string? head = null, upstream = null;
+        int? ahead = null, behind = null;
+        var changes = new List<GitFileChange>();
+
+        foreach (string line in (output ?? "").Replace("\r", "").Split('\n'))
         {
-            return (null, false);
+            if (line.Length == 0) continue;
+            if (line.StartsWith("# branch.head ", StringComparison.Ordinal))
+                head = line["# branch.head ".Length..];
+            else if (line.StartsWith("# branch.upstream ", StringComparison.Ordinal))
+                upstream = line["# branch.upstream ".Length..];
+            else if (line.StartsWith("# branch.ab ", StringComparison.Ordinal))
+            {
+                // "# branch.ab +<ahead> -<behind>"
+                var parts = line["# branch.ab ".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 2
+                    && int.TryParse(parts[0].TrimStart('+'), out int a)
+                    && int.TryParse(parts[1].TrimStart('-'), out int b))
+                { ahead = a; behind = b; }
+            }
+            else if (line[0] == '#') continue;
+            else if (line.StartsWith("? ", StringComparison.Ordinal))
+                changes.Add(new GitFileChange("??", line[2..]));
+            else if (line.StartsWith("! ", StringComparison.Ordinal))
+                continue; // ignored files — only listed with --ignored, never by us
+            else
+            {
+                // 1 XY sub mH mI mW hH hI <path>
+                // 2 XY sub mH mI mW hH hI Xscore <path>\t<origPath>
+                // u XY sub m1 m2 m3 mW h1 h2 h3 <path>
+                int fieldsBeforePath = line[0] switch { '1' => 8, '2' => 9, 'u' => 10, _ => -1 };
+                if (fieldsBeforePath < 0) continue;
+                var f = line.Split(' ', fieldsBeforePath + 1);
+                if (f.Length <= fieldsBeforePath || f[1].Length != 2) continue;
+                string path = f[fieldsBeforePath];
+                if (line[0] == '2')
+                {
+                    int tab = path.IndexOf('\t');
+                    if (tab >= 0) path = $"{path[(tab + 1)..]} → {path[..tab]}";
+                }
+                changes.Add(new GitFileChange(line[0] == 'u' ? "UU" : f[1].Replace('.', ' '), path));
+            }
         }
+
+        bool detached = head == "(detached)";
+        return new GitRepoStatus(detached ? null : head, detached, upstream, ahead, behind, changes);
+    }
+
+    // ── User-initiated operations (the toolbar git menu) ─────────────────────────────
+    //
+    // None of these ever run unprompted, and none of them write history: no commit, no push,
+    // no merge beyond a fast-forward. A Claude session is usually editing this same working
+    // tree, and a one-click history write from outside its conversation is both a race and
+    // a misclick that cannot be taken back.
+
+    /// <summary><c>git fetch</c>. Network-bound, so a long timeout; never prompts.</summary>
+    public static Task<GitOpResult> FetchAsync(string folderPath) =>
+        RunOpAsync(folderPath, new[] { "fetch" }, timeoutMs: 60_000);
+
+    /// <summary>
+    /// <c>git pull --ff-only --no-rebase</c>: moves the branch only when that loses nothing.
+    /// <c>--no-rebase</c> is belt-and-braces against a user's <c>pull.rebase=true</c> turning a
+    /// one-click "pull" into a rebase of their local commits. git 2.54 already lets
+    /// <c>--ff-only</c> win (the diverged-branch test passes without the flag), but how the two
+    /// interact has changed across git versions, and the flag costs nothing. If the branch has diverged
+    /// or a local edit would be overwritten, git refuses and says why — we report that rather
+    /// than stashing or merging on the user's behalf.
+    /// </summary>
+    public static Task<GitOpResult> PullFastForwardAsync(string folderPath) =>
+        RunOpAsync(folderPath, new[] { "pull", "--ff-only", "--no-rebase" }, timeoutMs: 120_000);
+
+    /// <summary>
+    /// <c>git switch --no-guess -- &lt;branch&gt;</c>. The name comes from the repo
+    /// (<see cref="ListBranchesAsync"/>), and a ref can legally be called <c>-x</c>: <c>--</c>
+    /// keeps it a branch name rather than an option (verified against git 2.54 with a branch
+    /// literally named <c>-x</c>). <c>--no-guess</c> stops git from silently creating a
+    /// tracking branch when the name only exists on a remote.
+    /// </summary>
+    public static Task<GitOpResult> SwitchBranchAsync(string folderPath, string branch) =>
+        RunOpAsync(folderPath, SwitchArgs(branch), timeoutMs: 30_000);
+
+    internal static string[] SwitchArgs(string branch) => new[] { "switch", "--no-guess", "--", branch };
+
+    /// <summary>Human-readable <c>git status</c> for the git panel.</summary>
+    public static Task<GitOpResult> StatusTextAsync(string folderPath) =>
+        RunOpAsync(folderPath, new[] { "-c", "color.status=false", "status" }, timeoutMs: 10_000, readOnly: true);
+
+    private static async Task<GitOpResult> RunOpAsync(
+        string folderPath, string[] args, int timeoutMs, bool readOnly = false)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath) || !System.IO.Directory.Exists(folderPath))
+            return new GitOpResult(false, "Folder does not exist.", TimedOut: false);
+        try
+        {
+            var (stdout, stderr, exit) = await RunGitFullAsync(folderPath, args, timeoutMs, readOnly)
+                .ConfigureAwait(false);
+            bool timedOut = exit == TimedOutExit;
+            string text = timedOut
+                ? $"git {args.First(a => !a.StartsWith('-') && !a.Contains('='))} did not finish within " +
+                  $"{timeoutMs / 1000}s and was stopped. If the remote needs a password or key " +
+                  "passphrase, run the command in a terminal once."
+                : CombineOutput(stdout, stderr);
+            return new GitOpResult(exit == 0, text, timedOut);
+        }
+        catch (Exception ex) { return new GitOpResult(false, ex.Message, TimedOut: false); }
+    }
+
+    /// <summary>git writes progress and most of its prose to stderr, even on success.</summary>
+    internal static string CombineOutput(string stdout, string stderr) =>
+        string.Join("\n", new[] { stdout, stderr }
+            .Select(s => (s ?? "").Replace("\r\n", "\n").Trim())
+            .Where(s => s.Length > 0));
+
+    /// <summary>
+    /// One line for a toast after a successful pull: "Already up to date." or the diffstat
+    /// summary ("3 files changed, 10 insertions(+)").
+    /// </summary>
+    internal static string SummarizePull(string output)
+    {
+        var lines = (output ?? "").Replace("\r", "").Split('\n')
+            .Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        if (lines.Any(l => l.StartsWith("Already up to date", StringComparison.OrdinalIgnoreCase)))
+            return "Already up to date.";
+        var stat = lines.LastOrDefault(l => Regex.IsMatch(l, @"^\d+ files? changed"));
+        if (stat != null) return $"Fast-forwarded: {stat}";
+        return lines.Any(l => l.Equals("Fast-forward", StringComparison.OrdinalIgnoreCase))
+            ? "Fast-forwarded." : "Pull finished.";
     }
 
     /// <summary>
@@ -175,6 +326,51 @@ public static class GitService
         return exit == 0 ? stdout : null;
     }
 
+    /// <summary>Exit code reported when a git run was killed for exceeding its timeout.</summary>
+    internal const int TimedOutExit = -2;
+
+    /// <summary>
+    /// Environment for every git we spawn.
+    ///
+    /// <c>GIT_TERMINAL_PROMPT=0</c>: git runs with no console, so a credential prompt for an
+    /// HTTPS remote would wait for input that can never arrive until the timeout kills it. With
+    /// it, git fails at once with "terminal prompts disabled", which we can report. (A GUI
+    /// credential helper such as Git Credential Manager still works — it doesn't use the
+    /// terminal.)
+    ///
+    /// <c>GIT_OPTIONAL_LOCKS=0</c> for read-only calls: see <see cref="GetStatusAsync"/>.
+    /// </summary>
+    internal static IReadOnlyList<KeyValuePair<string, string>> GitEnvironment(bool readOnly)
+    {
+        var env = new List<KeyValuePair<string, string>> { new("GIT_TERMINAL_PROMPT", "0") };
+        if (readOnly) env.Add(new("GIT_OPTIONAL_LOCKS", "0"));
+        return env;
+    }
+
+    /// <summary>
+    /// WSLENV with <paramref name="names"/> added. Windows environment variables only cross
+    /// into a distro when WSLENV lists them, so without this the git inside WSL never saw
+    /// GIT_TERMINAL_PROMPT. Existing entries (and their <c>/p</c>-style flags) are kept.
+    /// </summary>
+    internal static string MergeWslEnv(string? existing, IEnumerable<string> names)
+    {
+        var list = (existing ?? "").Split(':', StringSplitOptions.RemoveEmptyEntries).ToList();
+        foreach (string n in names)
+            if (!list.Any(e => e.Split('/')[0] == n)) list.Add(n);
+        return string.Join(":", list);
+    }
+
+    private static void ApplyEnvironment(ProcessStartInfo psi, bool readOnly, bool forWsl)
+    {
+        var env = GitEnvironment(readOnly);
+        foreach (var (k, v) in env) psi.Environment[k] = v;
+        if (forWsl)
+        {
+            psi.Environment.TryGetValue("WSLENV", out var existing);
+            psi.Environment["WSLENV"] = MergeWslEnv(existing, env.Select(e => e.Key));
+        }
+    }
+
     /// <summary>
     /// Joins argv into a Windows command line, quoting each element with the MSVCRT rules.
     ///
@@ -261,18 +457,18 @@ public static class GitService
     /// see the note on <c>Process.Start</c> below (issue #70).
     /// </summary>
     private static Task<(string stdout, string stderr, int exit)> RunGitFullAsync(
-        string workingDir, IReadOnlyList<string> args, int timeoutMs)
-        => Task.Run(() => RunGitCoreAsync(workingDir, args, timeoutMs));
+        string workingDir, IReadOnlyList<string> args, int timeoutMs, bool readOnly = false)
+        => Task.Run(() => RunGitCoreAsync(workingDir, args, timeoutMs, readOnly));
 
     private static async Task<(string stdout, string stderr, int exit)> RunGitCoreAsync(
-        string workingDir, IReadOnlyList<string> args, int timeoutMs)
+        string workingDir, IReadOnlyList<string> args, int timeoutMs, bool readOnly)
     {
         // WSL working folders (\\wsl$\<distro>\…) get routed through wsl.exe so git
         // runs inside the distro. Git for Windows trips on WSL UNCs (dubious-ownership
         // checks, .git symlink quirks) and reports "not a git repo" for valid repos.
         var (wslDistro, linuxPath) = TryParseWslUnc(workingDir);
         if (wslDistro != null)
-            return await RunGitInWslAsync(wslDistro, linuxPath, args, timeoutMs).ConfigureAwait(false);
+            return await RunGitInWslAsync(wslDistro, linuxPath, args, timeoutMs, readOnly).ConfigureAwait(false);
 
         var psi = new ProcessStartInfo("git")
         {
@@ -282,6 +478,7 @@ public static class GitService
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        ApplyEnvironment(psi, readOnly, forWsl: false);
 
         // Process.Start is synchronous and sits BEFORE this method's first await, so without
         // the Task.Run above it ran on whatever thread called in. Every caller chain here
@@ -314,14 +511,18 @@ public static class GitService
         var bothTask = Task.WhenAll(outTask, errTask);
         var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs)).ConfigureAwait(false);
 
-        if (completed != bothTask)
+        // The whole tree: a fetch's real work happens in children (git-remote-https, ssh),
+        // and killing only git.exe left those running.
+        bool timedOut = completed != bothTask;
+        if (timedOut)
         {
-            try { process.Kill(); } catch { }
+            try { process.Kill(entireProcessTree: true); } catch { }
         }
         try { await process.WaitForExitAsync().ConfigureAwait(false); } catch { }
 
         string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
         string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
+        if (timedOut) return (stdout, stderr, TimedOutExit);
         return (stdout, stderr, process.HasExited ? process.ExitCode : -1);
     }
 
@@ -333,7 +534,7 @@ public static class GitService
     /// back to UNC form so callers receive Windows-shaped paths.
     /// </summary>
     private static async Task<(string stdout, string stderr, int exit)> RunGitInWslAsync(
-        string distro, string linuxPath, IReadOnlyList<string> gitArgs, int timeoutMs)
+        string distro, string linuxPath, IReadOnlyList<string> gitArgs, int timeoutMs, bool readOnly)
     {
         string cwd = string.IsNullOrEmpty(linuxPath) ? "/" : linuxPath;
 
@@ -363,6 +564,7 @@ public static class GitService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        ApplyEnvironment(psi, readOnly, forWsl: true);
 
         using var process = Process.Start(psi);
         if (process is null) return ("", "", -1);
@@ -370,9 +572,10 @@ public static class GitService
         var outTask = process.StandardOutput.ReadToEndAsync();
         var errTask = process.StandardError.ReadToEndAsync();
         var bothTask = Task.WhenAll(outTask, errTask);
-        var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs));
-        if (completed != bothTask) { try { process.Kill(); } catch { } }
-        try { await process.WaitForExitAsync(); } catch { }
+        var completed = await Task.WhenAny(bothTask, Task.Delay(timeoutMs)).ConfigureAwait(false);
+        bool timedOut = completed != bothTask;
+        if (timedOut) { try { process.Kill(entireProcessTree: true); } catch { } }
+        try { await process.WaitForExitAsync().ConfigureAwait(false); } catch { }
 
         string stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
         string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : "";
@@ -380,6 +583,7 @@ public static class GitService
         // paths back to UNC. Order matters: the sentinel must go before path translation,
         // or a banner containing a slash would be rewritten as if it were a git path.
         stdout = TranslateLinuxPathsToUnc(StripWslProfileNoise(stdout), distro);
+        if (timedOut) return (stdout, stderr, TimedOutExit);
         return (stdout, stderr, process.HasExited ? process.ExitCode : -1);
     }
 
@@ -439,3 +643,21 @@ public static class GitService
         }, RegexOptions.Multiline);
     }
 }
+
+/// <summary>One changed path from <c>git status</c>. <see cref="Code"/> is the two-letter XY
+/// code ("M ", " M", "??", "UU" …); a rename's path reads "old → new".</summary>
+public sealed record GitFileChange(string Code, string Path);
+
+/// <summary>A repo snapshot from one <c>git status --porcelain=v2 --branch</c>.</summary>
+/// <param name="Branch">Null when detached.</param>
+/// <param name="Upstream">e.g. "origin/main"; null when the branch tracks nothing.</param>
+/// <param name="Ahead">Null when there is no upstream (or it is gone).</param>
+public sealed record GitRepoStatus(
+    string? Branch, bool IsDetached, string? Upstream, int? Ahead, int? Behind,
+    IReadOnlyList<GitFileChange> Changes)
+{
+    public bool IsDirty => Changes.Count > 0;
+}
+
+/// <summary>Outcome of a user-initiated git operation; <see cref="Output"/> is stdout + stderr.</summary>
+public sealed record GitOpResult(bool Ok, string Output, bool TimedOut);

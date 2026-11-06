@@ -63,6 +63,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `ColorService` | FNV-1a hash of folder path → 12-color palette |
 | `GitService` | Async `git branch --show-current` + `git status --porcelain`. **Every await is `ConfigureAwait(false)`, `RunGitFullAsync` is `Task.Run`-wrapped, and command lines are built as argv via `JoinArgv` — do not "simplify" any of the three away.** WSL repos are dispatched through `wsl.exe -d <distro> -e git …`; `-e` is a security boundary, see "Never interpolate a value into a command line" |
 | `GitRepoWatcher` | Shared, reference-counted `FileSystemWatcher` on a repo's `.git/HEAD` + `index`, debounced 400ms. Lets git state refresh on checkout/commit/stage instead of by polling. Resolves the `gitdir:` indirection so a linked worktree watches its own HEAD, not the main repo's. Acquire/Release per session — one watcher per `.git` dir, however many sessions share it. Returns null outside a repo — callers treat that as "poll only", not an error |
+| `GitStatusText` | WPF-free wording for the toolbar git chip and menu: ↑/↓ counts, the menu header line, the post-fetch toast, and a short hint recognised from git's own failure text. See "Git tools on the terminal toolbar" |
 | `WslDiscoveryService` | `wsl.exe` probes for distro list, `$HOME` and login shell, each cached per (distro, user) and capped at 3s. All three go through `RunWslCaptureAsync`, which is `Task.Run`-wrapped — **never call `Process.Start` inline here**, `wsl.exe` can boot a stopped distro VM |
 | `ShellIntegrationPayload` | WPF-free validation for OSC 9001. Every field is untrusted: colour is strict hex, dirty is an allowlist, title and branch strip control characters and are length-capped (`MaxTitleLength` 80, `MaxBranchLength` 200) |
 | `AlertDetector` | Pattern matching for Claude prompts/approvals |
@@ -730,6 +731,69 @@ Each session can have a list of "run commands" — labelled command lines invoke
 **Keybindings:** `F5` runs the active session's default. `Shift+F5` stops it. Mirrors Visual Studio; deliberately not `Ctrl+R` (collides with shell history search).
 
 **Lifecycle:** All runs are killed on session close, session sleep, and app exit. `SessionViewModel.Dispose()` calls `Runner.Dispose()` which iterates and disposes every instance. `SleepSession` also calls `vm.Runner.StopAll()` defensively before UI teardown.
+
+## Git tools on the terminal toolbar
+
+When a session's folder is a git repo, its terminal toolbar shows a chip — `⎇ main ● ↑2 ↓5`
+(branch, peach dirty dot, blue ahead/behind) — just left of ▶. Clicking it opens a menu:
+a header line (`main → origin/main · ↑2 ↓5 · 3 changed`), **Fetch**, **Pull (fast-forward
+only)**, **Status…**, **Switch branch ▸** (local branches, loaded when the submenu opens),
+**Copy branch name**, and **Open in VS Code** when `code.cmd` is on PATH. The UI is in
+`MainWindow.Git.cs`; git calls are in `GitService`. Hidden for SSH sessions — an OSC 9001
+branch is display-only, there is no local folder to run git in.
+
+**Deliberately read-mostly: no commit, push or merge.** A Claude session is usually editing
+that same working tree, and a one-click history write from outside its conversation is both a
+race and a misclick nobody can take back. Pull is `--ff-only --no-rebase`: it moves the branch
+only when that loses nothing, and on a diverged branch or a conflicting local edit git refuses
+and the panel shows why — it never stashes or merges on the user's behalf. Push, if ever
+added, should confirm and show exactly what is going out.
+
+**Nothing is typed into the terminal.** Every operation is its own background git process via
+`GitService` — in a Claude session, typed text would land in Claude's prompt.
+
+**One status call now feeds everything.** The poll used `branch --show-current` +
+`status --porcelain` (two spawns). It is now one `status --porcelain=v2 --branch`
+(`GitService.GetStatusAsync` / `ParseStatusV2`), which also yields upstream, ahead/behind and
+the changed-file list — cheaper *and* richer, since a spawn is ~all of the cost (see "Never
+spawn a process on the UI thread"). `GetGitInfoAsync` keeps its old contract on top of it,
+detached HEAD → `(null, false)` included. The extra fields (`GitUpstream`, `GitAhead`,
+`GitBehind`, `GitChangeCount`) follow the same rule as `GitBranch`: plain properties,
+announced only through `GitInfoVersion`. An upstream that is configured but whose remote
+branch is gone produces no `# branch.ab` line, so it reads "upstream gone", not "up to date".
+
+**Environment for every git spawn** (`GitService.GitEnvironment`):
+- `GIT_TERMINAL_PROMPT=0` — git has no console, so an HTTPS credential prompt would wait for
+  input that can never come until the timeout. With it, git fails at once ("terminal prompts
+  disabled") and `GitStatusText.FailureHint` says to sign in from a terminal once. GUI
+  credential helpers (Git Credential Manager) are unaffected.
+- `GIT_OPTIONAL_LOCKS=0` on read-only calls — a plain `git status` opportunistically takes
+  `index.lock`, which is how a background poll makes a git command the user (or Claude) runs
+  at the same moment fail.
+- WSL: Windows env vars reach a distro only when `WSLENV` names them, so both are merged into
+  it (`MergeWslEnv`) — without that, the git inside WSL never saw them.
+
+A timed-out run now kills the **whole process tree** — a fetch's real work happens in
+children (`git-remote-https`, `ssh`) that killing `git.exe` alone left running.
+
+**Switch branch** runs `switch --no-guess -- <name>`. The name comes from the repo and a ref
+can legally be called `-x`; `--` keeps it a branch name (verified against git 2.54 with a
+branch literally named `-x`). `--no-guess` stops git silently creating a tracking branch for a
+name that exists only on a remote.
+
+**One operation per repo at a time** (`_gitBusyRepos`, keyed by `RepoRoot` so worktrees of one
+repo share the slot); the chip shows `⟳` meanwhile. Afterwards *every* live pane on that repo
+re-reads git state explicitly: a fetch moves only remote refs, which `GitRepoWatcher` (HEAD +
+index) never sees. Success → a toast; failure → the git panel (docked under the toolbar, like
+notes) opens with git's own output plus the recognised hint.
+
+Covered by `GitToolsTests.cs`: the parser against captured `porcelain=v2` output, the wording,
+the argv (hostile and option-shaped branch names round-tripped through `CommandLineToArgvW`),
+and the operations end to end against a throwaway bare "remote" — fast-forward, refusing a
+diverged branch even with `pull.rebase=true`, refusing to overwrite a local edit, the `-x`
+branch, and the remote-only branch `--no-guess` must not invent. Removing `--` or `--no-guess`
+fails 6 tests each; removing `--no-rebase` fails none, because git 2.54 already lets
+`--ff-only` win — it is kept as a guard for other git versions.
 
 ## Per-Session Notes
 
