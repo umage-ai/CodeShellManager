@@ -133,6 +133,41 @@
     return true;
   });
 
+  // ── Program status: OSC 7501 ───────────────────────────────────────────────
+  //   ESC ] 7501 ; state=working:progress=40:id=build:app=cargo ST    (a report)
+  //   ESC ] 7501 ; ? ST                                               (feature query)
+  // Parsing and validation are on the C# side (ProgramStatusPayload) — this only routes.
+  //
+  // The query MUST be answered: Claude Code sends it at startup and, with no reply, never
+  // reports status. The host writes fixed reply bytes to the PTY (not via 'input': a reply
+  // is not the user typing). Posted synchronously from inside the parser so it is handled
+  // as early as possible — the program treats its device-attributes answer (CSI c, sent
+  // right after this query) as "no more replies coming". See CLAUDE.md "Program status
+  // (OSC 7501)": under the inbox ConPTY that race is currently lost, because conhost
+  // answers CSI c itself before the query ever reaches this page.
+  term.parser.registerOscHandler(7501, data => {
+    try {
+      const s = String(data);
+      if (s.trim().charAt(0) === '?') {
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'programStatusProbe' }));
+      } else if (s.length <= 4096) {
+        // Cheap pre-filter for the spec's 4096-byte sequence cap; the host re-checks bytes.
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'programStatus', data: s }));
+      }
+    } catch {}
+    return true;
+  });
+
+  // OSC 133 A — "a new shell prompt starts". Per the OSC 7501 spec, working/blocked records
+  // are dropped here (there is no heartbeat). Returns false: we only observe it.
+  term.parser.registerOscHandler(133, data => {
+    try {
+      if (String(data).charAt(0) === 'A')
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'promptStart' }));
+    } catch {}
+    return false;
+  });
+
   // ── Input → PTY ────────────────────────────────────────────────────────────
   function sendInput(data) {
     window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data }));

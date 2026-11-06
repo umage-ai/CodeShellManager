@@ -120,6 +120,16 @@ public sealed class TerminalBridge : IDisposable
     public event Action<System.Collections.Generic.IReadOnlyDictionary<string, string>>? ShellIntegrationReceived;
 
     /// <summary>
+    /// Fires with the raw payload of an OSC 7501 program-status report (the text after
+    /// <c>7501;</c>). Untrusted and unparsed — <see cref="Services.ProgramStatusPayload"/>
+    /// validates it. The feature query is answered here and never raised.
+    /// </summary>
+    public event Action<string>? ProgramStatusReceived;
+
+    /// <summary>OSC 133 A: a new shell prompt started (OSC 7501 drops live records on it).</summary>
+    public event Action? PromptStarted;
+
+    /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
     /// while the WebView2 has focus. Subscribers set <c>e.Handled = true</c> to prevent
     /// the key from also reaching xterm.js. The WPF WebView2 wrapper forwards
@@ -672,6 +682,30 @@ public sealed class TerminalBridge : IDisposable
                         if (dict.Count > 0)
                             ShellIntegrationReceived?.Invoke(dict);
                     }
+                    break;
+
+                // OSC 7501 feature query ("OSC 7501 ; ? ST"). Answered with FIXED bytes the app
+                // authored — nothing from the page or the program is echoed — so a raw PTY
+                // write is correct here (it is not untrusted text; see PasteToTerminal).
+                // Deliberately does NOT raise UserInput: a terminal reply is not the user.
+                // Win32-input-mode encoded, because conhost drops OSC sequences written to
+                // the ConPTY input as plain VT — see ProgramStatusPayload.ProbeReplyForConPty.
+                case "programStatusProbe":
+                    Trace("OSC7501 probe answered");
+                    _pty?.Write(Services.ProgramStatusPayload.ProbeReplyForConPty);
+                    break;
+
+                case "programStatus":
+                {
+                    string payload = root.TryGetProperty("data", out var psEl)
+                                     && psEl.ValueKind == JsonValueKind.String
+                        ? psEl.GetString() ?? "" : "";
+                    if (payload.Length > 0) ProgramStatusReceived?.Invoke(payload);
+                    break;
+                }
+
+                case "promptStart":
+                    PromptStarted?.Invoke();
                     break;
 
                 case "filesDropped":
