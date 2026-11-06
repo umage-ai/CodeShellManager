@@ -206,6 +206,133 @@ public class SessionViewModelProgramStatusTests
     }
 
     [Fact]
+    public void Root_done_badges_and_toasts_even_while_a_child_keeps_working()
+    {
+        var vm = MakeVm();
+        vm.ApplyProgramStatus("state=working:id=bg", T0);   // long-lived background task
+        vm.ApplyProgramStatus("state=working", T0);
+        var notice = vm.ApplyProgramStatus("state=done", T0.AddMinutes(1));
+
+        Assert.NotNull(notice);
+        Assert.Equal("Finished", notice!.Message);
+        Assert.True(vm.NeedsAttention);
+        Assert.True(vm.IsWorking);                          // child work stays visible
+
+        // More child progress must not wipe the unseen result.
+        vm.ApplyProgramStatus("state=working:id=bg:progress=50", T0.AddMinutes(2));
+        Assert.True(vm.NeedsAttention);
+
+        vm.ClearAlert();                                    // seen
+        Assert.False(vm.NeedsAttention);
+        Assert.True(vm.IsWorking);
+    }
+
+    [Fact]
+    public void Clear_all_rearms_the_heuristic()
+    {
+        var vm = MakeVm();
+        vm.AlertDetector = new AlertDetector(vm.Id, "s");
+        vm.ApplyProgramStatus("state=working", T0);
+        Assert.True(vm.AlertDetector.IsStoodDown);
+
+        vm.ApplyProgramStatus("state=clear", T0);
+        Assert.False(vm.HasProgramStatus);
+        Assert.False(vm.AlertDetector.IsStoodDown);
+
+        vm.RaiseAlert("Allow?", AlertType.ToolApproval);     // the heuristic counts again
+        Assert.True(vm.IsWaitingForApproval);
+    }
+
+    [Fact]
+    public void A_child_clear_that_leaves_records_does_not_rearm()
+    {
+        var vm = MakeVm();
+        vm.AlertDetector = new AlertDetector(vm.Id, "s");
+        vm.ApplyProgramStatus("state=idle", T0);
+        vm.ApplyProgramStatus("state=working:id=bg", T0);
+        vm.ApplyProgramStatus("state=clear:id=bg", T0);
+        Assert.True(vm.HasProgramStatus);
+        Assert.True(vm.AlertDetector.IsStoodDown);
+    }
+
+    [Fact]
+    public void Prompt_start_that_empties_the_store_rearms()
+    {
+        var vm = MakeVm();
+        vm.AlertDetector = new AlertDetector(vm.Id, "s");
+        vm.ApplyProgramStatus("state=blocked:kind=permission", T0);
+        vm.DropTransientProgramStatus();
+        Assert.False(vm.HasProgramStatus);
+        Assert.False(vm.AlertDetector.IsStoodDown);
+        Assert.False(vm.IsWaitingForApproval);
+        Assert.False(vm.NeedsAttention);
+    }
+
+    [Fact]
+    public void Acknowledging_the_last_result_does_not_rearm()
+    {
+        // Otherwise a Claude session whose "done" was just seen would have the regex guess
+        // at its prompt again.
+        var vm = MakeVm();
+        vm.AlertDetector = new AlertDetector(vm.Id, "s");
+        vm.ApplyProgramStatus("state=done", T0);
+        vm.ClearAlert();
+        Assert.True(vm.HasProgramStatus);
+        Assert.True(vm.AlertDetector.IsStoodDown);
+    }
+
+    [Fact]
+    public void Clear_status_menu_drops_everything_and_rearms()
+    {
+        var vm = MakeVm();
+        vm.AlertDetector = new AlertDetector(vm.Id, "s");
+        vm.ApplyProgramStatus("state=working:progress=10", T0);
+        vm.ApplyProgramStatus("state=done:id=x", T0);
+        vm.ClearProgramStatus();
+        Assert.False(vm.IsWorking);
+        Assert.False(vm.NeedsAttention);
+        Assert.Null(vm.AgentState);
+        Assert.False(vm.HasProgramStatus);
+        Assert.False(vm.AlertDetector.IsStoodDown);
+    }
+
+    [Theory]
+    [InlineData("state=working")]
+    [InlineData("state=blocked:kind=permission")]
+    [InlineData("state=idle")]
+    public void Live_reports_after_exit_are_ignored(string late)
+    {
+        var vm = MakeVm();
+        vm.ApplyProgramStatus("state=working", T0);
+        vm.OnProcessExited();
+        Assert.Null(vm.ApplyProgramStatus(late, T0));
+        Assert.False(vm.IsWorking);
+        Assert.False(vm.IsWaitingForApproval);
+    }
+
+    [Fact]
+    public void Results_after_exit_are_still_shown()
+    {
+        var vm = MakeVm();
+        vm.OnProcessExited();
+        Assert.NotNull(vm.ApplyProgramStatus("state=error", T0));
+        Assert.True(vm.NeedsAttention);
+    }
+
+    [Fact]
+    public void HasUnacknowledgedProgramStatus_is_false_when_there_is_nothing_to_ack()
+    {
+        var vm = MakeVm();
+        Assert.False(vm.HasUnacknowledgedProgramStatus);   // no 7501 at all
+        vm.ApplyProgramStatus("state=working", T0);
+        Assert.False(vm.HasUnacknowledgedProgramStatus);   // the per-keystroke common case
+        vm.ApplyProgramStatus("state=done", T0);
+        Assert.True(vm.HasUnacknowledgedProgramStatus);
+        vm.ClearAlert();
+        Assert.False(vm.HasUnacknowledgedProgramStatus);
+    }
+
+    [Fact]
     public void State_changes_raise_one_ProgramStatusVersion_notification()
     {
         var vm = MakeVm();

@@ -4,17 +4,18 @@ Programs running inside a CodeShellManager terminal can push session state up to
 
 > **Reporting working / waiting / done?** Use the standard **OSC 7501 Program Status Protocol**
 > ([spec](https://www.superlogical.com/rex/docs/build/program-status)) rather than OSC 9001. CSM
-> answers the `OSC 7501 ; ? ST` feature query and maps reports onto the session:
-> `working` (+`progress`) → a `⟳ working · 40%` indicator in the sidebar and toolbar;
-> `blocked` + `kind=permission` → orange approval dot; other `blocked` → green input dot;
-> `done` / `error` → "needs attention" badge and a rate-limited tray notification; `idle` / `clear`
-> → indicators cleared. Once a session sends any valid 7501 report, CSM's own screen-scraping
-> prompt detection stands down for that session. Status is runtime-only — never saved.
+> maps reports onto the session: `working` (+`progress`) → a `⟳ working · 40%` indicator in the
+> sidebar and toolbar; `blocked` + `kind=permission` → orange approval dot; other `blocked` →
+> green input dot; a record entering `done` / `error` / `blocked` → "needs attention" badge and a
+> rate-limited tray notification; `idle` / `clear` → indicators cleared. While a session holds any
+> 7501 record, CSM's own screen-scraping prompt detection stands down for it ("Clear status" in
+> the session's right-click menu hands it back). Status is runtime-only — never saved.
 >
-> Windows note: the inbox ConPTY answers the `CSI c` device-attributes query itself, before CSM
-> can reply to a `?` query sent just ahead of it, so a program that treats that answer as "no more
-> replies are coming" will conclude CSM does not support 7501. Programs can always send reports
-> without querying first — the spec makes detection optional.
+> **Send reports without querying first.** CSM does not answer the `OSC 7501 ; ? ST` feature
+> query by default: under the Windows inbox ConPTY a reply cannot arrive before conhost's own
+> answer to the `CSI c` query programs send right after it, so it would only reach the program
+> as late, unsolicited input. The spec makes detection optional; just report. (Claude Code
+> probes and therefore does not report under the inbox ConPTY yet.)
 
 ## Wire format
 

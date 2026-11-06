@@ -72,9 +72,10 @@ public static class ProgramStatusPayload
     /// here — nothing from the query is echoed. Omitting <c>states=</c>/<c>kinds=</c> means
     /// "the baseline sets", which is exactly what we accept.
     /// <para>
-    /// Required, not optional: Claude Code sends the query at startup and, if it gets no reply
-    /// before its device-attributes sentinel, logs <c>probe: no reply to OSC 7501 ; ?</c> and
-    /// never reports status at all.
+    /// Claude Code sends the query at startup and, if it gets no reply before its
+    /// device-attributes sentinel, logs <c>probe: no reply to OSC 7501 ; ?</c> and never reports.
+    /// Under the inbox ConPTY that sentinel is answered by conhost first, so the reply is OFF by
+    /// default and gated (<see cref="ProgramStatusProbeGate"/>).
     /// </para>
     /// </summary>
     public const string ProbeReply = "\x1b]7501;?\x1b\\";
@@ -106,8 +107,9 @@ public static class ProgramStatusPayload
     }
 
     /// <summary>True when the OSC payload is the feature query (<c>?</c>) rather than a report.</summary>
+    /// Only an exact <c>?</c> (after trimming) counts — the query carries no pairs.
     public static bool IsQuery(string? payload) =>
-        payload != null && payload.Trim().StartsWith('?');
+        payload != null && payload.Trim() == "?";
 
     /// <summary>
     /// Parses and validates one report payload (the text after <c>7501;</c>). Returns null when
@@ -127,7 +129,9 @@ public static class ProgramStatusPayload
             if (eq <= 0) continue;                                   // malformed → skip
             string key = pair[..eq].Trim();
             string value = pair[(eq + 1)..].Trim();
-            if (!IsValidKey(key) || !IsValidValue(value)) continue;  // malformed → skip
+            if (!IsKeyShaped(key)) continue;                         // malformed → skip
+            if (key.Length > MaxKeyBytes) return null;               // a LIMIT → drop whole report
+            if (!IsValidValue(value)) continue;                      // malformed → skip
             fields[key] = value;                                     // repeated → last wins
         }
 
@@ -154,11 +158,10 @@ public static class ProgramStatusPayload
         }
 
         string? app = null;
-        if (fields.TryGetValue("app", out var appText))
-        {
-            if (appText.Length > MaxAppBytes) return null;           // ASCII alphabet: chars == bytes
-            if (appText.Length > 0) app = appText;
-        }
+        // app: 1–32 of [A-Za-z0-9_.+-]; anything else is treated as absent (it is only a
+        // grouping label, so an odd one is not worth dropping the state it came with).
+        if (fields.TryGetValue("app", out var appText) && IsIdentifierSegment(appText, MaxAppBytes))
+            app = appText;
 
         string? title = null;
         if (fields.TryGetValue("title", out var titleB64))
@@ -203,11 +206,25 @@ public static class ProgramStatusPayload
             string.IsNullOrEmpty(msg) ? null : msg);
     }
 
-    internal static bool IsValidKey(string key)
+    /// <summary><c>[a-z]+</c>, any length — the 16-byte cap is a limit, checked separately.</summary>
+    internal static bool IsKeyShaped(string key)
     {
-        if (key.Length == 0 || key.Length > MaxKeyBytes) return false;
+        if (key.Length == 0) return false;
         foreach (char c in key)
             if (c is < 'a' or > 'z') return false;
+        return true;
+    }
+
+    /// <summary><c>[A-Za-z0-9_.+-]{1,max}</c> — one id segment, or an <c>app</c> value.</summary>
+    internal static bool IsIdentifierSegment(string s, int maxLength)
+    {
+        if (s.Length == 0 || s.Length > maxLength) return false;
+        foreach (char c in s)
+        {
+            bool ok = c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9'
+                      or '_' or '.' or '+' or '-';
+            if (!ok) return false;
+        }
         return true;
     }
 
@@ -222,14 +239,14 @@ public static class ProgramStatusPayload
         return true;
     }
 
-    /// <summary>Slash path: 1–8 non-empty segments of ≤32 bytes, ≤128 bytes in all.</summary>
+    /// <summary>Slash path: 1–8 segments of <c>[A-Za-z0-9_.+-]{1,32}</c>, ≤128 bytes in all.</summary>
     internal static bool IsValidId(string id)
     {
         if (id.Length == 0 || id.Length > MaxIdBytes) return false;
         var segments = id.Split('/');
         if (segments.Length > MaxIdDepth) return false;
         foreach (var s in segments)
-            if (s.Length == 0 || s.Length > MaxIdSegmentBytes) return false;
+            if (!IsIdentifierSegment(s, MaxIdSegmentBytes)) return false;
         return true;
     }
 
@@ -267,12 +284,17 @@ public static class ProgramStatusPayload
             return false;
         }
 
+        // By rune, not by char: format characters outside the BMP (the tag block,
+        // U+E0001 and U+E0020–U+E007F) are surrogate pairs and invisible all the same.
         var sb = new StringBuilder(decoded.Length);
-        foreach (char c in decoded)
+        foreach (Rune r in decoded.EnumerateRunes())
         {
-            if (char.IsControl(c)) return false;                     // C0, DEL, C1 — incl. CR/LF
-            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format) continue;
-            sb.Append(c);
+            if (Rune.IsControl(r)) return false;                     // C0, DEL, C1 — incl. CR/LF/NEL
+            var cat = Rune.GetUnicodeCategory(r);
+            // U+2028 / U+2029: "single line" means no line break of any kind.
+            if (cat is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator) return false;
+            if (cat == UnicodeCategory.Format) continue;
+            sb.Append(r.ToString());
         }
         text = sb.ToString();
         return true;

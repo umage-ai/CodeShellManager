@@ -20,11 +20,13 @@ public class ProgramStatusPayloadTests
     [Theory]
     [InlineData("?")]
     [InlineData(" ? ")]
-    [InlineData("?:states=idle")]
     public void IsQuery_recognises_the_feature_query(string payload) =>
         Assert.True(ProgramStatusPayload.IsQuery(payload));
 
     [Theory]
+    [InlineData("?:states=idle")]   // only an exact "?" is a query
+    [InlineData("??")]
+    [InlineData("?x")]
     [InlineData("state=idle")]
     [InlineData("")]
     [InlineData(null)]
@@ -106,7 +108,6 @@ public class ProgramStatusPayloadTests
     [InlineData("state=working:=x")]                 // empty key
     [InlineData("state=working:Bad=1")]              // uppercase key
     [InlineData("state=working:k3y=1")]              // digit in key
-    [InlineData("state=working:abcdefghijklmnopq=1")] // 17-byte key
     [InlineData("state=working:app=a b")]            // space inside a value
     [InlineData("state=working:app=a;b")]            // ';' not in alphabet
     public void Malformed_pairs_are_skipped_not_fatal(string payload)
@@ -115,6 +116,13 @@ public class ProgramStatusPayloadTests
         Assert.NotNull(r);
         Assert.Equal(ProgramState.Working, r!.State);
         Assert.Null(r.App);
+    }
+
+    [Fact]
+    public void Key_over_16_bytes_is_a_limit_and_drops_the_whole_report()
+    {
+        Assert.NotNull(ProgramStatusPayload.TryParse("state=working:abcdefghijklmnop=1"));   // 16
+        Assert.Null(ProgramStatusPayload.TryParse("state=working:abcdefghijklmnopq=1"));     // 17
     }
 
     [Fact]
@@ -187,6 +195,9 @@ public class ProgramStatusPayloadTests
     [InlineData("build/")]
     [InlineData("a//b")]
     [InlineData("")]
+    [InlineData("a,b")]                             // ',' is a value char, not an id char
+    [InlineData("a=b")]
+    [InlineData("build/x=1")]
     public void Invalid_id_ignores_the_report_rather_than_writing_root(string id) =>
         Assert.Null(ProgramStatusPayload.TryParse($"state=working:id={id}"));
 
@@ -209,11 +220,26 @@ public class ProgramStatusPayloadTests
     }
 
     [Fact]
-    public void App_over_32_bytes_drops_the_report()
+    public void App_allows_32_identifier_bytes()
     {
         Assert.Equal(new string('x', 32),
             ProgramStatusPayload.TryParse($"state=idle:app={new string('x', 32)}")!.App);
-        Assert.Null(ProgramStatusPayload.TryParse($"state=idle:app={new string('x', 33)}"));
+        Assert.Equal("my_app-1.2+x",
+            ProgramStatusPayload.TryParse("state=idle:app=my_app-1.2+x")!.App);
+    }
+
+    [Theory]
+    [InlineData("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")]   // 33
+    [InlineData("a/b")]
+    [InlineData("a,b")]
+    [InlineData("a=b")]
+    [InlineData("")]
+    public void Invalid_app_is_treated_as_absent_not_fatal(string app)
+    {
+        var r = ProgramStatusPayload.TryParse($"state=working:app={app}");
+        Assert.NotNull(r);
+        Assert.Null(r!.App);
+        Assert.Equal(ProgramState.Working, r.State);
     }
 
     // ---- base64 text ----------------------------------------------------------------------
@@ -268,6 +294,34 @@ public class ProgramStatusPayloadTests
         // U+202E RIGHT-TO-LEFT OVERRIDE, U+200B ZERO WIDTH SPACE, U+2066 LRI.
         var r = ProgramStatusPayload.TryParse($"state=done:msg={B64("ok‮txt.exe​⁦")}");
         Assert.Equal("oktxt.exe", r!.Message);
+    }
+
+    [Fact]
+    public void Supplementary_plane_format_characters_are_stripped_by_rune()
+    {
+        // U+E0001 LANGUAGE TAG and U+E0041 TAG LATIN CAPITAL A — surrogate pairs in UTF-16,
+        // invisible, and category Cf. A per-char check sees two surrogates and keeps them.
+        string tagged = "ok" + char.ConvertFromUtf32(0xE0001) + char.ConvertFromUtf32(0xE0041) + "!";
+        Assert.Equal("ok!", ProgramStatusPayload.TryParse($"state=done:msg={B64(tagged)}")!.Message);
+    }
+
+    [Fact]
+    public void Visible_supplementary_characters_survive()
+    {
+        string emoji = "done " + char.ConvertFromUtf32(0x1F389);
+        Assert.Equal(emoji, ProgramStatusPayload.TryParse($"state=done:msg={B64(emoji)}")!.Message);
+    }
+
+    [Theory]
+    [InlineData(0x2028)]   // LINE SEPARATOR
+    [InlineData(0x2029)]   // PARAGRAPH SEPARATOR
+    [InlineData(0x0085)]   // NEL (C1)
+    public void Unicode_line_breaks_drop_the_report(int codePoint)
+    {
+        // Code points, not literals: a raw U+2028 inside a C# string literal is a line break.
+        string text = "a" + char.ConvertFromUtf32(codePoint) + "b";
+        Assert.Null(ProgramStatusPayload.TryParse($"state=done:msg={B64(text)}"));
+        Assert.Null(ProgramStatusPayload.TryParse($"state=done:title={B64(text)}"));
     }
 
     [Fact]
