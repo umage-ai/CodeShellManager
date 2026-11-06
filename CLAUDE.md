@@ -443,7 +443,7 @@ warning is suppressed in the csproj deliberately — it recommends WinForms'
 5. Termination paths:
    - **Close** (`vm.CloseCommand`) → `MainViewModel.OnSessionCloseRequested` → `vm.Dispose()` + remove from `Sessions` + `SessionManager.RemoveSession()`. Session is gone from `state.json`.
    - **Sleep** (`SleepSession(vm)`) → `vm.Dispose()` + remove from `Sessions` but **keep** the `ShellSession` in `SessionManager` with `IsDormant = true`. A muted dormant sidebar entry replaces the active one.
-   - **Wake** (`WakeSessionAsync(session)`) → re-runs `LaunchSessionAsync(session, restoring: true)` — same path as restore-on-startup.
+   - **Wake** (`WakeSessionAsync(session)`) → re-runs `LaunchSessionAsync(session, restoring: true, removeOnFailure: false)` — same path as restore-on-startup. **Both pass `removeOnFailure: false` and then `FallBackToDormantIfNotLive`.** With the default, a session whose launch was refused or whose PTY failed to start (a WSL distro uninstalled, `claude` briefly off PATH) was *deleted* from `SessionManager` and the next save made it permanent — the PTY-failure path returns rather than throws, so Wake's catch never ran. Verified before/after against a real `state.json` (via `CSM_STATE_PATH`): the old build lost the session from the sidebar and the file; the fixed one keeps it asleep. Every relaunch path — restore, wake, restart — now ends a failure with the session asleep and editable.
    - **Restart** (`RestartSessionAsync(vm)`) → sleep-style teardown *without* the dormant bookkeeping, then `LaunchSessionAsync(session, restoring: true, removeOnFailure: false)`. The `ShellSession` stays in `SessionManager` (so Id, group, run commands and sidebar slot survive) and never enters the recently-closed ring. Reachable from the **↻ toolbar button and the "Restart" menu entries** (see "Restarting sessions" below) and from "Edit session…". Both non-default arguments matter: `restoring: true` makes a Claude session resume rather than start a fresh conversation (matching Wake — a restart tears down the same way, so it must recover the same way), and `removeOnFailure: false` stops a bad edit from *deleting* the session, since `LaunchSessionAsync`'s PTY-failure path calls `SessionManager.RemoveSession` — correct for a session that never started, destructive for a relaunch. If the relaunch fails either way, the session falls back to dormant so the row stays visible and fixable instead of leaving a launching placeholder that never resolves.
 
      A Claude restart also **waits for the old process to actually exit** (`DisposeAndWaitForExitAsync` + a config quiesce) before relaunching. Without that it recreates the concurrent-config-writer race the launch stagger and the shutdown loop both exist to prevent, and `--resume` can read a session index the outgoing process hasn't finalised. Non-Claude sessions skip the wait — they don't touch that file.
@@ -836,6 +836,19 @@ git itself refuses modified, untracked or locked worktrees and never removes the
 Deleting the branch is a separate, explicit question afterwards, using `branch -d` (not `-D`), so
 an unmerged branch is kept.
 
+**Refused when another worktree lives inside it.** git's clean check does not look inside an
+ignored folder, and a nested worktree usually sits in one (`.worktrees/` in `.gitignore`).
+Reproduced with git 2.54: worktree B inside A's ignored `.worktrees/`, with uncommitted work —
+A reports clean, `git worktree remove A` exits 0 and deletes B, work included.
+`GitWorktrees.NestedInside` is checked against a list re-read at click time, not the menu's.
+
+**Sleeping sessions are deleted only after git has removed the folder.** They never go through
+Recently closed, so deleting them before git ran meant a refusal lost them for good.
+
+**WSL paths follow Linux case rules.** `\\wsl.localhost\` is folded into `\\wsl$\` (GitService
+always reports the latter), and below the distro name paths compare case-sensitively —
+`/home/u/WT` is not `/home/u/wt`, and matching it would close the wrong worktree's sessions.
+
 **Close the sessions and wait for their processes to exit first.** On Windows a process whose
 cwd is inside the folder locks it, and git then fails half-way through the delete with
 `failed to delete … Permission denied` — verified by running the remove from inside the
@@ -856,6 +869,25 @@ spellings. Adding `--force` to the remove fails 3 tests; dropping `--` from the 
 fails 2. The full flow was also run end to end in the app with a terminal open inside the
 worktree: session closed, folder deleted, merged branch deleted. `GitServiceThreadingTests`
 now also find the repo root from a worktree checkout, where `.git` is a file.
+
+## Opening a folder in Explorer
+
+"Open in Explorer" (toolbar 📁, sidebar menu, note search results) goes through
+`Services/FolderOpener`, never `explorer.exe <folder>`. Passing the folder as Explorer's command
+line silently opened **Documents** instead for two kinds of path, measured by asking the Shell
+which folder each new Explorer window showed:
+
+- **forward slashes** (`C:/repos/wt-feat`) — the form git prints, which "New session in sibling
+  worktree" (and the Worktrees menu) stored as a session's `WorkingFolder`;
+- **a comma** anywhere in the name — Explorer splits its arguments on commas, and quoting does
+  not stop it.
+
+`FolderOpener` opens the folder itself through the shell (ShellExecute `open` on the full Windows
+path), which was right for every case tried — spaces, comma, `&`, `%`, forward slashes, trailing
+separator, 8.3 — and honours a replacement file manager. **It refuses anything that is not an
+existing directory first**: ShellExecute on a *file* runs it, and a folder path comes from
+`state.json` and imports. `LaunchSessionInSiblingWorktreeAsync` now stores the Windows form of
+the git path, so new worktree sessions don't carry forward slashes at all.
 
 ## Per-Session Notes
 

@@ -329,12 +329,13 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Close() => CloseRequested?.Invoke(this);
 
+    /// <summary>
+    /// Opens the folder via <see cref="FolderOpener"/> — not <c>explorer.exe &lt;folder&gt;</c>,
+    /// which silently opened Documents for forward-slash paths and names with a comma. Off the
+    /// UI thread: the existence check is \\wsl$ I/O for a WSL session.
+    /// </summary>
     [RelayCommand]
-    private void OpenInExplorer()
-    {
-        if (System.IO.Directory.Exists(Session.WorkingFolder))
-            System.Diagnostics.Process.Start("explorer.exe", Session.WorkingFolder);
-    }
+    private void OpenInExplorer() => _ = FolderOpener.OpenAsync(Session.WorkingFolder);
 
     /// <summary>
     /// Applies a CSM shell-integration payload (OSC 9001) emitted by the running program.

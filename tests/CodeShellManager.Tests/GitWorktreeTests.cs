@@ -27,6 +27,30 @@ public class GitWorktreeRuleTests
     public void IsInside_is_a_path_test_not_a_string_prefix(string folder, string root, bool expected) =>
         Assert.Equal(expected, GitWorktrees.IsInside(folder, root));
 
+    [Theory]
+    // Inside a distro, Linux paths are case-sensitive: /home/u/WT is a different folder, and
+    // matching it would close (and delete the sleeping) sessions of the wrong worktree.
+    [InlineData(@"\\wsl$\Ubuntu\home\u\WT", @"\\wsl$\Ubuntu\home\u\wt", false)]
+    [InlineData(@"\\wsl$\Ubuntu\home\u\wt\src", @"\\wsl$\Ubuntu\home\u\wt", true)]
+    // …but the distro name is not, and the two share spellings are the same place.
+    [InlineData(@"\\wsl$\ubuntu\home\u\wt", @"\\wsl$\Ubuntu\home\u\wt", true)]
+    [InlineData(@"\\wsl.localhost\Ubuntu\home\u\wt", @"\\wsl$\Ubuntu\home\u\wt", true)]
+    [InlineData(@"\\WSL.LOCALHOST\Ubuntu\home\u\wt\x", @"\\wsl$\Ubuntu\home\u\wt", true)]
+    public void Wsl_paths_follow_linux_case_rules_and_both_share_spellings(string folder, string root, bool expected)
+    {
+        Assert.Equal(expected, GitWorktrees.IsInside(folder, root));
+        Assert.Equal(expected && !folder.EndsWith(@"\src") && !folder.EndsWith(@"\x"), GitWorktrees.SamePath(folder, root));
+    }
+
+    [Fact]
+    public void NestedInside_finds_worktrees_living_in_the_target_folder_only()
+    {
+        var outer = Wt("C:/w/a", "a");
+        var wts = new[] { Wt("C:/w/main", "main"), outer, Wt("C:/w/a/.worktrees/b", "b"), Wt("C:/w/a-sibling", "s") };
+        Assert.Equal(new[] { "b" }, GitWorktrees.NestedInside(wts, outer).Select(w => w.Branch));
+        Assert.Empty(GitWorktrees.NestedInside(wts, wts[2]));
+    }
+
     [Fact]
     public void Containing_picks_the_deepest_worktree()
     {
@@ -218,6 +242,28 @@ public sealed class GitWorktreeRepoTests : IDisposable
         Directory.CreateDirectory(fakeSub);
         File.WriteAllText(Path.Combine(fakeSub, ".git"), "gitdir: ../main/.git/modules/sub\n");
         Assert.Null(GitWorktrees.LinkedWorktreeOf(fakeSub, Main));
+    }
+
+    [Fact]
+    public async Task A_worktree_nested_in_an_ignored_folder_is_detected_because_git_would_delete_it()
+    {
+        // The layout the pre-release review flagged, reproduced: worktree B inside A's
+        // .gitignored .worktrees/ folder, with uncommitted work. git reports A clean, and
+        // `worktree remove A` deletes B too. The menu must see B and refuse.
+        File.WriteAllText(Path.Combine(Main, ".gitignore"), ".worktrees/\n");
+        Git(Main, "add", ".gitignore");
+        Git(Main, "commit", "-q", "-m", "ignore");
+        AddWorktree("A", "a");
+        Git(WtPath("A"), "worktree", "add", "-q", "-b", "b", "--", Path.Combine(WtPath("A"), ".worktrees", "b"));
+        File.WriteAllText(Path.Combine(WtPath("A"), ".worktrees", "b", "work.txt"), "uncommitted\n");
+
+        var status = await GitService.GetStatusAsync(WtPath("A"));
+        Assert.False(status!.IsDirty);                         // git really does call A clean
+
+        var wts = GitWorktrees.Canonicalize(await GitService.ListWorktreesAsync(Main));
+        var a = GitWorktrees.Containing(wts, GitWorktrees.Canonical(WtPath("A")))!;
+        Assert.Equal("a", a.Branch);
+        Assert.Equal(new[] { "b" }, GitWorktrees.NestedInside(wts, a).Select(w => w.Branch));
     }
 
     [Fact]
