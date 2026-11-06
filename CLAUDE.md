@@ -803,6 +803,60 @@ branch, and the remote-only branch `--no-guess` must not invent. Removing `--` o
 fails 6 tests each; removing `--no-rebase` fails none, because git 2.54 already lets
 `--ff-only` win — it is kept as a guard for other git versions.
 
+### Worktrees in the git menu
+
+Worktrees are the normal way this tool is used — a Claude session per task, each in its own
+worktree — so the git menu knows about them. Logic is in the WPF-free `Services/GitWorktrees`;
+the UI in `MainWindow.Git.cs`.
+
+- **Which worktree am I in.** In a linked worktree the chip tooltip and menu header end with
+  `· worktree of <main repo>`. Worked out from the `.git` FILE (`gitdir: …/worktrees/<name>`),
+  with no git spawn, off the UI thread. A submodule's `.git` is a file too, so the
+  `/worktrees/` segment is what tells them apart.
+- **Switch branch knows where branches are checked out.** git allows a branch in one worktree at
+  a time; switching to one held elsewhere fails with `already used by worktree at …`. Such a
+  branch is listed as `feature — in wt-feature` and opens that worktree instead.
+- **Worktrees ▸** lists every worktree (branch, dirty dot, ↑/↓ — one status per worktree, only
+  when the submenu opens). Clicking one focuses its live session, else wakes a sleeping one,
+  else opens a new session there. Then: New worktree from this branch…, **Prune N missing
+  worktrees** (only git's bookkeeping for folders already deleted), **Remove this worktree…**.
+
+**Compare paths by their real form, never as strings.** git lists a worktree's long path; a
+session can hold an 8.3 spelling of the same folder, or reach it through a junction. This
+machine's `%TEMP%` is `C:\Users\MORTEN~1\…` (GitHub's runners use `RUNNER~1`), and the first
+end-to-end run of "Remove this worktree" failed on exactly that: the session was judged to be in
+no worktree, so the item never appeared. `GitWorktrees.Canonical` resolves both sides through
+`GetFinalPathNameByHandle` (expands 8.3, follows junctions and symlinks) before any comparison.
+It touches the disk, so it always runs off the UI thread.
+
+**Remove is the one write here beyond pull/switch, so it is guarded three ways:** refused up front
+when the worktree has changes; confirmed with the exact folder and the sessions it will close
+(and sleeping ones it will delete); and run as `git worktree remove` **without** `--force`, so
+git itself refuses modified, untracked or locked worktrees and never removes the main checkout.
+Deleting the branch is a separate, explicit question afterwards, using `branch -d` (not `-D`), so
+an unmerged branch is kept.
+
+**Close the sessions and wait for their processes to exit first.** On Windows a process whose
+cwd is inside the folder locks it, and git then fails half-way through the delete with
+`failed to delete … Permission denied` — verified by running the remove from inside the
+worktree. The remove therefore runs from the main worktree, after every session in the folder
+has been closed and its PTY's exit awaited (bounded, `HasExited` — see "Waiting for a PTY to
+exit"). Something else holding the folder (an editor, a dev server) still produces that error;
+`FailureHint` explains it and gives the `--force` command to finish with — safe, because git
+had already checked the tree was clean.
+
+`GitService.RunOpAsync` is now `Task.Run`-wrapped: its `Directory.Exists` used to run on the
+caller's thread, which for a WSL session is `\\wsl$` I/O on the UI thread.
+
+Covered by `GitWorktreeTests`, against real git: listing and branch mapping; the switch refusal;
+linked vs main vs submodule; removing a clean worktree (branch kept); refusing modified,
+untracked and locked ones and the main checkout; `branch -d` keeping an unmerged branch;
+deleting a branch named `-x`; prune touching only the missing one; and the 8.3 and junction
+spellings. Adding `--force` to the remove fails 3 tests; dropping `--` from the branch delete
+fails 2. The full flow was also run end to end in the app with a terminal open inside the
+worktree: session closed, folder deleted, merged branch deleted. `GitServiceThreadingTests`
+now also find the repo root from a worktree checkout, where `.git` is a file.
+
 ## Per-Session Notes
 
 Each session gets a collapsible 📝 notepad panel between the terminal toolbar and the terminal. Toggled by the 📝 button on the terminal toolbar; the panel is a docked 160px-high `TextBox` (`Visibility.Collapsed` by default).
