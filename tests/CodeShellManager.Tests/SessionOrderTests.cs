@@ -106,6 +106,29 @@ public class SessionOrderTests
         Assert.Equal(2, SessionOrder.InsertionIndex(grid, L("a", "b"), x => x, "nope"));
     }
 
+    // Restart / wake re-insert a VM whose sidebar row never moved. Cases carried over from
+    // PR #159 (fix/restart-pane-order), which fixed the same RegisterSession bug with its own
+    // SessionOrder.LiveInsertIndex; that PR was closed in favour of InsertionIndex here.
+    // Arguments: (live grid, manager order incl. dormant / not-yet-launched, id).
+
+    [Theory]
+    // Sidebar A, D(dormant), B, C — restarting B while the live list is [A, C].
+    [InlineData(new[] { "A", "C" }, new[] { "A", "D", "B", "C" }, "B", 1)]
+    // First session goes first, with a dormant one above it.
+    [InlineData(new[] { "B" }, new[] { "D", "A", "B" }, "A", 0)]
+    // Last session goes last, with dormant ones interleaved.
+    [InlineData(new[] { "A", "B" }, new[] { "A", "D1", "B", "D2", "C" }, "C", 2)]
+    // Several dormant sessions above do not accumulate an offset.
+    [InlineData(new[] { "A", "C" }, new[] { "D1", "D2", "D3", "A", "B", "C" }, "B", 1)]
+    // Restore loop: A and B are in the model but not yet live when C registers.
+    [InlineData(new[] { "E" }, new[] { "A", "B", "C", "E" }, "C", 0)]
+    // Nothing dormant: matches the model index.
+    [InlineData(new[] { "A", "C" }, new[] { "A", "B", "C" }, "B", 1)]
+    public void Restart_or_wake_lands_at_its_sidebar_position(string[] live, string[] model, string id, int expected)
+    {
+        Assert.Equal(expected, SessionOrder.InsertionIndex(L(live), L(model), x => x, id));
+    }
+
     // ── ClusterAnchorFor ──────────────────────────────────────────────────────
 
     private static SessionPlacement P(string id, string repo, string group = "", bool live = true) =>
