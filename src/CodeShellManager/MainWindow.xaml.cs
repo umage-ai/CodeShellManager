@@ -138,6 +138,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        LoadSavedWindowState(); // before Show — see MainWindow.Placement.cs
         _vm = new MainViewModel(_sessionManager, _stateService);
         _vm.SessionClosed += OnSessionVmClosed;
 
@@ -226,7 +227,7 @@ public partial class MainWindow : Window
     private void SaveWindowBounds()
     {
         if (!_windowStateReady) return;
-        _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
+        CaptureWindowState();
         _ = _vm.SaveStateAsync();
     }
 
@@ -252,7 +253,8 @@ public partial class MainWindow : Window
 
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
-        RestoreWindowState();
+        // Window bounds were already applied before the window was shown
+        // (MainWindow.Placement.cs); only start saving them from here on.
         _windowStateReady = true;
 
         // Unattributed UI-thread latency baseline (issue #70). Started after settings load
@@ -705,32 +707,6 @@ public partial class MainWindow : Window
     private static bool IsWebView2AccessDenied(Exception ex) =>
         ex is UnauthorizedAccessException
         && (ex.StackTrace?.Contains("WebView2", StringComparison.Ordinal) ?? false);
-
-    private void RestoreWindowState()
-    {
-        var bounds = _vm.GetSavedWindowBounds();
-        if (bounds != null)
-        {
-            // Validate bounds are at least partially on-screen
-            var screenWidth = SystemParameters.VirtualScreenWidth;
-            var screenHeight = SystemParameters.VirtualScreenHeight;
-            var screenLeft = SystemParameters.VirtualScreenLeft;
-            var screenTop = SystemParameters.VirtualScreenTop;
-
-            double left = Math.Max(screenLeft, Math.Min(bounds.Left, screenLeft + screenWidth - 100));
-            double top = Math.Max(screenTop, Math.Min(bounds.Top, screenTop + screenHeight - 100));
-            double width = Math.Max(400, Math.Min(bounds.Width, screenWidth));
-            double height = Math.Max(300, Math.Min(bounds.Height, screenHeight));
-
-            Left = left;
-            Top = top;
-            Width = width;
-            Height = height;
-        }
-
-        if (_vm.IsWindowMaximized())
-            WindowState = WindowState.Maximized;
-    }
 
     private async Task InitDatabaseAsync()
     {
@@ -6281,7 +6257,7 @@ public partial class MainWindow : Window
 
         _windowStateTimer.Stop();
         if (_windowStateReady)
-            _vm.UpdateWindowState(WindowState, Left, Top, Width, Height);
+            CaptureWindowState();
         await _vm.SaveStateAsync();
 
         // Non-Claude sessions don't fight over ~/.claude.json — dispose them in parallel.

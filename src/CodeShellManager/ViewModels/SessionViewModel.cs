@@ -417,6 +417,21 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// Returns <see cref="RepoRoot"/>, resolving it now if the poll has not got there yet.
+    /// The git busy slot is keyed by it, and falling back to the working folder in that
+    /// window let two panes of one repo hold different keys and run git at once (#181).
+    /// The probe runs on the pool — see "Never spawn a process on the UI thread".
+    /// </summary>
+    public async Task<string?> EnsureRepoRootAsync()
+    {
+        if (!string.IsNullOrEmpty(RepoRoot) || Session.Kind == SessionKind.Ssh) return RepoRoot;
+        string folder = Session.WorkingFolder;
+        string? root = await Task.Run(() => GitService.GetRepoRootAsync(folder));
+        if (!string.IsNullOrEmpty(root) && string.IsNullOrEmpty(RepoRoot)) RepoRoot = root;
+        return string.IsNullOrEmpty(RepoRoot) ? root : RepoRoot;
+    }
+
+    /// <summary>
     /// Drops the cached git info and re-probes it. <see cref="RefreshGitInfoAsync"/> resolves
     /// <see cref="RepoRoot"/> only once (it's stable for the life of a session), so a working
     /// folder that changed under us needs the cache cleared first.

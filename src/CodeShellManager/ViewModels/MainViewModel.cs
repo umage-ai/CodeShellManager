@@ -279,9 +279,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public AppState CurrentState => _appState;
 
     /// <summary>Saves window position/size. Only updates NormalBounds when not maximized.</summary>
-    public void UpdateWindowState(System.Windows.WindowState windowState, double left, double top, double width, double height)
+    /// <param name="placement">
+    /// The normal bounds in physical pixels (from GetWindowPlacement — valid whatever the
+    /// current state), or null when the native read failed. Only replaced when non-null.
+    /// </param>
+    /// <param name="maximized">Maximized now, or minimized from a maximized window.</param>
+    public void UpdateWindowState(System.Windows.WindowState windowState, double left, double top, double width, double height,
+        Models.WindowPlacementState? placement, bool maximized)
     {
-        _appState.WindowMaximized = windowState == System.Windows.WindowState.Maximized;
+        _appState.WindowMaximized = maximized;
+        if (placement != null) _appState.LastPlacement = placement;
         if (windowState == System.Windows.WindowState.Normal)
         {
             _appState.LastNormalBounds = new Models.WindowBounds
@@ -293,10 +300,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
             };
         }
     }
-
-    public Models.WindowBounds? GetSavedWindowBounds() => _appState.LastNormalBounds;
-
-    public bool IsWindowMaximized() => _appState.WindowMaximized;
 
     // Called by the View after it has set up the WebView2 + bridge for a session
     public void RegisterSession(SessionViewModel vm)

@@ -51,7 +51,7 @@ public partial class MainWindow
     /// from a second pane of the same repo would be pure duplication. Keyed by RepoRoot, so
     /// worktrees of one repository (which share refs) share the slot.
     /// </summary>
-    private readonly HashSet<string> _gitBusyRepos = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _gitBusyRepos = new(StringComparer.Ordinal); // keys are pre-folded by GitWorktrees.BusyKey
 
     private const int MaxChipBranchChars = 32;
 
@@ -67,8 +67,21 @@ public partial class MainWindow
         return br;
     }
 
+    /// <summary>
+    /// The busy-slot key as currently known — for display and peer matching only. A slot is
+    /// CLAIMED with <see cref="ResolveGitRepoKeyAsync"/>, never with this: before RepoRoot
+    /// lands it falls back to the folder, and two panes of one repo then hold different keys.
+    /// </summary>
     private static string GitRepoKey(SessionViewModel vm) =>
-        string.IsNullOrEmpty(vm.RepoRoot) ? vm.WorkingFolder : vm.RepoRoot;
+        GitWorktrees.BusyKey(vm.RepoRoot, vm.WorkingFolder);
+
+    /// <summary>
+    /// The busy-slot key with RepoRoot resolved on demand (off the UI thread), so a click in
+    /// the first seconds after launch claims the same slot as every other pane on the repo
+    /// (#181). Continues on the UI thread, where the slot set lives.
+    /// </summary>
+    private static async Task<string> ResolveGitRepoKeyAsync(SessionViewModel vm) =>
+        GitWorktrees.BusyKey(await vm.EnsureRepoRootAsync(), vm.WorkingFolder);
 
     /// <summary>
     /// Builds the chip (docked into the terminal toolbar) and the output panel (docked under
@@ -218,7 +231,7 @@ public partial class MainWindow
     private void UpdateGitChipsForRepo(string repoKey)
     {
         foreach (var s in _vm.Sessions)
-            if (string.Equals(GitRepoKey(s), repoKey, StringComparison.OrdinalIgnoreCase))
+            if (GitRepoKey(s) == repoKey)
                 UpdateGitChip(s);
     }
 
@@ -360,7 +373,7 @@ public partial class MainWindow
     private async Task<GitOpResult?> RunGitOpAsync(
         SessionViewModel vm, string verb, Func<string, Task<GitOpResult>> op)
     {
-        string key = GitRepoKey(vm);
+        string key = await ResolveGitRepoKeyAsync(vm);
         if (!_gitBusyRepos.Add(key))
         {
             ToastHelper.Show("Git busy", "A git operation is already running for this repository.");
@@ -381,7 +394,7 @@ public partial class MainWindow
         // A fetch moves only remote refs, which GitRepoWatcher (HEAD + index) never sees, so
         // every pane on this repo — worktrees included, they share refs — re-reads explicitly.
         var peers = _vm.Sessions
-            .Where(s => string.Equals(GitRepoKey(s), key, StringComparison.OrdinalIgnoreCase))
+            .Where(s => GitRepoKey(s) == key)
             .ToList();
         await Task.WhenAll(peers.Select(s => s.RefreshGitInfoAsync()));
         UpdateGitChipsForRepo(key);
@@ -616,7 +629,7 @@ public partial class MainWindow
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
             return;
 
-        string key = GitRepoKey(vm);
+        string key = await ResolveGitRepoKeyAsync(vm);
         if (!_gitBusyRepos.Add(key))
         {
             ToastHelper.Show("Git busy", "A git operation is already running for this repository.");
@@ -681,7 +694,7 @@ public partial class MainWindow
         {
             _gitBusyRepos.Remove(key);
             var peers = _vm.Sessions
-                .Where(s => string.Equals(GitRepoKey(s), key, StringComparison.OrdinalIgnoreCase)).ToList();
+                .Where(s => GitRepoKey(s) == key).ToList();
             await Task.WhenAll(peers.Select(s => s.RefreshGitInfoAsync()));
             UpdateGitChipsForRepo(key);
         }

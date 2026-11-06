@@ -76,7 +76,7 @@ public static class GitService
             }
             else if (line[0] == '#') continue;
             else if (line.StartsWith("? ", StringComparison.Ordinal))
-                changes.Add(new GitFileChange("??", line[2..]));
+                changes.Add(new GitFileChange("??", UnquoteCPath(line[2..])));
             else if (line.StartsWith("! ", StringComparison.Ordinal))
                 continue; // ignored files — only listed with --ignored, never by us
             else
@@ -91,15 +91,78 @@ public static class GitService
                 string path = f[fieldsBeforePath];
                 if (line[0] == '2')
                 {
+                    // A tab or newline INSIDE a name is always C-quoted (\t, \n), so the first
+                    // literal tab is the separator — split before unquoting, never after.
                     int tab = path.IndexOf('\t');
-                    if (tab >= 0) path = $"{path[(tab + 1)..]} → {path[..tab]}";
+                    path = tab >= 0
+                        ? $"{UnquoteCPath(path[(tab + 1)..])} → {UnquoteCPath(path[..tab])}"
+                        : UnquoteCPath(path);
                 }
-                changes.Add(new GitFileChange(line[0] == 'u' ? "UU" : f[1].Replace('.', ' '), path));
+                else path = UnquoteCPath(path);
+                // Unmerged entries keep their real XY: AA, DU, UD, AU, UA, DD and UU each say
+                // something different about the conflict (both added, deleted by us, …).
+                changes.Add(new GitFileChange(f[1].Replace('.', ' '), path));
             }
         }
 
         bool detached = head == "(detached)";
         return new GitRepoStatus(detached ? null : head, detached, upstream, ahead, behind, changes);
+    }
+
+    /// <summary>
+    /// Undoes git's C-style path quoting. <c>core.quotePath=false</c> stops git escaping
+    /// non-ASCII, but a name containing <c>"</c>, <c>\</c> or a control character (tab,
+    /// newline, …) is still wrapped in quotes with backslash escapes — and when quoting is on,
+    /// octal escapes (<c>\303\246</c>) are raw BYTES of a UTF-8 name, so the result is decoded
+    /// as bytes, not char by char. Anything not wrapped in <c>"</c> is returned unchanged; a
+    /// malformed escape is kept literally rather than dropped.
+    /// </summary>
+    internal static string UnquoteCPath(string s)
+    {
+        if (s.Length < 2 || s[0] != '"' || s[^1] != '"') return s;
+        int end = s.Length - 1;               // index of the closing quote
+        var bytes = new List<byte>(s.Length);
+        var enc = Encoding.UTF8;
+        for (int i = 1; i < end; i++)
+        {
+            char c = s[i];
+            if (c != '\\' || i + 1 >= end)
+            {
+                // Ordinary text (already decoded by the process reader): re-encode as UTF-8
+                // so it joins any octal-escaped bytes around it. Keep surrogate pairs whole.
+                int len = char.IsHighSurrogate(c) && i + 1 < end && char.IsLowSurrogate(s[i + 1]) ? 2 : 1;
+                bytes.AddRange(enc.GetBytes(s.Substring(i, len)));
+                i += len - 1;
+                continue;
+            }
+            char e = s[++i];
+            switch (e)
+            {
+                case 'a': bytes.Add(0x07); break;
+                case 'b': bytes.Add(0x08); break;
+                case 't': bytes.Add(0x09); break;
+                case 'n': bytes.Add(0x0A); break;
+                case 'v': bytes.Add(0x0B); break;
+                case 'f': bytes.Add(0x0C); break;
+                case 'r': bytes.Add(0x0D); break;
+                case '"': bytes.Add((byte)'"'); break;
+                case '\\': bytes.Add((byte)'\\'); break;
+                default:
+                    if (e is >= '0' and <= '3' && i + 2 < end
+                        && s[i + 1] is >= '0' and <= '7' && s[i + 2] is >= '0' and <= '7')
+                    {
+                        bytes.Add((byte)(((e - '0') << 6) | ((s[i + 1] - '0') << 3) | (s[i + 2] - '0')));
+                        i += 2;
+                    }
+                    else
+                    {
+                        bytes.Add((byte)'\\');
+                        i--; // not an escape we know: keep the backslash, re-read e as text
+                    }
+                    break;
+            }
+        }
+        return enc.GetString(bytes.ToArray());
     }
 
     // ── User-initiated operations (the toolbar git menu) ─────────────────────────────

@@ -99,6 +99,67 @@ public class GitStatusParseTests
     }
 
     [Fact]
+    public void Unmerged_entries_keep_their_real_code()
+    {
+        // Shape as git 2.54 prints it for a merge with every kind of conflict (#181: all of
+        // these used to be shown as "UU").
+        const string z = "0000000000000000000000000000000000000000";
+        const string h = "d00491fd7e5bb6fa28c517a0bb32b8b506539d4d";
+        var s = GitService.ParseStatusV2(
+            "# branch.head main\n" +
+            $"u AA N... 000000 100644 100644 100644 {z} {h} {h} added.txt\n" +
+            $"u DU N... 100644 000000 100644 100644 {h} {z} {h} deleted by us.txt\n" +
+            $"u UD N... 100644 100644 000000 100644 {h} {h} {z} delthem.txt\n" +
+            $"u AU N... 000000 100644 100644 100644 {z} {h} {h} au.txt\n" +
+            $"u UA N... 000000 100644 100644 100644 {z} {h} {h} ua.txt\n" +
+            $"u DD N... 100644 000000 000000 000000 {h} {z} {z} dd.txt\n" +
+            $"u UU N... 100644 100644 100644 100644 {h} {h} {h} mod.txt\n");
+        Assert.Equal(new[] { "AA", "DU", "UD", "AU", "UA", "DD", "UU" }, s.Changes.Select(c => c.Code));
+        Assert.Equal("deleted by us.txt", s.Changes[1].Path);
+    }
+
+    [Fact]
+    public void Quoted_paths_are_unquoted()
+    {
+        // git C-quotes these even with core.quotePath=false: '"', '\', and control chars.
+        const string h = "587be6b4c3f93f93c489c0111bba5596147a26cb";
+        var s = GitService.ParseStatusV2(
+            "# branch.head main\n" +
+            $"1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 {h} \"q\\\"uote.txt\"\n" +
+            $"1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 {h} \"tab\\there.txt\"\n" +
+            $"1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 {h} \"back\\\\slash.txt\"\n" +
+            $"1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 {h} \"new\\nline.txt\"\n" +
+            $"1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 {h} \"æø \\\"q\\\".txt\"\n" +
+            $"2 R. N... 100644 100644 100644 {h} {h} R100 \"to \\\"x\\\".txt\"\tfrom\\plain.txt\n" +
+            "? \"un\\ttracked\"\n");
+        Assert.Equal(new[]
+        {
+            "q\"uote.txt", "tab\there.txt", "back\\slash.txt", "new\nline.txt", "æø \"q\".txt",
+            "from\\plain.txt → to \"x\".txt", "un\ttracked",
+        }, s.Changes.Select(c => c.Path));
+    }
+
+    [Theory]
+    [InlineData("plain.txt", "plain.txt")]
+    [InlineData("\"\"", "")]
+    [InlineData("\"a\\\"b\"", "a\"b")]
+    [InlineData("\"a\\\\b\"", "a\\b")]
+    [InlineData("\"\\a\\b\\t\\n\\v\\f\\r\"", "\a\b\t\n\v\f\r")]
+    // Octal escapes are UTF-8 bytes: \303\246\303\270 is "æø" (what quotePath=true prints).
+    [InlineData("\"\\303\\246\\303\\270.txt\"", "æø.txt")]
+    // Mixed: raw non-ASCII next to escaped bytes still decodes as one UTF-8 sequence.
+    [InlineData("\"æ\\303\\270\"", "æø")]
+    // Malformed / unknown escapes are kept, not dropped.
+    [InlineData("\"a\\qb\"", "a\\qb")]
+    [InlineData("\"a\\9b\"", "a\\9b")]
+    [InlineData("\"trailing\\\"", "trailing\\")]
+    // Only fully wrapped values are quoted.
+    [InlineData("\"half", "\"half")]
+    [InlineData("half\"", "half\"")]
+    public void UnquoteCPath(string quoted, string expected) =>
+        Assert.Equal(expected, GitService.UnquoteCPath(quoted));
+
+    [Fact]
     public void Unrecognised_lines_are_ignored_not_fatal()
     {
         var s = GitService.ParseStatusV2("# branch.head main\nwhat is this\n1 short\n# branch.ab garbage\n");
@@ -390,6 +451,70 @@ public sealed class GitToolsRepoTests : IDisposable
         Assert.False(r.TimedOut);
         Assert.False(string.IsNullOrWhiteSpace(r.Output));
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(30), $"took {sw.Elapsed}");
+    }
+
+    private static int GitExit(string cwd, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false, CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        p.StandardOutput.ReadToEnd();
+        p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        return p.ExitCode;
+    }
+
+    [Fact]
+    public async Task Status_reports_each_kind_of_conflict_by_its_own_code()
+    {
+        void Write(string f, string c) => File.WriteAllText(Path.Combine(Work, f), c);
+        Write("mod.txt", "base\n"); Write("delus.txt", "base\n"); Write("delthem.txt", "base\n");
+        Git(Work, "add", ".");
+        Git(Work, "commit", "-q", "-m", "base");
+        Git(Work, "switch", "-q", "-c", "other");
+        Write("mod.txt", "other\n"); Write("added.txt", "other\n"); Write("delus.txt", "other\n");
+        Git(Work, "rm", "-q", "delthem.txt");
+        Git(Work, "add", ".");
+        Git(Work, "commit", "-q", "-m", "other");
+        Git(Work, "switch", "-q", "main");
+        Write("mod.txt", "main\n"); Write("added.txt", "main\n"); Write("delthem.txt", "main\n");
+        Git(Work, "rm", "-q", "delus.txt");
+        Git(Work, "add", ".");
+        Git(Work, "commit", "-q", "-m", "main");
+        Assert.NotEqual(0, GitExit(Work, "-c", "core.autocrlf=false", "merge", "other"));
+
+        var s = await GitService.GetStatusAsync(Work);
+        Assert.NotNull(s);
+        var codes = s!.Changes.ToDictionary(c => c.Path, c => c.Code);
+        Assert.Equal("UU", codes["mod.txt"]);
+        Assert.Equal("AA", codes["added.txt"]);
+        Assert.Equal("DU", codes["delus.txt"]);
+        Assert.Equal("UD", codes["delthem.txt"]);
+    }
+
+    [Fact]
+    public async Task Status_unquotes_names_git_still_quotes()
+    {
+        // Windows can't hold these names on disk, but the index can — staged with
+        // update-index, they come back from status as C-quoted paths.
+        string blob = Path.Combine(_root, "blob.txt");
+        File.WriteAllText(blob, "x\n");
+        string h = Git(Work, "hash-object", "-w", blob).Trim();
+        string[] names = { "q\"uote.txt", "tab\there.txt", "back\\slash.txt", "new\nline.txt", "two \"q\" s.txt" };
+        // Non-ASCII is covered by the parser tests: passed through argv it reaches git mangled
+        // on some Windows setups, which would test this harness rather than the parser.
+        foreach (var n in names)
+            // Git for Windows refuses such names by default (core.protectNTFS).
+            Git(Work, "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", $"100644,{h},{n}");
+
+        var s = await GitService.GetStatusAsync(Work);
+        Assert.NotNull(s);
+        var paths = s!.Changes.Select(c => c.Path).ToHashSet();
+        foreach (var n in names) Assert.Contains(n, paths);
     }
 
     [Fact]

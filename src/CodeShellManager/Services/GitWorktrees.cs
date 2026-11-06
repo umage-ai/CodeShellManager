@@ -99,6 +99,18 @@ public static class GitWorktrees
     private static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, [Out] char[] buf, uint len, uint flags);
 
     /// <summary>
+    /// The key a git operation's busy slot is held under: the repo root (the MAIN working
+    /// tree, so every worktree of one repository shares it) when known, else the folder.
+    /// Case-folded per <see cref="Key"/>'s rules so one HashSet with ordinal comparison can
+    /// hold Windows and WSL keys side by side.
+    /// </summary>
+    public static string BusyKey(string? repoRoot, string? workingFolder)
+    {
+        var (k, cmp) = Key(string.IsNullOrEmpty(repoRoot) ? workingFolder ?? "" : repoRoot);
+        return cmp == StringComparison.OrdinalIgnoreCase ? k.ToLowerInvariant() : k;
+    }
+
+    /// <summary>
     /// True when <paramref name="folder"/> is <paramref name="root"/> or below it. A plain
     /// prefix test is wrong: <c>C:/repo-wt</c> starts with <c>C:/repo</c> but is not inside it.
     /// </summary>

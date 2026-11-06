@@ -16,6 +16,32 @@ public class GitWorktreeRuleTests
         bool detached = false, bool locked = false, bool prunable = false) =>
         new(path, branch, bare, detached, locked, prunable);
 
+    // ── git busy-slot key (#181) ──────────────────────────────────────────────
+
+    [Fact]
+    public void BusyKey_prefers_the_repo_root_over_the_folder()
+    {
+        // Two worktrees of one repo: different folders, one RepoRoot (the main working tree).
+        Assert.Equal(GitWorktrees.BusyKey("C:/src/app", @"C:\src\app-wt-feature"),
+                     GitWorktrees.BusyKey("C:/src/app", @"C:\src\app\sub"));
+        Assert.Equal(GitWorktrees.BusyKey(null, @"C:\src\app"), GitWorktrees.BusyKey("", "C:/src/app/"));
+    }
+
+    [Fact]
+    public void BusyKey_folds_spelling_and_case_on_Windows()
+    {
+        Assert.Equal(GitWorktrees.BusyKey(@"C:\Src\App\", null), GitWorktrees.BusyKey("c:/src/app", null));
+    }
+
+    [Fact]
+    public void BusyKey_is_case_sensitive_inside_WSL_but_not_for_the_distro()
+    {
+        Assert.Equal(GitWorktrees.BusyKey(@"\\wsl.localhost\Ubuntu\home\u\repo", null),
+                     GitWorktrees.BusyKey(@"\\wsl$\ubuntu\home\u\repo", null));
+        Assert.NotEqual(GitWorktrees.BusyKey(@"\\wsl$\Ubuntu\home\u\Repo", null),
+                        GitWorktrees.BusyKey(@"\\wsl$\Ubuntu\home\u\repo", null));
+    }
+
     [Theory]
     [InlineData("C:/repo", "C:/repo", true)]
     [InlineData("C:/repo/src/app", "C:/repo", true)]

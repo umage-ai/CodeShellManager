@@ -157,6 +157,28 @@ public class AppState
     public AppSettings Settings { get; set; } = new();
 
     // Window state persistence
+    /// <summary>
+    /// Normal (restored) bounds in WPF DIPs. Still written so an older build can read it,
+    /// but only READ as a fallback when <see cref="LastPlacement"/> is absent — DIPs are
+    /// ambiguous across monitors of different scale, and pre-v0.10 builds saved them in
+    /// system-DPI space. See "DPI awareness" in CLAUDE.md.
+    /// </summary>
     public WindowBounds? LastNormalBounds { get; set; }
+    /// <summary>Normal bounds in physical screen pixels, plus the DPI they were saved at (#181).</summary>
+    public WindowPlacementState? LastPlacement { get; set; }
     public bool WindowMaximized { get; set; } = false;
+}
+
+/// <summary>
+/// The window's normal (restored) rectangle in PHYSICAL screen pixels, and the DPI of the
+/// monitor it was on when saved. Pixels are unambiguous under per-monitor DPI v2; the DPI
+/// lets a restore keep the same apparent size if that monitor's scale has changed since.
+/// </summary>
+public class WindowPlacementState
+{
+    public int Left { get; set; }
+    public int Top { get; set; }
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public int Dpi { get; set; }
 }
