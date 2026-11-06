@@ -31,7 +31,14 @@ public static class ImportExportService
             // cover an ABSENT key — an explicit "Sessions": null deserializes to a real
             // null. This is the untrusted path (any file the user points at), and the
             // caller dereferences Settings immediately, outside its own try block.
-            return state is null ? null : StateService.Normalize(state);
+            if (state is null) return null;
+            StateService.Normalize(state);
+            // An imported "Open with" list is a list of programs to launch, from a file the
+            // user didn't necessarily write. Stricter than state.json: no batch files at all.
+            // The settings editor shows each entry's full resolved command, so nothing kept
+            // here is hidden from the user.
+            state.Settings.OpenWith = OpenWithService.Sanitize(state.Settings.OpenWith, allowBatch: false, OpenWithService.Log);
+            return state;
         }
         catch
         {

@@ -14,6 +14,13 @@ public partial class SettingsWindow : Window
 
     public AppSettings EditedSettings => _edited;
 
+    /// <summary>
+    /// True when the "Open with" list was saved from its editor. The caller applies the list
+    /// only then, so a Settings save never overwrites a list seeded by detection while this
+    /// window was open.
+    /// </summary>
+    public bool OpenWithEdited { get; private set; }
+
     public SettingsWindow(AppSettings current, SearchService? searchService = null)
     {
         _searchService = searchService;
@@ -53,6 +60,8 @@ public partial class SettingsWindow : Window
             OutputRetentionDays = current.OutputRetentionDays,
             DebugTerminalTrace = current.DebugTerminalTrace,
             LaunchCommands = current.LaunchCommands.ToList(),
+            OpenWith = current.OpenWith.Select(e => e.Clone()).ToList(),
+            OpenWithSeeded = current.OpenWithSeeded,
         };
 
         // Populate controls
@@ -98,6 +107,7 @@ public partial class SettingsWindow : Window
         _ = LoadUsageStatsAsync();
         ApiKeyBox.Password = _edited.AnthropicApiKey;
         LaunchCommandsBox.Text = string.Join("\r\n", _edited.LaunchCommands);
+        UpdateOpenWithSummary();
 
         // Terminal font controls
         FontFamilyBox.Text = _edited.TerminalFontFamily;
@@ -140,6 +150,25 @@ public partial class SettingsWindow : Window
         };
         if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
             DefaultFolderBox.Text = dialog.SelectedPath;
+    }
+
+    private void UpdateOpenWithSummary()
+    {
+        OpenWithSummary.Text = _edited.OpenWith.Count == 0
+            ? (_edited.OpenWithSeeded ? "No editors configured." : "Detecting installed editors…")
+            : string.Join(", ", _edited.OpenWith.Select(e => e.IsDefault ? $"★ {e.Label}" : e.Label));
+    }
+
+    private void EditOpenWith_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenWithDialog(_edited.OpenWith) { Owner = this };
+        if (dlg.ShowDialog() == true && dlg.Result != null)
+        {
+            _edited.OpenWith = dlg.Result;
+            _edited.OpenWithSeeded = true;
+            OpenWithEdited = true;
+            UpdateOpenWithSummary();
+        }
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)

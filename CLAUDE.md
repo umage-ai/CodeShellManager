@@ -77,6 +77,8 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `DbGate` | Serializes every use of the shared `output.db` `SqliteConnection`. That one connection is handed to `SearchService` *and* to every `OutputIndexer`, and it is not thread-safe — concurrent create/dispose corrupts its internal command list. Acquire as `using var _ = await DbGate.AcquireAsync();` at the top of anything touching it. See issue #102 |
 | `PwshLocator` | Single answer to "pwsh or powershell?", shared by `RunInstance` (run commands) and `PseudoTerminal.BuildCmdLine` (session wrapper) so they can't disagree. Resolves via `where.exe`. An ordinary executable is accepted from metadata alone (no spawn). A **zero-byte reparse point is ambiguous, not bad**: that shape is a Store App Execution Alias, and a *working* Store install of PowerShell 7 looks identical to a stub left by an uninstalled app — so only that case is settled by actually probing execution. Rejecting the shape outright silently downgraded Store-PS7 users to 5.1 on every session launch |
 | `ToastHelper` | Tray balloon notifications |
+| `OpenWithService` | WPF-free "Open with…": template tokenise/substitute (one placeholder → one argv element), program/value validation, BatBadBut refusal, sanitising state.json/imports, launch. See "Open with…" |
+| `OpenWithDetector` | One-time seeding of the Open with list (VS Code family, Visual Studio via vswhere, JetBrains, Zed, Sublime, Notepad++). Disk/registry/spawn — `Task.Run` only |
 | `SessionRunner` | Per-session owner of `RunInstance` dictionary (run commands runtime) |
 | `RunInstance` | One headless PTY-backed run with ANSI-stripped output buffer |
 | `RunCommandTemplatesService` | Detects project type (dotnet/cargo/node/python/make) → seed run-command list |
@@ -742,13 +744,8 @@ and **Copy branch name**. The UI is in `MainWindow.Git.cs`; git calls are in `Gi
 Hidden for SSH sessions — an OSC 9001 branch is display-only, there is no local folder to run
 git in.
 
-**"Open in VS Code" is not in this menu** — it is not a git action and must work for a folder
-that isn't a repo. It lives in `MainWindow.OpenIn.cs`: a `{ }` button beside 📁 / >_ on the
-terminal toolbar, and an item after "Open PowerShell here" in the sidebar right-click menu.
-Both appear only when VS Code was found (`code.cmd` on PATH → its `Code.exe`, launched
-directly with the folder as one argv element, never through `code.cmd`/`cmd.exe`) and the
-session has a local folder. A configurable "Open with…" for other editors and installs is
-tracked in #178.
+**Opening the folder in an editor is not in this menu** — it is not a git action and must work
+for a folder that isn't a repo. See "Open with…" below.
 
 **Deliberately read-mostly: no commit, push or merge.** A Claude session is usually editing
 that same working tree, and a one-click history write from outside its conversation is both a
@@ -874,6 +871,60 @@ spellings. Adding `--force` to the remove fails 3 tests; dropping `--` from the 
 fails 2. The full flow was also run end to end in the app with a terminal open inside the
 worktree: session closed, folder deleted, merged branch deleted. `GitServiceThreadingTests`
 now also find the repo root from a worktree checkout, where `.git` is a file.
+
+## Open with… (editors and IDEs)
+
+`{ }` ▼ on the terminal toolbar (beside 📁 / >_) and **Open with ▸** in the sidebar right-click
+menu open the session's folder in an editor from a user-owned list (#178). The button opens the
+default; ▼ lists every entry that has a template for the session's kind, plus **Edit…** (also
+right-click on `{ }`, and Settings → Open with). UI in `MainWindow.OpenIn.cs` and
+`Views/OpenWithDialog`; every rule is in the WPF-free `Services/OpenWithService` (tested in
+`OpenWithServiceTests` / `OpenWithDetectorTests`).
+
+**Model.** `AppSettings.OpenWith: List<OpenWithEntry> { Label, Executable, LocalArgs, WslArgs,
+SshArgs, IsDefault }`. A blank template hides the entry for that kind. Placeholders: local
+`{folder}`; WSL `{folder}` (the `\\wsl$` mirror), `{distro}`, `{linuxPath}` (a blank or `~`
+Linux folder is resolved to `$HOME` at click time); SSH `{user}`, `{host}`, `{userAtHost}`,
+`{port}`, `{remoteFolder}`. Any other `{name}` is an error, not literal text.
+
+**Seeded once, then the user's.** `OpenWithDetector` runs on the first launch whose state has
+`OpenWithSeeded == false` (every state.json from before #178) — gated on the flag, not on an
+empty list, so deleting every entry sticks. It finds VS Code stable/Insiders, Cursor, Windsurf
+and VSCodium (PATH shim → exe, App Paths, `%LOCALAPPDATA%\Programs`, Program Files, Scoop; all
+with `--remote wsl+{distro} {linuxPath}` and `--remote ssh-remote+{userAtHost} {remoteFolder}`),
+Visual Studio via `vswhere` (`devenv.exe {folder}`, local only), JetBrains IDEs (standalone,
+Toolbox 1.x `apps\…` and 2.x `Programs\…` — the `*64.exe`, never the Toolbox `.cmd` scripts),
+Zed, Sublime Text and Notepad++. **It is disk, registry and a vswhere spawn: always
+`Task.Run`.** The PATH `code.cmd` lookup comes first, so the zero-config default is what it was
+before #178. "Detect installed editors" in the editor re-runs it and adds only new programs.
+
+**Launch rules — all load-bearing:**
+
+- **Split, then substitute.** The template is tokenised first (whitespace; `"…"` groups), and
+  placeholders are substituted inside their own token, so a value can never become a second
+  argument. The process is `UseShellExecute = false` + `ArgumentList` — no shell, no
+  interpolated command line. `OpenWithServiceTests` round-trips hostile folder names through
+  `CommandLineToArgvW`.
+- **Values are untrusted** (state.json, imports): control characters are refused; a value
+  starting with `-` is refused (the editor would read it as an option); host / user / distro may
+  not contain whitespace; a local `{folder}` must be an existing directory (`FolderOpener.Target`,
+  which also normalises forward slashes). A token that is only an empty placeholder is dropped —
+  an SSH session with no remote folder opens the host.
+- **Never a batch file if it can be avoided.** `.cmd`/`.bat` run through `cmd.exe`, which
+  re-parses arguments — `%` expands even inside quotes, `&` chains a command (BatBadBut,
+  CVE-2024-24576). Detection and Browse… resolve shims to the real exe (`ResolveShim`). If the
+  user insists on one, every argument containing a cmd metacharacter (`%!&|<>^"(),;=`) is
+  **refused, never escaped**.
+- **Programs:** an absolute local path to an `.exe` (no relative, UNC or device path), and never
+  a shell or script host (`cmd`, `powershell`, `pwsh`, `wsl`, `bash`, `mshta`, `rundll32`, `wt`,
+  …) — an "editor" that is really a shell turns a template into command execution.
+
+**Import trust.** `StateService.Normalize` sanitises the list on every load
+(`OpenWithService.Sanitize`: drops bad programs, clears bad templates, one default, fresh ids);
+`ImportExportService` re-sanitises with batch files disallowed, since a backup is any JSON file
+the user points at. A click is the only trigger (unlike `PostRunUrl`), and the editor shows the
+full resolved command line for every kind, so an imported entry hides nothing. Importing a
+pre-#178 backup (`OpenWithSeeded` false) keeps the current list.
 
 ## Opening a folder in Explorer
 
