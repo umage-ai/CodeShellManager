@@ -42,12 +42,13 @@ A condensed view, as of October 2026. Tools without a Windows build (Conductor, 
 | Sessions visible at once | ✅ 18 | ◐ 2 | ? | ? | ✅ panes | ◐ |
 | Sleep a session, keep its slot | ✅ | ◐ archive | ❌ | ❌ | ❌ | ◐ pause |
 | Waiting / approval detection | ✅ | ◐ on finish | ✅ | ? | ✅ | ◐ |
+| Working / idle state per agent | ❌ [#154](https://github.com/umage-ai/CodeShellManager/issues/154) | ? | ? | ? | ✅ | ? |
 | SSH + WSL sessions | ✅ | ✅ | ◐ | ◐ SSH | ◐ SSH | ❌ |
 | Per-session run commands | ✅ | ◐ preview servers | ❌ | ❌ | ❌ | ❌ |
-| Git worktrees | ◐ manual | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Diff / review view | ❌ [#148](https://github.com/umage-ai/CodeShellManager/issues/148) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Git worktrees | ◐ manual | ✅ | ✅ | ✅ | ◐ plugins | ✅ |
+| Diff / review view | ❌ [#148](https://github.com/umage-ai/CodeShellManager/issues/148) | ✅ | ✅ | ✅ | ◐ plugin | ✅ |
 | Agents keep running with the window closed | ❌ [#149](https://github.com/umage-ai/CodeShellManager/issues/149) | ✅ cloud | ? | ? | ✅ | ✅ |
-| Licence | MIT | Proprietary | MIT | MIT | AGPL-3.0 | AGPL-3.0 |
+| Licence | MIT | Proprietary | MIT | MIT | Apache-2.0 | AGPL-3.0 |
 
 Spotted something out of date? Competitors move fast. [Open an issue](https://github.com/umage-ai/CodeShellManager/issues) and we'll correct it.
 
