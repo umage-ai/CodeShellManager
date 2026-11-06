@@ -48,6 +48,14 @@ jobs:
             exit 1
           }
           Write-Host "WiX/Assets in sync ($($assetFiles.Count) files)"
+          # Bundled ConPTY files live beside the exe, not under Assets\, so check them by name.
+          foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+            if ($wxs -notmatch [regex]::Escape("`$(var.PublishDir)\$f")) {
+              Write-Host "::error::installer/CodeShellManager.wxs does not install $f (bundled ConPTY)"
+              exit 1
+            }
+          }
+          Write-Host "WiX installs the bundled ConPTY (conpty.dll + OpenConsole.exe)"
 
       # ── Build (every push / PR) ──────────────────────────────────────────────
       - name: Restore & Build
@@ -102,6 +110,16 @@ jobs:
           if (-not [System.Text.Encoding]::ASCII.GetString($exe).Contains("PerMonitorV2")) {
             throw "Published CodeShellManager.exe does not embed the PerMonitorV2 manifest."
           }
+          # Bundled ConPTY: both files must ship as loose files beside the exe (conpty.dll
+          # finds OpenConsole.exe next to itself). Missing either silently drops every user
+          # back to the inbox ConPTY — see "Bundled ConPTY" in CLAUDE.md.
+          foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+            if (-not (Test-Path "publish/$f")) { throw "Bundled ConPTY file missing from publish: $f" }
+            $sig = Get-AuthenticodeSignature "publish/$f"
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') {
+              throw "Bundled ConPTY file $f is not validly Microsoft-signed ($($sig.Status))."
+            }
+          }
 
       # ── Install WiX v4 ───────────────────────────────────────────────────────
       - name: Install WiX toolset v4 (last open-source release)
@@ -129,8 +147,10 @@ jobs:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files-folder: publish
-          files-folder-filter: exe
+          # OUR exe only, by name. publish/ also holds the bundled ConPTY's OpenConsole.exe
+          # (and conpty.dll), already signed by Microsoft — the old folder + `exe` filter
+          # would have re-signed Microsoft's binary with our certificate.
+          files: ${{ github.workspace }}\publish\CodeShellManager.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256

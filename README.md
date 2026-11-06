@@ -25,7 +25,7 @@ Most multi-agent tools are task orchestrators: a chat UI around one vendor's age
 - **Built for fleets, not a handful.** Up to 18 panes on screen, groups with bulk actions, sleep/wake to park projects without killing them, restart-all to pick up a new CLI build, and staggered Claude launches that avoid config corruption. Tested at 50+ sessions.
 - **Know who needs you.** Sessions waiting for input or tool approval get a green/orange dot and a tray notification.
 - **Run commands beside the agent.** F5 runs tests or a build in a separate background process with output in a drawer, then pastes the result to the agent in one click. The agent's terminal is never touched.
-- **A native Windows app.** WPF + ConPTY. No Electron, Python, daemon, tmux or WSL required. Local, SSH and WSL sessions side by side. Install with winget or Chocolatey; no account; MIT.
+- **A native Windows app.** WPF + ConPTY (a bundled, current Microsoft ConPTY, so terminal replies reach your programs intact). No Electron, Python, daemon, tmux or WSL required. Local, SSH and WSL sessions side by side. Install with winget or Chocolatey; no account; MIT.
 
 ## How it compares
 

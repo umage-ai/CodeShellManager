@@ -252,6 +252,9 @@ public partial class MainWindow : Window
 
         await InitDatabaseAsync();
         await _vm.LoadStateAsync();
+        // Before any terminal starts: PseudoTerminal resolves its ConPTY implementation once,
+        // on the first Start, from this flag. See "Bundled ConPTY" in CLAUDE.md.
+        Terminal.PseudoTerminal.PreferBundledConPty = _vm.Settings.UseBundledConPty;
         RestoreWindowState();
         _windowStateReady = true;
 

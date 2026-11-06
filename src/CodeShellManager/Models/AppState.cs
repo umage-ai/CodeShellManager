@@ -107,6 +107,14 @@ public class AppSettings
     /// </summary>
     public bool DebugTerminalTrace { get; set; } = false;
 
+    /// <summary>
+    /// Host terminals on the bundled ConPTY (<c>conpty.dll</c> + <c>OpenConsole.exe</c> beside
+    /// the exe) instead of the Windows inbox one. On by default; no UI — set it to false in
+    /// state.json to fall back. Read once per run, before the first terminal starts, so a
+    /// change needs a restart. See "Bundled ConPTY" in CLAUDE.md.
+    /// </summary>
+    public bool UseBundledConPty { get; set; } = true;
+
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";
     public int TerminalFontSize { get; set; } = 14;

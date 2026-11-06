@@ -25,15 +25,9 @@ public sealed class PseudoTerminal : IPseudoTerminal
         uint dwCreationFlags, IntPtr lpEnvironment, string? lpCurrentDirectory,
         ref STARTUPINFOEX lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern int CreatePseudoConsole(COORD size, SafeFileHandle hInput,
-        SafeFileHandle hOutput, uint dwFlags, out IntPtr phPC);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern int ResizePseudoConsole(IntPtr hPC, COORD size);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void ClosePseudoConsole(IntPtr hPC);
+    // CreatePseudoConsole / ResizePseudoConsole / ClosePseudoConsole are NOT DllImports:
+    // they are bound at runtime to either the bundled conpty.dll or the inbox kernel32 —
+    // see ConPtyApi and "Bundled ConPTY" in CLAUDE.md.
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList,
@@ -80,9 +74,6 @@ public sealed class PseudoTerminal : IPseudoTerminal
     private const uint DUPLICATE_SAME_ACCESS = 0x00000002;
 
     // ── Structs ───────────────────────────────────────────────────────────────
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct COORD { public short X; public short Y; }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFOEX
@@ -149,7 +140,93 @@ public sealed class PseudoTerminal : IPseudoTerminal
     // ── Fields ────────────────────────────────────────────────────────────────
 
     private IntPtr _hPC = IntPtr.Zero;
+    // The implementation _hPC was created with. Resize/Close MUST go to the same one — an
+    // HPCON from conpty.dll means nothing to kernel32, and vice versa.
+    private ConPtyApi? _api;
     private IntPtr _hProcess = IntPtr.Zero;
+
+    // ── ConPTY implementation selection ───────────────────────────────────────
+
+    /// <summary>
+    /// From <c>AppSettings.UseBundledConPty</c>; set at startup before the first
+    /// <see cref="Start"/>. Read once — the choice is cached for the process.
+    /// </summary>
+    public static bool PreferBundledConPty { get; set; } = true;
+
+    private static readonly object s_apiLock = new();
+    private static ConPtyApi? s_selectedApi;
+
+    /// <summary>The implementation new terminals use (resolved on first use, then cached).</summary>
+    public static ConPtyKind ActiveConPty => SelectedApi.Kind;
+
+    private static ConPtyApi SelectedApi
+    {
+        get
+        {
+            lock (s_apiLock)
+                return s_selectedApi ??= SelectApi(PreferBundledConPty, AppContext.BaseDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Bundled when allowed, present and loadable; otherwise the inbox kernel32 ConPTY. The
+    /// outcome and its reason are logged to crash.log exactly once per process.
+    /// </summary>
+    internal static ConPtyApi SelectApi(bool preferBundled, string baseDirectory)
+    {
+        var decision = ConPtyResolver.Decide(preferBundled, baseDirectory, File.Exists);
+        if (decision.TryBundled)
+        {
+            var bundled = ConPtyApi.TryBindBundled(
+                Path.Combine(baseDirectory, ConPtyResolver.DllName), out string reason);
+            if (bundled != null)
+            {
+                Log($"ConPTY: bundled ({reason})");
+                return bundled;
+            }
+            Log($"ConPTY: inbox — bundled failed to load: {reason}");
+            return ConPtyApi.Inbox;
+        }
+        Log($"ConPTY: inbox — {decision.Reason}");
+        return ConPtyApi.Inbox;
+    }
+
+    private static readonly BundledFailurePolicy s_bundledFailures = new();
+
+    /// <summary>
+    /// A bundled CreatePseudoConsole failed (this terminal retries on inbox regardless). Only
+    /// <see cref="BundledFailurePolicy.FailuresBeforeDemotion"/> failures IN A ROW switch every
+    /// later terminal to inbox — see <see cref="BundledFailurePolicy"/>.
+    /// </summary>
+    private static void NoteBundledFailure(string reason)
+    {
+        bool demote;
+        int count;
+        lock (s_apiLock)
+        {
+            demote = s_bundledFailures.RecordFailure(out count) && s_selectedApi?.Kind == ConPtyKind.Bundled;
+            if (demote) s_selectedApi = ConPtyApi.Inbox;
+        }
+        Log($"ConPTY: {reason} (consecutive failure {count}/{BundledFailurePolicy.FailuresBeforeDemotion}) — this terminal falls back to inbox");
+        if (demote) Log("ConPTY: inbox from now on — bundled failed repeatedly");
+    }
+
+    private static void NoteBundledSuccess()
+    {
+        lock (s_apiLock) s_bundledFailures.RecordSuccess();
+    }
+
+    /// <summary>
+    /// False keeps this terminal on the inbox ConPTY whatever the process-wide choice —
+    /// used by headless run commands (see <see cref="Services.RunInstance"/>).
+    /// </summary>
+    public bool AllowBundledConPty { get; init; } = true;
+
+    /// <summary>Which implementation THIS terminal was created with (valid after Start).</summary>
+    public ConPtyKind ConPtyKind => _api?.Kind ?? ConPtyKind.Inbox;
+
+    /// <summary>True when this terminal runs on the bundled conpty.dll + OpenConsole.exe.</summary>
+    public bool UsesBundledConPty => ConPtyKind == ConPtyKind.Bundled;
     private IntPtr _hJob = IntPtr.Zero;
 
     /// <summary>
@@ -165,7 +242,16 @@ public sealed class PseudoTerminal : IPseudoTerminal
     // (box-drawing chars, emoji, etc.) split at buffer boundaries decode correctly.
     private readonly Decoder _utf8 = Encoding.UTF8.GetDecoder();
 
-    public event Action<string>? DataReceived;
+    // Output read before the first subscriber attaches is kept and handed over in order —
+    // sessions attach their bridge only AFTER Start, and the bundled ConPTY's first bytes
+    // (ESC[1t ESC[c ESC[?1004h ESC[?9001h) must not be lost. See EarlyOutputBuffer.
+    private readonly EarlyOutputBuffer _output = new();
+
+    public event Action<string>? DataReceived
+    {
+        add => _output.Add(value);
+        remove => _output.Remove(value);
+    }
     public event Action? Exited;
 
     /// <summary>
@@ -222,9 +308,27 @@ public sealed class PseudoTerminal : IPseudoTerminal
         CreatePipe(out _inputRead!, out _inputWrite!, IntPtr.Zero, 0);
         CreatePipe(out _outputRead!, out _outputWrite!, IntPtr.Zero, 0);
 
-        var size = new COORD { X = (short)cols, Y = (short)rows };
-        int hr = CreatePseudoConsole(size, _inputRead, _outputWrite, 0, out _hPC);
+        var size = new ConPtyCoord { X = (short)cols, Y = (short)rows };
+        var api = AllowBundledConPty ? SelectedApi : ConPtyApi.Inbox;
+        int hr = api.Create(size, _inputRead, _outputWrite, 0, out _hPC);
+        if (api.Kind == ConPtyKind.Bundled)
+        {
+            if (hr == 0)
+            {
+                NoteBundledSuccess();
+            }
+            else
+            {
+                // Never leave a user without a terminal over the bundled copy: this one retries
+                // on inbox, and repeated failures switch later ones too. Failure leaves the
+                // pipe handles untouched.
+                NoteBundledFailure($"bundled CreatePseudoConsole failed: 0x{hr:X}");
+                api = ConPtyApi.Inbox;
+                hr = api.Create(size, _inputRead, _outputWrite, 0, out _hPC);
+            }
+        }
         if (hr != 0) throw new InvalidOperationException($"CreatePseudoConsole failed: 0x{hr:X}");
+        _api = api;
 
         // Build attribute list with PTY handle
         IntPtr attrListSize = IntPtr.Zero;
@@ -345,8 +449,8 @@ public sealed class PseudoTerminal : IPseudoTerminal
 
     public void Resize(int cols, int rows)
     {
-        if (_hPC == IntPtr.Zero) return;
-        ResizePseudoConsole(_hPC, new COORD { X = (short)cols, Y = (short)rows });
+        if (_hPC == IntPtr.Zero || _api == null) return;
+        _api.Resize(_hPC, new ConPtyCoord { X = (short)cols, Y = (short)rows });
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
@@ -385,7 +489,7 @@ public sealed class PseudoTerminal : IPseudoTerminal
                 char[] chars = new char[charCount];
                 _utf8.GetChars(buffer, 0, read, chars, 0);
                 string text = new string(chars);
-                DataReceived?.Invoke(text);
+                _output.Deliver(text);
             }
         }
         catch (OperationCanceledException) { }
@@ -519,7 +623,7 @@ public sealed class PseudoTerminal : IPseudoTerminal
         _outputRead?.Dispose();
         _outputWrite?.Dispose();
         if (_hJob != IntPtr.Zero) { CloseHandle(_hJob); _hJob = IntPtr.Zero; }
-        if (_hPC != IntPtr.Zero) { ClosePseudoConsole(_hPC); _hPC = IntPtr.Zero; }
+        if (_hPC != IntPtr.Zero) { _api?.Close(_hPC); _hPC = IntPtr.Zero; }
         if (_hProcess != IntPtr.Zero) { CloseHandle(_hProcess); _hProcess = IntPtr.Zero; }
     }
 }

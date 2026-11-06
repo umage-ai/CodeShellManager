@@ -83,7 +83,7 @@ public partial class AlertDetector : IDisposable
     // the next BEL. The `?` in the CSI class covers private-mode sequences (ESC[?25h).
     // Same pattern as OutputIndexer.AnsiPattern — keep the two in step.
     private static readonly Regex s_ansi =
-        new(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]", RegexOptions.Compiled);
+        new(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]", RegexOptions.Compiled);
 
     // Matches Claude's "❯" prompt (U+276F), generic y/n prompts, and "?" questions
     private static readonly Regex s_prompt =
