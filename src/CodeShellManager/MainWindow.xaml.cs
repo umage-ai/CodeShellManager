@@ -1765,7 +1765,8 @@ public partial class MainWindow : Window
         // BorderBrush by default. UpdateSidebarActiveState toggles BorderBrush to the
         // session accent color when active, so layout doesn't shift as items become
         // active and the active session stays visually distinct from the multi-select tint.
-        var container = new Border
+        // UiaBorder (not Border) so UI Automation can see the row — see Views/UiaElements.
+        var container = new UiaBorder
         {
             Margin = new Thickness(0, 2, 0, 2),
             Background = Brushes.Transparent,
@@ -2182,6 +2183,7 @@ public partial class MainWindow : Window
             });
         };
 
+        System.Windows.Automation.AutomationProperties.SetAutomationId(container, "SidebarSessionRow");
         return container;
     }
 
@@ -4442,12 +4444,13 @@ public partial class MainWindow : Window
 
         // Outer "active ring" — constant 2px frame; transparent unless this session is active
         // (constant thickness avoids layout shift when activating/deactivating)
-        var activeRing = new Border
+        var activeRing = new UiaBorder
         {
             BorderThickness = new Thickness(2),
             BorderBrush = Brushes.Transparent,
             Tag = accent
         };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(activeRing, "TerminalPane");
 
         // Fires only for the thin ring/chrome AROUND the terminal — WebView2 is an
         // HwndHost, so a click on the terminal itself never reaches WPF as a routed
@@ -4665,6 +4668,7 @@ public partial class MainWindow : Window
             Padding = new Thickness(4, 2, 4, 2),
             Margin = new Thickness(0)
         };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(closeBtn, "TerminalCloseBtn");
         closeBtn.Click += (_, _) => vm.CloseCommand.Execute(null);
 
         DockPanel.SetDock(closeBtn, Dock.Right);
@@ -5584,7 +5588,7 @@ public partial class MainWindow : Window
         string accentHex = GetAccentForSession(session);
         var accentColor = (Color)ColorConverter.ConvertFromString(accentHex);
 
-        var container = new Border
+        var container = new UiaBorder
         {
             Margin = new Thickness(0, 2, 0, 2),
             Background = Brushes.Transparent,
@@ -5714,6 +5718,7 @@ public partial class MainWindow : Window
             await WakeSessionAsync(session);
         };
 
+        System.Windows.Automation.AutomationProperties.SetAutomationId(container, "SidebarDormantRow");
         return container;
     }
 

@@ -21,17 +21,7 @@ public sealed class ProfilesTests : IClassFixture<AppFixture>
         // Default state: ImportWindowsTerminalProfiles = false.
         // Open the New Session dialog and confirm the Profile combobox is absent or hidden.
 
-        AppActions.WaitForElement(_f.MainWindow, "NewSessionBtn").AsButton().Click();
-
-        var dialogResult = Retry.WhileNull(
-            () => _f.App.GetAllTopLevelWindows(_f.Automation)
-                        .FirstOrDefault(w => w.Title == "New Session"),
-            TimeSpan.FromSeconds(5));
-
-        if (!dialogResult.Success)
-            throw new TimeoutException("New Session dialog did not open.");
-
-        var dialog = dialogResult.Result!;
+        var dialog = AppActions.OpenNewSessionDialog(_f.App, _f.MainWindow, _f.Automation);
 
         // The combobox should either not be in the tree or be off-screen (parent
         // StackPanel is Visibility="Collapsed" by default).
@@ -54,17 +44,7 @@ public sealed class ProfilesTests : IClassFixture<AppFixture>
     {
         // Verify the new settings checkbox renders so users can opt in.
 
-        AppActions.WaitForElement(_f.MainWindow, "SettingsBtn").AsButton().Click();
-
-        var settingsResult = Retry.WhileNull(
-            () => _f.App.GetAllTopLevelWindows(_f.Automation)
-                        .FirstOrDefault(w => w.Title == "Settings"),
-            TimeSpan.FromSeconds(5));
-
-        if (!settingsResult.Success)
-            throw new TimeoutException("Settings window did not open.");
-
-        var settingsWindow = settingsResult.Result!;
+        var settingsWindow = AppActions.OpenSettings(_f.App, _f.MainWindow, _f.Automation);
 
         var checkbox = settingsWindow.FindFirstDescendant(
             cf => cf.ByAutomationId("ImportWindowsTerminalProfilesCheck"));

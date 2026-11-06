@@ -62,11 +62,10 @@ public sealed class LayoutTests : IClassFixture<AppFixture>
         Thread.Sleep(500);
 
         // Click the 5th sidebar item (index 4) — it's off-screen in the 2×2 grid
-        var sidebar = AppActions.WaitForElement(_f.MainWindow, "SidebarSessionList");
-        var items = sidebar.FindAllChildren();
+        var items = AppActions.GetSidebarSessionRows(_f.MainWindow);
         Assert.True(items.Length >= 5, $"Expected ≥5 sidebar items, got {items.Length}");
 
-        items[4].Click();
+        items[4].Click(); // a real click: rows react to the mouse and have no Invoke pattern
         Thread.Sleep(500);
 
         // After clicking, the viewport should scroll and the 5th pane should appear in the grid

@@ -40,11 +40,7 @@ public sealed class SessionTests : IClassFixture<AppFixture>
         int before = AppActions.GetSidebarSessionCount(_f.MainWindow);
         Assert.True(before > 0, "Expected at least one session before closing.");
 
-        // Use Ctrl+W keyboard shortcut to close active session
-        _f.MainWindow.Focus();
-        FlaUI.Core.Input.Keyboard.TypeSimultaneously(
-            FlaUI.Core.WindowsAPI.VirtualKeyShort.CONTROL,
-            FlaUI.Core.WindowsAPI.VirtualKeyShort.KEY_W);
+        Assert.True(AppActions.CloseFirstSession(_f.MainWindow), "No terminal pane to close.");
         Thread.Sleep(1000);
 
         int after = AppActions.GetSidebarSessionCount(_f.MainWindow);
@@ -56,19 +52,13 @@ public sealed class SessionTests : IClassFixture<AppFixture>
     {
         // Close all sessions until empty
         int count = AppActions.GetSidebarSessionCount(_f.MainWindow);
-        for (int i = 0; i < count + 2; i++) // extra iterations are safe
-        {
-            _f.MainWindow.Focus();
-            FlaUI.Core.Input.Keyboard.TypeSimultaneously(
-                FlaUI.Core.WindowsAPI.VirtualKeyShort.CONTROL,
-                FlaUI.Core.WindowsAPI.VirtualKeyShort.KEY_W);
+        for (int i = 0; i < count + 2 && AppActions.CloseFirstSession(_f.MainWindow); i++)
             Thread.Sleep(500);
-        }
 
-        // EmptyState TextBlock should be visible
-        var emptyState = _f.MainWindow.FindFirstDescendant(
-            cf => cf.ByName("No sessions open."));
-        Assert.NotNull(emptyState);
+        // The EmptyState TextBlock should be visible. Matched by AutomationId: its text is
+        // two lines, so the old exact-name match on "No sessions open." could never hit.
+        var emptyState = AppActions.WaitForElement(_f.MainWindow, "EmptyState");
+        Assert.False(emptyState.IsOffscreen, "Empty-state text should be visible with no sessions.");
     }
 
     [Fact]
