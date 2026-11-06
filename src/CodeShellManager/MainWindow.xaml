@@ -219,6 +219,9 @@
 
                 <Button DockPanel.Dock="Left" AutomationProperties.AutomationId="NewSessionBtn" Content="＋ New Session" Style="{StaticResource ToolBtn}"
                         Foreground="#a6e3a1" Click="NewSession_Click" Margin="0,0,4,0"/>
+                <Button x:Name="RecentSessionsBtn" DockPanel.Dock="Left" AutomationProperties.AutomationId="RecentSessionsBtn"
+                        Content="🕘 Recent ▾" Style="{StaticResource ToolBtn}" Click="RecentSessions_Click" Margin="0,0,4,0"
+                        ToolTip="Jump to a recently used session (Ctrl+Shift+E)"/>
             </DockPanel>
         </Border>
 

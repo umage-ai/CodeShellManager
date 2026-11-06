@@ -739,6 +739,22 @@ The snapshot model is `Models/RecentlyClosedEntry.cs` — a separate POCO from `
 
 FTS5 scrollback retention is **out of scope** for v1 — restored sessions start with an empty xterm buffer.
 
+## Recent sessions menu
+
+**🕘 Recent ▾** on the main toolbar (`RecentSessionsBtn`) and **Ctrl+Shift+E** open a menu of the
+10 most recently used sessions, live and sleeping, newest first (`MainWindow.Recent.cs`;
+ordering and the "5m / 3h / 2d" wording in the WPF-free `Services/RecentSessions`,
+`RecentSessionsTests`). The active session is left out, so the first item is the previous one
+and Ctrl+Shift+E, Enter flips between two sessions; digits 1–9/0 pick directly. Each row shows
+the accent, name, folder, status (⟳ working, ● waiting, ! attention, 💤 asleep) and how long
+ago. Picking a live session focuses it — in filter-strip mode switching to its group tab if the
+current tab hides it; a sleeping one is woken. Not plain Ctrl+E: that is end-of-line in bash.
+
+"Used" is `ShellSession.LastActivityAt`, stamped in `MainWindow`'s `ActiveSession` handler and
+persisted. **It is not stamped while the restore loop runs** (`_restoreInProgress`):
+`RegisterSession` activates every restored session in turn, which used to overwrite the saved
+order with sidebar order on every start. The `LastActive` sidebar sort benefits from the same fix.
+
 ## Shell Integration (OSC 9001)
 
 Programs running inside a terminal can push session state up to CSM by emitting a custom OSC sequence — useful for SSH overlays (e.g. `nexus`) where CSM cannot inspect the remote repo locally.
@@ -1391,6 +1407,7 @@ Persisted in `state.json`. Key settings:
 | `Ctrl+W` | Close active session |
 | `Ctrl+F` | Toggle search |
 | `Ctrl+Tab` | Cycle sessions |
+| `Ctrl+Shift+E` | Recent sessions menu — see "Recent sessions menu" |
 | `F5` | Run the active session's default run command |
 | `Shift+F5` | Stop the active session's default run command |
 | `Escape` (in search) | Close search panel |
