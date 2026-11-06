@@ -116,14 +116,19 @@ public class AppSettings
     public bool UseBundledConPty { get; set; } = true;
 
     /// <summary>
-    /// Experimental, off by default, no UI: answer a program's OSC 7501 feature query
-    /// (<c>OSC 7501 ; ? ST</c>). Under the inbox ConPTY the reply cannot win the race against
-    /// conhost's own DA1 answer, so a prober like Claude Code receives it late — as unsolicited
-    /// input beginning with ESC. Even when on, replies are gated hard
-    /// (<see cref="Services.ProgramStatusProbeGate"/>). Incoming 7501 REPORTS are always parsed.
-    /// Enable by setting it to true in state.json. See CLAUDE.md "Program status (OSC 7501)".
+    /// Whether to answer a program's OSC 7501 feature query (<c>OSC 7501 ; ? ST</c>). No UI.
+    /// <list type="bullet">
+    /// <item><c>null</c> (default) — automatic: answer on the bundled ConPTY, where the raw
+    /// reply reaches the program in time; don't on the inbox ConPTY, where it always loses
+    /// the race against conhost's own DA1 answer and would only arrive as late, unsolicited
+    /// input beginning with ESC.</item>
+    /// <item><c>true</c> — answer on both (inbox: experiments only).</item>
+    /// <item><c>false</c> — never answer.</item>
+    /// </list>
+    /// Replies are always gated (<see cref="Services.ProgramStatusProbeGate"/>). Incoming 7501
+    /// REPORTS are always parsed. See CLAUDE.md "Program status (OSC 7501)".
     /// </summary>
-    public bool AnswerProgramStatusProbe { get; set; } = false;
+    public bool? AnswerProgramStatusProbe { get; set; }
 
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";

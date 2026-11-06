@@ -751,23 +751,36 @@ one, child records per background task, and `state=clear` on exit — **but only
 startup query `OSC 7501 ; ?` is answered**. Unanswered, it logs `probe: no reply to OSC 7501 ; ?`
 and never reports.
 
-**Claude Code does not report under the inbox ConPTY yet; programs that report without probing
-work.** The reply cannot win the race (see the measured subsection below), so answering the probe
-is **off by default**.
+**It works on the bundled ConPTY (the default); on the inbox ConPTY Claude Code does not report,
+while programs that report without probing still do.** Measured with the real `claude` behind
+the bundled ConPTY: the debug log says `programStatus=yes (probe: OSC 7501 reply)`, and a
+trivial prompt produced `state=idle` → `state=working` → `state=done` → `state=done:msg=…`
+reports. On the inbox ConPTY the reply cannot win the race (see "Bundled ConPTY" and the
+measured subsection below), so there it stays off by default.
 
 **Pipeline.** `terminal-init.js` registers `registerOscHandler(7501, …)`: an exact `?` posts
 `programStatusProbe`, a report posts `programStatus` with the raw payload (pre-capped at 4096).
 It also observes OSC 133 `A` and posts `promptStart` (returns `false` — observe only).
-Reports are always parsed. The probe is answered only when `AppSettings.AnswerProgramStatusProbe`
-is true — no UI; set `"AnswerProgramStatusProbe": true` under `Settings` in `state.json` for
-experiments — and even then `Services/ProgramStatusProbeGate` requires that this session's
-ConPTY has requested win32-input-mode (`ESC[?9001h` seen on output, `?9001l` turns it off;
-conhost sends `h` as its first bytes), at most one reply per 5s and 3 per session. The reply is
-fixed bytes (`ProgramStatusPayload.ProbeReplyForConPty`), written from the thread pool — app-authored,
-so a raw PTY write is correct, and it deliberately does **not** raise `UserInput`. Why so guarded:
-the reply always arrives *after* conhost's DA1 answer, i.e. as late unsolicited stdin starting
-with ESC, which a TUI can take for an Escape keypress; to a program that never asked it is junk
-input. `TerminalBridge` raises `ProgramStatusReceived` / `PromptStarted`. `MainViewModel.ApplyProgramStatus`
+Reports are always parsed. Whether the probe is answered follows `AppSettings.AnswerProgramStatusProbe`
+(`bool?`, no UI): **null (default) = automatic — answered when the session's PTY runs on the
+bundled ConPTY (`PseudoTerminal.UsesBundledConPty`), not on the inbox one**; `true` forces it
+on (inbox: experiments only), `false` off. `Services/ProgramStatusProbeGate` then allows at most
+one reply per 5s and 3 per session, and on the inbox ConPTY additionally requires that the
+session's ConPTY requested win32-input-mode (`ESC[?9001h` seen on output, `?9001l` turns it off).
+The reply is fixed, app-authored bytes — so a raw PTY write is correct, and it deliberately
+does **not** raise `UserInput`: the raw `ESC ] 7501 ; ? ESC \` on the bundled ConPTY,
+`ProbeReplyForConPty` (win32-input-mode key events) on inbox.
+
+**The reply is written synchronously on the UI thread, deliberately.** Claude sends DA1
+(`CSI c`) right after its query and treats the answer as "no more replies". On the bundled ConPTY
+xterm.js answers that DA1, and its answer is written to the PTY by the *next* `input` message,
+synchronously on the same thread. The page posts the probe synchronously from inside the parser,
+so it is handled first — but only if the reply is written right there; a thread-pool write
+(as the inbox-only experimental version had) races xterm's answer, and losing is exactly
+`probe: no reply`. It is one small write, at most three times per session — the keystroke
+path's cost. On the inbox ConPTY the guard exists for a different reason: the reply always
+arrives after conhost's own DA1 answer, i.e. as late unsolicited stdin starting with ESC, which
+a TUI can take for an Escape keypress. `TerminalBridge` raises `ProgramStatusReceived` / `PromptStarted`. `MainViewModel.ApplyProgramStatus`
 → `SessionViewModel.ApplyProgramStatus` parses (`Services/ProgramStatusPayload`), stores
 (`Services/ProgramStatusRecords`) and maps; the alert count and a toast are handled in
 `MainViewModel`. All WPF-free logic is tested in `ProgramStatusPayloadTests`,
@@ -855,14 +868,12 @@ app's own `PseudoTerminal` and against the real `claude`:
    query as a "no more replies" sentinel, so conhost's answer always arrives *before* ours can
    make the round trip through the page and back — Claude logs "no reply" and settles to off.
 
-So with Claude 2.1.319 on the inbox ConPTY, **no reports arrive yet** — and a reply that cannot
-be on time is only late stdin, which is why it is off by default. Everything else is tested and
-lights up as soon as either side moves. Paths, none taken here:
-bundling a newer ConPTY (`Microsoft.Windows.Console.ConPTY`: `conpty.dll` + `OpenConsole.exe`)
-if it forwards OSC input and doesn't answer DA1 itself (unverified); or Claude Code accepting a
-late reply / an env opt-in. Pre-seeding the reply before the program asks was rejected — in a
-non-probing program it would be stray keystrokes in the shell. Any program that reports without
-querying (the spec makes detection optional) works today.
+So with Claude 2.1.319 on the inbox ConPTY, **no reports arrive** — and a reply that cannot be
+on time is only late stdin, which is why it is off by default there. The fix that was taken is
+the bundled ConPTY ("Bundled ConPTY"): `Microsoft.Windows.Console.ConPTY`'s OpenConsole passes
+OSC input through and forwards DA1, measured to turn Claude's probe result from `no` to `yes`.
+Pre-seeding the reply before the program asks was rejected — in a non-probing program it would
+be stray keystrokes in the shell.
 
 ## Sleep / Wake (Dormant Sessions)
 

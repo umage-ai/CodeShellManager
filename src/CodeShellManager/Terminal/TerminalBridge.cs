@@ -129,8 +129,9 @@ public sealed class TerminalBridge : IDisposable
     /// <summary>OSC 133 A: a new shell prompt started (OSC 7501 drops live records on it).</summary>
     public event Action? PromptStarted;
 
-    // Gates answers to the OSC 7501 feature query: off unless AnswerProgramStatusProbe, and
-    // then only in win32-input-mode, rate-limited and capped. See ProgramStatusProbeGate.
+    // Gates answers to the OSC 7501 feature query: on for the bundled ConPTY, off for the
+    // inbox one unless forced (then only in win32-input-mode); always rate-limited and
+    // capped. See ProgramStatusProbeGate.
     private readonly Services.ProgramStatusProbeGate _probeGate = new();
 
     /// <summary>
@@ -693,30 +694,35 @@ public sealed class TerminalBridge : IDisposable
                 // authored — nothing from the page or the program is echoed — so a raw PTY
                 // write is correct here (it is not untrusted text; see PasteToTerminal).
                 // Deliberately does NOT raise UserInput: a terminal reply is not the user.
-                // Win32-input-mode encoded, because conhost drops OSC sequences written to
-                // the ConPTY input as plain VT — see ProgramStatusPayload.ProbeReplyForConPty.
                 //
-                // OFF by default (AppSettings.AnswerProgramStatusProbe): under the inbox
-                // ConPTY the reply always loses to conhost's own DA1 answer, so it only ever
-                // reaches the program as late, unsolicited input starting with ESC. When on,
-                // ProgramStatusProbeGate still requires win32-input-mode, a 5s interval and a
-                // lifetime cap. The write goes to the thread pool, never the UI thread.
+                // Bundled ConPTY (the default): the raw reply, answered by default. OpenConsole
+                // passes OSC input through and forwards the program's DA1 sentinel to xterm,
+                // whose answer arrives as the NEXT 'input' message.
+                // Inbox ConPTY: off by default — conhost answers DA1 itself, first, so the reply
+                // would only arrive late, as unsolicited input starting with ESC; when forced on
+                // it is win32-input-mode encoded (conhost drops plain OSC input).
+                // AppSettings.AnswerProgramStatusProbe overrides (null = that automatic rule);
+                // ProgramStatusProbeGate adds a 5s interval and a 3-per-session cap.
+                //
+                // Written synchronously, on this (UI) thread, ON PURPOSE: it must reach the
+                // PTY before xterm's DA1 answer, which the 'input' case writes synchronously on
+                // the same thread. A thread-pool write races it, and losing that race is exactly
+                // "probe: no reply". It is one small write, at most three times per session —
+                // the same cost as the keystroke path.
                 case "programStatusProbe":
                 {
-                    bool enabled = DebugSettings?.AnswerProgramStatusProbe == true;
-                    if (!_probeGate.TryAcquire(enabled, DateTime.UtcNow))
+                    var pty = _pty;
+                    bool bundled = pty?.UsesBundledConPty == true;
+                    bool enabled = Services.ProgramStatusProbeGate.IsEnabled(
+                        DebugSettings?.AnswerProgramStatusProbe, bundled);
+                    if (pty == null || !_probeGate.TryAcquire(enabled, DateTime.UtcNow, bundled))
                     {
-                        Trace($"OSC7501 probe not answered (enabled={enabled} w32={_probeGate.Win32InputMode})");
+                        Trace($"OSC7501 probe not answered (enabled={enabled} bundled={bundled} w32={_probeGate.Win32InputMode})");
                         break;
                     }
-                    Trace("OSC7501 probe answered");
-                    var pty = _pty;
-                    if (pty != null)
-                        _ = System.Threading.Tasks.Task.Run(() =>
-                        {
-                            try { pty.Write(Services.ProgramStatusPayload.ProbeReplyForConPty); }
-                            catch { /* PTY torn down meanwhile */ }
-                        });
+                    Trace($"OSC7501 probe answered (bundled={bundled})");
+                    try { pty.Write(Services.ProgramStatusProbeGate.ReplyFor(bundled)); }
+                    catch { /* PTY torn down meanwhile */ }
                     break;
                 }
 
