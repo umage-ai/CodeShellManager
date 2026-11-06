@@ -2,6 +2,22 @@
 
 Programs running inside a CodeShellManager terminal can push session state up to the host UI by emitting a custom OSC (Operating System Command) escape sequence. This is the recommended way for tools like SSH overlays, REPLs, and TUI apps to keep CSM's accent color, git status, and tab title in sync with whatever the program actually represents — even when CSM cannot inspect that state locally.
 
+> **Reporting working / waiting / done?** Use the standard **OSC 7501 Program Status Protocol**
+> ([spec](https://www.superlogical.com/rex/docs/build/program-status)) rather than OSC 9001. CSM
+> maps reports onto the session: `working` (+`progress`) → a `⟳ working · 40%` indicator in the
+> sidebar and toolbar; `blocked` + `kind=permission` → orange approval dot; other `blocked` →
+> green input dot; a record entering `done` / `error` / `blocked` → "needs attention" badge and a
+> rate-limited tray notification; `idle` / `clear` → indicators cleared. While a session holds any
+> 7501 record, CSM's own screen-scraping prompt detection stands down for it ("Clear status" in
+> the session's right-click menu hands it back). Status is runtime-only — never saved.
+>
+> **Feature query.** CSM answers `OSC 7501 ; ? ST` with `OSC 7501 ; ? ST` (default lists) on its
+> bundled ConPTY, which is the default — Claude Code's status reporting works there. If a user has
+> switched back to the Windows inbox ConPTY (`UseBundledConPty: false`), the query is not
+> answered: the inbox conhost answers the `CSI c` query programs send right after it itself, so a
+> reply could only arrive late, as unsolicited input. Either way the spec makes detection
+> optional — a program that reports without querying first works everywhere.
+
 ## Wire format
 
 ```

@@ -133,6 +133,42 @@
     return true;
   });
 
+  // ── Program status: OSC 7501 ───────────────────────────────────────────────
+  //   ESC ] 7501 ; state=working:progress=40:id=build:app=cargo ST    (a report)
+  //   ESC ] 7501 ; ? ST                                               (feature query)
+  // Parsing and validation are on the C# side (ProgramStatusPayload) — this only routes.
+  //
+  // Claude Code sends the query at startup and, with no reply, never reports status. The
+  // host decides whether to answer: yes on the bundled ConPTY, no on the inbox one (where
+  // conhost answers the program's CSI c sentinel itself, first). ORDER MATTERS: this post
+  // happens synchronously inside the parser, so it reaches the host before the 'input'
+  // message carrying xterm's answer to the CSI c the program sends right after the query.
+  // See CLAUDE.md "Program status (OSC 7501)". Reports are always forwarded.
+  term.parser.registerOscHandler(7501, data => {
+    try {
+      const s = String(data);
+      // Only an exact "?" is a query. Anything else starting with '?' is neither a query
+      // nor a report (keys are [a-z]) and is dropped by the host's parser.
+      if (s.trim() === '?') {
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'programStatusProbe' }));
+      } else if (s.length <= 4096) {
+        // Cheap pre-filter for the spec's 4096-byte sequence cap; the host re-checks bytes.
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'programStatus', data: s }));
+      }
+    } catch {}
+    return true;
+  });
+
+  // OSC 133 A — "a new shell prompt starts". Per the OSC 7501 spec, working/blocked records
+  // are dropped here (there is no heartbeat). Returns false: we only observe it.
+  term.parser.registerOscHandler(133, data => {
+    try {
+      if (String(data).charAt(0) === 'A')
+        window.chrome.webview.postMessage(JSON.stringify({ type: 'promptStart' }));
+    } catch {}
+    return false;
+  });
+
   // ── Input → PTY ────────────────────────────────────────────────────────────
   function sendInput(data) {
     window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data }));

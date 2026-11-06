@@ -120,6 +120,21 @@ public sealed class TerminalBridge : IDisposable
     public event Action<System.Collections.Generic.IReadOnlyDictionary<string, string>>? ShellIntegrationReceived;
 
     /// <summary>
+    /// Fires with the raw payload of an OSC 7501 program-status report (the text after
+    /// <c>7501;</c>). Untrusted and unparsed — <see cref="Services.ProgramStatusPayload"/>
+    /// validates it. The feature query is answered here and never raised.
+    /// </summary>
+    public event Action<string>? ProgramStatusReceived;
+
+    /// <summary>OSC 133 A: a new shell prompt started (OSC 7501 drops live records on it).</summary>
+    public event Action? PromptStarted;
+
+    // Gates answers to the OSC 7501 feature query: on for the bundled ConPTY, off for the
+    // inbox one unless forced (then only in win32-input-mode); always rate-limited and
+    // capped. See ProgramStatusProbeGate.
+    private readonly Services.ProgramStatusProbeGate _probeGate = new();
+
+    /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
     /// while the WebView2 has focus. Subscribers set <c>e.Handled = true</c> to prevent
     /// the key from also reaching xterm.js. The WPF WebView2 wrapper forwards
@@ -457,6 +472,7 @@ public sealed class TerminalBridge : IDisposable
             Trace($"OUTPUT recv len={rawData.Length} gap-since-prev={gap}ms");
         }
 
+        _probeGate.ObserveOutput(rawData);
         RawOutputReceived?.Invoke(rawData);
         PostBootDoneIfNeeded();
 
@@ -672,6 +688,55 @@ public sealed class TerminalBridge : IDisposable
                         if (dict.Count > 0)
                             ShellIntegrationReceived?.Invoke(dict);
                     }
+                    break;
+
+                // OSC 7501 feature query ("OSC 7501 ; ? ST"). Answered with FIXED bytes the app
+                // authored — nothing from the page or the program is echoed — so a raw PTY
+                // write is correct here (it is not untrusted text; see PasteToTerminal).
+                // Deliberately does NOT raise UserInput: a terminal reply is not the user.
+                //
+                // Bundled ConPTY (the default): the raw reply, answered by default. OpenConsole
+                // passes OSC input through and forwards the program's DA1 sentinel to xterm,
+                // whose answer arrives as the NEXT 'input' message.
+                // Inbox ConPTY: off by default — conhost answers DA1 itself, first, so the reply
+                // would only arrive late, as unsolicited input starting with ESC; when forced on
+                // it is win32-input-mode encoded (conhost drops plain OSC input).
+                // AppSettings.ProgramStatusProbe overrides (Auto = that automatic rule);
+                // ProgramStatusProbeGate adds a 5s interval and a 3-per-session cap.
+                //
+                // Written synchronously, on this (UI) thread, ON PURPOSE: it must reach the
+                // PTY before xterm's DA1 answer, which the 'input' case writes synchronously on
+                // the same thread. A thread-pool write races it, and losing that race is exactly
+                // "probe: no reply". It is one small write, at most three times per session —
+                // the same cost as the keystroke path.
+                case "programStatusProbe":
+                {
+                    var pty = _pty;
+                    bool bundled = pty?.UsesBundledConPty == true;
+                    bool enabled = Services.ProgramStatusProbeGate.IsEnabled(
+                        DebugSettings?.ProgramStatusProbe ?? Models.ProgramStatusProbeMode.Auto, bundled);
+                    if (pty == null || !_probeGate.TryAcquire(enabled, DateTime.UtcNow, bundled))
+                    {
+                        Trace($"OSC7501 probe not answered (enabled={enabled} bundled={bundled} w32={_probeGate.Win32InputMode})");
+                        break;
+                    }
+                    Trace($"OSC7501 probe answered (bundled={bundled})");
+                    try { pty.Write(Services.ProgramStatusProbeGate.ReplyFor(bundled)); }
+                    catch { /* PTY torn down meanwhile */ }
+                    break;
+                }
+
+                case "programStatus":
+                {
+                    string payload = root.TryGetProperty("data", out var psEl)
+                                     && psEl.ValueKind == JsonValueKind.String
+                        ? psEl.GetString() ?? "" : "";
+                    if (payload.Length > 0) ProgramStatusReceived?.Invoke(payload);
+                    break;
+                }
+
+                case "promptStart":
+                    PromptStarted?.Invoke();
                     break;
 
                 case "filesDropped":

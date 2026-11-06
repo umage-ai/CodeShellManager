@@ -29,6 +29,17 @@ public enum SidebarActionIconsMode
     Always
 }
 
+/// <summary>When to answer the OSC 7501 feature query — see <c>AppSettings.ProgramStatusProbe</c>.</summary>
+public enum ProgramStatusProbeMode
+{
+    /// <summary>Answer on the bundled ConPTY (raw reply, in time); not on the inbox one.</summary>
+    Auto = 0,
+    /// <summary>Answer on both (inbox: experiments only — the reply arrives late there).</summary>
+    On = 1,
+    /// <summary>Never answer.</summary>
+    Off = 2,
+}
+
 public class AppSettings
 {
     public bool AutoRestoreSessions { get; set; } = true;
@@ -114,6 +125,20 @@ public class AppSettings
     /// change needs a restart. See "Bundled ConPTY" in CLAUDE.md.
     /// </summary>
     public bool UseBundledConPty { get; set; } = true;
+
+    /// <summary>
+    /// Whether to answer a program's OSC 7501 feature query (<c>OSC 7501 ; ? ST</c>). No UI;
+    /// stored as a number in state.json (0 = Auto, 1 = On, 2 = Off).
+    /// <para>
+    /// Deliberately a NEW name: development builds saved a plain-bool
+    /// <c>"AnswerProgramStatusProbe": false</c> meaning "experimental, off", which under the
+    /// later nullable meaning would have read as "force off". The old key is now simply
+    /// ignored, and everyone starts on <see cref="ProgramStatusProbeMode.Auto"/>.
+    /// </para>
+    /// Replies are always gated (<see cref="Services.ProgramStatusProbeGate"/>). Incoming 7501
+    /// REPORTS are always parsed. See CLAUDE.md "Program status (OSC 7501)".
+    /// </summary>
+    public ProgramStatusProbeMode ProgramStatusProbe { get; set; } = ProgramStatusProbeMode.Auto;
 
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";

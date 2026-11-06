@@ -1563,6 +1563,14 @@ public partial class MainWindow : Window
             _vm.SaveStateDebounced();
         };
 
+        // OSC 7501 program status (Claude Code reports working / blocked / done through it
+        // once the probe is answered — TerminalBridge does that). Runtime-only: no save.
+        // WebMessageReceived already runs on the UI thread, so Invoke runs inline.
+        bridge.ProgramStatusReceived += payload =>
+            Dispatcher.Invoke(() => _vm.ApplyProgramStatus(vm, payload));
+        bridge.PromptStarted += () =>
+            Dispatcher.Invoke(() => _vm.DropTransientProgramStatus(vm));
+
         string assetsDir = Path.Combine(AppContext.BaseDirectory, "Assets");
         bool wantTransparent = session.ProfileBackgroundOpacity is < 1.0;
         string htmlFile = wantTransparent ? "terminal-transparent.html" : "terminal.html";
@@ -1642,6 +1650,8 @@ public partial class MainWindow : Window
             Dispatcher.Invoke(() =>
             {
                 _sessionManager.UpdateStatus(session.Id, SessionStatus.Exited);
+                // OSC 7501 lifetime: working/blocked records die with the process.
+                _vm.OnProgramProcessExited(vm);
                 RefreshSidebarItem(session.Id);
             });
         };
@@ -1968,6 +1978,10 @@ public partial class MainWindow : Window
         textPanel.Children.Add(folderText);
         textPanel.Children.Add(gitText);
         textPanel.Children.Add(worktreeText);
+        // OSC 7501 "working" — built collapsed, shown only while the program reports working.
+        var workText = BuildWorkingIndicator(new Thickness(0, 1, 0, 0));
+        UpdateWorkingIndicator(workText, vm, compact: false);
+        textPanel.Children.Add(workText);
         textPanel.Children.Add(alertBadge);
 
         // Status dot (waiting indicator)
@@ -2157,6 +2171,11 @@ public partial class MainWindow : Window
                     case nameof(SessionViewModel.GitInfoVersion):
                         UpdateGitText(gitText, vm);
                         UpdateWorktreeText();
+                        break;
+
+                    // One notification for working + progress + message (OSC 7501).
+                    case nameof(SessionViewModel.ProgramStatusVersion):
+                        UpdateWorkingIndicator(workText, vm, compact: false);
                         break;
 
                     case nameof(SessionViewModel.RepoRoot):
@@ -3460,6 +3479,20 @@ public partial class MainWindow : Window
                 menu.Items.Add(resetColor);
             }
 
+            // OSC 7501: the way out of a status that got stuck (a program that died mid-turn
+            // without clearing). Drops every record and hands the session back to the
+            // heuristic until the program reports again. Runtime-only, so no save.
+            if (vm.HasProgramStatus)
+            {
+                var clearStatus = new System.Windows.Controls.MenuItem
+                {
+                    Header = "Clear status",
+                    ToolTip = "Forget the state this program reported (working / waiting / done)"
+                };
+                clearStatus.Click += (_, _) => _vm.ClearProgramStatus(vm);
+                menu.Items.Add(clearStatus);
+            }
+
             // Folder actions — only when there's a local working folder to open.
             if (!vm.Session.IsRemote && !string.IsNullOrEmpty(vm.Session.WorkingFolder))
             {
@@ -4686,6 +4719,11 @@ public partial class MainWindow : Window
         DockPanel.SetDock(chevronBtn, Dock.Right);
         DockPanel.SetDock(playBtn, Dock.Right);
         DockPanel.SetDock(gitChip, Dock.Right);
+        // OSC 7501 working indicator, just left of the git chip. Toolbar chrome, never over
+        // the pane — WebView2 is an HwndHost and would cover any WPF overlay.
+        var workChip = BuildWorkingIndicator(new Thickness(0, 0, 8, 0));
+        UpdateWorkingIndicator(workChip, vm, compact: true);
+        DockPanel.SetDock(workChip, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
         // Dock.Right children are stacked right-to-left in declaration order, so this
@@ -4702,6 +4740,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(chevronBtn);
         toolbarContent.Children.Add(playBtn);
         toolbarContent.Children.Add(gitChip);
+        toolbarContent.Children.Add(workChip);
         toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
         toolbarContent.Children.Add(folderBlock);
@@ -4872,6 +4911,11 @@ public partial class MainWindow : Window
         // Subscribe to waiting state changes for the status dot
         vm.PropertyChanged += (_, args) =>
         {
+            if (args.PropertyName == nameof(SessionViewModel.ProgramStatusVersion))
+            {
+                Dispatcher.Invoke(() => UpdateWorkingIndicator(workChip, vm, compact: true));
+                return;
+            }
             if (args.PropertyName is nameof(SessionViewModel.IsWaitingForInput)
                                   or nameof(SessionViewModel.IsWaitingForApproval))
             {
