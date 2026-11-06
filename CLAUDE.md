@@ -28,6 +28,8 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 - `MainWindow.OnLoaded` skips the restore loop and clears the in-memory `SessionManager` — both sessions AND groups — so any new work in the run starts from a blank slate.
 - `MainViewModel.SaveStateAsync` short-circuits — **nothing is written to `state.json`** for the entire run. Window bounds, layout changes, settings tweaks, and any sessions created during the clean run are all discarded on exit.
 - The user's prior `state.json` survives the run untouched, so this is the safe way to test from a blank slate.
+- The terminals use their own WebView2 data folder (`WebView2-clean`), so a clean run — usually a dev build next to the installed app — never shares the installed copy's browser process. See "DPI awareness and the WebView2 data folder".
+- **Not isolated:** `output.db` (search index, notes, session history) and `crash.log` are shared with any other copy that is running, so test-session output shows up in the real copy's search.
 
 ## Architecture
 
@@ -381,6 +383,53 @@ can return first.
 The wait is bounded (1.5s) so a wedged renderer cannot block a launch; the `resize` handler
 still corrects the size whenever it arrives. It traces `RESIZE cols= rows= token= released=`
 under `DebugTerminalTrace` — the *absence* of that line is the signature of this bug.
+
+## DPI awareness and the WebView2 data folder
+
+**The app is per-monitor DPI aware (v2)**, declared in `app.manifest`. Before that it had no
+manifest and WPF defaulted to *system* DPI awareness: a process fixed its scale to the primary
+monitor's DPI **at the moment it started** and kept it for life. Whenever that stopped
+matching — another monitor, docking or undocking, a scale change in Settings, RDP from a
+different screen — Windows bitmap-stretched the whole window (soft, wrongly sized).
+
+The terminals made it worse, because they are not drawn by the app's process. WebView2 runs
+**one browser process per user-data folder**, shared by every app process pointing at that
+folder, and that process renders at its own scale. Observed: the installed app had started at
+150% and stayed there after the monitors went to 100%; a dev build started afterwards came up
+at the correct 100%, but its panes were rendered by the installed copy's browser process at
+150% — so the WPF chrome was right and the terminal text 1.5× too big, inside one window.
+
+**All terminals share one data folder** — `%AppData%\CodeShellManager\WebView2`, resolved by
+`Terminal/WebView2DataFolder`. `MainWindow` used to set a per-session `UserDataFolder` through
+`CreationProperties`, with a comment saying each instance needs its own; it was dead code —
+`TerminalBridge.InitializeAsync` passes an explicit environment, which wins, and no
+per-session folder was ever created on disk. Don't rename `WebView2`: that orphans every
+user's existing profile.
+
+**Two copies that create WebView2 differently cannot share that folder.** A per-monitor build
+starting next to a still-running system-DPI copy fails with `COMException 0x8007139F` ("The
+group or resource is not in the correct state…") the moment it calls `EnsureCoreWebView2Async`.
+`--clean` therefore uses its own `WebView2-clean` folder. A *normal* run of a different build
+next to the installed one (a portable ZIP, F5 without `--clean`) can still hit it — and so can
+the first launch of *this* release if a pre-manifest copy is somehow still running, since it
+is the first version on the other side of the DPI change. Closing the other copy ends its
+browser process and clears it. That case now fails cleanly instead of silently:
+
+- `LaunchSessionAsync` catches any `InitializeAsync` failure and tears down exactly like the
+  PTY-failure path. Before, the exception escaped a launch nobody awaited, so it only reached
+  `crash.log` later from the finalizer as an unobserved `TASK:` line; the pane kept its
+  spinner forever; and a new session stayed in `SessionManager` with no row — persisted to
+  `state.json`, invisible. That looked exactly like a hang, and was first diagnosed as one.
+- A new session shows `WebView2StartupError.Describe`'s message ("close the other copy");
+  restore, wake and restart rethrow, and each ends with the session **asleep** in the
+  sidebar. The restore loop batches 0x8007139F with the existing folder access-denied case
+  into one dialog.
+
+Covered by `DpiAndWebView2FolderTests`, including that the *built* `CodeShellManager.exe`
+contains `PerMonitorV2`: removing `<ApplicationManifest>` from the csproj would leave
+`app.manifest` on disk and silently bring the old behaviour back. The `WFO0003` analyzer
+warning is suppressed in the csproj deliberately — it recommends WinForms'
+`Application.SetHighDpiMode`, which a WPF app never calls.
 
 ## Session Lifecycle
 

@@ -392,8 +392,20 @@ public partial class MainWindow : Window
                 catch (Exception ex)
                 {
                     Log($"Restore FAILED for '{s.Name}': {ex}");
-                    if (IsWebView2AccessDenied(ex))
+                    if (IsWebView2AccessDenied(ex) || Terminal.WebView2StartupError.IsIncompatibleCopy(ex))
+                    {
                         webView2AccessDenied.Add(s.Name);
+                        // The batched dialog below tells the user to reopen these from the
+                        // sidebar, so make sure there is a row to reopen: put the session to
+                        // sleep, as Wake and Restart already do when a launch fails.
+                        if (!_sessionUi.ContainsKey(s.Id))
+                        {
+                            _launchingSidebarItems.Remove(s.Id);
+                            s.IsDormant = true;
+                            AddDormantSidebarItem(s);
+                            RebuildSidebarOrder();
+                        }
+                    }
                     else
                         MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                             "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -426,10 +438,11 @@ public partial class MainWindow : Window
                 MessageBox.Show(
                     $"Could not initialize WebView2 for {webView2AccessDenied.Count} session(s):\n\n" +
                     string.Join("\n", webView2AccessDenied.Select(n => "  • " + n)) +
-                    "\n\nThis usually means another CodeShellManager instance is running, " +
-                    "or a previous instance didn't shut down cleanly. Close any other " +
-                    "instances (or wait a few seconds for the WebView2 user-data folder " +
-                    "to unlock) and reopen the affected sessions from the sidebar.",
+                    "\n\nThis usually means another copy of CodeShellManager is running — " +
+                    "a different version, a portable copy or a dev build — or a previous " +
+                    "one didn't shut down cleanly. Close the other copy (or wait a few " +
+                    "seconds for the WebView2 data folder to unlock), then click the " +
+                    "sleeping sessions in the sidebar to wake them.",
                     "WebView2 unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
@@ -1449,20 +1462,15 @@ public partial class MainWindow : Window
         var alertDetector = new AlertDetector(session.Id, vm.DisplayName);
         vm.AlertDetector = alertDetector;
 
-        // Create WebView2 — each instance needs its own user data folder;
-        // WebView2 locks the folder exclusively and throws E_ACCESSDENIED otherwise.
-        string wv2DataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "CodeShellManager", "webview2", session.Id);
+        // No CreationProperties: TerminalBridge.InitializeAsync passes an explicit
+        // environment, and that wins. A per-session UserDataFolder used to be set here and
+        // was never used — no such folder was ever created on disk. All terminals share
+        // one folder; see WebView2DataFolder.
         var webView = new WebView2
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             DefaultBackgroundColor = System.Drawing.Color.FromArgb(30, 30, 46),
-            CreationProperties = new Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
-            {
-                UserDataFolder = wv2DataDir
-            }
         };
 
         // Build the persistent wrapper NOW (webView has no parent yet — this is safe).
@@ -1518,7 +1526,31 @@ public partial class MainWindow : Window
             _ => $"Starting {(string.IsNullOrWhiteSpace(session.Command) ? "session" : session.Command)}…",
         };
         bridge.SetBootContext(bootLabel, GetAccentForSession(session));
-        await bridge.InitializeAsync(htmlPath);
+        try
+        {
+            await bridge.InitializeAsync(htmlPath);
+        }
+        catch (Exception ex)
+        {
+            // Any WebView2 start failure — an incompatible copy of the app on the same data
+            // folder (0x8007139F) or the folder access-denied the restore loop batches. Same
+            // teardown as the PTY-failure catch below. Before this the exception escaped a
+            // launch nobody awaited: it reached crash.log only later, from the finalizer, as
+            // an unobserved "TASK:" line; the pane kept its spinner forever; and a new
+            // session stayed in SessionManager with no row — persisted, invisible.
+            Log($"LaunchSession WebView2 FAILED: {ex}");
+            TerminalGrid.Children.Remove(terminalWrapper);
+            vm.Dispose();
+            if (_launchingSidebarItems.Remove(session.Id))
+                RebuildSidebarOrder();
+            // Restore, wake and restart each turn the throw into a sleeping row that can be
+            // woken once the other copy is closed, and say so in their own words.
+            if (restoring) throw;
+            MessageBox.Show(this, Terminal.WebView2StartupError.Describe(ex), "Launch Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
+            return;
+        }
         bridge.ApplyFontSettings(_vm.Settings);
         bridge.ApplyProfileOverrides(session);
 
