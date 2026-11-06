@@ -16,6 +16,7 @@ public partial class AlertDetector : IDisposable
     private string _lastLine = "";
     private System.Threading.Timer? _idleTimer;
     private bool _alertFired;
+    private volatile bool _stoodDown;
 
     public event Action<AlertEvent>? AlertRaised;
     public event Action<string>? AlertCleared; // sessionId
@@ -26,8 +27,26 @@ public partial class AlertDetector : IDisposable
         _sessionName = sessionName;
     }
 
+    /// <summary>True once <see cref="StandDown"/> ran; sticky for this detector's lifetime.</summary>
+    public bool IsStoodDown => _stoodDown;
+
+    /// <summary>
+    /// The program reports its own state through OSC 7501, so the screen heuristic stops
+    /// guessing — its regexes would otherwise fight the reported state, e.g. raise
+    /// "approval needed" off a line of output while the program says it is working. Same
+    /// pattern as the git poller standing down after an OSC 9001 branch. User-interaction
+    /// notifications still fire: they are how a session acknowledges a done/error state.
+    /// </summary>
+    public void StandDown()
+    {
+        _stoodDown = true;
+        _idleTimer?.Dispose();
+        _idleTimer = null;
+    }
+
     public void Feed(string rawOutput)
     {
+        if (_stoodDown) return;
         string clean = StripAnsi(rawOutput);
 
         var lines = clean.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -52,7 +71,7 @@ public partial class AlertDetector : IDisposable
 
     private void OnIdle(object? _)
     {
-        if (_alertFired) return;
+        if (_alertFired || _stoodDown) return;
         if (string.IsNullOrWhiteSpace(_lastLine)) return;
 
         AlertType? alertType = null;

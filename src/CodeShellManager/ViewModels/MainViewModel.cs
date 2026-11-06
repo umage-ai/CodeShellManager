@@ -345,6 +345,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 App.Current.Dispatcher.BeginInvoke(() =>
                 {
+                    // Queued before the first OSC 7501 report landed: the reported state
+                    // wins, and the heuristic's toast must not fire either.
+                    if (vm.HasProgramStatus) return;
                     vm.RaiseAlert(alert.Message, alert.Type);
                     RaiseAlertCountIfChanged();
                     if (Settings.ShowToastNotifications)
@@ -370,6 +373,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
             SessionOrder.InsertionIndex(Sessions, ManagerOrder(), s => s.Id, vm.Id), vm);
         ActiveSession = vm;
         _ = SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Applies one OSC 7501 payload to a session (UI thread). Badge/dot/working state are
+    /// set by the VM; the alert count and the — rate-limited — toast are handled here,
+    /// mirroring what the heuristic AlertRaised path does.
+    /// </summary>
+    public void ApplyProgramStatus(SessionViewModel vm, string payload)
+    {
+        var notice = vm.ApplyProgramStatus(payload, DateTime.UtcNow);
+        RaiseAlertCountIfChanged();
+        if (notice != null && !string.IsNullOrEmpty(notice.Message) && Settings.ShowToastNotifications)
+            ToastHelper.Show(vm.DisplayName, notice.Message, Settings.ShowNotificationSound);
+    }
+
+    /// <summary>The session's process exited or a new prompt began: drop live 7501 records.</summary>
+    public void DropTransientProgramStatus(SessionViewModel vm)
+    {
+        vm.DropTransientProgramStatus();
+        RaiseAlertCountIfChanged();
     }
 
     private void OnSessionCloseRequested(SessionViewModel vm)
