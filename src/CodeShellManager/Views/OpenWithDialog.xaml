@@ -162,7 +162,7 @@
                     <TextBlock x:Name="SshPreview" Style="{StaticResource Preview}"/>
 
                     <TextBlock FontSize="10" Foreground="#6c7086" Margin="0,14,0,0" TextWrapping="Wrap"
-                               Text="Arguments are split on spaces; wrap text containing spaces in double quotes. Each placeholder is substituted inside its own argument, so a folder name can never turn into extra arguments. The previews show exactly what will be run, with sample session values."/>
+                               Text="Arguments are split on spaces; wrap text containing spaces in double quotes. Each placeholder is substituted inside its own argument, so a folder name can never turn into extra arguments. Every template must use at least one placeholder. Add :uri (e.g. {linuxPath:uri}) to percent-encode a value spliced into a URI. A placeholder may not start an argument with - or / — Electron editors read /name=value as a switch — so a Linux path goes inside a larger argument such as --folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}. The previews show exactly what will be run, with sample session values."/>
                 </StackPanel>
             </ScrollViewer>
             <TextBlock x:Name="EmptyHint" Grid.Column="2" Foreground="#6c7086" FontSize="12" TextWrapping="Wrap"

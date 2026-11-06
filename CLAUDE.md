@@ -879,52 +879,91 @@ menu open the session's folder in an editor from a user-owned list (#178). The b
 default; ▼ lists every entry that has a template for the session's kind, plus **Edit…** (also
 right-click on `{ }`, and Settings → Open with). UI in `MainWindow.OpenIn.cs` and
 `Views/OpenWithDialog`; every rule is in the WPF-free `Services/OpenWithService` (tested in
-`OpenWithServiceTests` / `OpenWithDetectorTests`).
+`OpenWithServiceTests` / `OpenWithHardeningTests` / `OpenWithDetectorTests`).
 
 **Model.** `AppSettings.OpenWith: List<OpenWithEntry> { Label, Executable, LocalArgs, WslArgs,
-SshArgs, IsDefault }`. A blank template hides the entry for that kind. Placeholders: local
+SshArgs, IsDefault }`. A blank template hides the entry for that kind; a non-blank one must use
+at least one placeholder (an entry opens the session's location — a template of only literal
+arguments would be a fixed command line behind a friendly label). Placeholders: local
 `{folder}`; WSL `{folder}` (the `\\wsl$` mirror), `{distro}`, `{linuxPath}` (a blank or `~`
 Linux folder is resolved to `$HOME` at click time); SSH `{user}`, `{host}`, `{userAtHost}`,
-`{port}`, `{remoteFolder}`. Any other `{name}` is an error, not literal text.
+`{port}`, `{remoteFolder}`. Any other `{name}` is an error, not literal text. `{name:uri}`
+percent-encodes the value for splicing into a URI (path placeholders keep `/`; `@` in
+`{userAtHost:uri}` becomes `%40` so it can't read as URI user-info).
 
-**Seeded once, then the user's.** `OpenWithDetector` runs on the first launch whose state has
-`OpenWithSeeded == false` (every state.json from before #178) — gated on the flag, not on an
-empty list, so deleting every entry sticks. It finds VS Code stable/Insiders, Cursor, Windsurf
-and VSCodium (PATH shim → exe, App Paths, `%LOCALAPPDATA%\Programs`, Program Files, Scoop; all
-with `--remote wsl+{distro} {linuxPath}` and `--remote ssh-remote+{userAtHost} {remoteFolder}`),
-Visual Studio via `vswhere` (`devenv.exe {folder}`, local only), JetBrains IDEs (standalone,
-Toolbox 1.x `apps\…` and 2.x `Programs\…` — the `*64.exe`, never the Toolbox `.cmd` scripts),
-Zed, Sublime Text and Notepad++. **It is disk, registry and a vswhere spawn: always
-`Task.Run`.** The PATH `code.cmd` lookup comes first, so the zero-config default is what it was
-before #178. "Detect installed editors" in the editor re-runs it and adds only new programs.
+**Seeded once, then the user's.** `OpenWithDetector` runs on each launch whose state has
+`OpenWithSeeded == false` (every state.json from before #178), and the flag is set only when it
+found something — so a machine with nothing installed keeps the old zero-config behaviour:
+install VS Code later and `{ }` appears on the next launch. Once seeded, deleting every entry
+sticks. It finds VS Code stable/Insiders, Cursor, Windsurf and VSCodium (PATH shim → exe, App
+Paths, `%LOCALAPPDATA%\Programs`, Program Files, Scoop; all with
+`--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}` and
+`--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}`), Visual Studio via
+`vswhere` (`devenv.exe {folder}`, local only), JetBrains IDEs (standalone, Toolbox 1.x `apps\…`
+and 2.x `Programs\…` — the `*64.exe`, never the Toolbox `.cmd` scripts), Zed, Sublime Text and
+Notepad++. **It is disk, registry and a vswhere spawn: always `Task.Run`.** The PATH `code.cmd`
+lookup comes first, so the zero-config default is what it was before #178. "Detect installed
+editors" in the editor re-runs it and adds only new programs.
 
 **Launch rules — all load-bearing:**
 
 - **Split, then substitute.** The template is tokenised first (whitespace; `"…"` groups), and
   placeholders are substituted inside their own token, so a value can never become a second
   argument. The process is `UseShellExecute = false` + `ArgumentList` — no shell, no
-  interpolated command line. `OpenWithServiceTests` round-trips hostile folder names through
-  `CommandLineToArgvW`.
-- **Values are untrusted** (state.json, imports): control characters are refused; a value
-  starting with `-` is refused (the editor would read it as an option); host / user / distro may
-  not contain whitespace; a local `{folder}` must be an existing directory (`FolderOpener.Target`,
-  which also normalises forward slashes). A token that is only an empty placeholder is dropped —
-  an SSH session with no remote folder opens the host.
+  interpolated command line. `OpenWithHardeningTests.ArgumentList_RealProcess_*` proves it
+  against what .NET really sends: it spawns a child (Windows PowerShell `-File`, echoing
+  `[Environment]::CommandLine`) with the same `ArgumentList` and splits the raw command line
+  with `CommandLineToArgvW`. The other round-trip tests use `ShellSession.QuoteForCmd`, which
+  is the *display* form (preview, tooltips) — the same MSVCRT rules, not the same code.
+- **No argument may look like a switch.** A value that *starts* an argv element may not begin
+  with `-` or `/` (`-` is refused anywhere in a value). The `/` rule is not theoretical —
+  **verified against Code.exe 1.143.1 on this machine**: launched with an isolated
+  `--user-data-dir` and the argument `/js-flags=--stack-size=987`, the renderer process came up
+  with `--js-flags=--stack-size=987`, i.e. Chromium parsed the slash form as a switch and
+  propagated it (the `--` control behaved identically; `/force-device-scale-factor=` did too).
+  Every Electron editor inherits this. That is why the seeded VS Code remote forms are a single
+  `--folder-uri vscode-remote://…` token and not `--remote wsl+X <linux path>`: a bare Linux
+  path is exactly a `/`-led argument.
+- **Values are untrusted** (state.json, imports): control characters are refused; host / user /
+  distro may not contain whitespace; a local `{folder}` must be an existing directory
+  (`FolderOpener.Target`, which also normalises forward slashes). A token that is only an empty
+  placeholder is dropped; an empty value inside a larger token (an SSH session with no remote
+  folder, in the `--folder-uri` form) is a clear error rather than a different target.
+- **Validate before side effects.** `PrepareAsync` checks the program, template and values
+  first, then the program on disk, and only then probes WSL `$HOME` — never spawn `wsl.exe` for
+  a command that was going to be refused.
 - **Never a batch file if it can be avoided.** `.cmd`/`.bat` run through `cmd.exe`, which
   re-parses arguments — `%` expands even inside quotes, `&` chains a command (BatBadBut,
-  CVE-2024-24576). Detection and Browse… resolve shims to the real exe (`ResolveShim`). If the
-  user insists on one, every argument containing a cmd metacharacter (`%!&|<>^"(),;=`) is
-  **refused, never escaped**.
-- **Programs:** an absolute local path to an `.exe` (no relative, UNC or device path), and never
-  a shell or script host (`cmd`, `powershell`, `pwsh`, `wsl`, `bash`, `mshta`, `rundll32`, `wt`,
-  …) — an "editor" that is really a shell turns a template into command execution.
+  CVE-2024-24576). Detection and Browse… resolve shims to the real exe (`ResolveShim` — a known
+  VS Code-family layout, or exactly one quoted `.exe` in the script; several is ambiguous and
+  refused). If the user insists on a batch file, every argument containing a cmd metacharacter
+  (`%!&|<>^"(),;=`) is **refused, never escaped**.
+- **Programs.** Pure check (`ValidateExecutable`): an absolute local `.exe` (no relative, UNC
+  or device path), **nothing under `%SystemRoot%`** (no editor lives there, and much there runs
+  commands from its arguments — `ssh -oProxyCommand`, `pcalua -a`, `wmic process call create`,
+  `MSBuild`, `hh`, `mmc`, `explorer <url>`), and not a known shell/script host by name. A name
+  check alone is bypassable, so `ValidateExecutableOnDisk` (import, launch, editor — always off
+  the UI thread) re-checks the **real** path via `GetFinalPathNameByHandle` (8.3 names like
+  `POWERS~1.EXE`, junctions, symlinks, subst), refuses network drives (final path UNC, or
+  `DriveType.Network`), and checks the PE `OriginalFilename`/`InternalName`, so a renamed copy of
+  `powershell.exe` is caught. None of that recognises an arbitrary renamed program — which is
+  why imports are confirmed by the user.
 
-**Import trust.** `StateService.Normalize` sanitises the list on every load
-(`OpenWithService.Sanitize`: drops bad programs, clears bad templates, one default, fresh ids);
-`ImportExportService` re-sanitises with batch files disallowed, since a backup is any JSON file
-the user points at. A click is the only trigger (unlike `PostRunUrl`), and the editor shows the
-full resolved command line for every kind, so an imported entry hides nothing. Importing a
-pre-#178 backup (`OpenWithSeeded` false) keeps the current list.
+**Import trust.** An imported backup controls both the program and the literal template, so
+filtering can only narrow it. `StateService.Normalize` sanitises the list on every load
+(`OpenWithService.Sanitize`, pure: drops bad programs, clears bad templates, one default, fresh
+ids); `ImportExportService` re-sanitises with `SanitizeImported` (on-disk checks, batch files
+disallowed). Then **`Import_Click` never adopts the list silently**: if it differs from the
+current one, a dialog spells out every entry's program and argument template per kind
+(`DescribeForReview`) and asks, defaulting to **No — keep the current list**. Imported entries
+therefore can't become the default without that confirmation. In the app, every menu item shows
+the program's file name in its header and the fully resolved command for that session as its
+tooltip (`OpenWithService.Describe`), as does `{ }`, so a disguised label can't hide what runs.
+Importing a pre-#178 backup (`OpenWithSeeded` false) keeps the current list without asking.
+
+**Toolbar state.** Per-pane controls live in `_openWithControls`, re-evaluated on the session
+VM's `WorkingFolder`/`DisplayName` changes (edit session, a WSL `$HOME` landing), and removed —
+with their `PropertyChanged` handler — at every teardown site that drops `_runControls`.
 
 ## Opening a folder in Explorer
 

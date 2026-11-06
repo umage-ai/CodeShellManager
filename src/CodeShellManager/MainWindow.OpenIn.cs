@@ -30,7 +30,7 @@ namespace CodeShellManager;
 public partial class MainWindow
 {
     /// <summary>Per-session toolbar controls, so a list change can repaint every pane. Pruned on refresh.</summary>
-    private readonly Dictionary<string, (StackPanel host, WpfButton btn)> _openWithControls = new();
+    private readonly Dictionary<string, (StackPanel host, WpfButton btn, System.ComponentModel.PropertyChangedEventHandler onChanged, SessionViewModel vm)> _openWithControls = new();
 
     private bool _openWithSeeding;
 
@@ -50,7 +50,13 @@ public partial class MainWindow
                 _openWithSeeding = false;
                 // The user may have edited (or imported) the list while detection ran — theirs wins.
                 if (_vm.Settings.OpenWithSeeded) return;
-                if (t.IsCompletedSuccessfully)
+                if (t.IsCompletedSuccessfully && t.Result.Count == 0)
+                {
+                    // Nothing found: stay unseeded, so installing VS Code later still makes
+                    // { } appear on the next launch — the pre-#178 zero-config behaviour.
+                    OpenWithService.Log("detection found no editors; will try again next launch");
+                }
+                else if (t.IsCompletedSuccessfully)
                 {
                     _vm.Settings.OpenWith = t.Result;
                     _vm.Settings.OpenWithSeeded = true;
@@ -90,6 +96,16 @@ public partial class MainWindow
             if (entry != null) OpenSessionWith(vm, entry);
         };
         btn.MouseRightButtonUp += (_, e) => { OpenOpenWithEditor(); e.Handled = true; };
+        // Computed when shown, from the live session — so it can't go stale after an edit,
+        // and it spells out the exact command rather than trusting the entry's label.
+        btn.ToolTip = "";
+        btn.ToolTipOpening += (_, _) =>
+        {
+            var entry = OpenWithService.DefaultFor(_vm.Settings.OpenWith, vm.Session.Kind);
+            btn.ToolTip = entry == null
+                ? "Open with…"
+                : $"Open folder in {entry.Label}\n{OpenWithService.Describe(entry, OpenWithContext.FromSession(vm.Session))}\n(right-click: edit list)";
+        };
 
         var chevron = new WpfButton
         {
@@ -113,9 +129,27 @@ public partial class MainWindow
         host.Children.Add(btn);
         host.Children.Add(chevron);
 
-        _openWithControls[vm.Id] = (host, btn);
+        // A pane rebuild for the same session replaces the old controls.
+        RemoveOpenWithControls(vm.Id);
+        // Kind / folder / host can change under a live pane (Edit session, a WSL $HOME landing),
+        // which is when the button may need to appear or disappear.
+        System.ComponentModel.PropertyChangedEventHandler onChanged = (_, e) =>
+        {
+            if (string.IsNullOrEmpty(e.PropertyName)
+                || e.PropertyName is nameof(SessionViewModel.WorkingFolder) or nameof(SessionViewModel.DisplayName))
+                Dispatcher.BeginInvoke(() => ApplyOpenWithButtonState(vm, host, btn));
+        };
+        vm.PropertyChanged += onChanged;
+        _openWithControls[vm.Id] = (host, btn, onChanged, vm);
         ApplyOpenWithButtonState(vm, host, btn);
         return host;
+    }
+
+    /// <summary>Drops a pane's Open-with controls — on close, sleep, restart and failed launch.</summary>
+    private void RemoveOpenWithControls(string sessionId)
+    {
+        if (!_openWithControls.Remove(sessionId, out var c)) return;
+        c.vm.PropertyChanged -= c.onChanged;
     }
 
     private void ApplyOpenWithButtonState(SessionViewModel vm, StackPanel host, WpfButton btn)
@@ -123,8 +157,8 @@ public partial class MainWindow
         var entry = OpenWithContext.FromSession(vm.Session).HasTarget
             ? OpenWithService.DefaultFor(_vm.Settings.OpenWith, vm.Session.Kind)
             : null;
-        host.Visibility = entry == null ? Visibility.Collapsed : Visibility.Visible;
-        btn.ToolTip = entry == null ? null : $"Open folder in {entry.Label}  (right-click: edit list)";
+        var vis = entry == null ? Visibility.Collapsed : Visibility.Visible;
+        if (host.Visibility != vis) host.Visibility = vis;
     }
 
     /// <summary>Repaints every pane's <c>{ }</c> after the list changed (seeded, edited, imported).</summary>
@@ -132,10 +166,10 @@ public partial class MainWindow
     {
         foreach (var id in _openWithControls.Keys.ToList())
         {
-            var vm = _vm.Sessions.FirstOrDefault(s => s.Id == id);
-            if (vm == null) { _openWithControls.Remove(id); continue; }
-            var (host, btn) = _openWithControls[id];
-            ApplyOpenWithButtonState(vm, host, btn);
+            // No pruning here: a pane mid-launch is registered before its VM joins
+            // _vm.Sessions. Entries are removed at the teardown sites (RemoveOpenWithControls).
+            var c = _openWithControls[id];
+            ApplyOpenWithButtonState(c.vm, c.host, c.btn);
         }
     }
 
@@ -166,12 +200,16 @@ public partial class MainWindow
     private List<object> BuildOpenWithItems(SessionViewModel vm)
     {
         var items = new List<object>();
+        var ctx = OpenWithContext.FromSession(vm.Session);
         foreach (var entry in OpenWithService.ApplicableTo(_vm.Settings.OpenWith, vm.Session.Kind))
         {
+            // The program's file name is in the header and the full resolved command is the
+            // tooltip, so an entry labelled "VS Code" can't quietly be something else.
+            string exeName = System.IO.Path.GetFileName(entry.Executable);
             var mi = new MenuItem
             {
-                Header = entry.IsDefault ? $"{entry.Label} (default)" : entry.Label,
-                ToolTip = entry.Executable,
+                Header = (entry.IsDefault ? $"{entry.Label} (default)" : entry.Label) + $"   — {exeName}",
+                ToolTip = OpenWithService.Describe(entry, ctx),
             };
             mi.Click += (_, _) => OpenSessionWith(vm, entry);
             items.Add(mi);

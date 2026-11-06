@@ -34,10 +34,12 @@ public static class ImportExportService
             if (state is null) return null;
             StateService.Normalize(state);
             // An imported "Open with" list is a list of programs to launch, from a file the
-            // user didn't necessarily write. Stricter than state.json: no batch files at all.
-            // The settings editor shows each entry's full resolved command, so nothing kept
-            // here is hidden from the user.
-            state.Settings.OpenWith = OpenWithService.Sanitize(state.Settings.OpenWith, allowBatch: false, OpenWithService.Log);
+            // user didn't necessarily write. Stricter than state.json: no batch files, and each
+            // program is checked against its real path on disk (8.3 names, links, network
+            // drives, renamed shells). Even then it is only a filter — the caller must still
+            // show the list and ask before adopting it (MainWindow.Import_Click).
+            var imported = state.Settings.OpenWith;
+            state.Settings.OpenWith = await Task.Run(() => OpenWithService.SanitizeImported(imported, OpenWithService.Log));
             return state;
         }
         catch

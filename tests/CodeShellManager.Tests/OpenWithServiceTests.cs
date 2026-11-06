@@ -65,34 +65,85 @@ public class OpenWithServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData("/home/alice/proj")]
-    [InlineData("/home/alice/my proj")]
-    [InlineData("/home/alice/$(id)")]
-    [InlineData("/home/alice/x\" --disable-extensions \"y")]
-    public void Wsl_VsCodeRemoteForm(string linuxPath)
+    [InlineData("/home/alice/proj", "vscode-remote://wsl+Ubuntu/home/alice/proj")]
+    [InlineData("/home/alice/my proj", "vscode-remote://wsl+Ubuntu/home/alice/my%20proj")]
+    [InlineData("/home/alice/$(id)", "vscode-remote://wsl+Ubuntu/home/alice/%24%28id%29")]
+    [InlineData("/home/a/x\" --disable-extensions \"y", "vscode-remote://wsl+Ubuntu/home/a/x%22%20--disable-extensions%20%22y")]
+    [InlineData("/home/a/#tag?q=1&100%", "vscode-remote://wsl+Ubuntu/home/a/%23tag%3Fq%3D1%26100%25")]
+    [InlineData("/home/a/ünï", "vscode-remote://wsl+Ubuntu/home/a/%C3%BCn%C3%AF")]
+    public void Wsl_VsCodeFolderUri_IsOneEncodedArgument(string linuxPath, string uri)
     {
         var ctx = new OpenWithContext(SessionKind.Wsl, Folder: @"\\wsl$\Ubuntu\home", Distro: "Ubuntu", LinuxPath: linuxPath);
         var (cmd, error) = OpenWithService.Build(VsCode(), ctx);
         Assert.Null(error);
-        var expected = new[] { "--remote", "wsl+Ubuntu", linuxPath };
+        var expected = new[] { "--folder-uri", uri };
         Assert.Equal(expected, cmd!.Arguments);
         Assert.Equal(expected, RoundTrip(cmd));
+        // What VS Code's URI.parse would recover: the original path, intact.
+        Assert.Equal(linuxPath, Uri.UnescapeDataString(uri["vscode-remote://wsl+Ubuntu".Length..]));
     }
 
     [Fact]
-    public void Ssh_UserAtHost_WhenUserSet()
+    public void Wsl_DistroInTheAuthority()
     {
+        var ctx = new OpenWithContext(SessionKind.Wsl, Distro: "Ubuntu-22.04", LinuxPath: "/srv");
+        var (cmd, _) = OpenWithService.Build(VsCode(), ctx);
+        Assert.Equal("vscode-remote://wsl+Ubuntu-22.04/srv", cmd!.Arguments[1]);
+    }
+
+    [Fact]
+    public void Ssh_UserAtHost_IsPercentEncodedInTheAuthority()
+    {
+        // '@' would otherwise be URI user-info; VS Code decodes %40 back to "alice@box".
         var ctx = new OpenWithContext(SessionKind.Ssh, User: "alice", Host: "box", RemoteFolder: "/srv/my app");
         var (cmd, _) = OpenWithService.Build(VsCode(), ctx);
-        Assert.Equal(new[] { "--remote", "ssh-remote+alice@box", "/srv/my app" }, cmd!.Arguments);
+        Assert.Equal(new[] { "--folder-uri", "vscode-remote://ssh-remote+alice%40box/srv/my%20app" }, cmd!.Arguments);
     }
 
     [Fact]
-    public void Ssh_HostOnly_AndEmptyRemoteFolderTokenIsDropped()
+    public void Ssh_HostOnly()
     {
-        var ctx = new OpenWithContext(SessionKind.Ssh, Host: "box");
+        var ctx = new OpenWithContext(SessionKind.Ssh, Host: "box", RemoteFolder: "/srv");
         var (cmd, _) = OpenWithService.Build(VsCode(), ctx);
-        Assert.Equal(new[] { "--remote", "ssh-remote+box" }, cmd!.Arguments);
+        Assert.Equal(new[] { "--folder-uri", "vscode-remote://ssh-remote+box/srv" }, cmd!.Arguments);
+    }
+
+    [Fact]
+    public void Ssh_NoRemoteFolder_IsAClearErrorNotADifferentTarget()
+    {
+        var (cmd, error) = OpenWithService.Build(VsCode(), new OpenWithContext(SessionKind.Ssh, Host: "box"));
+        Assert.Null(cmd);
+        Assert.Contains("remote folder", error);
+    }
+
+    [Fact]
+    public void EmptyStandalonePlaceholderToken_IsDropped()
+    {
+        var entry = new OpenWithEntry { Executable = Exe, SshArgs = "--host {host} {remoteFolder}" };
+        var (cmd, _) = OpenWithService.Build(entry, new OpenWithContext(SessionKind.Ssh, Host: "box"));
+        Assert.Equal(new[] { "--host", "box" }, cmd!.Arguments);
+    }
+
+    // ── '/' and '-' at the start of an argument (Chromium reads /name=value as a switch) ──
+
+    [Theory]
+    [InlineData("{linuxPath}")]
+    [InlineData("--remote wsl+{distro} {linuxPath}")]          // the pre-review seeded form
+    [InlineData("{linuxPath:uri}")]
+    public void SlashLeadingValue_StartingAnArgument_IsRefused(string template)
+    {
+        var entry = new OpenWithEntry { Executable = Exe, WslArgs = template };
+        var (cmd, error) = OpenWithService.Build(entry, new OpenWithContext(SessionKind.Wsl, Distro: "Ubuntu", LinuxPath: "/js-flags=--x"));
+        Assert.Null(cmd);
+        Assert.Contains("'/'", error);
+    }
+
+    [Fact]
+    public void SlashLeadingValue_InsideAnArgument_IsFine()
+    {
+        var entry = new OpenWithEntry { Executable = Exe, SshArgs = "--path={remoteFolder}" };
+        var (cmd, _) = OpenWithService.Build(entry, new OpenWithContext(SessionKind.Ssh, Host: "h", RemoteFolder: "/srv"));
+        Assert.Equal(new[] { "--path=/srv" }, cmd!.Arguments);
     }
 
     [Fact]
@@ -179,6 +230,8 @@ public class OpenWithServiceTests : IDisposable
     [InlineData("{folder}", SessionKind.Ssh)]
     [InlineData("{bogus}", SessionKind.Wsl)]
     [InlineData("\"{folder}", SessionKind.Local)]
+    [InlineData("--literal-only", SessionKind.Local)]         // must open the session's location
+    [InlineData("/c calc", SessionKind.Local)]
     public void InvalidTemplates_AreReported(string template, SessionKind kind) =>
         Assert.NotNull(OpenWithService.ValidateTemplate(template, kind));
 
@@ -188,7 +241,7 @@ public class OpenWithServiceTests : IDisposable
     [InlineData("{folder}", SessionKind.Wsl)]
     [InlineData("--remote ssh-remote+{userAtHost} {remoteFolder}", SessionKind.Ssh)]
     [InlineData("", SessionKind.Ssh)]
-    [InlineData("--literal-only", SessionKind.Local)]
+    [InlineData("--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}", SessionKind.Wsl)]
     public void ValidTemplates_Pass(string template, SessionKind kind) =>
         Assert.Null(OpenWithService.ValidateTemplate(template, kind));
 
@@ -403,8 +456,10 @@ public class OpenWithServiceTests : IDisposable
     [Fact]
     public async Task Prepare_MissingFolder_IsRefused()
     {
+        string exe = Path.Combine(_tmp, "Code.exe");
+        File.WriteAllText(exe, "");
         var ctx = new OpenWithContext(SessionKind.Local, Folder: Path.Combine(_tmp, "nope"));
-        var (cmd, error) = await OpenWithService.PrepareAsync(VsCode(), ctx);
+        var (cmd, error) = await OpenWithService.PrepareAsync(VsCode(exe), ctx);
         Assert.Null(cmd);
         Assert.Contains("doesn't exist", error);
     }

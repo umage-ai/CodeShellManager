@@ -155,7 +155,7 @@ public partial class SettingsWindow : Window
     private void UpdateOpenWithSummary()
     {
         OpenWithSummary.Text = _edited.OpenWith.Count == 0
-            ? (_edited.OpenWithSeeded ? "No editors configured." : "Detecting installed editors…")
+            ? (_edited.OpenWithSeeded ? "No editors configured." : "None found yet — installed editors are detected at startup.")
             : string.Join(", ", _edited.OpenWith.Select(e => e.IsDefault ? $"★ {e.Label}" : e.Label));
     }
 

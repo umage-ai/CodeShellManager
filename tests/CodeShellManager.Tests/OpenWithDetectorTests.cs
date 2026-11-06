@@ -60,8 +60,8 @@ public class OpenWithDetectorTests : IDisposable
         Assert.Equal("VS Code", vs.Label);
         Assert.Equal(exe, vs.Executable);
         Assert.Equal("{folder}", vs.LocalArgs);
-        Assert.Equal("--remote wsl+{distro} {linuxPath}", vs.WslArgs);
-        Assert.Equal("--remote ssh-remote+{userAtHost} {remoteFolder}", vs.SshArgs);
+        Assert.Equal("--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}", vs.WslArgs);
+        Assert.Equal("--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}", vs.SshArgs);
         Assert.True(vs.IsDefault);
     }
 

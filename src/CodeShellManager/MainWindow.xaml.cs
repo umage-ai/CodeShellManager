@@ -1589,6 +1589,7 @@ public partial class MainWindow : Window
             TerminalGrid.Children.Remove(terminalWrapper);
             // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
             _runControls.Remove(vm.Id);
+            RemoveOpenWithControls(vm.Id);
             _gitPanes.Remove(vm.Id);
             vm.Dispose();
             if (_launchingSidebarItems.Remove(session.Id))
@@ -1724,6 +1725,7 @@ public partial class MainWindow : Window
             TerminalGrid.Children.Remove(terminalWrapper);
             // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
             _runControls.Remove(vm.Id);
+            RemoveOpenWithControls(vm.Id);
             _gitPanes.Remove(vm.Id);
             MessageBox.Show($"Failed to start '{session.FullCommandLine}':\n{ex.Message}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -4956,6 +4958,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5252,6 +5255,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -5389,6 +5393,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        RemoveOpenWithControls(vm.Id);
         _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
@@ -6145,13 +6150,28 @@ public partial class MainWindow : Window
         _vm.Settings.MaxSearchResults = s.MaxSearchResults;
         _vm.Settings.ShowTerminalStatusDot = s.ShowTerminalStatusDot;
         _vm.Settings.LaunchCommands = s.LaunchCommands;
-        // Already sanitized by ImportExportService (no batch files, no shells). A backup
-        // from before #178 carries no list — keep ours rather than wipe it.
-        if (s.OpenWithSeeded)
+        // "Open with" entries are programs that run on a click, and a backup is any file the
+        // user was handed. ImportExportService filtered it (no batch files, shells, network or
+        // %SystemRoot% programs), but no filter can recognise a renamed program — so the list
+        // is never adopted silently: show every command and ask, defaulting to keeping ours.
+        // A backup from before #178 carries no list; keep ours without asking.
+        if (s.OpenWithSeeded && !OpenWithService.SameCommands(s.OpenWith, _vm.Settings.OpenWith))
         {
-            _vm.Settings.OpenWith = s.OpenWith;
-            _vm.Settings.OpenWithSeeded = true;
-            RefreshOpenWithButtons();
+            string listing = s.OpenWith.Count == 0
+                ? "(an empty list)\n"
+                : OpenWithService.DescribeForReview(s.OpenWith);
+            var adopt = MessageBox.Show(
+                "The backup contains its own \"Open with\" editor list. These programs would run when you " +
+                "use { } or Open with:\n\n" + listing +
+                "\nReplace your current list with this one?\n\nChoose No to keep your current list (recommended " +
+                "unless you made this backup yourself).",
+                "Import \"Open with\" list", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            if (adopt == MessageBoxResult.Yes)
+            {
+                _vm.Settings.OpenWith = s.OpenWith;
+                _vm.Settings.OpenWithSeeded = true;
+                RefreshOpenWithButtons();
+            }
         }
         _vm.Settings.TerminalFontFamily = s.TerminalFontFamily;
         _vm.Settings.TerminalFontSize = s.TerminalFontSize;

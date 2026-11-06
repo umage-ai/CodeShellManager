@@ -36,6 +36,27 @@ public partial class OpenWithDialog : Window
 
     private readonly ObservableCollection<EntryRow> _rows = new();
     private bool _loading;
+    private readonly System.Windows.Threading.DispatcherTimer _diskCheckTimer =
+        new() { Interval = TimeSpan.FromMilliseconds(350) };
+    private int _diskCheckSeq;
+
+    private async void DiskCheck_Tick(object? sender, EventArgs e)
+    {
+        _diskCheckTimer.Stop();
+        if (Selected is not { } row) return;
+        string exe = row.Entry.Executable;
+        int seq = ++_diskCheckSeq;
+        var (exists, error) = await Task.Run(() =>
+        {
+            string? err = OpenWithService.ValidateExecutableOnDisk(exe, allowBatch: true);
+            return (File.Exists(exe), err);
+        });
+        // Stale: the user kept typing or picked another entry while the check ran.
+        if (seq != _diskCheckSeq || !ReferenceEquals(Selected, row) || row.Entry.Executable != exe) return;
+        if (error != null) SetStatus(ExeStatus, error, Bad);
+        else if (!exists) SetStatus(ExeStatus, "Not found on this machine — the entry will fail until the program is installed.", Warn);
+        else SetStatus(ExeStatus, "", Muted);
+    }
 
     /// <summary>The edited list, sanitized. Set on Save.</summary>
     public List<OpenWithEntry>? Result { get; private set; }
@@ -43,6 +64,8 @@ public partial class OpenWithDialog : Window
     public OpenWithDialog(IEnumerable<OpenWithEntry>? initial)
     {
         InitializeComponent();
+        _diskCheckTimer.Tick += DiskCheck_Tick;
+        Closed += (_, _) => _diskCheckTimer.Stop();
         foreach (var e in initial ?? []) _rows.Add(new EntryRow(e.Clone()));
         EntriesList.ItemsSource = _rows;
         if (_rows.Count > 0) EntriesList.SelectedIndex = 0;
@@ -97,11 +120,14 @@ public partial class OpenWithDialog : Window
             SetStatus(ExeStatus,
                 "Batch file — Windows runs it through cmd.exe. A folder or value containing any of " +
                 OpenWithService.BatchMetaChars + " will be refused rather than passed. Prefer the program's .exe.", Warn);
-        else if (!File.Exists(e.Executable))
-            // Local, non-UNC (ValidateExecutable refused those), so a cheap check.
-            SetStatus(ExeStatus, "Not found on this machine — the entry will fail until the program is installed.", Warn);
         else
+        {
             SetStatus(ExeStatus, "", Muted);
+            // The on-disk checks (exists, real path, network drive, renamed shell) touch the
+            // disk, so they run debounced on the pool rather than per keystroke on this thread.
+            _diskCheckTimer.Stop();
+            _diskCheckTimer.Start();
+        }
 
         PreviewFor(LocalPreview, e, SampleLocal);
         PreviewFor(WslPreview, e, SampleWsl);
@@ -143,7 +169,7 @@ public partial class OpenWithDialog : Window
         return null;
     }
 
-    private void Browse_Click(object sender, RoutedEventArgs e)
+    private async void Browse_Click(object sender, RoutedEventArgs e)
     {
         if (Selected is not { } row) return;
         var dlg = new Microsoft.Win32.OpenFileDialog
@@ -151,10 +177,12 @@ public partial class OpenWithDialog : Window
             Title = "Choose the editor's program",
             Filter = "Programs (*.exe)|*.exe|Launcher scripts (*.cmd;*.bat)|*.cmd;*.bat",
         };
+        // No existence check here (disk I/O on the UI thread) — the shell dialog copes with a
+        // folder that isn't there. Only a local, fully qualified path is offered, never a share.
         try
         {
-            string? dir = Path.GetDirectoryName(row.Entry.Executable);
-            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) dlg.InitialDirectory = dir;
+            if (OpenWithService.ValidateExecutable(row.Entry.Executable, allowBatch: true) == null)
+                dlg.InitialDirectory = Path.GetDirectoryName(row.Entry.Executable);
         }
         catch { }
         if (dlg.ShowDialog(this) != true) return;
@@ -163,16 +191,22 @@ public partial class OpenWithDialog : Window
         if (OpenWithService.IsBatch(path))
         {
             // Resolve a launcher shim (code.cmd, a Toolbox script) to the real program so the
-            // entry never goes through cmd.exe at all.
-            string? exe = OpenWithService.ResolveShim(path);
-            if (exe != null)
+            // entry never goes through cmd.exe at all. Reads the script — off the UI thread.
+            string? exe = await Task.Run(() => OpenWithService.ResolveShim(path));
+            if (exe == null)
             {
                 System.Windows.MessageBox.Show(this,
-                    $"{Path.GetFileName(path)} is a launcher script. Using the program it starts instead:\n\n{exe}",
-                    "Open with", MessageBoxButton.OK, MessageBoxImage.Information);
-                path = exe;
+                    $"Couldn't tell which program {Path.GetFileName(path)} starts (it names none, or more than one). " +
+                    "Choose the editor's .exe directly — a batch file runs through cmd.exe.",
+                    "Open with", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
+            System.Windows.MessageBox.Show(this,
+                $"{Path.GetFileName(path)} is a launcher script. Using the program it starts instead:\n\n{exe}",
+                "Open with", MessageBoxButton.OK, MessageBoxImage.Information);
+            path = exe;
         }
+        if (!ReferenceEquals(Selected, row)) return;
         ExeBox.Text = path;
         if (string.IsNullOrWhiteSpace(LabelBox.Text))
             LabelBox.Text = Path.GetFileNameWithoutExtension(path);

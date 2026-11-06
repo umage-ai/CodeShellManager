@@ -47,10 +47,14 @@ public static class OpenWithDetector
         };
     }
 
-    // VS Code and its forks share the CLI flags, including the remote ones.
+    // VS Code and its forks share the CLI flags, including the remote ones. The remote forms
+    // are ONE argument (`--folder-uri vscode-remote://…`) rather than `--remote wsl+X /path`:
+    // a bare Linux path starts with '/', and Chromium reads `/name=value` as a switch on
+    // Windows (verified against Code.exe — see OpenWithService's remarks). The `:uri` forms
+    // percent-encode the values; VS Code's URI.parse decodes authority and path.
     public const string VsCodeLocalArgs = "{folder}";
-    public const string VsCodeWslArgs = "--remote wsl+{distro} {linuxPath}";
-    public const string VsCodeSshArgs = "--remote ssh-remote+{userAtHost} {remoteFolder}";
+    public const string VsCodeWslArgs = "--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}";
+    public const string VsCodeSshArgs = "--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}";
 
     private sealed record VsCodeFamily(string Label, string Shim, string Exe, string[] InstallDirs, string[] ScoopApps);
 
