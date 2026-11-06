@@ -761,10 +761,13 @@ measured subsection below), so there it stays off by default.
 **Pipeline.** `terminal-init.js` registers `registerOscHandler(7501, …)`: an exact `?` posts
 `programStatusProbe`, a report posts `programStatus` with the raw payload (pre-capped at 4096).
 It also observes OSC 133 `A` and posts `promptStart` (returns `false` — observe only).
-Reports are always parsed. Whether the probe is answered follows `AppSettings.AnswerProgramStatusProbe`
-(`bool?`, no UI): **null (default) = automatic — answered when the session's PTY runs on the
-bundled ConPTY (`PseudoTerminal.UsesBundledConPty`), not on the inbox one**; `true` forces it
-on (inbox: experiments only), `false` off. `Services/ProgramStatusProbeGate` then allows at most
+Reports are always parsed. Whether the probe is answered follows `AppSettings.ProgramStatusProbe`
+(enum `ProgramStatusProbeMode`, no UI, stored as a number: 0 Auto, 1 On, 2 Off): **Auto
+(default) — answered when the session's PTY runs on the bundled ConPTY
+(`PseudoTerminal.UsesBundledConPty`), not on the inbox one**; On forces it on (inbox: experiments
+only), Off off. It is deliberately not called `AnswerProgramStatusProbe`: development builds
+saved that key as a plain `false` meaning "experimental, off", which a nullable reading would
+have turned into "force off" — the old key is now ignored. `Services/ProgramStatusProbeGate` then allows at most
 one reply per 5s and 3 per session, and on the inbox ConPTY additionally requires that the
 session's ConPTY requested win32-input-mode (`ESC[?9001h` seen on output, `?9001l` turns it off).
 The reply is fixed, app-authored bytes — so a raw PTY write is correct, and it deliberately

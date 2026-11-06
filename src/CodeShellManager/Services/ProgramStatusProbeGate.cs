@@ -39,10 +39,15 @@ public sealed class ProgramStatusProbeGate
     public bool Win32InputMode { get { lock (_lock) return _win32InputMode; } }
 
     /// <summary>
-    /// Whether answering is enabled for a session: <paramref name="setting"/> is
-    /// <c>AppSettings.AnswerProgramStatusProbe</c> (null = automatic → only on the bundled ConPTY).
+    /// Whether answering is enabled for a session, from <c>AppSettings.ProgramStatusProbe</c>:
+    /// Auto → only on the bundled ConPTY; On → always; Off → never.
     /// </summary>
-    public static bool IsEnabled(bool? setting, bool bundledConPty) => setting ?? bundledConPty;
+    public static bool IsEnabled(Models.ProgramStatusProbeMode mode, bool bundledConPty) => mode switch
+    {
+        Models.ProgramStatusProbeMode.On => true,
+        Models.ProgramStatusProbeMode.Off => false,
+        _ => bundledConPty,
+    };
 
     /// <summary>The bytes to write: raw on the bundled ConPTY, key-event encoded on inbox.</summary>
     public static string ReplyFor(bool bundledConPty) => bundledConPty
