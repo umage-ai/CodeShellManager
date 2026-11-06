@@ -47,6 +47,49 @@ public class StateServiceTests : IDisposable
 
     // ── atomic write + backup ────────────────────────────────────────────────
 
+    // ── synchronous window-bounds read (#181) ───────────────────────────────
+
+    [Fact]
+    public void ReadWindowState_FirstRun_IsNull()
+    {
+        Assert.Null(StateService.TryReadWindowState());
+    }
+
+    [Fact]
+    public async Task ReadWindowState_RoundTripsPlacementAndLegacyBounds()
+    {
+        var s = WithSessions("a");
+        s.WindowMaximized = true;
+        s.LastNormalBounds = new WindowBounds { Left = 10, Top = 20, Width = 800, Height = 600 };
+        s.LastPlacement = new WindowPlacementState { Left = 2000, Top = 100, Width = 1500, Height = 900, Dpi = 144 };
+        await _svc.SaveAsync(s);
+
+        var w = StateService.TryReadWindowState();
+        Assert.NotNull(w);
+        Assert.True(w!.WindowMaximized);
+        Assert.Equal(800, w.LastNormalBounds!.Width);
+        Assert.Equal((2000, 100, 1500, 900, 144),
+            (w.LastPlacement!.Left, w.LastPlacement.Top, w.LastPlacement.Width, w.LastPlacement.Height, w.LastPlacement.Dpi));
+    }
+
+    [Fact]
+    public void ReadWindowState_OldFileWithoutPlacement_StillReadsLegacyBounds()
+    {
+        File.WriteAllText(_path,
+            "{ \"Sessions\": [], \"LastNormalBounds\": { \"Left\": 1, \"Top\": 2, \"Width\": 1280, \"Height\": 800 }, \"WindowMaximized\": false }");
+        var w = StateService.TryReadWindowState();
+        Assert.Null(w!.LastPlacement);
+        Assert.Equal(1280, w.LastNormalBounds!.Width);
+    }
+
+    [Fact]
+    public void ReadWindowState_FallsBackToBackup_WhenPrimaryIsTorn()
+    {
+        File.WriteAllText(_path, "{ \"Sessions\": [ { \"Id\": ");
+        File.WriteAllText(_path + ".bak", "{ \"WindowMaximized\": true }");
+        Assert.True(StateService.TryReadWindowState()!.WindowMaximized);
+    }
+
     [Fact]
     public async Task Save_FirstWrite_CreatesFileAndNoBackup()
     {

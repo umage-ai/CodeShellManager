@@ -16,6 +16,32 @@ public class GitWorktreeRuleTests
         bool detached = false, bool locked = false, bool prunable = false) =>
         new(path, branch, bare, detached, locked, prunable);
 
+    // ── git busy-slot key (#181) ──────────────────────────────────────────────
+
+    [Fact]
+    public void BusyKey_prefers_the_repo_root_over_the_folder()
+    {
+        // Two worktrees of one repo: different folders, one RepoRoot (the main working tree).
+        Assert.Equal(GitWorktrees.BusyKey("C:/src/app", @"C:\src\app-wt-feature"),
+                     GitWorktrees.BusyKey("C:/src/app", @"C:\src\app\sub"));
+        Assert.Equal(GitWorktrees.BusyKey(null, @"C:\src\app"), GitWorktrees.BusyKey("", "C:/src/app/"));
+    }
+
+    [Fact]
+    public void BusyKey_folds_spelling_and_case_on_Windows()
+    {
+        Assert.Equal(GitWorktrees.BusyKey(@"C:\Src\App\", null), GitWorktrees.BusyKey("c:/src/app", null));
+    }
+
+    [Fact]
+    public void BusyKey_is_case_sensitive_inside_WSL_but_not_for_the_distro()
+    {
+        Assert.Equal(GitWorktrees.BusyKey(@"\\wsl.localhost\Ubuntu\home\u\repo", null),
+                     GitWorktrees.BusyKey(@"\\wsl$\ubuntu\home\u\repo", null));
+        Assert.NotEqual(GitWorktrees.BusyKey(@"\\wsl$\Ubuntu\home\u\Repo", null),
+                        GitWorktrees.BusyKey(@"\\wsl$\Ubuntu\home\u\repo", null));
+    }
+
     [Theory]
     [InlineData("C:/repo", "C:/repo", true)]
     [InlineData("C:/repo/src/app", "C:/repo", true)]
@@ -171,6 +197,34 @@ public sealed class GitWorktreeRepoTests : IDisposable
         p.WaitForExit();
         if (p.ExitCode != 0) throw new InvalidOperationException($"git {string.Join(' ', args)}: {e}");
         return o;
+    }
+
+    [Fact]
+    public async Task Two_panes_of_one_repo_claim_the_same_busy_slot_before_RepoRoot_lands()
+    {
+        // #181: the busy slot used to be keyed by the folder until the poll set RepoRoot, so a
+        // pane in the main checkout and one in a linked worktree held different keys.
+        AddWorktree("wt-feat", "feat");
+        string wt = WtPath("wt-feat");
+        Assert.NotEqual(GitWorktrees.BusyKey(null, Main), GitWorktrees.BusyKey(null, wt));
+
+        var a = new CodeShellManager.ViewModels.SessionViewModel(
+            new CodeShellManager.Models.ShellSession { Id = "a", WorkingFolder = Main, Command = "cmd" });
+        var b = new CodeShellManager.ViewModels.SessionViewModel(
+            new CodeShellManager.Models.ShellSession { Id = "b", WorkingFolder = wt, Command = "cmd" });
+        try
+        {
+            // What MainWindow.ResolveGitRepoKeyAsync does before claiming the slot.
+            string ka = GitWorktrees.BusyKey(await a.EnsureRepoRootAsync(), a.WorkingFolder);
+            string kb = GitWorktrees.BusyKey(await b.EnsureRepoRootAsync(), b.WorkingFolder);
+            Assert.Equal(ka, kb);
+            Assert.Equal(GitWorktrees.BusyKey(Main, null), ka);
+        }
+        finally
+        {
+            a.Dispose();
+            b.Dispose();
+        }
     }
 
     [Fact]

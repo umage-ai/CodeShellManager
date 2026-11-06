@@ -68,6 +68,39 @@ public class StateService
         return new AppState();
     }
 
+    /// <summary>The window fields of <see cref="AppState"/>, and nothing else.</summary>
+    public sealed class SavedWindowState
+    {
+        public WindowPlacementState? LastPlacement { get; set; }
+        public WindowBounds? LastNormalBounds { get; set; }
+        public bool WindowMaximized { get; set; }
+    }
+
+    /// <summary>
+    /// Reads only the saved window bounds, synchronously. The window must be placed BEFORE
+    /// it is first shown (#181), which is before <see cref="LoadAsync"/> can run — that is
+    /// awaited from <c>OnLoaded</c>, by which point the window is already on screen on the
+    /// primary monitor. Falls back to the backup like <see cref="LoadAsync"/>; never throws,
+    /// and returns null on a first run. The full load still happens later as before.
+    /// </summary>
+    public static SavedWindowState? TryReadWindowState()
+    {
+        foreach (var path in new[] { StatePath, BackupPath })
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var s = JsonSerializer.Deserialize<SavedWindowState>(File.ReadAllBytes(path), Options);
+                if (s != null) return s;
+            }
+            catch (Exception ex)
+            {
+                Log($"window bounds: failed to read '{path}': {ex.Message}");
+            }
+        }
+        return null;
+    }
+
     private static async Task<AppState?> TryLoadAsync(string path)
     {
         try
@@ -181,7 +214,7 @@ public class StateService
         }
     }
 
-    private static void Log(string message)
+    internal static void Log(string message)
     {
         try
         {

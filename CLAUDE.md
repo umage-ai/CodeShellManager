@@ -76,6 +76,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `ImportExportService` | Read/write a full `AppState` to a JSON file (settings + sessions backup) |
 | `SessionConfigEditor` | Diffs/applies a `SessionConfigDraft` onto a `ShellSession`; decides whether the change needs a PTY restart |
 | `SidebarDropResolver` | WPF-free: maps a drop Y over the rendered sidebar rows to "before / after session X" (+ the group, in inline-headers mode) and the Y of the insertion line. See "Sidebar order and drag-and-drop" |
+| `WindowPlacementMath` | WPF-free: which monitor saved window bounds belong on, whether the caption is still reachable, the fallback when not, and workspace↔screen conversion — all in physical pixels. See "DPI awareness and the WebView2 data folder" |
 | `SessionOrder` | WPF-free order helpers: id-relative moves, re-aligning the grid to the sidebar order, and where a new worktree sibling should be placed. See "Sidebar order and drag-and-drop" |
 | `DbGate` | Serializes every use of the shared `output.db` `SqliteConnection`. That one connection is handed to `SearchService` *and* to every `OutputIndexer`, and it is not thread-safe — concurrent create/dispose corrupts its internal command list. Acquire as `using var _ = await DbGate.AcquireAsync();` at the top of anything touching it. See issue #102 |
 | `PwshLocator` | Single answer to "pwsh or powershell?", shared by `RunInstance` (run commands) and `PseudoTerminal.BuildCmdLine` (session wrapper) so they can't disagree. Resolves via `where.exe`. An ordinary executable is accepted from metadata alone (no spawn). A **zero-byte reparse point is ambiguous, not bad**: that shape is a Store App Execution Alias, and a *working* Store install of PowerShell 7 looks identical to a stub left by an uninstalled app — so only that case is settled by actually probing execution. Rejecting the shape outright silently downgraded Store-PS7 users to 5.1 on every session launch |
@@ -438,6 +439,34 @@ contains `PerMonitorV2`: removing `<ApplicationManifest>` from the csproj would 
 `app.manifest` on disk and silently bring the old behaviour back. The `WFO0003` analyzer
 warning is suppressed in the csproj deliberately — it recommends WinForms'
 `Application.SetHighDpiMode`, which a WPF app never calls.
+
+**Window bounds are restored before the window is shown, in physical pixels** (#181,
+`MainWindow.Placement.cs`). Restore used to set `Left/Top/Width/Height` from `OnLoaded` —
+after the window was already up, maximized, on the primary — and clamp against
+`SystemParameters.VirtualScreen*`, which is in the *primary's* DIPs. On a secondary monitor
+of a different scale the move raised a DPI change mid-way, so the size drifted run to run.
+Now the constructor reads only the window fields of `state.json` synchronously
+(`StateService.TryReadWindowState`; the full load is still awaited in `OnLoaded`), and
+`OnSourceInitialized` — HWND created, not yet shown — applies them with `SetWindowPlacement`.
+If that lands on a monitor of a different DPI, WPF applies Windows' scaled suggested rect, so
+the placement is **applied twice** when `GetDpiForWindow` changed: the second call is what
+makes the saved size exact. `AppState.LastPlacement` is the normal rect in physical screen
+pixels plus the DPI it was saved at. A **Normal** window saves `GetWindowRect`, not
+`rcNormalPosition`: a snapped window reports Normal while `rcNormalPosition` is its pre-snap
+floating rect, possibly on another monitor at another DPI (both APIs use the same frame
+convention, invisible resize borders included, so the round trip is exact). Maximized and
+minimized save `rcNormalPosition`. Either way the offset and the DPI come from the monitor
+the *rect* is on, never `MonitorFromWindow`. On restore a Normal window's landing spot is
+checked with `GetWindowRect` and corrected with `SetWindowPos`, so how Windows offsets
+workspace coordinates on a secondary monitor cannot move it. `LastNormalBounds` (DIPs) is
+still written for older builds and read only when `LastPlacement` is absent. Its scale is
+unknown: v0.10.0 saved pixels ÷ the DPI of *the window's* monitor, older system-DPI builds
+pixels ÷ the primary's. So each monitor's DPI is tried, and the one whose scaled rect lands
+on that same monitor wins, with the primary as tie-break (`FromLegacyDips`). Which monitor, whether the caption is still
+reachable on some *work area*, and the fallback when it isn't (monitor unplugged: fit into
+the nearest monitor and move to its nearest edge) are decided by the WPF-free
+`WindowPlacementMath`, covered by `WindowPlacementMathTests`. A reachable window — even one
+spanning two monitors or hanging off an edge — is left exactly where it was.
 
 ## Bundled ConPTY
 
@@ -995,6 +1024,10 @@ detached HEAD → `(null, false)` included. The extra fields (`GitUpstream`, `Gi
 `GitBehind`, `GitChangeCount`) follow the same rule as `GitBranch`: plain properties,
 announced only through `GitInfoVersion`. An upstream that is configured but whose remote
 branch is gone produces no `# branch.ab` line, so it reads "upstream gone", not "up to date".
+Unmerged (`u`) entries keep their real XY (`AA`, `DU`, `UD`, `AU`, `UA`, `DD`, `UU`), and
+paths are run through `UnquoteCPath`: even with `core.quotePath=false` git still C-quotes a
+name containing `"`, `\`, a tab or a newline, and its octal escapes are UTF-8 *bytes*. A
+rename's tab separator is split off before unquoting — a tab inside a name is always quoted.
 
 **Environment for every git spawn** (`GitService.GitEnvironment`):
 - `GIT_TERMINAL_PROMPT=0` — git has no console, so an HTTPS credential prompt would wait for
@@ -1016,7 +1049,16 @@ branch literally named `-x`). `--no-guess` stops git silently creating a trackin
 name that exists only on a remote.
 
 **One operation per repo at a time** (`_gitBusyRepos`, keyed by `RepoRoot` so worktrees of one
-repo share the slot); the chip shows `⟳` meanwhile. Afterwards *every* live pane on that repo
+repo share the slot); the chip shows `⟳` meanwhile. The slot is **claimed** with
+`ResolveGitRepoKeyAsync`, which resolves `RepoRoot` on demand (off the UI thread, via
+`SessionViewModel.EnsureRepoRootAsync`) when the poll hasn't landed it yet — falling back to
+the folder there let two panes of one repo hold different keys for the first seconds after
+launch and run git concurrently (#181). Keys go through `GitWorktrees.BusyKey`, which folds
+case and slashes per Windows/WSL rules. For one repo to give one key, `GetRepoRootAsync`
+returns one spelling: the result is canonicalised (`GitWorktrees.Canonical`, so an 8.3 or
+junction session folder in the main checkout matches git's long path from a worktree), and
+`RepoRootFromCommonDir` maps a Linux-absolute `--git-common-dir` from a WSL worktree back to
+`\\wsl$\<distro>\…`. Afterwards *every* live pane on that repo
 re-reads git state explicitly: a fetch moves only remote refs, which `GitRepoWatcher` (HEAD +
 index) never sees. Success → a toast; failure → the git panel (docked under the toolbar, like
 notes) opens with git's own output plus the recognised hint.
