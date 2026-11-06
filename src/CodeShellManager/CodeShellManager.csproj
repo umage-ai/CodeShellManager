@@ -15,6 +15,11 @@
          every release up to and including v0.5.0. -->
     <Version>0.8.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <!-- Per-monitor DPI (v2). See the comment in app.manifest and "DPI awareness" in CLAUDE.md. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WFO0003 says to move DPI settings to Application.SetHighDpiMode — WinForms' entry
+         point. This is a WPF app (WinForms is referenced only for the tray NotifyIcon), so that API never runs; the manifest is the WPF mechanism. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
 
   <!-- Hot Reload (Microsoft.Extensions.DotNetDeltaApplier) crashes the app with

@@ -259,9 +259,10 @@ public sealed class TerminalBridge : IDisposable
 
         // Use AppData for the WebView2 user-data folder so the app works when
         // installed under Program Files (which is not writable by the user process).
-        string wv2DataDir = System.IO.Path.Combine(
+        // --clean gets its own folder — see WebView2DataFolder for why sharing can hang.
+        string wv2DataDir = WebView2DataFolder.Resolve(
             System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
-            "CodeShellManager", "WebView2");
+            App.CleanStart);
         System.IO.Directory.CreateDirectory(wv2DataDir);
         var env = await CoreWebView2Environment.CreateAsync(null, wv2DataDir);
         await _webView.EnsureCoreWebView2Async(env);
