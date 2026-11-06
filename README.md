@@ -45,7 +45,7 @@ A condensed view, as of October 2026. Tools without a Windows build (Conductor, 
 | Working / idle state per agent | ❌ [#154](https://github.com/umage-ai/CodeShellManager/issues/154) | ? | ? | ? | ✅ | ? |
 | SSH + WSL sessions | ✅ | ✅ | ◐ | ◐ SSH | ◐ SSH | ❌ |
 | Per-session run commands | ✅ | ◐ preview servers | ❌ | ❌ | ❌ | ❌ |
-| Git worktrees | ◐ manual | ✅ | ✅ | ✅ | ◐ plugins | ✅ |
+| Git worktrees | ◐ one click, not automatic | ✅ | ✅ | ✅ | ◐ plugins | ✅ |
 | Diff / review view | ❌ [#148](https://github.com/umage-ai/CodeShellManager/issues/148) | ✅ | ✅ | ✅ | ◐ plugin | ✅ |
 | Agents keep running with the window closed | ❌ [#149](https://github.com/umage-ai/CodeShellManager/issues/149) | ✅ cloud | ? | ? | ✅ | ✅ |
 | Licence | MIT | Proprietary | MIT | MIT | Apache-2.0 | AGPL-3.0 |
@@ -55,10 +55,11 @@ Spotted something out of date? Competitors move fast. [Open an issue](https://gi
 ## Features
 
 - **Multi-terminal grid** — run up to 18 sessions simultaneously in configurable layouts (1, 2, 3, 4, 6 columns; 2×2, 6×2, 6×3 grids); the active pane is highlighted with a 2px accent ring so it's easy to spot
-- **Sidebar groups** — organise sessions into named groups with their own color and filter strip; bulk actions (sleep / close / re-group) operate on the active group
+- **Sidebar groups** — organise sessions into named groups with their own color and filter strip; bulk actions (sleep / close / restart / remote control / re-group) operate on the active group
+- **Drag-and-drop ordering** — drag sessions in the sidebar to reorder them, within or across groups; a blue insertion line shows exactly where the session will land, and the pane grid follows the sidebar order
 - **Sleep & wake** — 💤 button parks a session: PTY torn down, but the session (and its notes) stays in the sidebar so you can wake it later from where you left off. Great when you have many long-running projects but only need a few live at once.
 - **Restart sessions** — ↻ restarts a session in place (Claude conversations resume), or restart a whole group or every session to pick up a new CLI build; bulk restarts show progress and can be stopped
-- **Git worktrees** — start a new session in a fresh worktree from any session's branch; sibling worktrees can be grouped together in the sidebar
+- **Git worktrees** — start a new session in a fresh worktree from any session's branch; sibling worktrees can be grouped together in the sidebar. The git menu's **Worktrees ▸** lists every worktree of the repo with its state, jumps to (or opens) its session, prunes worktrees whose folder is gone, and removes a finished one — closing its sessions first, refusing if anything is uncommitted, and offering to delete the branch only if it is merged
 - **Edit session** — change a session's folder, command, SSH/WSL target or appearance after it was created
 - **Recently closed** — Ctrl+Shift+T reopens the last-closed session (browser convention); the New Session dialog also lists the last 10 closed sessions for one-click revival
 - **Per-session run commands** — define a list of labelled commands per session (Test, Build, Watch…); ▶ runs the default, F5 / Shift+F5 run/stop it, output streams into a side drawer without touching the parent terminal. Optional post-run URL opens in your browser on exit code 0.
@@ -66,6 +67,8 @@ Spotted something out of date? Competitors move fast. [Open an issue](https://gi
 - **Per-project notepad** — collapsible 📝 notes panel on every terminal, auto-saved and searchable
 - **Alert detection** — detects when Claude is waiting for input or tool approval; green/orange dot indicators
 - **Git status** — shows branch and dirty state in the sidebar per session
+- **Git tools on the terminal toolbar** — a chip like `⎇ main ● ↑2 ↓5` (branch, uncommitted changes, ahead/behind) on every repo session; its menu does Fetch, fast-forward-only Pull, Status, and Switch branch (worktree-aware). Deliberately read-mostly: no commit, push or merge, and nothing is ever typed into the terminal
+- **Open in VS Code / Explorer / PowerShell** — `{ }`, 📁 and `>_` on the terminal toolbar (and in the sidebar right-click menu) open the session's folder; VS Code appears when it is installed with `code` on PATH
 - **Session rename** — double-click any session name or click ✏ to rename inline
 - **Shell integration** — programs running in a session can push their accent color, git branch / dirty state, and tab title to CSM via OSC 9001 (handy for SSH overlays). See [`docs/shell-integration.md`](docs/shell-integration.md).
 - **Auto-resume** — automatically resumes the last Claude Code session when restoring on startup (`--resume <id>`); toggleable in Settings

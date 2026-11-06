@@ -1454,9 +1454,10 @@ public partial class MainWindow : Window
             MessageBox.Show(this, $"Cannot start '{label}'.\n\n{validationError}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             // Mirrors the PTY-failure catch below: dormant fallback is the caller's job.
-            // RestartSessionAsync (the only removeOnFailure: false caller) already checks
-            // _sessionUi after the await and adds the dormant row itself — doing it here
-            // too would leave a second, untracked Border in the sidebar.
+            // Every relaunch caller (restore, wake, restart) passes removeOnFailure: false and
+            // adds the dormant row itself after the await (FallBackToDormantIfNotLive, or
+            // inline in RestartSessionCoreAsync) — doing it here too would leave a second,
+            // untracked Border in the sidebar.
             if (removeOnFailure) _sessionManager.RemoveSession(session.Id);
             if (_launchingSidebarItems.Remove(session.Id)) RebuildSidebarOrder();
             return;

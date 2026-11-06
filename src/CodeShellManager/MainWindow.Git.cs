@@ -544,16 +544,39 @@ public partial class MainWindow
         string name = GitWorktrees.Name(wt.Path);
 
         // Re-read the list now rather than trusting the menu's: a worktree created inside this
-        // one since the menu opened must still block the remove (see NestedInside).
+        // one since the menu opened must still block the remove. Fail CLOSED — the listing
+        // returns empty on any git error, and an empty list must not read as "nothing nested".
         var (fresh, _) = await LoadWorktreesAsync(wt.Path);
-        var nested = GitWorktrees.NestedInside(fresh, wt);
+        if (!fresh.Any(w => GitWorktrees.SamePath(w.Path, wt.Path)))
+        {
+            MessageBox.Show(this,
+                $"Couldn't read the repository's worktree list, so '{name}' can't be checked safely " +
+                "and was left alone. Try again, or remove it from a terminal.",
+                "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        // Registered worktrees of this repo, plus anything on disk with a .git of its own — an
+        // independent clone or another repo's worktree in an ignored folder is deleted too.
+        var nested = GitWorktrees.NestedInside(fresh, wt).Select(w => w.Path).ToList();
+        string wtPath = wt.Path;
+        var onDisk = await Task.Run(() => GitWorktrees.NestedRepositories(FolderOpener.WindowsPath(wtPath)));
+        if (onDisk == null)
+        {
+            MessageBox.Show(this,
+                $"'{name}' is too large to check for nested repositories, so it was left alone. " +
+                "Remove it from a terminal if you are sure.",
+                "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        foreach (string p in onDisk)
+            if (!nested.Any(n => GitWorktrees.SamePath(n, p))) nested.Add(p);
         if (nested.Count > 0)
         {
             MessageBox.Show(this,
-                $"'{name}' contains another worktree:\n\n" +
-                string.Join("\n", nested.Select(n => $"  • {GitWorktrees.Name(n.Path)}  ({n.Path})")) +
-                "\n\nRemoving it would delete that worktree too, uncommitted work included — git does " +
-                "not check inside ignored folders. Remove the inner worktree first.",
+                $"'{name}' contains another git repository or worktree:\n\n" +
+                string.Join("\n", nested.Select(p => $"  • {GitWorktrees.Name(p)}  ({p})")) +
+                "\n\nRemoving it would delete that too, uncommitted work included — git does not " +
+                "check inside ignored folders. Move or remove it first.",
                 "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }

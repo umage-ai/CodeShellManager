@@ -94,6 +94,14 @@ jobs:
           # Ensure Assets are always present as loose files alongside the exe
           # (ExcludeFromSingleFile handles this, but belt-and-suspenders for SDK quirks)
           Copy-Item -Path src/CodeShellManager/Assets -Destination publish/Assets -Recurse -Force
+          # The unit test pins PerMonitorV2 into the BUILD output; this pins it into the exe
+          # that actually ships. Losing the manifest would silently revert to system-DPI
+          # scaling (blurry, wrongly sized after a monitor change) — see CLAUDE.md, "DPI
+          # awareness and the WebView2 data folder".
+          $exe = [System.IO.File]::ReadAllBytes("publish/CodeShellManager.exe")
+          if (-not [System.Text.Encoding]::ASCII.GetString($exe).Contains("PerMonitorV2")) {
+            throw "Published CodeShellManager.exe does not embed the PerMonitorV2 manifest."
+          }
 
       # ── Install WiX v4 ───────────────────────────────────────────────────────
       - name: Install WiX toolset v4 (last open-source release)
