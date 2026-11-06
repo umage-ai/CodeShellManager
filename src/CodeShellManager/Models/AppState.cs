@@ -115,6 +115,16 @@ public class AppSettings
     /// </summary>
     public bool UseBundledConPty { get; set; } = true;
 
+    /// <summary>
+    /// Experimental, off by default, no UI: answer a program's OSC 7501 feature query
+    /// (<c>OSC 7501 ; ? ST</c>). Under the inbox ConPTY the reply cannot win the race against
+    /// conhost's own DA1 answer, so a prober like Claude Code receives it late — as unsolicited
+    /// input beginning with ESC. Even when on, replies are gated hard
+    /// (<see cref="Services.ProgramStatusProbeGate"/>). Incoming 7501 REPORTS are always parsed.
+    /// Enable by setting it to true in state.json. See CLAUDE.md "Program status (OSC 7501)".
+    /// </summary>
+    public bool AnswerProgramStatusProbe { get; set; } = false;
+
     // Terminal font settings
     public string TerminalFontFamily { get; set; } = "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace";
     public int TerminalFontSize { get; set; } = 14;

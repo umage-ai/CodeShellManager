@@ -129,6 +129,10 @@ public sealed class TerminalBridge : IDisposable
     /// <summary>OSC 133 A: a new shell prompt started (OSC 7501 drops live records on it).</summary>
     public event Action? PromptStarted;
 
+    // Gates answers to the OSC 7501 feature query: off unless AnswerProgramStatusProbe, and
+    // then only in win32-input-mode, rate-limited and capped. See ProgramStatusProbeGate.
+    private readonly Services.ProgramStatusProbeGate _probeGate = new();
+
     /// <summary>
     /// Fires when the user presses a keyboard accelerator (Ctrl-combo, F-key, etc.)
     /// while the WebView2 has focus. Subscribers set <c>e.Handled = true</c> to prevent
@@ -467,6 +471,7 @@ public sealed class TerminalBridge : IDisposable
             Trace($"OUTPUT recv len={rawData.Length} gap-since-prev={gap}ms");
         }
 
+        _probeGate.ObserveOutput(rawData);
         RawOutputReceived?.Invoke(rawData);
         PostBootDoneIfNeeded();
 
@@ -690,10 +695,30 @@ public sealed class TerminalBridge : IDisposable
                 // Deliberately does NOT raise UserInput: a terminal reply is not the user.
                 // Win32-input-mode encoded, because conhost drops OSC sequences written to
                 // the ConPTY input as plain VT — see ProgramStatusPayload.ProbeReplyForConPty.
+                //
+                // OFF by default (AppSettings.AnswerProgramStatusProbe): under the inbox
+                // ConPTY the reply always loses to conhost's own DA1 answer, so it only ever
+                // reaches the program as late, unsolicited input starting with ESC. When on,
+                // ProgramStatusProbeGate still requires win32-input-mode, a 5s interval and a
+                // lifetime cap. The write goes to the thread pool, never the UI thread.
                 case "programStatusProbe":
+                {
+                    bool enabled = DebugSettings?.AnswerProgramStatusProbe == true;
+                    if (!_probeGate.TryAcquire(enabled, DateTime.UtcNow))
+                    {
+                        Trace($"OSC7501 probe not answered (enabled={enabled} w32={_probeGate.Win32InputMode})");
+                        break;
+                    }
                     Trace("OSC7501 probe answered");
-                    _pty?.Write(Services.ProgramStatusPayload.ProbeReplyForConPty);
+                    var pty = _pty;
+                    if (pty != null)
+                        _ = System.Threading.Tasks.Task.Run(() =>
+                        {
+                            try { pty.Write(Services.ProgramStatusPayload.ProbeReplyForConPty); }
+                            catch { /* PTY torn down meanwhile */ }
+                        });
                     break;
+                }
 
                 case "programStatus":
                 {

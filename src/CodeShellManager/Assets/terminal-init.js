@@ -138,17 +138,17 @@
   //   ESC ] 7501 ; ? ST                                               (feature query)
   // Parsing and validation are on the C# side (ProgramStatusPayload) — this only routes.
   //
-  // The query MUST be answered: Claude Code sends it at startup and, with no reply, never
-  // reports status. The host writes fixed reply bytes to the PTY (not via 'input': a reply
-  // is not the user typing). Posted synchronously from inside the parser so it is handled
-  // as early as possible — the program treats its device-attributes answer (CSI c, sent
-  // right after this query) as "no more replies coming". See CLAUDE.md "Program status
-  // (OSC 7501)": under the inbox ConPTY that race is currently lost, because conhost
-  // answers CSI c itself before the query ever reaches this page.
+  // Claude Code sends the query at startup and, with no reply, never reports status. The
+  // host decides whether to answer (OFF by default — AppSettings.AnswerProgramStatusProbe):
+  // under the inbox ConPTY the answer always loses to conhost's own CSI c reply, so it
+  // would only reach the program as late, unsolicited input. See CLAUDE.md "Program status
+  // (OSC 7501)". Reports are always forwarded.
   term.parser.registerOscHandler(7501, data => {
     try {
       const s = String(data);
-      if (s.trim().charAt(0) === '?') {
+      // Only an exact "?" is a query. Anything else starting with '?' is neither a query
+      // nor a report (keys are [a-z]) and is dropped by the host's parser.
+      if (s.trim() === '?') {
         window.chrome.webview.postMessage(JSON.stringify({ type: 'programStatusProbe' }));
       } else if (s.length <= 4096) {
         // Cheap pre-filter for the spec's 4096-byte sequence cap; the host re-checks bytes.

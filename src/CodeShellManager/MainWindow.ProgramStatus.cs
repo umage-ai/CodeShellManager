@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -23,6 +24,12 @@ public partial class MainWindow
     // gains nothing from 60, and a fleet of working sessions must not cost a frame each.
     private static readonly DoubleAnimation s_workingPulse = CreateWorkingPulse();
 
+    // Indicators currently in the visual tree (Loaded/Unloaded), so a minimize/restore can
+    // stop and restart their pulses, and the set currently pulsing.
+    private readonly HashSet<TextBlock> _workingIndicators = new();
+    private readonly HashSet<TextBlock> _pulsingIndicators = new();
+    private bool _workingIndicatorStateHooked;
+
     private static DoubleAnimation CreateWorkingPulse()
     {
         var anim = new DoubleAnimation
@@ -41,29 +48,61 @@ public partial class MainWindow
     private static SolidColorBrush Freeze(SolidColorBrush b) { b.Freeze(); return b; }
 
     /// <summary>Builds a collapsed indicator; drive it with <see cref="UpdateWorkingIndicator"/>.</summary>
-    private static TextBlock BuildWorkingIndicator(Thickness margin) => new()
+    private TextBlock BuildWorkingIndicator(Thickness margin)
     {
-        Foreground = s_workingBrush,
-        FontSize = 10,
-        Margin = margin,
-        VerticalAlignment = VerticalAlignment.Center,
-        TextTrimming = TextTrimming.CharacterEllipsis,
-        Visibility = Visibility.Collapsed
-    };
+        if (!_workingIndicatorStateHooked)
+        {
+            _workingIndicatorStateHooked = true;
+            StateChanged += (_, _) =>
+            {
+                foreach (var tb in _workingIndicators) RefreshWorkingPulse(tb);
+            };
+        }
 
-    /// <summary>
-    /// Shows/hides and relabels a working indicator from the VM. The pulse runs only while
-    /// visible — a collapsed element with a running clock still ticks.
-    /// </summary>
-    private static void UpdateWorkingIndicator(TextBlock tb, SessionViewModel vm, bool compact)
+        var tb = new TextBlock
+        {
+            Foreground = s_workingBrush,
+            FontSize = 10,
+            Margin = margin,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed
+        };
+        // IsVisible covers what Visibility alone does not: a sidebar row filtered out of the
+        // tree, a pane not in the current layout, a collapsed ancestor. Each would otherwise
+        // keep a clock ticking for something nobody can see.
+        tb.IsVisibleChanged += (_, _) => RefreshWorkingPulse(tb);
+        tb.Loaded += (_, _) => { _workingIndicators.Add(tb); RefreshWorkingPulse(tb); };
+        tb.Unloaded += (_, _) => { _workingIndicators.Remove(tb); RefreshWorkingPulse(tb); };
+        return tb;
+    }
+
+    /// <summary>Pulse only while the indicator can actually be seen.</summary>
+    private void RefreshWorkingPulse(TextBlock tb)
+    {
+        bool shouldPulse = tb.Visibility == Visibility.Visible
+                           && tb.IsVisible
+                           && WindowState != WindowState.Minimized;
+        if (shouldPulse == _pulsingIndicators.Contains(tb)) return;
+        if (shouldPulse)
+        {
+            _pulsingIndicators.Add(tb);
+            tb.BeginAnimation(UIElement.OpacityProperty, s_workingPulse);
+        }
+        else
+        {
+            _pulsingIndicators.Remove(tb);
+            tb.BeginAnimation(UIElement.OpacityProperty, null);
+        }
+    }
+
+    /// <summary>Shows/hides and relabels a working indicator from the VM.</summary>
+    private void UpdateWorkingIndicator(TextBlock tb, SessionViewModel vm, bool compact)
     {
         if (!vm.IsWorking)
         {
-            if (tb.Visibility != Visibility.Collapsed)
-            {
-                tb.BeginAnimation(UIElement.OpacityProperty, null);
-                tb.Visibility = Visibility.Collapsed;
-            }
+            if (tb.Visibility != Visibility.Collapsed) tb.Visibility = Visibility.Collapsed;
+            RefreshWorkingPulse(tb);
             return;
         }
 
@@ -76,11 +115,7 @@ public partial class MainWindow
         tb.ToolTip = string.IsNullOrEmpty(vm.ProgramStatusMessage)
             ? "Working (reported by the program)"
             : vm.ProgramStatusMessage;
-
-        if (tb.Visibility != Visibility.Visible)
-        {
-            tb.Visibility = Visibility.Visible;
-            tb.BeginAnimation(UIElement.OpacityProperty, s_workingPulse);
-        }
+        if (tb.Visibility != Visibility.Visible) tb.Visibility = Visibility.Visible;
+        RefreshWorkingPulse(tb);
     }
 }

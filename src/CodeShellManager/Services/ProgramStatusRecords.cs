@@ -46,8 +46,18 @@ public sealed class ProgramStatusRecords
     public int Count => _records.Count;
 
     /// <summary>Applies one validated report. Returns true when the stored records changed.</summary>
-    public bool Apply(ProgramStatusReport report)
+    public bool Apply(ProgramStatusReport report) => Apply(report, out _);
+
+    /// <summary>
+    /// Applies one validated report. <paramref name="enteredAttention"/> is true when THIS
+    /// record just entered blocked/done/error — it did not exist, or held a different state or
+    /// kind. Judged per record, not from the aggregate: a long-lived working child outranks
+    /// the root, so the root's turn-end <c>done</c> would never change the aggregate and the
+    /// user would get no badge.
+    /// </summary>
+    public bool Apply(ProgramStatusReport report, out bool enteredAttention)
     {
+        enteredAttention = false;
         if (report.State == ProgramState.Clear)
         {
             if (report.Id is null)
@@ -60,6 +70,12 @@ public sealed class ProgramStatusRecords
         }
 
         string key = report.Id ?? RootKey;
+        if (IsAttention(report.State))
+        {
+            enteredAttention = !_records.TryGetValue(key, out var prev)
+                               || prev.Report.State != report.State
+                               || prev.Report.Kind != report.Kind;
+        }
         // Each report fully REPLACES its record — nothing carries over from the previous one.
         _records[key] = new Entry(report, ++_seq);
 
@@ -88,7 +104,34 @@ public sealed class ProgramStatusRecords
     /// change. Returns true when anything was removed.
     /// </summary>
     public bool Acknowledge() =>
-        RemoveWhere(r => r.State is ProgramState.Done or ProgramState.Error);
+        HasUnacknowledgedResults && RemoveWhere(r => r.State is ProgramState.Done or ProgramState.Error);
+
+    /// <summary>
+    /// Any done/error record held. Allocation-free — it is checked on every keystroke.
+    /// </summary>
+    public bool HasUnacknowledgedResults
+    {
+        get
+        {
+            foreach (var e in _records.Values)
+                if (e.Report.State is ProgramState.Done or ProgramState.Error) return true;
+            return false;
+        }
+    }
+
+    /// <summary>Any record in blocked/done/error — i.e. a reason for the attention badge to stand.</summary>
+    public bool HasAttentionRecord
+    {
+        get
+        {
+            foreach (var e in _records.Values)
+                if (IsAttention(e.Report.State)) return true;
+            return false;
+        }
+    }
+
+    private static bool IsAttention(ProgramState s) =>
+        s is ProgramState.Blocked or ProgramState.Done or ProgramState.Error;
 
     /// <summary><c>app</c> for a record, inherited from the nearest ancestor that has one.</summary>
     public string? EffectiveApp(string? id)

@@ -1651,7 +1651,7 @@ public partial class MainWindow : Window
             {
                 _sessionManager.UpdateStatus(session.Id, SessionStatus.Exited);
                 // OSC 7501 lifetime: working/blocked records die with the process.
-                _vm.DropTransientProgramStatus(vm);
+                _vm.OnProgramProcessExited(vm);
                 RefreshSidebarItem(session.Id);
             });
         };
@@ -3477,6 +3477,20 @@ public partial class MainWindow : Window
                     _ = _vm.SaveStateAsync();
                 };
                 menu.Items.Add(resetColor);
+            }
+
+            // OSC 7501: the way out of a status that got stuck (a program that died mid-turn
+            // without clearing). Drops every record and hands the session back to the
+            // heuristic until the program reports again. Runtime-only, so no save.
+            if (vm.HasProgramStatus)
+            {
+                var clearStatus = new System.Windows.Controls.MenuItem
+                {
+                    Header = "Clear status",
+                    ToolTip = "Forget the state this program reported (working / waiting / done)"
+                };
+                clearStatus.Click += (_, _) => _vm.ClearProgramStatus(vm);
+                menu.Items.Add(clearStatus);
             }
 
             // Folder actions — only when there's a local working folder to open.

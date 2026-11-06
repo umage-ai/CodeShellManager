@@ -175,6 +175,49 @@ public class ProgramStatusRecordsTests
     }
 
     [Fact]
+    public void EnteredAttention_is_judged_per_record()
+    {
+        var store = new ProgramStatusRecords();
+        store.Apply(R(ProgramState.Working, id: "bg"), out bool e1);
+        Assert.False(e1);
+        store.Apply(R(ProgramState.Working), out bool e2);
+        Assert.False(e2);
+
+        // Root finishes while a child keeps working: the aggregate stays "working", but the
+        // root record entered done — that is the turn end the user must hear about.
+        store.Apply(R(ProgramState.Done), out bool e3);
+        Assert.True(e3);
+        Assert.Equal(ProgramState.Working, store.Summarize().State);
+
+        store.Apply(R(ProgramState.Done, msg: "again"), out bool e4);
+        Assert.False(e4);                                   // same state restated
+
+        store.Apply(R(ProgramState.Blocked, kind: BlockedKind.Question), out bool e5);
+        Assert.True(e5);
+        store.Apply(R(ProgramState.Blocked, kind: BlockedKind.Permission), out bool e6);
+        Assert.True(e6);                                    // a new kind is a new ask
+        store.Apply(R(ProgramState.Clear), out bool e7);
+        Assert.False(e7);
+    }
+
+    [Fact]
+    public void Attention_and_result_flags_track_the_records()
+    {
+        var store = new ProgramStatusRecords();
+        Assert.False(store.HasAttentionRecord);
+        store.Apply(R(ProgramState.Working));
+        Assert.False(store.HasAttentionRecord);
+        store.Apply(R(ProgramState.Blocked, id: "b"));
+        Assert.True(store.HasAttentionRecord);
+        Assert.False(store.HasUnacknowledgedResults);
+        store.Apply(R(ProgramState.Error, id: "e"));
+        Assert.True(store.HasUnacknowledgedResults);
+        store.Acknowledge();
+        Assert.False(store.HasUnacknowledgedResults);
+        Assert.True(store.HasAttentionRecord);              // blocked is still live
+    }
+
+    [Fact]
     public void Acknowledge_retires_done_and_error_only()
     {
         var store = new ProgramStatusRecords();

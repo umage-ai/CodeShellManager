@@ -68,6 +68,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `ShellIntegrationPayload` | WPF-free validation for OSC 9001. Every field is untrusted: colour is strict hex, dirty is an allowlist, title and branch strip control characters and are length-capped (`MaxTitleLength` 80, `MaxBranchLength` 200) |
 | `AlertDetector` | Pattern matching for Claude prompts/approvals. `StandDown()` silences it once a session speaks OSC 7501 |
 | `ProgramStatusPayload` | WPF-free OSC 7501 report parser/validator + the probe reply (win32-input-mode encoded for ConPTY). See "Program status (OSC 7501)" |
+| `ProgramStatusProbeGate` | Per-session gate on answering the 7501 probe: setting on (default off), win32-input-mode requested, 1 per 5s, 3 per session |
 | `ProgramStatusRecords` | WPF-free OSC 7501 record tree: replace, `clear`, 256-cap eviction, exit lifetime, acknowledge, and the blocked > working > error > done > idle aggregate |
 | `CommandPresetsService` | Launch presets + in-session shortcuts |
 | `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
@@ -750,24 +751,38 @@ one, child records per background task, and `state=clear` on exit — **but only
 startup query `OSC 7501 ; ?` is answered**. Unanswered, it logs `probe: no reply to OSC 7501 ; ?`
 and never reports.
 
-**Pipeline.** `terminal-init.js` registers `registerOscHandler(7501, …)`: a `?` query posts
+**Claude Code does not report under the inbox ConPTY yet; programs that report without probing
+work.** The reply cannot win the race (see the measured subsection below), so answering the probe
+is **off by default**.
+
+**Pipeline.** `terminal-init.js` registers `registerOscHandler(7501, …)`: an exact `?` posts
 `programStatusProbe`, a report posts `programStatus` with the raw payload (pre-capped at 4096).
 It also observes OSC 133 `A` and posts `promptStart` (returns `false` — observe only).
-`TerminalBridge` answers the probe itself with fixed bytes (`ProgramStatusPayload.ProbeReplyForConPty`)
-— app-authored, so a raw PTY write is correct, and it deliberately does **not** raise
-`UserInput` — and raises `ProgramStatusReceived` / `PromptStarted`. `MainViewModel.ApplyProgramStatus`
+Reports are always parsed. The probe is answered only when `AppSettings.AnswerProgramStatusProbe`
+is true — no UI; set `"AnswerProgramStatusProbe": true` under `Settings` in `state.json` for
+experiments — and even then `Services/ProgramStatusProbeGate` requires that this session's
+ConPTY has requested win32-input-mode (`ESC[?9001h` seen on output, `?9001l` turns it off;
+conhost sends `h` as its first bytes), at most one reply per 5s and 3 per session. The reply is
+fixed bytes (`ProgramStatusPayload.ProbeReplyForConPty`), written from the thread pool — app-authored,
+so a raw PTY write is correct, and it deliberately does **not** raise `UserInput`. Why so guarded:
+the reply always arrives *after* conhost's DA1 answer, i.e. as late unsolicited stdin starting
+with ESC, which a TUI can take for an Escape keypress; to a program that never asked it is junk
+input. `TerminalBridge` raises `ProgramStatusReceived` / `PromptStarted`. `MainViewModel.ApplyProgramStatus`
 → `SessionViewModel.ApplyProgramStatus` parses (`Services/ProgramStatusPayload`), stores
 (`Services/ProgramStatusRecords`) and maps; the alert count and a toast are handled in
 `MainViewModel`. All WPF-free logic is tested in `ProgramStatusPayloadTests`,
-`ProgramStatusRecordsTests` and `SessionViewModelProgramStatusTests`. Nothing is persisted.
+`ProgramStatusRecordsTests`, `ProgramStatusProbeGateTests` and `SessionViewModelProgramStatusTests`.
+Nothing is persisted.
 
-**Validation is the spec's, and strict.** Keys `[a-z]{1,16}`, values `[A-Za-z0-9_.,+/=-]*`,
+**Validation is the spec's, and strict.** Keys `[a-z]+`, values `[A-Za-z0-9_.,+/=-]*`,
 malformed pairs skipped, last repeat wins. A report is dropped *whole* on a missing/unknown
-state, an invalid id (it is not written to the root instead), a limit (sequence 4096, app 32,
-id 128/32 per segment/8 deep, title 256→192, msg 2732→2048 bytes), bad base64, invalid UTF-8,
-or any control character in decoded text. Unicode format characters (bidi overrides,
-zero-width) are stripped, not rejected — the spec asks for them to be neutralised. An
-out-of-range `progress` is treated as indeterminate, not as a reason to drop the report.
+state, an invalid id (segments `[A-Za-z0-9_.+-]{1,32}`, ≤8 deep, ≤128 bytes — never written to
+the root instead), a limit (sequence 4096, key 16, title 256→192, msg 2732→2048 bytes), bad
+base64, invalid UTF-8, or any control character or line/paragraph separator (U+2028/U+2029) in
+decoded text. Unicode format characters (bidi overrides, zero-width, the supplementary tag
+block U+E0001/U+E0020–E007F) are stripped by rune, not rejected — the spec asks for them to be
+neutralised. An `app` that isn't `[A-Za-z0-9_.+-]{1,32}` and an out-of-range `progress` are
+treated as absent, not as reasons to drop the report.
 
 **Records and precedence.** One record per id (root = no id); each report replaces its record
 wholesale; `clear` removes the id and its children, or everything without an id; 256 records,
@@ -781,30 +796,49 @@ would let a stale child result hide live work forever.
 | `working` (+`progress`) | `IsWorking` / `WorkProgress` → pulsing `⟳ working · 40%` in the sidebar row and `⟳ 40%` on the toolbar (accent blue, 10 fps opacity pulse, chrome only — HwndHost) |
 | `blocked` + `permission` | `IsWaitingForApproval` (orange) |
 | `blocked` + `question` / `auth` / no kind | `IsWaitingForInput` (green) |
-| `done` / `error` | `NeedsAttention` badge |
+| any record **entering** `blocked` / `done` / `error` | `NeedsAttention` badge + toast |
 | `idle` / none | indicators cleared |
 
-The badge and toast fire only on **entering** blocked/done/error (a new state or kind), never
-on a report that restates the current one with a new progress or msg; toasts are further
-limited to one per session per `ProgramStatusToastInterval` (5s). Leaving for working/idle
-clears the badge.
+**Attention is judged per record, not from the aggregate.** A long-lived working child (a
+background task) outranks the root, so the root's turn-end `done` would never change the
+aggregate — judged on the aggregate, the user got no badge. So `ProgramStatusRecords.Apply`
+reports whether *that record* entered blocked/done/error (new, or a different state or kind);
+a report restating the same state with new progress or msg does not. The badge is cleared only
+once **no** record is in an attention state, so child work cannot wipe an unseen result, while
+the working indicator keeps showing the child. Toasts are further limited to one per session
+per `ProgramStatusToastInterval` (5s).
 
 **Fallback rule.** The first *valid* report sets `HasProgramStatus` and calls
-`AlertDetector.StandDown()` — the regex heuristic stops for that session's lifetime (same
-pattern as `_gitOverriddenByOsc`), and `RaiseAlert` plus the queued `AlertRaised` handler both
-ignore late heuristic alerts. A relaunch builds a new VM, so restart/wake re-arm it. Sessions
-that never send 7501 behave exactly as before.
+`AlertDetector.StandDown()` (same pattern as `_gitOverriddenByOsc`); `RaiseAlert` and the queued
+`AlertRaised` handler both ignore late heuristic alerts. The heuristic is **re-armed**
+(`AlertDetector.Rearm()`, `HasProgramStatus = false`) when the store becomes empty through a
+`clear`, through `DropTransient` (prompt start / exit) leaving nothing, or through the sidebar
+right-click **"Clear status"** item (shown while program status is present) — the user's way out
+of a status that got stuck because a program died mid-turn. It is deliberately *not* re-armed
+when acknowledging empties the store: a Claude session whose `done` was just seen would have the
+regex guess at its prompt again. A time-based "stale working" rule was considered and rejected —
+Claude thinking for minutes without a new report is normal, and any timeout would fight it.
+Sessions that never send 7501 behave exactly as before.
 
-**User interaction acknowledges, it does not clear.** For a 7501 session `ClearAlert`
-(keystroke via `NotifyUserInteracted`, sidebar focus) clears the badge and retires `done`/`error`
-records — "a result you haven't seen" — but leaves the waiting dots and the working indicator
-alone: they describe what the program is doing now, and it will report its next state itself.
-Clearing them would blank an orange "needs permission" dot on the first keystroke.
+**User interaction acknowledges, it does not clear.** Only a *real* key event (`KeyboardInput`,
+xterm's `onKey`) or focusing the session acknowledges — not `UserInput`, which is every `onData`
+and so includes xterm's own automatic replies (DA, cursor reports, focus in/out); for a 7501
+session `UserInput` no longer reaches `NotifyUserInteracted` at all. Acknowledging clears the badge
+and retires `done`/`error` records but leaves the waiting dots and the working indicator alone:
+they describe what the program is doing now, and it will report its next state itself. The
+per-keystroke guard `HasUnacknowledgedProgramStatus` is allocation-free and false on almost
+every key.
 
 **Lifetime.** PTY exit and OSC 133 `A` call `DropTransient`: working, blocked and idle records go;
-done and error stay until acknowledged. A full reset (`RIS`) is not tracked. Note the PTY is
-usually `pwsh -NoExit -Command claude`, so "process exit" is the wrapper's — Claude's own
-`state=clear` on exit is what normally retires its records.
+done and error stay until acknowledged. After the PTY has exited, working/blocked/idle reports
+still in flight (web messages queued behind the exit) are ignored, so a late `working` cannot
+stick forever; results and clears are still honoured. A full reset (`RIS`) is not tracked. Note
+the PTY is usually `pwsh -NoExit -Command claude`, so "process exit" is the wrapper's — Claude's
+own `state=clear` on exit is what normally retires its records.
+
+**The pulse runs only while seen.** The indicator's animation starts and stops on
+`IsVisibleChanged` (a filtered-out sidebar row, a pane not in the layout), Loaded/Unloaded, and
+the window's minimize/restore.
 
 ### The probe reply cannot win under the inbox ConPTY (measured)
 
@@ -821,8 +855,9 @@ app's own `PseudoTerminal` and against the real `claude`:
    query as a "no more replies" sentinel, so conhost's answer always arrives *before* ours can
    make the round trip through the page and back — Claude logs "no reply" and settles to off.
 
-So with Claude 2.1.319 on the inbox ConPTY, **no reports arrive yet**; everything above is
-correct and tested, and lights up as soon as either side moves. Paths, none taken here:
+So with Claude 2.1.319 on the inbox ConPTY, **no reports arrive yet** — and a reply that cannot
+be on time is only late stdin, which is why it is off by default. Everything else is tested and
+lights up as soon as either side moves. Paths, none taken here:
 bundling a newer ConPTY (`Microsoft.Windows.Console.ConPTY`: `conpty.dll` + `OpenConsole.exe`)
 if it forwards OSC input and doesn't answer DA1 itself (unverified); or Claude Code accepting a
 late reply / an env opt-in. Pre-seeding the reply before the program asks was rejected — in a

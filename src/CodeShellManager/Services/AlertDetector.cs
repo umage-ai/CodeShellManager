@@ -27,7 +27,7 @@ public partial class AlertDetector : IDisposable
         _sessionName = sessionName;
     }
 
-    /// <summary>True once <see cref="StandDown"/> ran; sticky for this detector's lifetime.</summary>
+    /// <summary>True between <see cref="StandDown"/> and <see cref="Rearm"/>.</summary>
     public bool IsStoodDown => _stoodDown;
 
     /// <summary>
@@ -42,6 +42,18 @@ public partial class AlertDetector : IDisposable
         _stoodDown = true;
         _idleTimer?.Dispose();
         _idleTimer = null;
+    }
+
+    /// <summary>
+    /// Undo <see cref="StandDown"/>: the program no longer holds any OSC 7501 record (it
+    /// cleared them, it exited, or the user chose "Clear status"), so the heuristic is the
+    /// only source again. Starts from a clean slate — no stale last line, no fired flag.
+    /// </summary>
+    public void Rearm()
+    {
+        _lastLine = "";
+        _alertFired = false;
+        _stoodDown = false;
     }
 
     public void Feed(string rawOutput)
