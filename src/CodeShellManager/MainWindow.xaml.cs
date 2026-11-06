@@ -4580,6 +4580,10 @@ public partial class MainWindow : Window
         };
         chevronBtn.Click += (_, _) => ShowRunCommandsDropdown(vm, chevronBtn);
 
+        // Git chip + its output panel (MainWindow.Git.cs). Hidden until the folder is known
+        // to be a repo.
+        var (gitChip, gitPanel) = BuildGitControls(vm);
+
         // Edit session — opens the New Session form pre-filled with this session's config.
         var editBtn = new WpfButton
         {
@@ -4655,6 +4659,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(editBtn, Dock.Right);
         DockPanel.SetDock(chevronBtn, Dock.Right);
         DockPanel.SetDock(playBtn, Dock.Right);
+        DockPanel.SetDock(gitChip, Dock.Right);
         DockPanel.SetDock(claudeBadge, Dock.Left);
         DockPanel.SetDock(titleBlock, Dock.Left);
         // Dock.Right children are stacked right-to-left in declaration order, so this
@@ -4669,6 +4674,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(editBtn);
         toolbarContent.Children.Add(chevronBtn);
         toolbarContent.Children.Add(playBtn);
+        toolbarContent.Children.Add(gitChip);
         toolbarContent.Children.Add(claudeBadge);
         toolbarContent.Children.Add(titleBlock);
         toolbarContent.Children.Add(folderBlock);
@@ -4826,9 +4832,11 @@ public partial class MainWindow : Window
         DockPanel.SetDock(chipsStrip, Dock.Top);
         DockPanel.SetDock(drawer, Dock.Top);
         DockPanel.SetDock(notesPanel, Dock.Top);
+        DockPanel.SetDock(gitPanel, Dock.Top);
         outer.Children.Add(toolbar);
         outer.Children.Add(chipsStrip);
         outer.Children.Add(drawer);
+        outer.Children.Add(gitPanel);
         outer.Children.Add(notesPanel);
         outer.Children.Add(webView);
         wrapper.Child = outer;
@@ -4928,6 +4936,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
         _sidebarActionPanels.Remove(vm.Id);
@@ -5223,6 +5232,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
         _sidebarActionPanels.Remove(vm.Id);
@@ -5359,6 +5369,7 @@ public partial class MainWindow : Window
             _sessionUiVersion++;
         }
         _runControls.Remove(vm.Id);
+        _gitPanes.Remove(vm.Id);
         _drawerItemBySession.Remove(vm.Id);
         _drawerShown.Remove(vm.Id);
         _sidebarActionPanels.Remove(vm.Id);

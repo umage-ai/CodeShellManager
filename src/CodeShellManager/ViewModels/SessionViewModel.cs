@@ -41,6 +41,16 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         get => _gitInfoLoaded;
         set { if (_gitInfoLoaded != value) { _gitInfoLoaded = value; BumpGitInfo(); } }
     }
+    // Sync state for the toolbar git chip. Same rule as the three above: plain fields,
+    // announced only through GitInfoVersion.
+    /// <summary>Tracking branch ("origin/main"), or null when the branch tracks nothing.</summary>
+    public string? GitUpstream { get; private set; }
+    /// <summary>Commits ahead of / behind <see cref="GitUpstream"/>; null without an upstream.</summary>
+    public int? GitAhead { get; private set; }
+    public int? GitBehind { get; private set; }
+    /// <summary>Number of changed paths (staged, unstaged and untracked).</summary>
+    public int GitChangeCount { get; private set; }
+
     /// <summary>Absolute path to the session's repo top-level, or null if the working folder is not in a git repo.</summary>
     [ObservableProperty] private string? _repoRoot;
     /// <summary>Set by MainWindow whenever another live session shares this session's RepoRoot.</summary>
@@ -153,9 +163,15 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         // the synchronous Directory.Exists prefix that sits outside it, and keeping the
         // resume on the UI thread is what lets the sets below notify WPF safely.
         string folder = Session.WorkingFolder;
-        var (branch, isDirty) = await Task.Run(() => GitService.GetGitInfoAsync(folder));
+        // One spawn for branch, dirty, upstream and ahead/behind (it used to be two for just
+        // branch + dirty). A detached HEAD keeps reporting "no branch, clean" as it always has.
+        var status = await Task.Run(() => GitService.GetStatusAsync(folder));
         if (token.IsCancellationRequested) return; // session closed while the probe was off-thread
-        ApplyGitInfo(branch, isDirty);
+        if (status is null || status.IsDetached || string.IsNullOrEmpty(status.Branch))
+            ApplyGitInfo(null, false);
+        else
+            ApplyGitInfo(status.Branch, status.IsDirty, status.Upstream,
+                status.Ahead, status.Behind, status.Changes.Count);
 
         // RepoRoot is stable for the life of the session — resolve it once. Don't gate on
         // a non-empty branch: detached HEADs report no branch but are still valid repos
@@ -181,14 +197,24 @@ public partial class SessionViewModel : ObservableObject, IDisposable
     /// so the overwhelmingly common poll result is "identical to last time", and that now
     /// costs no UI work at all.
     /// </summary>
-    public void ApplyGitInfo(string? branch, bool isDirty)
+    public void ApplyGitInfo(string? branch, bool isDirty) =>
+        ApplyGitInfo(branch, isDirty, upstream: null, ahead: null, behind: null, changeCount: isDirty ? 1 : 0);
+
+    /// <inheritdoc cref="ApplyGitInfo(string?, bool)"/>
+    public void ApplyGitInfo(string? branch, bool isDirty, string? upstream, int? ahead, int? behind, int changeCount)
     {
-        if (_gitInfoLoaded && _gitBranch == branch && _gitIsDirty == isDirty) return;
+        if (_gitInfoLoaded && _gitBranch == branch && _gitIsDirty == isDirty
+            && GitUpstream == upstream && GitAhead == ahead && GitBehind == behind
+            && GitChangeCount == changeCount) return;
 
         // Backing fields directly — the generated setters would raise one event each.
         _gitBranch = branch;
         _gitIsDirty = isDirty;
         _gitInfoLoaded = true;
+        GitUpstream = upstream;
+        GitAhead = ahead;
+        GitBehind = behind;
+        GitChangeCount = changeCount;
 
         BumpGitInfo();
     }
@@ -400,6 +426,10 @@ public partial class SessionViewModel : ObservableObject, IDisposable
         GitBranch = null;
         GitIsDirty = false;
         GitInfoLoaded = false;
+        GitUpstream = null;
+        GitAhead = null;
+        GitBehind = null;
+        GitChangeCount = 0;
         HasWorktreeSiblings = false;
         // The user just pointed this session at a different folder, so whatever program
         // pushed git info via OSC 9001 was describing the old one. Let the local poller
