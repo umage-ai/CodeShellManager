@@ -66,7 +66,9 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
 | `GitStatusText` | WPF-free wording for the toolbar git chip and menu: ↑/↓ counts, the menu header line, the post-fetch toast, and a short hint recognised from git's own failure text. See "Git tools on the terminal toolbar" |
 | `WslDiscoveryService` | `wsl.exe` probes for distro list, `$HOME` and login shell, each cached per (distro, user) and capped at 3s. All three go through `RunWslCaptureAsync`, which is `Task.Run`-wrapped — **never call `Process.Start` inline here**, `wsl.exe` can boot a stopped distro VM |
 | `ShellIntegrationPayload` | WPF-free validation for OSC 9001. Every field is untrusted: colour is strict hex, dirty is an allowlist, title and branch strip control characters and are length-capped (`MaxTitleLength` 80, `MaxBranchLength` 200) |
-| `AlertDetector` | Pattern matching for Claude prompts/approvals |
+| `AlertDetector` | Pattern matching for Claude prompts/approvals. `StandDown()` silences it once a session speaks OSC 7501 |
+| `ProgramStatusPayload` | WPF-free OSC 7501 report parser/validator + the probe reply (win32-input-mode encoded for ConPTY). See "Program status (OSC 7501)" |
+| `ProgramStatusRecords` | WPF-free OSC 7501 record tree: replace, `clear`, 256-cap eviction, exit lifetime, acknowledge, and the blocked > working > error > done > idle aggregate |
 | `CommandPresetsService` | Launch presets + in-session shortcuts |
 | `ClaudeSessionService` | Detects `claude` invocations; finds last `--resume` session id under `~/.claude/projects/` |
 | `UpdateService` | GitHub Releases version check; caches result for 24h at `%AppData%/CodeShellManager/update-cache.json` |
@@ -737,6 +739,95 @@ Unknown keys are ignored. Multiple keys can be sent in a single sequence. Values
 **Pipeline:** `terminal-init.js` registers an OSC handler via `term.parser.registerOscHandler(9001, …)` (requires `allowProposedApi: true`, already set). It posts `{type: "shellIntegration", fields: {…}}` to WPF. `TerminalBridge` parses it and raises `ShellIntegrationReceived`. `MainWindow.LaunchSessionAsync` subscribes and calls `vm.ApplyShellIntegration(fields)` on the dispatcher, then `MainViewModel.SaveStateDebounced()` (500ms idle coalescing — a prompt hook fires on every prompt, and a `state.json` write per emission would be silly). Repainting the stripe and ring is **not** done here: the existing `AccentColor` `PropertyChanged` subscriptions in `BuildSidebarItem` / `BuildTerminalWrapper` already handle it, exactly as they do when `RepoRoot` lands.
 
 The OSC handler returns `true` so xterm consumes the sequence and it doesn't render.
+
+## Program status (OSC 7501)
+
+Programs report their own state through the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status):
+`ESC ] 7501 ; state=working:progress=40:id=build:app=cargo:msg=<base64> ST`. Claude Code
+(checked: 2.1.319) implements it — root record `working` while busy, `blocked` +
+`kind=permission|question|auth` when waiting, `done` after a completed turn, `error` on a failed
+one, child records per background task, and `state=clear` on exit — **but only after its
+startup query `OSC 7501 ; ?` is answered**. Unanswered, it logs `probe: no reply to OSC 7501 ; ?`
+and never reports.
+
+**Pipeline.** `terminal-init.js` registers `registerOscHandler(7501, …)`: a `?` query posts
+`programStatusProbe`, a report posts `programStatus` with the raw payload (pre-capped at 4096).
+It also observes OSC 133 `A` and posts `promptStart` (returns `false` — observe only).
+`TerminalBridge` answers the probe itself with fixed bytes (`ProgramStatusPayload.ProbeReplyForConPty`)
+— app-authored, so a raw PTY write is correct, and it deliberately does **not** raise
+`UserInput` — and raises `ProgramStatusReceived` / `PromptStarted`. `MainViewModel.ApplyProgramStatus`
+→ `SessionViewModel.ApplyProgramStatus` parses (`Services/ProgramStatusPayload`), stores
+(`Services/ProgramStatusRecords`) and maps; the alert count and a toast are handled in
+`MainViewModel`. All WPF-free logic is tested in `ProgramStatusPayloadTests`,
+`ProgramStatusRecordsTests` and `SessionViewModelProgramStatusTests`. Nothing is persisted.
+
+**Validation is the spec's, and strict.** Keys `[a-z]{1,16}`, values `[A-Za-z0-9_.,+/=-]*`,
+malformed pairs skipped, last repeat wins. A report is dropped *whole* on a missing/unknown
+state, an invalid id (it is not written to the root instead), a limit (sequence 4096, app 32,
+id 128/32 per segment/8 deep, title 256→192, msg 2732→2048 bytes), bad base64, invalid UTF-8,
+or any control character in decoded text. Unicode format characters (bidi overrides,
+zero-width) are stripped, not rejected — the spec asks for them to be neutralised. An
+out-of-range `progress` is treated as indeterminate, not as a reason to drop the report.
+
+**Records and precedence.** One record per id (root = no id); each report replaces its record
+wholesale; `clear` removes the id and its children, or everything without an id; 256 records,
+least-recently-updated evicted. The session shows one aggregate state:
+**blocked > working > error > done > idle**, ties to the root, then most recent. Working
+outranks error/done on purpose: those two persist until acknowledged, so ranking them higher
+would let a stale child result hide live work forever.
+
+| Aggregate | Session |
+|---|---|
+| `working` (+`progress`) | `IsWorking` / `WorkProgress` → pulsing `⟳ working · 40%` in the sidebar row and `⟳ 40%` on the toolbar (accent blue, 10 fps opacity pulse, chrome only — HwndHost) |
+| `blocked` + `permission` | `IsWaitingForApproval` (orange) |
+| `blocked` + `question` / `auth` / no kind | `IsWaitingForInput` (green) |
+| `done` / `error` | `NeedsAttention` badge |
+| `idle` / none | indicators cleared |
+
+The badge and toast fire only on **entering** blocked/done/error (a new state or kind), never
+on a report that restates the current one with a new progress or msg; toasts are further
+limited to one per session per `ProgramStatusToastInterval` (5s). Leaving for working/idle
+clears the badge.
+
+**Fallback rule.** The first *valid* report sets `HasProgramStatus` and calls
+`AlertDetector.StandDown()` — the regex heuristic stops for that session's lifetime (same
+pattern as `_gitOverriddenByOsc`), and `RaiseAlert` plus the queued `AlertRaised` handler both
+ignore late heuristic alerts. A relaunch builds a new VM, so restart/wake re-arm it. Sessions
+that never send 7501 behave exactly as before.
+
+**User interaction acknowledges, it does not clear.** For a 7501 session `ClearAlert`
+(keystroke via `NotifyUserInteracted`, sidebar focus) clears the badge and retires `done`/`error`
+records — "a result you haven't seen" — but leaves the waiting dots and the working indicator
+alone: they describe what the program is doing now, and it will report its next state itself.
+Clearing them would blank an orange "needs permission" dot on the first keystroke.
+
+**Lifetime.** PTY exit and OSC 133 `A` call `DropTransient`: working, blocked and idle records go;
+done and error stay until acknowledged. A full reset (`RIS`) is not tracked. Note the PTY is
+usually `pwsh -NoExit -Command claude`, so "process exit" is the wrapper's — Claude's own
+`state=clear` on exit is what normally retires its records.
+
+### The probe reply cannot win under the inbox ConPTY (measured)
+
+Two conhost behaviours, both measured on 10.0.26100 with a raw-mode echo program behind the
+app's own `PseudoTerminal` and against the real `claude`:
+
+1. **Conhost drops OSC on the input side.** Writing `ESC ] 7501 ; ? ST` (either terminator) — or
+   any OSC, e.g. an OSC 11 colour reply — to the ConPTY input never reaches the program; CSI and
+   DCS replies do. Hence `ProbeReplyForConPty`: the same bytes sent as win32-input-mode key events
+   (`ESC [ 0;0;<char>;1;0;1 _` per character), which conhost turns back into exactly those
+   characters. Verified: the program receives `ESC ] 7501 ; ? ESC \` intact.
+2. **Conhost answers `CSI c` (DA1) itself.** The query never reaches xterm.js; conhost injects
+   `ESC [ ? 61;6;7;… c` into the input immediately. Claude sends DA1 straight after its 7501
+   query as a "no more replies" sentinel, so conhost's answer always arrives *before* ours can
+   make the round trip through the page and back — Claude logs "no reply" and settles to off.
+
+So with Claude 2.1.319 on the inbox ConPTY, **no reports arrive yet**; everything above is
+correct and tested, and lights up as soon as either side moves. Paths, none taken here:
+bundling a newer ConPTY (`Microsoft.Windows.Console.ConPTY`: `conpty.dll` + `OpenConsole.exe`)
+if it forwards OSC input and doesn't answer DA1 itself (unverified); or Claude Code accepting a
+late reply / an env opt-in. Pre-seeding the reply before the program asks was rejected — in a
+non-probing program it would be stray keystrokes in the shell. Any program that reports without
+querying (the spec makes detection optional) works today.
 
 ## Sleep / Wake (Dormant Sessions)
 
