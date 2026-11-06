@@ -3464,6 +3464,13 @@ public partial class MainWindow : Window
                 psItem.Click += (_, _) => LaunchPowerShellInFolder(vm.WorkingFolder, vm.GroupId);
                 menu.Items.Add(psItem);
 
+                if (IsVsCodeAvailable())
+                {
+                    var codeItem = new System.Windows.Controls.MenuItem { Header = "Open in VS Code" };
+                    codeItem.Click += (_, _) => OpenInVsCode(vm.WorkingFolder);
+                    menu.Items.Add(codeItem);
+                }
+
                 if (vm.Session.IsWsl)
                 {
                     var wslConsoleItem = new System.Windows.Controls.MenuItem { Header = "Open WSL console here" };
@@ -4524,6 +4531,9 @@ public partial class MainWindow : Window
         };
         explorerBtn.Click += (_, _) => vm.OpenInExplorerCommand.Execute(null);
 
+        // { } — open the folder in VS Code (MainWindow.OpenIn.cs). Hidden unless found.
+        var vsCodeBtn = BuildVsCodeButton(vm);
+
         // PowerShell quick-launch button
         var toolbarPsBtn = new WpfButton
         {
@@ -4658,6 +4668,7 @@ public partial class MainWindow : Window
         DockPanel.SetDock(closeBtn, Dock.Right);
         DockPanel.SetDock(termStatusDot, Dock.Right);
         DockPanel.SetDock(explorerBtn, Dock.Right);
+        DockPanel.SetDock(vsCodeBtn, Dock.Right);
         DockPanel.SetDock(toolbarPsBtn, Dock.Right);
         DockPanel.SetDock(notesBtn, Dock.Right);
         DockPanel.SetDock(sleepBtn, Dock.Right);
@@ -4673,6 +4684,7 @@ public partial class MainWindow : Window
         toolbarContent.Children.Add(closeBtn);
         toolbarContent.Children.Add(termStatusDot);
         toolbarContent.Children.Add(explorerBtn);
+        toolbarContent.Children.Add(vsCodeBtn);
         toolbarContent.Children.Add(toolbarPsBtn);
         toolbarContent.Children.Add(notesBtn);
         toolbarContent.Children.Add(sleepBtn);
