@@ -37,6 +37,42 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <!-- Bundled ConPTY (conpty.dll + OpenConsole.exe, Microsoft-signed, MIT). See "Bundled
+         ConPTY" in CLAUDE.md for why. ExcludeAssets="all": the package's own build/runtime
+         assets are for C++ projects and would drop conpty.dll into runtimes\win-x64\native\;
+         both files are copied explicitly below instead, as LOOSE files beside the exe
+         (conpty.dll looks for OpenConsole.exe next to itself, and PseudoTerminal loads
+         conpty.dll by full path from AppContext.BaseDirectory). To update: bump Version
+         here, rebuild, and re-run the checks listed in CLAUDE.md. -->
+    <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.25.260930003"
+                      GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Which architecture's ConPTY to ship. In order: an explicit RuntimeIdentifier (CI
+       publishes win-x64), then PlatformTarget, then the BUILD machine's OS architecture —
+       an AnyCPU build with no RID runs natively, so on an arm64 dev box that is arm64.
+       Defaults to x64. The package lays the two files out differently:
+       runtimes\win-<arch>\native\conpty.dll and build\native\runtimes\<arch>\OpenConsole.exe. -->
+  <PropertyGroup>
+    <_ConPtyArch Condition="'$(RuntimeIdentifier)' == 'win-arm64'">arm64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(RuntimeIdentifier)' == 'win-x86'">x86</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(RuntimeIdentifier)' == 'win-x64'">x64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(PlatformTarget)' == 'ARM64'">arm64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(PlatformTarget)' == 'x86'">x86</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$(PlatformTarget)' == 'x64'">x64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == '' and '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">arm64</_ConPtyArch>
+    <_ConPtyArch Condition="'$(_ConPtyArch)' == ''">x64</_ConPtyArch>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\runtimes\win-$(_ConPtyArch)\native\conpty.dll"
+          Link="conpty.dll" Visible="false"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\build\native\runtimes\$(_ConPtyArch)\OpenConsole.exe"
+          Link="OpenConsole.exe" Visible="false"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
   </ItemGroup>
 
   <ItemGroup>

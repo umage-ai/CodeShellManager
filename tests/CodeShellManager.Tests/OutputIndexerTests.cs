@@ -12,7 +12,7 @@ namespace CodeShellManager.Tests;
 ///
 /// The pattern (as of writing) is:
 /// <code>
-/// \x1B\[[?0-9;]*[mGKHFJABCDsuhl]   // CSI: ESC[ ... final-byte
+/// \x1B\[[?0-9;]*[mGKHFJABCDsuhlct]   // CSI: ESC[ ... final-byte
 /// | \x1B\].*?(?:\x07|\x1B\\)        // OSC: ESC] ... BEL or ESC\ (ST)
 /// | \x1B[=>]                        // DECKPAM / DECKPNM (ESC= / ESC>)
 /// | \r                              // carriage return
@@ -20,7 +20,7 @@ namespace CodeShellManager.Tests;
 ///
 /// Note: this regex deliberately handles only the subset of ANSI control sequences
 /// that ConPTY + xterm.js commonly emit. CSI sequences whose final byte is outside
-/// <c>[mGKHFJABCDsuhl]</c> (for example DEC private-mode <c>n</c>, <c>r</c>, <c>t</c>,
+/// <c>[mGKHFJABCDsuhlct]</c> (for example DEC private-mode <c>n</c>, <c>r</c>,
 /// or device-status reports) are intentionally left in the indexed text.
 ///
 /// String-literal note: ESC and BEL are written as <c></c> / <c></c>
@@ -147,10 +147,19 @@ public class OutputIndexerTests
     }
 
     [Fact]
+    public void Strip_RemovesTheBundledConPtyOpeningQueries()
+    {
+        // OpenConsole (bundled ConPTY) starts every session with ESC[1t ESC[c, and DA1
+        // answers look like ESC[?61;6;7c. None of it belongs in the search index.
+        var input = $"{ESC}[1t{ESC}[c{ESC}[?1004h{ESC}[?9001hC:\\>{ESC}[?61;6;7;22c";
+        Assert.Equal("C:\\>", Strip(input));
+    }
+
+    [Fact]
     public void Strip_LeavesUnsupportedCsiFinalsIntact()
     {
         // Documenting current behavior: the regex's CSI arm only accepts finals
-        // in [mGKHFJABCDsuhl]. A device-status query like ESC[6n (final 'n') is
+        // in [mGKHFJABCDsuhlct]. A device-status query like ESC[6n (final 'n') is
         // NOT stripped. If the regex is later widened, update this test.
         var input = $"before{ESC}[6nafter";
         // The escape sequence remains intact because the CSI arm requires a

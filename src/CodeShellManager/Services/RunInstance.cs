@@ -53,8 +53,15 @@ public partial class RunInstance : ObservableObject, IDisposable
     public event Action? OutputChanged;
     public event Action? StateChanged;
 
+    // Run commands stay on the INBOX ConPTY, deliberately. They are headless — no xterm.js
+    // to answer queries — and the inbox conhost answers device-attribute queries itself,
+    // which is right for a headless PTY. The bundled OpenConsole forwards them to the
+    // terminal instead (that is why it is bundled), and consumes the first DA1 reply as the
+    // answer to its OWN startup query: measured, a program in a headless bundled PTY that
+    // sends CSI c never gets an answer. Run commands gain nothing from OSC input passthrough,
+    // so they keep the behaviour they always had. See "Bundled ConPTY" in CLAUDE.md.
     public RunInstance(RunCommandItem item)
-        : this(item, static () => new PseudoTerminal())
+        : this(item, static () => new PseudoTerminal { AllowBundledConPty = false })
     {
     }
 
@@ -403,6 +410,6 @@ public partial class RunInstance : ObservableObject, IDisposable
     // Mirrors the strip regex in OutputIndexer.AnsiPattern — keep them in sync.
     // The `?` inside [?0-9;]* covers CSI private-mode sequences like ESC[?9001h
     // (ConPTY's Win32 input-mode bootstrap), ESC[?1049h (alt screen), etc.
-    [GeneratedRegex(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]|\r", RegexOptions.Compiled)]
+    [GeneratedRegex(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]|\r", RegexOptions.Compiled)]
     private static partial Regex AnsiPattern();
 }

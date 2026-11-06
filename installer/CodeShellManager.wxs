@@ -49,6 +49,17 @@
         <File Source="$(var.PublishDir)\CodeShellManager.exe" KeyPath="yes" />
       </Component>
 
+      <!-- Bundled ConPTY (Microsoft.Windows.Console.ConPTY, Microsoft-signed). Both MUST sit
+           beside CodeShellManager.exe: PseudoTerminal loads conpty.dll by full path from the
+           exe's folder, and conpty.dll starts OpenConsole.exe from its own folder. Missing
+           either silently falls back to the inbox ConPTY. The CI guard checks these entries. -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\conpty.dll" KeyPath="yes" />
+      </Component>
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\OpenConsole.exe" KeyPath="yes" />
+      </Component>
+
       <!-- App icon (for Add/Remove Programs entry) -->
       <Component Directory="AssetsFolder" Guid="*">
         <File Source="$(var.PublishDir)\Assets\app.ico" KeyPath="yes" />
