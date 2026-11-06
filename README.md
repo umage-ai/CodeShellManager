@@ -62,6 +62,7 @@ Spotted something out of date? Competitors move fast. [Open an issue](https://gi
 - **Git worktrees** — start a new session in a fresh worktree from any session's branch; sibling worktrees can be grouped together in the sidebar. The git menu's **Worktrees ▸** lists every worktree of the repo with its state, jumps to (or opens) its session, prunes worktrees whose folder is gone, and removes a finished one — closing its sessions first, refusing if anything is uncommitted, and offering to delete the branch only if it is merged
 - **Edit session** — change a session's folder, command, SSH/WSL target or appearance after it was created
 - **Recently closed** — Ctrl+Shift+T reopens the last-closed session (browser convention); the New Session dialog also lists the last 10 closed sessions for one-click revival
+- **Recent sessions** — 🕘 Recent in the toolbar (Ctrl+Shift+E) lists the 10 sessions you used last, live or asleep, with their status; Enter jumps back to the previous one, 1–9/0 pick directly
 - **Per-session run commands** — define a list of labelled commands per session (Test, Build, Watch…); ▶ runs the default, F5 / Shift+F5 run/stop it, output streams into a side drawer without touching the parent terminal. Optional post-run URL opens in your browser on exit code 0.
 - **Full-text search** — all terminal output indexed to SQLite FTS5; instant search across every session, ever
 - **Per-project notepad** — collapsible 📝 notes panel on every terminal, auto-saved and searchable
@@ -141,6 +142,7 @@ dotnet run --project src/CodeShellManager/CodeShellManager.csproj
 | `Ctrl+W` | Close active session |
 | `Ctrl+F` | Toggle search |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle sessions |
+| `Ctrl+Shift+E` | Recent sessions menu (Enter = previous session, 1–9/0 pick) |
 | `F5` | Run the active session's default run-command |
 | `Shift+F5` | Stop the active session's running run-command |
 | `Escape` (in search) | Close search panel |

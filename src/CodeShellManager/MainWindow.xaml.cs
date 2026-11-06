@@ -147,7 +147,10 @@ public partial class MainWindow : Window
         {
             if (args.PropertyName == nameof(MainViewModel.ActiveSession))
             {
-                if (_vm.ActiveSession != null)
+                // Not while restoring: RegisterSession activates each restored session in
+                // turn, which would overwrite the saved "last used" order with sidebar order
+                // and leave the Recent menu (Ctrl+Shift+E) useless after every restart.
+                if (_vm.ActiveSession != null && !_restoreInProgress)
                     _vm.ActiveSession.Session.LastActivityAt = DateTime.UtcNow;
                 RefreshTerminalLayout();
                 UpdateSidebarActiveState();
@@ -6257,6 +6260,8 @@ public partial class MainWindow : Window
         }
         if (key == Key.W && mods == ModifierKeys.Control) { _vm.ActiveSession?.CloseCommand.Execute(null); return true; }
         if (key == Key.F && mods == ModifierKeys.Control) { ToggleSearch_Click(this, new RoutedEventArgs()); return true; }
+        // Recent sessions menu. Ctrl+Shift, not Ctrl+E: plain Ctrl+E is end-of-line in bash.
+        if (key == Key.E && mods == (ModifierKeys.Control | ModifierKeys.Shift)) { ShowRecentSessionsMenu(RecentSessionsBtn); return true; }
         if (key == Key.Tab && mods == ModifierKeys.Control) { CycleSession(forward: true); return true; }
         if (key == Key.Tab && mods == (ModifierKeys.Control | ModifierKeys.Shift)) { CycleSession(forward: false); return true; }
         if (key == Key.F5 && mods == ModifierKeys.None)
