@@ -836,11 +836,16 @@ git itself refuses modified, untracked or locked worktrees and never removes the
 Deleting the branch is a separate, explicit question afterwards, using `branch -d` (not `-D`), so
 an unmerged branch is kept.
 
-**Refused when another worktree lives inside it.** git's clean check does not look inside an
+**Refused when another repository lives inside it.** git's clean check does not look inside an
 ignored folder, and a nested worktree usually sits in one (`.worktrees/` in `.gitignore`).
 Reproduced with git 2.54: worktree B inside A's ignored `.worktrees/`, with uncommitted work —
-A reports clean, `git worktree remove A` exits 0 and deletes B, work included.
-`GitWorktrees.NestedInside` is checked against a list re-read at click time, not the menu's.
+A reports clean, `git worktree remove A` exits 0 and deletes B, work included. Two checks, both
+at click time: `GitWorktrees.NestedInside` against a freshly re-read worktree list, and
+`GitWorktrees.NestedRepositories`, an on-disk scan for any folder below it with a `.git` of its
+own — an independent clone or another repo's worktree is deleted just the same, and only the scan
+sees those (it also catches submodules, which git refuses to remove anyway). Junctions are not
+followed. **Both fail closed:** the listing returns empty on any git error, so a list that does
+not contain the target refuses; a scan that hits its folder cap returns null and refuses.
 
 **Sleeping sessions are deleted only after git has removed the folder.** They never go through
 Recently closed, so deleting them before git ran meant a refusal lost them for good.

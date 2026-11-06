@@ -42,7 +42,7 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 | Agents keep running with the window closed | ❌ ([#149](https://github.com/umage-ai/CodeShellManager/issues/149)) | ✅ cloud | ? | ? | ✅ | ✅ tmux | ❌ |
 | Mobile or remote control | ❌ | ✅ Dispatch | ✅ iOS | ✅ | ✅ SSH attach | ❌ | ❌ |
 | **Review and workflow** | | | | | | | |
-| Git worktree creation | ◐ manual | ✅ per session | ✅ | ✅ core feature | ◐ via plugins | ✅ | ? |
+| Git worktree creation | ◐ one click, not automatic | ✅ per session | ✅ | ✅ core feature | ◐ via plugins | ✅ | ? |
 | Diff / review view | ❌ ([#148](https://github.com/umage-ai/CodeShellManager/issues/148)) | ✅ | ✅ | ✅ | ◐ via plugin | ✅ | ◐ git sidebar |
 | Browser / app preview | ❌ post-run URL only | ✅ | ✅ | ? | ❌ | ❌ | ✅ |
 | Per-session run commands (F5, background output) | ✅ | ◐ preview servers | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -68,7 +68,7 @@ Popular tools without a Windows build (Conductor, Superset, cmux) are left out.
 - **No "agent is working" state.** CSM knows when a session is waiting for you, but not when it's busy. Herdr tracks working, blocked, done and idle for about 25 agents: [#154](https://github.com/umage-ai/CodeShellManager/issues/154).
 - **No diff or review view** yet: [#148](https://github.com/umage-ai/CodeShellManager/issues/148).
 - **Closing the window ends the sessions.** Close-to-tray with live status is planned: [#149](https://github.com/umage-ai/CodeShellManager/issues/149).
-- **Worktrees are manual.** Orca, Claude Code Desktop and Nimbalyst make one worktree per task the default.
+- **Worktrees are one click, not automatic.** CSM creates, lists, jumps between, prunes and removes worktrees from the git menu, but Orca, Claude Code Desktop and Nimbalyst make one worktree per task the default.
 - **No mobile or remote companion.**
 - **Windows-only, by design.**
 

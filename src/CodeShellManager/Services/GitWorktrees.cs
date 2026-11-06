@@ -155,6 +155,51 @@ public static class GitWorktrees
     public static IReadOnlyList<WorktreeInfo> NestedInside(IReadOnlyList<WorktreeInfo> worktrees, WorktreeInfo target) =>
         worktrees.Where(w => !w.IsBare && !SamePath(w.Path, target.Path) && IsInside(w.Path, target.Path)).ToList();
 
+    /// <summary>
+    /// Folders BELOW <paramref name="root"/> that are a git repository, worktree or submodule
+    /// of their own (they hold a <c>.git</c> folder or file). <see cref="NestedInside"/> only
+    /// sees worktrees registered with the same repo; an independent clone, or another repo's
+    /// worktree, inside an ignored folder would be deleted by `git worktree remove` just the
+    /// same (second-round pre-release review). Junctions and symlinks are not followed, and
+    /// <c>.git</c> folders are not descended into. Returns null when more than
+    /// <paramref name="maxDirs"/> folders had to be visited — the caller cannot vouch for the
+    /// tree then and must refuse. Disk I/O: call off the UI thread.
+    /// </summary>
+    public static IReadOnlyList<string>? NestedRepositories(string root, int maxDirs = 500_000)
+    {
+        var found = new List<string>();
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = false,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+        };
+        var pending = new Stack<string>();
+        pending.Push(root);
+        int visited = 0;
+        while (pending.Count > 0)
+        {
+            string dir = pending.Pop();
+            bool isRoot = ReferenceEquals(dir, root);
+            if (!isRoot && File.Exists(Path.Combine(dir, ".git")))
+            {
+                found.Add(dir);                       // linked worktree or submodule
+                continue;
+            }
+            foreach (string sub in Directory.EnumerateDirectories(dir, "*", options))
+            {
+                if (++visited > maxDirs) return null;
+                if (Path.GetFileName(sub).Equals(".git", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!isRoot) found.Add(dir);      // a repository of its own
+                    continue;                         // never walk into .git
+                }
+                pending.Push(sub);
+            }
+        }
+        return found;
+    }
+
     /// <summary>The worktree's folder name — what the menus show.</summary>
     public static string Name(string path)
     {

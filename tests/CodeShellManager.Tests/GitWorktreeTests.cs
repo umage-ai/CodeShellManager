@@ -267,6 +267,47 @@ public sealed class GitWorktreeRepoTests : IDisposable
     }
 
     [Fact]
+    public void NestedRepositories_finds_an_independent_clone_and_a_submodule_but_not_the_worktree_itself()
+    {
+        // NestedInside only sees worktrees registered with THIS repo. An independent clone, or
+        // a submodule (.git FILE), inside an ignored folder is deleted by `worktree remove` too.
+        AddWorktree("A", "a");
+        string a = WtPath("A");
+        Git(a, "init", "-q", Path.Combine(a, ".cache", "other-clone"));                 // .git folder
+        Directory.CreateDirectory(Path.Combine(a, "vendor", "sub"));
+        File.WriteAllText(Path.Combine(a, "vendor", "sub", ".git"), "gitdir: ../../.git/modules/sub\n");
+        Directory.CreateDirectory(Path.Combine(a, "src", "deep", "er"));                 // plain folders
+
+        var found = GitWorktrees.NestedRepositories(a)!.Select(p => Path.GetFileName(p)).OrderBy(n => n);
+
+        Assert.Equal(new[] { "other-clone", "sub" }, found);                             // not A itself
+    }
+
+    [Fact]
+    public void NestedRepositories_is_empty_for_a_plain_worktree_and_does_not_follow_junctions()
+    {
+        AddWorktree("A", "a");
+        // A junction from inside A to the MAIN checkout (which has a .git folder) must not be
+        // followed — git doesn't follow it when deleting either.
+        string link = Path.Combine(WtPath("A"), "link-to-main");
+        var psi = new ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var x in new[] { "/c", "mklink", "/J", link, Main }) psi.ArgumentList.Add(x);
+        using (var mk = Process.Start(psi)!) { mk.WaitForExit(); Assert.Equal(0, mk.ExitCode); }
+
+        Assert.Empty(GitWorktrees.NestedRepositories(WtPath("A"))!);
+        Directory.Delete(link);                                                           // the link only
+    }
+
+    [Fact]
+    public void NestedRepositories_gives_up_rather_than_vouching_for_a_tree_it_did_not_finish()
+    {
+        AddWorktree("A", "a");
+        for (int i = 0; i < 5; i++) Directory.CreateDirectory(Path.Combine(WtPath("A"), $"d{i}"));
+        Assert.Null(GitWorktrees.NestedRepositories(WtPath("A"), maxDirs: 3));
+    }
+
+    [Fact]
     public async Task Removing_a_clean_worktree_deletes_it_and_keeps_its_branch()
     {
         AddWorktree("wt-feat", "feat");
