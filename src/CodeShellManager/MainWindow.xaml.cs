@@ -115,6 +115,10 @@ public partial class MainWindow : Window
     private bool _isShuttingDown = false;
     private bool _shutdownComplete = false;
 
+    // Windows is logging off / shutting down: never hold that up with the "still running?"
+    // question — the OS would show "this app is preventing shutdown" over it.
+    private bool _osSessionEnding = false;
+
     // Guards RestartSessionsAsync so two restart loops can't interleave — see the comment
     // there for why restarts have to stay strictly sequential.
     private bool _restartInProgress = false;
@@ -141,6 +145,8 @@ public partial class MainWindow : Window
         LoadSavedWindowState(); // before Show — see MainWindow.Placement.cs
         _vm = new MainViewModel(_sessionManager, _stateService);
         _vm.SessionClosed += OnSessionVmClosed;
+        if (Application.Current != null)
+            Application.Current.SessionEnding += (_, _) => _osSessionEnding = true;
 
         // Refresh terminal layout whenever active session changes (Single mode needs this)
         _vm.PropertyChanged += (_, args) =>
@@ -1530,6 +1536,8 @@ public partial class MainWindow : Window
         {
             bridge.RawOutputReceived += alertDetector.Feed;
         }
+        // Feeds the "still busy?" check on app close (SessionBusyRules).
+        bridge.RawOutputReceived += _ => vm.NoteOutput();
 
         // Shell programs (e.g. an SSH overlay, a prompt hook, a Claude Code hook) push
         // session state via OSC 9001. Apply it on the VM, then debounce-save so the
@@ -6299,6 +6307,34 @@ public partial class MainWindow : Window
 
     // ── Window close ──────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// The "sessions are still running — close anyway?" check. True = go ahead and close.
+    /// Skipped when the setting is off, when Windows is ending the session, and when nothing
+    /// is busy (<see cref="SessionBusyRules"/>).
+    /// </summary>
+    private bool ConfirmCloseWithBusySessions()
+    {
+        if (_osSessionEnding || !_vm.Settings.WarnOnCloseWhenBusy) return true;
+
+        var now = DateTime.UtcNow;
+        var rows = new List<Views.BusySessionsDialog.Row>();
+        foreach (var vm in _vm.Sessions)
+        {
+            if (vm.BusyReason(now) is { } reason)
+                rows.Add(new Views.BusySessionsDialog.Row(vm.DisplayName, vm.AccentColor, reason));
+        }
+        if (rows.Count == 0) return true;
+
+        // A minimized window would centre the dialog on nothing visible.
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+
+        bool close = Views.BusySessionsDialog.Confirm(this, rows, out bool dontAskAgain);
+        if (close && dontAskAgain)
+            _vm.Settings.WarnOnCloseWhenBusy = false;   // persisted by the SaveStateAsync that follows
+        return close;
+    }
+
     protected override async void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         // Final entry: cleanup is finished, let WPF tear the window down for real.
@@ -6314,6 +6350,10 @@ public partial class MainWindow : Window
 
         // Re-entry during async cleanup (e.g. user double-clicks the X) — just suppress.
         if (_isShuttingDown) return;
+
+        // Ask first when something is still running. e.Cancel is already true, so returning
+        // here simply keeps the app open.
+        if (!ConfirmCloseWithBusySessions()) return;
         _isShuttingDown = true;
 
         var all = _vm.Sessions.ToList();

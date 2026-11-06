@@ -909,6 +909,25 @@ OSC input through and forwards DA1, measured to turn Claude's probe result from 
 Pre-seeding the reply before the program asks was rejected — in a non-probing program it would
 be stray keystrokes in the shell.
 
+## Closing the app while sessions are busy
+
+`OnClosing` first calls `ConfirmCloseWithBusySessions`: if any live session is busy, an owned
+`Views/BusySessionsDialog` lists each one (accent stripe, name, why) and asks — **Keep running**
+is the default for both Enter and Esc. An owned window rather than an overlay like the shutdown
+board, because asking must not collapse `TerminalGrid` (HwndHost — see "Session Spinners").
+
+"Busy" is the WPF-free `Services/SessionBusyRules` (tested in `SessionBusyRulesTests`):
+- a session that speaks OSC 7501 is judged by its report only — `working` (+progress) and
+  `blocked` (mid-turn) are busy; idle/done/error are not, whatever it prints;
+- any other session is busy if it printed within `RecentOutputWindow` (4s) —
+  `SessionViewModel.NoteOutput` stamps every PTY chunk (lock-free, any thread);
+- a running run command is busy either way.
+
+Skipped when `AppSettings.WarnOnCloseWhenBusy` is off (Settings, or the dialog's "Don't warn me
+again"), and when Windows is logging off (`Application.SessionEnding`) — the OS would otherwise
+show "this app is preventing shutdown" over it. `CloseWarningTests` (UI) runs `ping -t` and
+checks both answers.
+
 ## Sleep / Wake (Dormant Sessions)
 
 Sessions can be put to sleep instead of closed — the PTY is torn down but the `ShellSession` is kept in `state.json` (`IsDormant = true`) so it can be relaunched from the sidebar later. Useful when you have many long-running projects but only need a few live at once.
@@ -1338,6 +1357,7 @@ block the user and shutdown does).
 
 Persisted in `state.json`. Key settings:
 - `AutoRestoreSessions` — restore open sessions on next launch
+- `WarnOnCloseWhenBusy` (default true) — ask before closing the app while a session is busy; see "Closing the app while sessions are busy".
 - `AutoResumeClaude` — when restoring, append `--resume <sessionId>` to claude commands so the prior conversation is picked up. Toggle off if you want fresh sessions on restart.
 - `ClaudeLaunchStaggerMs` (default 2000) — flat delay between consecutive Claude launches, and the cap on the post-exit settle at shutdown. The Claude CLI rewrites its config unlocked on startup and exit, so two `claude.exe` doing it at once can lose each other's updates. Evidence this is real: a machine here had two orphaned `.claude.json.tmp.<pid>.<hash>` files with the same timestamp and different pids.
 

@@ -42,6 +42,9 @@ public sealed class AppFixture : IDisposable
     public void Dispose()
     {
         try { App.Close(); } catch { /* ignore if already closed */ }
+        // A busy session makes the app ask "close anyway?" (BusySessionsDialog) instead of
+        // exiting; never leave that process behind for the next test class.
+        try { if (!App.HasExited) App.Kill(); } catch { }
         Automation.Dispose();
         try { File.Delete(_statePath); } catch { }
     }
