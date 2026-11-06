@@ -37,6 +37,26 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <!-- Bundled ConPTY (conpty.dll + OpenConsole.exe, Microsoft-signed, MIT). See "Bundled
+         ConPTY" in CLAUDE.md for why. ExcludeAssets="all": the package's own build/runtime
+         assets are for C++ projects and would drop conpty.dll into runtimes\win-x64\native\;
+         both files are copied explicitly below instead, as LOOSE files beside the exe
+         (conpty.dll looks for OpenConsole.exe next to itself, and PseudoTerminal loads
+         conpty.dll by full path from AppContext.BaseDirectory). To update: bump Version
+         here, rebuild, and re-run the checks listed in CLAUDE.md. -->
+    <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.25.260930003"
+                      GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\runtimes\win-x64\native\conpty.dll"
+          Link="conpty.dll" Visible="false"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+    <None Include="$(PkgMicrosoft_Windows_Console_ConPTY)\build\native\runtimes\x64\OpenConsole.exe"
+          Link="OpenConsole.exe" Visible="false"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
   </ItemGroup>
 
   <ItemGroup>

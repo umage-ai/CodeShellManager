@@ -88,6 +88,8 @@ public partial class OutputIndexer : IDisposable
     // The `?` inside [?0-9;]* covers CSI private-mode sequences like ESC[?9001h
     // (ConPTY's Win32 input-mode bootstrap), ESC[?1049h (alt screen), etc.
     // OSC strings may terminate with BEL (\x07) or ST (ESC\).
-    [GeneratedRegex(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhl]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]|\r", RegexOptions.Compiled)]
+    // `c` and `t` came with the bundled ConPTY: OpenConsole opens every session with
+    // ESC[1t ESC[c (window op + DA1 query), which would otherwise land in the index.
+    [GeneratedRegex(@"\x1B\[[?0-9;]*[mGKHFJABCDsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]|\r", RegexOptions.Compiled)]
     private static partial Regex AnsiPattern();
 }

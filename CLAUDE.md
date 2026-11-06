@@ -42,7 +42,7 @@ PTY (ConPTY) → PseudoTerminal → TerminalBridge → WebView2 (xterm.js)
                            AlertDetector → SessionViewModel.RaiseAlert()
 ```
 
-- **PseudoTerminal** (`Terminal/PseudoTerminal.cs`): Windows ConPTY wrapper, P/Invoke only. Implements `IPseudoTerminal` (`Terminal/IPseudoTerminal.cs`) — the minimum surface needed by `RunInstance` (`DataReceived`, `Exited`, `ExitCode`, `Start`). Tests inject a fake via the `internal RunInstance(item, Func<IPseudoTerminal>)` constructor. `BuildCmdLine` passes shells through verbatim (`cmd`/`powershell`/`pwsh`/`wsl`/`bash`/`zsh`/`sh`/`ssh`/`nu`/`fish`); anything else is wrapped in `pwsh.exe -NoExit -Command …` (falls back to `powershell.exe` when pwsh isn't on PATH). The pwsh preference is deliberate — it loads the user's PowerShell 7 profile so functions defined there (e.g. `claudelocal`, `claudework`) resolve as bare session commands.
+- **PseudoTerminal** (`Terminal/PseudoTerminal.cs`): Windows ConPTY wrapper, P/Invoke only. Sessions run on the **bundled** ConPTY (`conpty.dll` + `OpenConsole.exe`, bound in `Terminal/ConPtyApi.cs`), run commands on the inbox one — see "Bundled ConPTY". Implements `IPseudoTerminal` (`Terminal/IPseudoTerminal.cs`) — the minimum surface needed by `RunInstance` (`DataReceived`, `Exited`, `ExitCode`, `Start`). Tests inject a fake via the `internal RunInstance(item, Func<IPseudoTerminal>)` constructor. `BuildCmdLine` passes shells through verbatim (`cmd`/`powershell`/`pwsh`/`wsl`/`bash`/`zsh`/`sh`/`ssh`/`nu`/`fish`); anything else is wrapped in `pwsh.exe -NoExit -Command …` (falls back to `powershell.exe` when pwsh isn't on PATH). The pwsh preference is deliberate — it loads the user's PowerShell 7 profile so functions defined there (e.g. `claudelocal`, `claudework`) resolve as bare session commands.
 - **TerminalBridge** (`Terminal/TerminalBridge.cs`): Routes bytes between PTY and xterm.js via WebView2 messages. Surfaces accelerator keys (Ctrl-combos, F-keys, Esc) via `_webView.PreviewKeyDown` — the newer WPF WebView2 wrapper forwards accelerators through standard key events rather than a separate `CoreWebView2Controller.AcceleratorKeyPressed`. Bridge re-raises them as `AcceleratorKeyPressed` so `MainWindow.OnBridgeAcceleratorKey` can run global shortcuts even when the terminal has focus.
 - **OutputIndexer** (`Terminal/OutputIndexer.cs`): Async channels → SQLite, strips ANSI
 - **AlertDetector** (`Services/AlertDetector.cs`): Regex on raw PTY output, fires after 1.5s idle
@@ -433,6 +433,75 @@ contains `PerMonitorV2`: removing `<ApplicationManifest>` from the csproj would 
 `app.manifest` on disk and silently bring the old behaviour back. The `WFO0003` analyzer
 warning is suppressed in the csproj deliberately — it recommends WinForms'
 `Application.SetHighDpiMode`, which a WPF app never calls.
+
+## Bundled ConPTY
+
+Terminals run on a **bundled ConPTY** — `conpty.dll` + `OpenConsole.exe` from the NuGet package
+`Microsoft.Windows.Console.ConPTY` (1.25.260930003; both Microsoft-signed, MIT) — instead of
+the Windows inbox one (kernel32 → `C:\Windows\System32\conhost.exe`). `UseBundledConPty` in
+`AppSettings` (default **true**, no UI) switches back to the inbox one; it is read once at
+startup, before the first terminal, so a change needs a restart.
+
+**Why: two inbox-conhost behaviours, both measured** (conhost 10.0.26100, a raw-mode echo
+program behind the app's own `PseudoTerminal`, and the real `claude`):
+
+1. **It drops OSC sequences on the input side.** Anything the terminal writes back as
+   `ESC ] … ST` — an OSC 11 colour reply, the OSC 7501 program-status reply — never reaches
+   the program (CSI and DCS replies do). The bundled one delivers it intact, BEL- or ST-terminated.
+2. **It answers `CSI c` (DA1) itself**, immediately, and never forwards the query. Programs
+   use the DA1 answer as a "no more replies are coming" sentinel after their own queries, so
+   any reply that has to come from the real terminal loses the race. The bundled one forwards
+   DA1 to the terminal, where xterm.js answers it in order.
+
+Concretely, Claude Code 2.1.319's debug log says `programStatus=no (probe: no reply to OSC 7501 ; ?)`
+on the inbox ConPTY and `programStatus=yes (probe: OSC 7501 reply)` on the bundled one.
+
+**Loading rules** (`Terminal/ConPtyApi.cs`, `PseudoTerminal`):
+- `conpty.dll` is loaded **by full path** from `AppContext.BaseDirectory` (`NativeLibrary.TryLoad`
+  + `GetExport`), never by bare name — a bare name walks the DLL search order (current
+  directory, PATH), i.e. a hijack. `TryBindBundled` refuses a relative path outright. The inbox
+  functions are likewise bound from `System32\kernel32.dll` by full path.
+- Both files must sit **beside the exe**: `conpty.dll` launches `OpenConsole.exe` from its own
+  folder. The csproj copies them as loose files with `ExcludeFromSingleFile` (the package's own
+  assets are excluded — they are for C++ projects and would land in `runtimes\win-x64\native\`).
+- An HPCON is only valid with the implementation that created it, so each `PseudoTerminal`
+  remembers its `ConPtyApi` and sends Resize/Close to the same one.
+
+**Fallback to inbox** — never "no terminal": the setting is off; a file is missing; the load
+or an export lookup fails (wrong architecture, corrupt file); or the bundled
+`CreatePseudoConsole` returns a failure HRESULT, in which case that terminal retries on inbox and
+every later one stays there. The outcome and reason are logged once to `crash.log`
+(`PTY ConPTY: bundled (loaded …)` / `PTY ConPTY: inbox — …`). `PseudoTerminal.ActiveConPty` and the
+per-instance `ConPtyKind` / `UsesBundledConPty` say which one is in use.
+
+**Run commands stay on the inbox ConPTY** (`RunInstance` constructs
+`new PseudoTerminal { AllowBundledConPty = false }`). Measured: OpenConsole opens every PTY by
+sending `ESC[1t ESC[c` to the terminal and treats the first DA1 answer it receives as the
+answer to *its own* query. A headless run PTY has no xterm to answer, and a program inside it
+that sends `CSI c` was never answered at all on the bundled one (the inbox conhost answers it
+locally — right for a headless PTY). Startup itself is not delayed by the unanswered query
+(`cmd /c echo`: first output median 45ms inbox vs 44ms bundled; answering DA1 made no
+improvement), and run commands gain nothing from OSC input passthrough — so they keep exactly
+the behaviour they had.
+
+**Other measured differences** (sessions): resize, exit detection (`HasExited`/`Exited`), the
+job-object kill and output throughput (`dir /s`, 343KB in ~660ms) are the same on both.
+OpenConsole does not clear the screen at start (no `ESC[2J`), terminates OSC titles with ST
+instead of BEL, and toggles autowrap (`?7l`/`?7h`); xterm.js handles all of it. The opening
+`ESC[1t ESC[c` were added to the CSI final-byte class (`c`, `t`) of the three ANSI strip
+regexes (`OutputIndexer`, `RunInstance`, `AlertDetector`) so they don't reach the search index.
+
+**Packaging:** the MSI installs both files into `INSTALLFOLDER` (`installer/CodeShellManager.wxs`);
+the ZIP ships the publish folder. CI fails the build if the `.wxs` lacks either entry, if either
+file is missing from `publish/`, or if either is not validly Microsoft-signed. The exe-signing
+step signs **`CodeShellManager.exe` by name** — it used to sign every `*.exe` in `publish/`,
+which would now re-sign Microsoft's `OpenConsole.exe` with our certificate.
+
+**Updating the package:** bump `Version` on the `Microsoft.Windows.Console.ConPTY`
+PackageReference in the csproj, build, and re-measure both behaviours above (OSC input
+passthrough; DA1 forwarded, not answered) plus `ConPtyApiTests` — the property name
+`$(PkgMicrosoft_Windows_Console_ConPTY)` and the `build\native\runtimes\x64\OpenConsole.exe`
+path are the two things a package layout change would break.
 
 ## Session Lifecycle
 
