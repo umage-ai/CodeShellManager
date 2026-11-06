@@ -398,28 +398,24 @@ public partial class MainWindow : Window
                 long gateMs = restoreClock.ElapsedMilliseconds - gateStart;
 
                 long launchStart = restoreClock.ElapsedMilliseconds;
-                try { await LaunchSessionAsync(s, restoring: true); }
+                // removeOnFailure: false — this is a relaunch of a saved session. With the
+                // default, a PTY that failed to start (claude briefly off PATH, a WSL distro
+                // uninstalled) made LaunchSessionAsync DELETE the session, and the next save
+                // made that permanent. Restart has always passed false for this reason.
+                try { await LaunchSessionAsync(s, restoring: true, removeOnFailure: false); }
                 catch (Exception ex)
                 {
                     Log($"Restore FAILED for '{s.Name}': {ex}");
                     if (IsWebView2AccessDenied(ex) || Terminal.WebView2StartupError.IsIncompatibleCopy(ex))
-                    {
                         webView2AccessDenied.Add(s.Name);
-                        // The batched dialog below tells the user to reopen these from the
-                        // sidebar, so make sure there is a row to reopen: put the session to
-                        // sleep, as Wake and Restart already do when a launch fails.
-                        if (!_sessionUi.ContainsKey(s.Id))
-                        {
-                            _launchingSidebarItems.Remove(s.Id);
-                            s.IsDormant = true;
-                            AddDormantSidebarItem(s);
-                            RebuildSidebarOrder();
-                        }
-                    }
                     else
                         MessageBox.Show($"Failed to restore '{s.Name}': {ex.Message}",
                             "Restore Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+                // Every failure shape — thrown, or handled inside LaunchSessionAsync — ends here
+                // with no pane. Put the session to sleep so it keeps a row that can be fixed
+                // and woken; otherwise it stays saved with no row anywhere.
+                FallBackToDormantIfNotLive(s);
 
                 // Split the per-session cost into "waiting for the previous Claude" vs
                 // "actually launching" (WebView2 create + navigate + PTY spawn). #82 asked
@@ -5432,19 +5428,34 @@ public partial class MainWindow : Window
 
         try
         {
-            await LaunchSessionAsync(session, restoring: true);
+            // removeOnFailure: false — see the restore loop. With the default, clicking a
+            // sleeping row whose program failed to start deleted the session for good: the
+            // PTY-failure path returns rather than throws, so the catch below never ran.
+            await LaunchSessionAsync(session, restoring: true, removeOnFailure: false);
         }
         catch (Exception ex)
         {
             Log($"Wake FAILED for '{session.Name}': {ex}");
-            // Restore the dormant entry so the user doesn't lose access to the session
-            session.IsDormant = true;
-            AddDormantSidebarItem(session);
-            RebuildSidebarOrder();
             MessageBox.Show($"Failed to wake '{session.Name}': {ex.Message}",
                 "Wake Error", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        // Thrown or handled inside, a failed wake leaves no pane: keep the sleeping row.
+        FallBackToDormantIfNotLive(session);
         _ = _vm.SaveStateAsync();
+    }
+
+    /// <summary>
+    /// After a relaunch (restore, wake): if no pane came up, put the session back to sleep so
+    /// it keeps a sidebar row the user can edit and wake. Restart does the same inline.
+    /// </summary>
+    private void FallBackToDormantIfNotLive(ShellSession session)
+    {
+        if (_sessionUi.ContainsKey(session.Id) || session.IsDormant) return;
+        if (!_sessionManager.Sessions.Any(s => s.Id == session.Id)) return;
+        _launchingSidebarItems.Remove(session.Id);
+        session.IsDormant = true;
+        AddDormantSidebarItem(session);
+        RebuildSidebarOrder();
     }
 
     /// <summary>

@@ -422,8 +422,7 @@ public partial class MainWindow
             foreach (var w in worktrees)
             {
                 if (w.IsBare) continue;
-                bool isCurrent = current != null && GitWorktrees.Normalize(w.Path)
-                    .Equals(GitWorktrees.Normalize(current.Path), StringComparison.OrdinalIgnoreCase);
+                bool isCurrent = current != null && GitWorktrees.SamePath(w.Path, current.Path);
                 var mi = new MenuItem
                 {
                     Header = new TextBlock { Text = GitWorktrees.Label(w, statusOf.GetValueOrDefault(w.Path)) },
@@ -543,6 +542,22 @@ public partial class MainWindow
         SessionViewModel vm, GitService.WorktreeInfo wt, string mainPath, GitRepoStatus? status)
     {
         string name = GitWorktrees.Name(wt.Path);
+
+        // Re-read the list now rather than trusting the menu's: a worktree created inside this
+        // one since the menu opened must still block the remove (see NestedInside).
+        var (fresh, _) = await LoadWorktreesAsync(wt.Path);
+        var nested = GitWorktrees.NestedInside(fresh, wt);
+        if (nested.Count > 0)
+        {
+            MessageBox.Show(this,
+                $"'{name}' contains another worktree:\n\n" +
+                string.Join("\n", nested.Select(n => $"  • {GitWorktrees.Name(n.Path)}  ({n.Path})")) +
+                "\n\nRemoving it would delete that worktree too, uncommitted work included — git does " +
+                "not check inside ignored folders. Remove the inner worktree first.",
+                "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         if (status is { IsDirty: true })
         {
             MessageBox.Show(this,
@@ -596,16 +611,6 @@ public partial class MainWindow
                 if (pty != null) exits.Add(WaitForPtyExitAsync(pty, timeoutMs: 10_000));
             }
             await Task.WhenAll(exits);
-            foreach (var d in dormantHere)
-            {
-                _dormantSidebarItems.Remove(d.Id);
-                _sessionManager.RemoveSession(d.Id);
-            }
-            if (dormantHere.Count > 0)
-            {
-                RebuildSidebarOrder();
-                _ = _vm.SaveStateAsync();
-            }
 
             var r = await GitService.RemoveWorktreeAsync(mainPath, wt.Path);
             if (!r.Ok)
@@ -616,6 +621,20 @@ public partial class MainWindow
                     (liveHere.Count > 0 ? "\n\nThe sessions that were in it are closed; Ctrl+Shift+T reopens them." : ""),
                     "Remove worktree", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
+            }
+
+            // Only now that git has removed the folder: deleted earlier, a refusal (a file
+            // created since the menu opened, an editor holding the folder) lost them for good —
+            // unlike live sessions they never go through Recently closed.
+            foreach (var d in dormantHere)
+            {
+                _dormantSidebarItems.Remove(d.Id);
+                _sessionManager.RemoveSession(d.Id);
+            }
+            if (dormantHere.Count > 0)
+            {
+                RebuildSidebarOrder();
+                _ = _vm.SaveStateAsync();
             }
 
             string removed = $"Removed worktree {name}.";

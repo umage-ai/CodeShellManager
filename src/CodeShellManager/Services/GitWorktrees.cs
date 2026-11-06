@@ -14,9 +14,46 @@ namespace CodeShellManager.Services;
 /// </summary>
 public static class GitWorktrees
 {
-    /// <summary>Forward slashes, no trailing separator — the form git prints and compares.</summary>
-    public static string Normalize(string path) =>
-        string.IsNullOrEmpty(path) ? "" : path.Replace('\\', '/').TrimEnd('/');
+    /// <summary>
+    /// Forward slashes, no trailing separator — the form git prints and compares. The two
+    /// spellings of a WSL share (<c>\\wsl.localhost\</c> and <c>\\wsl$\</c>) are folded to
+    /// one: GitService always reports <c>\\wsl$</c>, and a session opened as
+    /// <c>\\wsl.localhost</c> otherwise matched no worktree at all.
+    /// </summary>
+    public static string Normalize(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return "";
+        string n = path.Replace('\\', '/').TrimEnd('/');
+        const string localhost = "//wsl.localhost/";
+        if (n.StartsWith(localhost, StringComparison.OrdinalIgnoreCase)) n = "//wsl$/" + n[localhost.Length..];
+        return n;
+    }
+
+    /// <summary>
+    /// The comparable form of a path and how to compare it. Windows paths are
+    /// case-insensitive; inside a WSL distro they are NOT — <c>/home/u/wt</c> and
+    /// <c>/home/u/WT</c> are different folders, and treating them as one would close (and
+    /// delete the sleeping) sessions of the wrong worktree. The distro name itself is
+    /// case-insensitive, so only that segment is folded.
+    /// </summary>
+    private static (string key, StringComparison cmp) Key(string path)
+    {
+        string n = Normalize(path);
+        const string wsl = "//wsl$/";
+        if (!n.StartsWith(wsl, StringComparison.OrdinalIgnoreCase)) return (n, StringComparison.OrdinalIgnoreCase);
+        int slash = n.IndexOf('/', wsl.Length);
+        string distro = slash < 0 ? n[wsl.Length..] : n[wsl.Length..slash];
+        string rest = slash < 0 ? "" : n[slash..];
+        return (wsl + distro.ToLowerInvariant() + rest, StringComparison.Ordinal);
+    }
+
+    /// <summary>Same folder, by <see cref="Key"/> — case rules per Windows / WSL.</summary>
+    public static bool SamePath(string a, string b)
+    {
+        var (ka, cmp) = Key(a);
+        var (kb, _) = Key(b);
+        return ka.Length > 0 && ka.Equals(kb, cmp);
+    }
 
     /// <summary>
     /// The folder's real path, in <see cref="Normalize"/>d form: 8.3 short names expanded,
@@ -67,10 +104,10 @@ public static class GitWorktrees
     /// </summary>
     public static bool IsInside(string folder, string root)
     {
-        string f = Normalize(folder), r = Normalize(root);
+        var (f, cmp) = Key(folder);
+        var (r, _) = Key(root);
         if (f.Length == 0 || r.Length == 0) return false;
-        return f.Equals(r, StringComparison.OrdinalIgnoreCase)
-            || f.StartsWith(r + "/", StringComparison.OrdinalIgnoreCase);
+        return f.Equals(r, cmp) || f.StartsWith(r + "/", cmp);
     }
 
     /// <summary>
@@ -87,7 +124,7 @@ public static class GitWorktrees
     /// entry is "main" too but has no working tree, so it is never offered for removal.
     /// </summary>
     public static bool IsMain(IReadOnlyList<WorktreeInfo> worktrees, WorktreeInfo wt) =>
-        worktrees.Count > 0 && Normalize(worktrees[0].Path).Equals(Normalize(wt.Path), StringComparison.OrdinalIgnoreCase);
+        worktrees.Count > 0 && SamePath(worktrees[0].Path, wt.Path);
 
     /// <summary>
     /// Branches checked out in a worktree OTHER than <paramref name="current"/>, mapped to that
@@ -101,12 +138,22 @@ public static class GitWorktrees
         foreach (var w in worktrees)
         {
             if (w.IsBare || string.IsNullOrEmpty(w.Branch)) continue;
-            if (current != null && Normalize(w.Path).Equals(Normalize(current.Path), StringComparison.OrdinalIgnoreCase))
+            if (current != null && SamePath(w.Path, current.Path))
                 continue;
             map.TryAdd(w.Branch, w);
         }
         return map;
     }
+
+    /// <summary>
+    /// Other worktrees that live INSIDE <paramref name="target"/>'s folder. Removing the target
+    /// would delete them too: git's clean check does not look inside an ignored folder, and a
+    /// nested worktree usually sits in one (<c>.worktrees/</c> in .gitignore). Reproduced with
+    /// git 2.54 — `worktree remove` on the outer one exited 0 and deleted the inner one along
+    /// with its uncommitted file. So the menu refuses while any are listed.
+    /// </summary>
+    public static IReadOnlyList<WorktreeInfo> NestedInside(IReadOnlyList<WorktreeInfo> worktrees, WorktreeInfo target) =>
+        worktrees.Where(w => !w.IsBare && !SamePath(w.Path, target.Path) && IsInside(w.Path, target.Path)).ToList();
 
     /// <summary>The worktree's folder name — what the menus show.</summary>
     public static string Name(string path)
