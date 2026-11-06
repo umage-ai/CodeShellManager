@@ -1584,6 +1584,9 @@ public partial class MainWindow : Window
             // session stayed in SessionManager with no row — persisted, invisible.
             Log($"LaunchSession WebView2 FAILED: {ex}");
             TerminalGrid.Children.Remove(terminalWrapper);
+            // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
+            _runControls.Remove(vm.Id);
+            _gitPanes.Remove(vm.Id);
             vm.Dispose();
             if (_launchingSidebarItems.Remove(session.Id))
                 RebuildSidebarOrder();
@@ -1716,6 +1719,9 @@ public partial class MainWindow : Window
         {
             Log($"PTY start FAILED: {ex}");
             TerminalGrid.Children.Remove(terminalWrapper);
+            // BuildTerminalWrapper registered these; the pane is gone, so drop them too.
+            _runControls.Remove(vm.Id);
+            _gitPanes.Remove(vm.Id);
             MessageBox.Show($"Failed to start '{session.FullCommandLine}':\n{ex.Message}",
                 "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
             vm.Dispose();
