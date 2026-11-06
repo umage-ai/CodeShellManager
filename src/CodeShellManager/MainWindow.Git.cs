@@ -50,7 +50,6 @@ public partial class MainWindow
     /// </summary>
     private readonly HashSet<string> _gitBusyRepos = new(StringComparer.OrdinalIgnoreCase);
 
-    private static Task<string?>? _vsCodeLookup;
     private const int MaxChipBranchChars = 32;
 
     private static readonly SolidColorBrush GitMuted  = Frozen(0xa6, 0xad, 0xc8);
@@ -75,8 +74,6 @@ public partial class MainWindow
     /// </summary>
     private (WpfButton chip, Border panel) BuildGitControls(SessionViewModel vm)
     {
-        _vsCodeLookup ??= Task.Run(FindVsCode);
-
         var chipText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 11 };
         var chip = new WpfButton
         {
@@ -279,28 +276,6 @@ public partial class MainWindow
         copy.Click += (_, _) => { try { Clipboard.SetText(vm.GitBranch ?? ""); } catch { } };
         menu.Items.Add(copy);
 
-        if (_vsCodeLookup is { IsCompletedSuccessfully: true, Result: { } codeExe })
-        {
-            var code = new MenuItem { Header = "Open in VS Code" };
-            string folder = vm.WorkingFolder;
-            code.Click += (_, _) => _ = Task.Run(() =>
-            {
-                try
-                {
-                    // Code.exe directly with the folder as one argv element — not code.cmd,
-                    // which would put the folder through cmd.exe's parser.
-                    var psi = new System.Diagnostics.ProcessStartInfo(codeExe) { UseShellExecute = false };
-                    psi.ArgumentList.Add(folder);
-                    System.Diagnostics.Process.Start(psi)?.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.BeginInvoke(() => ToastHelper.Show("Couldn't open VS Code", ex.Message));
-                }
-            });
-            menu.Items.Add(code);
-        }
-
         menu.IsOpen = true;
     }
 
@@ -387,28 +362,5 @@ public partial class MainWindow
         ui.PanelText.Text = body.Replace("\n", Environment.NewLine);
         ui.PanelText.ScrollToHome();
         ui.Panel.Visibility = Visibility.Visible;
-    }
-
-    /// <summary>
-    /// Finds VS Code's Code.exe via the <c>code.cmd</c> launcher on PATH (it lives in
-    /// <c>&lt;install&gt;\bin\</c>). File checks only — no process is spawned to find it.
-    /// </summary>
-    private static string? FindVsCode()
-    {
-        try
-        {
-            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
-            foreach (string dir in path.Split(';', StringSplitOptions.RemoveEmptyEntries))
-            {
-                string d = dir.Trim().Trim('"');
-                if (d.Length == 0 || d.StartsWith(@"\\", StringComparison.Ordinal)) continue; // skip network dirs
-                string cmd = System.IO.Path.Combine(d, "code.cmd");
-                if (!System.IO.File.Exists(cmd)) continue;
-                string exe = System.IO.Path.GetFullPath(System.IO.Path.Combine(d, "..", "Code.exe"));
-                if (System.IO.File.Exists(exe)) return exe;
-            }
-        }
-        catch { }
-        return null;
     }
 }

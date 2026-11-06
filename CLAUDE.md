@@ -738,9 +738,17 @@ When a session's folder is a git repo, its terminal toolbar shows a chip — `�
 (branch, peach dirty dot, blue ahead/behind) — just left of ▶. Clicking it opens a menu:
 a header line (`main → origin/main · ↑2 ↓5 · 3 changed`), **Fetch**, **Pull (fast-forward
 only)**, **Status…**, **Switch branch ▸** (local branches, loaded when the submenu opens),
-**Copy branch name**, and **Open in VS Code** when `code.cmd` is on PATH. The UI is in
-`MainWindow.Git.cs`; git calls are in `GitService`. Hidden for SSH sessions — an OSC 9001
-branch is display-only, there is no local folder to run git in.
+and **Copy branch name**. The UI is in `MainWindow.Git.cs`; git calls are in `GitService`.
+Hidden for SSH sessions — an OSC 9001 branch is display-only, there is no local folder to run
+git in.
+
+**"Open in VS Code" is not in this menu** — it is not a git action and must work for a folder
+that isn't a repo. It lives in `MainWindow.OpenIn.cs`: a `{ }` button beside 📁 / >_ on the
+terminal toolbar, and an item after "Open PowerShell here" in the sidebar right-click menu.
+Both appear only when VS Code was found (`code.cmd` on PATH → its `Code.exe`, launched
+directly with the folder as one argv element, never through `code.cmd`/`cmd.exe`) and the
+session has a local folder. A configurable "Open with…" for other editors and installs is
+tracked in #178.
 
 **Deliberately read-mostly: no commit, push or merge.** A Claude session is usually editing
 that same working tree, and a one-click history write from outside its conversation is both a
