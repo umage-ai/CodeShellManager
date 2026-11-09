@@ -217,11 +217,16 @@
                             Click="Layout_ThreeByThree_Click" FontSize="9" Padding="4,4"/>
                 </StackPanel>
 
-                <Button DockPanel.Dock="Left" AutomationProperties.AutomationId="NewSessionBtn" Content="＋ New Session" Style="{StaticResource ToolBtn}"
-                        Foreground="#a6e3a1" Click="NewSession_Click" Margin="0,0,4,0"/>
-                <Button x:Name="RecentSessionsBtn" DockPanel.Dock="Left" AutomationProperties.AutomationId="RecentSessionsBtn"
-                        Content="🕘 Recent ▾" Style="{StaticResource ToolBtn}" Click="RecentSessions_Click" Margin="0,0,4,0"
-                        ToolTip="Jump to a recently used session (Ctrl+Shift+E)"/>
+                <!-- Last child of the DockPanel fills the remaining width, so the left-hand
+                     buttons share a left-aligned StackPanel — a bare button here stretches
+                     across the middle of the toolbar. -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+                    <Button AutomationProperties.AutomationId="NewSessionBtn" Content="＋ New Session" Style="{StaticResource ToolBtn}"
+                            Foreground="#a6e3a1" Click="NewSession_Click" Margin="0,0,4,0"/>
+                    <Button x:Name="RecentSessionsBtn" AutomationProperties.AutomationId="RecentSessionsBtn"
+                            Content="🕘 Recent ▾" Style="{StaticResource ToolBtn}" Click="RecentSessions_Click" Margin="0,0,4,0"
+                            ToolTip="Jump to a recently used session (Ctrl+Shift+E)"/>
+                </StackPanel>
             </DockPanel>
         </Border>
 
