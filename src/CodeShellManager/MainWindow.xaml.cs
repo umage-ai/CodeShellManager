@@ -1968,11 +1968,15 @@ public partial class MainWindow : Window
         textPanel.Children.Add(folderText);
         textPanel.Children.Add(gitText);
         textPanel.Children.Add(worktreeText);
-        // OSC 7501 "working" — built collapsed, shown only while the program reports working.
-        var workText = BuildWorkingIndicator(new Thickness(0, 1, 0, 0));
-        UpdateWorkingIndicator(workText, vm, compact: false);
-        textPanel.Children.Add(workText);
         textPanel.Children.Add(alertBadge);
+
+        // OSC 7501 "working" — built collapsed, shown only while the program reports working.
+        // It shares the status column with the waiting dot below: the two are mutually
+        // exclusive (both follow the one aggregate state), so a row has one status slot on
+        // the right instead of a working line under the text plus a dot beside it.
+        var workText = BuildWorkingIndicator(new Thickness(4, 0, 4, 0));
+        UpdateWorkingIndicator(workText, vm, compact: true);
+        Grid.SetColumn(workText, 2);
 
         // Status dot (waiting indicator)
         var statusDot = new Ellipse
@@ -2015,6 +2019,7 @@ public partial class MainWindow : Window
         inner.Children.Add(stripe);
         inner.Children.Add(textPanel);
         inner.Children.Add(statusDot);
+        inner.Children.Add(workText);
         inner.Children.Add(btnPanel);
 
         container.Child = inner;
@@ -2165,7 +2170,7 @@ public partial class MainWindow : Window
 
                     // One notification for working + progress + message (OSC 7501).
                     case nameof(SessionViewModel.ProgramStatusVersion):
-                        UpdateWorkingIndicator(workText, vm, compact: false);
+                        UpdateWorkingIndicator(workText, vm, compact: true);
                         break;
 
                     case nameof(SessionViewModel.RepoRoot):

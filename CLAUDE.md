@@ -856,7 +856,7 @@ would let a stale child result hide live work forever.
 
 | Aggregate | Session |
 |---|---|
-| `working` (+`progress`) | `IsWorking` / `WorkProgress` → pulsing `⟳ working · 40%` in the sidebar row and `⟳ 40%` on the toolbar (accent blue, 10 fps opacity pulse, chrome only — HwndHost) |
+| `working` (+`progress`) | `IsWorking` / `WorkProgress` → pulsing `⟳ 40%` (or `⟳ working`) on the toolbar and in the sidebar row's status slot on the right — the same slot as the waiting dot, since the two are mutually exclusive (accent blue, 10 fps opacity pulse, chrome only — HwndHost) |
 | `blocked` + `permission` | `IsWaitingForApproval` (orange) |
 | `blocked` + `question` / `auth` / no kind | `IsWaitingForInput` (green) |
 | any record **entering** `blocked` / `done` / `error` | `NeedsAttention` badge + toast |

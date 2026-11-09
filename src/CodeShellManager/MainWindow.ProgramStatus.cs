@@ -11,7 +11,7 @@ namespace CodeShellManager;
 
 /// <summary>
 /// The "working" indicator driven by OSC 7501 program status — a small pulsing
-/// <c>⟳ working · 40%</c> in the sidebar row and on the terminal toolbar. It lives in that
+/// <c>⟳ 40%</c> in the sidebar row's status slot and on the terminal toolbar. It lives in that
 /// chrome on purpose: WebView2 is an <c>HwndHost</c>, so nothing WPF draws can appear over a
 /// terminal pane (see "Session Spinners" in CLAUDE.md).
 /// </summary>

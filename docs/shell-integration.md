@@ -4,7 +4,7 @@ Programs running inside a CodeShellManager terminal can push session state up to
 
 > **Reporting working / waiting / done?** Use the standard **OSC 7501 Program Status Protocol**
 > ([spec](https://www.superlogical.com/rex/docs/build/program-status)) rather than OSC 9001. CSM
-> maps reports onto the session: `working` (+`progress`) → a `⟳ working · 40%` indicator in the
+> maps reports onto the session: `working` (+`progress`) → a `⟳ 40%` working indicator in the
 > sidebar and toolbar; `blocked` + `kind=permission` → orange approval dot; other `blocked` →
 > green input dot; a record entering `done` / `error` / `blocked` → "needs attention" badge and a
 > rate-limited tray notification; `idle` / `clear` → indicators cleared. While a session holds any
