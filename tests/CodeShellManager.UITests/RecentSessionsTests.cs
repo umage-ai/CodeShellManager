@@ -20,11 +20,13 @@ public sealed class RecentSessionsTests : IClassFixture<AppFixture>
     private MenuItem[] OpenRecentMenu()
     {
         AppActions.Press(AppActions.WaitForElement(_f.MainWindow, "RecentSessionsBtn"));
-        // A ContextMenu is a popup: UI Automation lists it as an unnamed top-level window of
-        // the app's process with the Menu inside — not under the main window.
+        // A ContextMenu is a popup: an unnamed Window with the Menu inside. UI Automation lists
+        // it either at the top level of the app's process (seen on a locked desktop) or as a
+        // child of the main window (seen on an unlocked one), so look in both places.
         var menu = Retry.WhileNull(
             () => _f.Automation.GetDesktop()
                       .FindAllChildren(cf => cf.ByProcessId(_f.App.ProcessId))
+                      .SelectMany(w => w.FindAllChildren(cf => cf.ByControlType(ControlType.Window)).Prepend(w))
                       .Select(w => w.FindFirstChild(cf => cf.ByControlType(ControlType.Menu)))
                       .FirstOrDefault(m => m != null),
             TimeSpan.FromSeconds(5)).Result
