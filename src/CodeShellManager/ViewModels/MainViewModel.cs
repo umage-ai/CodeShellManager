@@ -335,7 +335,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
             vm.Bridge.KeyboardInput += Promote;
             // Clicking into a pane must promote it too. This can only come from the page —
             // see TerminalBridge.PaneActivated for why WPF never sees the click.
-            vm.Bridge.PaneActivated += Promote;
+            //
+            // And it must take keyboard focus with it. Promote moves the highlight; the
+            // keyboard follows Win32 focus, which something else can hold — the window's
+            // Activated handler refocusing the previous session, or a restart's teardown.
+            // A click is the user saying where input goes, so make focus agree with the
+            // highlight. Throttled page-side (300ms); FocusTerminal is one BeginInvoke.
+            var bridge = vm.Bridge;
+            vm.Bridge.PaneActivated += () =>
+            {
+                Promote();
+                bridge.FocusTerminal();
+            };
             // UserInput is every onData, which includes xterm's own automatic replies
             // (device attributes, cursor reports, focus in/out). For the heuristic that has
             // always been the "interaction" signal; for an OSC 7501 session it must not be,

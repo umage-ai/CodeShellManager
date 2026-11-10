@@ -5394,6 +5394,10 @@ public partial class MainWindow : Window
             {
                 _vm.ActiveSession = revived;
                 UpdateSidebarActiveState();
+                // ActiveSession alone moves the highlight, not the keyboard. The old pane's
+                // WebView2 is gone, so without this focus is left wherever the teardown put
+                // it — and typing lands in a pane other than the highlighted one.
+                revived.Bridge?.FocusTerminal();
             }
         }
     }
@@ -6286,10 +6290,34 @@ public partial class MainWindow : Window
     // Refocus the last-active terminal when the window regains focus (e.g. Alt+Tab).
     // Without this, focus lands on whichever WPF control happened to hold it last —
     // typically not the WebView2, so keystrokes go nowhere.
+    //
+    // But NOT when the window was activated by a click. Then the click is the user saying
+    // where focus goes: on a pane, the page's mousedown posts `activate`, and
+    // MainViewModel promotes AND focuses that pane; on the sidebar, FocusSession does it.
+    // Refocusing the *previous* ActiveSession here raced that: FocusTerminal is a
+    // BeginInvoke, the page's `activate` is a cross-process message, and when the stale
+    // focus landed last the highlight moved to the clicked pane while the keystrokes went
+    // to the old one — "I type in one pane and the letters appear in another".
     private void OnWindowActivated(object? sender, EventArgs e)
     {
+        if (IsAnyMouseButtonDown()) return;
         _vm.ActiveSession?.Bridge?.FocusTerminal();
     }
+
+    // GetAsyncKeyState reads the PHYSICAL buttons, so a swapped-button mouse reports its
+    // primary click as VK_RBUTTON — check both rather than guess which one is "left".
+    // WPF's Mouse.LeftButton is not usable here: a click on a WebView2 (an HwndHost) is
+    // native input WPF never sees.
+    private static bool IsAnyMouseButtonDown()
+    {
+        const int VK_LBUTTON = 0x01, VK_RBUTTON = 0x02, VK_MBUTTON = 0x04;
+        return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
+            || (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0
+            || (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
 
     private void CycleSession(bool forward)
     {
