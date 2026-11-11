@@ -1,6 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Text;
 using System.Text.RegularExpressions;
 using CodeShellManager.Models;
@@ -49,6 +53,22 @@ public partial class RunInstance : ObservableObject, IDisposable
     // append only what is new instead of re-assigning up to 1MB per refresh — see ReadSince.
     private long _totalAppended;
     private bool _disposed;
+
+    // PostRunUrl is opened at most once per run: by the readiness watcher (a server that has
+    // started listening) or by a successful exit (a one-shot command), whichever comes first.
+    private int _urlOpened;
+    private CancellationTokenSource? _readyCts;
+
+    /// <summary>How long the readiness watcher keeps probing a loopback URL before giving up.</summary>
+    internal TimeSpan ReadyTimeout { get; set; } = TimeSpan.FromMinutes(2);
+    internal TimeSpan ReadyPollInterval { get; set; } = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Test seam: "is something listening behind this URL?". Default: a TCP connect.</summary>
+    internal Func<Uri, CancellationToken, Task<bool>> ReadyProbe { get; set; } = IsListeningAsync;
+
+    /// <summary>Test seam: opens the validated URL. Default: ShellExecute → default browser.</summary>
+    internal Action<string> UrlLauncher { get; set; } =
+        static url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 
     public event Action? OutputChanged;
     public event Action? StateChanged;
@@ -136,6 +156,7 @@ public partial class RunInstance : ObservableObject, IDisposable
             }
 
             _pty.Start(command, args, workDir, cols: 200, rows: 50, useJobObject: true);
+            StartReadyWatcher(parent);
         }
         catch (Exception ex)
         {
@@ -211,26 +232,127 @@ public partial class RunInstance : ObservableObject, IDisposable
         State = ExitCode == 0 ? RunState.ExitedOk : RunState.ExitedFailed;
         StateChanged?.Invoke();
 
-        // Open post-run URL on success only. ShellExecute hands the URL to the
-        // OS default browser. We can't pop UI from the PTY-exit callback thread,
-        // so failures are logged to crash.log for diagnosability rather than silenced.
-        if (State == RunState.ExitedOk && !string.IsNullOrWhiteSpace(PostRunUrl))
+        _readyCts?.Cancel();
+
+        // A one-shot command (build, deploy) opens its URL when it succeeds. A server never
+        // exits, so for that case the readiness watcher started in Start() opens it instead.
+        if (State == RunState.ExitedOk) OpenPostRunUrlOnce();
+    }
+
+    /// <summary>
+    /// A run command with a PostRunUrl is usually a dev server (`npm run dev`, `node serve.js`),
+    /// and a server never exits — so "open the URL when the command exits 0" meant the URL never
+    /// opened at all. While the run is alive, probe the URL and open it once something is
+    /// listening there.
+    ///
+    /// Only for loopback URLs, and not for SSH parents. A remote URL (a deploy target) is
+    /// reachable before the command has done anything, so probing it would open the page before
+    /// the deploy finished — those keep the exit-0 rule. For an SSH parent the server listens on
+    /// the REMOTE machine's loopback, which a local probe cannot see.
+    /// </summary>
+    private void StartReadyWatcher(ShellSession parent)
+    {
+        if (parent.Kind == SessionKind.Ssh) return;
+        if (!TryGetLaunchableUrl(PostRunUrl, out string? safeUrl)) return;
+        var uri = new Uri(safeUrl!);
+        if (!IsLoopbackHost(uri)) return;
+
+        var cts = new CancellationTokenSource();
+        _readyCts = cts;
+        var probe = ReadyProbe;
+        var timeout = ReadyTimeout;
+        var interval = ReadyPollInterval;
+        _ = Task.Run(async () =>
         {
-            if (!TryGetLaunchableUrl(PostRunUrl, out string? safeUrl))
+            var deadline = DateTime.UtcNow + timeout;
+            try
             {
-                LogPostRunUrl(PostRunUrl, "rejected — only http and https URLs are opened");
-                return;
+                while (!cts.IsCancellationRequested && DateTime.UtcNow < deadline)
+                {
+                    bool ready;
+                    try { ready = await probe(uri, cts.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { return; }
+                    catch { ready = false; }
+                    if (cts.IsCancellationRequested) return;
+                    if (ready) { OpenPostRunUrlOnce(); return; }
+                    await Task.Delay(interval, cts.Token).ConfigureAwait(false);
+                }
             }
-            // safeUrl, not PostRunUrl: launch the string the validator actually inspected.
-            // Uri.TryCreate accepts and internally escapes characters that the raw string
-            // still contains — a quote or space survives into ShellExecute, which expands it
-            // into the handler's registered `shell\open\command` template. Modern browsers
-            // pass --single-argument and are unaffected; other registered handlers may not
-            // be. Validating one string and launching a different one is the bug class,
-            // regardless of who is currently immune to it.
-            try { Process.Start(new ProcessStartInfo(safeUrl!) { UseShellExecute = true }); }
-            catch (Exception ex) { LogPostRunUrl(PostRunUrl, ex.Message); }
+            catch (OperationCanceledException) { }
+        });
+    }
+
+    /// <summary>localhost, 127.0.0.0/8, [::1] — and 0.0.0.0 / [::], which dev servers print.</summary>
+    internal static bool IsLoopbackHost(Uri uri)
+    {
+        if (uri.IsLoopback) return true;
+        return IPAddress.TryParse(uri.Host.Trim('[', ']'), out var ip)
+            && (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any));
+    }
+
+    private static async Task<bool> IsListeningAsync(Uri uri, CancellationToken ct)
+    {
+        string host = uri.Host.Trim('[', ']');
+        if (host == "0.0.0.0") host = "127.0.0.1";
+        else if (host == "::") host = "::1";
+
+        // "localhost" is ::1 AND 127.0.0.1, and a server usually binds only one of them (Vite on
+        // Node 17+ binds ::1, many others 127.0.0.1). Probe every address in parallel: on
+        // Windows a refused loopback connect takes ~2s (SYN retries), so trying them in turn
+        // inside one timeout never reached the second address.
+        IPAddress[] addresses;
+        try
+        {
+            addresses = IPAddress.TryParse(host, out var literal)
+                ? [literal]
+                : await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
         }
+        catch (SocketException) { return false; }
+
+        var attempts = new Task<bool>[addresses.Length];
+        for (int i = 0; i < addresses.Length; i++)
+            attempts[i] = ConnectsAsync(new IPEndPoint(addresses[i], uri.Port), ct);
+        foreach (bool ok in await Task.WhenAll(attempts).ConfigureAwait(false))
+            if (ok) return true;
+        return false;
+    }
+
+    private static async Task<bool> ConnectsAsync(IPEndPoint endpoint, CancellationToken ct)
+    {
+        using var socket = new Socket(endpoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        attempt.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            await socket.ConnectAsync(endpoint, attempt.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (SocketException) { return false; }
+    }
+
+    private void OpenPostRunUrlOnce()
+    {
+        if (string.IsNullOrWhiteSpace(PostRunUrl)) return;
+        if (Interlocked.Exchange(ref _urlOpened, 1) != 0) return;
+
+        // ShellExecute hands the URL to the OS default browser. This runs on the PTY-exit
+        // callback thread or the watcher's pool thread, so failures go to crash.log for
+        // diagnosability rather than popping UI.
+        if (!TryGetLaunchableUrl(PostRunUrl, out string? safeUrl))
+        {
+            LogPostRunUrl(PostRunUrl, "rejected — only http and https URLs are opened");
+            return;
+        }
+        // safeUrl, not PostRunUrl: launch the string the validator actually inspected.
+        // Uri.TryCreate accepts and internally escapes characters that the raw string
+        // still contains — a quote or space survives into ShellExecute, which expands it
+        // into the handler's registered `shell\open\command` template. Modern browsers
+        // pass --single-argument and are unaffected; other registered handlers may not
+        // be. Validating one string and launching a different one is the bug class,
+        // regardless of who is currently immune to it.
+        try { UrlLauncher(safeUrl!); }
+        catch (Exception ex) { LogPostRunUrl(PostRunUrl, ex.Message); }
     }
 
     /// <summary>
@@ -390,6 +512,7 @@ public partial class RunInstance : ObservableObject, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _readyCts?.Cancel();
         if (_pty != null)
         {
             _pty.DataReceived -= OnPtyData;
