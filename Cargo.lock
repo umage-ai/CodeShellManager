@@ -966,6 +966,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swash",
+ "tempfile",
 ]
 
 [[package]]

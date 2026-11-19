@@ -82,6 +82,8 @@ pub struct EngineBackend {
     quit: Option<Quit>,
     quit_ready: bool,
     waker: Option<Arc<AtomicBool>>,
+    /// The Git tab's details, from git tool replies.
+    git: crate::git_model::GitDetails,
 }
 
 impl EngineBackend {
@@ -98,6 +100,7 @@ impl EngineBackend {
             quit: None,
             quit_ready: false,
             waker: None,
+            git: crate::git_model::GitDetails::default(),
         };
         b.refresh(true);
         b
@@ -139,6 +142,7 @@ impl EngineBackend {
 
     fn publish(&mut self, view: &Snapshot) {
         let mut m = map_snapshot(view, &self.opts, self.theme);
+        m.git = self.git.map.clone();
         if let Some(q) = &self.quit {
             let used = q.started.elapsed().as_secs_f32().min(self.opts.shutdown_budget_s.max(1.0));
             m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: self.opts.shutdown_budget_s.max(1.0) });
@@ -207,6 +211,10 @@ impl Backend for EngineBackend {
     /// The engine already applied the effect. Errors are shown; so are the result sentences of
     /// calls that start, stop or import something (UI-state calls stay quiet).
     fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice> {
+        if let Some(notices) = self.git.on_reply(call, reply) {
+            self.refresh(true);
+            return notices;
+        }
         match reply {
             Err(e) => vec![Notice::Toast(e.to_string())],
             Ok(out) => {
@@ -375,8 +383,13 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         folder,
         branch: s.branch.clone(),
         dirty: s.git_dirty,
-        ahead: 0,
-        behind: 0,
+        ahead: s.git_ahead.and_then(|a| u32::try_from(a).ok()).unwrap_or(0),
+        behind: s.git_behind.and_then(|b| u32::try_from(b).ok()).unwrap_or(0),
+        upstream: s.git_upstream.clone(),
+        changes: u32::try_from(s.git_changes).unwrap_or(u32::MAX),
+        git_summary: s.git_summary.clone(),
+        worktree_of: s.worktree_of.clone(),
+        git_busy: s.git_busy,
         status: status_from_engine(s.status),
         progress: s.progress,
         detail: s.status_message.clone().unwrap_or_default(),
@@ -387,6 +400,23 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         started,
         exited,
         exit_code: s.exit_code,
+    }
+}
+
+/// A linked worktree's session nests under a session in its repo's main checkout (same repo
+/// root, not itself a worktree), as the sidebar shows worktree clusters.
+fn worktree_parents(sessions: &mut [SessionView], view: &Snapshot) {
+    let root = |id: &str| view.session(id).and_then(|s| s.repo_root.as_deref()).map(str::to_lowercase);
+    let mains: Vec<(String, String)> = view
+        .sessions
+        .iter()
+        .filter(|s| s.worktree_of.is_none())
+        .filter_map(|s| s.repo_root.as_deref().map(|r| (r.to_lowercase(), s.id.clone())))
+        .collect();
+    for s in sessions.iter_mut().filter(|s| s.worktree_of.is_some()) {
+        if let Some(r) = root(&s.id) {
+            s.parent = mains.iter().find(|(mr, id)| *mr == r && *id != s.id).map(|(_, id)| id.clone());
+        }
     }
 }
 
@@ -422,7 +452,8 @@ fn folders(sessions: &[SessionView], extra: &[String]) -> Vec<FolderSuggestion> 
 
 /// The whole mapping, pure (tested without an engine thread).
 pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> UiModel {
-    let sessions: Vec<SessionView> = view.sessions.iter().map(session_from_engine).collect();
+    let mut sessions: Vec<SessionView> = view.sessions.iter().map(session_from_engine).collect();
+    worktree_parents(&mut sessions, view);
     let groups = view
         .groups
         .iter()
@@ -462,6 +493,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         theme,
         now_ms,
         wpf_import: if sessions.is_empty() { opts.wpf_import.clone() } else { None },
+        git: Default::default(),
         sessions,
         groups,
     }

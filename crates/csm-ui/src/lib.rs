@@ -17,6 +17,7 @@ pub mod app;
 pub mod backend;
 pub mod demo;
 pub mod engine_backend;
+pub mod git_model;
 mod icon_data;
 pub mod icons;
 pub mod model;

@@ -679,13 +679,13 @@ pub fn pane(
         if let Some(g) = s.group.as_deref().and_then(|g| model.group(g)) {
             widgets::paint_text(ui, pos2(lx, cy), Align2::LEFT_CENTER, &g.name, theme::medium(text::TINY), t.faint, (right_limit - lx).max(0.0));
         }
-    } else if let Some(b) = &s.branch {
+    } else if s.branch.is_some() {
         let room = (right_limit - lx).max(0.0);
         if room > space::XXL + space::XL {
             let chip_rect = Rect::from_min_size(pos2(lx, cy - size::CHIP / 2.0), vec2(room, size::CHIP));
             let resp = ui
                 .scope_builder(UiBuilder::new().max_rect(chip_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-                    widgets::branch_chip(ui, b, s.dirty, s.ahead, room, !o.torn)
+                    super::git::branch_chip(ui, s, room, !o.torn)
                 })
                 .inner;
             if resp.clicked() {

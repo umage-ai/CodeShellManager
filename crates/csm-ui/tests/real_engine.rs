@@ -266,8 +266,7 @@ fn buttons_submit_real_engine_tools_and_the_ui_follows_the_snapshot() {
 
     // A tool the engine doesn't have yet answers honestly instead of pretending.
     let ctx = r.h.ctx.clone();
-    let id = r.only_session();
-    r.h.state_mut().run(&ctx, csm_ui::Action::Tool("git_fetch", json!({"session_id": id})));
+    r.h.state_mut().run(&ctx, csm_ui::Action::Tool("grant_list", json!({})));
     r.until("the stand-in's answer", |r| r.toast_contains("isn't built yet"));
 }
 

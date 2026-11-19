@@ -256,6 +256,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         theme,
         now_ms: now,
         wpf_import: None,
+        git: crate::git_model::demo_details(),
     }
 }
 
