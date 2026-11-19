@@ -66,10 +66,38 @@ pub fn accept_caller(v: Option<&Value>) -> Result<Caller, String> {
     }
 }
 
+/// `ToolError` derives `Serialize` with an internal tag, which serde cannot apply to its
+/// string-carrying variants (serializing one fails), so the bridge spells errors out itself.
+pub(crate) fn encode_error(e: &ToolError) -> Value {
+    let (code, message) = match e {
+        ToolError::UnknownTool(m) => ("unknown_tool", m),
+        ToolError::InvalidParams(m) => ("invalid_params", m),
+        ToolError::NotFound(m) => ("not_found", m),
+        ToolError::Refused(m) => ("refused", m),
+        ToolError::Declined(m) => ("declined", m),
+        ToolError::Failed(m) => ("failed", m),
+        ToolError::TimedOut(m) => ("timed_out", m),
+    };
+    json!({"code": code, "message": message})
+}
+
+pub(crate) fn decode_error(v: &Value) -> ToolError {
+    let message = v.get("message").and_then(Value::as_str).unwrap_or("the tool failed").to_string();
+    match v.get("code").and_then(Value::as_str) {
+        Some("unknown_tool") => ToolError::UnknownTool(message),
+        Some("invalid_params") => ToolError::InvalidParams(message),
+        Some("not_found") => ToolError::NotFound(message),
+        Some("refused") => ToolError::Refused(message),
+        Some("declined") => ToolError::Declined(message),
+        Some("timed_out") => ToolError::TimedOut(message),
+        _ => ToolError::Failed(message),
+    }
+}
+
 pub(crate) fn encode_reply(reply: Result<ToolOutput, ToolError>) -> Value {
     match reply {
-        Ok(output) => json!({"status": "done", "output": output}),
-        Err(error) => json!({"status": "error", "error": error}),
+        Ok(output) => json!({"status": "done", "output": {"message": output.message, "data": output.data}}),
+        Err(error) => json!({"status": "error", "error": encode_error(&error)}),
     }
 }
 
@@ -85,12 +113,11 @@ pub(crate) fn decode_wait(v: &Value) -> Result<WaitStatus, String> {
         Some("pending") => Ok(WaitStatus::Pending),
         Some("done") => {
             let out = v.get("output").cloned().unwrap_or(Value::Null);
-            serde_json::from_value(out).map(|o| WaitStatus::Finished(Ok(o))).map_err(|e| format!("bad tool output from the app: {e}"))
+            let message = out.get("message").and_then(Value::as_str).unwrap_or_default().to_string();
+            let data = out.get("data").cloned().unwrap_or(Value::Null);
+            Ok(WaitStatus::Finished(Ok(ToolOutput { message, data })))
         }
-        Some("error") => {
-            let err = v.get("error").cloned().unwrap_or(Value::Null);
-            serde_json::from_value(err).map(|e| WaitStatus::Finished(Err(e))).map_err(|e| format!("bad tool error from the app: {e}"))
-        }
+        Some("error") => Ok(WaitStatus::Finished(Err(decode_error(v.get("error").unwrap_or(&Value::Null))))),
         _ => Err("the app sent a reply this version of csm does not understand".to_string()),
     }
 }
@@ -127,6 +154,16 @@ mod tests {
         assert_eq!(decode_wait(&encode_reply(ok.clone())), Ok(WaitStatus::Finished(ok)));
         let err = Err(ToolError::Refused("no".into()));
         assert_eq!(decode_wait(&encode_reply(err.clone())), Ok(WaitStatus::Finished(err)));
+        for e in [
+            ToolError::UnknownTool("a".into()),
+            ToolError::InvalidParams("b".into()),
+            ToolError::NotFound("c".into()),
+            ToolError::Declined("d".into()),
+            ToolError::Failed("e".into()),
+            ToolError::TimedOut("f".into()),
+        ] {
+            assert_eq!(decode_error(&encode_error(&e)), e);
+        }
         assert_eq!(decode_wait(&json!({"status": "pending"})), Ok(WaitStatus::Pending));
         assert!(decode_wait(&json!({})).is_err());
     }

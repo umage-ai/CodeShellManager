@@ -29,6 +29,8 @@ pub struct RemoteOptions {
     pub start: bool,
     /// The app binary for `start`. `None` reads [`APP_ENV`], then craft-ipc's usual lookup.
     pub app_path: Option<PathBuf>,
+    /// Which transport to use when the app offers both. `None` is the platform default.
+    pub tcp: Option<bool>,
     /// Arguments passed to the app when it is started.
     pub app_args: Vec<OsString>,
 }
@@ -36,7 +38,8 @@ pub struct RemoteOptions {
 /// A connection to the running app, made on first use and re-made if it drops between calls.
 pub struct RemoteBackend {
     options: RemoteOptions,
-    client: Option<Client>,
+    /// The connection and the instance id of the app it is connected to.
+    client: Option<(Client, String)>,
 }
 
 fn not_running(extra: &str) -> BridgeError {
@@ -91,9 +94,11 @@ impl RemoteBackend {
             .map_err(|e| BridgeError::Unreachable(format!("could not start {}: {e}", bin.display())))
     }
 
-    fn connect(&self) -> Result<Client, BridgeError> {
+    fn connect(&self) -> Result<(Client, String), BridgeError> {
         let record = self.find_record()?;
-        let mut client = Client::connect(&record).map_err(|e| unreachable("could not connect to CodeShellManager", &e))?;
+        let use_tcp = self.options.tcp.unwrap_or(crate::ipc_server::USE_TCP_BY_DEFAULT) && record.tcp_port().is_some();
+        let connected = if use_tcp { Client::connect_tcp(&record) } else { Client::connect(&record) };
+        let mut client = connected.map_err(|e| unreachable("could not connect to CodeShellManager", &e))?;
         let identity = HelloClient {
             app: "csm".to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -103,20 +108,27 @@ impl RemoteBackend {
             protocol_max: craft_ipc::wire::PROTOCOL_MAX,
         };
         client.hello(&identity).map_err(|e| unreachable("CodeShellManager did not accept this client", &e))?;
-        Ok(client)
+        Ok((client, record.instance))
     }
 
-    /// A connection that answers a ping, re-made when the old one is gone (the app restarted).
+    /// Whether the instance we are connected to is still published. Asking the dead pipe instead
+    /// would block for craft-ipc's whole reply deadline (60 s) on Windows.
+    fn still_published(&self, instance: &str) -> bool {
+        let Ok(dir) = self.runtime() else { return false };
+        Discovery::scan(&dir).is_ok_and(|all| all.iter().any(|r| r.app == APP_ID && r.instance == instance))
+    }
+
+    /// The connection, re-made when the app it belonged to is gone (it restarted or quit).
     fn live(&mut self) -> Result<&mut Client, BridgeError> {
-        let alive = match self.client.as_mut() {
-            Some(c) => c.call(wire::METHOD_PING, json!({})).is_ok(),
+        let alive = match &self.client {
+            Some((_, instance)) => self.still_published(instance),
             None => false,
         };
         if !alive {
             self.client = None;
             self.client = Some(self.connect()?);
         }
-        self.client.as_mut().ok_or_else(|| not_running(""))
+        self.client.as_mut().map(|(c, _)| c).ok_or_else(|| not_running(""))
     }
 
     /// Call `f` on a live connection. A broken connection is dropped so the next call reconnects.
@@ -137,7 +149,7 @@ impl RemoteBackend {
     /// until `on_event` returns false or the app goes away. Each event is the engine's JSON, with
     /// an `event` field naming it.
     pub fn watch(&mut self, mut on_event: impl FnMut(Value) -> bool) -> Result<(), BridgeError> {
-        let mut client = self.connect()?;
+        let (mut client, _) = self.connect()?;
         client.subscribe(&[wire::EVENT_NAME]).map_err(|e| unreachable("could not subscribe to events", &e))?;
         loop {
             match client.next_event(Some(Duration::from_secs(30))) {
@@ -164,7 +176,7 @@ impl Backend for RemoteBackend {
 
     fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError> {
         let started = Instant::now();
-        let submitted = self.with(|c| c.call(wire::METHOD_SUBMIT, json!({"caller": caller, "tool": tool, "params": params})))?;
+        let submitted = self.with(|c| c.call(wire::METHOD_SUBMIT, json!({"caller": serde_json::to_value(caller).unwrap_or(Value::Null), "tool": tool, "params": params})))?;
         let Some(ticket) = submitted.get("ticket").and_then(Value::as_u64) else {
             return Err(BridgeError::Unreachable("the app did not accept the call".to_string()));
         };
@@ -173,7 +185,7 @@ impl Backend for RemoteBackend {
                 return Err(BridgeError::Tool(ToolError::TimedOut(format!("`{tool}` did not finish within {} minutes", MAX_CALL.as_secs() / 60))));
             }
             // Not `live()`: a dead connection here means the ticket is gone with it.
-            let Some(client) = self.client.as_mut() else {
+            let Some((client, _)) = self.client.as_mut() else {
                 return Err(BridgeError::Unreachable("lost the connection to CodeShellManager while waiting for the result.".to_string()));
             };
             let reply = match client.call(wire::METHOD_WAIT, json!({"ticket": ticket, "timeout_ms": MAX_WAIT_MS})) {

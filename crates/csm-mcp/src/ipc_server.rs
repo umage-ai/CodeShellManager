@@ -33,6 +33,13 @@ use crate::wire::{self, APP_ID, MAX_WAIT_MS};
 const TICKET_TTL: Duration = Duration::from_secs(20 * 60);
 const MAX_TICKETS: usize = 256;
 
+/// On Windows craft-ipc's named-pipe transport stalls any line longer than about 512 bytes (the
+/// pipe's buffer size): a 568-byte reply never arrived in a probe on Windows 11, while 368 bytes
+/// did. Tool lists and outputs are far longer, so Windows uses craft-ipc's loopback TCP transport,
+/// which has the same token handshake and the same protocol. Everywhere else the socket is used.
+/// Both are published; the client picks (see `RemoteOptions::transport`).
+pub const USE_TCP_BY_DEFAULT: bool = cfg!(windows);
+
 /// Anything that stops the bridge from starting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpcError(pub String);
@@ -58,6 +65,9 @@ pub struct IpcOptions {
     pub runtime: Option<RuntimeDir>,
     /// What `link.hello` reports as the app's version. Defaults to this crate's.
     pub app_version: Option<String>,
+    /// Also listen on a loopback TCP port (127.0.0.1, same token handshake, port in the instance
+    /// record). `None` is the platform default: on for Windows, off elsewhere. See [`USE_TCP_BY_DEFAULT`].
+    pub tcp: Option<bool>,
     /// Called when a peer asks the app to raise its window (`app.activate`). Must be quick.
     pub on_activate: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -105,14 +115,14 @@ pub fn serve_ipc(engine: Engine) -> Result<Handle, IpcError> {
 }
 
 pub fn serve_ipc_with(engine: Engine, options: IpcOptions) -> Result<Handle, IpcError> {
-    let IpcOptions { runtime, app_version, on_activate } = options;
+    let IpcOptions { runtime, app_version, tcp, on_activate } = options;
     let sink = Arc::new(Sink::new(engine.clone()));
     let config = ServerConfig {
         app: APP_ID.to_string(),
         app_version: app_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
         instance: None,
         runtime,
-        tcp_port: None,
+        tcp_port: tcp.unwrap_or(USE_TCP_BY_DEFAULT).then_some(0),
         sink,
         activate: Arc::new(Raise(on_activate)),
         frames: Arc::new(NoFrames),
@@ -199,7 +209,7 @@ impl Sink {
             }
             wire::METHOD_TOOLS => {
                 let tools: Vec<ToolInfo> = self.engine.registry().all().iter().map(ToolInfo::from_spec).collect();
-                let _ = tx.send(json!({"tools": tools}));
+                let _ = tx.send(json!({"tools": serde_json::to_value(&tools).unwrap_or(Value::Null)}));
             }
             wire::METHOD_SUBMIT => {
                 let _ = tx.send(self.submit(params));
