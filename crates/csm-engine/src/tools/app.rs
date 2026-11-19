@@ -197,6 +197,7 @@ fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
                 Err(msg) => Err(ToolError::Failed(msg)),
                 Ok(imported) => Ok(merge(ctx, imported)),
             };
+            crate::lifecycle::after_step(ctx.state, ctx.engine);
             if let Some(reply) = reply {
                 reply.send(r);
             }

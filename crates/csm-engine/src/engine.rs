@@ -301,7 +301,11 @@ fn run_tool(spec: &ToolSpec, state: &mut State, caller: &Caller, params: Value, 
         Ok(r) => r,
         Err(_) => Err(ToolError::Failed(format!("`{}` failed unexpectedly; nothing else was affected", spec.id))),
     };
-    if let Some(reply) = c.reply.take() {
+    let reply = c.reply.take();
+    drop(c);
+    if let Some(reply) = reply {
+        // Publish first, so a caller that reads `view()` after the reply sees the change.
+        crate::lifecycle::after_step(state, engine);
         let _ = reply.send(r);
     }
 }

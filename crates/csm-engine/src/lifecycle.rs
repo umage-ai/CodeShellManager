@@ -291,6 +291,9 @@ pub(crate) fn after_step(state: &mut State, engine: &Engine) {
         events.emit(Event::LayoutChanged);
     }
 
+    state.rt.prev = snap.clone();
+    engine.publish(snap.clone());
+
     // Waits whose condition is now met (or whose session is gone).
     if !state.rt.waits.is_empty() {
         let waits = std::mem::take(&mut state.rt.waits);
@@ -303,8 +306,6 @@ pub(crate) fn after_step(state: &mut State, engine: &Engine) {
         }
     }
 
-    state.rt.prev = snap.clone();
-    engine.publish(snap);
 }
 
 pub(crate) fn wait_output(v: &snapshot::SessionView) -> ToolOutput {
@@ -908,6 +909,7 @@ fn finish_restart(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>, results: Vec<(S
     }
     if !failed.is_empty() && results.len() == 1 {
         let err = failed.first().and_then(|f| f["error"].as_str()).unwrap_or("unknown error").to_owned();
+        after_step(ctx.state, ctx.engine);
         if let Some(r) = reply {
             r.send(Err(ToolError::Failed(format!("The restart failed: {err}. The session is asleep; edit it and wake it."))));
         }
@@ -916,6 +918,7 @@ fn finish_restart(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>, results: Vec<(S
     if results.len() > 1 {
         ctx.events.toast(message.clone());
     }
+    after_step(ctx.state, ctx.engine);
     if let Some(r) = reply {
         r.send(Ok(ToolOutput::new(message, json!({"restarted": ok, "failed": failed, "skipped": skipped}))));
     }
@@ -1059,6 +1062,7 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>) {
             }));
         }
         engine.post(Box::new(move |ctx| {
+            after_step(ctx.state, ctx.engine);
             save_now(ctx.state);
             ctx.events.emit(Event::QuitReady);
             if let Some(r) = reply {
