@@ -897,11 +897,13 @@ version = "0.0.1"
 dependencies = [
  "bitflags 2.13.2",
  "csm-core",
+ "csm-index",
  "csm-pty",
  "csm-services",
  "csm-term",
  "dirs",
  "log",
+ "rusqlite",
  "schemars",
  "serde",
  "serde_json",

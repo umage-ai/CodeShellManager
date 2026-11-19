@@ -4,6 +4,7 @@
 mod app;
 mod groups;
 mod layout;
+mod search;
 mod sessions;
 
 use serde_json::Value;
@@ -18,6 +19,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(groups::specs());
     v.extend(layout::specs());
     v.extend(app::specs());
+    v.extend(search::specs());
     v
 }
 

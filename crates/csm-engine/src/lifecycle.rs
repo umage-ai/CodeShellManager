@@ -59,6 +59,17 @@ fn display_name(state: &State, id: &str) -> String {
         .unwrap_or_else(|| id.to_owned())
 }
 
+/// Tells the search index which session a stream of output belongs to, and keeps the config
+/// snapshot a closed session can be reopened from. Both are queued, never waited for.
+pub(crate) fn record_in_index(ix: &csm_index::Index, name: &str, s: &csm_core::models::ShellSession) {
+    let folder = s.working_folder.as_str();
+    ix.note_session(&s.id, name, folder, &s.group_id);
+    let entry = RecentlyClosedEntry::from_session(s, Timestamp::from_epoch_ms(now_ms()), new_id);
+    if let Ok(json) = serde_json::to_string(&entry) {
+        ix.record_history(&s.id, name, folder, &json);
+    }
+}
+
 fn is_claude(state: &State, id: &str) -> bool {
     state.app.sessions.iter().find(|s| s.id == id).is_some_and(|s| crate::launch::is_claude_command(&s.command))
 }
@@ -233,6 +244,9 @@ pub(crate) fn save_now(state: &mut State) {
 
 /// The engine thread is ending: kill what is left and write the state one last time.
 pub(crate) fn on_exit(state: &mut State) {
+    if let Some(ix) = state.rt.index.take() {
+        ix.shutdown();
+    }
     let ids: Vec<String> = state.rt.sessions.keys().cloned().collect();
     for id in ids {
         if let Some(rt) = state.rt.sessions.remove(&id) {
@@ -366,7 +380,11 @@ pub(crate) fn launch(ctx: &mut Ctx<'_>, id: &str, restoring: bool) -> Result<(),
     }
     ctx.state.rt.instance_seq = ctx.state.rt.instance_seq.wrapping_add(1);
     let (cols, rows) = ctx.state.options.fallback_size;
-    let io = SessionIo::new(id, &name, ctx.state.rt.instance_seq, GridSize::new(cols, rows), ctx.engine.clone());
+    let index = ctx.state.rt.index.clone();
+    if let Some(ix) = &index {
+        record_in_index(ix, &name, s);
+    }
+    let io = SessionIo::new(id, &name, ctx.state.rt.instance_seq, GridSize::new(cols, rows), ctx.engine.clone(), index);
     let deadline = Instant::now() + ctx.state.options.first_size_timeout;
     ctx.state.rt.sessions.insert(id.to_owned(), SessionRt::new(io, restoring, deadline));
     ctx.state.touch();
@@ -721,6 +739,9 @@ pub(crate) fn close_session(ctx: &mut Ctx<'_>, id: &str, force: bool) -> Result<
     if let Some(s) = ctx.state.app.sessions.get(i) {
         let entry = RecentlyClosedEntry::from_session(s, Timestamp::from_epoch_ms(now_ms()), new_id);
         ctx.state.app.recently_closed.insert(0, entry);
+        if let Some(ix) = &ctx.state.rt.index {
+            record_in_index(ix, &name, s);
+        }
         ctx.state.app.recently_closed.truncate(MAX_RECENTLY_CLOSED);
     }
     let pty = teardown(ctx, id);

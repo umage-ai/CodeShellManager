@@ -49,6 +49,9 @@ pub struct StateOptions {
     pub save_debounce: Duration,
     /// Run the restore loop when the engine starts.
     pub restore_on_start: bool,
+    /// The search index and notes store (`docs/tools.md`, notes and search). Off by default;
+    /// production uses [`IndexSetting::Auto`].
+    pub index: crate::index::IndexSetting,
 }
 
 impl Default for StateOptions {
@@ -63,6 +66,7 @@ impl Default for StateOptions {
             exit_wait: Duration::from_millis(10_000),
             save_debounce: Duration::from_millis(500),
             restore_on_start: true,
+            index: crate::index::IndexSetting::Off,
         }
     }
 }
@@ -70,7 +74,7 @@ impl Default for StateOptions {
 impl StateOptions {
     /// The production options: the state file at [`persist::default_state_path`].
     pub fn production() -> Self {
-        Self { save_path: persist::default_state_path(), ..Self::default() }
+        Self { save_path: persist::default_state_path(), index: crate::index::IndexSetting::Auto, ..Self::default() }
     }
 
     pub(crate) fn saves(&self) -> bool {
@@ -133,6 +137,8 @@ pub(crate) struct Runtime {
     pub saver: Option<persist::Saver>,
     /// The ConPTY in use and why (resolved once off the engine thread).
     pub conpty: Arc<OnceLock<String>>,
+    /// The search index and notes store, when the run has one.
+    pub index: Option<csm_index::Index>,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].
@@ -164,7 +170,7 @@ impl State {
         app.groups.retain(|g| !g.id.trim().is_empty() && seen.insert(g.id.clone()));
         app.recently_closed.truncate(crate::lifecycle::MAX_RECENTLY_CLOSED);
         let focused = app.ui.focused_session.clone().filter(|f| app.sessions.iter().any(|s| &s.id == f));
-        let mut rt = Runtime { focused, dirty: true, ..Runtime::default() };
+        let mut rt = Runtime { focused, dirty: true, index: crate::index::open(&options), ..Runtime::default() };
         if options.saves()
             && let Some(path) = &options.save_path
         {
