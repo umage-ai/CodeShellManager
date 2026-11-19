@@ -1,0 +1,24 @@
+[package]
+name = "term-spike"
+description = "Phase 0 terminal spike (throwaway): egui terminal panes over csm-pty + csm-term"
+build = "build.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csm-pty = { path = "../../crates/csm-pty" }
+csm-term = { path = "../../crates/csm-term" }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
+egui = "0.36"
+swash = "0.2"
+arboard = { version = "3.6", default-features = false }
+log = "0.4"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }

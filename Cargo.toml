@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]  # add "apps/*" back once the first app crate lands (an unmatched glob breaks the build)
+members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.0.1"
