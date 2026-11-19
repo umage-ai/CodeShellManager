@@ -51,8 +51,24 @@ pub struct SessionView {
     pub live: bool,
     pub asleep: bool,
     pub exit_code: Option<i32>,
+    /// The branch: polled from the folder, or pushed with OSC 9001 (which wins).
     pub branch: Option<String>,
     pub git_dirty: bool,
+    /// What the branch tracks (`origin/main`); `None` when nothing.
+    pub git_upstream: Option<String>,
+    /// Commits ahead of / behind the upstream; `None` without one (or when it is gone).
+    pub git_ahead: Option<i32>,
+    pub git_behind: Option<i32>,
+    /// Changed paths (`git status`).
+    pub git_changes: usize,
+    /// The git menu's header line (`main → origin/main · ↑2 · 3 changed · worktree of X`).
+    pub git_summary: Option<String>,
+    /// In a linked worktree: the main repo's name.
+    pub worktree_of: Option<String>,
+    /// The main working tree's root (canonical); every worktree of a repo shares it.
+    pub repo_root: Option<String>,
+    /// A git operation is running on this session's repository.
+    pub git_busy: bool,
     /// The terminal title (OSC 0/2), when the program set one.
     pub title: Option<String>,
     pub is_claude: bool,
@@ -157,6 +173,7 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         .clone()
         .unwrap_or_else(|| csm_core::color::hex_color(&s.accent_key()).to_owned());
     let name = if s.name.trim().is_empty() { s.default_display_name() } else { s.name.clone() };
+    let git = crate::tools::git::view_fields(state, s);
     SessionView {
         id: s.id.clone(),
         name,
@@ -180,8 +197,16 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
             Phase::Exited { code } => code,
             _ => None,
         }),
-        branch: rt.and_then(|r| r.git_branch.clone()),
-        git_dirty: rt.is_some_and(|r| r.git_dirty),
+        branch: git.branch,
+        git_dirty: git.dirty,
+        git_upstream: git.upstream,
+        git_ahead: git.ahead,
+        git_behind: git.behind,
+        git_changes: git.changes,
+        git_summary: git.summary,
+        worktree_of: git.worktree_of,
+        repo_root: git.repo_root,
+        git_busy: git.busy,
         title: rt.and_then(|r| r.title.clone()).filter(|t| !t.is_empty()),
         is_claude: crate::launch::is_claude_command(&s.command),
         reports_status: rt.is_some_and(|r| r.has_program_status),

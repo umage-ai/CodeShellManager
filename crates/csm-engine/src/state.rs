@@ -133,6 +133,8 @@ pub(crate) struct Runtime {
     pub saver: Option<persist::Saver>,
     /// The ConPTY in use and why (resolved once off the engine thread).
     pub conpty: Arc<OnceLock<String>>,
+    /// Git status per live session, the `.git` watchers and the per-repo busy slots.
+    pub git: crate::tools::git::GitRt,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].
