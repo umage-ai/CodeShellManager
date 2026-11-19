@@ -197,6 +197,8 @@ pub struct SessionView {
     /// When the status was entered (ms since the epoch).
     pub status_since_ms: Option<u64>,
     pub accent: Accent,
+    /// The accent was pushed by the program (OSC 9001): "Reset accent colour" is offered.
+    pub accent_overridden: bool,
     /// The repo session this worktree session belongs under.
     pub parent: Option<SessionId>,
     pub runs: Vec<RunView>,

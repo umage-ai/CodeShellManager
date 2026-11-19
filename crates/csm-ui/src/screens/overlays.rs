@@ -27,9 +27,118 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if app.ui.overlay == Overlay::Busy {
         busy_dialog(ctx, app, actions);
     }
-    if app.model.shutdown.is_some() {
-        shutdown_board(ctx, app);
+    if app.ui.overlay == Overlay::Confirm {
+        confirm_dialog(ctx, app, actions);
     }
+    if app.ui.overlay == Overlay::Help {
+        help(ctx, actions);
+    }
+    if app.model.shutdown.is_some() {
+        shutdown_board(ctx, app, actions);
+    }
+}
+
+/// A yes/no question ("Restart now?"). Enter answers yes; Esc and the scrim answer no.
+fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let Some(c) = app.ui.confirm.clone() else {
+        actions.push(Action::CloseOverlays);
+        return;
+    };
+    let t = Tokens::get(ctx);
+    scrim(ctx, "confirm-scrim");
+    let yes = |actions: &mut Vec<Action>| {
+        actions.push(Action::CloseOverlays);
+        actions.push((*c.yes).clone());
+    };
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+        yes(actions);
+        return;
+    }
+    let screen = ctx.content_rect();
+    egui::Area::new(Id::new("confirm")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
+        widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
+            ui.set_width(size::DIALOG_W);
+            ui.spacing_mut().item_spacing.y = space::MD;
+            ui.label(egui::RichText::new(&c.title).font(semibold(text::TITLE)).color(t.fg));
+            ui.add(egui::Label::new(egui::RichText::new(&c.body).font(theme::regular(text::BODY)).color(t.fg2)).wrap());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::button(ui, ButtonKind::Primary, None, &c.yes_label, Some("Enter")).clicked() {
+                    yes(actions);
+                }
+                if widgets::button(ui, ButtonKind::Ghost, None, &c.no_label, Some("Esc")).clicked() {
+                    actions.push(Action::CloseOverlays);
+                }
+            });
+        });
+    });
+}
+
+/// Every keyboard shortcut, in one place (`?`, F1, Ctrl+/).
+pub const SHORTCUTS: [(&str, &str); 18] = [
+    ("Ctrl K", "Search sessions and commands"),
+    ("Ctrl T", "New session"),
+    ("Ctrl Shift T", "Reopen the last closed session"),
+    ("Ctrl J", "Next session that needs you"),
+    ("Ctrl Tab", "Next session in this group"),
+    ("Ctrl Shift Tab", "Previous session"),
+    ("Ctrl 1…9", "Rail tabs (1 is All)"),
+    ("Ctrl I", "Show or hide the inspector"),
+    ("Ctrl W", "Close the active session"),
+    ("F2", "Rename the active session"),
+    ("F5", "Run the default run command"),
+    ("Shift F5", "Stop it"),
+    ("Ctrl ,", "Settings"),
+    ("F1  ?  Ctrl /", "This list"),
+    ("Esc", "Close a menu, panel or dialog"),
+    ("Enter", "Open or run the selected row"),
+    ("Tab", "New session: the next command"),
+    ("Ctrl Enter", "New session: start and keep the panel open"),
+];
+
+fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ctx);
+    let screen = ctx.content_rect();
+    egui::Area::new(Id::new("help-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+        ui.painter().rect_filled(rect, 0.0, t.scrim);
+        if resp.clicked() {
+            actions.push(Action::CloseOverlays);
+        }
+    });
+    egui::Area::new(Id::new("help")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
+        widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
+            ui.set_width(size::HELP_W);
+            ui.horizontal(|ui| {
+                icons::show(ui, "keyboard", icon::XL, t.fg);
+                ui.label(egui::RichText::new("Keyboard shortcuts").font(semibold(text::TITLE)).color(t.fg));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, "x", size::CONTROL_SM, false, "Close  Esc").clicked() {
+                        actions.push(Action::CloseOverlays);
+                    }
+                });
+            });
+            ui.add_space(space::SM);
+            let max_h = (ctx.content_rect().height() - size::PALETTE_TOP * 2.0).max(size::MENU_W);
+            egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+            egui::Grid::new("help-keys").num_columns(2).spacing(vec2(space::LG, space::XS + space::XXS)).show(ui, |ui| {
+                for (keys, what) in SHORTCUTS {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
+                        for k in keys.split("  ") {
+                            widgets::kbd(ui, k);
+                        }
+                    });
+                    let r = ui.label(egui::RichText::new(what).font(theme::regular(text::BODY)).color(t.fg2));
+                    let label = format!("Shortcut: {keys}: {what}");
+                    r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone()));
+                    ui.end_row();
+                }
+            });
+            });
+            ui.add_space(space::SM);
+            ui.label(egui::RichText::new("Every command is also in Ctrl+K, by name.").font(theme::regular(text::CAPTION)).color(t.muted));
+        });
+    });
 }
 
 fn toasts(ctx: &egui::Context, app: &mut CsmApp) {
@@ -161,12 +270,17 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
                 }
             });
             ui.horizontal(|ui| {
+                let cr = ui.add(egui::Checkbox::new(&mut app.ui.dont_warn, egui::RichText::new("Don't warn me again").font(theme::regular(text::BODY)).color(t.fg2)));
+                cr.on_hover_text("Settings › General › Warn when closing busy sessions turns it back on.");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if widgets::button(ui, ButtonKind::Primary, None, "Keep running", None).clicked() {
                         actions.push(Action::CloseOverlays);
                     }
                     if widgets::button(ui, ButtonKind::Danger, None, "Close anyway", None).clicked() {
                         actions.push(Action::CloseOverlays);
+                        if app.ui.dont_warn {
+                            actions.push(Action::Tool("settings_set", json!({"key": "WarnOnCloseWhenBusy", "value": false})));
+                        }
                         actions.push(Action::Tool("app_quit", json!({})));
                     }
                 });
@@ -176,7 +290,7 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
     });
 }
 
-fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp) {
+fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let Some(board) = app.model.shutdown.clone() else { return };
     let t = Tokens::get(ctx);
     scrim(ctx, "shutdown-scrim");
@@ -244,9 +358,20 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp) {
             lab(ui, "Wait budget", format!("{:.1} s of {:.0} s", board.budget_used_s, board.budget_s));
             widgets::bar(ui, board.budget_used_s / board.budget_s.max(1.0), t.peach, size::BAR);
             ui.add_space(space::SM);
-            // No "Force close now": the engine's quit already bounds a wedged session with the
-            // budget, and has no way to cut it shorter yet.
-            ui.add(egui::Label::new(egui::RichText::new(hint).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
+            let waiting = done < board.rows.len();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // `app_quit { force }`: the engine stops waiting for the remaining exits.
+                    if waiting
+                        && widgets::button(ui, ButtonKind::Secondary, None, "Force close now", None)
+                            .on_hover_text("Everything still running is stopped now, without waiting for it to exit on its own.")
+                            .clicked()
+                    {
+                        actions.push(Action::Tool("app_quit", json!({"force": true})));
+                    }
+                    ui.add(egui::Label::new(egui::RichText::new(hint).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
+                });
+            });
         });
     });
 }

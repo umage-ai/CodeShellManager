@@ -14,7 +14,7 @@ use crate::icons;
 use crate::model::{Kind, Layout, LayoutMode, Scope, SessionId, SessionView, SplitDir, SplitNode, Status, UiModel};
 use crate::screens::sidebar::kind_badge;
 use crate::terminal::{SourceState, TerminalSource, TerminalView, ViewOptions, lock};
-use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
+use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
 fn named(resp: &egui::Response, ty: WidgetType, label: impl Into<String>) {
@@ -254,7 +254,10 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
             let Some(s) = model.session(&id) else { continue };
             let src = app.backend.terminal(&id);
-            pane(ui, &mut host, &model, s, src.as_deref(), r, o, &scope, actions);
+            let head = pane(ui, &mut host, &model, s, src.as_deref(), r, o, &scope, actions);
+            if head.drag_started() && layout.mode == LayoutMode::Free {
+                app.ui.drags.pane = Some(id.clone());
+            }
         }
         // Grid: empty slots invite a pick.
         if layout.mode == LayoutMode::Grid {
@@ -272,9 +275,10 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 }
             }
         }
-        // Free: the dividers, then the floating panes on top.
+        // Free: the dividers, a header being dragged onto an edge, then the floating panes on top.
         if layout.mode == LayoutMode::Free {
             dividers(ui, app, &layout, inner, &scope, actions);
+            split_drag(ui, app, &layout, &planned, &scope, actions);
             for f in &layout.floats {
                 let Some(s) = model.session(&f.session) else { continue };
                 if !s.status.is_live() {
@@ -503,7 +507,7 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
     }
     if layout.mode == LayoutMode::Free {
-        widgets::paint_text(ui, pos2(seg.max.x + space::MD, cy), Align2::LEFT_CENTER, "Drag a divider to resize. Float a pane, or tear it off into its own window.", theme::regular(text::CAPTION), t.muted, end - seg.max.x - space::MD * 2.0);
+        widgets::paint_text(ui, pos2(seg.max.x + space::MD, cy), Align2::LEFT_CENTER, "Drag a divider to resize. Drop a pane header on another pane's edge to split.", theme::regular(text::CAPTION), t.muted, end - seg.max.x - space::MD * 2.0);
     }
 }
 
@@ -519,7 +523,7 @@ pub fn pane(
     o: PaneOpts,
     scope: &Scope,
     actions: &mut Vec<Action>,
-) {
+) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let accent = t.accent(s.accent);
     let r = CornerRadius::same(radius::MD);
@@ -541,7 +545,8 @@ pub fn pane(
         let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, ..ViewOptions::default() };
         let mut child = ui.new_child(UiBuilder::new().max_rect(body));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
-        let PaneHost { renderer, views } = host;
+        let PaneHost { renderer, views, padding, .. } = host;
+        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), ..opts };
         let view = views.entry(view_key.clone()).or_insert_with(|| TerminalView::new(Id::new(("csm-pane", view_key.clone()))));
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;
@@ -567,8 +572,12 @@ pub fn pane(
     let cy = head.center().y;
     // The header itself takes clicks (activate, right-click menu); registered before its
     // controls so they sit on top of it in hit testing.
-    let head_resp = ui.interact(head.shrink2(vec2(space::SM, 0.0)), Id::new(("pane-head", s.id.clone(), o.torn, o.mini)), Sense::click());
+    // In Free mode a docked pane's header drags onto another pane's edge to split it.
+    let splittable = o.mode == Some(LayoutMode::Free) && !o.floating && !o.torn && !o.mini;
+    let head_sense = if splittable { Sense::click_and_drag() } else { Sense::click() };
+    let head_resp = ui.interact(head.shrink2(vec2(space::SM, 0.0)), Id::new(("pane-head", s.id.clone(), o.torn, o.mini)), head_sense);
     named(&head_resp, WidgetType::Other, format!("Pane: {}", s.name));
+    let head_resp = if splittable { head_resp.on_hover_cursor(CursorIcon::Grab) } else { head_resp };
     // Right-hand controls first (they keep their size; the name elides).
     let mut x = head.max.x - space::XS;
     let ctl = |ui: &mut Ui, name: &str, on: bool, tip: &str, x: &mut f32| -> bool {
@@ -721,6 +730,119 @@ pub fn pane(
         let at = ui.ctx().pointer_latest_pos().unwrap_or(head.right_bottom());
         actions.push(Action::OpenMenu(Menu::Pane { session: s.id.clone(), at }));
     }
+    head_resp
+}
+
+/// Which edge of a pane a split drop would take, for a pointer at `p` inside `r`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Edge {
+    /// The nearest edge, when the pointer is within `size::DROP_EDGE` of it (the middle of a
+    /// pane is not a drop zone).
+    pub fn at(r: Rect, p: egui::Pos2) -> Option<Edge> {
+        if !r.contains(p) || r.width() <= 0.0 || r.height() <= 0.0 {
+            return None;
+        }
+        let dx = (p.x - r.min.x) / r.width();
+        let dy = (p.y - r.min.y) / r.height();
+        let candidates = [(dx, Edge::Left), (1.0 - dx, Edge::Right), (dy, Edge::Top), (1.0 - dy, Edge::Bottom)];
+        let (d, e) = candidates.into_iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
+        (d <= size::DROP_EDGE).then_some(e)
+    }
+
+    /// The part of `r` the new pane would take.
+    pub fn zone(self, r: Rect) -> Rect {
+        let (w, h) = (r.width() / 2.0, r.height() / 2.0);
+        match self {
+            Edge::Left => Rect::from_min_size(r.min, vec2(w, r.height())),
+            Edge::Right => Rect::from_min_size(pos2(r.min.x + w, r.min.y), vec2(w, r.height())),
+            Edge::Top => Rect::from_min_size(r.min, vec2(r.width(), h)),
+            Edge::Bottom => Rect::from_min_size(pos2(r.min.x, r.min.y + h), vec2(r.width(), h)),
+        }
+    }
+
+    /// The split this drop makes: direction, and whether the dropped pane goes after the target.
+    pub fn split(self) -> (SplitDir, bool) {
+        match self {
+            Edge::Left => (SplitDir::Row, false),
+            Edge::Right => (SplitDir::Row, true),
+            Edge::Top => (SplitDir::Col, false),
+            Edge::Bottom => (SplitDir::Col, true),
+        }
+    }
+}
+
+/// The tree after dropping `src` on `target`'s `edge`: `src` leaves its place and splits the
+/// target. `None` when nothing would change.
+pub fn split_drop(tree: &SplitNode, src: &str, target: &str, edge: Edge) -> Option<SplitNode> {
+    if src == target || !tree.contains(target) {
+        return None;
+    }
+    let rest = tree.without(src)?;
+    let (dir, after) = edge.split();
+    Some(rest.split_leaf(target, src, dir, after))
+}
+
+/// Free mode, while a pane header is dragged: the drop zones of the pane under the pointer, and
+/// the split on release (`layout_set { free }`).
+fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(SessionId, Rect, PaneOpts)], scope: &Scope, actions: &mut Vec<Action>) {
+    let Some(src) = app.ui.drags.pane.clone() else { return };
+    let Some(p) = ui.ctx().pointer_latest_pos() else { return };
+    let t = Tokens::get(ui.ctx());
+    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    let target = planned.iter().find(|(id, r, _)| id != &src && r.contains(p));
+    let painter = ui.painter().clone();
+    let mut drop = None;
+    if let Some((tid, r, _)) = target {
+        // Every edge of the pane under the pointer is a zone; the one it would take is lit.
+        let lit = Edge::at(*r, p);
+        for e in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            let z = e.zone(*r).shrink(space::XS);
+            if Some(e) == lit {
+                painter.rect_filled(z, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP * 2.0));
+                painter.rect_stroke(z, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+            } else {
+                painter.rect_stroke(z, CornerRadius::same(radius::MD), Stroke::new(size::HAIRLINE, Tokens::tint(t.blue, alpha::ASLEEP)), StrokeKind::Inside);
+            }
+        }
+        if let Some(e) = lit {
+            let z = e.zone(*r);
+            let label = "Split here";
+            let lw = widgets::text_width(ui, label, theme::medium(text::CAPTION)) + space::LG;
+            let lr = Rect::from_center_size(z.center(), vec2(lw, size::CHIP));
+            painter.rect_filled(lr, CornerRadius::same(radius::PILL), t.blue);
+            painter.text(lr.center(), Align2::CENTER_CENTER, label, theme::medium(text::CAPTION), t.on_accent);
+            drop = Some((tid.clone(), e));
+        }
+    }
+    // The dragged pane's name follows the pointer.
+    if let Some(s) = app.model.session(&src) {
+        let w = widgets::text_width(ui, &s.name, theme::medium(text::BODY)) + space::LG + size::STRIPE;
+        let gr = Rect::from_min_size(p + vec2(space::MD, space::XS), vec2(w, size::CONTROL_SM));
+        painter.rect(gr, CornerRadius::same(radius::MD), t.pop, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+        painter.rect_filled(Rect::from_min_size(gr.min + vec2(space::SM, space::SM - space::XXS), vec2(size::STRIPE, gr.height() - space::LG + space::XS)), CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+        painter.text(pos2(gr.min.x + space::SM + size::STRIPE + space::SM, gr.center().y), Align2::LEFT_CENTER, &s.name, theme::medium(text::BODY), t.fg);
+    }
+    if ui.input(|i| i.pointer.any_released()) {
+        app.ui.drags.pane = None;
+        let tree = layout.tree.clone().or_else(|| {
+            let ids: Vec<SessionId> = planned.iter().map(|(id, ..)| id.clone()).collect();
+            SplitNode::row(&ids)
+        });
+        if let (Some((tid, e)), Some(tree)) = (drop, tree)
+            && let Some(next) = split_drop(&tree, &src, &tid, e)
+        {
+            let mut free = layout.free();
+            free.tree = Some(next);
+            actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "free": free.to_value()})));
+        }
+    }
 }
 
 /// Everything a torn-off window needs, refreshed by the main frame. Shared with the deferred
@@ -857,6 +979,26 @@ mod tests {
         assert_eq!(divs.len(), 2);
         assert!((leaves[0].1.width() - 98.0).abs() < 0.01);
         assert!((divs[0].rect.min.x - 98.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_header_dropped_on_an_edge_splits_that_pane() {
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 100.0));
+        assert_eq!(Edge::at(r, pos2(10.0, 50.0)), Some(Edge::Left));
+        assert_eq!(Edge::at(r, pos2(190.0, 50.0)), Some(Edge::Right));
+        assert_eq!(Edge::at(r, pos2(100.0, 95.0)), Some(Edge::Bottom));
+        assert_eq!(Edge::at(r, pos2(100.0, 50.0)), None, "the middle is not a zone");
+        assert_eq!(Edge::at(r, pos2(300.0, 50.0)), None);
+        let tree = SplitNode::row(&["a".into(), "b".into(), "c".into()]).unwrap();
+        // c onto b's bottom: b and c stacked, a beside them.
+        let next = split_drop(&tree, "c", "b", Edge::Bottom).unwrap();
+        let SplitNode::Split { dir, children, .. } = &next else { panic!() };
+        assert_eq!(*dir, SplitDir::Row);
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[1], SplitNode::Split { dir: SplitDir::Col, ratios: vec![0.5, 0.5], children: vec![SplitNode::leaf("b"), SplitNode::leaf("c")] });
+        assert_eq!(next.sessions(), vec!["a", "b", "c"]);
+        assert!(split_drop(&tree, "a", "a", Edge::Left).is_none(), "onto itself changes nothing");
+        assert_eq!(split_drop(&tree, "a", "c", Edge::Right).unwrap().sessions(), vec!["b", "c", "a"]);
     }
 
     #[test]

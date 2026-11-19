@@ -226,6 +226,14 @@ impl Backend for EngineBackend {
                     self.theme = theme_from_setting(v);
                     self.refresh(true);
                 }
+                // The quick-open's commands follow Settings › General.
+                if call.id == "settings_set"
+                    && out.data["key"] == "LaunchCommands"
+                    && let Some(list) = out.data["value"].as_array()
+                {
+                    self.opts.launch_commands = list.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    self.refresh(true);
+                }
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
                 let effects = self.engine.registry().get(&call.id).map(|s| s.effects);
                 let say = call.id == "state_import_wpf" || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));
@@ -400,6 +408,7 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         detail: s.status_message.clone().unwrap_or_default(),
         status_since_ms: s.inbox_since_ms.and_then(|t| u64::try_from(t).ok()),
         accent: accent_from_hex(&s.accent),
+        accent_overridden: s.accent_override,
         parent: None,
         runs: s.runs.iter().map(run_from_engine).collect(),
         open_with: s

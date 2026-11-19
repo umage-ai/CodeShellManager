@@ -187,7 +187,8 @@ fn main() {
         viewport: egui::ViewportBuilder::default()
             .with_title("CodeShellManager")
             .with_inner_size(theme::size::WINDOW)
-            .with_min_inner_size(theme::size::WINDOW_MIN),
+            .with_min_inner_size(theme::size::WINDOW_MIN)
+            .with_icon(std::sync::Arc::new(csm_ui::app::app_icon(64))),
         ..Default::default()
     };
     let shutdown = engine.clone();

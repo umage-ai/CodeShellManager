@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::events::{Event, Events};
@@ -110,12 +110,9 @@ struct Pending {
     asked_at: Instant,
 }
 
-/// A remembered "always allow": this client may call this tool without asking.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Grant {
-    pub client: String,
-    pub tool: String,
-}
+/// A remembered "always allow": this client may call this tool without asking. Kept in the
+/// state (`AppState::mcp_grants`), so it survives a restart; `grant_list` / `grant_revoke`.
+pub use csm_core::models::McpGrant as Grant;
 
 /// Cheap to clone; all clones talk to the same engine thread.
 #[derive(Clone)]
@@ -219,7 +216,6 @@ fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
     ON_ENGINE_THREAD.with(|f| f.set(true));
     let mut pending: HashMap<u64, Pending> = HashMap::new();
     let mut next_id: u64 = 1;
-    let mut grants: Vec<Grant> = Vec::new();
     {
         let mut c = ctx(&mut state, &Caller::Ui, &engine, None);
         if catch_unwind(AssertUnwindSafe(|| crate::lifecycle::on_start(&mut c))).is_err() {
@@ -241,7 +237,7 @@ fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
             }
         }
         if let Some(msg) = msg
-            && !handle(msg, &engine, &mut state, &mut pending, &mut next_id, &mut grants)
+            && !handle(msg, &engine, &mut state, &mut pending, &mut next_id)
         {
             break;
         }
@@ -261,7 +257,6 @@ fn handle(
     state: &mut State,
     pending: &mut HashMap<u64, Pending>,
     next_id: &mut u64,
-    grants: &mut Vec<Grant>,
 ) -> bool {
     {
         match msg {
@@ -276,7 +271,7 @@ fn handle(
                 // Consent bookkeeping is handled here, not in a tool, so no tool can skip it.
                 match id.as_str() {
                     "consent_answer" => {
-                        let r = answer(&caller, params, pending, grants, state, engine);
+                        let r = answer(&caller, params, pending, state, engine);
                         let _ = reply.send(r);
                         return true;
                     }
@@ -297,7 +292,7 @@ fn handle(
                     return true;
                 }
                 if let Caller::External { client, .. } = &caller {
-                    let granted = grants.iter().any(|g| &g.client == client && g.tool == spec.id);
+                    let granted = state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id);
                     if spec.effects.needs_consent() && !granted {
                         let key = *next_id;
                         *next_id = next_id.saturating_add(1);
@@ -384,7 +379,6 @@ fn answer(
     caller: &Caller,
     params: Value,
     pending: &mut HashMap<u64, Pending>,
-    grants: &mut Vec<Grant>,
     state: &mut State,
     engine: &Engine,
 ) -> Reply {
@@ -406,8 +400,9 @@ fn answer(
                 && let Caller::External { client, .. } = &req.caller
             {
                 let g = Grant { client: client.clone(), tool: req.spec.id.to_string() };
-                if !grants.contains(&g) {
-                    grants.push(g);
+                if !state.app.mcp_grants.contains(&g) {
+                    state.app.mcp_grants.push(g);
+                    state.persist();
                 }
             }
             // The state may have changed while the person decided: check the rules again.

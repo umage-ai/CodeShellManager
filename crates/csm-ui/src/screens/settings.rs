@@ -1,0 +1,365 @@
+//! Settings (title bar ⚙, Ctrl+,): a page over the work area, not a modal. Sections on the left,
+//! one column of controls on the right. Values come from tools (`settings_get`, `app_info`,
+//! `grant_list`); every change is a tool call (`settings_set`, `view_set`, `grant_revoke`), and
+//! the page shows what the engine answered, never a local copy that could disagree.
+
+use egui::{Align2, CornerRadius, Id, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
+use serde_json::{Value, json};
+
+use crate::app::{Action, CsmApp, SettingsSection};
+use crate::icons;
+use crate::model::GroupMode;
+use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
+use crate::widgets::{self, ButtonKind};
+
+fn set(key: &str, value: Value) -> Action {
+    Action::Tool("settings_set", json!({"key": key, "value": value}))
+}
+
+pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 0.0, t.bg);
+
+    // The section list.
+    let nav = Rect::from_min_max(rect.min, pos2(rect.min.x + size::SETTINGS_NAV_W, rect.max.y));
+    ui.painter().rect_filled(nav, 0.0, t.mantle);
+    ui.painter().vline(nav.max.x - size::HAIRLINE / 2.0, nav.y_range(), Stroke::new(size::HAIRLINE, t.surface0));
+    let head_y = nav.min.y + space::LG + space::SM;
+    ui.painter().text(pos2(nav.min.x + space::LG, head_y), Align2::LEFT_CENTER, "Settings", semibold(text::TITLE), t.fg);
+    let mut y = head_y + space::XL;
+    for sec in SettingsSection::ALL {
+        let r = Rect::from_min_size(pos2(nav.min.x + space::SM, y), vec2(nav.width() - space::LG, size::CONTROL + space::XS));
+        y += r.height() + space::XXS;
+        let resp = ui.interact(r, Id::new(("settings-sec", sec.label())), Sense::click());
+        let on = app.ui.settings.section == sec;
+        if on || resp.hovered() {
+            ui.painter().rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
+        }
+        let ir = Rect::from_min_size(pos2(r.min.x + space::ROW_X, r.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
+        icons::paint(ui, ir, sec.icon(), icon::MD, if on { t.blue } else { t.muted });
+        ui.painter().text(pos2(ir.max.x + space::SM, r.center().y), Align2::LEFT_CENTER, sec.label(), theme::medium(text::BODY), if on { t.fg } else { t.fg2 });
+        let label = format!("Settings: {}", sec.label());
+        resp.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label.clone()));
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            app.ui.settings.section = sec;
+        }
+    }
+    let close = Rect::from_min_size(pos2(nav.min.x + space::SM, nav.max.y - size::CONTROL - space::MD), vec2(nav.width() - space::LG, size::CONTROL));
+    if ui.scope_builder(UiBuilder::new().max_rect(close), |ui| widgets::button(ui, ButtonKind::Ghost, Some("x"), "Close settings", Some("Esc"))).inner.clicked() {
+        actions.push(Action::CloseSettings);
+    }
+
+    // The section.
+    let body = Rect::from_min_max(pos2(nav.max.x, rect.min.y), rect.max);
+    let col_w = size::SETTINGS_W.min(body.width() - space::XL * 2.0).max(size::MENU_W);
+    let col = Rect::from_min_max(pos2(body.min.x + space::XL, body.min.y + space::LG), pos2(body.min.x + space::XL + col_w, body.max.y));
+    ui.scope_builder(UiBuilder::new().max_rect(col), |ui| {
+        egui::ScrollArea::vertical().id_salt("settings-body").auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(col_w - space::SM);
+            ui.spacing_mut().item_spacing.y = space::SM;
+            ui.label(egui::RichText::new(app.ui.settings.section.label()).font(semibold(text::TITLE)).color(t.fg));
+            ui.add_space(space::XS);
+            if app.ui.settings.values.is_empty() {
+                ui.label(egui::RichText::new("Loading the settings…").font(theme::regular(text::BODY)).color(t.muted));
+                return;
+            }
+            match app.ui.settings.section {
+                SettingsSection::General => general(ui, app, actions),
+                SettingsSection::Appearance => appearance(ui, app, actions),
+                SettingsSection::Groups => groups(ui, app, actions),
+                SettingsSection::Mcp => mcp(ui, app, actions),
+                SettingsSection::About => about(ui, app, actions),
+            }
+            ui.add_space(space::XL);
+        });
+    });
+}
+
+fn caption(ui: &mut Ui, s: &str) {
+    let t = Tokens::get(ui.ctx());
+    ui.add(egui::Label::new(egui::RichText::new(s).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
+}
+
+fn section(ui: &mut Ui, s: &str) {
+    ui.add_space(space::SM);
+    widgets::caps(ui, s);
+}
+
+/// A labelled one-line text setting: saved (`settings_set`) on Enter or when it loses focus.
+fn text_setting(ui: &mut Ui, app: &mut CsmApp, key: &str, label: &str, hint: &str, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let saved = app.ui.settings.str(key).unwrap_or_default().to_string();
+    let mut buf = app.ui.settings.drafts.get(key).cloned().unwrap_or_else(|| saved.clone());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).font(theme::regular(text::BODY)).color(t.fg));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let edit = egui::TextEdit::singleline(&mut buf)
+                .id(Id::new(("setting", key.to_string())))
+                .hint_text(egui::RichText::new(hint).color(t.faint))
+                .font(theme::mono(text::MONO))
+                .desired_width(size::FIELD_W);
+            let r = ui.add(edit);
+            let label = label.to_string();
+            r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label.clone()));
+            let commit = r.lost_focus() || (r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if commit && buf != saved {
+                actions.push(set(key, Value::String(buf.trim().to_string())));
+            }
+        });
+    });
+    if buf == saved {
+        app.ui.settings.drafts.remove(key);
+    } else {
+        app.ui.settings.drafts.insert(key.to_string(), buf);
+    }
+}
+
+fn bool_setting(ui: &mut Ui, app: &CsmApp, key: &str, label: &str, hint: &str, actions: &mut Vec<Action>) {
+    let on = app.ui.settings.bool(key).unwrap_or(false);
+    if widgets::toggle(ui, on, label, Some(hint)).clicked() {
+        actions.push(set(key, Value::Bool(!on)));
+    }
+}
+
+/// A whole-number setting with a drag value; saved when the drag or the typing ends.
+fn number_setting(ui: &mut Ui, app: &mut CsmApp, key: &str, label: &str, range: std::ops::RangeInclusive<i64>, unit: &str, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let saved = app.ui.settings.num(key).map_or(0, |n| n as i64);
+    let draft_key = format!("#{key}");
+    let mut v: i64 = app.ui.settings.drafts.get(&draft_key).and_then(|d| d.parse().ok()).unwrap_or(saved);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).font(theme::regular(text::BODY)).color(t.fg));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(unit).font(theme::regular(text::CAPTION)).color(t.muted));
+            let r = ui.add(egui::DragValue::new(&mut v).range(range));
+            let label = label.to_string();
+            r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, label.clone()));
+            let done = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
+            if done && v != saved {
+                actions.push(set(key, json!(v)));
+            }
+        });
+    });
+    if v == saved {
+        app.ui.settings.drafts.remove(&draft_key);
+    } else {
+        app.ui.settings.drafts.insert(draft_key, v.to_string());
+    }
+}
+
+fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    section(ui, "New sessions");
+    text_setting(ui, app, "DefaultWorkingFolder", "Default folder", "C:\\src (blank: ask)", actions);
+    text_setting(ui, app, "DefaultCommand", "Default command", "claude", actions);
+    section(ui, "Launch commands");
+    caption(ui, "What Tab cycles through in the New session panel, in this order.");
+    let cmds: Vec<String> = app
+        .ui
+        .settings
+        .values
+        .get("LaunchCommands")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    widgets::card_frame(&t).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for (i, c) in cmds.iter().enumerate() {
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL), Sense::hover());
+            ui.painter().text(pos2(r.min.x + space::XS, r.center().y), Align2::LEFT_CENTER, c, theme::mono(text::MONO), t.fg);
+            let mut x = r.max.x;
+            let mut btn = |ui: &mut Ui, name: &str, tip: &str| {
+                x -= size::CONTROL_SM;
+                let b = Rect::from_center_size(pos2(x + size::CONTROL_SM / 2.0, r.center().y), Vec2::splat(size::CONTROL_SM));
+                x -= space::XXS;
+                widgets::icon_button_at(ui, b, Id::new(("launch-cmd", i, name.to_string())), name, false, tip).clicked()
+            };
+            if btn(ui, "x", &format!("Remove “{c}”")) {
+                let mut v = cmds.clone();
+                v.remove(i);
+                actions.push(set("LaunchCommands", json!(v)));
+            }
+            if i > 0 && btn(ui, "chevU", &format!("Move “{c}” up")) {
+                let mut v = cmds.clone();
+                v.swap(i, i - 1);
+                actions.push(set("LaunchCommands", json!(v)));
+            }
+        }
+        if cmds.is_empty() {
+            ui.label(egui::RichText::new("No commands: the New session panel offers the default command only.").font(theme::regular(text::CAPTION)).color(t.muted));
+        }
+    });
+    ui.horizontal(|ui| {
+        let edit = egui::TextEdit::singleline(&mut app.ui.settings.new_command)
+            .id(Id::new("settings-new-command"))
+            .hint_text(egui::RichText::new("claude --model …").color(t.faint))
+            .font(theme::mono(text::MONO))
+            .desired_width(size::FIELD_W);
+        let r = ui.add(edit);
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "New launch command"));
+        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let add = widgets::button(ui, ButtonKind::Secondary, Some("plus"), "Add", None).clicked();
+        let c = app.ui.settings.new_command.trim().to_string();
+        if (enter || add) && !c.is_empty() && !c.chars().any(char::is_control) {
+            let mut v = cmds.clone();
+            if !v.contains(&c) {
+                v.push(c);
+                actions.push(set("LaunchCommands", json!(v)));
+            }
+            app.ui.settings.new_command.clear();
+        }
+    });
+    section(ui, "Starting and closing");
+    bool_setting(ui, app, "AutoRestoreSessions", "Restore sessions on start", "Sessions that were open when the app closed start again, one at a time.", actions);
+    bool_setting(ui, app, "AutoResumeClaude", "Resume Claude conversations", "A restored or restarted Claude session continues its conversation (--resume).", actions);
+    bool_setting(ui, app, "WarnOnCloseWhenBusy", "Warn when closing busy sessions", "Ask before quitting while a session is working or waiting on you.", actions);
+    number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
+    caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
+}
+
+fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    section(ui, "Theme");
+    let cur = app.ui.settings.str("Theme").unwrap_or("dark").to_ascii_lowercase();
+    let options = ["Dark (Mocha)", "Light (Latte)", "System"];
+    let ids = ["dark", "light", "system"];
+    let sel = ids.iter().position(|i| *i == cur || (cur == "mocha" && *i == "dark") || (cur == "latte" && *i == "light"));
+    if let Some(i) = widgets::segmented(ui, "Theme", &options, sel)
+        && let Some(id) = ids.get(i)
+    {
+        actions.push(set("Theme", json!(id)));
+    }
+    caption(ui, "System follows the light or dark setting of your desktop.");
+    section(ui, "Terminal");
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Font").font(theme::regular(text::BODY)).color(t.fg));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let face = lock_face(app);
+            ui.label(egui::RichText::new(face).font(theme::mono(text::MONO)).color(t.fg2));
+        });
+    });
+    caption(ui, "The built-in JetBrains Mono, or the font passed with --font at start-up.");
+    number_setting(ui, app, "TerminalFontPoints", "Font size (0 = default)", 0..=32, "pt", actions);
+    number_setting(ui, app, "TerminalPadding", "Padding inside a pane", 0..=32, "pt", actions);
+}
+
+/// The primary terminal face's name.
+fn lock_face(app: &CsmApp) -> String {
+    let host = crate::terminal::lock(&app.host);
+    let d = host.renderer.fonts.describe();
+    let name = d.split(" (").next().unwrap_or_default();
+    // "<face> <size>pt": the face is what this row is about.
+    let face = name.rsplit_once(' ').map_or(name, |(f, _)| f);
+    if face.starts_with("JetBrainsMono") { "JetBrains Mono (built in)".to_string() } else { face.to_string() }
+}
+
+fn groups(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let model = app.model.clone();
+    section(ui, "How groups appear");
+    let options = ["Rail", "Headers", "Flat"];
+    let sel = match model.group_mode {
+        GroupMode::Rail => 0,
+        GroupMode::Headers => 1,
+        GroupMode::Flat => 2,
+    };
+    if let Some(i) = widgets::segmented(ui, "Group view", &options, Some(sel))
+        && i != sel
+    {
+        let v = ["rail", "headers", "flat"].get(i).copied().unwrap_or("rail");
+        actions.push(Action::Tool("view_set", json!({"view": v})));
+    }
+    caption(ui, "Rail: one group at a time, a tab per group, and the panes follow the tab. Headers: every group in one list, collapsible. Flat: no groups.");
+    caption(ui, "The same switch sits next to SESSIONS in the sidebar. Each group keeps its own layout.");
+    section(ui, "Sidebar");
+    let inbox = model.inbox_panel.open;
+    if widgets::toggle(ui, inbox, "Show the Needs you inbox", Some("Ctrl+J jumps to the next session that needs you either way.")).clicked() {
+        actions.push(Action::Tool("inbox_panel_set", json!({"open": !inbox})));
+    }
+    bool_setting(ui, app, "ShowGitBranch", "Show the branch on each row", "The branch name next to the status glyph.", actions);
+}
+
+fn mcp(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    section(ui, "Claude sessions");
+    bool_setting(
+        ui,
+        app,
+        "OfferMcpToClaude",
+        "Offer CodeShellManager's tools to Claude sessions",
+        "Claude sessions started here get `csm mcp` as an MCP server. Off by default: it changes the claude command line.",
+        actions,
+    );
+    caption(ui, "Any MCP client can use them by hand: claude mcp add codeshell -- csm mcp");
+    section(ui, "Always allowed");
+    caption(ui, "Clients that answered “Always for this client” on a consent card. Revoke one and it asks again.");
+    let grants = app.ui.settings.grants.clone();
+    widgets::card_frame(&t).inner_margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 0.0;
+        if grants.is_empty() {
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::hover());
+            ui.painter().text(pos2(r.min.x, r.center().y), Align2::LEFT_CENTER, "No client has an “Always” grant.", theme::regular(text::BODY), t.muted);
+        }
+        for (i, g) in grants.iter().enumerate() {
+            let client = g["client"].as_str().unwrap_or_default().to_string();
+            let tool = g["tool"].as_str().unwrap_or_default().to_string();
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::hover());
+            if i > 0 {
+                ui.painter().hline(r.x_range(), r.min.y, Stroke::new(size::HAIRLINE, t.surface0));
+            }
+            let cr = ui.painter().text(pos2(r.min.x, r.center().y), Align2::LEFT_CENTER, &client, theme::medium(text::BODY), t.fg);
+            let title = app.dispatch.registry().get(&tool).map_or(tool.clone(), |s| s.title.to_string());
+            let b = Rect::from_min_max(pos2(r.max.x - size::MENU_W / 2.0 + space::XL, r.min.y + space::XS), pos2(r.max.x, r.max.y - space::XS));
+            widgets::paint_text(ui, pos2(cr.max.x + space::SM, r.center().y), Align2::LEFT_CENTER, &format!("may run {title} ({tool})"), theme::regular(text::CAPTION), t.muted, b.min.x - cr.max.x - space::LG);
+            let label = format!("Revoke {client} · {tool}");
+            let resp = ui.scope_builder(UiBuilder::new().max_rect(b).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| widgets::button(ui, ButtonKind::Danger, None, "Revoke", None)).inner;
+            resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+            if resp.clicked() {
+                actions.push(Action::Tool("grant_revoke", json!({"client": client, "tool": tool})));
+            }
+        }
+    });
+}
+
+fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let info = app.ui.settings.info.clone();
+    let s = |k: &str| info.get(k).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).unwrap_or_else(|| "…".into());
+    egui::Grid::new("about-kv").num_columns(2).spacing(vec2(space::LG, space::SM)).show(ui, |ui| {
+        let k = |ui: &mut Ui, s: &str| {
+            ui.label(egui::RichText::new(s).font(theme::regular(text::BODY)).color(t.muted));
+        };
+        k(ui, "Version");
+        ui.label(egui::RichText::new(format!("CodeShellManager {}", s("version"))).font(theme::regular(text::BODY)));
+        ui.end_row();
+        k(ui, "Platform");
+        ui.label(egui::RichText::new(s("platform")).font(theme::regular(text::BODY)));
+        ui.end_row();
+        k(ui, "ConPTY in use");
+        let conpty = info.get("conpty").and_then(Value::as_str).unwrap_or("not decided yet (no session has started)");
+        ui.add(egui::Label::new(egui::RichText::new(conpty).font(theme::regular(text::BODY))).wrap());
+        ui.end_row();
+        k(ui, "Sessions");
+        ui.label(egui::RichText::new(format!("{} live of {} · {} groups", s("live"), s("sessions"), s("groups"))).font(theme::regular(text::BODY)));
+        ui.end_row();
+        k(ui, "State file");
+        let path = info.get("state_path").and_then(Value::as_str).map(String::from);
+        let saving = info.get("saving").and_then(Value::as_bool).unwrap_or(false);
+        let shown = match (&path, saving) {
+            (Some(p), true) => p.clone(),
+            (Some(p), false) => format!("{p} (not saved in this mode)"),
+            (None, _) => "none: nothing is saved (CSM_CONFIG_DIR is empty or --clean)".into(),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(&shown).font(theme::mono(text::MONO))).wrap());
+        ui.end_row();
+    });
+    if let Some(p) = info.get("state_path").and_then(Value::as_str)
+        && widgets::button(ui, ButtonKind::Secondary, Some("copy"), "Copy the state file's path", None).clicked()
+    {
+        actions.push(Action::CopyText(p.to_string()));
+    }
+    ui.add_space(space::SM);
+    caption(ui, "The search index and notes live beside the state file; a portable marker beside the exe keeps everything there.");
+}

@@ -724,6 +724,26 @@ pub(crate) fn retire(pty: Arc<dyn Pty>, graceful: bool, wait: Duration) {
 }
 
 /// Waits (on a worker) until the process has exited or `wait` passed. True when it exited.
+/// [`wait_exit`] that also gives up as soon as `stop()` says so (a forced quit).
+fn wait_exit_unless(pty: &dyn Pty, wait: Duration, stop: &dyn Fn() -> bool) -> bool {
+    let deadline = Instant::now() + wait;
+    while !pty.has_exited() {
+        if Instant::now() >= deadline || stop() {
+            return pty.has_exited();
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Sleeps up to `d`, waking early when `stop()` says so.
+fn sleep_unless(d: Duration, stop: &dyn Fn() -> bool) {
+    let deadline = Instant::now() + d;
+    while Instant::now() < deadline && !stop() {
+        thread::sleep(Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
 pub(crate) fn wait_exit(pty: &dyn Pty, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     while !pty.has_exited() {
@@ -1059,12 +1079,23 @@ fn relaunch_after_restart(ctx: &mut Ctx<'_>, id: &str, was_focused: bool, then: 
 /// budget (`ClaudeShutdownBudgetMs`) runs out to exit by themselves, with the flat settle between
 /// them; everything else is killed at once. Sessions stay in the state (they restore next time).
 /// Ends with the state saved and [`Event::QuitReady`].
-pub(crate) fn quit(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>) {
+pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     if ctx.state.rt.shutting_down {
+        if force {
+            // A second, forced quit: the running one stops waiting for exits.
+            ctx.state.rt.quit_force.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(r) = reply {
+                r.send(Ok(ToolOutput::message("Force closing: the remaining sessions are stopped now.")));
+            }
+            return;
+        }
         if let Some(r) = reply {
-            r.send(Err(ToolError::Refused("the app is already closing".into())));
+            r.send(Err(ToolError::Refused("the app is already closing (pass force: true to stop waiting)".into())));
         }
         return;
+    }
+    if force {
+        ctx.state.rt.quit_force.store(true, std::sync::atomic::Ordering::Release);
     }
     ctx.state.rt.shutting_down = true;
     ctx.state.rt.restart_cancel = true;
@@ -1085,12 +1116,14 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>) {
     let settle = Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0));
     let events = ctx.events.clone();
     let engine = ctx.engine.clone();
+    let forced = ctx.state.rt.quit_force.clone();
     let worker = move || {
         let start = Instant::now();
+        let forced_now = || forced.load(std::sync::atomic::Ordering::Acquire);
         for (id, pty, claude) in targets {
             let t0 = Instant::now();
             let ms = |t: Instant| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
-            if !claude || pty.has_exited() {
+            if !claude || pty.has_exited() || forced_now() {
                 pty.kill();
                 let phase = if pty.has_exited() { "clean" } else { "forced" };
                 events.emit(Event::QuitProgress { session_id: id, phase: phase.into(), elapsed_ms: ms(t0) });
@@ -1098,13 +1131,13 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>) {
                 events.emit(Event::QuitProgress { session_id: id.clone(), phase: "closing".into(), elapsed_ms: 0 });
                 pty.close();
                 let remaining = budget.saturating_sub(start.elapsed());
-                let clean = wait_exit(pty.as_ref(), remaining);
+                let clean = wait_exit_unless(pty.as_ref(), remaining, &forced_now);
                 pty.kill();
                 let phase = if clean { "clean" } else { "forced" };
                 log::info!("quit: {id} {phase} exit={}ms", ms(t0));
                 events.emit(Event::QuitProgress { session_id: id, phase: phase.into(), elapsed_ms: ms(t0) });
-                if clean {
-                    thread::sleep(settle.min(budget.saturating_sub(start.elapsed())));
+                if clean && !forced_now() {
+                    sleep_unless(settle.min(budget.saturating_sub(start.elapsed())), &forced_now);
                 }
             }
             engine.post(Box::new(|ctx| {

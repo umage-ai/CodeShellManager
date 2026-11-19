@@ -1,11 +1,18 @@
 //! The group rail (`.grail`) and the sidebar (`.sb`): the "Needs you" inbox with its drag
 //! divider, the section header with the group-view switch, and the session rows in the rail,
 //! headers or flat view.
+//!
+//! Drag and drop: a live row drags onto a rail tab or a group header (`session_move_to_group`
+//! into that group), or between rows, where an insertion line shows the slot. The slot is an
+//! anchor ("before X" / "after Y", `csm_core::sidebar_drop`), never an index, so it means the
+//! same place in the sidebar, the panes and `state.json`. Renaming (F2), renaming a group and
+//! naming a new one happen in place.
 
-use egui::{Align2, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+use csm_core::sidebar_drop::{self, SidebarRow, SidebarRowKind};
+use egui::{Align2, CornerRadius, CursorIcon, Id, Order, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2};
 use serde_json::json;
 
-use crate::app::{Action, CsmApp, Menu};
+use crate::app::{Action, CsmApp, InlineTarget, Menu};
 use crate::icons;
 use crate::model::{GroupMode, Kind, Scope, SessionView, Status, UiModel, initials};
 use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
@@ -39,13 +46,27 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let model = app.model.clone();
     let mut y = rect.min.y + space::SM;
     let cx = rect.center().x;
+    let dragging = app.ui.drags.row.clone();
+    let released = ui.input(|i| i.pointer.any_released());
+    let pointer = ui.ctx().pointer_latest_pos();
     let mut tab = |ui: &mut Ui, scope: Scope, label: String, y: &mut f32| {
         let r = Rect::from_center_size(pos2(cx, *y + size::RAIL_TAB / 2.0), Vec2::splat(size::RAIL_TAB));
         *y += size::RAIL_TAB + space::XS;
         let resp = ui.interact(r, Id::new(("rail-tab", scope.key())), Sense::click());
         let on = model.rail == scope;
         let p = ui.painter();
-        if on || resp.hovered() {
+        // A dragged session over a group's tab: it moves there on release.
+        let drop_here = matches!(&scope, Scope::Group(_)) && dragging.is_some() && pointer.is_some_and(|p| r.contains(p));
+        if drop_here {
+            p.rect_filled(r, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP * 2.0));
+            p.rect_stroke(r, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+            if released
+                && let (Some(sid), Scope::Group(g)) = (&dragging, &scope)
+                && model.session(sid).is_some_and(|s| s.group.as_deref() != Some(g.as_str()))
+            {
+                actions.push(Action::Tool("session_move_to_group", json!({"session_id": sid, "group_id": g})));
+            }
+        } else if on || resp.hovered() {
             p.rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
         }
         if on {
@@ -104,6 +125,69 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if widgets::icon_button_at(ui, add, Id::new("rail-add"), "plus", false, "New group").clicked() {
         actions.push(Action::NewGroupPrompt);
     }
+    if app.ui.compact {
+        // A narrow window: the sidebar opens over the panes from here.
+        let b = Rect::from_center_size(pos2(cx, rect.max.y - space::SM - size::CONTROL / 2.0), vec2(size::RAIL_TAB, size::CONTROL));
+        let peek = app.ui.peek_sidebar;
+        if widgets::icon_button_at(ui, b, Id::new("rail-peek"), "panelL", peek, if peek { "Hide the sessions list" } else { "Show the sessions list" }).clicked() {
+            app.ui.peek_sidebar = !peek;
+        }
+        let nb = Rect::from_center_size(pos2(cx, b.min.y - space::XS - size::CONTROL / 2.0), vec2(size::RAIL_TAB, size::CONTROL));
+        if widgets::icon_button_at(ui, nb, Id::new("rail-new"), "terminal", false, "New session  Ctrl+T").clicked() {
+            actions.push(Action::OpenQuickOpen { group: None });
+        }
+    }
+}
+
+/// Compact window: the sidebar over the panes, closed by a click outside it or by picking a
+/// session.
+pub fn peek(ctx: &egui::Context, app: &mut CsmApp, rect: Rect, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ctx);
+    let before = actions.len();
+    let resp = egui::Area::new(Id::new("sidebar-peek")).order(Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
+        ui.set_min_size(rect.size());
+        let shadow = egui::Shadow { offset: [8, 0], blur: 28, spread: 0, color: t.shadow };
+        ui.painter().add(shadow.as_shape(rect, CornerRadius::ZERO));
+        let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
+        show(&mut child, app, actions);
+    });
+    let picked = actions[before..].iter().any(|a| matches!(a, Action::Tool("session_focus", _)));
+    let outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !resp.response.rect.contains(p) && p.x > rect.max.x));
+    if picked || outside {
+        app.ui.peek_sidebar = false;
+    }
+}
+
+/// The in-place text field (F2 rename, group rename, new group). Enter or a click elsewhere
+/// saves; Esc cancels.
+fn inline_field(ui: &mut Ui, app: &mut CsmApp, rect: Rect, label: &str, hint: &str, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let Some(e) = app.ui.inline.as_mut() else { return };
+    e.unseen_frames = 0;
+    ui.painter().rect(rect, CornerRadius::same(radius::SM), t.field, Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
+    let edit = egui::TextEdit::singleline(&mut e.text)
+        .id(Id::new("inline-edit"))
+        .frame(egui::Frame::NONE)
+        .font(theme::regular(text::BODY))
+        .hint_text(egui::RichText::new(hint).color(t.faint))
+        .vertical_align(egui::Align::Center)
+        .desired_width(rect.width() - space::SM * 2.0);
+    // A child, not `put`: the field must not move the rows below it.
+    let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(space::SM, size::HAIRLINE))));
+    let r = child.add(edit);
+    let label = label.to_string();
+    r.widget_info(move || WidgetInfo::labeled(WidgetType::TextEdit, true, label.clone()));
+    if e.focus {
+        r.request_focus();
+        e.focus = false;
+    } else if r.lost_focus() {
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        actions.push(if esc { Action::CancelInline } else { Action::CommitInline });
+    }
+}
+
+fn inline_is(app: &CsmApp, target: &InlineTarget) -> bool {
+    app.ui.inline.as_ref().is_some_and(|e| &e.target == target)
 }
 
 pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
@@ -163,27 +247,114 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
 
     let list = Rect::from_min_max(pos2(rect.min.x + space::SM, top), pos2(rect.max.x - space::SM, foot.min.y - space::XS));
+    let mut rows: Vec<SidebarRow> = Vec::new();
     ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
         section_header(ui, app, actions);
+        if inline_is(app, &InlineTarget::NewGroup) {
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL), Sense::hover());
+            inline_field(ui, app, r.shrink2(vec2(space::XXS, space::XXS)), "New group name", "New group, e.g. Client X", actions);
+            ui.add_space(space::XS);
+        }
+        let list_top = ui.cursor().min.y;
         egui::ScrollArea::vertical().id_salt("session-list").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             match model.group_mode {
-                GroupMode::Headers => headers_view(ui, app, actions),
+                GroupMode::Headers => headers_view(ui, app, &mut rows, actions),
                 GroupMode::Rail | GroupMode::Flat => {
                     let scope = if model.group_mode == GroupMode::Rail { model.rail.clone() } else { Scope::All };
                     if model.group_mode == GroupMode::Rail {
-                        scope_header(ui, &model, &scope, actions);
+                        scope_header(ui, app, &scope, actions);
                     }
                     let ss = model.scope_sessions(&scope);
                     for s in ordered(&ss) {
-                        row(ui, &model, s, actions);
+                        let r = row(ui, app, s, actions);
+                        rows.push(SidebarRow::new(row_kind(s), Some(&s.id), f64::from(r.rect.top()), f64::from(r.rect.height())));
                     }
                     if ss.is_empty() {
-                        ui.add_space(space::SM);
-                        ui.label(egui::RichText::new("No sessions here yet.").color(t.muted).size(text::CAPTION));
+                        empty_scope(ui, &model, &scope);
                     }
                 }
             }
+        });
+        // A dragged row: the insertion line (or the group header it lands under) and the drop.
+        let list_rect = Rect::from_min_max(pos2(list.min.x, list_top), list.max);
+        drop_between_rows(ui, app, &rows, list_rect, actions);
+    });
+    drag_ghost(ui.ctx(), app);
+}
+
+/// The row kind `sidebar_drop` resolves against: sleeping rows are never anchors.
+fn row_kind(s: &SessionView) -> SidebarRowKind {
+    if s.status.is_live() { SidebarRowKind::Session } else { SidebarRowKind::Dormant }
+}
+
+/// An empty group (or no sessions at all): say so, and how to fill it.
+fn empty_scope(ui: &mut Ui, model: &UiModel, scope: &Scope) {
+    let t = Tokens::get(ui.ctx());
+    ui.add_space(space::SM);
+    let msg = match scope {
+        Scope::Group(_) => "No sessions in this group yet. Drag one onto its tab, or press Ctrl+T.",
+        Scope::All if model.sessions.is_empty() => "No sessions yet. Ctrl+T opens a folder.",
+        Scope::All => "No sessions here yet.",
+    };
+    ui.horizontal(|ui| {
+        ui.add_space(space::XS + space::XXS);
+        ui.add(egui::Label::new(egui::RichText::new(msg).color(t.muted).size(text::CAPTION)).wrap());
+    });
+}
+
+/// While a session row is dragged over the list: where it would land, and the move on release.
+fn drop_between_rows(ui: &mut Ui, app: &mut CsmApp, rows: &[SidebarRow], list: Rect, actions: &mut Vec<Action>) {
+    let Some(dragged) = app.ui.drags.row.clone() else { return };
+    let Some(p) = ui.ctx().pointer_latest_pos().filter(|p| list.contains(*p)) else { return };
+    let Some(target) = sidebar_drop::resolve(rows, f64::from(p.y)) else { return };
+    let t = Tokens::get(ui.ctx());
+    let model = app.model.clone();
+    // Over a group header: the header lights up (the session lands at the top of that group).
+    let header = rows.iter().find(|r| r.kind == SidebarRowKind::GroupHeader && f64::from(p.y) >= r.top && f64::from(p.y) < r.bottom());
+    let painter = ui.painter().with_clip_rect(list);
+    if let Some(h) = header {
+        let hr = Rect::from_min_size(pos2(list.min.x, h.top as f32), vec2(list.width(), h.height as f32));
+        painter.rect(hr, CornerRadius::same(radius::SM), Tokens::tint(t.blue, alpha::DROP * 2.0), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+    } else {
+        let y = target.indicator_y as f32;
+        painter.hline((list.min.x + space::XS)..=(list.max.x - space::XS), y, Stroke::new(size::RING, t.blue));
+        painter.circle_filled(pos2(list.min.x + space::XS, y), space::XS - size::HAIRLINE, t.blue);
+    }
+    if !ui.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    let anchor = target.before_session_id.as_ref().or(target.after_session_id.as_ref());
+    if anchor == Some(&dragged) {
+        return;
+    }
+    let group = if target.assigns_group {
+        target.group_id.clone()
+    } else {
+        anchor.and_then(|a| model.session(a)).map_or_else(|| model.session(&dragged).and_then(|s| s.group.clone()), |s| s.group.clone())
+    };
+    let mut params = json!({"session_id": dragged, "group_id": group});
+    if let Some(b) = &target.before_session_id {
+        params["before"] = json!(b);
+    } else if let Some(a) = &target.after_session_id {
+        params["after"] = json!(a);
+    }
+    actions.push(Action::Tool("session_move_to_group", params));
+}
+
+/// The dragged row, following the pointer.
+fn drag_ghost(ctx: &egui::Context, app: &CsmApp) {
+    let Some(id) = &app.ui.drags.row else { return };
+    let (Some(s), Some(p)) = (app.model.session(id), ctx.pointer_latest_pos()) else { return };
+    let t = Tokens::get(ctx);
+    ctx.set_cursor_icon(CursorIcon::Grabbing);
+    egui::Area::new(Id::new("row-ghost")).order(Order::Tooltip).interactable(false).fixed_pos(p + vec2(space::MD, space::XS)).show(ctx, |ui| {
+        widgets::pop_frame(&t).inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::XS as i8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(size::STRIPE, icon::MD), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+                ui.label(egui::RichText::new(&s.name).font(theme::medium(text::BODY)).color(t.fg));
+            });
         });
     });
 }
@@ -327,14 +498,29 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     ui.add_space(space::XXS);
 }
 
-fn scope_header(ui: &mut Ui, model: &UiModel, scope: &Scope, actions: &mut Vec<Action>) {
+fn scope_header(ui: &mut Ui, app: &mut CsmApp, scope: &Scope, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
+    let model = app.model.clone();
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL), Sense::hover());
     let cy = rect.center().y;
     let ss = model.scope_sessions(scope);
     let live = ss.iter().filter(|s| s.status.is_live()).count();
-    let r = ui.painter().text(pos2(rect.min.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, model.scope_name(scope), semibold(text::BODY), t.fg);
-    ui.painter().text(pos2(r.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, format!("{live}/{}", ss.len()), theme::mono(text::MONO_SM), t.faint);
+    let renaming = matches!(scope, Scope::Group(g) if inline_is(app, &InlineTarget::Group(g.clone())));
+    if renaming {
+        let fr = Rect::from_min_max(pos2(rect.min.x, rect.min.y + space::XXS), pos2(rect.max.x - size::CONTROL_SM - space::XS, rect.max.y - space::XXS));
+        inline_field(ui, app, fr, "Rename group", "Group name", actions);
+    } else {
+        let name = model.scope_name(scope);
+        let nr = widgets::paint_text(ui, pos2(rect.min.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, &name, semibold(text::BODY), t.fg, rect.width() - size::CONTROL_SM - space::XXL * 2.0);
+        ui.painter().text(pos2(nr.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, format!("{live}/{}", ss.len()), theme::mono(text::MONO_SM), t.faint);
+        if let Scope::Group(g) = scope {
+            // Double-click the name to rename it in place.
+            let hr = ui.interact(nr, Id::new(("scope-name", g.clone())), Sense::click());
+            if hr.on_hover_text("Double-click to rename (F2 renames the active session)").double_clicked() {
+                actions.push(Action::StartGroupRename(g.clone()));
+            }
+        }
+    }
     if let Scope::Group(g) = scope {
         let b = Rect::from_center_size(pos2(rect.max.x - space::XXS - size::CONTROL_SM / 2.0, cy), Vec2::splat(size::CONTROL_SM));
         if widgets::icon_button_at(ui, b, Id::new(("scope-more", g.clone())), "more", false, "Group actions (or right-click its tab)").clicked() {
@@ -343,7 +529,7 @@ fn scope_header(ui: &mut Ui, model: &UiModel, scope: &Scope, actions: &mut Vec<A
     }
 }
 
-fn headers_view(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let model = app.model.clone();
     let mut scopes: Vec<(Scope, String)> = model.groups.iter().map(|g| (Scope::Group(g.id.clone()), g.name.clone())).collect();
@@ -360,8 +546,14 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             Scope::All => "ungrouped".into(),
         };
         let collapsed = app.model.group(&gid).is_some_and(|g| g.collapsed);
-        ui.add_space(space::XS);
+        let (gap, _) = ui.allocate_exact_size(vec2(ui.available_width(), space::XS), Sense::hover());
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::ROW), Sense::hover());
+        // The header's slot (with the gap above it) is a drop target for its group.
+        let header_id = match &scope {
+            Scope::Group(g) => Some(g.as_str()),
+            Scope::All => None,
+        };
+        rows.push(SidebarRow::new(SidebarRowKind::GroupHeader, header_id, f64::from(gap.top()), f64::from(rect.bottom() - gap.top())));
         let resp = ui.interact(rect, Id::new(("group-header", gid.clone())), Sense::click());
         if resp.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_hover);
@@ -369,7 +561,14 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let cy = rect.center().y;
         let ch = Rect::from_min_size(pos2(rect.min.x + space::XXS, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ch, if collapsed { "chevR" } else { "chevD" }, icon::MD, t.fg2);
-        let nr = ui.painter().text(pos2(ch.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, &name, semibold(text::SMALL), t.fg2);
+        let renaming = matches!(&scope, Scope::Group(g) if inline_is(app, &InlineTarget::Group(g.clone())));
+        let nr = if renaming {
+            let fr = Rect::from_min_max(pos2(ch.max.x + space::XS, rect.min.y + space::XXS), pos2(rect.max.x - space::XL, rect.max.y - space::XXS));
+            inline_field(ui, app, fr, "Rename group", "Group name", actions);
+            fr
+        } else {
+            widgets::paint_text(ui, pos2(ch.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, &name, semibold(text::SMALL), t.fg2, rect.width() - space::XXL * 3.0)
+        };
         let live = ss.iter().filter(|s| s.status.is_live()).count();
         let cr = ui.painter().text(pos2(nr.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, format!("{live}/{}", ss.len()), theme::mono(text::MONO_SM), t.faint);
         if collapsed {
@@ -403,9 +602,21 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let at = ui.ctx().pointer_latest_pos().unwrap_or(rect.right_top());
             actions.push(Action::OpenMenu(Menu::Group { group: g.clone(), at }));
         }
+        if resp.double_clicked()
+            && let Scope::Group(g) = &scope
+        {
+            actions.push(Action::StartGroupRename(g.clone()));
+        }
         if !collapsed {
             for s in ordered(&ss) {
-                row(ui, &model, s, actions);
+                let r = row(ui, app, s, actions);
+                rows.push(SidebarRow::new(row_kind(s), Some(&s.id), f64::from(r.rect.top()), f64::from(r.rect.height())));
+            }
+            if ss.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(space::LG + space::XS);
+                    ui.label(egui::RichText::new("Empty. Drag a session here.").color(t.faint).size(text::CAPTION));
+                });
             }
         }
     }
@@ -413,8 +624,10 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
 
 /// A compact session row (`.row`): accent stripe, name (with kind badge), branch, status glyph;
 /// the selected row gets a second line with the status word and folder.
-pub fn row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Action>) {
+pub fn row(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) -> egui::Response {
     let t = Tokens::get(ui.ctx());
+    let model = app.model.clone();
+    let model = model.as_ref();
     let selected = model.active.as_deref() == Some(s.id.as_str());
     let queued = model.restore.as_ref().is_some_and(|r| {
         let live: Vec<&SessionView> = model.sessions.iter().filter(|x| x.status.is_live()).collect();
@@ -423,15 +636,27 @@ pub fn row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Acti
     let status = if queued { Status::Starting } else { s.status };
     let h = if selected { size::ROW + space::LG + space::XXS } else { size::ROW };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let resp = ui.interact(rect, Id::new(("session-row", s.id.clone())), Sense::click());
     let asleep = s.status == Status::Asleep;
+    // Live rows drag (onto a rail tab, a group header, or between rows); sleeping ones don't.
+    let sense = if asleep { Sense::click() } else { Sense::click_and_drag() };
+    let resp = ui.interact(rect, Id::new(("session-row", s.id.clone())), sense);
+    if resp.drag_started() {
+        app.ui.drags.row = Some(s.id.clone());
+    }
+    let being_dragged = app.ui.drags.row.as_deref() == Some(s.id.as_str());
     let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
     if asleep {
+        child.set_opacity(alpha::ASLEEP);
+    }
+    if being_dragged {
         child.set_opacity(alpha::ASLEEP);
     }
     let p = child.painter().clone();
     if selected || resp.hovered() {
         p.rect_filled(rect, CornerRadius::same(radius::SM), if selected { t.row_sel } else { t.row_hover });
+    }
+    if resp.has_focus() {
+        p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
     }
     let indent = if s.parent.is_some() { space::LG - space::XXS } else { 0.0 };
     let cy = rect.min.y + size::ROW / 2.0;
@@ -459,9 +684,14 @@ pub fn row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Acti
         Kind::Local => None,
     };
     let bw = badge.map_or(0.0, |b| widgets::text_width(&child, b, semibold(text::CAPS)) + space::SM + space::XS);
-    let nr = widgets::paint_text(&child, pos2(x, cy), Align2::LEFT_CENTER, &s.name, theme::regular(text::BODY), name_color, right - x - bw);
-    if let Some(b) = badge {
-        kind_badge(&child, pos2(nr.max.x + space::XS, cy), b);
+    if inline_is(app, &InlineTarget::Session(s.id.clone())) {
+        let fr = Rect::from_min_max(pos2(x - space::XS, cy - size::ROW / 2.0 + space::XXS), pos2(gx - space::XS, cy + size::ROW / 2.0 - space::XXS));
+        inline_field(ui, app, fr, "Rename session", "Session name", actions);
+    } else {
+        let nr = widgets::paint_text(&child, pos2(x, cy), Align2::LEFT_CENTER, &s.name, theme::regular(text::BODY), name_color, right - x - bw);
+        if let Some(b) = badge {
+            kind_badge(&child, pos2(nr.max.x + space::XS, cy), b);
+        }
     }
     if selected {
         let y2 = rect.max.y - space::SM - space::XXS;
@@ -473,16 +703,17 @@ pub fn row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Acti
     let tip = if asleep {
         format!("{} · Asleep keeps the session, its group, notes and run commands. Click to wake.", s.name)
     } else {
-        format!("{} · {}", s.name, s.status_text())
+        format!("{} · {}\n{}\nDrag onto a group tab or header to move it; F2 renames.", s.name, s.status_text(), s.folder)
     };
-    let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
-    if resp.clicked() {
+    let resp = if app.ui.drags.row.is_some() { resp } else { resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand) };
+    if resp.clicked() || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
         actions.push(Action::Tool("session_focus", json!({"session_id": s.id})));
     }
     if resp.secondary_clicked() {
         let at = ui.ctx().pointer_latest_pos().unwrap_or(rect.right_top());
         actions.push(Action::OpenMenu(Menu::Row { session: s.id.clone(), at }));
     }
+    resp
 }
 
 /// The small `SSH` / `WSL` / command badge (`.kb`).

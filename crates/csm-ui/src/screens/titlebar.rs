@@ -64,12 +64,17 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if btn(ui, "power", false, "Quit: sessions get time to exit") {
         actions.push(Action::AskQuit);
     }
-    if btn(ui, "sliders", false, "Settings") {
-        actions.push(Action::Toast("Settings open as a page in the inspector area (not in this round).".into()));
+    let settings_open = app.ui.settings.open;
+    if btn(ui, "sliders", settings_open, "Settings  Ctrl+,") {
+        actions.push(if settings_open { Action::CloseSettings } else { Action::OpenSettings });
+    }
+    if btn(ui, "help", app.ui.overlay == crate::app::Overlay::Help, "Keyboard shortcuts  F1 or ?") {
+        actions.push(Action::ShowHelp);
     }
     let next = crate::engine_backend::theme_setting(if t.dark() { ThemeKind::Latte } else { ThemeKind::Mocha });
     let theme_icon = if t.dark() { "moon" } else { "sun" };
-    if btn(ui, theme_icon, false, "Theme: Mocha (dark) or Latte (light)") {
+    let tip = if t.dark() { "Theme: dark. Click for light (Settings › Appearance has System)" } else { "Theme: light. Click for dark (Settings › Appearance has System)" };
+    if btn(ui, theme_icon, false, tip) {
         actions.push(Action::Tool("settings_set", json!({"key": "theme", "value": next})));
     }
     let open = app.model.inspector.is_some();

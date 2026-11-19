@@ -63,6 +63,9 @@ fn default_font_size() -> i32 {
 fn default_font_weight() -> String {
     "normal".to_owned()
 }
+fn default_padding() -> i32 {
+    8
+}
 fn default_line_height() -> f64 {
     1.0
 }
@@ -150,6 +153,29 @@ pub struct AppSettings {
 
     #[serde(deserialize_with = "nd")]
     pub launch_commands: Vec<String>,
+
+    /// Offer CodeShellManager's tools to the Claude sessions it launches (`--mcp-config`).
+    /// Opt-in: it changes the user's `claude` command line. (The Rust app's own settings below
+    /// are written only when changed, so a file the WPF app reads back stays as it wrote it.)
+    #[serde(skip_serializing_if = "is_false")]
+    pub offer_mcp_to_claude: bool,
+    /// Space between a pane's edge and the terminal cells, in points.
+    #[serde(skip_serializing_if = "is_default_padding")]
+    pub terminal_padding: i32,
+    /// The terminal font size in the Rust app's points; 0 = the app's default. (The WPF
+    /// `TerminalFontSize` is CSS pixels for xterm.js and stays as it was.)
+    #[serde(skip_serializing_if = "is_zero")]
+    pub terminal_font_points: i32,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+fn is_zero(n: &i32) -> bool {
+    *n == 0
+}
+fn is_default_padding(n: &i32) -> bool {
+    *n == default_padding()
 }
 
 impl Default for AppSettings {
@@ -193,6 +219,9 @@ impl Default for AppSettings {
             open_with: Vec::new(),
             open_with_seeded: false,
             launch_commands: default_launch_commands(),
+            offer_mcp_to_claude: false,
+            terminal_padding: default_padding(),
+            terminal_font_points: 0,
         }
     }
 }
@@ -223,6 +252,15 @@ pub struct WindowPlacementState {
     pub dpi: i32,
 }
 
+/// An MCP client allowed to call one tool without the consent card ("Always for this client").
+/// Revocable in Settings → MCP (`grant_revoke`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct McpGrant {
+    pub client: String,
+    pub tool: String,
+}
+
 fn default_layout() -> String {
     "Single".to_owned()
 }
@@ -251,6 +289,10 @@ pub struct AppState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_placement: Option<WindowPlacementState>,
     pub window_maximized: bool,
+
+    /// "Always for this client" answers to MCP consent cards. Absent in WPF files.
+    #[serde(deserialize_with = "nd", skip_serializing_if = "Vec::is_empty")]
+    pub mcp_grants: Vec<McpGrant>,
 
     /// The Rust app's own UI memory (rail tab, layouts per group, panels). Absent in WPF files;
     /// read leniently so a bad value never costs the sessions.
@@ -283,6 +325,7 @@ impl Default for AppState {
             last_normal_bounds: None,
             last_placement: None,
             window_maximized: false,
+            mcp_grants: Vec::new(),
             ui: UiState::default(),
             csm_rs_version: None,
         }

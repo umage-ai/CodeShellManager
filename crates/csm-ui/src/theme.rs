@@ -382,6 +382,23 @@ pub mod size {
     pub const TEAR_OFF: [f32; 2] = [960.0, 560.0];
     pub const WINDOW: [f32; 2] = [1280.0, 800.0];
     pub const WINDOW_MIN: [f32; 2] = [760.0, 480.0];
+    /// Below this window width the sidebar folds to the rail.
+    pub const COMPACT_W: f32 = 1000.0;
+    pub const INSPECTOR_MIN: f32 = 280.0;
+    /// The settings page's section list.
+    pub const SETTINGS_NAV_W: f32 = 200.0;
+    /// The settings page's column of controls.
+    pub const SETTINGS_W: f32 = 620.0;
+    /// A text field in a settings row.
+    pub const FIELD_W: f32 = 300.0;
+    /// The shortcut list.
+    pub const HELP_W: f32 = 560.0;
+    /// A pane edge that takes a split drop: this fraction of the pane's width or height.
+    pub const DROP_EDGE: f32 = 0.3;
+    /// How far a press must move before it is a drag (a click stays a click).
+    pub const DRAG_SLOP: f32 = 4.0;
+    /// An on/off switch's track.
+    pub const SWITCH: [f32; 2] = [34.0, 18.0];
 }
 
 /// Opacities (the mock-up's `opacity` and `color-mix` percentages).

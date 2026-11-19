@@ -168,6 +168,11 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         x.progress = Some(40);
         x.runs = runs_npm();
     });
+    set(&mut s, "build", &|x| {
+        // A colour the remote's prompt hook pushed (OSC 9001): "Reset accent colour" applies.
+        x.accent = Accent::Rgb([0xe0, 0x8f, 0x62]);
+        x.accent_overridden = true;
+    });
     set(&mut s, "wt", &|x| {
         x.parent = Some("web".into());
         x.status_since_ms = Some(now - mins(1));
@@ -633,6 +638,15 @@ impl DemoBackend {
                 let next = i.map_or(0, |i| (i + 1) % list.len());
                 list.get(next).cloned().map(|id| self.focus(&id)).unwrap_or_default()
             }
+            "session_accent_reset" => {
+                if let Some(id) = &sid
+                    && let Some(s) = self.session_mut(id)
+                {
+                    s.accent = Accent::Palette(2);
+                    s.accent_overridden = false;
+                }
+                vec![]
+            }
             "session_status_clear" => {
                 if let Some(id) = &sid {
                     self.set_status(id, Status::Idle);
@@ -702,6 +716,18 @@ impl DemoBackend {
                 let gname = p.group_id.as_deref().and_then(|g| self.model.group(g)).map_or("Ungrouped".to_string(), |g| g.name.clone());
                 if let Some(s) = self.session_mut(&p.session_id) {
                     s.group = p.group_id.clone();
+                }
+                // Before / after an anchor, found after taking the moved session out (as the
+                // engine does), so a downward move never overshoots.
+                let anchor = p.before.clone().map(|a| (a, false)).or_else(|| p.after.clone().map(|a| (a, true)));
+                if let Some((a, after)) = anchor
+                    && a != p.session_id
+                    && let Some(i) = self.model.sessions.iter().position(|s| s.id == p.session_id)
+                {
+                    let moved = self.model.sessions.remove(i);
+                    let at = self.model.sessions.iter().position(|s| s.id == a).map_or(self.model.sessions.len(), |j| if after { j + 1 } else { j });
+                    self.model.sessions.insert(at.min(self.model.sessions.len()), moved);
+                    return vec![];
                 }
                 toast(format!("Moved to {gname}."))
             }

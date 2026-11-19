@@ -13,7 +13,7 @@ mod ui_state;
 
 pub use alert_event::{AlertEvent, AlertType};
 pub use app_state::{
-    AppSettings, AppState, GroupDisplayMode, ProgramStatusProbeMode, SidebarActionIconsMode,
+    AppSettings, AppState, GroupDisplayMode, McpGrant, ProgramStatusProbeMode, SidebarActionIconsMode,
     WindowBounds, WindowPlacementState,
 };
 pub use group::SessionGroup;

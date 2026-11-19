@@ -86,15 +86,21 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         item("copy", "Copy path", Action::CopyText(s.folder.clone())),
         Entry::Sep,
         Entry::Head("Session".into()),
-        item("pencil", "Edit session…", Action::Toast("Edit opens the New session panel, filled in (next round). The tool is session_edit.".into())),
+        hinted("pencil", "Edit session…", "folder, command", Action::EditSession(id.to_string())),
+        hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
         hinted("restart", "Restart", "Ctrl Shift R", tool("session_restart", sid.clone())),
         hinted("moon", "Sleep", "keeps it in the sidebar", tool("session_sleep", sid.clone())),
         demo_status(id),
+    ];
+    if s.accent_overridden {
+        v.push(item("palette", "Reset accent colour", tool("session_accent_reset", sid.clone())));
+    }
+    v.extend([
         Entry::Sep,
         item("float", "Float in this window", tool("pane_float", json!({"session_id": id, "group": scope}))),
         item("tear", "Move to a new window", tool("pane_tear_off", json!({"session_id": id, "group": scope}))),
         Entry::Sep,
-    ];
+    ]);
     v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some("Ctrl W".into()), danger: true, action: tool("session_close", json!({"session_id": id, "force": false})) });
     v
 }
@@ -122,7 +128,8 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
             if pinned { "Unpin from Side by side" } else { "Pin to Side by side" },
             tool(if pinned { "layout_unpin" } else { "layout_pin" }, json!({"session_id": id, "group": scope.key()})),
         ),
-        hinted("pencil", "Rename", "F2", Action::StartRename(id.to_string())),
+        hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
+        item("pencil", "Edit session…", Action::EditSession(id.to_string())),
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
         item("folder", "Open folder", tool("open_folder", sid.clone())),
         open_with(s),
@@ -130,6 +137,9 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     ];
     if s.is_claude() && s.status.is_live() {
         v.push(hinted("eraser", "Clear status", "stuck after a crash?", tool("session_status_clear", sid.clone())));
+    }
+    if s.accent_overridden {
+        v.push(hinted("palette", "Reset accent colour", "set by the program", tool("session_accent_reset", sid.clone())));
     }
     v.push(demo_status(id));
     v.push(Entry::Sep);

@@ -29,11 +29,13 @@ fn echo<P: DeserializeOwned + Serialize>(_: &mut Ctx<'_>, v: Value) -> Reply {
 }
 
 /// The real app's stand-in: params checked, then an honest refusal.
+#[allow(dead_code)] // the stand-in seam: unused while every catalogue id is built
 fn not_built<P: DeserializeOwned>(_: &mut Ctx<'_>, v: Value) -> Reply {
     let _: P = parse_params(v)?;
     Err(csm_engine::ToolError::Failed(NOT_BUILT.into()))
 }
 
+#[allow(dead_code)] // for no-param stand-ins
 fn not_built_none(_: &mut Ctx<'_>, _: Value) -> Reply {
     Err(csm_engine::ToolError::Failed(NOT_BUILT.into()))
 }
@@ -41,6 +43,7 @@ fn not_built_none(_: &mut Ctx<'_>, _: Value) -> Reply {
 /// What a stand-in answers in the real app.
 pub const NOT_BUILT: &str = "This isn't built yet in this version of CodeShellManager.";
 
+#[allow(dead_code)] // for no-param stand-ins
 fn none(_: &mut Ctx<'_>, v: Value) -> Reply {
     if v.as_object().is_some_and(|o| !o.is_empty()) {
         return Err(csm_engine::ToolError::InvalidParams("this tool takes no params".into()));
@@ -123,7 +126,11 @@ pub struct SessionEditParams {
     pub session_id: String,
     pub name: Option<String>,
     pub command: Option<String>,
+    pub args: Option<String>,
     pub folder: Option<String>,
+    pub kind: Option<KindParam>,
+    pub ssh: Option<SshParams>,
+    pub wsl: Option<WslParams>,
     /// Restart now when the change needs one.
     pub restart: Option<bool>,
 }
@@ -448,13 +455,6 @@ pub struct OpenWithParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct GrantRevokeParams {
-    pub client: String,
-    pub tool: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ImportParams {
     pub path: String,
 }
@@ -474,8 +474,10 @@ pub struct DemoStatusParams {
     pub status: String,
 }
 
+#[allow(dead_code)] // the stand-in seam: unused while every catalogue id is built
 const READ: Effects = Effects::READ_ONLY;
 const UI: Effects = Effects::UI;
+#[allow(dead_code)] // the stand-in seam: unused while every catalogue id is built
 const STATE: Effects = Effects::MUTATES_STATE;
 
 /// How a stand-in answers.
@@ -490,10 +492,12 @@ pub enum StandIn {
 type Pair = (fn() -> Value, csm_engine::ToolFn);
 
 /// `(schema, run)` for a stand-in taking `P`.
+#[allow(dead_code)] // the stand-in seam: unused while every catalogue id is built
 fn with<P: DeserializeOwned + Serialize + JsonSchema>(how: StandIn) -> Pair {
     (schema_of::<P>, if how == StandIn::Echo { echo::<P> } else { not_built::<P> })
 }
 
+#[allow(dead_code)] // for no-param stand-ins
 fn no_params(how: StandIn) -> Pair {
     (empty_schema, if how == StandIn::Echo { none } else { not_built_none })
 }
@@ -504,16 +508,10 @@ fn spec(id: &'static str, title: &'static str, summary: &'static str, toolset: T
 
 /// The ids of `docs/tools.md` the engine doesn't have yet. Ids, titles, params and effects are
 /// what the real tools will use.
-pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
-    use Toolset::*;
-    vec![
-        // runs, git, notes, search, open folder / with: real engine tools (csm-engine tools/runs,
-        // tools/open, tools/git, tools/search), so no stand-ins. In `--demo` they answer "no session"
-        // for the demo's sessions and the demo backend applies its own effect (`DemoBackend::apply`).
-        // app
-        spec("grant_list", "MCP grants", "Clients allowed to call tools without asking.", App, READ, no_params(how)),
-        spec("grant_revoke", "Revoke an MCP grant", "Make a client ask again before calling a tool.", App, STATE, with::<GrantRevokeParams>(how)),
-    ]
+pub fn stand_ins(_how: StandIn) -> Vec<ToolSpec> {
+    // Every catalogue id is built now (engine tools, or the app's own `pane_*`). Kept as the seam
+    // for the next tool that lands in the UI before the engine.
+    Vec::new()
 }
 
 /// Tools only the demo has: the review's status switcher. Not in docs/tools.md.
