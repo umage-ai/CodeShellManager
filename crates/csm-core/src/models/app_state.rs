@@ -259,6 +259,11 @@ pub struct AppState {
         skip_serializing_if = "UiState::is_default"
     )]
     pub ui: UiState,
+
+    /// Version of the Rust app's file format; absent in files the WPF app wrote. The Rust app
+    /// stamps it on every save.
+    #[serde(rename = "CsmRsVersion", skip_serializing_if = "Option::is_none")]
+    pub csm_rs_version: Option<u32>,
 }
 
 fn nd_settings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<AppSettings, D::Error> {
@@ -279,6 +284,7 @@ impl Default for AppState {
             last_placement: None,
             window_maximized: false,
             ui: UiState::default(),
+            csm_rs_version: None,
         }
     }
 }
