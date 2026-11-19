@@ -298,7 +298,7 @@ fn run_mcp(m: &ArgMatches, backend: Box<dyn Backend>, mode: &Mode) -> i32 {
     let mut service = McpService::new(backend, options);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    match service.serve(stdin.lock(), stdout.lock()) {
+    match service.serve(stdin.lock(), stdout) {
         Ok(()) => EXIT_OK,
         Err(e) => {
             eprintln!("error: {e}");
