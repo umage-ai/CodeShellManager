@@ -137,7 +137,10 @@ fn on_the_real_engine_the_chip_and_tab_follow_the_repository() {
         ..StateOptions::default()
     };
     let engine: Engine = Engine::start(State::new(csm_core::models::AppState::default(), options), csm_ui::app_tools()).unwrap();
-    let id = engine.call(Caller::Ui, "session_new", json!({"folder": repo.display().to_string(), "command": "pwsh"})).unwrap().data["id"].as_str().unwrap().to_owned();
+    let id = engine.call(Caller::Ui, "session_new", json!({"folder": repo.display().to_string(), "command": "pwsh"})).unwrap().data["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     engine.call(Caller::Ui, "inspector_show", json!({"tab": "git"})).unwrap();
     let backend = EngineBackend::new(engine.clone(), EngineOptions::default());
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);

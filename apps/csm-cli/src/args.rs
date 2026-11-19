@@ -80,16 +80,13 @@ fn flag_name(prop: &str) -> String {
 
 /// The clap command for one tool.
 pub fn tool_command(info: &ToolInfo) -> Command {
-    let mut cmd = Command::new(info.cli_name())
-        .about(info.summary.clone())
-        .hide(true)
-        .arg(
-            Arg::new("json")
-                .long("json")
-                .value_name("PARAMS")
-                .num_args(0..=1)
-                .help("With a value ({...} or @file.json): the tool's params as JSON. On its own: print the full result as JSON."),
-        );
+    let mut cmd = Command::new(info.cli_name()).about(info.summary.clone()).hide(true).arg(
+        Arg::new("json")
+            .long("json")
+            .value_name("PARAMS")
+            .num_args(0..=1)
+            .help("With a value ({...} or @file.json): the tool's params as JSON. On its own: print the full result as JSON."),
+    );
     let req = required(&info.input_schema);
     for (name, prop) in props(&info.input_schema) {
         let long = flag_name(&name);
@@ -102,7 +99,8 @@ pub fn tool_command(info: &ToolInfo) -> Command {
             help = format!("{help} (required)").trim().to_string();
         }
         let mut arg = Arg::new(name.clone()).long(long).help(help).action(ArgAction::Set);
-        arg = if ty == "boolean" { arg.num_args(0..=1).default_missing_value("true").value_name("true|false") } else { arg.num_args(1).value_name(ty) };
+        arg =
+            if ty == "boolean" { arg.num_args(0..=1).default_missing_value("true").value_name("true|false") } else { arg.num_args(1).value_name(ty) };
         cmd = cmd.arg(arg);
     }
     cmd
@@ -219,10 +217,7 @@ pub fn build(tools: &[ToolInfo], note: Option<&str>) -> Command {
                 .arg(Arg::new("toolset").long("toolset").value_name("SET").help("Only this toolset"))
                 .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON")),
         )
-        .subcommand(
-            Command::new("events")
-                .about("Print engine events from the running app as JSON lines until interrupted"),
-        )
+        .subcommand(Command::new("events").about("Print engine events from the running app as JSON lines until interrupted"))
         .subcommand(
             Command::new("setup")
                 .about("Connect `csm mcp` to Claude Code, Claude Desktop, Codex and Cursor (comments kept, backup made, verified)")
@@ -234,8 +229,18 @@ pub fn build(tools: &[ToolInfo], note: Option<&str>) -> Command {
         .subcommand(
             Command::new("doctor")
                 .about("Check the install and print the fix for anything wrong")
-                .arg(Arg::new("skip_self_test").long("skip-self-test").action(ArgAction::SetTrue).help("Do not start `csm mcp --in-process` to test it"))
-                .arg(Arg::new("skip_signature").long("skip-signature").action(ArgAction::SetTrue).help("Do not check the ConPTY files' signatures (starts PowerShell)"))
+                .arg(
+                    Arg::new("skip_self_test")
+                        .long("skip-self-test")
+                        .action(ArgAction::SetTrue)
+                        .help("Do not start `csm mcp --in-process` to test it"),
+                )
+                .arg(
+                    Arg::new("skip_signature")
+                        .long("skip-signature")
+                        .action(ArgAction::SetTrue)
+                        .help("Do not check the ConPTY files' signatures (starts PowerShell)"),
+                )
                 .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON")),
         )
         .subcommand(

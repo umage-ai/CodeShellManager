@@ -17,10 +17,6 @@ pub mod watch;
 pub mod worktrees;
 
 pub use args::*;
-pub use status::{
-    GitFileChange, GitOpResult, GitRepoStatus, git_info, parse_status_v2, unquote_c_path,
-};
-pub use text::{
-    combine_output, failure_hint, fetch_summary, menu_header, summarize_pull, sync_text,
-};
+pub use status::{GitFileChange, GitOpResult, GitRepoStatus, git_info, parse_status_v2, unquote_c_path};
+pub use text::{combine_output, failure_hint, fetch_summary, menu_header, summarize_pull, sync_text};
 pub use worktrees::{WorktreeInfo, parse_worktree_list};

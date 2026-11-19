@@ -22,5 +22,5 @@ mod db;
 mod handle;
 
 pub use clean::{LineCleaner, normalize_folder};
-pub use db::{Db, IndexError, NoteRow, OutputHit, NoteHit, SchemaStats, SCHEMA_VERSION, fts_phrase};
+pub use db::{Db, IndexError, NoteHit, NoteRow, OutputHit, SCHEMA_VERSION, SchemaStats, fts_phrase};
 pub use handle::{Index, IndexLocation, IndexOptions};

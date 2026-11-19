@@ -119,9 +119,7 @@ impl Db {
     fn migrate(&mut self) -> Result<(), IndexError> {
         let v: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if v > SCHEMA_VERSION {
-            return Err(IndexError::Db(format!(
-                "the index was written by a newer version (schema {v}); this one reads {SCHEMA_VERSION}"
-            )));
+            return Err(IndexError::Db(format!("the index was written by a newer version (schema {v}); this one reads {SCHEMA_VERSION}")));
         }
         if v < 1 {
             let tx = self.conn.transaction()?;
@@ -375,7 +373,12 @@ fn trim(tx: &rusqlite::Transaction<'_>, session_id: &str, excess: i64) -> rusqli
 
 fn fts_error(e: rusqlite::Error) -> IndexError {
     let m = e.to_string();
-    if m.contains("fts5") || m.contains("syntax error") || m.contains("no such column") || m.contains("unterminated") || m.contains("unknown special query") {
+    if m.contains("fts5")
+        || m.contains("syntax error")
+        || m.contains("no such column")
+        || m.contains("unterminated")
+        || m.contains("unknown special query")
+    {
         IndexError::Message(format!("That isn't valid search syntax ({m}). Search for plain words, or quote the phrase."))
     } else {
         IndexError::Db(format!("the search index failed: {m}"))
@@ -543,7 +546,24 @@ mod tests {
         let mut db = mem();
         db.insert_output("s", 1, &lines(&["foo AND bar", "NEAR(x y)", "say \"hi\" there", "a-b c*d"]), 1 << 20).unwrap();
         for q in [
-            "foo AND", "NEAR(", "\"", "\"unterminated", "a-b", "c*", "*", "(", ")", "OR", "NOT x", "col:x", "^x", "-", "'", "\\", "x\u{0}y", "{}",
+            "foo AND",
+            "NEAR(",
+            "\"",
+            "\"unterminated",
+            "a-b",
+            "c*",
+            "*",
+            "(",
+            ")",
+            "OR",
+            "NOT x",
+            "col:x",
+            "^x",
+            "-",
+            "'",
+            "\\",
+            "x\u{0}y",
+            "{}",
             "a b c d e f",
         ] {
             let r = db.search_output(&fts_phrase(q), 10, None);

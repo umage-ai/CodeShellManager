@@ -70,7 +70,10 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             p.rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
         }
         if on {
-            let bar = Rect::from_min_max(pos2(r.min.x - space::XS - space::XXS, r.min.y + space::SM), pos2(r.min.x - space::XS - space::XXS + size::STRIPE, r.max.y - space::SM));
+            let bar = Rect::from_min_max(
+                pos2(r.min.x - space::XS - space::XXS, r.min.y + space::SM),
+                pos2(r.min.x - space::XS - space::XXS + size::STRIPE, r.max.y - space::SM),
+            );
             p.rect_filled(bar, CornerRadius::same(radius::SM / 2), t.blue);
         }
         let fg = if on || resp.hovered() { t.fg } else { t.muted };
@@ -84,7 +87,12 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         if n > 0 {
             let c = pos2(r.max.x + space::XXS, r.min.y + space::XS + space::XXS / 2.0);
             let b = widgets::paint_count(ui, c, n, false, size::BADGE);
-            ui.painter().rect_stroke(b.expand(size::RING / 2.0), CornerRadius::same(radius::PILL), Stroke::new(size::RING, t.crust), StrokeKind::Middle);
+            ui.painter().rect_stroke(
+                b.expand(size::RING / 2.0),
+                CornerRadius::same(radius::PILL),
+                Stroke::new(size::RING, t.crust),
+                StrokeKind::Middle,
+            );
         } else if let Some(d) = dot {
             let c = pos2(r.max.x - space::XS - size::HAIRLINE, r.min.y + space::XS + size::HAIRLINE);
             ui.painter().circle_filled(c, space::XS + size::RING / 2.0, t.crust);
@@ -129,7 +137,16 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         // A narrow window: the sidebar opens over the panes from here.
         let b = Rect::from_center_size(pos2(cx, rect.max.y - space::SM - size::CONTROL / 2.0), vec2(size::RAIL_TAB, size::CONTROL));
         let peek = app.ui.peek_sidebar;
-        if widgets::icon_button_at(ui, b, Id::new("rail-peek"), "panelL", peek, if peek { "Hide the sessions list" } else { "Show the sessions list" }).clicked() {
+        if widgets::icon_button_at(
+            ui,
+            b,
+            Id::new("rail-peek"),
+            "panelL",
+            peek,
+            if peek { "Hide the sessions list" } else { "Show the sessions list" },
+        )
+        .clicked()
+        {
             app.ui.peek_sidebar = !peek;
         }
         let nb = Rect::from_center_size(pos2(cx, b.min.y - space::XS - size::CONTROL / 2.0), vec2(size::RAIL_TAB, size::CONTROL));
@@ -152,7 +169,8 @@ pub fn peek(ctx: &egui::Context, app: &mut CsmApp, rect: Rect, actions: &mut Vec
         show(&mut child, app, actions);
     });
     let picked = actions[before..].iter().any(|a| matches!(a, Action::Tool("session_focus", _)));
-    let outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !resp.response.rect.contains(p) && p.x > rect.max.x));
+    let outside =
+        ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !resp.response.rect.contains(p) && p.x > rect.max.x));
     if picked || outside {
         app.ui.peek_sidebar = false;
     }
@@ -199,7 +217,12 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let mut top = rect.min.y;
 
     if model.inbox_panel.open {
-        let h = app.ui.drags.inbox_h.unwrap_or(model.inbox_panel.height).clamp(size::INBOX_MIN_H, (rect.height() - size::INBOX_MIN_H * 2.0).max(size::INBOX_MIN_H));
+        let h = app
+            .ui
+            .drags
+            .inbox_h
+            .unwrap_or(model.inbox_panel.height)
+            .clamp(size::INBOX_MIN_H, (rect.height() - size::INBOX_MIN_H * 2.0).max(size::INBOX_MIN_H));
         let pane = Rect::from_min_max(pos2(rect.min.x + space::SM, top + space::SM), pos2(rect.max.x - space::SM, top + h));
         inbox(ui, app, pane, actions);
         top += h;
@@ -315,7 +338,13 @@ fn drop_between_rows(ui: &mut Ui, app: &mut CsmApp, rows: &[SidebarRow], list: R
     let painter = ui.painter().with_clip_rect(list);
     if let Some(h) = header {
         let hr = Rect::from_min_size(pos2(list.min.x, h.top as f32), vec2(list.width(), h.height as f32));
-        painter.rect(hr, CornerRadius::same(radius::SM), Tokens::tint(t.blue, alpha::DROP * 2.0), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+        painter.rect(
+            hr,
+            CornerRadius::same(radius::SM),
+            Tokens::tint(t.blue, alpha::DROP * 2.0),
+            Stroke::new(size::RING, t.blue),
+            StrokeKind::Inside,
+        );
     } else {
         let y = target.indicator_y as f32;
         painter.hline((list.min.x + space::XS)..=(list.max.x - space::XS), y, Stroke::new(size::RING, t.blue));
@@ -379,17 +408,35 @@ fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
     let cw = widgets::paint_count(ui, pos2(tr.max.x + space::SM + space::XS + space::XXS, cy), needs.len(), needs.is_empty(), size::COUNT);
     let _ = cw;
     let close = Rect::from_center_size(pos2(head.max.x - space::SM - size::CONTROL_SM / 2.0, cy), Vec2::splat(size::CONTROL_SM));
-    if widgets::icon_button_at(ui, close, Id::new("inbox-close"), "x", false, "Hide the inbox. Ctrl+J still works; the badge next to Sessions brings it back.").clicked() {
+    if widgets::icon_button_at(
+        ui,
+        close,
+        Id::new("inbox-close"),
+        "x",
+        false,
+        "Hide the inbox. Ctrl+J still works; the badge next to Sessions brings it back.",
+    )
+    .clicked()
+    {
         actions.push(Action::Tool("inbox_panel_set", json!({"open": false})));
     }
     let kw = widgets::kbd_width(ui, "Ctrl J");
     let next_w = widgets::text_width(ui, "Next", theme::regular(text::CAPTION)) + kw + space::SM + space::SM;
-    let next = Rect::from_min_max(pos2(close.min.x - space::XS - next_w, cy - size::KBD / 2.0 - space::XXS), pos2(close.min.x - space::XS, cy + size::KBD / 2.0 + space::XXS));
+    let next = Rect::from_min_max(
+        pos2(close.min.x - space::XS - next_w, cy - size::KBD / 2.0 - space::XXS),
+        pos2(close.min.x - space::XS, cy + size::KBD / 2.0 + space::XXS),
+    );
     let nr = ui.interact(next, Id::new("inbox-next"), Sense::click());
     if nr.hovered() {
         ui.painter().rect_filled(next, CornerRadius::same(radius::SM), t.row_sel);
     }
-    ui.painter().text(pos2(next.min.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, "Next", theme::regular(text::CAPTION), if nr.hovered() { t.fg } else { t.muted });
+    ui.painter().text(
+        pos2(next.min.x + space::XS + space::XXS, cy),
+        Align2::LEFT_CENTER,
+        "Next",
+        theme::regular(text::CAPTION),
+        if nr.hovered() { t.fg } else { t.muted },
+    );
     widgets::paint_kbd(ui, Rect::from_min_size(pos2(next.max.x - space::XS - kw, cy - size::KBD / 2.0), vec2(kw, size::KBD)), "Ctrl J");
     named(&nr, WidgetType::Button, "Jump to the next session that needs you");
     if nr.on_hover_cursor(CursorIcon::PointingHand).clicked() {
@@ -438,8 +485,24 @@ fn inbox_row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Ac
     icons::paint_status(ui, g, s.status, icon::MD);
     let age = model.age_text(s);
     let ar = ui.painter().text(pos2(rect.max.x - space::SM, line1), Align2::RIGHT_CENTER, &age, theme::mono(text::MONO_SM), t.faint);
-    widgets::paint_text(ui, pos2(g.max.x + space::SM, line1), Align2::LEFT_CENTER, &s.name, theme::medium(text::BODY), t.fg, ar.min.x - g.max.x - space::MD);
-    widgets::paint_text(ui, pos2(g.max.x + space::SM, line1 + space::LG + space::XXS), Align2::LEFT_CENTER, &s.detail, theme::regular(text::CAPTION), t.muted, rect.max.x - g.max.x - space::LG);
+    widgets::paint_text(
+        ui,
+        pos2(g.max.x + space::SM, line1),
+        Align2::LEFT_CENTER,
+        &s.name,
+        theme::medium(text::BODY),
+        t.fg,
+        ar.min.x - g.max.x - space::MD,
+    );
+    widgets::paint_text(
+        ui,
+        pos2(g.max.x + space::SM, line1 + space::LG + space::XXS),
+        Align2::LEFT_CENTER,
+        &s.detail,
+        theme::regular(text::CAPTION),
+        t.muted,
+        rect.max.x - g.max.x - space::LG,
+    );
     named(&resp, WidgetType::Button, format!("Inbox: {}", s.name));
     if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(s.status_text()).clicked() {
         actions.push(Action::Tool("session_focus", json!({"session_id": s.id})));
@@ -462,7 +525,13 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let resp = ui.interact(br, Id::new("inbox-reopen"), Sense::click());
         let (bg, fg) = if n > 0 { (t.st_approval, t.on_accent) } else { (t.surface0, t.fg2) };
         ui.painter().rect_filled(br, CornerRadius::same(radius::PILL), bg);
-        icons::paint(ui, Rect::from_min_size(pos2(br.min.x + space::XS + space::XXS / 2.0, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "inbox", icon::XS - space::XXS / 2.0, fg);
+        icons::paint(
+            ui,
+            Rect::from_min_size(pos2(br.min.x + space::XS + space::XXS / 2.0, cy - icon::XS / 2.0), Vec2::splat(icon::XS)),
+            "inbox",
+            icon::XS - space::XXS / 2.0,
+            fg,
+        );
         ui.painter().text(pos2(br.max.x - space::XS - space::XXS / 2.0, cy), Align2::RIGHT_CENTER, label, semibold(text::TINY), fg);
         named(&resp, WidgetType::Button, "Show the Needs you inbox");
         if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Show the Needs you inbox").clicked() {
@@ -472,13 +541,23 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     let _ = x;
     // The group-view switch.
-    let views = [(GroupMode::Rail, "rail", "Group rail: one group at a time, panes follow it"), (GroupMode::Headers, "layers", "Group headers: every group, collapsible"), (GroupMode::Flat, "list", "Flat list: no groups")];
+    let views = [
+        (GroupMode::Rail, "rail", "Group rail: one group at a time, panes follow it"),
+        (GroupMode::Headers, "layers", "Group headers: every group, collapsible"),
+        (GroupMode::Flat, "list", "Flat list: no groups"),
+    ];
     let bw = space::XL - space::XXS;
     let bh = space::LG + space::XXS;
-    let seg = Rect::from_min_max(pos2(rect.max.x - space::XS - 3.0 * bw - space::XS, cy - bh / 2.0 - space::XXS), pos2(rect.max.x - space::XS, cy + bh / 2.0 + space::XXS));
+    let seg = Rect::from_min_max(
+        pos2(rect.max.x - space::XS - 3.0 * bw - space::XS, cy - bh / 2.0 - space::XXS),
+        pos2(rect.max.x - space::XS, cy + bh / 2.0 + space::XXS),
+    );
     ui.painter().rect(seg, CornerRadius::same(radius::SM + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
     for (i, (mode, name, tip)) in views.iter().enumerate() {
-        let b = Rect::from_min_size(pos2(seg.min.x + space::XXS / 2.0 + size::HAIRLINE + i as f32 * (bw + size::HAIRLINE), seg.min.y + space::XXS / 2.0 + size::HAIRLINE), vec2(bw, bh));
+        let b = Rect::from_min_size(
+            pos2(seg.min.x + space::XXS / 2.0 + size::HAIRLINE + i as f32 * (bw + size::HAIRLINE), seg.min.y + space::XXS / 2.0 + size::HAIRLINE),
+            vec2(bw, bh),
+        );
         let resp = ui.interact(b, Id::new(("gview", *name)), Sense::click());
         let on = model.group_mode == *mode;
         if on {
@@ -487,13 +566,22 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         icons::paint(ui, b, name, icon::SM, if on || resp.hovered() { t.fg } else { t.faint });
         named(&resp, WidgetType::RadioButton, format!("Group view: {}", name));
         if resp.on_hover_text(*tip).clicked() && !on {
-            actions.push(Action::Tool("view_set", json!({"view": match mode { GroupMode::Rail => "rail", GroupMode::Headers => "headers", GroupMode::Flat => "flat" }})));
+            actions.push(Action::Tool(
+                "view_set",
+                json!({"view": match mode { GroupMode::Rail => "rail", GroupMode::Headers => "headers", GroupMode::Flat => "flat" }}),
+            ));
         }
     }
     if model.group_mode != GroupMode::Rail {
         let live = model.sessions.iter().filter(|s| s.status.is_live()).count();
         let asleep = model.sessions.len() - live;
-        ui.painter().text(pos2(seg.min.x - space::SM, cy), Align2::RIGHT_CENTER, format!("{live} live · {asleep} asleep"), theme::mono(text::MONO_SM), t.muted);
+        ui.painter().text(
+            pos2(seg.min.x - space::SM, cy),
+            Align2::RIGHT_CENTER,
+            format!("{live} live · {asleep} asleep"),
+            theme::mono(text::MONO_SM),
+            t.muted,
+        );
     }
     ui.add_space(space::XXS);
 }
@@ -507,12 +595,27 @@ fn scope_header(ui: &mut Ui, app: &mut CsmApp, scope: &Scope, actions: &mut Vec<
     let live = ss.iter().filter(|s| s.status.is_live()).count();
     let renaming = matches!(scope, Scope::Group(g) if inline_is(app, &InlineTarget::Group(g.clone())));
     if renaming {
-        let fr = Rect::from_min_max(pos2(rect.min.x, rect.min.y + space::XXS), pos2(rect.max.x - size::CONTROL_SM - space::XS, rect.max.y - space::XXS));
+        let fr =
+            Rect::from_min_max(pos2(rect.min.x, rect.min.y + space::XXS), pos2(rect.max.x - size::CONTROL_SM - space::XS, rect.max.y - space::XXS));
         inline_field(ui, app, fr, "Rename group", "Group name", actions);
     } else {
         let name = model.scope_name(scope);
-        let nr = widgets::paint_text(ui, pos2(rect.min.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, &name, semibold(text::BODY), t.fg, rect.width() - size::CONTROL_SM - space::XXL * 2.0);
-        ui.painter().text(pos2(nr.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, format!("{live}/{}", ss.len()), theme::mono(text::MONO_SM), t.faint);
+        let nr = widgets::paint_text(
+            ui,
+            pos2(rect.min.x + space::XS + space::XXS, cy),
+            Align2::LEFT_CENTER,
+            &name,
+            semibold(text::BODY),
+            t.fg,
+            rect.width() - size::CONTROL_SM - space::XXL * 2.0,
+        );
+        ui.painter().text(
+            pos2(nr.max.x + space::XS + space::XXS, cy),
+            Align2::LEFT_CENTER,
+            format!("{live}/{}", ss.len()),
+            theme::mono(text::MONO_SM),
+            t.faint,
+        );
         if let Scope::Group(g) = scope {
             // Double-click the name to rename it in place.
             let hr = ui.interact(nr, Id::new(("scope-name", g.clone())), Sense::click());
@@ -567,10 +670,24 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
             inline_field(ui, app, fr, "Rename group", "Group name", actions);
             fr
         } else {
-            widgets::paint_text(ui, pos2(ch.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, &name, semibold(text::SMALL), t.fg2, rect.width() - space::XXL * 3.0)
+            widgets::paint_text(
+                ui,
+                pos2(ch.max.x + space::XS + space::XXS, cy),
+                Align2::LEFT_CENTER,
+                &name,
+                semibold(text::SMALL),
+                t.fg2,
+                rect.width() - space::XXL * 3.0,
+            )
         };
         let live = ss.iter().filter(|s| s.status.is_live()).count();
-        let cr = ui.painter().text(pos2(nr.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, format!("{live}/{}", ss.len()), theme::mono(text::MONO_SM), t.faint);
+        let cr = ui.painter().text(
+            pos2(nr.max.x + space::XS + space::XXS, cy),
+            Align2::LEFT_CENTER,
+            format!("{live}/{}", ss.len()),
+            theme::mono(text::MONO_SM),
+            t.faint,
+        );
         if collapsed {
             // A collapsed group still shows the glyph of any session in it that needs you.
             let mut x = cr.max.x + space::XS + space::XXS;
@@ -585,14 +702,30 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
             let w = widgets::text_width(ui, label, theme::medium(text::TINY)) + icon::XS + space::SM + space::XS;
             let wr = Rect::from_min_size(pos2(rect.max.x - space::XS - w, cy - size::COUNT / 2.0), vec2(w, size::COUNT));
             ui.painter().rect_filled(wr, CornerRadius::same(radius::PILL), Tokens::tint(t.blue, alpha::SOFT));
-            icons::paint(ui, Rect::from_min_size(pos2(wr.min.x + space::XS + space::XXS, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "monitor", icon::XS - size::HAIRLINE, t.blue);
+            icons::paint(
+                ui,
+                Rect::from_min_size(pos2(wr.min.x + space::XS + space::XXS, cy - icon::XS / 2.0), Vec2::splat(icon::XS)),
+                "monitor",
+                icon::XS - size::HAIRLINE,
+                t.blue,
+            );
             ui.painter().text(pos2(wr.max.x - space::XS - space::XXS, cy), Align2::RIGHT_CENTER, label, theme::medium(text::TINY), t.blue);
         } else if let Scope::Group(_) = &scope {
             let mode = model.layout(&scope).mode;
-            icons::paint(ui, Rect::from_min_size(pos2(rect.max.x - space::XS - icon::SM, cy - icon::SM / 2.0), Vec2::splat(icon::SM)), mode.icon(), icon::SM, t.faint);
+            icons::paint(
+                ui,
+                Rect::from_min_size(pos2(rect.max.x - space::XS - icon::SM, cy - icon::SM / 2.0), Vec2::splat(icon::SM)),
+                mode.icon(),
+                icon::SM,
+                t.faint,
+            );
         }
         named(&resp, WidgetType::Button, format!("Group: {name}"));
-        let resp = resp.on_hover_text(if collapsed { "Click to expand. Right-click for group actions." } else { "Click to collapse. Right-click for group actions." });
+        let resp = resp.on_hover_text(if collapsed {
+            "Click to expand. Right-click for group actions."
+        } else {
+            "Click to collapse. Right-click for group actions."
+        });
         if resp.clicked() {
             actions.push(Action::ToggleCollapse(gid.clone()));
         }
@@ -696,8 +829,17 @@ pub fn row(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
     if selected {
         let y2 = rect.max.y - space::SM - space::XXS;
         let label = if queued { "Queued".to_string() } else { s.status_text() };
-        let lr = p.text(pos2(stripe.max.x + space::SM, y2), Align2::LEFT_CENTER, &label, theme::medium(text::CAPTION), icons::status_color(&t, status));
-        widgets::paint_text(&child, pos2(lr.max.x, y2), Align2::LEFT_CENTER, &format!(" · {}", s.folder), theme::regular(text::CAPTION), t.muted, rect.max.x - lr.max.x - space::SM);
+        let lr =
+            p.text(pos2(stripe.max.x + space::SM, y2), Align2::LEFT_CENTER, &label, theme::medium(text::CAPTION), icons::status_color(&t, status));
+        widgets::paint_text(
+            &child,
+            pos2(lr.max.x, y2),
+            Align2::LEFT_CENTER,
+            &format!(" · {}", s.folder),
+            theme::regular(text::CAPTION),
+            t.muted,
+            rect.max.x - lr.max.x - space::SM,
+        );
     }
     named(&resp, WidgetType::Button, format!("Session: {}", s.name));
     let tip = if asleep {
@@ -726,4 +868,3 @@ pub fn kind_badge(ui: &Ui, left_center: egui::Pos2, label: &str) -> Rect {
     ui.painter().text(r.center(), Align2::CENTER_CENTER, label, theme::mono(text::CAPS), t.muted);
     r
 }
-

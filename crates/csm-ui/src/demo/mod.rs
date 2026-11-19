@@ -141,7 +141,17 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
     let mut s = vec![
         session("odulodo", "odulodo", "Odulodo", Local, "claude", "C:\\GitHub\\Odulodo", Some("main"), Approval, 9),
         session("web", "odulodo", "Odulodo.Web", Local, "claude", "C:\\GitHub\\Odulodo.Web", Some("feat/brand-facet"), Working, 3),
-        session("wt", "odulodo", "search-sort", Local, "claude", "C:\\GitHub\\Odulodo.Web\\.worktrees\\search-sort", Some("feat/search-sort"), Question, 4),
+        session(
+            "wt",
+            "odulodo",
+            "search-sort",
+            Local,
+            "claude",
+            "C:\\GitHub\\Odulodo.Web\\.worktrees\\search-sort",
+            Some("feat/search-sort"),
+            Question,
+            4,
+        ),
         session("webps", "odulodo", "Odulodo.Web (PS)", Local, "pwsh", "C:\\GitHub\\Odulodo.Web", Some("feat/brand-facet"), Idle, 3),
         session("csm", "umage", "CodeShellManager", Local, "claude", "C:\\GitHub\\CodeShellManager", Some("main"), Done, 7),
         session("rs", "umage", "CodeShellManager-rs", Local, "claude", "C:\\GitHub\\CodeShellManager-rs", Some("phase0/term-spike"), Working, 6),
@@ -293,7 +303,13 @@ fn demo_targets(kind: Kind, folder: &str) -> Vec<OpenWithItem> {
     demo_open_with()
         .into_iter()
         .filter(|e| kind == Kind::Local || e.ssh_args.is_some())
-        .map(|e| OpenWithItem { command: format!("\"{}\" \"{folder}\"", e.executable), entry_id: e.id, label: e.label, program: e.program, is_default: e.is_default })
+        .map(|e| OpenWithItem {
+            command: format!("\"{}\" \"{folder}\"", e.executable),
+            entry_id: e.id,
+            label: e.label,
+            program: e.program,
+            is_default: e.is_default,
+        })
         .collect()
 }
 
@@ -629,8 +645,7 @@ impl DemoBackend {
                 out
             }
             "inbox_next" => {
-                let list: Vec<SessionId> =
-                    self.model.needs_you().iter().chain(self.model.unseen().iter()).map(|s| s.id.clone()).collect();
+                let list: Vec<SessionId> = self.model.needs_you().iter().chain(self.model.unseen().iter()).map(|s| s.id.clone()).collect();
                 if list.is_empty() {
                     return toast("Nothing needs you.".into());
                 }
@@ -843,7 +858,8 @@ impl DemoBackend {
             "pane_float" => {
                 let Some(p) = parse::<PaneParams>(call) else { return vec![] };
                 let key = p.group.clone().unwrap_or_else(|| self.scope_key());
-                let live: Vec<SessionId> = self.model.scope_sessions(&Scope::from_key(&key)).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
+                let live: Vec<SessionId> =
+                    self.model.scope_sessions(&Scope::from_key(&key)).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
                 self.layout_mut(&key).float_pane(&p.session_id, &live);
                 toast("Floating. Drag its header to move it.".into())
             }
@@ -920,7 +936,10 @@ impl DemoBackend {
             "git_switch_branch" => toast("Switched branch.".into()),
             "worktree_new" => toast("Created the worktree and opened a session in it.".into()),
             "worktree_remove" => toast("Refused: this worktree has uncommitted changes.".into()),
-            "open_folder" => toast(format!("Opened {} in the file manager.", sid.as_deref().and_then(|i| self.model.session(i)).map_or("the folder", |s| s.folder.as_str()))),
+            "open_folder" => toast(format!(
+                "Opened {} in the file manager.",
+                sid.as_deref().and_then(|i| self.model.session(i)).map_or("the folder", |s| s.folder.as_str())
+            )),
             "open_with" => {
                 let p = parse::<OpenWithParams>(call);
                 let entry = p.as_ref().and_then(|p| p.entry.clone()).unwrap_or_else(|| "VS Code".into());

@@ -127,11 +127,8 @@ impl EngineBackend {
         }
         self.terms = terms;
         if view.quit.is_some() && self.quit.is_none() {
-            let rows = self
-                .last_live
-                .iter()
-                .map(|id| ShutdownRow { session: id.clone(), state: ShutdownRowState::Pending, elapsed_s: 0.0 })
-                .collect();
+            let rows =
+                self.last_live.iter().map(|id| ShutdownRow { session: id.clone(), state: ShutdownRowState::Pending, elapsed_s: 0.0 }).collect();
             self.quit = Some(Quit { started: Instant::now(), rows });
         }
         if view.quit.is_none() {
@@ -414,7 +411,13 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         open_with: s
             .open_with
             .iter()
-            .map(|o| OpenWithItem { entry_id: o.entry_id.clone(), label: o.label.clone(), program: o.program.clone(), command: o.command.clone(), is_default: o.is_default })
+            .map(|o| OpenWithItem {
+                entry_id: o.entry_id.clone(),
+                label: o.label.clone(),
+                program: o.program.clone(),
+                command: o.command.clone(),
+                is_default: o.is_default,
+            })
             .collect(),
         started,
         exited,
@@ -519,11 +522,8 @@ fn folders(sessions: &[SessionView], extra: &[String]) -> Vec<FolderSuggestion> 
 pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> UiModel {
     let mut sessions: Vec<SessionView> = view.sessions.iter().map(session_from_engine).collect();
     worktree_parents(&mut sessions, view);
-    let groups = view
-        .groups
-        .iter()
-        .map(|g| GroupView { id: g.id.clone(), name: g.name.clone(), torn_off: g.torn_off, collapsed: !g.expanded })
-        .collect();
+    let groups =
+        view.groups.iter().map(|g| GroupView { id: g.id.clone(), name: g.name.clone(), torn_off: g.torn_off, collapsed: !g.expanded }).collect();
     let layouts = view.layouts.iter().map(|(k, l)| (scope_key_from_engine(k), layout_from_core(l))).collect();
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let folders = folders(&sessions, &opts.folders);

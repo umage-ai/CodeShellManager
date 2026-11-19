@@ -1,7 +1,9 @@
 //! The components every screen draws with (the mock-up's `.ibtn`, `.btn`, `.kbd`, `.pill`,
 //! `.chip`, `.count`, `.mi` …). Each names itself for screen readers and tests.
 
-use egui::{Align2, Color32, CornerRadius, CursorIcon, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{
+    Align2, Color32, CornerRadius, CursorIcon, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+};
 
 use crate::icons;
 use crate::model::Status;
@@ -164,7 +166,8 @@ pub fn branch_chip(ui: &mut Ui, branch: &str, dirty: bool, ahead: u32, max_w: f3
     let t = Tokens::get(ui.ctx());
     let font = crate::theme::mono(text::MONO_SM);
     let ahead_s = (ahead > 0).then(|| format!("↑{ahead}"));
-    let extra = icon::XS + space::XS + if dirty { space::SM } else { 0.0 } + ahead_s.as_ref().map_or(0.0, |a| text_width(ui, a, font.clone()) + space::XS);
+    let extra =
+        icon::XS + space::XS + if dirty { space::SM } else { 0.0 } + ahead_s.as_ref().map_or(0.0, |a| text_width(ui, a, font.clone()) + space::XS);
     let tw = text_width(ui, branch, font.clone());
     let w = (space::SM + space::XXS + extra + tw).min(max_w.max(extra + space::XXL));
     let sense = if clickable { Sense::click() } else { Sense::hover() };

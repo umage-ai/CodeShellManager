@@ -177,8 +177,8 @@ mod tests {
     #[test]
     fn icon_set_has_what_the_screens_use() {
         for n in [
-            "more", "search", "plus", "x", "branch", "play", "pin", "inbox", "panelR", "history", "sliders", "focus", "side", "overview",
-            "grid", "free", "rail", "layers", "list", "chevD", "chevR", "tear", "float", "dock", "moon", "restart", "monitor",
+            "more", "search", "plus", "x", "branch", "play", "pin", "inbox", "panelR", "history", "sliders", "focus", "side", "overview", "grid",
+            "free", "rail", "layers", "list", "chevD", "chevR", "tear", "float", "dock", "moon", "restart", "monitor",
         ] {
             assert!(exists(n), "{n}");
             assert!(svg(n).is_some_and(|s| s.starts_with("<svg")), "{n}");

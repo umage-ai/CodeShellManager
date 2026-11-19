@@ -88,16 +88,8 @@ pub enum Toolset {
 }
 
 impl Toolset {
-    pub const ALL: [Toolset; 8] = [
-        Toolset::Core,
-        Toolset::Groups,
-        Toolset::Layout,
-        Toolset::Runs,
-        Toolset::Git,
-        Toolset::Notes,
-        Toolset::Search,
-        Toolset::App,
-    ];
+    pub const ALL: [Toolset; 8] =
+        [Toolset::Core, Toolset::Groups, Toolset::Layout, Toolset::Runs, Toolset::Git, Toolset::Notes, Toolset::Search, Toolset::App];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -234,8 +226,7 @@ pub fn empty_schema() -> Value {
 /// Parse tool params; `null` is treated as `{}` so callers can omit them.
 pub fn parse_params<T: DeserializeOwned>(v: Value) -> Result<T, ToolError> {
     let v = if v.is_null() { Value::Object(Default::default()) } else { v };
-    serde_path_to_error::deserialize(v)
-        .map_err(|e| ToolError::InvalidParams(format!("{} (at `{}`)", e.inner(), e.path())))
+    serde_path_to_error::deserialize(v).map_err(|e| ToolError::InvalidParams(format!("{} (at `{}`)", e.inner(), e.path())))
 }
 
 #[cfg(test)]

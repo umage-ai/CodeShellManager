@@ -26,10 +26,7 @@ use csm_term::{GridSize, ReplySink, TermConfig, TermEvent, Terminal};
 use crate::engine::{Ctx, Engine};
 
 pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)).unwrap_or(0)
 }
 
 /// Where a session's process is.
@@ -38,7 +35,9 @@ pub(crate) enum Phase {
     /// No process yet (waiting for a size, the stagger, or the spawn worker).
     Starting,
     Live,
-    Exited { code: Option<i32> },
+    Exited {
+        code: Option<i32>,
+    },
 }
 
 /// Runs once the PTY started (`Ok`) or failed to (`Err`). Restart chains continue from here.
@@ -248,8 +247,7 @@ impl SessionIo {
             if io.detector_active.load(Ordering::Acquire) {
                 io.detector().feed(&String::from_utf8_lossy(bytes), now);
             }
-            let events: Vec<TermEvent> =
-                events.into_iter().filter(|e| matches!(e, TermEvent::Tap(_) | TermEvent::Title(_))).collect();
+            let events: Vec<TermEvent> = events.into_iter().filter(|e| matches!(e, TermEvent::Tap(_) | TermEvent::Title(_))).collect();
             if !events.is_empty() {
                 let (id, instance) = (io.id.clone(), io.instance);
                 io.engine.post(Box::new(move |ctx| crate::lifecycle::apply_term_events(ctx, &id, instance, events)));

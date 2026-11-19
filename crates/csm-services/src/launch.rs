@@ -88,23 +88,15 @@ fn blank(s: &str) -> bool {
 #[must_use]
 pub fn launch_validation_error(spec: &LaunchSpec) -> Option<&'static str> {
     match spec.kind {
-        SessionKind::Ssh if blank(&spec.ssh_host) => {
-            Some("This SSH session has no host. Edit the session and set one.")
-        }
-        SessionKind::Wsl if blank(&spec.wsl_distro) => {
-            Some("This WSL session has no distro. Edit the session and pick one.")
-        }
+        SessionKind::Ssh if blank(&spec.ssh_host) => Some("This SSH session has no host. Edit the session and set one."),
+        SessionKind::Wsl if blank(&spec.wsl_distro) => Some("This WSL session has no distro. Edit the session and pick one."),
         _ => None,
     }
 }
 
 /// The ssh target as one string: `user@host`, or just the host without a user.
 fn ssh_target(spec: &LaunchSpec) -> String {
-    if blank(&spec.ssh_user) {
-        spec.ssh_host.clone()
-    } else {
-        format!("{}@{}", spec.ssh_user, spec.ssh_host)
-    }
+    if blank(&spec.ssh_user) { spec.ssh_host.clone() } else { format!("{}@{}", spec.ssh_user, spec.ssh_host) }
 }
 
 /// `-p PORT ` (non-default only), `-t `, the quoted target, then the remote command as a
@@ -140,18 +132,11 @@ pub fn build_ssh_args(spec: &LaunchSpec) -> Result<String, LaunchError> {
     }
     let mut remote = String::new();
     if !blank(&spec.ssh_remote_folder) {
-        remote.push_str(&format!(
-            "cd {} && ",
-            posix_single_quote(&spec.ssh_remote_folder)
-        ));
+        remote.push_str(&format!("cd {} && ", posix_single_quote(&spec.ssh_remote_folder)));
     }
     // Command/Args are arbitrary remote execution by design; becoming *local* execution is
     // not, which is why they sit inside the quoted element too.
-    remote.push_str(if blank(&spec.command) {
-        "bash"
-    } else {
-        &spec.command
-    });
+    remote.push_str(if blank(&spec.command) { "bash" } else { &spec.command });
     if !blank(&spec.args) {
         remote.push(' ');
         remote.push_str(&spec.args);
@@ -170,10 +155,7 @@ pub fn build_run_ssh_args(spec: &LaunchSpec, command_line: &str) -> Result<Strin
     }
     let mut remote = String::new();
     if !blank(&spec.ssh_remote_folder) {
-        remote.push_str(&format!(
-            "cd {} && ",
-            posix_single_quote(&spec.ssh_remote_folder)
-        ));
+        remote.push_str(&format!("cd {} && ", posix_single_quote(&spec.ssh_remote_folder)));
     }
     remote.push_str("bash -c ");
     remote.push_str(&posix_single_quote(command_line));
@@ -218,16 +200,8 @@ pub fn build_wsl_args(spec: &LaunchSpec, inner: Option<&str>) -> Result<String, 
     let payload: String = match inner {
         Some(i) => i.to_string(),
         None => {
-            let shell = if blank(&spec.command) {
-                login_shell
-            } else {
-                &spec.command
-            };
-            if blank(&spec.args) {
-                shell.to_string()
-            } else {
-                format!("{shell} {}", spec.args)
-            }
+            let shell = if blank(&spec.command) { login_shell } else { &spec.command };
+            if blank(&spec.args) { shell.to_string() } else { format!("{shell} {}", spec.args) }
         }
     };
     out.push_str(" -e ");
@@ -276,10 +250,7 @@ pub fn build_pwsh_args(command_line: &str) -> String {
     for unit in command_line.encode_utf16() {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
-    format!(
-        "-NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand {}",
-        base64_encode(&bytes)
-    )
+    format!("-NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand {}", base64_encode(&bytes))
 }
 
 /// Standard base64 with padding (RFC 4648), as `Convert.ToBase64String`.
@@ -316,18 +287,7 @@ pub fn build_run_wsl_args(spec: &LaunchSpec, command_line: &str) -> Result<Strin
 // ── PseudoTerminal.BuildCmdLine ─────────────────────────────────────────────────────────
 
 /// Shells passed through verbatim (they initialise the console themselves).
-const PASSTHROUGH_SHELLS: [&str; 10] = [
-    "cmd",
-    "powershell",
-    "pwsh",
-    "wsl",
-    "bash",
-    "zsh",
-    "sh",
-    "ssh",
-    "nu",
-    "fish",
-];
+const PASSTHROUGH_SHELLS: [&str; 10] = ["cmd", "powershell", "pwsh", "wsl", "bash", "zsh", "sh", "ssh", "nu", "fish"];
 
 /// The command line handed to CreateProcess for a session.
 ///
@@ -389,14 +349,8 @@ pub fn is_runnable(path: &str, probe: &dyn RunnableProbe) -> bool {
 /// `where.exe` proves a *name* resolves, not that it runs (issue #104).
 #[must_use]
 pub fn choose_pwsh(where_stdout: Option<&str>, probe: &dyn RunnableProbe) -> &'static str {
-    let first = where_stdout
-        .and_then(|s| s.split('\n').next())
-        .map_or("", str::trim);
-    if where_stdout.is_some() && is_runnable(first, probe) {
-        "pwsh.exe"
-    } else {
-        "powershell.exe"
-    }
+    let first = where_stdout.and_then(|s| s.split('\n').next()).map_or("", str::trim);
+    if where_stdout.is_some() && is_runnable(first, probe) { "pwsh.exe" } else { "powershell.exe" }
 }
 
 #[cfg(test)]
@@ -423,37 +377,21 @@ mod tests {
     }
 
     fn wsl(distro: &str) -> LaunchSpec {
-        LaunchSpec {
-            kind: SessionKind::Wsl,
-            wsl_distro: distro.into(),
-            ..LaunchSpec::default()
-        }
+        LaunchSpec { kind: SessionKind::Wsl, wsl_distro: distro.into(), ..LaunchSpec::default() }
     }
 
     // ── ShellSessionTests: ssh ─────────────────────────────────────────────────────────
 
     #[test]
     fn ssh_default_port_omits_port_flag() {
-        let s = ssh(
-            "alice",
-            "dev.example.com",
-            22,
-            "/home/alice/project",
-            "bash",
-        );
-        assert_eq!(
-            build_ssh_args(&s).unwrap(),
-            "-t alice@dev.example.com \"cd '/home/alice/project' && bash\""
-        );
+        let s = ssh("alice", "dev.example.com", 22, "/home/alice/project", "bash");
+        assert_eq!(build_ssh_args(&s).unwrap(), "-t alice@dev.example.com \"cd '/home/alice/project' && bash\"");
     }
 
     #[test]
     fn ssh_non_default_port_includes_port_flag() {
         let s = ssh("bob", "192.168.1.100", 2222, "", "pwsh");
-        assert_eq!(
-            build_ssh_args(&s).unwrap(),
-            "-p 2222 -t bob@192.168.1.100 \"pwsh\""
-        );
+        assert_eq!(build_ssh_args(&s).unwrap(), "-p 2222 -t bob@192.168.1.100 \"pwsh\"");
     }
 
     #[test]
@@ -476,26 +414,13 @@ mod tests {
 
     #[test]
     fn ssh_folder_with_spaces_produces_valid_command() {
-        let s = ssh(
-            "alice",
-            "dev.example.com",
-            22,
-            "/home/alice/my project",
-            "bash",
-        );
-        assert_eq!(
-            build_ssh_args(&s).unwrap(),
-            "-t alice@dev.example.com \"cd '/home/alice/my project' && bash\""
-        );
+        let s = ssh("alice", "dev.example.com", 22, "/home/alice/my project", "bash");
+        assert_eq!(build_ssh_args(&s).unwrap(), "-t alice@dev.example.com \"cd '/home/alice/my project' && bash\"");
     }
 
     #[test]
     fn full_command_line_local_returns_command_and_args() {
-        let s = LaunchSpec {
-            command: "claude".into(),
-            args: "--continue".into(),
-            ..LaunchSpec::default()
-        };
+        let s = LaunchSpec { command: "claude".into(), args: "--continue".into(), ..LaunchSpec::default() };
         assert_eq!(full_command_line(&s), "claude --continue");
     }
 
@@ -519,43 +444,22 @@ mod tests {
 
     #[test]
     fn wsl_happy_path_builds_expected_shape() {
-        let s = LaunchSpec {
-            wsl_user: "alice".into(),
-            wsl_working_folder: "/home/alice/proj".into(),
-            command: "claude".into(),
-            ..wsl("Ubuntu")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d Ubuntu -u alice --cd /home/alice/proj -e bash -lc \"claude\""
-        );
+        let s = LaunchSpec { wsl_user: "alice".into(), wsl_working_folder: "/home/alice/proj".into(), command: "claude".into(), ..wsl("Ubuntu") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d Ubuntu -u alice --cd /home/alice/proj -e bash -lc \"claude\"");
     }
 
     #[test]
     fn wsl_no_user_omits_user_flag() {
-        let s = LaunchSpec {
-            wsl_working_folder: "/srv".into(),
-            command: "bash".into(),
-            ..wsl("Debian")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d Debian --cd /srv -e bash -lc \"bash\""
-        );
+        let s = LaunchSpec { wsl_working_folder: "/srv".into(), command: "bash".into(), ..wsl("Debian") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d Debian --cd /srv -e bash -lc \"bash\"");
     }
 
     #[test]
     fn wsl_no_working_folder_falls_back_to_home_tilde() {
         // "(optional)" means "your home directory". Omitting --cd would inherit the
         // launching Windows process's cwd (/mnt/c/...) on the slow 9p mount.
-        let s = LaunchSpec {
-            command: "bash".into(),
-            ..wsl("Ubuntu")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d Ubuntu --cd ~ -e bash -lc \"bash\""
-        );
+        let s = LaunchSpec { command: "bash".into(), ..wsl("Ubuntu") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d Ubuntu --cd ~ -e bash -lc \"bash\"");
     }
 
     #[test]
@@ -567,10 +471,7 @@ mod tests {
 
     #[test]
     fn wsl_uses_exec_flag_not_bare_dash_dash() {
-        let s = LaunchSpec {
-            command: "claude".into(),
-            ..wsl("Ubuntu")
-        };
+        let s = LaunchSpec { command: "claude".into(), ..wsl("Ubuntu") };
         let args = build_wsl_args(&s, None).unwrap();
         assert!(args.contains(" -e "));
         // a substring check alone would not catch "--cd"
@@ -579,88 +480,47 @@ mod tests {
 
     #[test]
     fn wsl_resolved_shell_is_used_as_exec_shell() {
-        let s = LaunchSpec {
-            command: "ls".into(),
-            resolved_wsl_shell: Some("sh".into()),
-            ..wsl("docker-desktop")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d docker-desktop --cd ~ -e sh -lc \"ls\""
-        );
+        let s = LaunchSpec { command: "ls".into(), resolved_wsl_shell: Some("sh".into()), ..wsl("docker-desktop") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d docker-desktop --cd ~ -e sh -lc \"ls\"");
     }
 
     #[test]
     fn wsl_resolved_shell_unset_defaults_to_bash() {
-        let s = LaunchSpec {
-            command: "ls".into(),
-            ..wsl("Ubuntu")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d Ubuntu --cd ~ -e bash -lc \"ls\""
-        );
+        let s = LaunchSpec { command: "ls".into(), ..wsl("Ubuntu") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d Ubuntu --cd ~ -e bash -lc \"ls\"");
     }
 
     #[test]
     fn wsl_empty_command_inner_payload_uses_resolved_shell_too() {
         // Otherwise an empty command box on an sh-only distro would emit `bash` as the
         // *inner* payload, failing identically to the outer bug.
-        let s = LaunchSpec {
-            command: String::new(),
-            resolved_wsl_shell: Some("sh".into()),
-            ..wsl("docker-desktop")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d docker-desktop --cd ~ -e sh -lc \"sh\""
-        );
+        let s = LaunchSpec { command: String::new(), resolved_wsl_shell: Some("sh".into()), ..wsl("docker-desktop") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d docker-desktop --cd ~ -e sh -lc \"sh\"");
     }
 
     #[test]
     fn wsl_args_are_appended_to_the_command() {
-        let s = LaunchSpec {
-            command: "claude".into(),
-            args: "--continue".into(),
-            ..wsl("Ubuntu")
-        };
-        assert!(
-            build_wsl_args(&s, None)
-                .unwrap()
-                .contains("bash -lc \"claude --continue\"")
-        );
+        let s = LaunchSpec { command: "claude".into(), args: "--continue".into(), ..wsl("Ubuntu") };
+        assert!(build_wsl_args(&s, None).unwrap().contains("bash -lc \"claude --continue\""));
     }
 
     #[test]
     fn wsl_empty_distro_is_an_error() {
-        let s = LaunchSpec {
-            command: "bash".into(),
-            ..wsl("")
-        };
+        let s = LaunchSpec { command: "bash".into(), ..wsl("") };
         assert_eq!(build_wsl_args(&s, None), Err(LaunchError::MissingWslDistro));
         assert_eq!(full_command_line(&s), "wsl.exe");
     }
 
     #[test]
     fn full_command_line_wsl_starts_with_wsl_exe() {
-        let s = LaunchSpec {
-            command: "claude".into(),
-            ..wsl("Ubuntu")
-        };
+        let s = LaunchSpec { command: "claude".into(), ..wsl("Ubuntu") };
         assert!(full_command_line(&s).starts_with("wsl.exe "));
     }
 
     #[test]
     fn wsl_linux_path_with_spaces_quotes_cd_value() {
-        let s = LaunchSpec {
-            wsl_working_folder: "/home/alice/my proj".into(),
-            command: "claude".into(),
-            ..wsl("Ubuntu")
-        };
-        assert_eq!(
-            build_wsl_args(&s, None).unwrap(),
-            "-d Ubuntu --cd \"/home/alice/my proj\" -e bash -lc \"claude\""
-        );
+        let s = LaunchSpec { wsl_working_folder: "/home/alice/my proj".into(), command: "claude".into(), ..wsl("Ubuntu") };
+        assert_eq!(build_wsl_args(&s, None).unwrap(), "-d Ubuntu --cd \"/home/alice/my proj\" -e bash -lc \"claude\"");
     }
 
     // ── LaunchValidationError ──────────────────────────────────────────────────────────
@@ -672,16 +532,8 @@ mod tests {
 
     #[test]
     fn launch_validation_ssh_blank_host_reports() {
-        let s = LaunchSpec {
-            kind: SessionKind::Ssh,
-            ..LaunchSpec::default()
-        };
-        assert!(
-            launch_validation_error(&s)
-                .unwrap()
-                .to_lowercase()
-                .contains("host")
-        );
+        let s = LaunchSpec { kind: SessionKind::Ssh, ..LaunchSpec::default() };
+        assert!(launch_validation_error(&s).unwrap().to_lowercase().contains("host"));
     }
 
     #[test]
@@ -704,31 +556,10 @@ mod tests {
 
     #[test]
     fn run_wsl_bash_payload_arrives_intact() {
-        for command_line in [
-            "cargo test",
-            "echo \"hi\"",
-            "sed -i 's/\\\"//g' f.txt",
-            "cp -r /src /dst\\",
-            "printf '%s\\n' \"$HOME\"",
-        ] {
-            let p = LaunchSpec {
-                wsl_working_folder: "/home/a b".into(),
-                ..wsl("Ubuntu")
-            };
+        for command_line in ["cargo test", "echo \"hi\"", "sed -i 's/\\\"//g' f.txt", "cp -r /src /dst\\", "printf '%s\\n' \"$HOME\""] {
+            let p = LaunchSpec { wsl_working_folder: "/home/a b".into(), ..wsl("Ubuntu") };
             let argv = split(&build_run_wsl_args(&p, command_line).unwrap());
-            assert_eq!(
-                argv,
-                vec![
-                    "-d",
-                    "Ubuntu",
-                    "--cd",
-                    "/home/a b",
-                    "-e",
-                    "bash",
-                    "-lc",
-                    command_line
-                ]
-            );
+            assert_eq!(argv, vec!["-d", "Ubuntu", "--cd", "/home/a b", "-e", "bash", "-lc", command_line]);
         }
     }
 
@@ -743,27 +574,13 @@ mod tests {
         };
         assert_eq!(
             split(&build_wsl_args(&s, None).unwrap()),
-            vec![
-                "-d",
-                "My Distro",
-                "-u",
-                "alice",
-                "--cd",
-                "/home/alice",
-                "-e",
-                "bash",
-                "-lc",
-                "claude --prompt \"fix the \\\"foo\\\" bug\""
-            ]
+            vec!["-d", "My Distro", "-u", "alice", "--cd", "/home/alice", "-e", "bash", "-lc", "claude --prompt \"fix the \\\"foo\\\" bug\""]
         );
     }
 
     #[test]
     fn run_wsl_blank_distro_errors() {
-        assert_eq!(
-            build_run_wsl_args(&wsl(""), "ls"),
-            Err(LaunchError::MissingWslDistro)
-        );
+        assert_eq!(build_run_wsl_args(&wsl(""), "ls"), Err(LaunchError::MissingWslDistro));
     }
 
     // ── UntrustedInputTests: ssh remote folder and host ────────────────────────────────
@@ -782,10 +599,7 @@ mod tests {
             "/it's/here", // legitimate path that also used to break the command
         ] {
             let args = build_ssh_args(&ssh_hostile("example.invalid", folder)).unwrap();
-            assert!(
-                args.contains(&format!("cd {}", posix_single_quote(folder))),
-                "{folder}"
-            );
+            assert!(args.contains(&format!("cd {}", posix_single_quote(folder))), "{folder}");
             if folder.contains('\'') {
                 assert!(!args.contains(&format!("cd '{folder}' &&")));
             }
@@ -796,11 +610,7 @@ mod tests {
     fn the_whole_remote_command_stays_one_windows_argument() {
         // A `"` is the escape PosixSingleQuote does NOT handle: before the outer quoting it
         // terminated the hand-written wrapper, and ProxyCommand runs LOCALLY.
-        for folder in [
-            "/t\" -oProxyCommand=calc \"x",
-            "/t\" -oPermitLocalCommand=yes \"x",
-            "/plain",
-        ] {
+        for folder in ["/t\" -oProxyCommand=calc \"x", "/t\" -oPermitLocalCommand=yes \"x", "/plain"] {
             let argv = split(&build_ssh_args(&ssh_hostile("example.invalid", folder)).unwrap());
             assert_eq!(argv.len(), 3, "{folder}");
             assert_eq!(argv[0], "-t");
@@ -825,33 +635,17 @@ mod tests {
         // POSIX single-quoting inside, Windows argv quoting around the whole of it. These
         // values exercise both: a quote for the inner layer, a double quote and a trailing
         // backslash for the outer one (MSVCRT's 2n / 2n+1 backslash rules).
-        for folder in [
-            "/it's/here",
-            "/a\"b",
-            "/a'b\"c",
-            "/trailing\\",
-            "/a'b\"c\\",
-            "/x'; id; :'",
-        ] {
+        for folder in ["/it's/here", "/a\"b", "/a'b\"c", "/trailing\\", "/a'b\"c\\", "/x'; id; :'"] {
             let argv = split(&build_ssh_args(&ssh_hostile("example.invalid", folder)).unwrap());
             assert_eq!(argv.len(), 3, "{folder}");
             assert_eq!(argv[1], "example.invalid");
-            assert_eq!(
-                argv[2],
-                format!("cd {} && bash", posix_single_quote(folder))
-            );
+            assert_eq!(argv[2], format!("cd {} && bash", posix_single_quote(folder)));
         }
     }
 
     #[test]
     fn hostile_user_and_command_stay_inside_their_elements() {
-        let s = ssh(
-            "al ice\" -oProxyCommand=x",
-            "h",
-            2222,
-            "/p",
-            "bash -c \"echo \\\"x\\\"\"",
-        );
+        let s = ssh("al ice\" -oProxyCommand=x", "h", 2222, "/p", "bash -c \"echo \\\"x\\\"\"");
         let argv = split(&build_ssh_args(&s).unwrap());
         assert_eq!(argv.len(), 5);
         assert_eq!(&argv[..2], ["-p", "2222"]);
@@ -863,29 +657,19 @@ mod tests {
 
     #[test]
     fn local_cmd_wraps_for_cmd() {
-        assert_eq!(
-            build_local_cmd("dotnet test --filter X"),
-            "/c \"dotnet test --filter X\""
-        );
+        assert_eq!(build_local_cmd("dotnet test --filter X"), "/c \"dotnet test --filter X\"");
     }
 
     #[test]
     fn run_ssh_local_folder_builds_expected_shape() {
         let p = ssh("alice", "dev.example.com", 22, "/proj", "");
-        assert_eq!(
-            build_run_ssh_args(&p, "cargo test").unwrap(),
-            "-t alice@dev.example.com \"cd '/proj' && bash -c 'cargo test'\""
-        );
+        assert_eq!(build_run_ssh_args(&p, "cargo test").unwrap(), "-t alice@dev.example.com \"cd '/proj' && bash -c 'cargo test'\"");
     }
 
     #[test]
     fn run_ssh_non_default_port_includes_port_flag() {
         let p = ssh("bob", "h", 2222, "", "");
-        assert!(
-            build_run_ssh_args(&p, "ls")
-                .unwrap()
-                .starts_with("-p 2222 ")
-        );
+        assert!(build_run_ssh_args(&p, "ls").unwrap().starts_with("-p 2222 "));
     }
 
     #[test]
@@ -905,10 +689,7 @@ mod tests {
 
     #[test]
     fn run_ssh_blank_host_errors() {
-        assert_eq!(
-            build_run_ssh_args(&ssh("", "", 22, "", ""), "ls"),
-            Err(LaunchError::MissingSshHost)
-        );
+        assert_eq!(build_run_ssh_args(&ssh("", "", 22, "", ""), "ls"), Err(LaunchError::MissingSshHost));
     }
 
     #[test]
@@ -917,15 +698,10 @@ mod tests {
         // ($env: would otherwise be eaten by cmd.exe parsing).
         let cmd = "Write-Host \"hi $env:USERNAME!\" | Out-Default";
         let args = build_pwsh_args(cmd);
-        assert!(
-            args.starts_with("-NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand ")
-        );
+        assert!(args.starts_with("-NonInteractive -NoLogo -ExecutionPolicy Bypass -EncodedCommand "));
         let b64 = args.rsplit(' ').next().unwrap();
         let bytes = base64_decode(b64);
-        let units: Vec<u16> = bytes
-            .chunks(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let units: Vec<u16> = bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert_eq!(String::from_utf16(&units).unwrap(), cmd);
     }
 
@@ -968,22 +744,9 @@ mod tests {
 
     #[test]
     fn passthrough_shells_are_not_wrapped() {
-        for shell in [
-            "pwsh",
-            "pwsh.exe",
-            "PWSH.EXE",
-            "powershell",
-            "powershell.exe",
-            "cmd",
-            "cmd.exe",
-            "ssh",
-            "bash",
-            "wsl",
-            "zsh",
-            "sh",
-            "nu",
-            "fish",
-        ] {
+        for shell in
+            ["pwsh", "pwsh.exe", "PWSH.EXE", "powershell", "powershell.exe", "cmd", "cmd.exe", "ssh", "bash", "wsl", "zsh", "sh", "nu", "fish"]
+        {
             let full = format!("{shell} --version");
             assert_eq!(build_cmd_line(shell, &full, "pwsh.exe"), full);
         }
@@ -991,42 +754,27 @@ mod tests {
 
     #[test]
     fn passthrough_detection_uses_the_file_stem_of_a_path() {
-        assert_eq!(
-            build_cmd_line(r"C:\Windows\System32\cmd.exe", "x", "pwsh.exe"),
-            "x"
-        );
+        assert_eq!(build_cmd_line(r"C:\Windows\System32\cmd.exe", "x", "pwsh.exe"), "x");
     }
 
     #[test]
     fn non_shell_command_is_wrapped_in_pwsh() {
-        assert_eq!(
-            build_cmd_line("claudelocal", "claudelocal", "pwsh.exe"),
-            "pwsh.exe -NoExit -Command claudelocal"
-        );
+        assert_eq!(build_cmd_line("claudelocal", "claudelocal", "pwsh.exe"), "pwsh.exe -NoExit -Command claudelocal");
     }
 
     #[test]
     fn non_shell_command_falls_back_to_windows_powershell() {
-        assert_eq!(
-            build_cmd_line("claudelocal", "claudelocal", "powershell.exe"),
-            "powershell.exe -NoExit -Command claudelocal"
-        );
+        assert_eq!(build_cmd_line("claudelocal", "claudelocal", "powershell.exe"), "powershell.exe -NoExit -Command claudelocal");
     }
 
     #[test]
     fn non_shell_command_with_arguments_preserves_args() {
-        assert_eq!(
-            build_cmd_line("claude", "claude --resume abc123", "pwsh.exe"),
-            "pwsh.exe -NoExit -Command claude --resume abc123"
-        );
+        assert_eq!(build_cmd_line("claude", "claude --resume abc123", "pwsh.exe"), "pwsh.exe -NoExit -Command claude --resume abc123");
     }
 
     #[test]
     fn powershell_function_name_is_wrapped_so_the_profile_loads() {
-        assert_eq!(
-            build_cmd_line("claudework", "claudework", "pwsh.exe"),
-            "pwsh.exe -NoExit -Command claudework"
-        );
+        assert_eq!(build_cmd_line("claudework", "claudework", "pwsh.exe"), "pwsh.exe -NoExit -Command claudework");
     }
 
     // ── PwshLocatorTests ───────────────────────────────────────────────────────────────
@@ -1050,13 +798,7 @@ mod tests {
 
     fn fs_with(path: &str, len: u64, reparse: bool, executes: bool) -> FakeFs {
         let mut fs = FakeFs::default();
-        fs.files.insert(
-            path.into(),
-            FileMeta {
-                len,
-                is_reparse_point: reparse,
-            },
-        );
+        fs.files.insert(path.into(), FileMeta { len, is_reparse_point: reparse });
         fs.executable.insert(path.into(), executes);
         fs
     }
@@ -1065,11 +807,7 @@ mod tests {
     fn runnable_real_executable_is_accepted_without_a_probe() {
         let fs = fs_with("pwsh.exe", 4, false, false);
         assert!(is_runnable("pwsh.exe", &fs));
-        assert_eq!(
-            fs.probes.get(),
-            0,
-            "the metadata path must not spawn anything"
-        );
+        assert_eq!(fs.probes.get(), 0, "the metadata path must not spawn anything");
     }
 
     #[test]
@@ -1077,11 +815,7 @@ mod tests {
         // The shape of a Store alias stub never backed by an install.
         let fs = fs_with("pwsh.exe", 0, false, false);
         assert!(!is_runnable("pwsh.exe", &fs));
-        assert_eq!(
-            fs.probes.get(),
-            1,
-            "decided by the probe, not by the length check"
-        );
+        assert_eq!(fs.probes.get(), 1, "decided by the probe, not by the length check");
     }
 
     #[test]
@@ -1113,10 +847,7 @@ mod tests {
 
     #[test]
     fn runnable_malformed_path_is_rejected_rather_than_panicking() {
-        assert!(!is_runnable(
-            "C:\\a\0b",
-            &fs_with("C:\\a\0b", 4, false, true)
-        ));
+        assert!(!is_runnable("C:\\a\0b", &fs_with("C:\\a\0b", 4, false, true)));
         assert!(!is_runnable("::::", &FakeFs::default()));
     }
 
@@ -1131,10 +862,7 @@ mod tests {
     fn choose_pwsh_falls_back_when_where_failed_or_the_hit_is_not_runnable() {
         let fs = fs_with("C:\\stub\\pwsh.exe", 0, true, false);
         assert_eq!(choose_pwsh(None, &fs), "powershell.exe");
-        assert_eq!(
-            choose_pwsh(Some("C:\\stub\\pwsh.exe\r\n"), &fs),
-            "powershell.exe"
-        );
+        assert_eq!(choose_pwsh(Some("C:\\stub\\pwsh.exe\r\n"), &fs), "powershell.exe");
         assert_eq!(choose_pwsh(Some(""), &fs), "powershell.exe");
     }
 }

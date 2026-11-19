@@ -87,7 +87,9 @@ impl Default for TermConfig {
 pub enum TermEvent {
     Tap(TapEvent),
     /// The 7501 probe was seen; `answered` says whether a reply was written.
-    ProbeAnswered { answered: bool },
+    ProbeAnswered {
+        answered: bool,
+    },
     Title(String),
     Bell,
     /// OSC 52 copy request. The host decides whether to honour it.
@@ -119,12 +121,7 @@ impl EventListener for Listener {
         match event {
             Event::PtyWrite(text) => shared.replies.send(text.as_bytes()),
             Event::ColorRequest(index, format) => {
-                let rgb = shared
-                    .colors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(index)
-                    .copied();
+                let rgb = shared.colors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(index).copied();
                 if let Some(rgb) = rgb {
                     shared.replies.send(format(rgb).as_bytes());
                 }
@@ -139,11 +136,7 @@ impl EventListener for Listener {
             Event::ClipboardStore(_, text) => shared.push(TermEvent::ClipboardStore(text)),
             // Never answer an OSC 52 read: it would hand the clipboard to whatever is printing.
             Event::ClipboardLoad(..) => {}
-            Event::MouseCursorDirty
-            | Event::CursorBlinkingChange
-            | Event::Wakeup
-            | Event::Exit
-            | Event::ChildExit(_) => {}
+            Event::MouseCursorDirty | Event::CursorBlinkingChange | Event::Wakeup | Event::Exit | Event::ChildExit(_) => {}
         }
     }
 }
@@ -164,12 +157,8 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(size: GridSize, config: TermConfig, replies: Arc<dyn ReplySink>) -> Self {
-        let shared = Arc::new(Shared {
-            replies,
-            events: Mutex::new(Vec::new()),
-            colors: Mutex::new(Vec::new()),
-            window: Mutex::new(window_size(size)),
-        });
+        let shared =
+            Arc::new(Shared { replies, events: Mutex::new(Vec::new()), colors: Mutex::new(Vec::new()), window: Mutex::new(window_size(size)) });
         let term_config = Config { scrolling_history: config.scrollback, ..Config::default() };
         let term = Term::new(term_config, &size, Listener(shared.clone()));
         let mut t = Self {
@@ -340,10 +329,5 @@ pub fn load_mode(mode: &AtomicU32) -> TermMode {
 }
 
 fn window_size(size: GridSize) -> WindowSize {
-    WindowSize {
-        num_lines: size.rows,
-        num_cols: size.cols,
-        cell_width: size.cell_width,
-        cell_height: size.cell_height,
-    }
+    WindowSize { num_lines: size.rows, num_cols: size.cols, cell_width: size.cell_width, cell_height: size.cell_height }
 }

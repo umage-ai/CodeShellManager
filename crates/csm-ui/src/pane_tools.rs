@@ -13,9 +13,22 @@ use crate::engine_backend::{layout_from_core, layout_into_core};
 use crate::model::{Layout, SessionId};
 
 pub fn tools() -> Vec<ToolSpec> {
-    let t = |id, title, summary, run| ToolSpec { id, title, summary, toolset: Toolset::Layout, effects: Effects::UI, input_schema: schema_of::<PaneParams>, run };
+    let t = |id, title, summary, run| ToolSpec {
+        id,
+        title,
+        summary,
+        toolset: Toolset::Layout,
+        effects: Effects::UI,
+        input_schema: schema_of::<PaneParams>,
+        run,
+    };
     vec![
-        t("pane_float", "Float in this window", "Float a pane over the others (switches the group to the Free layout).", pane_float as csm_engine::ToolFn),
+        t(
+            "pane_float",
+            "Float in this window",
+            "Float a pane over the others (switches the group to the Free layout).",
+            pane_float as csm_engine::ToolFn,
+        ),
         t("pane_dock", "Dock into the split tree", "Dock a floating or torn-off pane back into the layout.", pane_dock),
         t("pane_tear_off", "Move to a new window", "Show a pane in its own OS window.", pane_tear_off),
     ]
@@ -40,14 +53,8 @@ fn edit(ctx: &mut Ctx<'_>, params: Value, op: fn(&mut Layout, &str, &[SessionId]
         return Err(ToolError::NotFound(format!("no session `{}`", p.session_id)));
     }
     let key = key_of(ctx.state, p.group.as_deref())?;
-    let live: Vec<SessionId> = ctx
-        .state
-        .app
-        .sessions
-        .iter()
-        .filter(|s| !s.is_dormant && (key == ALL_LAYOUT_KEY || s.group_id == key))
-        .map(|s| s.id.clone())
-        .collect();
+    let live: Vec<SessionId> =
+        ctx.state.app.sessions.iter().filter(|s| !s.is_dormant && (key == ALL_LAYOUT_KEY || s.group_id == key)).map(|s| s.id.clone()).collect();
     let core = ctx.state.app.ui.layouts.entry(key.clone()).or_default();
     let mut l = layout_from_core(core);
     let message = op(&mut l, &p.session_id, &live);

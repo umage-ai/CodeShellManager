@@ -18,7 +18,14 @@ use super::{clean_name, find};
 pub(super) fn specs() -> Vec<ToolSpec> {
     let t = |id, title, summary, effects, input_schema, run| ToolSpec { id, title, summary, toolset: Toolset::Runs, effects, input_schema, run };
     vec![
-        t("run_list", "Run commands", "A session's run commands and the state of each one's last run (running, ok, failed, stopped).", Effects::READ_ONLY, schema_of::<SessionParams>, run_list),
+        t(
+            "run_list",
+            "Run commands",
+            "A session's run commands and the state of each one's last run (running, ok, failed, stopped).",
+            Effects::READ_ONLY,
+            schema_of::<SessionParams>,
+            run_list,
+        ),
         t(
             "run_start",
             "Run",
@@ -27,7 +34,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<RunParams>,
             run_start,
         ),
-        t("run_stop", "Stop run", "Stop a running run command (default: the default one) and everything it started.", Effects::MAY_DISCARD_DATA, schema_of::<RunParams>, run_stop),
+        t(
+            "run_stop",
+            "Stop run",
+            "Stop a running run command (default: the default one) and everything it started.",
+            Effects::MAY_DISCARD_DATA,
+            schema_of::<RunParams>,
+            run_stop,
+        ),
         t(
             "run_output",
             "Run output",
@@ -127,9 +141,8 @@ fn item_for(ctx: &Ctx<'_>, p: &RunParams) -> Result<(csm_core::models::ShellSess
     if s.run_commands.is_empty() {
         return Err(ToolError::NotFound("this session has no run commands; add some with run_edit (or the Runs tab)".into()));
     }
-    let item = runs::pick(s, p.run_id.as_deref()).ok_or_else(|| {
-        ToolError::NotFound(format!("no run command `{}`; run_list shows them", p.run_id.clone().unwrap_or_default()))
-    })?;
+    let item = runs::pick(s, p.run_id.as_deref())
+        .ok_or_else(|| ToolError::NotFound(format!("no run command `{}`; run_list shows them", p.run_id.clone().unwrap_or_default())))?;
     Ok((s.clone(), item.clone()))
 }
 
@@ -255,7 +268,8 @@ fn run_edit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     // Runs of removed commands are stopped (their item is gone, so nothing could stop them later).
     let keep: Vec<String> = items.iter().map(|x| x.id.clone()).collect();
     s.run_commands = items;
-    let removed: Vec<String> = ctx.state.rt.runs.get(&sid).map(|v| v.iter().filter(|r| !keep.contains(&r.item_id)).map(|r| r.item_id.clone()).collect()).unwrap_or_default();
+    let removed: Vec<String> =
+        ctx.state.rt.runs.get(&sid).map(|v| v.iter().filter(|r| !keep.contains(&r.item_id)).map(|r| r.item_id.clone()).collect()).unwrap_or_default();
     for r in &removed {
         runs::stop(ctx.state, &sid, r);
     }

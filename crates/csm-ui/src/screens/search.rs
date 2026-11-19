@@ -75,7 +75,10 @@ fn items(app: &CsmApp) -> Vec<Item> {
         for n in &s.notes {
             out.push(Item::Note {
                 folder: text_of(n, "folder"),
-                session_ids: n["session_ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                session_ids: n["session_ids"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default(),
                 excerpt: text_of(n, "excerpt"),
                 matches: ranges(&n["matches"]),
             });
@@ -166,7 +169,13 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 // Input row.
                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::PALETTE_INPUT), Sense::hover());
                 ui.painter().hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
-                icons::paint(ui, Rect::from_min_size(pos2(rect.min.x + space::MD + space::XXS, rect.center().y - icon::XXL / 2.0), Vec2::splat(icon::XXL)), "search", icon::XXL, t.muted);
+                icons::paint(
+                    ui,
+                    Rect::from_min_size(pos2(rect.min.x + space::MD + space::XXS, rect.center().y - icon::XXL / 2.0), Vec2::splat(icon::XXL)),
+                    "search",
+                    icon::XXL,
+                    t.muted,
+                );
                 let kw = widgets::kbd_width(ui, "Esc");
                 widgets::paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::MD - kw / 2.0, rect.center().y), vec2(kw, size::KBD)), "Esc");
                 let er = Rect::from_min_max(pos2(rect.min.x + space::XXL + space::LG, rect.min.y), pos2(rect.max.x - space::XL - kw, rect.max.y));
@@ -217,17 +226,61 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                             Item::Session { id, name, folder, count } => {
                                 let accent = model.session(id).map(|s| t.accent(s.accent)).unwrap_or(t.faint);
                                 let x = rect.min.x + space::SM;
-                                ui.painter().rect_filled(Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)), CornerRadius::same(radius::SM / 2), accent);
+                                ui.painter().rect_filled(
+                                    Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
+                                    CornerRadius::same(radius::SM / 2),
+                                    accent,
+                                );
                                 let nx = x + size::STRIPE + space::ROW_X;
-                                let r = widgets::paint_text(ui, pos2(nx, cy), Align2::LEFT_CENTER, name, theme::semibold(text::BODY), t.fg, rect.width() / 2.0);
+                                let r = widgets::paint_text(
+                                    ui,
+                                    pos2(nx, cy),
+                                    Align2::LEFT_CENTER,
+                                    name,
+                                    theme::semibold(text::BODY),
+                                    t.fg,
+                                    rect.width() / 2.0,
+                                );
                                 let gone = if model.session(id).is_none() { "  ·  closed" } else { "" };
-                                widgets::paint_text(ui, pos2(r.max.x + space::ROW_X, cy), Align2::LEFT_CENTER, &format!("{folder}{gone}"), theme::regular(text::CAPTION), t.muted, (rect.max.x - r.max.x - space::XXL * 2.0).max(0.0));
-                                ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, count.to_string(), theme::regular(text::CAPTION), t.faint);
+                                widgets::paint_text(
+                                    ui,
+                                    pos2(r.max.x + space::ROW_X, cy),
+                                    Align2::LEFT_CENTER,
+                                    &format!("{folder}{gone}"),
+                                    theme::regular(text::CAPTION),
+                                    t.muted,
+                                    (rect.max.x - r.max.x - space::XXL * 2.0).max(0.0),
+                                );
+                                ui.painter().text(
+                                    pos2(rect.max.x - space::SM, cy),
+                                    Align2::RIGHT_CENTER,
+                                    count.to_string(),
+                                    theme::regular(text::CAPTION),
+                                    t.faint,
+                                );
                             }
                             Item::NotesHead { count } => {
-                                icons::paint(ui, Rect::from_min_size(pos2(rect.min.x + space::SM, cy - icon::MD / 2.0), Vec2::splat(icon::MD)), "note", icon::MD, t.yellow);
-                                ui.painter().text(pos2(rect.min.x + space::SM + icon::MD + space::ROW_X, cy), Align2::LEFT_CENTER, "Notes", theme::semibold(text::BODY), t.fg);
-                                ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, count.to_string(), theme::regular(text::CAPTION), t.faint);
+                                icons::paint(
+                                    ui,
+                                    Rect::from_min_size(pos2(rect.min.x + space::SM, cy - icon::MD / 2.0), Vec2::splat(icon::MD)),
+                                    "note",
+                                    icon::MD,
+                                    t.yellow,
+                                );
+                                ui.painter().text(
+                                    pos2(rect.min.x + space::SM + icon::MD + space::ROW_X, cy),
+                                    Align2::LEFT_CENTER,
+                                    "Notes",
+                                    theme::semibold(text::BODY),
+                                    t.fg,
+                                );
+                                ui.painter().text(
+                                    pos2(rect.max.x - space::SM, cy),
+                                    Align2::RIGHT_CENTER,
+                                    count.to_string(),
+                                    theme::regular(text::CAPTION),
+                                    t.faint,
+                                );
                             }
                             Item::Hit { session_name, ts, excerpt, matches, .. } => {
                                 let r = ui.interact(rect, Id::new(("search-hit", i)), Sense::click());
@@ -236,12 +289,20 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                                 }
                                 let age = ago(*ts);
                                 let aw = widgets::text_width(ui, &age, theme::regular(text::CAPTION));
-                                ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, &age, theme::regular(text::CAPTION), t.faint);
+                                ui.painter().text(
+                                    pos2(rect.max.x - space::SM, cy),
+                                    Align2::RIGHT_CENTER,
+                                    &age,
+                                    theme::regular(text::CAPTION),
+                                    t.faint,
+                                );
                                 let x = rect.min.x + space::SM + size::STRIPE + space::ROW_X;
                                 let job = excerpt_job(ui, excerpt, matches, (rect.max.x - x - aw - space::LG).max(0.0));
                                 let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
                                 ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Search result: {session_name}: {excerpt}")));
+                                r.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Search result: {session_name}: {excerpt}"))
+                                });
                                 if r.clicked() {
                                     picked = Some(i);
                                 }
@@ -252,12 +313,22 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                                     ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
                                 }
                                 let x = rect.min.x + space::SM + size::STRIPE + space::ROW_X;
-                                let fr = widgets::paint_text(ui, pos2(x, cy), Align2::LEFT_CENTER, folder, theme::regular(text::CAPTION), t.muted, rect.width() / 3.0);
+                                let fr = widgets::paint_text(
+                                    ui,
+                                    pos2(x, cy),
+                                    Align2::LEFT_CENTER,
+                                    folder,
+                                    theme::regular(text::CAPTION),
+                                    t.muted,
+                                    rect.width() / 3.0,
+                                );
                                 let x2 = fr.max.x + space::ROW_X;
                                 let job = excerpt_job(ui, excerpt, matches, (rect.max.x - x2 - space::LG).max(0.0));
                                 let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
                                 ui.painter().galley(pos2(x2, cy - g.size().y / 2.0), g, t.fg);
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Search note: {folder}: {excerpt}")));
+                                r.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Search note: {folder}: {excerpt}"))
+                                });
                                 if r.clicked() {
                                     picked = Some(i);
                                 }
@@ -272,7 +343,14 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     ui.painter().hline(frect.x_range(), frect.min.y, Stroke::new(size::HAIRLINE, t.surface0));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(frect.shrink2(vec2(space::MD, 0.0))), |ui| {
                         ui.horizontal_centered(|ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(format!("“{name}” is closed. Reopen it from its saved configuration?")).font(theme::regular(text::BODY)).color(t.fg)).truncate());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("“{name}” is closed. Reopen it from its saved configuration?"))
+                                        .font(theme::regular(text::BODY))
+                                        .color(t.fg),
+                                )
+                                .truncate(),
+                            );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if widgets::button(ui, ButtonKind::Primary, None, "Reopen", None).clicked() {
                                     offer_action = Some(true);
@@ -293,7 +371,13 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 widgets::paint_kbd(ui, Rect::from_min_size(pos2(fx, fy - size::KBD / 2.0), vec2(kw, size::KBD)), "Enter");
                 fx += kw + space::XS + space::XXS;
                 ui.painter().text(pos2(fx, fy), Align2::LEFT_CENTER, "search", theme::regular(text::CAPTION), t.muted);
-                ui.painter().text(pos2(frect.max.x - space::MD, fy), Align2::RIGHT_CENTER, "Click a result to jump to its session", theme::regular(text::CAPTION), t.muted);
+                ui.painter().text(
+                    pos2(frect.max.x - space::MD, fy),
+                    Align2::RIGHT_CENTER,
+                    "Click a result to jump to its session",
+                    theme::regular(text::CAPTION),
+                    t.muted,
+                );
             });
     });
     app.ui.search.focus_input = focus;

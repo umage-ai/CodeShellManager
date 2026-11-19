@@ -735,11 +735,7 @@ impl UiModel {
         match self.group_mode {
             GroupMode::Rail => self.rail.clone(),
             GroupMode::Flat => Scope::All,
-            GroupMode::Headers => self
-                .active_session()
-                .and_then(|s| s.group.clone())
-                .map(Scope::Group)
-                .unwrap_or(Scope::All),
+            GroupMode::Headers => self.active_session().and_then(|s| s.group.clone()).map(Scope::Group).unwrap_or(Scope::All),
         }
     }
 

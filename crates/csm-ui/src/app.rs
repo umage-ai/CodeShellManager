@@ -21,7 +21,9 @@ pub enum Action {
     /// `engine.submit(Caller::Ui, id, params)`.
     Tool(&'static str, Value),
     OpenPalette,
-    OpenQuickOpen { group: Option<GroupId> },
+    OpenQuickOpen {
+        group: Option<GroupId>,
+    },
     CloseOverlays,
     OpenMenu(Menu),
     CloseMenu,
@@ -44,7 +46,10 @@ pub enum Action {
     /// The busy-close dialog (closing the app).
     AskQuit,
     /// A consent card was answered.
-    Consent { request_id: u64, answer: &'static str },
+    Consent {
+        request_id: u64,
+        answer: &'static str,
+    },
     /// The quick-open in edit mode, filled in from the session (`session_get`), saving with
     /// `session_edit`.
     EditSession(SessionId),
@@ -219,7 +224,6 @@ pub struct PaletteState {
     pub scroll_to_sel: bool,
     pub focus_input: bool,
 }
-
 
 /// The search panel's state: what was asked, and what the two search tools answered.
 #[derive(Debug, Clone, Default)]
@@ -550,7 +554,11 @@ impl CsmApp {
                 match reply {
                     Ok(o) => {
                         n.unavailable.remove(sid);
-                        let text = if call.id == "note_get" { o.data["text"].as_str().map(str::to_owned) } else { call.params["text"].as_str().map(str::to_owned) };
+                        let text = if call.id == "note_get" {
+                            o.data["text"].as_str().map(str::to_owned)
+                        } else {
+                            call.params["text"].as_str().map(str::to_owned)
+                        };
                         let shared = o.data["shared_by"].as_u64().and_then(|v| usize::try_from(v).ok());
                         // Sessions in one folder share the note: they all see the new text.
                         let folder = self.model.session(sid).map(|s| s.folder.clone());
@@ -703,11 +711,7 @@ impl CsmApp {
                     Scope::Group(g) => Some(g),
                     Scope::All => None,
                 });
-                self.ui.quick = QuickOpenState {
-                    group,
-                    focus_input: true,
-                    ..QuickOpenState::default()
-                };
+                self.ui.quick = QuickOpenState { group, focus_input: true, ..QuickOpenState::default() };
             }
             Action::CloseOverlays => {
                 self.ui.overlay = Overlay::None;
@@ -879,7 +883,13 @@ impl CsmApp {
         let Some(s) = self.model.session(id).cloned() else { return };
         self.ui.menu = None;
         self.ui.overlay = Overlay::QuickOpen;
-        let mut q = QuickOpenState { edit: Some(id.to_string()), name: s.name.clone(), group: s.group.clone(), focus_input: true, ..QuickOpenState::default() };
+        let mut q = QuickOpenState {
+            edit: Some(id.to_string()),
+            name: s.name.clone(),
+            group: s.group.clone(),
+            focus_input: true,
+            ..QuickOpenState::default()
+        };
         match s.kind {
             crate::model::Kind::Local => q.query = s.folder.clone(),
             crate::model::Kind::Ssh => {
@@ -1277,11 +1287,7 @@ pub fn app_icon(side: u32) -> egui::IconData {
         (px - a.0 - vx * h).hypot(py - a.1 - vy * h)
     };
     let w = n * 0.085;
-    let strokes = [
-        ((0.28, 0.32), (0.46, 0.50)),
-        ((0.46, 0.50), (0.28, 0.68)),
-        ((0.54, 0.70), (0.74, 0.70)),
-    ];
+    let strokes = [((0.28, 0.32), (0.46, 0.50)), ((0.46, 0.50), (0.28, 0.68)), ((0.54, 0.70), (0.74, 0.70))];
     for y in 0..side {
         for x in 0..side {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);

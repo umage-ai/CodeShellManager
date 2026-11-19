@@ -121,7 +121,9 @@ pub(crate) fn run_doctor(m: &ArgMatches, env: &Env) -> i32 {
         None => None,
     };
     let exe = std::env::current_exe().ok();
-    let self_test = (!m.get_flag("skip_self_test")).then(|| exe.as_ref().map(|e| vec![e.to_string_lossy().into_owned(), "mcp".into(), "--in-process".into()])).flatten();
+    let self_test = (!m.get_flag("skip_self_test"))
+        .then(|| exe.as_ref().map(|e| vec![e.to_string_lossy().into_owned(), "mcp".into(), "--in-process".into()]))
+        .flatten();
     let req = DoctorRequest {
         remote: RemoteOptions { runtime, app_path: env.app.clone(), ..Default::default() },
         self_test,

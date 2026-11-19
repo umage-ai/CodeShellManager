@@ -79,7 +79,7 @@ pub fn normalize_folder(folder: &str) -> Option<String> {
     let windows_like = t.contains('\\') || t.as_bytes().get(1) == Some(&b':');
     let mut s = if windows_like { t.replace('/', "\\") } else { t.to_owned() };
     let root_len = if s.as_bytes().get(1) == Some(&b':') { 3 } else { 1 };
-    while s.len() > root_len && (s.ends_with('\\') ||s.ends_with('/')) {
+    while s.len() > root_len && (s.ends_with('\\') || s.ends_with('/')) {
         s.pop();
     }
     let drive = s.as_bytes().get(1) == Some(&b':') && s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);

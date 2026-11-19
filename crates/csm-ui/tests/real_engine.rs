@@ -318,13 +318,29 @@ fn stand_ins_do_not_collide_with_engine_tools() {
     // Engine::start refuses duplicate ids, so building the rig is the collision check.
     let r = rig(true);
     let reg = r.engine.registry();
-    for id in ["session_new", "app_quit", "state_import_wpf", "pane_float", "pane_dock", "pane_tear_off", "run_start", "git_fetch", "note_set", "search_output", "open_with", "grant_list"] {
+    for id in [
+        "session_new",
+        "app_quit",
+        "state_import_wpf",
+        "pane_float",
+        "pane_dock",
+        "pane_tear_off",
+        "run_start",
+        "git_fetch",
+        "note_set",
+        "search_output",
+        "open_with",
+        "grant_list",
+    ] {
         assert!(reg.get(id).is_some(), "{id} is registered");
     }
     assert!(reg.get("demo_set_status").is_none(), "the review's status switcher is demo-only");
     // pane_* are real: they change the engine's stored layout.
     let folder = r.folder.clone();
-    let id = r.engine.call(Caller::Ui, "session_new", json!({"folder": folder, "command": "pwsh", "focus": true})).unwrap().data["id"].as_str().unwrap().to_owned();
+    let id = r.engine.call(Caller::Ui, "session_new", json!({"folder": folder, "command": "pwsh", "focus": true})).unwrap().data["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     r.engine.call(Caller::Ui, "pane_float", json!({"session_id": id})).unwrap();
     let l = r.engine.view().current_layout();
     assert_eq!(l.mode, csm_core::models::LayoutMode::Free);

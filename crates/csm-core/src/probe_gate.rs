@@ -51,11 +51,7 @@ impl ProgramStatusProbeGate {
 
     /// The bytes to write: raw on the bundled ConPTY, key-event encoded on inbox.
     pub fn reply_for(bundled_conpty: bool) -> String {
-        if bundled_conpty {
-            PROBE_REPLY.to_owned()
-        } else {
-            probe_reply_for_conpty()
-        }
+        if bundled_conpty { PROBE_REPLY.to_owned() } else { probe_reply_for_conpty() }
     }
 
     /// Tracks win32-input-mode from PTY output; the last of `?9001h`/`?9001l` in a chunk wins.
@@ -88,10 +84,7 @@ impl ProgramStatusProbeGate {
         }
         // C# starts `_lastReplyUtc` at DateTime.MinValue, i.e. "long ago": no interval applies
         // to the first reply.
-        if self
-            .last_reply_ms
-            .is_some_and(|last| now_ms.saturating_sub(last) < MIN_INTERVAL_MS)
-        {
+        if self.last_reply_ms.is_some_and(|last| now_ms.saturating_sub(last) < MIN_INTERVAL_MS) {
             return false;
         }
         self.replies += 1;
@@ -153,16 +146,12 @@ mod tests {
     #[test]
     fn is_enabled_follows_the_mode_then_the_conpty() {
         for (mode, bundled, expected) in [
-            (ProgramStatusProbeMode::Auto, true, true), // bundled ConPTY answers
+            (ProgramStatusProbeMode::Auto, true, true),   // bundled ConPTY answers
             (ProgramStatusProbeMode::Auto, false, false), // inbox ConPTY does not
-            (ProgramStatusProbeMode::On, false, true),  // forced on (inbox experiments)
-            (ProgramStatusProbeMode::Off, true, false), // forced off
+            (ProgramStatusProbeMode::On, false, true),    // forced on (inbox experiments)
+            (ProgramStatusProbeMode::Off, true, false),   // forced off
         ] {
-            assert_eq!(
-                ProgramStatusProbeGate::is_enabled(mode, bundled),
-                expected,
-                "{mode:?} {bundled}"
-            );
+            assert_eq!(ProgramStatusProbeGate::is_enabled(mode, bundled), expected, "{mode:?} {bundled}");
         }
     }
 
@@ -176,10 +165,7 @@ mod tests {
         assert!(g.try_acquire(true, T0, true));
 
         assert_eq!(ProgramStatusProbeGate::reply_for(true), "\x1b]7501;?\x1b\\");
-        assert_eq!(
-            ProgramStatusProbeGate::reply_for(false),
-            probe_reply_for_conpty()
-        );
+        assert_eq!(ProgramStatusProbeGate::reply_for(false), probe_reply_for_conpty());
     }
 
     #[test]
@@ -195,9 +181,7 @@ mod tests {
     #[test]
     fn lifetime_cap_per_session() {
         let mut g = win32_gate();
-        let granted = (0..20)
-            .filter(|i| g.try_acquire(true, T0 + i * MINUTE, false))
-            .count();
+        let granted = (0..20).filter(|i| g.try_acquire(true, T0 + i * MINUTE, false)).count();
         assert_eq!(granted, MAX_REPLIES_PER_SESSION as usize);
     }
 

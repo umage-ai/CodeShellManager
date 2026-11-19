@@ -48,11 +48,31 @@ fn demo_index() -> csm_engine::IndexSetting {
     let Ok(ix) = Index::start(IndexOptions::memory()) else { return csm_engine::IndexSetting::Off };
     let lines: [(&str, &str, &str, &str); 6] = [
         ("odulodo", "Odulodo", r"C:\GitHub\Odulodo", "Do you want to run `dotnet ef database update`? approval needed for the migration"),
-        ("web", "Odulodo.Web", r"C:\GitHub\Odulodo.Web", "error TS2345: Argument of type 'BrandFacet' is not assignable to parameter of type 'Facet'"),
+        (
+            "web",
+            "Odulodo.Web",
+            r"C:\GitHub\Odulodo.Web",
+            "error TS2345: Argument of type 'BrandFacet' is not assignable to parameter of type 'Facet'",
+        ),
         ("web", "Odulodo.Web", r"C:\GitHub\Odulodo.Web", "vite v6 building for production... 214 modules transformed"),
-        ("rs", "CodeShellManager-rs", r"C:\GitHub\CodeShellManager-rs", "test result: ok. 142 passed; 0 failed; the terminal widget keeps pace with 4 MB/s of output"),
-        ("csm", "CodeShellManager", r"C:\GitHub\CodeShellManager", "Merged the migration: the terminal search index moved to the local app data folder"),
-        ("craft", "craft-anything", r"C:\src\craft-anything", "error[E0599]: no method named `frobnicate` found for struct `Engine` in the current scope"),
+        (
+            "rs",
+            "CodeShellManager-rs",
+            r"C:\GitHub\CodeShellManager-rs",
+            "test result: ok. 142 passed; 0 failed; the terminal widget keeps pace with 4 MB/s of output",
+        ),
+        (
+            "csm",
+            "CodeShellManager",
+            r"C:\GitHub\CodeShellManager",
+            "Merged the migration: the terminal search index moved to the local app data folder",
+        ),
+        (
+            "craft",
+            "craft-anything",
+            r"C:\src\craft-anything",
+            "error[E0599]: no method named `frobnicate` found for struct `Engine` in the current scope",
+        ),
     ];
     for (id, name, folder, text) in lines {
         ix.note_session(id, name, folder, "");

@@ -107,10 +107,7 @@ fn child_pids(parent: u32) -> Vec<u32> {
 
 #[cfg(windows)]
 fn alive(pid: u32) -> bool {
-    let list = std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output()
-        .unwrap();
+    let list = std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
     String::from_utf8_lossy(&list.stdout).contains(&format!(" {pid} "))
 }
 

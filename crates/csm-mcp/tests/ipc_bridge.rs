@@ -151,7 +151,8 @@ fn a_long_wait_is_a_series_of_polls() {
     let b = Bridge::start();
     let events = b.engine.subscribe();
     let mut raw = b.raw();
-    let t = raw.call(wire::METHOD_SUBMIT, json!({"caller": {"kind": "external", "client": "c"}, "tool": "fake_send", "params": {"text": "x"}})).unwrap();
+    let t =
+        raw.call(wire::METHOD_SUBMIT, json!({"caller": {"kind": "external", "client": "c"}, "tool": "fake_send", "params": {"text": "x"}})).unwrap();
     let ticket = t["ticket"].as_u64().unwrap();
     let request = next_consent(&events);
     let started = Instant::now();
@@ -218,9 +219,11 @@ fn engine_events_reach_a_watching_client() {
 fn csm_mcp_through_the_bridge_labels_calls_as_the_mcp_client() {
     let b = Bridge::start();
     let mut service = McpService::new(b.remote(), McpOptions { session_id: Some("odulodo".into()), all_tools: false });
-    let init = service.handle_line(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "claude-code"}}}).to_string());
+    let init = service
+        .handle_line(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "claude-code"}}}).to_string());
     assert!(init[0].contains("codeshell"));
-    let call = service.handle_line(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "fake_whoami", "arguments": {}}}).to_string());
+    let call = service
+        .handle_line(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "fake_whoami", "arguments": {}}}).to_string());
     let reply: Value = serde_json::from_str(&call[0]).unwrap();
     assert_eq!(reply["result"]["structuredContent"], json!({"kind": "external", "client": "claude-code", "session_id": "odulodo"}));
 }

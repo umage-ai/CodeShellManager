@@ -13,9 +13,30 @@ use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schem
 pub(super) fn specs() -> Vec<ToolSpec> {
     let t = |id, title, summary, effects, input_schema, run| ToolSpec { id, title, summary, toolset: Toolset::Layout, effects, input_schema, run };
     vec![
-        t("view_get", "Current view", "The group view (rail, headers, flat), the rail tab, the focused session, the inspector and the inbox panel.", Effects::READ_ONLY, empty_schema, view_get),
-        t("view_set", "Change view…", "Switch the group view (rail, headers, flat) and/or the rail tab (a group id, or \"all\").", Effects::UI, schema_of::<ViewSetParams>, view_set),
-        t("layout_get", "Current layout", "A group's layout (default: the one shown now): mode, grid size, pinned sessions.", Effects::READ_ONLY, schema_of::<LayoutGetParams>, layout_get),
+        t(
+            "view_get",
+            "Current view",
+            "The group view (rail, headers, flat), the rail tab, the focused session, the inspector and the inbox panel.",
+            Effects::READ_ONLY,
+            empty_schema,
+            view_get,
+        ),
+        t(
+            "view_set",
+            "Change view…",
+            "Switch the group view (rail, headers, flat) and/or the rail tab (a group id, or \"all\").",
+            Effects::UI,
+            schema_of::<ViewSetParams>,
+            view_set,
+        ),
+        t(
+            "layout_get",
+            "Current layout",
+            "A group's layout (default: the one shown now): mode, grid size, pinned sessions.",
+            Effects::READ_ONLY,
+            schema_of::<LayoutGetParams>,
+            layout_get,
+        ),
         t(
             "layout_set",
             "Change layout…",
@@ -26,8 +47,22 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ),
         t("layout_pin", "Pin side by side", "Pin a session into the side-by-side layout.", Effects::UI, schema_of::<PinParams>, layout_pin),
         t("layout_unpin", "Unpin", "Remove a session from the side-by-side layout.", Effects::UI, schema_of::<PinParams>, layout_unpin),
-        t("inspector_show", "Show inspector…", "Show the inspector on a tab (notes, runs, git, session) or hide it.", Effects::UI, schema_of::<InspectorParams>, inspector_show),
-        t("inbox_panel_set", "Inbox panel", "Open or close the Needs-you panel and/or set its height.", Effects::UI, schema_of::<InboxPanelParams>, inbox_panel_set),
+        t(
+            "inspector_show",
+            "Show inspector…",
+            "Show the inspector on a tab (notes, runs, git, session) or hide it.",
+            Effects::UI,
+            schema_of::<InspectorParams>,
+            inspector_show,
+        ),
+        t(
+            "inbox_panel_set",
+            "Inbox panel",
+            "Open or close the Needs-you panel and/or set its height.",
+            Effects::UI,
+            schema_of::<InboxPanelParams>,
+            inbox_panel_set,
+        ),
     ]
 }
 

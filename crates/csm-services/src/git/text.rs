@@ -12,12 +12,7 @@ pub fn sync_text(ahead: Option<i32>, behind: Option<i32>) -> String {
         Some(b) if b > 0 => format!("↓{b}"),
         _ => String::new(),
     };
-    [up, down]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(" ")
+    [up, down].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" ")
 }
 
 /// The disabled first line of the menu, e.g. `main → origin/main · ↑2 ↓5 · 3 changed` or
@@ -45,11 +40,7 @@ pub fn menu_header(
     // git omits "# branch.ab" when the upstream is configured but its remote branch no longer
     // exists (deleted after merge, say). That is not "up to date".
     if upstream.is_some() && sync.is_empty() {
-        sync = if ahead.is_none() {
-            "upstream gone".to_string()
-        } else {
-            "up to date".to_string()
-        };
+        sync = if ahead.is_none() { "upstream gone".to_string() } else { "up to date".to_string() };
     }
     let changes = match change_count {
         0 => "clean".to_string(),
@@ -69,17 +60,8 @@ pub fn menu_header(
 
 /// Toast text after a successful fetch, from the freshly re-read status.
 #[must_use]
-pub fn fetch_summary(
-    branch: Option<&str>,
-    upstream: Option<&str>,
-    ahead: Option<i32>,
-    behind: Option<i32>,
-) -> String {
-    let (Some(branch), Some(upstream), Some(behind)) = (
-        branch.filter(|b| !b.is_empty()),
-        upstream.filter(|u| !u.is_empty()),
-        behind,
-    ) else {
+pub fn fetch_summary(branch: Option<&str>, upstream: Option<&str>, ahead: Option<i32>, behind: Option<i32>) -> String {
+    let (Some(branch), Some(upstream), Some(behind)) = (branch.filter(|b| !b.is_empty()), upstream.filter(|u| !u.is_empty()), behind) else {
         return "Fetched.".to_string();
     };
     // C#: `behind == 0 && ahead is null or 0`, i.e. behind == 0 && (ahead is null or 0)
@@ -87,16 +69,9 @@ pub fn fetch_summary(
         return format!("{branch} is up to date with {upstream}.");
     }
     if behind == 0 {
-        return format!(
-            "Nothing new — {branch} is {} ahead of {upstream}.",
-            ahead.unwrap_or(0)
-        );
+        return format!("Nothing new — {branch} is {} ahead of {upstream}.", ahead.unwrap_or(0));
     }
-    let commits = if behind == 1 {
-        "1 new commit".to_string()
-    } else {
-        format!("{behind} new commits")
-    };
+    let commits = if behind == 1 { "1 new commit".to_string() } else { format!("{behind} new commits") };
     match ahead {
         Some(a) if a > 0 => format!("{commits} on {upstream}; {branch} has diverged ({a} ahead)."),
         _ => format!("{commits} on {upstream} — Pull to fast-forward."),
@@ -113,22 +88,16 @@ pub fn failure_hint(output: &str) -> Option<&'static str> {
     // Worktree refusals first: their wording overlaps the generic cases below. Each was
     // captured from git 2.54.
     if has("is already used by worktree at") || has("is already checked out at") {
-        return Some(
-            "That branch is checked out in another worktree. Open that worktree instead (Worktrees ▸).",
-        );
+        return Some("That branch is checked out in another worktree. Open that worktree instead (Worktrees ▸).");
     }
     if has("contains modified or untracked files") {
-        return Some(
-            "The worktree has uncommitted or untracked files. Commit or stash them first.",
-        );
+        return Some("The worktree has uncommitted or untracked files. Commit or stash them first.");
     }
     if has("cannot remove a locked working tree") {
         return Some("The worktree is locked. Unlock it with 'git worktree unlock' first.");
     }
     if has("is a main working tree") {
-        return Some(
-            "That is the repository's main checkout, which can't be removed as a worktree.",
-        );
+        return Some("That is the repository's main checkout, which can't be removed as a worktree.");
     }
     if has("is not fully merged") {
         return Some("The branch has commits that aren't merged anywhere, so it was kept.");
@@ -142,17 +111,12 @@ pub fn failure_hint(output: &str) -> Option<&'static str> {
     }
 
     if has("Not possible to fast-forward") || has("diverging branches") || has("have diverged") {
-        return Some(
-            "The branch has diverged from its upstream, so it can't fast-forward. Merge or rebase in a terminal.",
-        );
+        return Some("The branch has diverged from its upstream, so it can't fast-forward. Merge or rebase in a terminal.");
     }
     if has("would be overwritten") {
         return Some("Local changes would be overwritten. Commit or stash them first.");
     }
-    if has("terminal prompts disabled")
-        || has("could not read Username")
-        || has("Authentication failed")
-    {
+    if has("terminal prompts disabled") || has("could not read Username") || has("Authentication failed") {
         return Some("The remote needs credentials. Run git fetch once in a terminal to sign in.");
     }
     if has("Permission denied (publickey)") || has("Host key verification failed") {
@@ -174,25 +138,14 @@ pub fn failure_hint(output: &str) -> Option<&'static str> {
 #[must_use]
 pub fn summarize_pull(output: &str) -> String {
     let cleaned = output.replace('\r', "");
-    let lines: Vec<&str> = cleaned
-        .split('\n')
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    if lines
-        .iter()
-        .any(|l| l.to_lowercase().starts_with("already up to date"))
-    {
+    let lines: Vec<&str> = cleaned.split('\n').map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.iter().any(|l| l.to_lowercase().starts_with("already up to date")) {
         return "Already up to date.".to_string();
     }
     if let Some(stat) = lines.iter().rev().find(|l| is_diffstat_line(l)) {
         return format!("Fast-forwarded: {stat}");
     }
-    if lines.iter().any(|l| l.eq_ignore_ascii_case("Fast-forward")) {
-        "Fast-forwarded.".to_string()
-    } else {
-        "Pull finished.".to_string()
-    }
+    if lines.iter().any(|l| l.eq_ignore_ascii_case("Fast-forward")) { "Fast-forwarded.".to_string() } else { "Pull finished.".to_string() }
 }
 
 /// `^\d+ files? changed`
@@ -214,12 +167,7 @@ fn is_diffstat_line(line: &str) -> bool {
 /// trimmed streams with a newline.
 #[must_use]
 pub fn combine_output(stdout: &str, stderr: &str) -> String {
-    [stdout, stderr]
-        .iter()
-        .map(|s| s.replace("\r\n", "\n").trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    [stdout, stderr].iter().map(|s| s.replace("\r\n", "\n").trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 #[cfg(test)]
@@ -228,113 +176,55 @@ mod tests {
 
     #[test]
     fn sync_cases() {
-        for (a, b, expected) in [
-            (None, None, ""),
-            (Some(0), Some(0), ""),
-            (Some(2), Some(0), "↑2"),
-            (Some(0), Some(5), "↓5"),
-            (Some(2), Some(5), "↑2 ↓5"),
-        ] {
+        for (a, b, expected) in
+            [(None, None, ""), (Some(0), Some(0), ""), (Some(2), Some(0), "↑2"), (Some(0), Some(5), "↓5"), (Some(2), Some(5), "↑2 ↓5")]
+        {
             assert_eq!(sync_text(a, b), expected);
         }
     }
 
     #[test]
     fn menu_header_variants() {
-        assert_eq!(
-            menu_header(Some("main"), Some("origin/main"), Some(2), Some(5), 3, None),
-            "main → origin/main · ↑2 ↓5 · 3 changed"
-        );
-        assert_eq!(
-            menu_header(Some("main"), Some("origin/main"), Some(0), Some(0), 0, None),
-            "main → origin/main · up to date · clean"
-        );
-        assert_eq!(
-            menu_header(Some("main"), Some("origin/main"), None, None, 1, None),
-            "main → origin/main · upstream gone · 1 changed"
-        );
-        assert_eq!(
-            menu_header(Some("wip"), None, None, None, 0, None),
-            "wip · no upstream · clean"
-        );
-        assert_eq!(
-            menu_header(None, None, None, None, 0, None),
-            "detached HEAD · no upstream · clean"
-        );
+        assert_eq!(menu_header(Some("main"), Some("origin/main"), Some(2), Some(5), 3, None), "main → origin/main · ↑2 ↓5 · 3 changed");
+        assert_eq!(menu_header(Some("main"), Some("origin/main"), Some(0), Some(0), 0, None), "main → origin/main · up to date · clean");
+        assert_eq!(menu_header(Some("main"), Some("origin/main"), None, None, 1, None), "main → origin/main · upstream gone · 1 changed");
+        assert_eq!(menu_header(Some("wip"), None, None, None, 0, None), "wip · no upstream · clean");
+        assert_eq!(menu_header(None, None, None, None, 0, None), "detached HEAD · no upstream · clean");
     }
 
     #[test]
     fn header_names_the_main_repo_only_in_a_linked_worktree() {
-        assert!(
-            menu_header(Some("feat"), None, None, None, 0, Some("CodeShellManager"))
-                .ends_with(" · worktree of CodeShellManager")
-        );
+        assert!(menu_header(Some("feat"), None, None, None, 0, Some("CodeShellManager")).ends_with(" · worktree of CodeShellManager"));
         assert!(!menu_header(Some("main"), None, None, None, 0, None).contains("worktree"));
     }
 
     #[test]
     fn fetch_summary_variants() {
         assert_eq!(fetch_summary(Some("main"), None, None, None), "Fetched.");
-        assert_eq!(
-            fetch_summary(Some("main"), Some("origin/main"), Some(0), Some(0)),
-            "main is up to date with origin/main."
-        );
-        assert_eq!(
-            fetch_summary(Some("main"), Some("origin/main"), Some(2), Some(0)),
-            "Nothing new — main is 2 ahead of origin/main."
-        );
-        assert_eq!(
-            fetch_summary(Some("main"), Some("origin/main"), Some(0), Some(1)),
-            "1 new commit on origin/main — Pull to fast-forward."
-        );
-        assert_eq!(
-            fetch_summary(Some("main"), Some("origin/main"), Some(2), Some(4)),
-            "4 new commits on origin/main; main has diverged (2 ahead)."
-        );
+        assert_eq!(fetch_summary(Some("main"), Some("origin/main"), Some(0), Some(0)), "main is up to date with origin/main.");
+        assert_eq!(fetch_summary(Some("main"), Some("origin/main"), Some(2), Some(0)), "Nothing new — main is 2 ahead of origin/main.");
+        assert_eq!(fetch_summary(Some("main"), Some("origin/main"), Some(0), Some(1)), "1 new commit on origin/main — Pull to fast-forward.");
+        assert_eq!(fetch_summary(Some("main"), Some("origin/main"), Some(2), Some(4)), "4 new commits on origin/main; main has diverged (2 ahead).");
     }
 
     #[test]
     fn fetch_summary_edges() {
         // no ahead count (upstream without branch.ab) behaves like level
-        assert_eq!(
-            fetch_summary(Some("main"), Some("origin/main"), None, Some(0)),
-            "main is up to date with origin/main."
-        );
-        assert_eq!(
-            fetch_summary(None, Some("o/m"), Some(0), Some(0)),
-            "Fetched."
-        );
-        assert_eq!(
-            fetch_summary(Some("m"), Some("o/m"), Some(0), None),
-            "Fetched."
-        );
+        assert_eq!(fetch_summary(Some("main"), Some("origin/main"), None, Some(0)), "main is up to date with origin/main.");
+        assert_eq!(fetch_summary(None, Some("o/m"), Some(0), Some(0)), "Fetched.");
+        assert_eq!(fetch_summary(Some("m"), Some("o/m"), Some(0), None), "Fetched.");
     }
 
     #[test]
     fn failure_hint_recognises_common_errors() {
         for (output, fragment) in [
             ("fatal: Not possible to fast-forward, aborting.", "diverged"),
-            (
-                "error: Your local changes to the following files would be overwritten by merge:",
-                "Commit or stash",
-            ),
-            (
-                "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
-                "credentials",
-            ),
+            ("error: Your local changes to the following files would be overwritten by merge:", "Commit or stash"),
+            ("fatal: could not read Username for 'https://github.com': terminal prompts disabled", "credentials"),
             ("git@github.com: Permission denied (publickey).", "SSH"),
-            (
-                "There is no tracking information for the current branch.",
-                "no upstream",
-            ),
-            (
-                "fatal: unable to access 'https://x/': Could not resolve host: x",
-                "network",
-            ),
-            (
-                "fatal: Unable to create '.git/index.lock': File exists.",
-                "Another git command",
-            ),
+            ("There is no tracking information for the current branch.", "no upstream"),
+            ("fatal: unable to access 'https://x/': Could not resolve host: x", "network"),
+            ("fatal: Unable to create '.git/index.lock': File exists.", "Another git command"),
         ] {
             let hint = failure_hint(output).unwrap_or_else(|| panic!("no hint for {output}"));
             assert!(hint.contains(fragment), "{output}: {hint}");
@@ -351,27 +241,12 @@ mod tests {
     fn worktree_refusals_get_a_plain_hint() {
         // Each message captured verbatim from git 2.54.
         for (output, fragment) in [
-            (
-                "fatal: 'feat' is already used by worktree at 'C:/tmp/wt-feat'",
-                "another worktree",
-            ),
-            (
-                "fatal: '../wt-feat' contains modified or untracked files, use --force to delete it",
-                "uncommitted or untracked",
-            ),
-            (
-                "fatal: cannot remove a locked working tree;\nuse 'remove -f -f' to override or unlock first",
-                "locked",
-            ),
+            ("fatal: 'feat' is already used by worktree at 'C:/tmp/wt-feat'", "another worktree"),
+            ("fatal: '../wt-feat' contains modified or untracked files, use --force to delete it", "uncommitted or untracked"),
+            ("fatal: cannot remove a locked working tree;\nuse 'remove -f -f' to override or unlock first", "locked"),
             ("fatal: '.' is a main working tree", "main checkout"),
-            (
-                "error: the branch 'feat' is not fully merged\nhint: If you are sure you want to delete it, run 'git branch -D feat'",
-                "aren't merged",
-            ),
-            (
-                "error: failed to delete 'C:/tmp/wt-self': Permission denied",
-                "files open",
-            ),
+            ("error: the branch 'feat' is not fully merged\nhint: If you are sure you want to delete it, run 'git branch -D feat'", "aren't merged"),
+            ("error: failed to delete 'C:/tmp/wt-self': Permission denied", "files open"),
         ] {
             let hint = failure_hint(output).unwrap_or_else(|| panic!("no hint for {output}"));
             assert!(hint.contains(fragment), "{output}: {hint}");
@@ -388,10 +263,7 @@ mod tests {
             ),
             ("Updating 1a2b..3c4d\nFast-forward", "Fast-forwarded."),
             ("something else", "Pull finished."),
-            (
-                "1 file changed, 1 insertion(+)",
-                "Fast-forwarded: 1 file changed, 1 insertion(+)",
-            ),
+            ("1 file changed, 1 insertion(+)", "Fast-forwarded: 1 file changed, 1 insertion(+)"),
         ] {
             assert_eq!(summarize_pull(output), expected);
         }

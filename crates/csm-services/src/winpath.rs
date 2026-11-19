@@ -87,11 +87,7 @@ pub fn path_root(path: &str) -> String {
             let mut parts = rest.split(is_sep);
             let server = parts.next().unwrap_or("");
             let share = parts.next().unwrap_or("");
-            return if share.is_empty() {
-                format!("\\\\{server}")
-            } else {
-                format!("\\\\{server}\\{share}")
-            };
+            return if share.is_empty() { format!("\\\\{server}") } else { format!("\\\\{server}\\{share}") };
         }
     }
     String::new()
@@ -103,10 +99,7 @@ pub fn path_root(path: &str) -> String {
 /// `GetFullPathNameW` does (so `C:\Windows .\x` is `C:\Windows\x`).
 #[must_use]
 pub fn normalize_full(path: &str) -> String {
-    let unified: String = path
-        .chars()
-        .map(|c| if c == '/' { '\\' } else { c })
-        .collect();
+    let unified: String = path.chars().map(|c| if c == '/' { '\\' } else { c }).collect();
     let root = path_root(&unified);
     let rest = unified.get(root.len()..).unwrap_or("");
     let mut stack: Vec<&str> = Vec::new();
@@ -223,17 +216,11 @@ mod tests {
 
     #[test]
     fn normalizes_lexically() {
-        assert_eq!(
-            normalize_full(r"C:\Tools\..\Windows\System32\a.exe"),
-            r"C:\Windows\System32\a.exe"
-        );
+        assert_eq!(normalize_full(r"C:\Tools\..\Windows\System32\a.exe"), r"C:\Windows\System32\a.exe");
         assert_eq!(normalize_full("C:/a//b/./c/"), r"C:\a\b\c");
         assert_eq!(normalize_full(r"C:\.."), r"C:\");
         assert_eq!(normalize_full(r"C:\Windows .\x"), r"C:\Windows\x");
-        assert_eq!(
-            normalize_full(r"\\wsl$\Ubuntu\home\u\repo\.git"),
-            r"\\wsl$\Ubuntu\home\u\repo\.git"
-        );
+        assert_eq!(normalize_full(r"\\wsl$\Ubuntu\home\u\repo\.git"), r"\\wsl$\Ubuntu\home\u\repo\.git");
         assert_eq!(normalize_full(r"\\srv\share\..\..\x"), r"\\srv\share\x");
     }
 

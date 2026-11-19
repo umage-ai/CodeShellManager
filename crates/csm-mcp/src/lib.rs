@@ -24,7 +24,7 @@ pub mod wire;
 
 pub use catalog::{Backend, BridgeError, LocalBackend, ToolInfo};
 pub use ipc_client::{APP_ENV, MAX_CALL, RemoteBackend, RemoteOptions};
-pub use ipc_server::{USE_TCP_BY_DEFAULT, Handle, IpcError, IpcOptions, serve_ipc, serve_ipc_with};
+pub use ipc_server::{Handle, IpcError, IpcOptions, USE_TCP_BY_DEFAULT, serve_ipc, serve_ipc_with};
 pub use mcp::{McpOptions, McpService, McpTools};
 pub use wire::APP_ID;
 

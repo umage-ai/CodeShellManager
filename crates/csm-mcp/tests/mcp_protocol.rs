@@ -60,7 +60,8 @@ impl Client {
     }
 
     fn initialize(&mut self, client: &str) -> Value {
-        let r = self.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": client, "version": "1"}}));
+        let r =
+            self.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": client, "version": "1"}}));
         self.tx.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string()).unwrap();
         assert!(self.lines(Duration::from_millis(300)).is_some_and(|l| l.is_empty()), "a notification gets no reply");
         r

@@ -700,11 +700,7 @@ pub(super) fn session_reopen_closed(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         profile_background_opacity: e.profile_background_opacity,
         profile_retro_effect: e.profile_retro_effect,
         profile_color_scheme_json: e.profile_color_scheme_json.clone(),
-        run_commands: e
-            .run_commands
-            .iter()
-            .map(|r| RunCommandItem { id: new_id(), ..r.clone() })
-            .collect(),
+        run_commands: e.run_commands.iter().map(|r| RunCommandItem { id: new_id(), ..r.clone() }).collect(),
         ..Default::default()
     };
     let id = s.id.clone();
@@ -757,9 +753,7 @@ fn session_send_text(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     };
     match rt.phase {
         Phase::Starting => {
-            return Err(ToolError::Refused(
-                "the session is still starting; wait for it (session_wait until idle) and try again".into(),
-            ));
+            return Err(ToolError::Refused("the session is still starting; wait for it (session_wait until idle) and try again".into()));
         }
         Phase::Exited { .. } => return Err(ToolError::Refused("the session's process has exited; restart it first".into())),
         Phase::Live => {}
@@ -903,12 +897,7 @@ fn inbox_list(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
 
 fn inbox_next(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
     let snap = current(ctx);
-    let next = snap
-        .inbox
-        .iter()
-        .find(|id| snap.focused.as_ref() != Some(*id))
-        .or_else(|| snap.inbox.first())
-        .cloned();
+    let next = snap.inbox.iter().find(|id| snap.focused.as_ref() != Some(*id)).or_else(|| snap.inbox.first()).cloned();
     match next {
         Some(id) => lifecycle::focus(ctx, &id),
         None => Ok(ToolOutput::message("Nothing needs you.")),

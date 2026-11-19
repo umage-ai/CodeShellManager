@@ -134,7 +134,12 @@ mod tests {
         assert!(scan(&format!("id: {}{}0", "AKIA", "ABCDEFGHIJKLMNOP")).is_empty(), "17 characters is not an access key id");
         assert_eq!(scan(&format!("{}{}", "sk-ant-", "x".repeat(30))).len(), 1);
         assert_eq!(scan(&format!("a\n{}\nb", concat!("-----BEGIN ", "PRIVATE KEY-----"))), vec![(2, "PEM private key")]);
-        for fine in ["the task-queue-processing-pipeline-is-fast-enough-now", "ghp_short", "sk-learn", "skip-this-long-identifier-with-dashes-abcdefghijklmnop"] {
+        for fine in [
+            "the task-queue-processing-pipeline-is-fast-enough-now",
+            "ghp_short",
+            "sk-learn",
+            "skip-this-long-identifier-with-dashes-abcdefghijklmnop",
+        ] {
             assert!(scan(fine).is_empty(), "{fine}");
         }
     }

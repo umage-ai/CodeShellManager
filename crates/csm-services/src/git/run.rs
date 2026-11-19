@@ -92,11 +92,7 @@ impl GitTarget {
         }
         match wsl::try_parse_unc_path(folder) {
             (Some(distro), linux) if !distro.is_empty() => {
-                let linux = if linux.is_empty() {
-                    "/".to_string()
-                } else {
-                    linux
-                };
+                let linux = if linux.is_empty() { "/".to_string() } else { linux };
                 Some(GitTarget::Wsl { distro, linux })
             }
             _ => Some(GitTarget::Local(folder.to_string())),
@@ -117,8 +113,7 @@ pub fn is_wsl_folder(folder: &str) -> bool {
 
 #[cfg(windows)]
 fn system32(exe: &str) -> PathBuf {
-    let root =
-        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
     root.join("System32").join(exe)
 }
 
@@ -172,24 +167,22 @@ fn reader<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>> 
         let _ = tx.send(Vec::new());
         return rx;
     };
-    let spawned = thread::Builder::new()
-        .name("csm-git-pipe".into())
-        .spawn(move || {
-            let mut kept = Vec::new();
-            let mut buf = [0u8; 8192];
-            loop {
-                match pipe.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let room = OUTPUT_CAP.saturating_sub(kept.len());
-                        if let Some(chunk) = buf.get(..n.min(room)) {
-                            kept.extend_from_slice(chunk);
-                        }
+    let spawned = thread::Builder::new().name("csm-git-pipe".into()).spawn(move || {
+        let mut kept = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = OUTPUT_CAP.saturating_sub(kept.len());
+                    if let Some(chunk) = buf.get(..n.min(room)) {
+                        kept.extend_from_slice(chunk);
                     }
                 }
             }
-            let _ = tx.send(kept);
-        });
+        }
+        let _ = tx.send(kept);
+    });
     if spawned.is_err() {
         // The receiver then reports a disconnect, read as "no output".
         log::warn!("git: no pipe reader thread");
@@ -214,12 +207,7 @@ fn kill_tree(child: &mut Child) {
     #[cfg(unix)]
     {
         // The child leads its own process group (`process_group(0)`): signal the group.
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -229,32 +217,19 @@ fn kill_tree(child: &mut Child) {
 #[must_use]
 pub fn run_git(folder: &str, git_args: &[String], timeout: Duration, read_only: bool) -> GitRun {
     let Some(target) = GitTarget::of(folder) else {
-        return GitRun {
-            spawn_error: Some("no folder".into()),
-            ..GitRun::default()
-        };
+        return GitRun { spawn_error: Some("no folder".into()), ..GitRun::default() };
     };
     run_target(&target, git_args, timeout, read_only)
 }
 
-fn run_target(
-    target: &GitTarget,
-    git_args: &[String],
-    timeout: Duration,
-    read_only: bool,
-) -> GitRun {
+fn run_target(target: &GitTarget, git_args: &[String], timeout: Duration, read_only: bool) -> GitRun {
     let mut cmd = match command(target, git_args, read_only) {
         Ok(c) => c,
         Err(e) => {
-            return GitRun {
-                spawn_error: Some(e),
-                ..GitRun::default()
-            };
+            return GitRun { spawn_error: Some(e), ..GitRun::default() };
         }
     };
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -269,10 +244,7 @@ fn run_target(
         Ok(c) => c,
         Err(e) => {
             let what = if target.is_wsl() { "wsl.exe" } else { "git" };
-            return GitRun {
-                spawn_error: Some(format!("could not start {what}: {e}")),
-                ..GitRun::default()
-            };
+            return GitRun { spawn_error: Some(format!("could not start {what}: {e}")), ..GitRun::default() };
         }
     };
     let out = reader(child.stdout.take());
@@ -302,23 +274,13 @@ fn run_target(
     }
     // A grandchild that outlived the tree kill could hold a pipe open: don't wait on it forever.
     let grace = Duration::from_secs(2);
-    let decode = |rx: mpsc::Receiver<Vec<u8>>| {
-        rx.recv_timeout(grace)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_default()
-    };
+    let decode = |rx: mpsc::Receiver<Vec<u8>>| rx.recv_timeout(grace).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let mut stdout = decode(out);
     let stderr = decode(err);
     if target.is_wsl() {
         stdout = args::strip_wsl_profile_noise(&stdout).to_string();
     }
-    GitRun {
-        stdout,
-        stderr,
-        code: if timed_out { None } else { code },
-        timed_out,
-        spawn_error: None,
-    }
+    GitRun { stdout, stderr, code: if timed_out { None } else { code }, timed_out, spawn_error: None }
 }
 
 /// The folder exists (local) or the target is WSL (whose `\\wsl$` probe could boot a distro;
@@ -389,11 +351,7 @@ pub fn worktree_list(folder: &str) -> Vec<WorktreeInfo> {
 /// Local branch names.
 pub fn branches(folder: &str) -> Result<Vec<String>, String> {
     let r = run_git(folder, &args::list_branches_args(), QUERY_TIMEOUT, true);
-    if r.ok() {
-        Ok(args::parse_branch_list(&r.stdout))
-    } else {
-        Err(failure_text("Listing branches", &r, QUERY_TIMEOUT))
-    }
+    if r.ok() { Ok(args::parse_branch_list(&r.stdout)) } else { Err(failure_text("Listing branches", &r, QUERY_TIMEOUT)) }
 }
 
 /// A user-initiated operation: combined output, ok, timed out.
@@ -410,11 +368,7 @@ pub fn op(folder: &str, git_args: &[String], timeout: Duration, read_only: bool)
             timeout.as_secs()
         ));
     }
-    GitOpResult {
-        ok: r.ok(),
-        output,
-        timed_out: r.timed_out,
-    }
+    GitOpResult { ok: r.ok(), output, timed_out: r.timed_out }
 }
 
 #[must_use]
@@ -441,35 +395,19 @@ pub fn prune_worktrees(folder: &str) -> GitOpResult {
 /// process whose cwd is inside the folder would lock it on Windows).
 #[must_use]
 pub fn remove_worktree(run_from: &str, worktree_path: &str) -> GitOpResult {
-    op(
-        run_from,
-        &args::remove_worktree_args(worktree_path),
-        WORKTREE_TIMEOUT,
-        false,
-    )
+    op(run_from, &args::remove_worktree_args(worktree_path), WORKTREE_TIMEOUT, false)
 }
 
 /// `branch -d -- <branch>`: git keeps an unmerged branch.
 #[must_use]
 pub fn delete_merged_branch(run_from: &str, branch: &str) -> GitOpResult {
-    op(
-        run_from,
-        &args::delete_merged_branch_args(branch),
-        SWITCH_TIMEOUT,
-        false,
-    )
+    op(run_from, &args::delete_merged_branch_args(branch), SWITCH_TIMEOUT, false)
 }
 
 /// `worktree add`: a new branch (`-b <branch> -- <path> [<base>]`) or an existing one
 /// (`-- <path> <branch>`). Argv; `--` before the positionals.
 #[must_use]
-pub fn add_worktree(
-    run_from: &str,
-    target_path: &str,
-    branch: &str,
-    create: bool,
-    base: Option<&str>,
-) -> GitOpResult {
+pub fn add_worktree(run_from: &str, target_path: &str, branch: &str, create: bool, base: Option<&str>) -> GitOpResult {
     let mut a = args::worktree_add_args(target_path, branch, create);
     if create && let Some(b) = base.filter(|b| !b.is_empty()) {
         a.push(b.to_string());
@@ -497,10 +435,7 @@ pub fn failure_message(what: &str, output: &str) -> String {
 fn failure_text(what: &str, r: &GitRun, timeout: Duration) -> String {
     let mut out = r.output();
     if r.timed_out {
-        out.push_str(&format!(
-            "\ngit did not finish within {}s and was stopped.",
-            timeout.as_secs()
-        ));
+        out.push_str(&format!("\ngit did not finish within {}s and was stopped.", timeout.as_secs()));
     }
     failure_message(what, &out)
 }
@@ -562,11 +497,7 @@ pub fn nested_repositories(root: &Path, max_dirs: usize) -> Option<Vec<PathBuf>>
             if visited > max_dirs {
                 return None;
             }
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(".git")
-            {
+            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(".git") {
                 if !is_root {
                     found.push(dir.clone());
                 }
@@ -601,9 +532,7 @@ pub fn git_dir(folder: &str) -> Option<PathBuf> {
                 return None;
             }
             let p = match wsl::try_parse_unc_path(folder) {
-                (Some(distro), _) if gd.starts_with('/') => {
-                    PathBuf::from(wsl::to_unc_path(&distro, &gd))
-                }
+                (Some(distro), _) if gd.starts_with('/') => PathBuf::from(wsl::to_unc_path(&distro, &gd)),
                 _ if Path::new(&gd).is_absolute() => PathBuf::from(&gd),
                 _ => dir.join(&gd),
             };
@@ -643,28 +572,11 @@ pub fn linked_worktree_of(folder: &str, repo_root: Option<&str>) -> Option<Strin
 #[must_use]
 pub fn default_worktree_path(repo_root: &str, branch: &str) -> String {
     let root = repo_root.trim_end_matches(['/', '\\']);
-    let safe: String = branch
-        .chars()
-        .map(|c| {
-            if matches!(c, '/' | '\\' | ' ' | ':') {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect();
+    let safe: String = branch.chars().map(|c| if matches!(c, '/' | '\\' | ' ' | ':') { '-' } else { c }).collect();
     let name = worktrees::name(root);
     let wsl = is_wsl_folder(root);
-    let sep = if wsl || root.contains('\\') {
-        '\\'
-    } else {
-        '/'
-    };
-    let root_native = if sep == '\\' {
-        root.replace('/', "\\")
-    } else {
-        root.to_string()
-    };
+    let sep = if wsl || root.contains('\\') { '\\' } else { '/' };
+    let root_native = if sep == '\\' { root.replace('/', "\\") } else { root.to_string() };
     match root_native.rfind(sep) {
         Some(i) if i > 0 => format!("{}{sep}{name}-{safe}", root_native.get(..i).unwrap_or("")),
         _ => format!("{root_native}-{safe}"),
@@ -675,11 +587,7 @@ pub fn default_worktree_path(repo_root: &str, branch: &str) -> String {
 /// sessions store it. WSL UNC and Unix paths are left as they are.
 #[must_use]
 pub fn windows_form(path: &str) -> String {
-    if cfg!(windows) {
-        path.replace('/', "\\")
-    } else {
-        path.to_string()
-    }
+    if cfg!(windows) { path.replace('/', "\\") } else { path.to_string() }
 }
 
 #[cfg(test)]
@@ -689,17 +597,8 @@ mod tests {
     #[test]
     fn targets() {
         assert_eq!(GitTarget::of(""), None);
-        assert_eq!(
-            GitTarget::of(r"C:\repo"),
-            Some(GitTarget::Local(r"C:\repo".into()))
-        );
-        assert_eq!(
-            GitTarget::of(r"\\wsl$\Ubuntu\home\u\proj"),
-            Some(GitTarget::Wsl {
-                distro: "Ubuntu".into(),
-                linux: "/home/u/proj".into()
-            })
-        );
+        assert_eq!(GitTarget::of(r"C:\repo"), Some(GitTarget::Local(r"C:\repo".into())));
+        assert_eq!(GitTarget::of(r"\\wsl$\Ubuntu\home\u\proj"), Some(GitTarget::Wsl { distro: "Ubuntu".into(), linux: "/home/u/proj".into() }));
         assert!(is_wsl_folder(r"\\wsl.localhost\Ubuntu\home"));
     }
 
@@ -712,18 +611,9 @@ mod tests {
 
     #[test]
     fn default_paths_are_siblings_of_the_main_checkout() {
-        assert_eq!(
-            default_worktree_path(r"C:\src\odulodo", "feat/x y"),
-            r"C:\src\odulodo-feat-x-y"
-        );
-        assert_eq!(
-            default_worktree_path("C:/src/odulodo", "fix"),
-            "C:/src/odulodo-fix"
-        );
-        assert_eq!(
-            default_worktree_path(r"\\wsl$\Ubuntu\home\u\repo", "b"),
-            r"\\wsl$\Ubuntu\home\u\repo-b"
-        );
+        assert_eq!(default_worktree_path(r"C:\src\odulodo", "feat/x y"), r"C:\src\odulodo-feat-x-y");
+        assert_eq!(default_worktree_path("C:/src/odulodo", "fix"), "C:/src/odulodo-fix");
+        assert_eq!(default_worktree_path(r"\\wsl$\Ubuntu\home\u\repo", "b"), r"\\wsl$\Ubuntu\home\u\repo-b");
     }
 
     #[cfg(windows)]
@@ -733,16 +623,7 @@ mod tests {
         let c = command(&t, &args::status_args(), true).unwrap();
         let prog = c.get_program().to_string_lossy().to_lowercase();
         assert!(prog.ends_with(r"system32\wsl.exe"), "{prog}");
-        let wslenv = c
-            .get_envs()
-            .find(|(k, _)| k.to_string_lossy() == "WSLENV")
-            .and_then(|(_, v)| v)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        assert!(
-            wslenv.contains("GIT_TERMINAL_PROMPT") && wslenv.contains("GIT_OPTIONAL_LOCKS"),
-            "{wslenv}"
-        );
+        let wslenv = c.get_envs().find(|(k, _)| k.to_string_lossy() == "WSLENV").and_then(|(_, v)| v).unwrap().to_string_lossy().into_owned();
+        assert!(wslenv.contains("GIT_TERMINAL_PROMPT") && wslenv.contains("GIT_OPTIONAL_LOCKS"), "{wslenv}");
     }
 }

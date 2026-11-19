@@ -81,13 +81,7 @@ fn osc_7501_report_and_probe_answered_before_da1() {
     // Claude's startup shape: probe, then DA1 as the "no more replies" sentinel.
     let input = b"\x1b]7501;state=working:progress=40:id=build\x1b\\\x1b]7501;?\x1b\\\x1b[c";
     let (events, replies) = run_all_splits(input, ProbeReply::Raw);
-    assert_eq!(
-        taps(&events),
-        vec![
-            TapEvent::ProgramStatus("state=working:progress=40:id=build".into()),
-            TapEvent::ProgramStatusProbe,
-        ]
-    );
+    assert_eq!(taps(&events), vec![TapEvent::ProgramStatus("state=working:progress=40:id=build".into()), TapEvent::ProgramStatusProbe,]);
     assert!(events.contains(&TermEvent::ProbeAnswered { answered: true }));
     assert_eq!(replies, [PROBE_REPLY, DA1_REPLY].concat());
 }
@@ -133,7 +127,8 @@ fn win32_input_mode_reply_needs_the_mode() {
 
 #[test]
 fn osc_133_and_7() {
-    let input = b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;2\x07\x1b]133;D\x07\x1b]7;file://host/C:/repo%20x\x1b\\\x1b]133;Z\x07";
+    let input =
+        b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;2\x07\x1b]133;D\x07\x1b]7;file://host/C:/repo%20x\x1b\\\x1b]133;Z\x07";
     let (events, _) = run_all_splits(input, ProbeReply::Off);
     assert_eq!(
         taps(&events),
@@ -180,7 +175,26 @@ fn random_bytes_never_panic() {
         seed ^= seed << 17;
         seed
     };
-    let alphabet: &[&[u8]] = &[b"\x1b", b"]", b"9001;", b"7501;", b"133;", b"7;", b"?", b"\x07", b"\\", b"[", b"c", b"a", b";", b"=", b"\xff", b"\xe6\x97\xa5", b"\x9c", b"\x18"];
+    let alphabet: &[&[u8]] = &[
+        b"\x1b",
+        b"]",
+        b"9001;",
+        b"7501;",
+        b"133;",
+        b"7;",
+        b"?",
+        b"\x07",
+        b"\\",
+        b"[",
+        b"c",
+        b"a",
+        b";",
+        b"=",
+        b"\xff",
+        b"\xe6\x97\xa5",
+        b"\x9c",
+        b"\x18",
+    ];
     for _ in 0..200 {
         let (mut t, _) = term(ProbeReply::Raw);
         let mut buf = Vec::new();

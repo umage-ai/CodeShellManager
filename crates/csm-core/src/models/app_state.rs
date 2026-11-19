@@ -296,10 +296,7 @@ pub struct AppState {
 
     /// The Rust app's own UI memory (rail tab, layouts per group, panels). Absent in WPF files;
     /// read leniently so a bad value never costs the sessions.
-    #[serde(
-        deserialize_with = "lenient",
-        skip_serializing_if = "UiState::is_default"
-    )]
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "UiState::is_default")]
     pub ui: UiState,
 
     /// Version of the Rust app's file format; absent in files the WPF app wrote. The Rust app
@@ -356,21 +353,14 @@ mod tests {
     fn a_stale_dev_build_key_is_ignored_and_the_mode_defaults_to_auto() {
         // Earlier development builds saved "AnswerProgramStatusProbe": false meaning
         // "experimental, off"; the renamed setting must not read that as a deliberate "off".
-        let settings: AppSettings = serde_json::from_str(
-            r#"{"AnswerProgramStatusProbe": false, "UseBundledConPty": true}"#,
-        )
-        .unwrap();
+        let settings: AppSettings = serde_json::from_str(r#"{"AnswerProgramStatusProbe": false, "UseBundledConPty": true}"#).unwrap();
         assert_eq!(settings.program_status_probe, ProgramStatusProbeMode::Auto);
         assert!(settings.use_bundled_con_pty);
     }
 
     #[test]
     fn the_probe_mode_round_trips_through_state_json_as_a_number() {
-        let json = serde_json::to_string(&AppSettings {
-            program_status_probe: ProgramStatusProbeMode::Off,
-            ..Default::default()
-        })
-        .unwrap();
+        let json = serde_json::to_string(&AppSettings { program_status_probe: ProgramStatusProbeMode::Off, ..Default::default() }).unwrap();
         assert!(json.contains(r#""ProgramStatusProbe":2"#), "{json}");
         let back: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.program_status_probe, ProgramStatusProbeMode::Off);
@@ -390,8 +380,7 @@ mod tests {
         let st: AppState = serde_json::from_str("{}").unwrap();
         assert_eq!(st.last_layout, "Single");
         // A malformed Ui key never costs the rest of the file.
-        let st: AppState =
-            serde_json::from_str(r#"{"Ui": {"Layouts": 7}, "Sessions": [{"Id": "a"}]}"#).unwrap();
+        let st: AppState = serde_json::from_str(r#"{"Ui": {"Layouts": 7}, "Sessions": [{"Id": "a"}]}"#).unwrap();
         assert_eq!(st.sessions.len(), 1);
         assert!(st.ui.layouts.is_empty());
     }

@@ -128,9 +128,15 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Ac
         widgets::card_frame(&t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(egui::RichText::new("No run commands yet").font(semibold(text::BODY)).color(t.fg));
-            ui.label(egui::RichText::new("Run commands start in their own background terminal, so they never type into this session.").font(theme::regular(text::CAPTION)).color(t.muted));
+            ui.label(
+                egui::RichText::new("Run commands start in their own background terminal, so they never type into this session.")
+                    .font(theme::regular(text::CAPTION))
+                    .color(t.muted),
+            );
             ui.horizontal_wrapped(|ui| {
-                if s.kind != crate::model::Kind::Ssh && widgets::button(ui, ButtonKind::Secondary, Some("search"), "Detect from project", None).clicked() {
+                if s.kind != crate::model::Kind::Ssh
+                    && widgets::button(ui, ButtonKind::Secondary, Some("search"), "Detect from project", None).clicked()
+                {
                     actions.push(Action::Tool("run_edit", json!({"session_id": s.id, "detect": true})));
                 }
                 if widgets::button(ui, ButtonKind::Secondary, Some("plus"), "Add a command…", None).clicked() {
@@ -178,12 +184,24 @@ fn run_row(ui: &mut Ui, t: &Tokens, s: &SessionView, r: &RunView, on: bool, acti
     let running = r.state == RunState::Running;
     let b = Rect::from_min_size(pos2(rect.min.x + space::SM, rect.min.y + space::SM - space::XXS), Vec2::splat(size::CONTROL_SM));
     let tip = if running { "Stop" } else { "Run" };
-    if widgets::icon_button_at(ui, b, Id::new(("run-btn", s.id.clone(), r.id.clone())), if running { "stop" } else { "play" }, false, &format!("{tip} {}", r.label)).clicked() {
+    if widgets::icon_button_at(
+        ui,
+        b,
+        Id::new(("run-btn", s.id.clone(), r.id.clone())),
+        if running { "stop" } else { "play" },
+        false,
+        &format!("{tip} {}", r.label),
+    )
+    .clicked()
+    {
         actions.push(Action::Tool(if running { "run_stop" } else { "run_start" }, json!({"session_id": s.id, "run_id": r.id})));
     }
     let lr = ui.painter().text(pos2(b.max.x + space::SM, b.center().y), Align2::LEFT_CENTER, &r.label, semibold(text::BODY), t.fg);
     if r.is_default {
-        let dr = Rect::from_min_size(pos2(lr.max.x + space::XS + space::XXS, b.center().y - space::SM + space::XXS), vec2(space::LG + space::XS + space::XXS, space::LG - space::XXS));
+        let dr = Rect::from_min_size(
+            pos2(lr.max.x + space::XS + space::XXS, b.center().y - space::SM + space::XXS),
+            vec2(space::LG + space::XS + space::XXS, space::LG - space::XXS),
+        );
         ui.painter().rect_stroke(dr, CornerRadius::same(radius::SM - 1), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
         ui.painter().text(dr.center(), Align2::CENTER_CENTER, "F5", theme::medium(text::CAPS), t.muted);
     }
@@ -194,7 +212,8 @@ fn run_row(ui: &mut Ui, t: &Tokens, s: &SessionView, r: &RunView, on: bool, acti
         RunState::NotRun => (t.muted, None),
     };
     let dw = widgets::text_width(ui, &r.detail, theme::medium(text::TINY)) + space::LG + icon::XS;
-    let chip = Rect::from_min_size(pos2(rect.max.x - space::SM - dw, b.center().y - space::SM - space::XXS / 2.0), vec2(dw, space::LG + size::HAIRLINE));
+    let chip =
+        Rect::from_min_size(pos2(rect.max.x - space::SM - dw, b.center().y - space::SM - space::XXS / 2.0), vec2(dw, space::LG + size::HAIRLINE));
     if r.state != RunState::NotRun {
         ui.painter().rect_filled(chip, CornerRadius::same(radius::PILL), Tokens::tint(c, alpha::PILL));
     }
@@ -206,7 +225,15 @@ fn run_row(ui: &mut Ui, t: &Tokens, s: &SessionView, r: &RunView, on: bool, acti
         icons::paint(ui, ir, n, icon::XS, c);
     }
     ui.painter().text(pos2(ir.max.x + space::XS, chip.center().y), Align2::LEFT_CENTER, &r.detail, theme::medium(text::TINY), t.fg);
-    widgets::paint_text(ui, pos2(b.max.x + space::SM, rect.max.y - space::SM - space::XXS), Align2::LEFT_CENTER, &r.command_line, theme::mono(text::MONO_SM), t.muted, rect.width() - space::XXL * 2.0);
+    widgets::paint_text(
+        ui,
+        pos2(b.max.x + space::SM, rect.max.y - space::SM - space::XXS),
+        Align2::LEFT_CENTER,
+        &r.command_line,
+        theme::mono(text::MONO_SM),
+        t.muted,
+        rect.width() - space::XXL * 2.0,
+    );
     resp.clicked()
 }
 
@@ -239,14 +266,18 @@ fn output(ui: &mut Ui, app: &mut CsmApp, t: &Tokens, s: &SessionView, r: &RunVie
         .show(ui, |ui| {
             ui.set_min_size(vec2(ui.available_width(), h));
             ui.set_max_height(h);
-            egui::ScrollArea::vertical().id_salt(("runs-out-scroll", s.id.clone(), r.id.clone())).stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
-                let shown = if text.is_empty() {
-                    if r.state == RunState::NotRun && r.exit_code.is_none() { "Not run yet." } else { "No output yet." }
-                } else {
-                    text.as_str()
-                };
-                ui.add(egui::Label::new(egui::RichText::new(shown).font(theme::mono(text::MONO_SM)).color(t.term_fg)).wrap().selectable(true));
-            });
+            egui::ScrollArea::vertical()
+                .id_salt(("runs-out-scroll", s.id.clone(), r.id.clone()))
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let shown = if text.is_empty() {
+                        if r.state == RunState::NotRun && r.exit_code.is_none() { "Not run yet." } else { "No output yet." }
+                    } else {
+                        text.as_str()
+                    };
+                    ui.add(egui::Label::new(egui::RichText::new(shown).font(theme::mono(text::MONO_SM)).color(t.term_fg)).wrap().selectable(true));
+                });
         });
     ui.horizontal_wrapped(|ui| {
         let running = r.state == RunState::Running;
@@ -261,12 +292,19 @@ fn output(ui: &mut Ui, app: &mut CsmApp, t: &Tokens, s: &SessionView, r: &RunVie
             actions.push(Action::CopyAs(text.clone(), format!("Copied the output of {}.", r.label)));
         }
         if s.is_claude() {
-            if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send to Claude", None).on_hover_text("Pastes the output into Claude's prompt as a fenced block, without pressing Enter").clicked() {
+            if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send to Claude", None)
+                .on_hover_text("Pastes the output into Claude's prompt as a fenced block, without pressing Enter")
+                .clicked()
+            {
                 // Untrusted text: pasted with bracketed paste, never submitted.
                 actions.push(Action::Tool("session_send_text", json!({"session_id": s.id, "text": fenced(&r.command_line, &text), "submit": false})));
             }
-        } else if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send to terminal", None).on_hover_text("Copies the output: pasting it into a shell would run each line").clicked() {
-            actions.push(Action::CopyAs(text.clone(), "Copied the output: a shell would run each pasted line, so paste it where you mean to.".into()));
+        } else if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send to terminal", None)
+            .on_hover_text("Copies the output: pasting it into a shell would run each line")
+            .clicked()
+        {
+            actions
+                .push(Action::CopyAs(text.clone(), "Copied the output: a shell would run each pasted line, so paste it where you mean to.".into()));
         }
     });
 }
@@ -280,37 +318,59 @@ fn editor(ui: &mut Ui, s: &SessionView, mut rows: Vec<EditRow>, actions: &mut Ve
     let mut swap: Option<(usize, usize)> = None;
     let mut make_default: Option<usize> = None;
     let n = rows.len();
-    egui::ScrollArea::vertical().id_salt(("runs-editor-scroll", s.id.clone())).max_height((ui.available_height() - size::CONTROL_LG * 3.0).max(size::CONTROL_LG * 4.0)).show(ui, |ui| {
-        for (i, r) in rows.iter_mut().enumerate() {
-            widgets::card_frame(&t).inner_margin(egui::Margin::symmetric(space::SM as i8, space::SM as i8)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    if ui.radio(r.is_default, "").on_hover_text("The default: the Run button and F5").clicked() {
-                        make_default = Some(i);
-                    }
-                    ui.add(egui::TextEdit::singleline(&mut r.label).hint_text("Label").desired_width((ui.available_width() - size::CONTROL_SM * 3.0 - space::XL).max(size::CONTROL_LG * 2.0)).id(Id::new(("run-label", s.id.clone(), i))));
-                    if ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text("Move up").clicked() {
-                        swap = Some((i, i.saturating_sub(1)));
-                    }
-                    if ui.add_enabled(i + 1 < n, egui::Button::new("↓").small()).on_hover_text("Move down").clicked() {
-                        swap = Some((i, i + 1));
-                    }
-                    let (del, _) = ui.allocate_exact_size(Vec2::splat(size::CONTROL_SM), Sense::hover());
-                    if widgets::icon_button_at(ui, del, Id::new(("run-del", s.id.clone(), i)), "trash", false, "Delete").clicked() {
-                        remove = Some(i);
-                    }
-                });
-                ui.add(egui::TextEdit::singleline(&mut r.command_line).hint_text("Command line, e.g. npm run dev").font(theme::mono(text::MONO)).desired_width(f32::INFINITY).id(Id::new(("run-cmd", s.id.clone(), i))));
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt(("run-mode", s.id.clone(), i)).selected_text(if r.powershell { "PowerShell" } else { "Process" }).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut r.powershell, false, "Process").on_hover_text("cmd /c on Windows, the login shell elsewhere");
-                        ui.selectable_value(&mut r.powershell, true, "PowerShell").on_hover_text("pwsh: pipes, $env:, cmdlets");
+    egui::ScrollArea::vertical()
+        .id_salt(("runs-editor-scroll", s.id.clone()))
+        .max_height((ui.available_height() - size::CONTROL_LG * 3.0).max(size::CONTROL_LG * 4.0))
+        .show(ui, |ui| {
+            for (i, r) in rows.iter_mut().enumerate() {
+                widgets::card_frame(&t).inner_margin(egui::Margin::symmetric(space::SM as i8, space::SM as i8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        if ui.radio(r.is_default, "").on_hover_text("The default: the Run button and F5").clicked() {
+                            make_default = Some(i);
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut r.label)
+                                .hint_text("Label")
+                                .desired_width((ui.available_width() - size::CONTROL_SM * 3.0 - space::XL).max(size::CONTROL_LG * 2.0))
+                                .id(Id::new(("run-label", s.id.clone(), i))),
+                        );
+                        if ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text("Move up").clicked() {
+                            swap = Some((i, i.saturating_sub(1)));
+                        }
+                        if ui.add_enabled(i + 1 < n, egui::Button::new("↓").small()).on_hover_text("Move down").clicked() {
+                            swap = Some((i, i + 1));
+                        }
+                        let (del, _) = ui.allocate_exact_size(Vec2::splat(size::CONTROL_SM), Sense::hover());
+                        if widgets::icon_button_at(ui, del, Id::new(("run-del", s.id.clone(), i)), "trash", false, "Delete").clicked() {
+                            remove = Some(i);
+                        }
                     });
-                    ui.add(egui::TextEdit::singleline(&mut r.post_run_url).hint_text("Open after success: http://localhost:5173").desired_width(f32::INFINITY).id(Id::new(("run-url", s.id.clone(), i))));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut r.command_line)
+                            .hint_text("Command line, e.g. npm run dev")
+                            .font(theme::mono(text::MONO))
+                            .desired_width(f32::INFINITY)
+                            .id(Id::new(("run-cmd", s.id.clone(), i))),
+                    );
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(("run-mode", s.id.clone(), i))
+                            .selected_text(if r.powershell { "PowerShell" } else { "Process" })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut r.powershell, false, "Process")
+                                    .on_hover_text("cmd /c on Windows, the login shell elsewhere");
+                                ui.selectable_value(&mut r.powershell, true, "PowerShell").on_hover_text("pwsh: pipes, $env:, cmdlets");
+                            });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut r.post_run_url)
+                                .hint_text("Open after success: http://localhost:5173")
+                                .desired_width(f32::INFINITY)
+                                .id(Id::new(("run-url", s.id.clone(), i))),
+                        );
+                    });
                 });
-            });
-        }
-    });
+            }
+        });
     if let Some(i) = make_default {
         for (j, r) in rows.iter_mut().enumerate() {
             r.is_default = i == j;
@@ -334,7 +394,11 @@ fn editor(ui: &mut Ui, s: &SessionView, mut rows: Vec<EditRow>, actions: &mut Ve
             let first = rows.is_empty();
             rows.push(EditRow { is_default: first, ..EditRow::default() });
         }
-        if s.kind != crate::model::Kind::Ssh && widgets::button(ui, ButtonKind::Ghost, Some("search"), "Detect from project", None).on_hover_text("Replace the list with the project type's commands").clicked() {
+        if s.kind != crate::model::Kind::Ssh
+            && widgets::button(ui, ButtonKind::Ghost, Some("search"), "Detect from project", None)
+                .on_hover_text("Replace the list with the project type's commands")
+                .clicked()
+        {
             actions.push(Action::Tool("run_edit", json!({"session_id": s.id, "detect": true})));
             close = true;
         }
@@ -352,7 +416,11 @@ fn editor(ui: &mut Ui, s: &SessionView, mut rows: Vec<EditRow>, actions: &mut Ve
             close = true;
         }
     });
-    ui.label(egui::RichText::new("Runs start in their own background terminal in the session's folder (SSH: on the host; WSL: in the distro).").font(theme::regular(text::CAPTION)).color(t.muted));
+    ui.label(
+        egui::RichText::new("Runs start in their own background terminal in the session's folder (SSH: on the host; WSL: in the distro).")
+            .font(theme::regular(text::CAPTION))
+            .color(t.muted),
+    );
     ui.ctx().data_mut(|d| {
         if close {
             d.remove::<Vec<EditRow>>(key);
@@ -378,15 +446,28 @@ mod tests {
     #[test]
     fn editor_rows_become_run_edit_params() {
         let rows = vec![
-            EditRow { id: "a".into(), label: " Dev ".into(), command_line: "npm run dev".into(), powershell: false, post_run_url: "http://localhost:5173".into(), is_default: true },
+            EditRow {
+                id: "a".into(),
+                label: " Dev ".into(),
+                command_line: "npm run dev".into(),
+                powershell: false,
+                post_run_url: "http://localhost:5173".into(),
+                is_default: true,
+            },
             EditRow { label: "Lint".into(), command_line: "npm run lint | Select -First 5".into(), powershell: true, ..EditRow::default() },
         ];
         let p = edit_params("s", &rows);
-        assert_eq!(p["runs"][0], json!({"id": "a", "label": "Dev", "command_line": "npm run dev", "is_default": true, "mode": "process", "post_run_url": "http://localhost:5173"}));
+        assert_eq!(
+            p["runs"][0],
+            json!({"id": "a", "label": "Dev", "command_line": "npm run dev", "is_default": true, "mode": "process", "post_run_url": "http://localhost:5173"})
+        );
         assert_eq!(p["runs"][1]["mode"], "powershell");
         assert!(p["runs"][1].get("id").is_none());
         assert!(rows_problem(&rows).is_none());
         assert!(rows_problem(&[EditRow { label: "x".into(), ..EditRow::default() }]).is_some());
-        assert!(rows_problem(&[EditRow { label: "x".into(), command_line: "y".into(), post_run_url: "localhost:1".into(), ..EditRow::default() }]).is_some());
+        assert!(
+            rows_problem(&[EditRow { label: "x".into(), command_line: "y".into(), post_run_url: "localhost:1".into(), ..EditRow::default() }])
+                .is_some()
+        );
     }
 }

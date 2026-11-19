@@ -9,12 +9,7 @@
 //!
 //! Windows only: other platforms have no such command-line model.
 #![cfg(windows)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use csm_services::argv::{join_argv, quote_for_cmd, split_command_line};
 use csm_services::git::{WSL_GIT_SCRIPT, build_local_git_command_line, build_wsl_git_command_line};
@@ -24,10 +19,7 @@ use std::process::Command;
 
 /// What a real process receives for this raw command-line tail.
 fn real_argv(raw_tail: &str) -> Vec<String> {
-    let out = Command::new(env!("CARGO_BIN_EXE_csm-argv-echo"))
-        .raw_arg(raw_tail)
-        .output()
-        .expect("spawn csm-argv-echo");
+    let out = Command::new(env!("CARGO_BIN_EXE_csm-argv-echo")).raw_arg(raw_tail).output().expect("spawn csm-argv-echo");
     assert!(out.status.success(), "echo helper failed for: {raw_tail}");
     let text = String::from_utf8(out.stdout).expect("utf-8 argv");
     let mut parts: Vec<String> = text.split('\0').map(str::to_string).collect();
@@ -137,29 +129,13 @@ fn the_wsl_launch_line_reaches_wsl_exe_as_the_intended_argv() {
     let line = build_wsl_args(&wsl_spec(), None).unwrap();
     assert_eq!(
         real_argv(&line),
-        vec![
-            "-d",
-            "My Distro",
-            "-u",
-            "al ice",
-            "--cd",
-            "/home/a b/\"q\"/",
-            "-e",
-            "bash",
-            "-lc",
-            "claude --prompt \"fix the \\\"foo\\\" bug\"",
-        ]
+        vec!["-d", "My Distro", "-u", "al ice", "--cd", "/home/a b/\"q\"/", "-e", "bash", "-lc", "claude --prompt \"fix the \\\"foo\\\" bug\"",]
     );
 }
 
 #[test]
 fn the_ssh_launch_line_keeps_hostile_values_out_of_ssh_options() {
-    for folder in [
-        "/t\" -oProxyCommand=calc \"x",
-        "/it's/here",
-        "/trailing\\",
-        "/a'b\"c\\",
-    ] {
+    for folder in ["/t\" -oProxyCommand=calc \"x", "/it's/here", "/trailing\\", "/a'b\"c\\"] {
         let spec = LaunchSpec {
             kind: SessionKind::Ssh,
             ssh_host: "h -oProxyCommand=calc".into(),
@@ -177,49 +153,14 @@ fn the_ssh_launch_line_keeps_hostile_values_out_of_ssh_options() {
 
 #[test]
 fn hostile_git_arguments_reach_git_as_single_elements() {
-    for payload in [
-        "$(id)",
-        "`id`",
-        "a;id",
-        "a b",
-        "a\"b",
-        "trailing\\\\",
-        "a\nb",
-    ] {
-        let local = build_local_git_command_line(
-            r"C:\repo",
-            &["worktree", "add", "-b", payload, "--", r"C:\wt"],
-        );
-        assert_eq!(
-            real_argv(&local),
-            vec![
-                "-C", r"C:\repo", "worktree", "add", "-b", payload, "--", r"C:\wt"
-            ],
-            "{payload:?}"
-        );
+    for payload in ["$(id)", "`id`", "a;id", "a b", "a\"b", "trailing\\\\", "a\nb"] {
+        let local = build_local_git_command_line(r"C:\repo", &["worktree", "add", "-b", payload, "--", r"C:\wt"]);
+        assert_eq!(real_argv(&local), vec!["-C", r"C:\repo", "worktree", "add", "-b", payload, "--", r"C:\wt"], "{payload:?}");
 
-        let wsl = build_wsl_git_command_line(
-            "Ubuntu",
-            "/home/a/repo",
-            &["switch", "--no-guess", "--", payload],
-        );
+        let wsl = build_wsl_git_command_line("Ubuntu", "/home/a/repo", &["switch", "--no-guess", "--", payload]);
         let argv = real_argv(&wsl);
         let g = argv.iter().position(|a| a == "git").unwrap();
-        assert_eq!(
-            argv[..g],
-            ["-d", "Ubuntu", "-e", "sh", "-lc", WSL_GIT_SCRIPT]
-        );
-        assert_eq!(
-            argv[g..],
-            [
-                "git",
-                "-C",
-                "/home/a/repo",
-                "switch",
-                "--no-guess",
-                "--",
-                payload
-            ]
-        );
+        assert_eq!(argv[..g], ["-d", "Ubuntu", "-e", "sh", "-lc", WSL_GIT_SCRIPT]);
+        assert_eq!(argv[g..], ["git", "-C", "/home/a/repo", "switch", "--no-guess", "--", payload]);
     }
 }

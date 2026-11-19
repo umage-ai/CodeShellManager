@@ -74,11 +74,7 @@ pub(crate) use numeric_enum;
 /// (`1000`, not `1000.0`). Both read back identically; this keeps a rewritten `state.json`
 /// textually close to the one the C# app wrote.
 pub(crate) fn ser_f64<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.0e15 {
-        s.serialize_i64(*v as i64)
-    } else {
-        s.serialize_f64(*v)
-    }
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.0e15 { s.serialize_i64(*v as i64) } else { s.serialize_f64(*v) }
 }
 
 /// [`ser_f64`] for an optional field (always paired with `skip_serializing_if = "Option::is_none"`).

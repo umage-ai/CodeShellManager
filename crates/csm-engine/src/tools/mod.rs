@@ -6,8 +6,8 @@ pub(crate) mod git;
 mod groups;
 mod layout;
 pub mod open;
-mod runs;
 mod platform;
+mod runs;
 mod search;
 mod sessions;
 
@@ -38,9 +38,7 @@ pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, _state: &State
         && let Caller::External { session_id: Some(own), .. } = caller
         && params.get("session_id").and_then(Value::as_str) == Some(own.as_str())
     {
-        return Some(ToolError::Refused(
-            "a session cannot send input to itself; that would be an agent typing into its own prompt".into(),
-        ));
+        return Some(ToolError::Refused("a session cannot send input to itself; that would be an agent typing into its own prompt".into()));
     }
     None
 }
@@ -53,17 +51,11 @@ pub(crate) fn current(ctx: &mut Ctx<'_>) -> std::sync::Arc<crate::snapshot::Snap
 
 /// Index of a session, or a clear error.
 pub(crate) fn find(state: &State, id: &str) -> Result<usize, ToolError> {
-    crate::lifecycle::session_index(state, id)
-        .ok_or_else(|| ToolError::NotFound(format!("no session `{id}`; `session_list` shows the ids")))
+    crate::lifecycle::session_index(state, id).ok_or_else(|| ToolError::NotFound(format!("no session `{id}`; `session_list` shows the ids")))
 }
 
 pub(crate) fn find_group(state: &State, id: &str) -> Result<usize, ToolError> {
-    state
-        .app
-        .groups
-        .iter()
-        .position(|g| g.id == id)
-        .ok_or_else(|| ToolError::NotFound(format!("no group `{id}`; `group_list` shows the ids")))
+    state.app.groups.iter().position(|g| g.id == id).ok_or_else(|| ToolError::NotFound(format!("no group `{id}`; `group_list` shows the ids")))
 }
 
 /// User-visible names: control characters removed, trimmed, capped.

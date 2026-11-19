@@ -74,11 +74,7 @@ impl Pty for UnixPty {
         crate::send_to_writer(&self.writer, bytes)
     }
     fn resize(&self, size: PtySize) -> io::Result<()> {
-        self.master
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .resize(pp_size(size))
-            .map_err(io::Error::other)
+        self.master.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resize(pp_size(size)).map_err(io::Error::other)
     }
     fn has_exited(&self) -> bool {
         self.exit.has_exited()

@@ -14,8 +14,24 @@ use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, emp
 pub(super) fn specs() -> Vec<ToolSpec> {
     let t = |id, title, summary, toolset, effects, input_schema, run| ToolSpec { id, title, summary, toolset, effects, input_schema, run };
     vec![
-        t("app_info", "About", "Version, the ConPTY in use, where the state is kept, session counts.", Toolset::App, Effects::READ_ONLY, empty_schema, app_info),
-        t("settings_get", "Settings", "All settings (or one, by key). Keys as in state.json (PascalCase) or snake_case. Secrets are not returned.", Toolset::App, Effects::READ_ONLY, schema_of::<GetParams>, settings_get),
+        t(
+            "app_info",
+            "About",
+            "Version, the ConPTY in use, where the state is kept, session counts.",
+            Toolset::App,
+            Effects::READ_ONLY,
+            empty_schema,
+            app_info,
+        ),
+        t(
+            "settings_get",
+            "Settings",
+            "All settings (or one, by key). Keys as in state.json (PascalCase) or snake_case. Secrets are not returned.",
+            Toolset::App,
+            Effects::READ_ONLY,
+            schema_of::<GetParams>,
+            settings_get,
+        ),
         t(
             "settings_set",
             "Change a setting…",
@@ -25,7 +41,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<SetParams>,
             settings_set,
         ),
-        t("recently_closed_list", "Recently closed", "Closed sessions that can be reopened, newest first (index 0).", Toolset::App, Effects::READ_ONLY, empty_schema, recently_closed_list),
+        t(
+            "recently_closed_list",
+            "Recently closed",
+            "Closed sessions that can be reopened, newest first (index 0).",
+            Toolset::App,
+            Effects::READ_ONLY,
+            empty_schema,
+            recently_closed_list,
+        ),
         t(
             "state_import_wpf",
             "Import from CodeShellManager (WPF)…",
@@ -44,7 +68,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<QuitParams>,
             app_quit,
         ),
-        t("grant_list", "MCP grants", "Clients allowed to call a tool without asking (\"Always for this client\" on a consent card).", Toolset::App, Effects::READ_ONLY, empty_schema, grant_list),
+        t(
+            "grant_list",
+            "MCP grants",
+            "Clients allowed to call a tool without asking (\"Always for this client\" on a consent card).",
+            Toolset::App,
+            Effects::READ_ONLY,
+            empty_schema,
+            grant_list,
+        ),
         t(
             "grant_revoke",
             "Revoke an MCP grant",
@@ -54,8 +86,24 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<RevokeParams>,
             grant_revoke,
         ),
-        t("toolset_enable", "Enable toolset", "Offer a toolset's tools to this MCP client (core is always on).", Toolset::Core, Effects::IDEMPOTENT, schema_of::<ToolsetParams>, toolset_switch),
-        t("toolset_disable", "Disable toolset", "Stop offering a toolset's tools to this MCP client.", Toolset::Core, Effects::IDEMPOTENT, schema_of::<ToolsetParams>, toolset_switch),
+        t(
+            "toolset_enable",
+            "Enable toolset",
+            "Offer a toolset's tools to this MCP client (core is always on).",
+            Toolset::Core,
+            Effects::IDEMPOTENT,
+            schema_of::<ToolsetParams>,
+            toolset_switch,
+        ),
+        t(
+            "toolset_disable",
+            "Disable toolset",
+            "Stop offering a toolset's tools to this MCP client.",
+            Toolset::Core,
+            Effects::IDEMPOTENT,
+            schema_of::<ToolsetParams>,
+            toolset_switch,
+        ),
     ]
 }
 
@@ -165,8 +213,8 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         return Err(ToolError::NotFound(format!("no setting `{}`; settings_get lists them", p.key)));
     }
     m.insert(key.clone(), p.value.clone());
-    let updated: AppSettings = serde_json::from_value(Value::Object(m))
-        .map_err(|e| ToolError::InvalidParams(format!("`{key}` cannot be {}: {e}", p.value)))?;
+    let updated: AppSettings =
+        serde_json::from_value(Value::Object(m)).map_err(|e| ToolError::InvalidParams(format!("`{key}` cannot be {}: {e}", p.value)))?;
     ctx.state.app.settings = updated;
     ctx.state.persist();
     let restart = matches!(key.as_str(), "UseBundledConPty");
@@ -211,9 +259,9 @@ fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let reply = ctx.park();
     let engine = ctx.engine.clone();
     let worker = move || {
-        let result = std::fs::read(&path)
-            .map_err(|e| format!("could not read {}: {e}", path.display()))
-            .and_then(|b| csm_core::state::parse(&String::from_utf8_lossy(&b)).map_err(|e| format!("{} is not a CodeShellManager state file: {e}", path.display())));
+        let result = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display())).and_then(|b| {
+            csm_core::state::parse(&String::from_utf8_lossy(&b)).map_err(|e| format!("{} is not a CodeShellManager state file: {e}", path.display()))
+        });
         engine.post(Box::new(move |ctx| {
             let r = match result {
                 Err(msg) => Err(ToolError::Failed(msg)),
@@ -225,10 +273,7 @@ fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             }
         }));
     };
-    std::thread::Builder::new()
-        .name("csm-import".into())
-        .spawn(worker)
-        .map_err(|e| ToolError::Failed(format!("could not start the import: {e}")))?;
+    std::thread::Builder::new().name("csm-import".into()).spawn(worker).map_err(|e| ToolError::Failed(format!("could not start the import: {e}")))?;
     Ok(ToolOutput::message("Importing."))
 }
 
@@ -258,10 +303,7 @@ fn merge(ctx: &mut Ctx<'_>, mut imported: csm_core::models::AppState) -> ToolOut
         g.sort_order = i32::try_from(i).unwrap_or(i32::MAX);
     }
     ctx.state.persist();
-    ToolOutput::new(
-        format!("Imported {sessions} sessions (asleep) and {groups} groups."),
-        json!({"sessions": sessions, "groups": groups}),
-    )
+    ToolOutput::new(format!("Imported {sessions} sessions (asleep) and {groups} groups."), json!({"sessions": sessions, "groups": groups}))
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]

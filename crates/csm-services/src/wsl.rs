@@ -61,27 +61,15 @@ pub fn parse_distros(raw: &str) -> Vec<WslDistro> {
         }
         let version_idx = tokens.len() - 1;
         let state_idx = tokens.len() - 2;
-        let name = tokens
-            .get(first_name..state_idx)
-            .unwrap_or_default()
-            .join(" ");
+        let name = tokens.get(first_name..state_idx).unwrap_or_default().join(" ");
         let state = tokens.get(state_idx).copied().unwrap_or("").to_string();
         let Some(version) = tokens.get(version_idx).and_then(|v| v.parse::<i32>().ok()) else {
             continue;
         };
-        results.push(WslDistro {
-            name,
-            version,
-            is_default,
-            state,
-        });
+        results.push(WslDistro { name, version, is_default, state });
     }
     results.retain(|d| !is_docker_internal_distro(&d.name));
-    results.sort_by(|a, b| {
-        b.is_default
-            .cmp(&a.is_default)
-            .then_with(|| a.name.to_uppercase().cmp(&b.name.to_uppercase()))
-    });
+    results.sort_by(|a, b| b.is_default.cmp(&a.is_default).then_with(|| a.name.to_uppercase().cmp(&b.name.to_uppercase())));
     results
 }
 
@@ -117,9 +105,7 @@ pub fn try_parse_unc_path(path: &str) -> (Option<String>, String) {
     let normalized = path.replace('/', "\\");
     let normalized = normalized.trim_end_matches('\\');
     for prefix in [r"\\wsl$\", r"\\wsl.localhost\"] {
-        let has_prefix = normalized
-            .get(..prefix.len())
-            .is_some_and(|head| head.eq_ignore_ascii_case(prefix));
+        let has_prefix = normalized.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix));
         if !has_prefix {
             continue;
         }
@@ -134,11 +120,7 @@ pub fn try_parse_unc_path(path: &str) -> (Option<String>, String) {
         if distro.is_empty() {
             return (None, String::new());
         }
-        let linux = if linux_rest.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", linux_rest.replace('\\', "/"))
-        };
+        let linux = if linux_rest.is_empty() { "/".to_string() } else { format!("/{}", linux_rest.replace('\\', "/")) };
         return (Some(distro.to_string()), linux);
     }
     (None, String::new())
@@ -149,13 +131,8 @@ pub fn try_parse_unc_path(path: &str) -> (Option<String>, String) {
 /// RecentlyClosed entry or an import). Returns the new working folder, or `None` for a
 /// non-WSL session (leave it alone).
 #[must_use]
-pub fn resync_wsl_working_folder(
-    kind: crate::launch::SessionKind,
-    distro: &str,
-    wsl_working_folder: &str,
-) -> Option<String> {
-    (kind == crate::launch::SessionKind::Wsl)
-        .then(|| to_unc_path(distro.trim(), wsl_working_folder))
+pub fn resync_wsl_working_folder(kind: crate::launch::SessionKind, distro: &str, wsl_working_folder: &str) -> Option<String> {
+    (kind == crate::launch::SessionKind::Wsl).then(|| to_unc_path(distro.trim(), wsl_working_folder))
 }
 
 #[cfg(test)]
@@ -227,8 +204,7 @@ mod tests {
     #[test]
     fn parse_localised_header_is_not_a_phantom_distro() {
         // German `wsl -l -v` header: no literal NAME, VERSION column is a word.
-        let raw =
-            "  NAME   STATUS   VERSION\n  Bezeichnung   Status   Version\n* Ubuntu Running 2\n";
+        let raw = "  NAME   STATUS   VERSION\n  Bezeichnung   Status   Version\n* Ubuntu Running 2\n";
         let r = parse_distros(raw);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].name, "Ubuntu");
@@ -272,10 +248,7 @@ mod tests {
 
     #[test]
     fn to_unc_path_happy_path() {
-        assert_eq!(
-            to_unc_path("Ubuntu", "/home/alice/proj"),
-            r"\\wsl$\Ubuntu\home\alice\proj"
-        );
+        assert_eq!(to_unc_path("Ubuntu", "/home/alice/proj"), r"\\wsl$\Ubuntu\home\alice\proj");
     }
 
     #[test]
@@ -292,11 +265,7 @@ mod tests {
     fn try_parse_unc_path_known_shapes() {
         for (path, distro, linux) in [
             (r"\\wsl$\Ubuntu\home\alice", Some("Ubuntu"), "/home/alice"),
-            (
-                r"\\wsl.localhost\Debian\srv\app",
-                Some("Debian"),
-                "/srv/app",
-            ),
+            (r"\\wsl.localhost\Debian\srv\app", Some("Debian"), "/srv/app"),
             (r"\\WSL$\Ubuntu\", Some("Ubuntu"), "/"),
             ("//wsl$/Ubuntu/home/alice", Some("Ubuntu"), "/home/alice"),
             (r"\\wsl$\Ubuntu", Some("Ubuntu"), "/"),
@@ -313,13 +282,7 @@ mod tests {
 
     #[test]
     fn try_parse_unc_path_never_panics_on_odd_input() {
-        for p in [
-            "\u{e9}\u{e9}\u{e9}",
-            r"\\wsl",
-            "\\\\wsl$",
-            "ä\\\\wsl$\\x",
-            "\0",
-        ] {
+        for p in ["\u{e9}\u{e9}\u{e9}", r"\\wsl", "\\\\wsl$", "ä\\\\wsl$\\x", "\0"] {
             let _ = try_parse_unc_path(p);
         }
     }
@@ -336,10 +299,7 @@ mod tests {
     fn resync_re_derives_from_distro_and_linux_folder() {
         // A hand-edited / stale RecentlyClosed entry: WorkingFolder points somewhere
         // unrelated (the UNC mirror invariant).
-        assert_eq!(
-            resync_wsl_working_folder(SessionKind::Wsl, "Ubuntu", "/home/alice/proj").as_deref(),
-            Some(r"\\wsl$\Ubuntu\home\alice\proj")
-        );
+        assert_eq!(resync_wsl_working_folder(SessionKind::Wsl, "Ubuntu", "/home/alice/proj").as_deref(), Some(r"\\wsl$\Ubuntu\home\alice\proj"));
     }
 
     #[test]

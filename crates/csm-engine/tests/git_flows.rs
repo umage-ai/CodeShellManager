@@ -201,7 +201,10 @@ fn switch_handles_dash_names_remote_only_names_and_branches_held_elsewhere() {
     assert!(main["worktree"].is_null());
 
     // SSH sessions have no folder for git.
-    let ssh = h.ok("session_new", json!({"kind": "ssh", "ssh": {"host": "example.invalid"}, "command": "bash", "focus": false})).data["id"].as_str().unwrap().to_owned();
+    let ssh = h.ok("session_new", json!({"kind": "ssh", "ssh": {"host": "example.invalid"}, "command": "bash", "focus": false})).data["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(matches!(h.ui("git_fetch", json!({"session_id": ssh})), Err(ToolError::Refused(_))));
 }
 

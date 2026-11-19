@@ -12,7 +12,14 @@ use serde_json::json;
 fn rig(folder: &str, list: Vec<OpenWithEntry>) -> H {
     let mut app = test_app();
     app.settings.open_with = list;
-    app.sessions.push(ShellSession { id: "s".into(), name: "s".into(), command: "pwsh".into(), working_folder: folder.into(), is_dormant: true, ..Default::default() });
+    app.sessions.push(ShellSession {
+        id: "s".into(),
+        name: "s".into(),
+        command: "pwsh".into(),
+        working_folder: folder.into(),
+        is_dormant: true,
+        ..Default::default()
+    });
     app.sessions.push(ShellSession {
         id: "r".into(),
         name: "r".into(),
@@ -129,7 +136,13 @@ fn batch_file_entries_refuse_cmd_metacharacters_in_the_folder() {
     let dir = tempfile::tempdir().unwrap();
     let hostile = dir.path().join("a&calc");
     std::fs::create_dir(&hostile).unwrap();
-    let bat = OpenWithEntry { id: "b".into(), label: "Bat".into(), executable: dir.path().join("ed.cmd").display().to_string(), local_args: Some("{folder}".into()), ..Default::default() };
+    let bat = OpenWithEntry {
+        id: "b".into(),
+        label: "Bat".into(),
+        executable: dir.path().join("ed.cmd").display().to_string(),
+        local_args: Some("{folder}".into()),
+        ..Default::default()
+    };
     std::fs::write(&bat.executable, "@echo off").unwrap();
     let h = rig(&hostile.display().to_string(), vec![bat]);
     let e = err(&h, "open_with", json!({"session_id": "s"}));
@@ -153,8 +166,20 @@ fn open_folder_opens_only_existing_local_folders() {
 #[test]
 fn a_hostile_list_in_state_json_is_cleaned_on_load() {
     let mut list = vec![vscode()];
-    list.push(OpenWithEntry { id: "x".into(), label: "Evil".into(), executable: if cfg!(windows) { r"C:\Windows\System32\cmd.exe".into() } else { "/bin/sh".into() }, local_args: Some("/c calc {folder}".into()), ..Default::default() });
-    list.push(OpenWithEntry { id: "y".into(), label: "Literal".into(), executable: exe("Lit"), local_args: Some("--always-this".into()), ..Default::default() });
+    list.push(OpenWithEntry {
+        id: "x".into(),
+        label: "Evil".into(),
+        executable: if cfg!(windows) { r"C:\Windows\System32\cmd.exe".into() } else { "/bin/sh".into() },
+        local_args: Some("/c calc {folder}".into()),
+        ..Default::default()
+    });
+    list.push(OpenWithEntry {
+        id: "y".into(),
+        label: "Literal".into(),
+        executable: exe("Lit"),
+        local_args: Some("--always-this".into()),
+        ..Default::default()
+    });
     let h = rig(r"C:\src", list);
     let v = h.wait_until("cleaned", |v| v.open_with.len() == 1);
     assert_eq!(v.open_with[0].label, "VS Code");

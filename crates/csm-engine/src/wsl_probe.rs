@@ -80,15 +80,27 @@ pub fn home(distro: &str, user: &str) -> Option<String> {
 
 /// `bash` or `sh`, whichever the distro can run as a login shell (cached; `bash` on any failure).
 pub fn login_shell(distro: &str, user: &str) -> String {
-    cached(&SHELLS, distro, user, |argv| proc_stdout(argv).map(|s| parse_shell(&s).to_owned()), "command -v bash >/dev/null 2>&1 && echo bash || echo sh")
-        .unwrap_or_else(|| "bash".to_owned())
+    cached(
+        &SHELLS,
+        distro,
+        user,
+        |argv| proc_stdout(argv).map(|s| parse_shell(&s).to_owned()),
+        "command -v bash >/dev/null 2>&1 && echo bash || echo sh",
+    )
+    .unwrap_or_else(|| "bash".to_owned())
 }
 
 fn proc_stdout(argv: &[String]) -> Option<String> {
     proc::capture_ok("wsl.exe", argv, PROBE_TIMEOUT)
 }
 
-fn cached(cache: &Mutex<Option<HashMap<Key, String>>>, distro: &str, user: &str, run: impl FnOnce(&[String]) -> Option<String>, script: &str) -> Option<String> {
+fn cached(
+    cache: &Mutex<Option<HashMap<Key, String>>>,
+    distro: &str,
+    user: &str,
+    run: impl FnOnce(&[String]) -> Option<String>,
+    script: &str,
+) -> Option<String> {
     if !cfg!(windows) {
         return None;
     }
@@ -145,9 +157,47 @@ mod tests {
         }
         let cache = Mutex::new(None);
         let mut calls = 0;
-        assert_eq!(cached(&cache, "D", "", |_| { calls += 1; None }, "s"), None);
-        assert_eq!(cached(&cache, "D", "", |_| { calls += 1; Some("/home/x".into()) }, "s").as_deref(), Some("/home/x"));
-        assert_eq!(cached(&cache, "d", " ", |_| { calls += 1; Some("other".into()) }, "s").as_deref(), Some("/home/x"));
+        assert_eq!(
+            cached(
+                &cache,
+                "D",
+                "",
+                |_| {
+                    calls += 1;
+                    None
+                },
+                "s"
+            ),
+            None
+        );
+        assert_eq!(
+            cached(
+                &cache,
+                "D",
+                "",
+                |_| {
+                    calls += 1;
+                    Some("/home/x".into())
+                },
+                "s"
+            )
+            .as_deref(),
+            Some("/home/x")
+        );
+        assert_eq!(
+            cached(
+                &cache,
+                "d",
+                " ",
+                |_| {
+                    calls += 1;
+                    Some("other".into())
+                },
+                "s"
+            )
+            .as_deref(),
+            Some("/home/x")
+        );
         assert_eq!(calls, 2);
     }
 }

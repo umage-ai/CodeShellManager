@@ -82,7 +82,14 @@ impl SpikeApp {
                 theme::FG,
                 format!(
                     "{:.0} fps · ui() avg {:.2} ms p95 {:.2} ms max {:.2} ms · rebuilds/frame {:.1} · lock misses {} · ingest {:.1} MB/s · {} panes",
-                    s.fps, s.cpu_avg, s.cpu_p95, s.cpu_max, s.rebuilds_per_frame, s.lock_misses, self.ingest_mb_s, self.panes.len()
+                    s.fps,
+                    s.cpu_avg,
+                    s.cpu_p95,
+                    s.cpu_max,
+                    s.rebuilds_per_frame,
+                    s.lock_misses,
+                    self.ingest_mb_s,
+                    self.panes.len()
                 ),
             );
         });
@@ -115,10 +122,7 @@ fn grid_cells(area: Rect, n: usize) -> Vec<Rect> {
 impl eframe::App for SpikeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let t0 = Instant::now();
-        self.shared.frame = FrameCounters {
-            prev_frame_cpu_ms: frame.info().cpu_usage.unwrap_or(0.0) * 1000.0,
-            ..Default::default()
-        };
+        self.shared.frame = FrameCounters { prev_frame_cpu_ms: frame.info().cpu_usage.unwrap_or(0.0) * 1000.0, ..Default::default() };
         let ctx = ui.ctx().clone();
         if std::env::var_os("CSM_LOG_REPAINT_CAUSES").is_some() {
             let causes = ctx.repaint_causes();
@@ -151,19 +155,17 @@ impl eframe::App for SpikeApp {
             }
             let title = self.panes[i].name.clone();
             let (panes, shared) = (&mut self.panes, &mut self.shared);
-            egui::Window::new(title)
-                .id(Id::new(("floating", i)))
-                .default_size([640.0, 360.0])
-                .min_size([200.0, 100.0])
-                .resizable(true)
-                .show(&ctx, |ui| {
+            egui::Window::new(title).id(Id::new(("floating", i))).default_size([640.0, 360.0]).min_size([200.0, 100.0]).resizable(true).show(
+                &ctx,
+                |ui| {
                     let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
                     if let Some(pane) = panes.get_mut(i)
                         && let Some(a) = pane_ui(ui, pane, shared, rect)
                     {
                         actions.push((i, a));
                     }
-                });
+                },
+            );
         }
 
         self.shared.frame.float_ms = tf.elapsed().as_secs_f32() * 1000.0;
@@ -247,8 +249,16 @@ impl eframe::App for SpikeApp {
                     let st = p.term.status();
                     log::info!(
                         "BENCH pane {} '{}' {:?} backend={:?} first_grid={:?} grid={:?} bytes={} probe_answered={:?} 7501={:?} exit={:?}",
-                        p.id, p.name, p.placement, p.term.backend(), p.term.first_grid().map(|g| (g.cols, g.rows)), p.view.grid().map(|g| (g.cols, g.rows)),
-                        p.term.bytes_read(), st.probe_answered, st.program_status, st.exit
+                        p.id,
+                        p.name,
+                        p.placement,
+                        p.term.backend(),
+                        p.term.first_grid().map(|g| (g.cols, g.rows)),
+                        p.view.grid().map(|g| (g.cols, g.rows)),
+                        p.term.bytes_read(),
+                        st.probe_answered,
+                        st.program_status,
+                        st.exit
                     );
                 }
                 ctx.send_viewport_cmd(ViewportCommand::Close);

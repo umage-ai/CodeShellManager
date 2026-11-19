@@ -136,7 +136,7 @@ pub fn tab(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
                 ui.label(egui::RichText::new(h).font(semibold(text::BODY)).color(t.fg));
                 caption(ui, &t, c);
             });
-            
+
             return;
         }
         header(ui, &t, s, &detail);
@@ -205,7 +205,10 @@ fn header(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail) {
 fn actions_row(ui: &mut Ui, s: &SessionView, mem: &mut TabMem, actions: &mut Vec<Action>) {
     ui.horizontal_wrapped(|ui| {
         let sid = json!({"session_id": s.id});
-        if widgets::button(ui, ButtonKind::Secondary, Some("fetch"), "Fetch", None).on_hover_text("git fetch (never prompts for a password)").clicked() {
+        if widgets::button(ui, ButtonKind::Secondary, Some("fetch"), "Fetch", None)
+            .on_hover_text("git fetch (never prompts for a password)")
+            .clicked()
+        {
             actions.push(Action::Tool("git_fetch", sid.clone()));
         }
         if widgets::button(ui, ButtonKind::Secondary, Some("download"), "Pull", None)
@@ -342,7 +345,15 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
         let y1 = rect.min.y + space::MD;
         let ir = Rect::from_min_size(pos2(rect.min.x + space::SM, y1 - icon::SM / 2.0), Vec2::splat(icon::SM));
         icons::paint(ui, ir, if w.main { "branch" } else { "fork" }, icon::SM, if w.current { t.blue } else { t.muted });
-        widgets::paint_text(ui, pos2(ir.max.x + space::SM, y1), Align2::LEFT_CENTER, &w.label, theme::mono(text::MONO_SM), if w.prunable { t.muted } else { t.fg }, rect.width() - space::XXL * 2.0);
+        widgets::paint_text(
+            ui,
+            pos2(ir.max.x + space::SM, y1),
+            Align2::LEFT_CENTER,
+            &w.label,
+            theme::mono(text::MONO_SM),
+            if w.prunable { t.muted } else { t.fg },
+            rect.width() - space::XXL * 2.0,
+        );
         let who = match (w.current, w.sessions.len(), w.sessions.iter().all(|x| x.asleep)) {
             (true, _, _) => "this session".to_string(),
             (_, 0, _) => "no session · click to open one".to_string(),
@@ -350,7 +361,15 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
             (_, 1, _) => "1 session · click to focus".to_string(),
             (_, n, _) => format!("{n} sessions · click to focus"),
         };
-        widgets::paint_text(ui, pos2(ir.max.x + space::SM, rect.max.y - space::SM), Align2::LEFT_CENTER, &who, theme::regular(text::CAPTION), t.muted, rect.width() - space::XXL);
+        widgets::paint_text(
+            ui,
+            pos2(ir.max.x + space::SM, rect.max.y - space::SM),
+            Align2::LEFT_CENTER,
+            &who,
+            theme::regular(text::CAPTION),
+            t.muted,
+            rect.width() - space::XXL,
+        );
         let label = format!("Worktree: {}", w.name);
         resp.widget_info(|| egui::WidgetInfo::labeled(WidgetType::Button, !w.current, &label));
         if resp.clicked() {
@@ -365,7 +384,8 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
         Some(mut name) => {
             let mut keep = true;
             ui.horizontal(|ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text("new-branch").desired_width(ui.available_width() - size::CONTROL_LG * 3.0));
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut name).hint_text("new-branch").desired_width(ui.available_width() - size::CONTROL_LG * 3.0));
                 r.widget_info(|| egui::WidgetInfo::labeled(WidgetType::TextEdit, true, "New worktree branch"));
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let create = widgets::button(ui, ButtonKind::Primary, Some("plus"), "Create", None).clicked();
@@ -377,7 +397,11 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
                     keep = false;
                 }
             });
-            caption(ui, t, "Checks out the branch (created from HEAD when new) beside the main checkout and opens a session there with this one's command.");
+            caption(
+                ui,
+                t,
+                "Checks out the branch (created from HEAD when new) beside the main checkout and opens a session there with this one's command.",
+            );
             if keep {
                 mem.new_worktree = Some(name);
             }
@@ -389,7 +413,10 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
                 }
                 if d.prunable > 0 {
                     let l = if d.prunable == 1 { "Prune 1 missing worktree".to_string() } else { format!("Prune {} missing worktrees", d.prunable) };
-                    if widgets::button(ui, ButtonKind::Ghost, Some("eraser"), &l, None).on_hover_text("Only git's bookkeeping for folders already deleted").clicked() {
+                    if widgets::button(ui, ButtonKind::Ghost, Some("eraser"), &l, None)
+                        .on_hover_text("Only git's bookkeeping for folders already deleted")
+                        .clicked()
+                    {
                         actions.push(Action::Tool("worktree_prune", json!({"session_id": sid})));
                     }
                 }

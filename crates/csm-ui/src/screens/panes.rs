@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use egui::{Align2, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportId, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{
+    Align2, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportId, WidgetInfo, WidgetType,
+    pos2, vec2,
+};
 use serde_json::json;
 
 use crate::app::{Action, CsmApp, Menu, PaneHost};
@@ -106,7 +109,11 @@ pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<
                     slot += 1;
                 }
                 let pinned = layout.pinned.contains(&id);
-                out.push((id.clone(), r, PaneOpts { mode: Some(LayoutMode::Side), preview: preview.as_deref() == Some(id.as_str()), pinned, ..PaneOpts::default() }));
+                out.push((
+                    id.clone(),
+                    r,
+                    PaneOpts { mode: Some(LayoutMode::Side), preview: preview.as_deref() == Some(id.as_str()), pinned, ..PaneOpts::default() },
+                ));
             }
         }
         LayoutMode::Overview => {
@@ -231,7 +238,13 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     let torn_group = matches!(&scope, Scope::Group(g) if model.group(g).is_some_and(|g| g.torn_off));
     if torn_group {
-        ui.painter().text(inner.center(), Align2::CENTER_CENTER, format!("{} lives in its own window.", model.scope_name(&scope)), theme::regular(text::BODY), t.muted);
+        ui.painter().text(
+            inner.center(),
+            Align2::CENTER_CENTER,
+            format!("{} lives in its own window.", model.scope_name(&scope)),
+            theme::regular(text::BODY),
+            t.muted,
+        );
         return;
     }
     if model.sessions.is_empty() {
@@ -240,7 +253,11 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     let planned = plan(&model, &scope, &layout, inner);
     if planned.is_empty() {
-        let msg = if model.scope_sessions(&scope).is_empty() { "No sessions here yet. Ctrl+T starts one." } else { "Every session here is asleep. Click one in the sidebar to wake it." };
+        let msg = if model.scope_sessions(&scope).is_empty() {
+            "No sessions here yet. Ctrl+T starts one."
+        } else {
+            "Every session here is asleep. Click one in the sidebar to wake it."
+        };
         ui.painter().text(inner.center(), Align2::CENTER_CENTER, msg, theme::regular(text::BODY), t.muted);
     }
     let focus = app.ui.focus_terminal.clone();
@@ -267,8 +284,20 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 let stroke = if resp.hovered() { t.blue } else { t.surface1 };
                 dashed_rect(ui, *r, stroke);
                 icons::paint(ui, Rect::from_center_size(r.center() - vec2(0.0, space::MD), Vec2::splat(icon::XXL)), "plus", icon::XXL, t.muted);
-                ui.painter().text(r.center() + vec2(0.0, space::SM), Align2::CENTER_CENTER, "Empty slot", theme::regular(text::SMALL), if resp.hovered() { t.fg } else { t.muted });
-                ui.painter().text(r.center() + vec2(0.0, space::LG + space::SM), Align2::CENTER_CENTER, "Pick a session for it", theme::regular(text::TINY), t.faint);
+                ui.painter().text(
+                    r.center() + vec2(0.0, space::SM),
+                    Align2::CENTER_CENTER,
+                    "Empty slot",
+                    theme::regular(text::SMALL),
+                    if resp.hovered() { t.fg } else { t.muted },
+                );
+                ui.painter().text(
+                    r.center() + vec2(0.0, space::LG + space::SM),
+                    Align2::CENTER_CENTER,
+                    "Pick a session for it",
+                    theme::regular(text::TINY),
+                    t.faint,
+                );
                 named(&resp, WidgetType::Button, "Empty slot");
                 if resp.clicked() {
                     actions.push(Action::OpenPalette);
@@ -286,7 +315,12 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 }
                 let r = Rect::from_min_size(inner.min + vec2(f.rect[0], f.rect[1]), vec2(f.rect[2], f.rect[3]));
                 let src = app.backend.terminal(&f.session);
-                let o = PaneOpts { mode: Some(LayoutMode::Free), floating: true, active: model.active.as_deref() == Some(s.id.as_str()), ..PaneOpts::default() };
+                let o = PaneOpts {
+                    mode: Some(LayoutMode::Free),
+                    floating: true,
+                    active: model.active.as_deref() == Some(s.id.as_str()),
+                    ..PaneOpts::default()
+                };
                 let area_id = Id::new(("float", f.session.clone()));
                 let mut drag = None;
                 egui::Area::new(area_id).order(egui::Order::Middle).fixed_pos(r.min).show(ui.ctx(), |ui| {
@@ -336,7 +370,11 @@ fn first_run(ui: &mut Ui, model: &UiModel, area: Rect, actions: &mut Vec<Action>
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = space::SM;
             ui.label(egui::RichText::new("No sessions yet").font(semibold(text::TITLE)).color(t.fg));
-            ui.label(egui::RichText::new("Open a folder and Claude (or a shell) starts there. Ctrl+T works from anywhere.").font(theme::regular(text::BODY)).color(t.fg2));
+            ui.label(
+                egui::RichText::new("Open a folder and Claude (or a shell) starts there. Ctrl+T works from anywhere.")
+                    .font(theme::regular(text::BODY))
+                    .color(t.fg2),
+            );
             ui.add_space(space::SM);
             let new = widgets::button(ui, ButtonKind::Primary, Some("plus"), "New session", Some("Ctrl T"));
             named(&new, WidgetType::Button, "New session");
@@ -446,7 +484,9 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let layout = model.layout(&scope);
     let live = model.scope_sessions(&scope).iter().filter(|s| s.status.is_live()).count();
     let meta = match layout.mode {
-        LayoutMode::Side => format!("{} pinned · {live} live", layout.pinned.iter().filter(|p| model.session(p).is_some_and(|s| s.status.is_live())).count()),
+        LayoutMode::Side => {
+            format!("{} pinned · {live} live", layout.pinned.iter().filter(|p| model.session(p).is_some_and(|s| s.status.is_live())).count())
+        }
         LayoutMode::Overview => "every live session".into(),
         LayoutMode::Grid => format!("preset {}", layout.grid.label()),
         LayoutMode::Free => {
@@ -463,10 +503,15 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let mut widths = Vec::new();
     for m in LayoutMode::ALL {
         let extra = if m == LayoutMode::Grid { icon::XS + space::XS } else { 0.0 };
-        widths.push(space::ROW_X + icon::MD + space::XS + space::XXS + widgets::text_width(ui, m.label(), font.clone()) + extra + space::ROW_X - space::XXS);
+        widths.push(
+            space::ROW_X + icon::MD + space::XS + space::XXS + widgets::text_width(ui, m.label(), font.clone()) + extra + space::ROW_X - space::XXS,
+        );
     }
     let seg_w: f32 = widths.iter().sum::<f32>() + space::XXS * (widths.len() as f32 + 1.0);
-    let seg = Rect::from_min_size(pos2(mr.max.x + space::MD, cy - size::SEG_BUTTON / 2.0 - space::XXS - size::HAIRLINE), vec2(seg_w, size::SEG_BUTTON + space::XS + size::RING));
+    let seg = Rect::from_min_size(
+        pos2(mr.max.x + space::MD, cy - size::SEG_BUTTON / 2.0 - space::XXS - size::HAIRLINE),
+        vec2(seg_w, size::SEG_BUTTON + space::XS + size::RING),
+    );
     ui.painter().rect(seg, CornerRadius::same(radius::MD + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
     let mut x = seg.min.x + space::XXS + size::HAIRLINE / 2.0;
     for (m, w) in LayoutMode::ALL.into_iter().zip(widths) {
@@ -501,13 +546,22 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let w = widgets::text_width(ui, "Inspector", theme::medium(text::BODY)) + icon::LG + space::ROW_X * 2.0 + space::XS + space::XXS;
         let r = Rect::from_min_size(pos2(end - w, cy - size::CONTROL / 2.0), vec2(w, size::CONTROL));
         end = r.min.x - space::SM;
-        let resp = ui.scope_builder(UiBuilder::new().max_rect(r), |ui| widgets::button(ui, ButtonKind::Ghost, Some("panelR"), "Inspector", None)).inner;
+        let resp =
+            ui.scope_builder(UiBuilder::new().max_rect(r), |ui| widgets::button(ui, ButtonKind::Ghost, Some("panelR"), "Inspector", None)).inner;
         if resp.clicked() {
             actions.push(Action::Tool("inspector_show", json!({"tab": "notes"})));
         }
     }
     if layout.mode == LayoutMode::Free {
-        widgets::paint_text(ui, pos2(seg.max.x + space::MD, cy), Align2::LEFT_CENTER, "Drag a divider to resize. Drop a pane header on another pane's edge to split.", theme::regular(text::CAPTION), t.muted, end - seg.max.x - space::MD * 2.0);
+        widgets::paint_text(
+            ui,
+            pos2(seg.max.x + space::MD, cy),
+            Align2::LEFT_CENTER,
+            "Drag a divider to resize. Drop a pane header on another pane's edge to split.",
+            theme::regular(text::CAPTION),
+            t.muted,
+            end - seg.max.x - space::MD * 2.0,
+        );
     }
 }
 
@@ -538,7 +592,17 @@ pub fn pane(
     });
 
     // Terminal (drawn first so the header sits on top of the pane's clip).
-    let view_key = format!("{}:{}", if o.torn { "torn" } else if o.mini { "mini" } else { "main" }, s.id);
+    let view_key = format!(
+        "{}:{}",
+        if o.torn {
+            "torn"
+        } else if o.mini {
+            "mini"
+        } else {
+            "main"
+        },
+        s.id
+    );
     let mut clicked = false;
     if let Some(src) = source {
         let style = t.terminal_style();
@@ -555,10 +619,21 @@ pub fn pane(
             p.rect_filled(body, 0.0, t.term_bg);
             let starting = queued || src.state() == SourceState::Starting;
             if starting {
-                icons::paint_status(ui, Rect::from_center_size(body.center() - vec2(0.0, space::MD), Vec2::splat(icon::HERO)), Status::Working, icon::HERO);
+                icons::paint_status(
+                    ui,
+                    Rect::from_center_size(body.center() - vec2(0.0, space::MD), Vec2::splat(icon::HERO)),
+                    Status::Working,
+                    icon::HERO,
+                );
                 icons::request_spinner_repaint(ui);
             }
-            p.text(body.center() + vec2(0.0, if starting { space::LG + space::XS } else { 0.0 }), Align2::CENTER_CENTER, text_, theme::regular(text::SMALL), t.muted);
+            p.text(
+                body.center() + vec2(0.0, if starting { space::LG + space::XS } else { 0.0 }),
+                Align2::CENTER_CENTER,
+                text_,
+                theme::regular(text::SMALL),
+                t.muted,
+            );
         }
     } else {
         let msg = if s.status == Status::Asleep { "Asleep. Wake it from the sidebar." } else { "No terminal." };
@@ -656,7 +731,11 @@ pub fn pane(
     let label = if queued { "Queued".to_string() } else { s.status_text() };
     let pill_w = {
         let quiet = matches!(status, Status::Idle | Status::Asleep);
-        icon::SM + space::XS + widgets::text_width(ui, &label, theme::medium(text::CAPTION)) + space::SM + if quiet { space::XXS } else { space::XS + space::XXS }
+        icon::SM
+            + space::XS
+            + widgets::text_width(ui, &label, theme::medium(text::CAPTION))
+            + space::SM
+            + if quiet { space::XXS } else { space::XS + space::XXS }
     };
     // In a narrow pane the pill keeps only its glyph (the word is in its tooltip), so the name
     // keeps room to read.
@@ -808,7 +887,12 @@ fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(Sessio
                 painter.rect_filled(z, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP * 2.0));
                 painter.rect_stroke(z, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
             } else {
-                painter.rect_stroke(z, CornerRadius::same(radius::MD), Stroke::new(size::HAIRLINE, Tokens::tint(t.blue, alpha::ASLEEP)), StrokeKind::Inside);
+                painter.rect_stroke(
+                    z,
+                    CornerRadius::same(radius::MD),
+                    Stroke::new(size::HAIRLINE, Tokens::tint(t.blue, alpha::ASLEEP)),
+                    StrokeKind::Inside,
+                );
             }
         }
         if let Some(e) = lit {
@@ -826,8 +910,18 @@ fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(Sessio
         let w = widgets::text_width(ui, &s.name, theme::medium(text::BODY)) + space::LG + size::STRIPE;
         let gr = Rect::from_min_size(p + vec2(space::MD, space::XS), vec2(w, size::CONTROL_SM));
         painter.rect(gr, CornerRadius::same(radius::MD), t.pop, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
-        painter.rect_filled(Rect::from_min_size(gr.min + vec2(space::SM, space::SM - space::XXS), vec2(size::STRIPE, gr.height() - space::LG + space::XS)), CornerRadius::same(radius::SM / 2), t.accent(s.accent));
-        painter.text(pos2(gr.min.x + space::SM + size::STRIPE + space::SM, gr.center().y), Align2::LEFT_CENTER, &s.name, theme::medium(text::BODY), t.fg);
+        painter.rect_filled(
+            Rect::from_min_size(gr.min + vec2(space::SM, space::SM - space::XXS), vec2(size::STRIPE, gr.height() - space::LG + space::XS)),
+            CornerRadius::same(radius::SM / 2),
+            t.accent(s.accent),
+        );
+        painter.text(
+            pos2(gr.min.x + space::SM + size::STRIPE + space::SM, gr.center().y),
+            Align2::LEFT_CENTER,
+            &s.name,
+            theme::medium(text::BODY),
+            t.fg,
+        );
     }
     if ui.input(|i| i.pointer.any_released()) {
         app.ui.drags.pane = None;
@@ -931,7 +1025,14 @@ fn torn_state(ctx: &egui::Context) -> Arc<Mutex<TornState>> {
 }
 
 /// A group in its own window: a bar with Dock back, and its live sessions side by side.
-fn group_window(ui: &mut Ui, host: &mut PaneHost, model: &UiModel, sources: &HashMap<SessionId, Arc<dyn TerminalSource>>, gid: &str, out: &mut Vec<Action>) {
+fn group_window(
+    ui: &mut Ui,
+    host: &mut PaneHost,
+    model: &UiModel,
+    sources: &HashMap<SessionId, Arc<dyn TerminalSource>>,
+    gid: &str,
+    out: &mut Vec<Action>,
+) {
     let t = Tokens::get(ui.ctx());
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0.0, t.bg);
@@ -939,11 +1040,25 @@ fn group_window(ui: &mut Ui, host: &mut PaneHost, model: &UiModel, sources: &Has
     ui.painter().hline(bar.x_range(), bar.max.y, Stroke::new(size::HAIRLINE, t.surface0));
     let scope = Scope::Group(gid.to_string());
     let live: Vec<&SessionView> = model.scope_sessions(&scope).into_iter().filter(|s| s.status.is_live()).collect();
-    let nr = ui.painter().text(pos2(bar.min.x + space::MD, bar.center().y), Align2::LEFT_CENTER, model.scope_name(&scope), semibold(text::EMPH), t.fg);
-    ui.painter().text(pos2(nr.max.x + space::MD, bar.center().y), Align2::LEFT_CENTER, format!("{} live · own window, own layout", live.len()), theme::regular(text::CAPTION), t.muted);
-    let bw = widgets::text_width(ui, "Dock back into the main window", theme::medium(text::BODY)) + icon::LG + space::ROW_X * 2.0 + space::XS + space::XXS;
+    let nr =
+        ui.painter().text(pos2(bar.min.x + space::MD, bar.center().y), Align2::LEFT_CENTER, model.scope_name(&scope), semibold(text::EMPH), t.fg);
+    ui.painter().text(
+        pos2(nr.max.x + space::MD, bar.center().y),
+        Align2::LEFT_CENTER,
+        format!("{} live · own window, own layout", live.len()),
+        theme::regular(text::CAPTION),
+        t.muted,
+    );
+    let bw =
+        widgets::text_width(ui, "Dock back into the main window", theme::medium(text::BODY)) + icon::LG + space::ROW_X * 2.0 + space::XS + space::XXS;
     let br = Rect::from_min_size(pos2(bar.max.x - space::SM - bw, bar.center().y - size::CONTROL / 2.0), vec2(bw, size::CONTROL));
-    if ui.scope_builder(UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("dock"), "Dock back into the main window", None)).inner.clicked() {
+    if ui
+        .scope_builder(UiBuilder::new().max_rect(br), |ui| {
+            widgets::button(ui, ButtonKind::Ghost, Some("dock"), "Dock back into the main window", None)
+        })
+        .inner
+        .clicked()
+    {
         out.push(Action::Tool("group_dock", json!({"group_id": gid})));
     }
     let area = Rect::from_min_max(pos2(rect.min.x, bar.max.y), rect.max);
@@ -955,7 +1070,6 @@ fn group_window(ui: &mut Ui, host: &mut PaneHost, model: &UiModel, sources: &Has
         pane(ui, host, model, s, sources.get(&s.id).map(|a| a.as_ref()), r, o, &scope, out);
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -995,7 +1109,10 @@ mod tests {
         let SplitNode::Split { dir, children, .. } = &next else { panic!() };
         assert_eq!(*dir, SplitDir::Row);
         assert_eq!(children.len(), 2);
-        assert_eq!(children[1], SplitNode::Split { dir: SplitDir::Col, ratios: vec![0.5, 0.5], children: vec![SplitNode::leaf("b"), SplitNode::leaf("c")] });
+        assert_eq!(
+            children[1],
+            SplitNode::Split { dir: SplitDir::Col, ratios: vec![0.5, 0.5], children: vec![SplitNode::leaf("b"), SplitNode::leaf("c")] }
+        );
         assert_eq!(next.sessions(), vec!["a", "b", "c"]);
         assert!(split_drop(&tree, "a", "a", Edge::Left).is_none(), "onto itself changes nothing");
         assert_eq!(split_drop(&tree, "a", "c", Edge::Right).unwrap().sessions(), vec!["b", "c", "a"]);

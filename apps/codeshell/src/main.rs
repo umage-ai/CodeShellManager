@@ -157,7 +157,8 @@ fn main() {
         let theme_kind = if args.latte { ThemeKind::Latte } else { csm_ui::engine_backend::theme_from_setting(&settings.theme) };
         let wpf_import = persist::wpf_state_path().filter(|p| p.is_file()).map(|p| p.display().to_string());
         let folders = [home(), std::env::current_dir().ok()].into_iter().flatten().map(|p| p.display().to_string()).collect();
-        let opts = EngineOptions { theme: theme_kind, launch_commands: settings.launch_commands.clone(), folders, wpf_import, shutdown_budget_s: budget };
+        let opts =
+            EngineOptions { theme: theme_kind, launch_commands: settings.launch_commands.clone(), folders, wpf_import, shutdown_budget_s: budget };
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
         (engine, Mode::Real { opts }, theme_kind)
     };

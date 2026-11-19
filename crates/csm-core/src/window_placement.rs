@@ -20,12 +20,7 @@ pub struct PixelRect {
 
 impl PixelRect {
     pub const fn new(left: i64, top: i64, width: i64, height: i64) -> Self {
-        Self {
-            left,
-            top,
-            width,
-            height,
-        }
+        Self { left, top, width, height }
     }
 
     pub fn right(&self) -> i64 {
@@ -42,11 +37,7 @@ impl PixelRect {
         let t = self.top.max(o.top);
         let r = self.right().min(o.right());
         let b = self.bottom().min(o.bottom());
-        if r > l && b > t {
-            PixelRect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
-        } else {
-            PixelRect::default()
-        }
+        if r > l && b > t { PixelRect::new(l, t, r.saturating_sub(l), b.saturating_sub(t)) } else { PixelRect::default() }
     }
 
     pub fn area(&self) -> i64 {
@@ -84,21 +75,12 @@ pub fn resolve(
     min_width_dip: f64,
     min_height_dip: f64,
 ) -> Option<(PixelRect, usize)> {
-    let primary = monitors
-        .iter()
-        .position(|m| m.is_primary)
-        .or(if monitors.is_empty() { None } else { Some(0) })?;
+    let primary = monitors.iter().position(|m| m.is_primary).or(if monitors.is_empty() { None } else { Some(0) })?;
 
     let (mut rect, saved_dpi) = match placement {
-        Some(p) if p.width > 0 && p.height > 0 && p.dpi > 0 => (
-            PixelRect::new(
-                i64::from(p.left),
-                i64::from(p.top),
-                i64::from(p.width),
-                i64::from(p.height),
-            ),
-            i64::from(p.dpi),
-        ),
+        Some(p) if p.width > 0 && p.height > 0 && p.dpi > 0 => {
+            (PixelRect::new(i64::from(p.left), i64::from(p.top), i64::from(p.width), i64::from(p.height)), i64::from(p.dpi))
+        }
         _ => match legacy {
             Some(l) if usable_legacy(l) => from_legacy_dips(l, monitors, primary)?,
             _ => return None,
@@ -116,10 +98,7 @@ pub fn resolve(
     // Reachable: leave it exactly where the user put it, even hanging off an edge or spanning
     // two monitors. Restoring is not the place to second-guess a layout.
     if home.is_some() && is_caption_visible(&rect, target_monitor.dpi, monitors) {
-        return Some((
-            ensure_min_size(&rect, target_monitor, min_width_dip, min_height_dip),
-            target,
-        ));
+        return Some((ensure_min_size(&rect, target_monitor, min_width_dip, min_height_dip), target));
     }
 
     // Caption out of reach (monitor unplugged, rearranged, resolution dropped): fit it into the
@@ -130,11 +109,7 @@ pub fn resolve(
 }
 
 fn usable_legacy(l: &WindowBounds) -> bool {
-    [l.left, l.top, l.width, l.height]
-        .iter()
-        .all(|v| v.is_finite())
-        && l.width > 0.0
-        && l.height > 0.0
+    [l.left, l.top, l.width, l.height].iter().all(|v| v.is_finite()) && l.width > 0.0 && l.height > 0.0
 }
 
 /// Legacy DIP bounds to physical pixels, plus the DPI they are taken to have been saved at. The
@@ -145,19 +120,10 @@ fn usable_legacy(l: &WindowBounds) -> bool {
 /// DPI was used. Several can be consistent (a small window near a shared edge); the primary
 /// wins that tie, then the largest share of the rect on its monitor. If none is, the primary's
 /// scale is used and the visibility rules in [`resolve`] take over.
-pub fn from_legacy_dips(
-    legacy: &WindowBounds,
-    monitors: &[MonitorArea],
-    primary: usize,
-) -> Option<(PixelRect, i64)> {
+pub fn from_legacy_dips(legacy: &WindowBounds, monitors: &[MonitorArea], primary: usize) -> Option<(PixelRect, i64)> {
     let scaled = |dpi: i64| {
         let s = dpi as f64 / 96.0;
-        PixelRect::new(
-            round(legacy.left * s),
-            round(legacy.top * s),
-            round(legacy.width * s),
-            round(legacy.height * s),
-        )
+        PixelRect::new(round(legacy.left * s), round(legacy.top * s), round(legacy.width * s), round(legacy.height * s))
     };
 
     // (monitor index, scaled rect, share of the rect that is on that monitor)
@@ -171,10 +137,7 @@ pub fn from_legacy_dips(
         let better = match &best {
             None => true,
             Some((bi, _, bshare)) => {
-                let (bp, mp) = (
-                    monitors.get(*bi).is_some_and(|b| b.is_primary),
-                    m.is_primary,
-                );
+                let (bp, mp) = (monitors.get(*bi).is_some_and(|b| b.is_primary), m.is_primary);
                 // OrderByDescending(IsPrimary).ThenByDescending(share), first of equals wins.
                 (mp && !bp) || (mp == bp && share > *bshare)
             }
@@ -208,10 +171,7 @@ pub fn home(rect: &PixelRect, monitors: &[MonitorArea]) -> Option<usize> {
 /// What to save for a normal-state window: its screen rect (GetWindowRect) and the DPI of the
 /// monitor that RECT is on, not of whatever monitor the window reports, which is the question
 /// that goes wrong for a snapped or spanning window.
-pub fn save_from_screen(
-    screen: &PixelRect,
-    monitors: &[MonitorArea],
-) -> Option<WindowPlacementState> {
+pub fn save_from_screen(screen: &PixelRect, monitors: &[MonitorArea]) -> Option<WindowPlacementState> {
     if screen.width <= 0 || screen.height <= 0 || monitors.is_empty() {
         return None;
     }
@@ -223,10 +183,7 @@ pub fn save_from_screen(
 /// (workspace coordinates). Each monitor's work-area offset is tried, and the one under which
 /// the rect lands most on that same monitor is taken: the rect's own monitor, which need not be
 /// the one the (maximized) window is on now. That monitor supplies the DPI.
-pub fn save_from_workspace(
-    workspace: &PixelRect,
-    monitors: &[MonitorArea],
-) -> Option<WindowPlacementState> {
+pub fn save_from_workspace(workspace: &PixelRect, monitors: &[MonitorArea]) -> Option<WindowPlacementState> {
     if workspace.width <= 0 || workspace.height <= 0 || monitors.is_empty() {
         return None;
     }
@@ -274,11 +231,7 @@ pub fn rescale(r: &PixelRect, from_dpi: i64, to_dpi: i64) -> PixelRect {
         return *r;
     }
     let f = to_dpi as f64 / from_dpi as f64;
-    PixelRect {
-        width: round(r.width as f64 * f),
-        height: round(r.height as f64 * f),
-        ..*r
-    }
+    PixelRect { width: round(r.width as f64 * f), height: round(r.height as f64 * f), ..*r }
 }
 
 /// Moves `r` the shortest distance that puts it inside `area` (shrinking it first if it is
@@ -298,12 +251,8 @@ pub fn clamp_into(r: &PixelRect, area: &PixelRect) -> PixelRect {
 /// way Windows defines the offset on a secondary monitor.
 pub fn screen_to_workspace(r: &PixelRect, m: &MonitorArea) -> PixelRect {
     PixelRect {
-        left: r
-            .left
-            .saturating_sub(m.work.left.saturating_sub(m.bounds.left)),
-        top: r
-            .top
-            .saturating_sub(m.work.top.saturating_sub(m.bounds.top)),
+        left: r.left.saturating_sub(m.work.left.saturating_sub(m.bounds.left)),
+        top: r.top.saturating_sub(m.work.top.saturating_sub(m.bounds.top)),
         ..*r
     }
 }
@@ -311,33 +260,17 @@ pub fn screen_to_workspace(r: &PixelRect, m: &MonitorArea) -> PixelRect {
 /// The inverse of [`screen_to_workspace`].
 pub fn workspace_to_screen(r: &PixelRect, m: &MonitorArea) -> PixelRect {
     PixelRect {
-        left: r
-            .left
-            .saturating_add(m.work.left.saturating_sub(m.bounds.left)),
-        top: r
-            .top
-            .saturating_add(m.work.top.saturating_sub(m.bounds.top)),
+        left: r.left.saturating_add(m.work.left.saturating_sub(m.bounds.left)),
+        top: r.top.saturating_add(m.work.top.saturating_sub(m.bounds.top)),
         ..*r
     }
 }
 
 /// Grows a too-small rect to the window's minimum size (capped at the work area).
-fn ensure_min_size(
-    r: &PixelRect,
-    m: &MonitorArea,
-    min_width_dip: f64,
-    min_height_dip: f64,
-) -> PixelRect {
+fn ensure_min_size(r: &PixelRect, m: &MonitorArea, min_width_dip: f64, min_height_dip: f64) -> PixelRect {
     let min_w = m.work.width.min(ceil(min_width_dip * m.dpi as f64 / 96.0));
-    let min_h = m
-        .work
-        .height
-        .min(ceil(min_height_dip * m.dpi as f64 / 96.0));
-    PixelRect {
-        width: r.width.max(min_w),
-        height: r.height.max(min_h),
-        ..*r
-    }
+    let min_h = m.work.height.min(ceil(min_height_dip * m.dpi as f64 / 96.0));
+    PixelRect { width: r.width.max(min_w), height: r.height.max(min_h), ..*r }
 }
 
 /// The monitor whose bounds are nearest the rect's centre (squared distance); the first of
@@ -392,21 +325,11 @@ mod tests {
     // The standard rig: a 1920x1080 primary at 100% with a 48px taskbar at the bottom, and a
     // 3840x2160 secondary at 150% to its right.
     fn primary() -> MonitorArea {
-        MonitorArea {
-            bounds: PixelRect::new(0, 0, 1920, 1080),
-            work: PixelRect::new(0, 0, 1920, 1032),
-            dpi: 96,
-            is_primary: true,
-        }
+        MonitorArea { bounds: PixelRect::new(0, 0, 1920, 1080), work: PixelRect::new(0, 0, 1920, 1032), dpi: 96, is_primary: true }
     }
 
     fn secondary() -> MonitorArea {
-        MonitorArea {
-            bounds: PixelRect::new(1920, 0, 3840, 2160),
-            work: PixelRect::new(1920, 0, 3840, 2088),
-            dpi: 144,
-            is_primary: false,
-        }
+        MonitorArea { bounds: PixelRect::new(1920, 0, 3840, 2160), work: PixelRect::new(1920, 0, 3840, 2088), dpi: 144, is_primary: false }
     }
 
     fn both() -> Vec<MonitorArea> {
@@ -414,44 +337,26 @@ mod tests {
     }
 
     fn p(l: i32, t: i32, w: i32, h: i32, dpi: i32) -> WindowPlacementState {
-        WindowPlacementState {
-            left: l,
-            top: t,
-            width: w,
-            height: h,
-            dpi,
-        }
+        WindowPlacementState { left: l, top: t, width: w, height: h, dpi }
     }
 
     fn rect(l: i64, t: i64, w: i64, h: i64) -> PixelRect {
         PixelRect::new(l, t, w, h)
     }
 
-    fn res(
-        placement: Option<&WindowPlacementState>,
-        legacy: Option<&WindowBounds>,
-        monitors: &[MonitorArea],
-    ) -> Option<(PixelRect, usize)> {
+    fn res(placement: Option<&WindowPlacementState>, legacy: Option<&WindowBounds>, monitors: &[MonitorArea]) -> Option<(PixelRect, usize)> {
         resolve(placement, legacy, monitors, 0.0, 0.0)
     }
 
     fn legacy(l: f64, t: f64, w: f64, h: f64) -> WindowBounds {
-        WindowBounds {
-            left: l,
-            top: t,
-            width: w,
-            height: h,
-        }
+        WindowBounds { left: l, top: t, width: w, height: h }
     }
 
     #[test]
     fn nothing_saved_resolves_to_none() {
         assert_eq!(res(None, None, &both()), None);
         assert_eq!(res(Some(&p(0, 0, 0, 0, 96)), None, &both()), None);
-        assert_eq!(
-            res(None, Some(&legacy(0.0, 0.0, f64::NAN, 10.0)), &both()),
-            None
-        );
+        assert_eq!(res(None, Some(&legacy(0.0, 0.0, f64::NAN, 10.0)), &both()), None);
     }
 
     #[test]
@@ -471,38 +376,20 @@ mod tests {
     // A rig where the workspace offsets differ per monitor: primary with its taskbar docked at
     // the TOP (workspace (0,0) = screen (0,48)), 150% secondary with a left taskbar.
     fn top_bar_primary() -> MonitorArea {
-        MonitorArea {
-            bounds: PixelRect::new(0, 0, 1920, 1080),
-            work: PixelRect::new(0, 48, 1920, 1032),
-            dpi: 96,
-            is_primary: true,
-        }
+        MonitorArea { bounds: PixelRect::new(0, 0, 1920, 1080), work: PixelRect::new(0, 48, 1920, 1032), dpi: 96, is_primary: true }
     }
 
     fn left_bar_secondary(dpi: i64) -> MonitorArea {
-        MonitorArea {
-            bounds: PixelRect::new(1920, 0, 3840, 2160),
-            work: PixelRect::new(1992, 0, 3768, 2160),
-            dpi,
-            is_primary: false,
-        }
+        MonitorArea { bounds: PixelRect::new(1920, 0, 3840, 2160), work: PixelRect::new(1992, 0, 3768, 2160), dpi, is_primary: false }
     }
 
     /// One app run: restore what was saved, then save what is on screen the way
     /// MainWindow.CaptureWindowState does: GetWindowRect for a normal window, the workspace
     /// rcNormalPosition (as SetWindowPlacement was given it) for a maximized one.
-    fn run(
-        saved: &WindowPlacementState,
-        monitors: &[MonitorArea],
-        maximized: bool,
-    ) -> WindowPlacementState {
+    fn run(saved: &WindowPlacementState, monitors: &[MonitorArea], maximized: bool) -> WindowPlacementState {
         let (r, mi) = res(Some(saved), None, monitors).unwrap();
         let m = monitors.get(mi).unwrap();
-        if maximized {
-            save_from_workspace(&screen_to_workspace(&r, m), monitors).unwrap()
-        } else {
-            save_from_screen(&r, monitors).unwrap()
-        }
+        if maximized { save_from_workspace(&screen_to_workspace(&r, m), monitors).unwrap() } else { save_from_screen(&r, monitors).unwrap() }
     }
 
     fn tuple(s: &WindowPlacementState) -> (i32, i32, i32, i32, i32) {
@@ -525,11 +412,7 @@ mod tests {
 
     #[test]
     fn monitor_scale_change_rescales_once_then_stays_put() {
-        let mut cur = run(
-            &p(2500, 400, 1800, 1200, 144),
-            &[top_bar_primary(), left_bar_secondary(144)],
-            false,
-        );
+        let mut cur = run(&p(2500, 400, 1800, 1200, 144), &[top_bar_primary(), left_bar_secondary(144)], false);
         // The secondary goes 150% -> 200%: same apparent size, applied once.
         let after = [top_bar_primary(), left_bar_secondary(192)];
         cur = run(&cur, &after, false);
@@ -557,25 +440,10 @@ mod tests {
     #[test]
     fn saved_screen_rect_takes_dpi_from_the_monitor_holding_most_of_it() {
         let monitors = both();
-        assert_eq!(
-            save_from_screen(&rect(1500, 100, 1200, 800), &monitors)
-                .unwrap()
-                .dpi,
-            144
-        );
-        assert_eq!(
-            save_from_screen(&rect(1000, 100, 1200, 800), &monitors)
-                .unwrap()
-                .dpi,
-            96
-        );
+        assert_eq!(save_from_screen(&rect(1500, 100, 1200, 800), &monitors).unwrap().dpi, 144);
+        assert_eq!(save_from_screen(&rect(1000, 100, 1200, 800), &monitors).unwrap().dpi, 96);
         // Off every monitor: the nearest one's.
-        assert_eq!(
-            save_from_screen(&rect(9000, 100, 800, 600), &monitors)
-                .unwrap()
-                .dpi,
-            144
-        );
+        assert_eq!(save_from_screen(&rect(9000, 100, 800, 600), &monitors).unwrap().dpi, 144);
     }
 
     #[test]
@@ -638,30 +506,15 @@ mod tests {
 
     #[test]
     fn minimum_size_is_enforced_in_physical_pixels() {
-        let (r, _) = resolve(
-            Some(&p(2000, 100, 300, 200, 144)),
-            None,
-            &both(),
-            800.0,
-            500.0,
-        )
-        .unwrap();
+        let (r, _) = resolve(Some(&p(2000, 100, 300, 200, 144)), None, &both(), 800.0, 500.0).unwrap();
         assert_eq!(r, rect(2000, 100, 1200, 750));
     }
 
     #[test]
     fn legacy_dip_bounds_are_scaled_by_the_primary_dpi() {
         // Saved by a system-DPI build at 150% primary: DIPs x 1.5 = pixels.
-        let primary150 = MonitorArea {
-            dpi: 144,
-            ..primary()
-        };
-        let (r, _) = res(
-            None,
-            Some(&legacy(100.0, 50.0, 1000.0, 600.0)),
-            &[primary150],
-        )
-        .unwrap();
+        let primary150 = MonitorArea { dpi: 144, ..primary() };
+        let (r, _) = res(None, Some(&legacy(100.0, 50.0, 1000.0, 600.0)), &[primary150]).unwrap();
         assert_eq!(r, rect(150, 75, 1500, 900));
     }
 
@@ -671,12 +524,7 @@ mod tests {
         // pixels (2200, 300, 2400x1500) on the 150% secondary was saved as (1466.67, 200,
         // 1600x1000). Read at the primary's 100% it would land mostly on the primary at
         // two-thirds the size.
-        let (r, m) = res(
-            None,
-            Some(&legacy(2200.0 / 1.5, 200.0, 1600.0, 1000.0)),
-            &both(),
-        )
-        .unwrap();
+        let (r, m) = res(None, Some(&legacy(2200.0 / 1.5, 200.0, 1600.0, 1000.0)), &both()).unwrap();
         assert_eq!(r, rect(2200, 300, 2400, 1500));
         assert_eq!(m, 1);
     }
@@ -707,12 +555,7 @@ mod tests {
 
     #[test]
     fn placement_wins_over_legacy_bounds() {
-        let (r, _) = res(
-            Some(&p(2200, 300, 2400, 1500, 144)),
-            Some(&legacy(0.0, 0.0, 500.0, 500.0)),
-            &both(),
-        )
-        .unwrap();
+        let (r, _) = res(Some(&p(2200, 300, 2400, 1500, 144)), Some(&legacy(0.0, 0.0, 500.0, 500.0)), &both()).unwrap();
         assert_eq!(r, rect(2200, 300, 2400, 1500));
     }
 
@@ -728,15 +571,8 @@ mod tests {
 
     #[test]
     fn rescale_scales_size_only() {
-        for (from, to, w, expected_w) in [
-            (96, 144, 1000, 1500),
-            (144, 96, 1500, 1000),
-            (120, 120, 1000, 1000),
-        ] {
-            assert_eq!(
-                rescale(&rect(7, 9, w, w), from, to),
-                rect(7, 9, expected_w, expected_w)
-            );
+        for (from, to, w, expected_w) in [(96, 144, 1000, 1500), (144, 96, 1500, 1000), (120, 120, 1000, 1000)] {
+            assert_eq!(rescale(&rect(7, 9, w, w), from, to), rect(7, 9, expected_w, expected_w));
         }
     }
 
@@ -748,13 +584,7 @@ mod tests {
         for &a in &extremes {
             for &b in &extremes {
                 for &dpi in &[i32::MAX, 1, 96] {
-                    let pl = p(
-                        a,
-                        b,
-                        a.saturating_abs().max(1),
-                        b.saturating_abs().max(1),
-                        dpi,
-                    );
+                    let pl = p(a, b, a.saturating_abs().max(1), b.saturating_abs().max(1), dpi);
                     let _ = res(Some(&pl), None, &both());
                     let _ = res(Some(&pl), None, &[primary()]);
                     let _ = resolve(Some(&pl), None, &both(), f64::MAX, f64::NAN);

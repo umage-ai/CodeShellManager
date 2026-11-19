@@ -179,9 +179,7 @@ fn target(ctx: &Ctx<'_>, id: &str) -> Result<Target, ToolError> {
     let i = find(ctx.state, id)?;
     let s = ctx.state.app.sessions.get(i).ok_or_else(|| ToolError::NotFound(format!("no session `{id}`")))?;
     if s.kind == SessionKind::Ssh {
-        return Err(ToolError::Refused(
-            "git actions need a local or WSL folder; an SSH session's branch is only what it reports (OSC 9001)".into(),
-        ));
+        return Err(ToolError::Refused("git actions need a local or WSL folder; an SSH session's branch is only what it reports (OSC 9001)".into()));
     }
     if s.working_folder.trim().is_empty() {
         return Err(ToolError::Refused("the session has no folder to run git in".into()));
@@ -312,9 +310,7 @@ fn session_refs(ctx: &Ctx<'_>) -> Vec<SessionRef> {
 /// Each session paired with the worktree its folder is in (deepest match; folders compared in
 /// their real form). On a worker: canonicalising touches the disk.
 fn sessions_in<'a>(list: &'a [WorktreeInfo], refs: &[SessionRef]) -> Vec<(SessionRef, &'a WorktreeInfo)> {
-    refs.iter()
-        .filter_map(|r| worktrees::containing(list, &run::canonical(&r.folder)).map(|w| (r.clone(), w)))
-        .collect()
+    refs.iter().filter_map(|r| worktrees::containing(list, &run::canonical(&r.folder)).map(|w| (r.clone(), w))).collect()
 }
 
 /// `session_new` params for a new session in worktree `path`, like `source` (kind, command,

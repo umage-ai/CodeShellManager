@@ -20,7 +20,10 @@
 //! the list is deduplicated by program and ends with exactly one default (VS Code first when
 //! present, as before).
 
-use super::{OpenWithEntry, Rules, VSCODE_LOCAL_ARGS, VSCODE_SSH_ARGS, VSCODE_WSL_ARGS, ensure_single_default, resolve_shim_from_script, validate_executable_for};
+use super::{
+    OpenWithEntry, Rules, VSCODE_LOCAL_ARGS, VSCODE_SSH_ARGS, VSCODE_WSL_ARGS, ensure_single_default, resolve_shim_from_script,
+    validate_executable_for,
+};
 use crate::winpath;
 
 /// The platform whose install layout is searched.
@@ -79,11 +82,7 @@ fn join(p: Platform, a: &str, b: &str) -> String {
     if a.is_empty() {
         return b.to_string();
     }
-    if a.ends_with(sep) || (p == Platform::Windows && a.ends_with('/')) {
-        format!("{a}{b}")
-    } else {
-        format!("{a}{sep}{b}")
-    }
+    if a.ends_with(sep) || (p == Platform::Windows && a.ends_with('/')) { format!("{a}{b}") } else { format!("{a}{sep}{b}") }
 }
 
 fn leaf(p: Platform, path: &str) -> &str {
@@ -171,7 +170,12 @@ const FAMILIES: &[Family] = &[
 /// JetBrains: Windows launcher, label, Linux launcher, macOS bundle names.
 const JETBRAINS: &[(&str, &str, &str, &[&str])] = &[
     ("rider64.exe", "Rider", "rider", &["Rider.app"]),
-    ("idea64.exe", "IntelliJ IDEA", "idea", &["IntelliJ IDEA.app", "IntelliJ IDEA Ultimate.app", "IntelliJ IDEA CE.app", "IntelliJ IDEA Community Edition.app"]),
+    (
+        "idea64.exe",
+        "IntelliJ IDEA",
+        "idea",
+        &["IntelliJ IDEA.app", "IntelliJ IDEA Ultimate.app", "IntelliJ IDEA CE.app", "IntelliJ IDEA Community Edition.app"],
+    ),
     ("pycharm64.exe", "PyCharm", "pycharm", &["PyCharm.app", "PyCharm Professional Edition.app", "PyCharm CE.app", "PyCharm Community Edition.app"]),
     ("webstorm64.exe", "WebStorm", "webstorm", &["WebStorm.app"]),
     ("goland64.exe", "GoLand", "goland", &["GoLand.app"]),
@@ -281,11 +285,7 @@ fn windows(env: &dyn DetectEnv) -> Vec<OpenWithEntry> {
         }
     }
     for (exe_name, label, _, _) in JETBRAINS {
-        let best = bins
-            .iter()
-            .map(|b| join(p, b, exe_name))
-            .filter(|e| env.is_file(e))
-            .max_by_key(|e| env.modified(e).unwrap_or(0));
+        let best = bins.iter().map(|b| join(p, b, exe_name)).filter(|e| env.is_file(e)).max_by_key(|e| env.modified(e).unwrap_or(0));
         if let Some(exe) = best {
             // JetBrains IDEs open a \\wsl$ folder natively, so the WSL form is the UNC mirror.
             out.push(entry(label, &exe, Some("{folder}"), Some("{folder}"), None));
@@ -307,7 +307,11 @@ fn windows(env: &dyn DetectEnv) -> Vec<OpenWithEntry> {
     }
     if let Some(npp) = first_file(
         env,
-        [env.app_path("notepad++.exe"), Some(join(p, &join(p, &pf, "Notepad++"), "notepad++.exe")), Some(join(p, &join(p, &pf86, "Notepad++"), "notepad++.exe"))],
+        [
+            env.app_path("notepad++.exe"),
+            Some(join(p, &join(p, &pf, "Notepad++"), "notepad++.exe")),
+            Some(join(p, &join(p, &pf86, "Notepad++"), "notepad++.exe")),
+        ],
     ) {
         out.push(entry("Notepad++", &npp, Some("-openFoldersAsWorkspace {folder}"), Some("-openFoldersAsWorkspace {folder}"), None));
     }
@@ -388,7 +392,8 @@ fn mac(env: &dyn DetectEnv) -> Vec<OpenWithEntry> {
         // JetBrains Toolbox 2.x puts its IDEs in ~/Applications too; 1.x in a nested folder.
         roots.push(join(p, &join(p, &home, "Applications"), "JetBrains Toolbox"));
     }
-    let bundles: Vec<String> = roots.iter().filter(|r| env.is_dir(r)).flat_map(|r| env.list(r)).filter(|b| b.ends_with(".app") && env.is_dir(b)).collect();
+    let bundles: Vec<String> =
+        roots.iter().filter(|r| env.is_dir(r)).flat_map(|r| env.list(r)).filter(|b| b.ends_with(".app") && env.is_dir(b)).collect();
     let find = |names: &[&str]| bundles.iter().find(|b| names.iter().any(|n| leaf(p, b).eq_ignore_ascii_case(n))).cloned();
     // The bundle path becomes one quoted template token: it must not need escaping.
     let token_safe = |b: &str| !b.contains('"') && !b.contains('{') && !b.contains('}') && !b.chars().any(char::is_control);
@@ -479,7 +484,13 @@ fn on_path(env: &dyn DetectEnv, name: &str) -> Option<String> {
 /// A `.desktop` file's program, resolved to a real binary.
 fn desktop_program(env: &dyn DetectEnv, file: &str) -> Option<String> {
     let prog = desktop_exec_program(&env.read_text(file)?)?;
-    let abs = if prog.starts_with('/') { Some(prog) } else if prog.contains('/') { None } else { on_path(env, &prog) }?;
+    let abs = if prog.starts_with('/') {
+        Some(prog)
+    } else if prog.contains('/') {
+        None
+    } else {
+        on_path(env, &prog)
+    }?;
     Some(env.real_path(&abs).unwrap_or(abs))
 }
 
@@ -518,7 +529,8 @@ fn linux(env: &dyn DetectEnv) -> Vec<OpenWithEntry> {
     let toolbox = env.var("HOME").filter(|h| h.starts_with('/')).map(|h| join(p, &h, ".local/share/JetBrains/Toolbox/apps"));
     for (_, label, bin, _) in JETBRAINS {
         let ids = [format!("jetbrains-{bin}.desktop"), format!("jetbrains-{bin}-ce.desktop")];
-        let via_desktop = dirs.iter().flat_map(|d| ids.iter().map(move |id| join(p, d, id))).filter(|f| env.is_file(f)).find_map(|f| desktop_program(env, &f));
+        let via_desktop =
+            dirs.iter().flat_map(|d| ids.iter().map(move |id| join(p, d, id))).filter(|f| env.is_file(f)).find_map(|f| desktop_program(env, &f));
         let via_toolbox = || {
             let root = toolbox.as_ref().filter(|t| env.is_dir(t))?;
             env.list(root)
@@ -559,7 +571,15 @@ mod tests {
 
     impl Fake {
         fn new(platform: Platform) -> Self {
-            Fake { platform, vars: HashMap::new(), files: HashMap::new(), dirs: HashMap::new(), app_paths: HashMap::new(), vswhere: None, links: HashMap::new() }
+            Fake {
+                platform,
+                vars: HashMap::new(),
+                files: HashMap::new(),
+                dirs: HashMap::new(),
+                app_paths: HashMap::new(),
+                vswhere: None,
+                links: HashMap::new(),
+            }
         }
         fn var(mut self, k: &str, v: &str) -> Self {
             self.vars.insert(k.into(), v.into());
@@ -668,10 +688,11 @@ mod tests {
 
     #[test]
     fn an_unknown_shim_resolves_only_when_its_script_names_one_exe() {
-        let one = win()
-            .var("PATH", r"C:\tools\bin")
-            .file(r"C:\tools\bin\cursor.cmd", "@\"C:\\tools\\Cursor\\Cursor.exe\" %*", 1)
-            .file(r"C:\tools\Cursor\Cursor.exe", "", 1);
+        let one = win().var("PATH", r"C:\tools\bin").file(r"C:\tools\bin\cursor.cmd", "@\"C:\\tools\\Cursor\\Cursor.exe\" %*", 1).file(
+            r"C:\tools\Cursor\Cursor.exe",
+            "",
+            1,
+        );
         assert_eq!(labels(&detect(&one)), ["Cursor"]);
         let two = win()
             .var("PATH", r"C:\tools\bin")
@@ -725,10 +746,11 @@ mod tests {
 
     #[test]
     fn plain_editors_and_notepad_plus_plus_workspace_flag() {
-        let f = win()
-            .file(r"C:\Users\u\AppData\Local\Programs\Zed\Zed.exe", "", 1)
-            .file(r"C:\Program Files\Sublime Text\subl.exe", "", 1)
-            .file(r"C:\Program Files (x86)\Notepad++\notepad++.exe", "", 1);
+        let f = win().file(r"C:\Users\u\AppData\Local\Programs\Zed\Zed.exe", "", 1).file(r"C:\Program Files\Sublime Text\subl.exe", "", 1).file(
+            r"C:\Program Files (x86)\Notepad++\notepad++.exe",
+            "",
+            1,
+        );
         let got = detect(&f);
         assert_eq!(labels(&got), ["Zed", "Sublime Text", "Notepad++"]);
         assert_eq!(got[2].local_args.as_deref(), Some("-openFoldersAsWorkspace {folder}"));
@@ -768,7 +790,11 @@ mod tests {
         let f = Fake::new(Platform::Linux)
             .var("HOME", "/home/u")
             .var("PATH", "/usr/local/bin:/usr/bin:relative")
-            .file("/usr/share/applications/code.desktop", "[Desktop Entry]\nName=Visual Studio Code\nExec=/usr/share/code/code --unity-launch %F\n[Desktop Action new]\nExec=/bin/sh -c x\n", 1)
+            .file(
+                "/usr/share/applications/code.desktop",
+                "[Desktop Entry]\nName=Visual Studio Code\nExec=/usr/share/code/code --unity-launch %F\n[Desktop Action new]\nExec=/bin/sh -c x\n",
+                1,
+            )
             .file("/usr/share/code/code", "", 1)
             .file("/usr/share/applications/cursor.desktop", "[Desktop Entry]\nExec=cursor %F\n", 1)
             .file("/usr/bin/cursor", "", 1)

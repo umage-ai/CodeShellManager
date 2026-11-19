@@ -47,11 +47,7 @@ pub fn reason(
         n => parts.push(format!("{n} run commands running")),
     }
 
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" · "))
-    }
+    if parts.is_empty() { None } else { Some(parts.join(" · ")) }
 }
 
 #[cfg(test)]
@@ -60,13 +56,7 @@ mod tests {
 
     const NOW: i64 = 1_793_966_400_000;
 
-    fn reason_of(
-        status: bool,
-        state: Option<ProgramState>,
-        progress: Option<u8>,
-        runs: u32,
-        last: Option<i64>,
-    ) -> Option<String> {
+    fn reason_of(status: bool, state: Option<ProgramState>, progress: Option<u8>, runs: u32, last: Option<i64>) -> Option<String> {
         reason(status, state, progress, runs, last, NOW)
     }
 
@@ -81,18 +71,12 @@ mod tests {
 
     #[test]
     fn quiet_shell_is_idle() {
-        assert_eq!(
-            reason_of(false, None, None, 0, Some(NOW - 2 * 60_000)),
-            None
-        );
+        assert_eq!(reason_of(false, None, None, 0, Some(NOW - 2 * 60_000)), None);
     }
 
     #[test]
     fn recent_output_without_program_status_is_busy() {
-        assert_eq!(
-            reason_of(false, None, None, 0, Some(NOW - 1_000)).as_deref(),
-            Some("producing output")
-        );
+        assert_eq!(reason_of(false, None, None, 0, Some(NOW - 1_000)).as_deref(), Some("producing output"));
     }
 
     #[test]
@@ -102,51 +86,29 @@ mod tests {
 
     #[test]
     fn output_just_outside_window_is_idle() {
-        assert_eq!(
-            reason_of(
-                false,
-                None,
-                None,
-                0,
-                Some(NOW - RECENT_OUTPUT_WINDOW_MS - 1)
-            ),
-            None
-        );
+        assert_eq!(reason_of(false, None, None, 0, Some(NOW - RECENT_OUTPUT_WINDOW_MS - 1)), None);
     }
 
     #[test]
     fn working_with_progress() {
-        assert_eq!(
-            reason_of(true, Some(ProgramState::Working), Some(40), 0, None).as_deref(),
-            Some("working · 40%")
-        );
+        assert_eq!(reason_of(true, Some(ProgramState::Working), Some(40), 0, None).as_deref(), Some("working · 40%"));
     }
 
     #[test]
     fn working_indeterminate() {
-        assert_eq!(
-            reason_of(true, Some(ProgramState::Working), None, 0, None).as_deref(),
-            Some("working")
-        );
+        assert_eq!(reason_of(true, Some(ProgramState::Working), None, 0, None).as_deref(), Some("working"));
     }
 
     #[test]
     fn blocked_is_busy_mid_task() {
-        assert_eq!(
-            reason_of(true, Some(ProgramState::Blocked), None, 0, None).as_deref(),
-            Some("waiting for you mid-task")
-        );
+        assert_eq!(reason_of(true, Some(ProgramState::Blocked), None, 0, None).as_deref(), Some("waiting for you mid-task"));
     }
 
     #[test]
     fn program_status_settled_states_are_idle_even_with_recent_output() {
         // A 7501 session is judged by its report: an idle TUI may still repaint.
         for state in [ProgramState::Idle, ProgramState::Done, ProgramState::Error] {
-            assert_eq!(
-                reason_of(true, Some(state), None, 0, Some(NOW)),
-                None,
-                "{state:?}"
-            );
+            assert_eq!(reason_of(true, Some(state), None, 0, Some(NOW)), None, "{state:?}");
         }
     }
 
@@ -157,18 +119,12 @@ mod tests {
 
     #[test]
     fn running_run_command_is_busy_even_when_terminal_is_quiet() {
-        assert_eq!(
-            reason_of(false, None, None, 1, None).as_deref(),
-            Some("1 run command running")
-        );
+        assert_eq!(reason_of(false, None, None, 1, None).as_deref(), Some("1 run command running"));
     }
 
     #[test]
     fn reasons_combine() {
-        assert_eq!(
-            reason_of(true, Some(ProgramState::Working), None, 3, None).as_deref(),
-            Some("working · 3 run commands running")
-        );
+        assert_eq!(reason_of(true, Some(ProgramState::Working), None, 3, None).as_deref(), Some("working · 3 run commands running"));
     }
 
     #[test]

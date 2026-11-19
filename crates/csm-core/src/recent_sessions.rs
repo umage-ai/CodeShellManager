@@ -13,16 +13,8 @@ pub const MAX_ITEMS: usize = 10;
 /// screen; leaving it out makes the first item "the session I was in before", so
 /// Ctrl+Shift+E, Enter flips between the two). Stable on ties: sessions never used (same
 /// backfilled stamp) keep sidebar order.
-pub fn pick<'a>(
-    sessions: &'a [ShellSession],
-    active_id: Option<&str>,
-    max: usize,
-) -> Vec<&'a ShellSession> {
-    let mut candidates: Vec<(usize, &ShellSession)> = sessions
-        .iter()
-        .filter(|s| Some(s.id.as_str()) != active_id)
-        .enumerate()
-        .collect();
+pub fn pick<'a>(sessions: &'a [ShellSession], active_id: Option<&str>, max: usize) -> Vec<&'a ShellSession> {
+    let mut candidates: Vec<(usize, &ShellSession)> = sessions.iter().filter(|s| Some(s.id.as_str()) != active_id).enumerate().collect();
     // Newest first; the original index breaks ties. An unparseable stamp sorts as "never",
     // like C#'s `default(DateTime)`.
     candidates.sort_by_key(|(i, s)| (std::cmp::Reverse(stamp(s)), *i));
@@ -30,10 +22,7 @@ pub fn pick<'a>(
 }
 
 /// [`pick`] with the default [`MAX_ITEMS`].
-pub fn pick_default<'a>(
-    sessions: &'a [ShellSession],
-    active_id: Option<&str>,
-) -> Vec<&'a ShellSession> {
+pub fn pick_default<'a>(sessions: &'a [ShellSession], active_id: Option<&str>) -> Vec<&'a ShellSession> {
     pick(sessions, active_id, MAX_ITEMS)
 }
 
@@ -67,11 +56,7 @@ pub fn ago(then_ms: Option<i64>, now_ms: i64) -> String {
 
 /// [`ago`] for a stored timestamp: blank when it is the "never" sentinel (C# `thenUtc == default`).
 pub fn ago_for(then: &crate::time::Timestamp, now_ms: i64) -> String {
-    if then.is_never() {
-        String::new()
-    } else {
-        ago(then.epoch_ms(), now_ms)
-    }
+    if then.is_never() { String::new() } else { ago(then.epoch_ms(), now_ms) }
 }
 
 #[cfg(test)]
@@ -97,12 +82,7 @@ mod tests {
 
     #[test]
     fn newest_first_active_excluded() {
-        let list = [
-            s("a", 30.0, false),
-            s("b", 1.0, false),
-            s("c", 10.0, false),
-            s("d", 0.0, false),
-        ];
+        let list = [s("a", 30.0, false), s("b", 1.0, false), s("c", 10.0, false), s("d", 0.0, false)];
         assert_eq!(ids(&pick_default(&list, Some("d"))), ["b", "c", "a"]);
     }
 
@@ -114,9 +94,7 @@ mod tests {
 
     #[test]
     fn capped_at_max() {
-        let list: Vec<ShellSession> = (0..25)
-            .map(|i| s(&format!("s{i}"), f64::from(i), false))
-            .collect();
+        let list: Vec<ShellSession> = (0..25).map(|i| s(&format!("s{i}"), f64::from(i), false)).collect();
         let picked = pick_default(&list, None);
         assert_eq!(picked.len(), MAX_ITEMS);
         assert_eq!(picked[0].id, "s0");
@@ -124,33 +102,20 @@ mod tests {
 
     #[test]
     fn ties_keep_sidebar_order() {
-        let list = [
-            s("x", 60.0, false),
-            s("y", 60.0, false),
-            s("z", 60.0, false),
-        ];
+        let list = [s("x", 60.0, false), s("y", 60.0, false), s("z", 60.0, false)];
         assert_eq!(ids(&pick_default(&list, None)), ["x", "y", "z"]);
     }
 
     #[test]
     fn no_active_all_candidates() {
-        assert_eq!(
-            pick_default(&[s("a", 1.0, false), s("b", 2.0, false)], None).len(),
-            2
-        );
+        assert_eq!(pick_default(&[s("a", 1.0, false), s("b", 2.0, false)], None).len(), 2);
     }
 
     #[test]
     fn ago_compact() {
-        for (minutes_ago, expected) in [
-            (0.2, "now"),
-            (5.0, "5m"),
-            (59.0, "59m"),
-            (60.0, "1h"),
-            (60.0 * 23.0, "23h"),
-            (60.0 * 24.0 * 3.0, "3d"),
-            (60.0 * 24.0 * 30.0, "4w"),
-        ] {
+        for (minutes_ago, expected) in
+            [(0.2, "now"), (5.0, "5m"), (59.0, "59m"), (60.0, "1h"), (60.0 * 23.0, "23h"), (60.0 * 24.0 * 3.0, "3d"), (60.0 * 24.0 * 30.0, "4w")]
+        {
             let then = NOW - (minutes_ago * 60_000.0) as i64;
             assert_eq!(ago(Some(then), NOW), expected, "{minutes_ago}");
         }

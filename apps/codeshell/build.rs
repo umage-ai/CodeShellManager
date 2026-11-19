@@ -15,28 +15,18 @@ fn main() {
         _ => "x64",
     };
     let Some(manifest) = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from) else { return };
-    let src = std::env::var_os("CSM_CONPTY_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest.join("..").join("..").join(".conpty").join(arch));
+    let src = std::env::var_os("CSM_CONPTY_DIR").map(PathBuf::from).unwrap_or_else(|| manifest.join("..").join("..").join(".conpty").join(arch));
     let Some(out) = std::env::var_os("OUT_DIR").map(PathBuf::from) else { return };
     // OUT_DIR = <target>/<profile>/build/<pkg>[-<hash>|/<hash>]/out (the layout varies by cargo
     // version): the profile dir is the parent of the nearest `build` ancestor.
-    let Some(profile_dir) = out
-        .ancestors()
-        .find(|p| p.file_name().is_some_and(|n| n == "build"))
-        .and_then(|b| b.parent())
-        .map(PathBuf::from)
-    else {
+    let Some(profile_dir) = out.ancestors().find(|p| p.file_name().is_some_and(|n| n == "build")).and_then(|b| b.parent()).map(PathBuf::from) else {
         return;
     };
     for name in ["conpty.dll", "OpenConsole.exe"] {
         let from = src.join(name);
         println!("cargo:rerun-if-changed={}", from.display());
         if !from.is_file() {
-            println!(
-                "cargo:warning={name} not found in {} — the app will use the inbox ConPTY. Run scripts/get-conpty.ps1.",
-                src.display()
-            );
+            println!("cargo:warning={name} not found in {} — the app will use the inbox ConPTY. Run scripts/get-conpty.ps1.", src.display());
             continue;
         }
         let to = profile_dir.join(name);

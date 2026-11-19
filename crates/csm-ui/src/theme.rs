@@ -251,8 +251,8 @@ impl Tokens {
         let mut palette = csm_term::Palette::default();
         if !self.dark() {
             let ansi = [
-                0x5c5f77, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xacb0be, 0x6c6f85, 0xd20f39, 0x40a02b,
-                0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xbcc0cc,
+                0x5c5f77, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xacb0be, 0x6c6f85, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5,
+                0xea76cb, 0x179299, 0xbcc0cc,
             ];
             for (slot, c) in palette.ansi.iter_mut().zip(ansi) {
                 *slot = rgb(hex(c));
@@ -463,14 +463,10 @@ pub fn install_fonts(ctx: &egui::Context) {
         let tweak = FontTweak { coords: VariationCoords::new([(*b"wght", weight)]), ..Default::default() };
         fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(FIGTREE).tweak(tweak)));
     }
-    fonts
-        .font_data
-        .insert("JetBrainsMono".to_owned(), Arc::new(FontData::from_static(crate::terminal::fonts::JETBRAINS_MONO)));
+    fonts.font_data.insert("JetBrainsMono".to_owned(), Arc::new(FontData::from_static(crate::terminal::fonts::JETBRAINS_MONO)));
     let defaults_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let defaults_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
-    let with = |first: &str, rest: &[String]| -> Vec<String> {
-        std::iter::once(first.to_owned()).chain(rest.iter().cloned()).collect()
-    };
+    let with = |first: &str, rest: &[String]| -> Vec<String> { std::iter::once(first.to_owned()).chain(rest.iter().cloned()).collect() };
     fonts.families.insert(FontFamily::Proportional, with("Figtree", &defaults_prop));
     fonts.families.insert(medium_family(), with("Figtree-Medium", &defaults_prop));
     fonts.families.insert(semibold_family(), with("Figtree-SemiBold", &defaults_prop));

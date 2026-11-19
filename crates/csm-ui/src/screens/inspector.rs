@@ -39,7 +39,15 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let pill_w = icon::SM + space::XS + widgets::text_width(ui, &label, theme::medium(text::CAPTION)) + space::LG;
     let pill = Rect::from_min_size(pos2(close.min.x - space::SM - pill_w, cy - size::CHIP / 2.0), vec2(pill_w, size::CHIP));
     ui.scope_builder(UiBuilder::new().max_rect(pill), |ui| widgets::status_pill(ui, s.status, &label));
-    widgets::paint_text(ui, pos2(stripe.max.x + space::SM, cy), Align2::LEFT_CENTER, &s.name, semibold(text::BODY), t.fg, pill.min.x - stripe.max.x - space::LG);
+    widgets::paint_text(
+        ui,
+        pos2(stripe.max.x + space::SM, cy),
+        Align2::LEFT_CENTER,
+        &s.name,
+        semibold(text::BODY),
+        t.fg,
+        pill.min.x - stripe.max.x - space::LG,
+    );
 
     // Tabs.
     let tabs = Rect::from_min_size(pos2(rect.min.x, head.max.y + space::XS), vec2(rect.width(), size::TAB));
@@ -114,7 +122,11 @@ fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Actio
         .show(ui, |ui| {
             ui.add_sized(
                 vec2(ui.available_width(), h.max(size::CONTROL_LG * 3.0)),
-                egui::TextEdit::multiline(&mut buf).id(Id::new(("notes", folder.clone()))).frame(egui::Frame::NONE).font(theme::mono(text::SMALL)).desired_rows(12),
+                egui::TextEdit::multiline(&mut buf)
+                    .id(Id::new(("notes", folder.clone())))
+                    .frame(egui::Frame::NONE)
+                    .font(theme::mono(text::SMALL))
+                    .desired_rows(12),
             )
         })
         .inner;
@@ -195,7 +207,11 @@ fn session(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
             icons::status(ui, s.status, icon::SM);
             ui.label(egui::RichText::new(s.status_text()).font(semibold(text::SMALL)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(if s.is_claude() { "root · claude" } else { "root · heuristic" }).font(theme::regular(text::CAPTION)).color(t.muted));
+                ui.label(
+                    egui::RichText::new(if s.is_claude() { "root · claude" } else { "root · heuristic" })
+                        .font(theme::regular(text::CAPTION))
+                        .color(t.muted),
+                );
             });
         });
         if s.is_claude() && s.status.is_live() {

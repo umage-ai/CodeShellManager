@@ -16,10 +16,26 @@ use crate::widgets;
 pub enum Entry {
     Head(String),
     Sep,
-    Item { icon: &'static str, label: String, hint: Option<String>, danger: bool, action: Action },
-    Sub { icon: &'static str, label: String, items: Vec<Entry> },
+    Item {
+        icon: &'static str,
+        label: String,
+        hint: Option<String>,
+        danger: bool,
+        action: Action,
+    },
+    Sub {
+        icon: &'static str,
+        label: String,
+        items: Vec<Entry>,
+    },
     /// An item with a hover tooltip (Open with: the exact command it runs).
-    ItemTip { icon: &'static str, label: String, hint: Option<String>, tip: String, action: Action },
+    ItemTip {
+        icon: &'static str,
+        label: String,
+        hint: Option<String>,
+        tip: String,
+        action: Action,
+    },
 }
 
 fn item(icon: &'static str, label: impl Into<String>, action: Action) -> Entry {
@@ -101,7 +117,13 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         item("tear", "Move to a new window", tool("pane_tear_off", json!({"session_id": id, "group": scope}))),
         Entry::Sep,
     ]);
-    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some("Ctrl W".into()), danger: true, action: tool("session_close", json!({"session_id": id, "force": false})) });
+    v.push(Entry::Item {
+        icon: "x",
+        label: "Close".into(),
+        hint: Some("Ctrl W".into()),
+        danger: true,
+        action: tool("session_close", json!({"session_id": id, "force": false})),
+    });
     v
 }
 
@@ -149,7 +171,13 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     } else {
         v.push(item("power", "Wake", tool("session_wake", sid.clone())));
     }
-    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: None, danger: true, action: tool("session_close", json!({"session_id": id, "force": false})) });
+    v.push(Entry::Item {
+        icon: "x",
+        label: "Close".into(),
+        hint: None,
+        danger: true,
+        action: tool("session_close", json!({"session_id": id, "force": false})),
+    });
     v
 }
 
@@ -170,7 +198,13 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
                 .iter()
                 .map(|m| {
                     let hint = (lay.mode == *m).then(|| "current".to_string());
-                    Entry::Item { icon: m.icon(), label: m.label().into(), hint, danger: false, action: tool("layout_set", json!({"group": gid, "mode": m.id()})) }
+                    Entry::Item {
+                        icon: m.icon(),
+                        label: m.label().into(),
+                        hint,
+                        danger: false,
+                        action: tool("layout_set", json!({"group": gid, "mode": m.id()})),
+                    }
                 })
                 .collect(),
         },
@@ -188,7 +222,13 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
         item("restart", format!("Restart all ({live})…"), tool("group_restart_all", json!({"group_id": gid, "force": false}))),
         item("moon", "Sleep all", tool("group_sleep_all", gp.clone())),
         item("trash", "Delete group…", tool("group_delete", gp.clone())),
-        Entry::Item { icon: "x", label: "Close all…".into(), hint: None, danger: true, action: tool("group_close_all", json!({"group_id": gid, "force": false})) },
+        Entry::Item {
+            icon: "x",
+            label: "Close all…".into(),
+            hint: None,
+            danger: true,
+            action: tool("group_close_all", json!({"group_id": gid, "force": false})),
+        },
     ]);
     v
 }
@@ -198,7 +238,13 @@ fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     let mut v = vec![Entry::Head("Run commands".into())];
     for r in &s.runs {
         let hint = if r.is_default { format!("F5 · {}", r.detail) } else { r.detail.clone() };
-        v.push(Entry::Item { icon: "play", label: r.label.clone(), hint: Some(hint), danger: false, action: tool("run_start", json!({"session_id": id, "run_id": r.id})) });
+        v.push(Entry::Item {
+            icon: "play",
+            label: r.label.clone(),
+            hint: Some(hint),
+            danger: false,
+            action: tool("run_start", json!({"session_id": id, "run_id": r.id})),
+        });
     }
     v.push(Entry::Sep);
     v.push(item("pencil", "Edit commands…", Action::EditRuns(id.to_string())));
@@ -207,7 +253,16 @@ fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
 
 /// Draws `entries` in an area at `at`; returns the area's rect.
 #[allow(clippy::too_many_arguments)]
-fn menu_area(ctx: &egui::Context, app: &mut CsmApp, id: Id, at: Pos2, entries: &[Entry], depth: usize, right: bool, actions: &mut Vec<Action>) -> Vec<Rect> {
+fn menu_area(
+    ctx: &egui::Context,
+    app: &mut CsmApp,
+    id: Id,
+    at: Pos2,
+    entries: &[Entry],
+    depth: usize,
+    right: bool,
+    actions: &mut Vec<Action>,
+) -> Vec<Rect> {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     let mut rects = Vec::new();
@@ -266,12 +321,25 @@ fn menu_area(ctx: &egui::Context, app: &mut CsmApp, id: Id, at: Pos2, entries: &
                         if open {
                             ui.painter().rect_filled(r.rect, CornerRadius::same(radius::SM + 1), Tokens::tint(t.row_sel, alpha::ASLEEP));
                         }
-                        icons::paint(ui, Rect::from_min_size(pos2(r.rect.max.x - space::ROW_X - icon::MD, r.rect.center().y - icon::MD / 2.0), Vec2::splat(icon::MD)), "chevR", icon::MD, t.muted);
+                        icons::paint(
+                            ui,
+                            Rect::from_min_size(
+                                pos2(r.rect.max.x - space::ROW_X - icon::MD, r.rect.center().y - icon::MD / 2.0),
+                                Vec2::splat(icon::MD),
+                            ),
+                            "chevR",
+                            icon::MD,
+                            t.muted,
+                        );
                         if r.hovered() || r.clicked() {
                             app.ui.submenu = Some(label.clone());
                         }
                         if open || r.hovered() {
-                            sub = Some((pos2(r.rect.max.x + space::XS + space::XXS, r.rect.min.y - space::XS - size::HAIRLINE), items.clone(), label.clone()));
+                            sub = Some((
+                                pos2(r.rect.max.x + space::XS + space::XXS, r.rect.min.y - space::XS - size::HAIRLINE),
+                                items.clone(),
+                                label.clone(),
+                            ));
                         }
                     }
                 }
@@ -309,14 +377,29 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let at = pos2(at.x - size::MENU_W, at.y);
             menu_area(ctx, app, Id::new("menu-pane"), at, &e, 0, false, actions)
         }
-        Menu::Row { session, at } => menu_area(ctx, app, Id::new("menu-row"), *at + vec2(space::XS + space::XXS, -space::XS), &with_demo(row_menu(&model, session), demo), 0, false, actions),
+        Menu::Row { session, at } => menu_area(
+            ctx,
+            app,
+            Id::new("menu-row"),
+            *at + vec2(space::XS + space::XXS, -space::XS),
+            &with_demo(row_menu(&model, session), demo),
+            0,
+            false,
+            actions,
+        ),
         Menu::Group { group, at } => menu_area(ctx, app, Id::new("menu-group"), *at, &group_menu(&model, group), 0, false, actions),
-        Menu::Runs { session, at } => menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions),
+        Menu::Runs { session, at } => {
+            menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
+        }
         Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
         Menu::QuickGroup { at } => {
             let mut e = vec![Entry::Head("Group".into())];
             for g in &model.groups {
-                e.push(item(if app.ui.quick.group.as_deref() == Some(g.id.as_str()) { "check" } else { "blank" }, g.name.clone(), Action::Toast(format!("quick-group:{}", g.id))));
+                e.push(item(
+                    if app.ui.quick.group.as_deref() == Some(g.id.as_str()) { "check" } else { "blank" },
+                    g.name.clone(),
+                    Action::Toast(format!("quick-group:{}", g.id)),
+                ));
             }
             e.push(item(if app.ui.quick.group.is_none() { "check" } else { "blank" }, "Ungrouped", Action::Toast("quick-group:".into())));
             menu_area(ctx, app, Id::new("menu-qgroup"), *at, &e, 0, false, actions)
@@ -361,7 +444,10 @@ fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut V
                         if on {
                             ui.painter().rect_stroke(rect, CornerRadius::same(radius::MD), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
                         }
-                        let glyph = Rect::from_min_size(pos2(rect.center().x - size::GRID_GLYPH[0] / 2.0, rect.min.y + space::SM), vec2(size::GRID_GLYPH[0], size::GRID_GLYPH[1]));
+                        let glyph = Rect::from_min_size(
+                            pos2(rect.center().x - size::GRID_GLYPH[0] / 2.0, rect.min.y + space::SM),
+                            vec2(size::GRID_GLYPH[0], size::GRID_GLYPH[1]),
+                        );
                         let label = match tile {
                             Some(g) => {
                                 let cells = crate::screens::panes::grid_cells(glyph, usize::from(g.cols), usize::from(g.rows), space::XXS);
@@ -372,17 +458,31 @@ fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut V
                                 g.label()
                             }
                             None => {
-                                ui.painter().extend(egui::Shape::dashed_line(&[glyph.left_top(), glyph.right_top(), glyph.right_bottom(), glyph.left_bottom(), glyph.left_top()], Stroke::new(size::HAIRLINE, t.surface2), space::XS, space::XS - size::HAIRLINE));
+                                ui.painter().extend(egui::Shape::dashed_line(
+                                    &[glyph.left_top(), glyph.right_top(), glyph.right_bottom(), glyph.left_bottom(), glyph.left_top()],
+                                    Stroke::new(size::HAIRLINE, t.surface2),
+                                    space::XS,
+                                    space::XS - size::HAIRLINE,
+                                ));
                                 icons::paint(ui, glyph, "plus", icon::MD, t.muted);
                                 "Custom…".into()
                             }
                         };
-                        ui.painter().text(pos2(rect.center().x, glyph.max.y + space::SM + space::XS), Align2::CENTER_CENTER, &label, theme::regular(text::CAPTION), if on { t.fg } else { t.fg2 });
+                        ui.painter().text(
+                            pos2(rect.center().x, glyph.max.y + space::SM + space::XS),
+                            Align2::CENTER_CENTER,
+                            &label,
+                            theme::regular(text::CAPTION),
+                            if on { t.fg } else { t.fg2 },
+                        );
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Grid {label}")));
                         if r.clicked() {
                             match tile {
                                 Some(g) => {
-                                    actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": "grid", "cols": g.cols, "rows": g.rows})));
+                                    actions.push(Action::Tool(
+                                        "layout_set",
+                                        json!({"group": scope.key(), "mode": "grid", "cols": g.cols, "rows": g.rows}),
+                                    ));
                                     actions.push(Action::CloseMenu);
                                 }
                                 None => app.ui.submenu = Some("custom-grid".into()),
@@ -412,13 +512,14 @@ fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut V
     resp.response.rect
 }
 
-
 /// The width a menu row needs: icon, label, hint or submenu chevron, padding.
 fn row_width(ui: &egui::Ui, e: &Entry) -> f32 {
     let label = |s: &str| widgets::text_width(ui, s, theme::regular(text::BODY));
     let base = space::SM + icon::LG + space::ROW_X * 2.0;
     match e {
-        Entry::Item { label: l, hint, .. } | Entry::ItemTip { label: l, hint, .. } => base + label(l) + hint.as_ref().map_or(0.0, |h| widgets::text_width(ui, h, theme::mono(text::TINY)) + space::LG),
+        Entry::Item { label: l, hint, .. } | Entry::ItemTip { label: l, hint, .. } => {
+            base + label(l) + hint.as_ref().map_or(0.0, |h| widgets::text_width(ui, h, theme::mono(text::TINY)) + space::LG)
+        }
         Entry::Sub { label: l, .. } => base + label(l) + icon::MD + space::LG,
         Entry::Head(_) | Entry::Sep => 0.0,
     }

@@ -20,21 +20,12 @@ pub struct ProgramStatusSummary {
 impl ProgramStatusSummary {
     /// No records.
     pub fn empty() -> Self {
-        Self {
-            state: None,
-            kind: BlockedKind::None,
-            progress: None,
-            message: None,
-            app: None,
-        }
+        Self { state: None, kind: BlockedKind::None, progress: None, message: None, app: None }
     }
 
     /// States that warrant the "needs attention" badge.
     pub fn wants_attention(&self) -> bool {
-        matches!(
-            self.state,
-            Some(ProgramState::Blocked | ProgramState::Done | ProgramState::Error)
-        )
+        matches!(self.state, Some(ProgramState::Blocked | ProgramState::Done | ProgramState::Error))
     }
 }
 
@@ -45,10 +36,7 @@ pub struct ProgramStatusNotice {
 }
 
 fn is_attention(s: ProgramState) -> bool {
-    matches!(
-        s,
-        ProgramState::Blocked | ProgramState::Done | ProgramState::Error
-    )
+    matches!(s, ProgramState::Blocked | ProgramState::Done | ProgramState::Error)
 }
 
 fn is_result(s: ProgramState) -> bool {
@@ -109,27 +97,14 @@ impl ProgramStatusRecords {
 
         let key = report.id.clone().unwrap_or_default();
         let entered_attention = is_attention(report.state)
-            && self.records.get(&key).is_none_or(|prev| {
-                prev.report.state != report.state || prev.report.kind != report.kind
-            });
+            && self.records.get(&key).is_none_or(|prev| prev.report.state != report.state || prev.report.kind != report.kind);
 
         // Each report fully REPLACES its record: nothing carries over from the previous one.
         self.seq += 1;
-        self.records.insert(
-            key.clone(),
-            Entry {
-                report,
-                seq: self.seq,
-            },
-        );
+        self.records.insert(key.clone(), Entry { report, seq: self.seq });
 
         if self.records.len() > Self::MAX_RECORDS {
-            let victim = self
-                .records
-                .iter()
-                .filter(|(k, _)| **k != key)
-                .min_by_key(|(_, e)| e.seq)
-                .map(|(k, _)| k.clone());
+            let victim = self.records.iter().filter(|(k, _)| **k != key).min_by_key(|(_, e)| e.seq).map(|(k, _)| k.clone());
             if let Some(victim) = victim {
                 self.records.remove(&victim);
             }
@@ -141,12 +116,7 @@ impl ProgramStatusRecords {
     /// and idle records are dropped (there is no heartbeat, so nothing else would ever retire
     /// them); done and error persist because they are results the user has not looked at yet.
     pub fn drop_transient(&mut self) -> bool {
-        self.remove_where(|r| {
-            matches!(
-                r.state,
-                ProgramState::Working | ProgramState::Blocked | ProgramState::Idle
-            )
-        })
+        self.remove_where(|r| matches!(r.state, ProgramState::Working | ProgramState::Blocked | ProgramState::Idle))
     }
 
     /// The user has seen the session. Done and error are retired; live states are left for the
@@ -169,11 +139,7 @@ impl ProgramStatusRecords {
     pub fn effective_app(&self, id: Option<&str>) -> Option<String> {
         let mut current = id;
         loop {
-            if let Some(app) = self
-                .records
-                .get(current.unwrap_or(""))
-                .and_then(|e| e.report.app.as_ref())
-            {
+            if let Some(app) = self.records.get(current.unwrap_or("")).and_then(|e| e.report.app.as_ref()) {
                 return Some(app.clone());
             }
             let cur = current?;
@@ -205,19 +171,14 @@ impl ProgramStatusRecords {
             kind: r.kind,
             progress: r.progress,
             message: r.message.clone(),
-            app: self.effective_app(if key.is_empty() {
-                None
-            } else {
-                Some(key.as_str())
-            }),
+            app: self.effective_app(if key.is_empty() { None } else { Some(key.as_str()) }),
         }
     }
 
     fn remove_subtree(&mut self, id: &str) -> bool {
         let prefix = format!("{id}/");
         let before = self.records.len();
-        self.records
-            .retain(|k, _| !(k == id || k.starts_with(&prefix)));
+        self.records.retain(|k, _| !(k == id || k.starts_with(&prefix)));
         self.records.len() != before
     }
 
@@ -258,10 +219,7 @@ mod tests {
         ProgramStatusReport::new(state)
     }
     fn rid(state: ProgramState, id: &str) -> ProgramStatusReport {
-        ProgramStatusReport {
-            id: Some(id.into()),
-            ..ProgramStatusReport::new(state)
-        }
+        ProgramStatusReport { id: Some(id.into()), ..ProgramStatusReport::new(state) }
     }
 
     #[test]
@@ -274,11 +232,7 @@ mod tests {
     #[test]
     fn each_report_fully_replaces_its_record() {
         let mut store = ProgramStatusRecords::new();
-        store.apply(ProgramStatusReport {
-            progress: Some(40),
-            message: Some("building".into()),
-            ..r(ProgramState::Working)
-        });
+        store.apply(ProgramStatusReport { progress: Some(40), message: Some("building".into()), ..r(ProgramState::Working) });
         store.apply(r(ProgramState::Working));
         let s = store.summarize();
         assert_eq!(s.state, Some(ProgramState::Working));
@@ -350,20 +304,12 @@ mod tests {
                 let mut store = ProgramStatusRecords::new();
                 store.apply(rid(first, "x"));
                 store.apply(rid(second, "y"));
-                assert_eq!(
-                    store.summarize().state,
-                    Some(expected),
-                    "{first:?} {second:?}"
-                );
+                assert_eq!(store.summarize().state, Some(expected), "{first:?} {second:?}");
 
                 let mut rooted = ProgramStatusRecords::new();
                 rooted.apply(r(first));
                 rooted.apply(rid(second, "child"));
-                assert_eq!(
-                    rooted.summarize().state,
-                    Some(expected),
-                    "{first:?} {second:?} rooted"
-                );
+                assert_eq!(rooted.summarize().state, Some(expected), "{first:?} {second:?} rooted");
             }
         }
     }
@@ -372,21 +318,14 @@ mod tests {
     fn a_stale_done_child_never_hides_live_work() {
         let mut store = ProgramStatusRecords::new();
         store.apply(rid(ProgramState::Done, "old")); // persists until acknowledged
-        store.apply(ProgramStatusReport {
-            progress: Some(10),
-            ..r(ProgramState::Working)
-        });
+        store.apply(ProgramStatusReport { progress: Some(10), ..r(ProgramState::Working) });
         assert_eq!(store.summarize().state, Some(ProgramState::Working));
         assert_eq!(store.summarize().progress, Some(10));
     }
 
     #[test]
     fn ties_prefer_the_root_then_the_most_recent() {
-        let working = |id: Option<&str>, p: u8| ProgramStatusReport {
-            id: id.map(str::to_owned),
-            progress: Some(p),
-            ..r(ProgramState::Working)
-        };
+        let working = |id: Option<&str>, p: u8| ProgramStatusReport { id: id.map(str::to_owned), progress: Some(p), ..r(ProgramState::Working) };
         let mut store = ProgramStatusRecords::new();
         store.apply(working(None, 10));
         store.apply(working(Some("a"), 20));
@@ -401,15 +340,8 @@ mod tests {
     #[test]
     fn summary_carries_kind_and_message_of_the_winner() {
         let mut store = ProgramStatusRecords::new();
-        store.apply(ProgramStatusReport {
-            message: Some("root".into()),
-            ..r(ProgramState::Working)
-        });
-        store.apply(ProgramStatusReport {
-            kind: BlockedKind::Auth,
-            message: Some("login".into()),
-            ..rid(ProgramState::Blocked, "deploy/eu")
-        });
+        store.apply(ProgramStatusReport { message: Some("root".into()), ..r(ProgramState::Working) });
+        store.apply(ProgramStatusReport { kind: BlockedKind::Auth, message: Some("login".into()), ..rid(ProgramState::Blocked, "deploy/eu") });
         let s = store.summarize();
         assert_eq!(s.kind, BlockedKind::Auth);
         assert_eq!(s.message.as_deref(), Some("login"));
@@ -428,10 +360,7 @@ mod tests {
         store.apply(with_app(Some("build"), Some("rustc")));
         store.apply(with_app(Some("build/test/unit"), None));
         store.apply(with_app(Some("lint"), None));
-        assert_eq!(
-            store.effective_app(Some("build/test/unit")).as_deref(),
-            Some("rustc")
-        ); // skips missing build/test
+        assert_eq!(store.effective_app(Some("build/test/unit")).as_deref(), Some("rustc")); // skips missing build/test
         assert_eq!(store.effective_app(Some("lint")).as_deref(), Some("cargo"));
         assert_eq!(store.effective_app(None).as_deref(), Some("cargo"));
     }
@@ -454,11 +383,7 @@ mod tests {
     #[test]
     fn entered_attention_is_judged_per_record() {
         let mut store = ProgramStatusRecords::new();
-        assert!(
-            !store
-                .apply_noting_attention(rid(ProgramState::Working, "bg"))
-                .1
-        );
+        assert!(!store.apply_noting_attention(rid(ProgramState::Working, "bg")).1);
         assert!(!store.apply_noting_attention(r(ProgramState::Working)).1);
 
         // Root finishes while a child keeps working: the aggregate stays "working", but the
@@ -466,21 +391,12 @@ mod tests {
         assert!(store.apply_noting_attention(r(ProgramState::Done)).1);
         assert_eq!(store.summarize().state, Some(ProgramState::Working));
 
-        let again = ProgramStatusReport {
-            message: Some("again".into()),
-            ..r(ProgramState::Done)
-        };
+        let again = ProgramStatusReport { message: Some("again".into()), ..r(ProgramState::Done) };
         assert!(!store.apply_noting_attention(again).1); // same state restated
 
-        let question = ProgramStatusReport {
-            kind: BlockedKind::Question,
-            ..r(ProgramState::Blocked)
-        };
+        let question = ProgramStatusReport { kind: BlockedKind::Question, ..r(ProgramState::Blocked) };
         assert!(store.apply_noting_attention(question).1);
-        let permission = ProgramStatusReport {
-            kind: BlockedKind::Permission,
-            ..r(ProgramState::Blocked)
-        };
+        let permission = ProgramStatusReport { kind: BlockedKind::Permission, ..r(ProgramState::Blocked) };
         assert!(store.apply_noting_attention(permission).1); // a new kind is a new ask
         assert!(!store.apply_noting_attention(r(ProgramState::Clear)).1);
     }
@@ -506,10 +422,7 @@ mod tests {
         let mut store = ProgramStatusRecords::new();
         store.apply(r(ProgramState::Done));
         store.apply(rid(ProgramState::Error, "e"));
-        store.apply(ProgramStatusReport {
-            kind: BlockedKind::Permission,
-            ..rid(ProgramState::Blocked, "b")
-        });
+        store.apply(ProgramStatusReport { kind: BlockedKind::Permission, ..rid(ProgramState::Blocked, "b") });
 
         assert!(store.acknowledge());
         assert_eq!(store.count(), 1);

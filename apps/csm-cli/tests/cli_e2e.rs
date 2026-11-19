@@ -39,7 +39,15 @@ fn echo_schema() -> Value {
 }
 
 fn specs() -> Vec<ToolSpec> {
-    let s = |id, toolset, effects, schema: fn() -> Value, run| ToolSpec { id, title: "T", summary: "A fake tool.", toolset, effects, input_schema: schema, run };
+    let s = |id, toolset, effects, schema: fn() -> Value, run| ToolSpec {
+        id,
+        title: "T",
+        summary: "A fake tool.",
+        toolset,
+        effects,
+        input_schema: schema,
+        run,
+    };
     vec![
         s("fake_echo", Toolset::Core, Effects::READ_ONLY, echo_schema, echo),
         s("fake_fail", Toolset::Git, Effects::READ_ONLY, csm_engine::empty_schema, fail),

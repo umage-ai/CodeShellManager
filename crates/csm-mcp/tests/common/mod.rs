@@ -65,7 +65,15 @@ fn none() -> Value {
 }
 
 pub fn specs() -> Vec<ToolSpec> {
-    let spec = |id, toolset, effects, input_schema: fn() -> Value, run| ToolSpec { id, title: "Fake", summary: "A fake tool.", toolset, effects, input_schema, run };
+    let spec = |id, toolset, effects, input_schema: fn() -> Value, run| ToolSpec {
+        id,
+        title: "Fake",
+        summary: "A fake tool.",
+        toolset,
+        effects,
+        input_schema,
+        run,
+    };
     vec![
         spec("fake_echo", Toolset::Core, Effects::READ_ONLY, echo_schema, echo),
         spec("fake_missing", Toolset::Core, Effects::READ_ONLY, none, missing),

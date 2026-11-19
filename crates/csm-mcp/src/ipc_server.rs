@@ -267,22 +267,20 @@ impl Sink {
         // the connection thread polls the channel we hand back.
         let tickets = Arc::clone(&self.tickets);
         let tx2 = tx.clone();
-        let spawned = thread::Builder::new().name("csm-ipc-wait".into()).spawn(move || {
-            match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-                Ok(reply) => {
-                    lock(&tickets).remove(&key);
-                    let _ = tx2.send(wire::encode_reply(reply));
+        let spawned = thread::Builder::new().name("csm-ipc-wait".into()).spawn(move || match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+            Ok(reply) => {
+                lock(&tickets).remove(&key);
+                let _ = tx2.send(wire::encode_reply(reply));
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(t) = lock(&tickets).get_mut(&key) {
+                    t.rx = Some(rx);
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Some(t) = lock(&tickets).get_mut(&key) {
-                        t.rx = Some(rx);
-                    }
-                    let _ = tx2.send(json!({"status": "pending"}));
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    lock(&tickets).remove(&key);
-                    let _ = tx2.send(wire::encode_reply(Err(ToolError::Failed("the engine stopped".into()))));
-                }
+                let _ = tx2.send(json!({"status": "pending"}));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                lock(&tickets).remove(&key);
+                let _ = tx2.send(wire::encode_reply(Err(ToolError::Failed("the engine stopped".into()))));
             }
         });
         if spawned.is_err() {

@@ -7,7 +7,14 @@ use csm_mcp::ToolInfo;
 use serde_json::{Value, json};
 
 fn info(schema: Value) -> ToolInfo {
-    ToolInfo { id: "session_new".into(), title: "New".into(), summary: "Open a session.".into(), toolset: Toolset::Core, effects: Effects::LAUNCHES_PROCESS, input_schema: schema }
+    ToolInfo {
+        id: "session_new".into(),
+        title: "New".into(),
+        summary: "Open a session.".into(),
+        toolset: Toolset::Core,
+        effects: Effects::LAUNCHES_PROCESS,
+        input_schema: schema,
+    }
 }
 
 fn schema() -> Value {
@@ -43,7 +50,8 @@ fn parse(argv: &[&str]) -> Result<(Value, Output), String> {
 
 #[test]
 fn flags_are_typed_from_the_schema() {
-    let (p, out) = parse(&["session-new", "--folder", "C:/x y", "--focus", "--cols", "120", "--ratio", "0.5", "--kind", "wsl", "--name", "n"]).unwrap();
+    let (p, out) =
+        parse(&["session-new", "--folder", "C:/x y", "--focus", "--cols", "120", "--ratio", "0.5", "--kind", "wsl", "--name", "n"]).unwrap();
     assert_eq!(out, Output::Message);
     assert_eq!(p, json!({"folder": "C:/x y", "focus": true, "cols": 120, "ratio": 0.5, "kind": "wsl", "name": "n"}));
 }

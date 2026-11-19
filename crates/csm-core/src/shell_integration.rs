@@ -85,11 +85,7 @@ mod tests {
             ("#A6E3A1", "#A6E3A1"),
             ("#a6e3a180", "#80a6e3a1"), // #rrggbbaa (integrator) -> #aarrggbb (WPF)
         ] {
-            assert_eq!(
-                try_normalize_color(input).as_deref(),
-                Some(expected),
-                "{input}"
-            );
+            assert_eq!(try_normalize_color(input).as_deref(), Some(expected), "{input}");
         }
     }
 
@@ -141,11 +137,7 @@ mod tests {
             ("multi\r\nline", "multiline"),
             ("ünïcödé ⎇ ok", "ünïcödé ⎇ ok"), // non-ASCII printable is fine
         ] {
-            assert_eq!(
-                sanitize_title(input).as_deref(),
-                Some(expected),
-                "{input:?}"
-            );
+            assert_eq!(sanitize_title(input).as_deref(), Some(expected), "{input:?}");
         }
     }
 
@@ -168,10 +160,7 @@ mod tests {
         // One unit short of the cap, then a 2-unit emoji straddling the boundary.
         let input = format!("{}😀", "x".repeat(MAX_TITLE_LENGTH - 1));
         let result = sanitize_title(&input).unwrap();
-        assert!(
-            !result.contains('😀'),
-            "the straddling emoji is dropped whole"
-        );
+        assert!(!result.contains('😀'), "the straddling emoji is dropped whole");
         assert_eq!(utf16_len(&result), MAX_TITLE_LENGTH - 1);
     }
 
@@ -179,13 +168,7 @@ mod tests {
 
     #[test]
     fn sanitize_branch_cases() {
-        for (input, expected) in [
-            ("main", Some("main")),
-            (" feat/x ", Some("feat/x")),
-            ("", None),
-            ("   ", None),
-            ("a\u{1b}b", Some("ab")),
-        ] {
+        for (input, expected) in [("main", Some("main")), (" feat/x ", Some("feat/x")), ("", None), ("   ", None), ("a\u{1b}b", Some("ab"))] {
             assert_eq!(sanitize_branch(input).as_deref(), expected, "{input:?}");
         }
     }

@@ -113,18 +113,9 @@ impl GlyphAtlas {
         self.tex.set_partial([x, y], image, TextureOptions::NEAREST);
         self.uploads += 1;
         let s = ATLAS_SIZE as f32;
-        let uv = Rect::from_min_max(
-            Pos2::new(x as f32 / s, y as f32 / s),
-            Pos2::new((x + raster.width) as f32 / s, (y + raster.height) as f32 / s),
-        );
-        let g = AtlasGlyph {
-            uv,
-            left: raster.left as f32,
-            top: raster.top as f32,
-            w: raster.width as f32,
-            h: raster.height as f32,
-            color: raster.color,
-        };
+        let uv = Rect::from_min_max(Pos2::new(x as f32 / s, y as f32 / s), Pos2::new((x + raster.width) as f32 / s, (y + raster.height) as f32 / s));
+        let g =
+            AtlasGlyph { uv, left: raster.left as f32, top: raster.top as f32, w: raster.width as f32, h: raster.height as f32, color: raster.color };
         self.map.insert(key, Some(g));
         Some(g)
     }

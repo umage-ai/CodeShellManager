@@ -202,6 +202,9 @@ mod tests {
             ..OpenWithEntryView::default()
         }];
         let p = set_params(&rows);
-        assert_eq!(p, json!({"entries": [{"id": "a", "label": "Zed", "executable": r"C:\Zed\Zed.exe", "local_args": "{folder}", "is_default": true}]}));
+        assert_eq!(
+            p,
+            json!({"entries": [{"id": "a", "label": "Zed", "executable": r"C:\Zed\Zed.exe", "local_args": "{folder}", "is_default": true}]})
+        );
     }
 }

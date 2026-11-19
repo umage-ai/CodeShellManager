@@ -95,8 +95,12 @@ fn a_result_for_a_closed_session_offers_to_reopen_it() {
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::OpenSearch(String::new()));
     h.state_mut().ui.search.searched = Some("x".into());
-    h.state_mut().ui.search.output = vec![json!({"type": "output", "session_id": "gone-1", "session_name": "Old build", "folder": "C:\\old", "ts": 0, "excerpt": "ancient output", "matches": [[0, 7]], "reopenable": true})];
-    h.state_mut().ui.search.notes = vec![json!({"type": "note", "folder": "C:\\GitHub\\Odulodo", "excerpt": "a note about odulodo", "matches": [[2, 6]], "session_ids": ["odulodo"]})];
+    h.state_mut().ui.search.output = vec![
+        json!({"type": "output", "session_id": "gone-1", "session_name": "Old build", "folder": "C:\\old", "ts": 0, "excerpt": "ancient output", "matches": [[0, 7]], "reopenable": true}),
+    ];
+    h.state_mut().ui.search.notes = vec![
+        json!({"type": "note", "folder": "C:\\GitHub\\Odulodo", "excerpt": "a note about odulodo", "matches": [[2, 6]], "session_ids": ["odulodo"]}),
+    ];
     settle(&mut h);
     h.get_by_label_contains("Search result: Old build:").click();
     settle(&mut h);
@@ -109,7 +113,9 @@ fn a_result_for_a_closed_session_offers_to_reopen_it() {
     // Notes are labelled as notes, and open the Notes tab on a session in that folder.
     h.state_mut().run(&ctx, Action::OpenSearch(String::new()));
     h.state_mut().ui.search.output = Vec::new();
-    h.state_mut().ui.search.notes = vec![json!({"type": "note", "folder": "C:\\GitHub\\Odulodo", "excerpt": "a note about odulodo", "matches": [[2, 6]], "session_ids": ["odulodo"]})];
+    h.state_mut().ui.search.notes = vec![
+        json!({"type": "note", "folder": "C:\\GitHub\\Odulodo", "excerpt": "a note about odulodo", "matches": [[2, 6]], "session_ids": ["odulodo"]}),
+    ];
     settle(&mut h);
     h.get_by_label_contains("Search note: C:\\GitHub\\Odulodo").click();
     settle(&mut h);
@@ -219,7 +225,8 @@ impl Rig {
     }
 
     fn new_session(&mut self, name: &str) -> String {
-        let out = self.engine.call(Caller::Ui, "session_new", json!({"folder": self.folder, "command": "pwsh", "name": name, "focus": true})).unwrap();
+        let out =
+            self.engine.call(Caller::Ui, "session_new", json!({"folder": self.folder, "command": "pwsh", "name": name, "focus": true})).unwrap();
         let id = out.data["id"].as_str().unwrap().to_owned();
         let want = id.clone();
         self.until("the session in the UI", move |r| r.h.state().model.session(&want).is_some());

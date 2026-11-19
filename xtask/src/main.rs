@@ -68,7 +68,9 @@ fn main() -> ExitCode {
         },
         Some("ci") => ci::run(flag("--skip-tests"), flag("--skip-cargo")),
         _ => {
-            eprintln!("usage: cargo xtask <layers | policy | tools [--check] | secrets [--staged] | mcp-size [--markdown] | ci [--skip-tests] [--skip-cargo]>");
+            eprintln!(
+                "usage: cargo xtask <layers | policy | tools [--check] | secrets [--staged] | mcp-size [--markdown] | ci [--skip-tests] [--skip-cargo]>"
+            );
             return ExitCode::from(2);
         }
     };

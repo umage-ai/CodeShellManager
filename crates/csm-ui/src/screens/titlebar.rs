@@ -29,7 +29,10 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if let Some(r) = &app.model.restore {
         let label = format!("Restoring {} of {}", r.done.min(r.total), r.total);
         let tail = r.current.clone().map_or_else(|| "· done".to_string(), |c| format!("· {c}"));
-        let w = widgets::text_width(ui, &label, theme::medium(text::CAPTION)) + widgets::text_width(ui, &tail, theme::regular(text::CAPTION)) + space::XXL + space::SM;
+        let w = widgets::text_width(ui, &label, theme::medium(text::CAPTION))
+            + widgets::text_width(ui, &tail, theme::regular(text::CAPTION))
+            + space::XXL
+            + space::SM;
         let pill = Rect::from_center_size(rect.center(), vec2(w, size::CONTROL_SM));
         p.rect_filled(pill, CornerRadius::same(radius::PILL), Tokens::tint(t.blue, 0.14));
         let g = Rect::from_min_size(pos2(pill.min.x + space::ROW_X, pill.center().y - icon::SM / 2.0), Vec2::splat(icon::SM));
@@ -43,7 +46,13 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         p.rect(mid, CornerRadius::same(radius::MD), t.field, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
         let ir = Rect::from_min_size(pos2(mid.min.x + space::ROW_X, mid.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, "search", icon::MD, if resp.hovered() { t.fg2 } else { t.muted });
-        p.text(pos2(ir.max.x + space::SM, mid.center().y), Align2::LEFT_CENTER, "Search sessions and commands", theme::regular(text::BODY), if resp.hovered() { t.fg2 } else { t.muted });
+        p.text(
+            pos2(ir.max.x + space::SM, mid.center().y),
+            Align2::LEFT_CENTER,
+            "Search sessions and commands",
+            theme::regular(text::BODY),
+            if resp.hovered() { t.fg2 } else { t.muted },
+        );
         let kw = widgets::kbd_width(ui, "Ctrl K");
         paint_kbd(ui, Rect::from_center_size(pos2(mid.max.x - space::XS - space::XXS - kw / 2.0, mid.center().y), vec2(kw, size::KBD)), "Ctrl K");
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Search sessions and commands"));
@@ -73,7 +82,11 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     let next = crate::engine_backend::theme_setting(if t.dark() { ThemeKind::Latte } else { ThemeKind::Mocha });
     let theme_icon = if t.dark() { "moon" } else { "sun" };
-    let tip = if t.dark() { "Theme: dark. Click for light (Settings › Appearance has System)" } else { "Theme: light. Click for dark (Settings › Appearance has System)" };
+    let tip = if t.dark() {
+        "Theme: dark. Click for light (Settings › Appearance has System)"
+    } else {
+        "Theme: light. Click for dark (Settings › Appearance has System)"
+    };
     if btn(ui, theme_icon, false, tip) {
         actions.push(Action::Tool("settings_set", json!({"key": "theme", "value": next})));
     }

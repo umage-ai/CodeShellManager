@@ -102,12 +102,9 @@ fn parse_133(params: &[&[u8]]) -> Option<PromptMark> {
         b'A' => PromptMark::PromptStart,
         b'B' => PromptMark::CommandStart,
         b'C' => PromptMark::CommandExecuted,
-        b'D' => PromptMark::CommandFinished {
-            exit_code: params
-                .get(1)
-                .and_then(|p| std::str::from_utf8(p).ok())
-                .and_then(|s| s.trim().parse().ok()),
-        },
+        b'D' => {
+            PromptMark::CommandFinished { exit_code: params.get(1).and_then(|p| std::str::from_utf8(p).ok()).and_then(|s| s.trim().parse().ok()) }
+        }
         _ => return None,
     })
 }

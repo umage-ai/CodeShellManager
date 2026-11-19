@@ -147,12 +147,7 @@ pub(crate) fn views(state: &State, s: &ShellSession) -> Vec<RunView> {
 /// Output handles of every invocation, by `(session id, run id)` (the snapshot carries them so
 /// the UI can read output once a frame without a tool call).
 pub(crate) fn handles(state: &State) -> HashMap<(String, String), RunOutputHandle> {
-    state
-        .rt
-        .runs
-        .iter()
-        .flat_map(|(sid, v)| v.iter().map(move |r| ((sid.clone(), r.item_id.clone()), RunOutputHandle(r.output.clone()))))
-        .collect()
+    state.rt.runs.iter().flat_map(|(sid, v)| v.iter().map(move |r| ((sid.clone(), r.item_id.clone()), RunOutputHandle(r.output.clone())))).collect()
 }
 
 // ── Planning (pure) ──────────────────────────────────────────────────────────────────────
@@ -229,9 +224,11 @@ pub fn plan(s: &ShellSession, item: &RunCommandItem, windows: bool, pwsh: &str, 
         SessionKind::Local => {
             let cwd = Some(s.working_folder.trim()).filter(|f| !f.is_empty()).map(PathBuf::from);
             match (item.mode, windows) {
-                (RunMode::PowerShell, _) => {
-                    RunPlan { argv: std::iter::once(pwsh.to_owned()).chain(split_command_line(&sl::build_pwsh_args(cmd))).collect(), verbatim: None, cwd }
-                }
+                (RunMode::PowerShell, _) => RunPlan {
+                    argv: std::iter::once(pwsh.to_owned()).chain(split_command_line(&sl::build_pwsh_args(cmd))).collect(),
+                    verbatim: None,
+                    cwd,
+                },
                 (RunMode::Process, true) => RunPlan { argv: vec!["cmd.exe".to_owned()], verbatim: Some(sl::build_local_cmd(cmd)), cwd },
                 (RunMode::Process, false) => RunPlan { argv: vec![unix_shell.to_owned(), "-lc".to_owned(), cmd.to_owned()], verbatim: None, cwd },
             }
@@ -315,7 +312,13 @@ pub(crate) fn start(ctx: &mut Ctx<'_>, s: &ShellSession, item: &RunCommandItem) 
 }
 
 /// On a worker: resolve, spawn on the inbox ConPTY, wire output. Blocking.
-fn spawn_run(s: &ShellSession, item: &RunCommandItem, factory: &crate::state::PtyFactory, output: &Arc<RunOutput>, closed: &AtomicBool) -> Result<Arc<dyn Pty>, String> {
+fn spawn_run(
+    s: &ShellSession,
+    item: &RunCommandItem,
+    factory: &crate::state::PtyFactory,
+    output: &Arc<RunOutput>,
+    closed: &AtomicBool,
+) -> Result<Arc<dyn Pty>, String> {
     let pwsh = if cfg!(windows) { crate::launch::pwsh() } else { "pwsh" };
     let unix_shell = std::env::var("SHELL").ok().filter(|v| v.starts_with('/')).unwrap_or_else(|| "/bin/sh".into());
     let mut p = plan(s, item, cfg!(windows), pwsh, &unix_shell)?;
@@ -497,7 +500,13 @@ mod tests {
         assert_eq!(p.argv.first().map(String::as_str), Some("ssh"));
         assert!(!p.argv.iter().any(|a| a.starts_with("-oProxyCommand")), "{:?}", p.argv);
         assert!(p.argv.last().is_some_and(|a| a.contains("bash -c 'make test'")), "{:?}", p.argv);
-        let wsl = ShellSession { id: "s".into(), kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), wsl_working_folder: "/home/a".into(), ..Default::default() };
+        let wsl = ShellSession {
+            id: "s".into(),
+            kind: SessionKind::Wsl,
+            wsl_distro: "Ubuntu".into(),
+            wsl_working_folder: "/home/a".into(),
+            ..Default::default()
+        };
         let p = plan(&wsl, &item("echo $HOME", RunMode::Process), true, "pwsh.exe", "/bin/sh").unwrap();
         assert_eq!(&p.argv[..3], ["wsl.exe", "-d", "Ubuntu"]);
         assert!(p.argv.windows(2).any(|w| w[0] == "-e"), "-e, never --: {:?}", p.argv);

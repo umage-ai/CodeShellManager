@@ -164,7 +164,15 @@ pub fn clients(host: &Host) -> Vec<Client> {
     let codex_dir = host.var("CODEX_HOME").unwrap_or_else(|| host.home.join(".codex"));
     let desktop_dir = host.app_data().join("Claude");
     vec![
-        Client { id: "claude_code", display: "Claude Code", config: claude_json, markers: vec![claude_dir], format: Format::Jsonc, table: vec!["mcpServers"], shape: Shape::Stdio },
+        Client {
+            id: "claude_code",
+            display: "Claude Code",
+            config: claude_json,
+            markers: vec![claude_dir],
+            format: Format::Jsonc,
+            table: vec!["mcpServers"],
+            shape: Shape::Stdio,
+        },
         Client {
             id: "claude_desktop",
             display: "Claude Desktop",

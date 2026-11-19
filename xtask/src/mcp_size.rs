@@ -25,7 +25,12 @@ fn list_size(service: &mut McpService<LocalBackend>, id: u64) -> Result<(usize, 
 pub fn run(markdown: bool) -> Result<(), String> {
     let engine = Engine::start(State::default(), Vec::new()).map_err(|e| format!("could not start an engine: {e}"))?;
     let mut service = McpService::new(LocalBackend::new(engine.clone()), McpOptions::default());
-    call(&mut service, 1, "initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "xtask", "version": "0"}}))?;
+    call(
+        &mut service,
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "xtask", "version": "0"}}),
+    )?;
     let mut id = 2;
     let (base_tools, base_bytes) = list_size(&mut service, id)?;
     let mut rows = vec![("base (core + toolset tools)".to_owned(), base_tools, base_bytes)];

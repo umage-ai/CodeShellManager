@@ -69,10 +69,8 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     // The 12-colour palette, kept verbatim so a palette change forces a deliberate update here.
-    const EXPECTED_PALETTE: [&str; 12] = [
-        "#FF6B6B", "#FF9E42", "#FFD166", "#AEDE68", "#51CF66", "#38D9A9", "#66D9E8", "#4DABF7",
-        "#748FFC", "#9775FA", "#F783AC", "#FF6B95",
-    ];
+    const EXPECTED_PALETTE: [&str; 12] =
+        ["#FF6B6B", "#FF9E42", "#FFD166", "#AEDE68", "#51CF66", "#38D9A9", "#66D9E8", "#4DABF7", "#748FFC", "#9775FA", "#F783AC", "#FF6B95"];
 
     #[test]
     fn palette_is_the_expected_one() {
@@ -87,12 +85,7 @@ mod tests {
 
     #[test]
     fn is_deterministic_across_multiple_calls() {
-        for key in [
-            r"C:\projects\alpha",
-            r"C:\projects\beta",
-            "user@host.example.com",
-            "",
-        ] {
+        for key in [r"C:\projects\alpha", r"C:\projects\beta", "user@host.example.com", ""] {
             let results: HashSet<&str> = (0..5).map(|_| hex_color(key)).collect();
             assert_eq!(results.len(), 1, "{key}");
         }
@@ -106,13 +99,7 @@ mod tests {
 
     #[test]
     fn returns_valid_hex_format() {
-        for key in [
-            r"C:\projects\my-app",
-            "",
-            "   ",
-            "user@host:22",
-            r"\\unc\share\path",
-        ] {
+        for key in [r"C:\projects\my-app", "", "   ", "user@host:22", r"\\unc\share\path"] {
             let hex = hex_color(key);
             assert_eq!(hex.len(), 7);
             assert!(hex.starts_with('#'));
@@ -133,15 +120,10 @@ mod tests {
         // If this becomes flaky, widen the sample: uneven distribution is a real regression signal.
         let mut counts: HashMap<&str, u32> = EXPECTED_PALETTE.iter().map(|c| (*c, 0)).collect();
         for i in 0..120 {
-            *counts
-                .entry(hex_color(&format!("C:\\repo\\project-{i}")))
-                .or_insert(0) += 1;
+            *counts.entry(hex_color(&format!("C:\\repo\\project-{i}"))).or_insert(0) += 1;
         }
         for color in EXPECTED_PALETTE {
-            assert!(
-                counts.get(color).copied().unwrap_or(0) > 0,
-                "{color} was never produced over 120 keys"
-            );
+            assert!(counts.get(color).copied().unwrap_or(0) > 0, "{color} was never produced over 120 keys");
         }
     }
 
@@ -196,10 +178,7 @@ mod tests {
         let mut n = 0;
         for line in include_str!("../tests/fixtures/dotnet_color_golden.tsv").lines() {
             let (hex_key, expected) = line.split_once('\t').unwrap();
-            let bytes: Vec<u8> = (0..hex_key.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&hex_key[i..i + 2], 16).unwrap())
-                .collect();
+            let bytes: Vec<u8> = (0..hex_key.len()).step_by(2).map(|i| u8::from_str_radix(&hex_key[i..i + 2], 16).unwrap()).collect();
             let key = String::from_utf8(bytes).unwrap();
             assert_eq!(hex_color(&key), expected.trim(), "{key:?}");
             n += 1;
@@ -218,10 +197,7 @@ mod tests {
         let mut expected: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for line in include_str!("../tests/fixtures/dotnet_lower_invariant.txt").lines() {
             let (a, b) = line.trim().split_once(':').unwrap();
-            expected.insert(
-                u32::from_str_radix(a, 16).unwrap(),
-                u32::from_str_radix(b, 16).unwrap(),
-            );
+            expected.insert(u32::from_str_radix(a, 16).unwrap(), u32::from_str_radix(b, 16).unwrap());
         }
         assert!(expected.len() > 1000);
         let mut newer_unicode_only = 0;
@@ -229,18 +205,12 @@ mod tests {
             let Some(c) = char::from_u32(cp) else {
                 continue;
             };
-            let got = to_lower_invariant(&c.to_string())
-                .chars()
-                .next()
-                .map(u32::from);
+            let got = to_lower_invariant(&c.to_string()).chars().next().map(u32::from);
             let want = expected.get(&cp).copied();
             if got == Some(want.unwrap_or(cp)) {
                 continue;
             }
-            assert!(
-                want.is_none() && cp >= 0x1C89,
-                "U+{cp:04X}: rust={got:?} dotnet={want:?}"
-            );
+            assert!(want.is_none() && cp >= 0x1C89, "U+{cp:04X}: rust={got:?} dotnet={want:?}");
             newer_unicode_only += 1;
         }
         assert!(newer_unicode_only < 100, "{newer_unicode_only}");

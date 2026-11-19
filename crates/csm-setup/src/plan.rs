@@ -153,7 +153,16 @@ fn same_command(a: &Value, b: &Value) -> bool {
 /// What setup would do for one client.
 pub fn inspect_client(c: &Client, command: &[String]) -> Action {
     let entry = c.desired_entry(command);
-    let mut action = Action { client: c.id, display: c.display, config: c.config.clone(), kind: ActionKind::Blocked, reason: None, entry: entry.clone(), before: None, after: None };
+    let mut action = Action {
+        client: c.id,
+        display: c.display,
+        config: c.config.clone(),
+        kind: ActionKind::Blocked,
+        reason: None,
+        entry: entry.clone(),
+        before: None,
+        after: None,
+    };
     let blocked = |mut a: Action, why: String| {
         a.reason = Some(why);
         a
@@ -335,7 +344,8 @@ fn apply_one(a: &Action, c: Option<&Client>) -> FileResult {
         result.outcome = Outcome::Failed(format!("could not write: {e}"));
         return result;
     }
-    let check = read_text(&a.config).and_then(|t| t.ok_or_else(|| "the file vanished".to_owned())).and_then(|t| verify(c, a.before.as_deref(), &t, &a.entry));
+    let check =
+        read_text(&a.config).and_then(|t| t.ok_or_else(|| "the file vanished".to_owned())).and_then(|t| verify(c, a.before.as_deref(), &t, &a.entry));
     result.outcome = match check {
         Ok(()) => Outcome::Written,
         Err(why) => {
@@ -343,7 +353,11 @@ fn apply_one(a: &Action, c: Option<&Client>) -> FileResult {
                 Some(old) => write_atomic(&a.config, old).is_ok(),
                 None => std::fs::remove_file(&a.config).is_ok(),
             };
-            Outcome::RolledBack(if restored { why } else { format!("{why}; and the original could not be restored: copy {:?} back by hand", result.backup) })
+            Outcome::RolledBack(if restored {
+                why
+            } else {
+                format!("{why}; and the original could not be restored: copy {:?} back by hand", result.backup)
+            })
         }
     };
     result

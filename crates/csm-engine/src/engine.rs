@@ -129,9 +129,7 @@ impl Engine {
     /// engine tool (sessions, groups, layout, app) is always registered; `tools` adds more.
     /// The restore loop starts right away when `state` has sessions to restore.
     pub fn start(state: State, tools: Vec<ToolSpec>) -> Result<Engine, ToolError> {
-        let registry = Arc::new(Registry::new(
-            builtin_specs().into_iter().chain(crate::tools::specs()).chain(tools).collect(),
-        )?);
+        let registry = Arc::new(Registry::new(builtin_specs().into_iter().chain(crate::tools::specs()).chain(tools).collect())?);
         let (tx, rx) = mpsc::channel::<Msg>();
         let events = Events::default();
         let engine = Engine {
@@ -251,13 +249,7 @@ fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
 }
 
 /// One message. Returns false to stop the loop.
-fn handle(
-    msg: Msg,
-    engine: &Engine,
-    state: &mut State,
-    pending: &mut HashMap<u64, Pending>,
-    next_id: &mut u64,
-) -> bool {
+fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u64, Pending>, next_id: &mut u64) -> bool {
     {
         match msg {
             Msg::Shutdown => return false,
@@ -349,8 +341,7 @@ fn pending_json(key: u64, p: &Pending) -> Value {
 
 fn expire(pending: &mut HashMap<u64, Pending>, events: &Events) {
     let now = Instant::now();
-    let stale: Vec<u64> =
-        pending.iter().filter(|(_, p)| now.duration_since(p.asked_at) >= CONSENT_TIMEOUT).map(|(k, _)| *k).collect();
+    let stale: Vec<u64> = pending.iter().filter(|(_, p)| now.duration_since(p.asked_at) >= CONSENT_TIMEOUT).map(|(k, _)| *k).collect();
     for k in stale {
         if let Some(p) = pending.remove(&k) {
             let _ = p.reply.send(Err(ToolError::TimedOut(format!("nobody answered whether `{}` may run", p.spec.id))));
@@ -375,13 +366,7 @@ enum ConsentChoice {
     Deny,
 }
 
-fn answer(
-    caller: &Caller,
-    params: Value,
-    pending: &mut HashMap<u64, Pending>,
-    state: &mut State,
-    engine: &Engine,
-) -> Reply {
+fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, state: &mut State, engine: &Engine) -> Reply {
     // Only the person, in the app, can answer. An MCP client must never approve its own request.
     if *caller != Caller::Ui {
         return Err(ToolError::Refused("consent is answered in the app, not over MCP or the CLI".into()));
@@ -522,9 +507,7 @@ mod tests {
         let e = Engine::start(State::default(), vec![sensitive()]).unwrap();
         let events = e.subscribe();
         let rx = e.submit(ext(), "test_send", Value::Null);
-        let Ok(Event::ConsentRequested { request }) = events.recv_timeout(Duration::from_secs(5)) else {
-            panic!("expected a consent request")
-        };
+        let Ok(Event::ConsentRequested { request }) = events.recv_timeout(Duration::from_secs(5)) else { panic!("expected a consent request") };
         assert!(rx.try_recv().is_err(), "must not run before the answer");
         // An MCP client cannot answer its own request.
         let id = request["request_id"].clone();
@@ -542,9 +525,7 @@ mod tests {
         let e = Engine::start(State::default(), vec![sensitive()]).unwrap();
         let events = e.subscribe();
         let rx = e.submit(ext(), "test_send", Value::Null);
-        let Ok(Event::ConsentRequested { request }) = events.recv_timeout(Duration::from_secs(5)) else {
-            panic!("expected a consent request")
-        };
+        let Ok(Event::ConsentRequested { request }) = events.recv_timeout(Duration::from_secs(5)) else { panic!("expected a consent request") };
         e.call(Caller::Ui, "consent_answer", json!({"request_id": request["request_id"], "answer": "deny"})).unwrap();
         assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err(ToolError::Declined(_))));
         e.shutdown();

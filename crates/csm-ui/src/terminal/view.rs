@@ -11,7 +11,7 @@ use std::time::Instant;
 use csm_term::alacritty_terminal::index::{Column, Line, Point, Side};
 use csm_term::alacritty_terminal::selection::{Selection, SelectionType};
 use csm_term::alacritty_terminal::term::TermMode;
-use csm_term::input::{self, Key, MouseAction, MouseButton, Mods};
+use csm_term::input::{self, Key, Mods, MouseAction, MouseButton};
 use csm_term::{GridSize, Terminal};
 use egui::{Color32, Event, Id, ImeEvent, Mesh, Pos2, Rect, Response, Sense, Shape, Ui, Vec2, pos2, vec2};
 
@@ -281,10 +281,7 @@ impl TerminalView {
         let focused = opts.interactive && resp.has_focus();
         if focused {
             ui.memory_mut(|mem| {
-                mem.set_focus_lock_filter(
-                    self.id,
-                    egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true },
-                );
+                mem.set_focus_lock_filter(self.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
             });
         }
         let mode = source.mode();
@@ -355,12 +352,7 @@ impl TerminalView {
         if focused && let Some(cache) = &self.cache {
             let cursor_rect = cache.cursor_rect;
             ctx.output_mut(|o| {
-                o.ime = Some(egui::output::IMEOutput {
-                    purpose: egui::IMEPurpose::Terminal,
-                    rect,
-                    cursor_rect,
-                    should_interrupt_composition: false,
-                });
+                o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Terminal, rect, cursor_rect, should_interrupt_composition: false });
             });
             if !self.preedit.is_empty() {
                 let fg = opts.style.palette.foreground;
@@ -495,9 +487,7 @@ impl TerminalView {
                             self.drag_origin = Some((col, row));
                         }
                     } else if !pressed && self.mouse_down == Some(b) {
-                        if report
-                            && let Some(bytes) = input::encode_mouse(MouseAction::Release(b), col as u32, row as u32, mods(modifiers), mode)
-                        {
+                        if report && let Some(bytes) = input::encode_mouse(MouseAction::Release(b), col as u32, row as u32, mods(modifiers), mode) {
                             source.send_mouse(&bytes.0);
                         }
                         if !report && !self.has_selection {
@@ -513,7 +503,9 @@ impl TerminalView {
                     let report = input::mouse_reporting(mode) && !shift;
                     match self.mouse_down {
                         Some(b) if report => {
-                            if let Some(bytes) = input::encode_mouse(MouseAction::Motion { held: Some(b) }, col as u32, row as u32, Mods::default(), mode) {
+                            if let Some(bytes) =
+                                input::encode_mouse(MouseAction::Motion { held: Some(b) }, col as u32, row as u32, Mods::default(), mode)
+                            {
                                 source.send_mouse(&bytes.0);
                             }
                         }
@@ -525,7 +517,9 @@ impl TerminalView {
                         }
                         Some(_) => {}
                         None if report && hovered && body.contains(pos) => {
-                            if let Some(bytes) = input::encode_mouse(MouseAction::Motion { held: None }, col as u32, row as u32, Mods::default(), mode) {
+                            if let Some(bytes) =
+                                input::encode_mouse(MouseAction::Motion { held: None }, col as u32, row as u32, Mods::default(), mode)
+                            {
                                 source.send_mouse(&bytes.0);
                             }
                         }

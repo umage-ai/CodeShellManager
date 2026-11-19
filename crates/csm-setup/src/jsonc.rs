@@ -434,7 +434,8 @@ impl Doc {
                 let own_lines = self.first_on_line(member.key_start) && line_rest.trim().is_empty();
                 let (start, end) = if own_lines {
                     let line_end = member_end + line_rest.len();
-                    let eol_len = if self.text.get(line_end..).is_some_and(|s| s.starts_with("\r\n")) { 2 } else { usize::from(rest.len() > line_rest.len()) };
+                    let eol_len =
+                        if self.text.get(line_end..).is_some_and(|s| s.starts_with("\r\n")) { 2 } else { usize::from(rest.len() > line_rest.len()) };
                     (self.line_start(member.key_start), line_end + eol_len)
                 } else {
                     (member.key_start, member_end)

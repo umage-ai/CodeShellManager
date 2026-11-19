@@ -228,11 +228,7 @@ impl ExitState {
 }
 
 /// A dedicated reader thread (never a pool thread: the read blocks for the session's life).
-pub(crate) fn spawn_reader(
-    name: String,
-    mut source: impl Read + Send + 'static,
-    output: Arc<EarlyOutputBuffer>,
-) -> io::Result<()> {
+pub(crate) fn spawn_reader(name: String, mut source: impl Read + Send + 'static, output: Arc<EarlyOutputBuffer>) -> io::Result<()> {
     std::thread::Builder::new().name(name).spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -253,10 +249,7 @@ pub(crate) fn spawn_reader(
 /// A dedicated writer thread: one queue, so writes from the UI (keys, pastes) and from the
 /// emulator (DA1, 7501 replies) reach the child in exactly the order they were queued, and a
 /// child that stops reading can never block the caller.
-pub(crate) fn spawn_writer(
-    name: String,
-    mut sink: impl Write + Send + 'static,
-) -> io::Result<Sender<Vec<u8>>> {
+pub(crate) fn spawn_writer(name: String, mut sink: impl Write + Send + 'static) -> io::Result<Sender<Vec<u8>>> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::Builder::new().name(name).spawn(move || {
         for chunk in rx {
@@ -272,9 +265,7 @@ pub(crate) fn spawn_writer(
 pub(crate) fn send_to_writer(writer: &Mutex<Option<Sender<Vec<u8>>>>, bytes: &[u8]) -> io::Result<()> {
     let guard = writer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_ref() {
-        Some(tx) => tx
-            .send(bytes.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer has stopped")),
+        Some(tx) => tx.send(bytes.to_vec()).map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer has stopped")),
         None => Err(io::Error::new(io::ErrorKind::BrokenPipe, "PTY is closed")),
     }
 }

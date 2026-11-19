@@ -64,13 +64,7 @@ pub struct GroupLayout {
 
 impl Default for GroupLayout {
     fn default() -> Self {
-        Self {
-            mode: LayoutMode::Side,
-            grid_cols: default_cols(),
-            grid_rows: default_rows(),
-            pinned: Vec::new(),
-            free_tree: None,
-        }
+        Self { mode: LayoutMode::Side, grid_cols: default_cols(), grid_rows: default_rows(), pinned: Vec::new(), free_tree: None }
     }
 }
 
@@ -135,15 +129,7 @@ mod tests {
     #[test]
     fn round_trips_and_defaults() {
         let mut ui = UiState::default();
-        ui.layouts.insert(
-            "g".into(),
-            GroupLayout {
-                mode: LayoutMode::Grid,
-                grid_cols: 3,
-                grid_rows: 2,
-                ..Default::default()
-            },
-        );
+        ui.layouts.insert("g".into(), GroupLayout { mode: LayoutMode::Grid, grid_cols: 3, grid_rows: 2, ..Default::default() });
         ui.inspector = Some(InspectorTab::Git);
         let json = serde_json::to_string(&ui).unwrap();
         assert!(json.contains(r#""Mode":"grid""#), "{json}");

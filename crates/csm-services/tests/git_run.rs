@@ -1,11 +1,6 @@
 //! The git process layer against real repositories: a throwaway bare "remote" and clones of it
 //! in a temp directory. Needs `git` on PATH (as the app does).
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,25 +17,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args([
-            "-c",
-            "user.name=csm",
-            "-c",
-            "user.email=csm@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
+        .args(["-c", "user.name=csm", "-c", "user.email=csm@example.invalid", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
         .args(args)
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success(), "git {args:?} failed: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -70,19 +51,11 @@ fn repos() -> Repos {
     write(&seed.join("a.txt"), "one\n");
     git(&seed, &["add", "."]);
     git(&seed, &["commit", "-m", "one"]);
-    git(
-        &seed,
-        &["remote", "add", "origin", &remote.display().to_string()],
-    );
+    git(&seed, &["remote", "add", "origin", &remote.display().to_string()]);
     git(&seed, &["push", "-u", "origin", "main"]);
     let a = root.join("a");
     git(&root, &["clone", &remote.display().to_string(), "a"]);
-    Repos {
-        _tmp: tmp,
-        root,
-        remote,
-        a,
-    }
+    Repos { _tmp: tmp, root, remote, a }
 }
 
 fn s(p: &Path) -> String {
@@ -119,20 +92,9 @@ fn status_reports_branch_upstream_ahead_behind_and_changes() {
     git(&r.a, &["fetch"]);
     let st = run::status(&s(&r.a)).unwrap();
     assert_eq!((st.ahead, st.behind), (Some(1), Some(1)));
-    let codes: Vec<(String, String)> = st
-        .changes
-        .iter()
-        .map(|c| (c.code.clone(), c.path.clone()))
-        .collect();
-    assert!(
-        codes.contains(&(".M".to_string(), "a.txt".to_string()))
-            || codes.iter().any(|(c, p)| c.contains('M') && p == "a.txt"),
-        "{codes:?}"
-    );
-    assert!(
-        codes.iter().any(|(c, p)| c == "??" && p == "new.txt"),
-        "{codes:?}"
-    );
+    let codes: Vec<(String, String)> = st.changes.iter().map(|c| (c.code.clone(), c.path.clone())).collect();
+    assert!(codes.contains(&(".M".to_string(), "a.txt".to_string())) || codes.iter().any(|(c, p)| c.contains('M') && p == "a.txt"), "{codes:?}");
+    assert!(codes.iter().any(|(c, p)| c == "??" && p == "new.txt"), "{codes:?}");
 
     // Not a repo: no status, no root.
     let plain = r.root.join("plain");
@@ -161,10 +123,7 @@ fn fetch_then_pull_fast_forwards_and_a_diverged_branch_is_refused() {
     push_from_other(&r, "b2.txt");
     let p = run::pull_ff_only(&s(&r.a));
     assert!(!p.ok, "a diverged branch must not be pulled: {}", p.output);
-    assert!(
-        !r.a.join("b2.txt").exists(),
-        "nothing was merged or rebased"
-    );
+    assert!(!r.a.join("b2.txt").exists(), "nothing was merged or rebased");
     let msg = run::failure_message("Pull", &p.output);
     assert!(msg.starts_with("Pull failed."), "{msg}");
     // The local commit is still the tip.
@@ -190,16 +149,8 @@ fn switch_handles_a_dash_branch_and_never_guesses_a_remote_one() {
     git(&b, &["push", "-u", "origin", "remote-only"]);
     assert!(run::fetch(&s(&r.a)).ok);
     let sw = run::switch_branch(&s(&r.a), "remote-only");
-    assert!(
-        !sw.ok,
-        "a remote-only name must not be invented: {}",
-        sw.output
-    );
-    assert!(
-        !run::branches(&s(&r.a))
-            .unwrap()
-            .contains(&"remote-only".to_string())
-    );
+    assert!(!sw.ok, "a remote-only name must not be invented: {}", sw.output);
+    assert!(!run::branches(&s(&r.a)).unwrap().contains(&"remote-only".to_string()));
 }
 
 #[test]
@@ -220,26 +171,11 @@ fn worktrees_add_list_and_remove_with_the_refusals() {
     // Repo root and "worktree of" from inside the linked worktree.
     let root = run::repo_root(&s(&wt)).unwrap();
     assert!(worktrees::same_path(&root, &a), "{root} vs {a}");
-    assert_eq!(
-        run::linked_worktree_of(&s(&wt), Some(&root)).as_deref(),
-        Some("a")
-    );
-    assert_eq!(
-        run::linked_worktree_of(&a, Some(&root)),
-        None,
-        "the main checkout is not a worktree of anything"
-    );
+    assert_eq!(run::linked_worktree_of(&s(&wt), Some(&root)).as_deref(), Some("a"));
+    assert_eq!(run::linked_worktree_of(&a, Some(&root)), None, "the main checkout is not a worktree of anything");
     // Its own git dir, for the watcher.
     let gd = run::git_dir(&s(&wt)).unwrap();
-    assert!(
-        gd.join("HEAD").is_file()
-            && gd
-                .to_string_lossy()
-                .replace('\\', "/")
-                .contains("/worktrees/"),
-        "{}",
-        gd.display()
-    );
+    assert!(gd.join("HEAD").is_file() && gd.to_string_lossy().replace('\\', "/").contains("/worktrees/"), "{}", gd.display());
 
     // A dirty worktree is refused by git itself (no --force).
     write(&wt.join("untracked.txt"), "x\n");
@@ -261,12 +197,7 @@ fn worktrees_add_list_and_remove_with_the_refusals() {
     // Fails closed: a scan that hits its cap returns None.
     assert!(run::nested_repositories(&wt, 1).is_none());
     std::fs::remove_dir_all(wt.join(".worktrees")).unwrap();
-    assert_eq!(
-        run::nested_repositories(&wt, run::NESTED_SCAN_MAX_DIRS)
-            .unwrap()
-            .len(),
-        0
-    );
+    assert_eq!(run::nested_repositories(&wt, run::NESTED_SCAN_MAX_DIRS).unwrap().len(), 0);
 
     // Unmerged work on the branch: removing the worktree works, deleting the branch with -d
     // keeps it.
@@ -294,32 +225,15 @@ fn worktrees_add_list_and_remove_with_the_refusals() {
 fn canonical_follows_junctions() {
     let r = repos();
     let link = r.root.join("via-junction");
-    let st = Command::new("cmd")
-        .args(["/c", "mklink", "/J"])
-        .arg(&link)
-        .arg(&r.a)
-        .output()
-        .unwrap();
-    assert!(
-        st.status.success(),
-        "{}",
-        String::from_utf8_lossy(&st.stderr)
-    );
+    let st = Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&link).arg(&r.a).output().unwrap();
+    assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
     let c = run::canonical(&s(&link));
     assert!(worktrees::same_path(&c, &s(&r.a)), "{c}");
     // The repo root from the junction spelling is the real one too: one busy key per repo.
     let root = run::repo_root(&s(&link)).unwrap();
-    assert_eq!(
-        worktrees::busy_key(Some(&root), None),
-        worktrees::busy_key(Some(&s(&r.a)), None)
-    );
+    assert_eq!(worktrees::busy_key(Some(&root), None), worktrees::busy_key(Some(&s(&r.a)), None));
     // The nested scan does not follow it.
-    assert_eq!(
-        run::nested_repositories(&r.root.join("seed"), 1000)
-            .unwrap()
-            .len(),
-        0
-    );
+    assert_eq!(run::nested_repositories(&r.root.join("seed"), 1000).unwrap().len(), 0);
 }
 
 #[test]
@@ -348,11 +262,7 @@ fn the_watcher_fires_on_checkout_and_is_shared() {
     git(&r.a, &["switch", "other"]);
     let deadline = Instant::now() + Duration::from_secs(10);
     while hits.load(Ordering::SeqCst) < 101 {
-        assert!(
-            Instant::now() < deadline,
-            "no change seen (hits {})",
-            hits.load(Ordering::SeqCst)
-        );
+        assert!(Instant::now() < deadline, "no change seen (hits {})", hits.load(Ordering::SeqCst));
         std::thread::sleep(Duration::from_millis(20));
     }
     drop(g1);
@@ -368,20 +278,9 @@ fn a_hung_git_is_killed_at_its_deadline() {
     let r = repos();
     let t0 = Instant::now();
     // `-c core.fsmonitor=...` would run a hook; keep it portable: an alias that sleeps.
-    let sleeper = if cfg!(windows) {
-        "!powershell -NoProfile -Command Start-Sleep 30"
-    } else {
-        "!sleep 30"
-    };
-    let args: Vec<String> = ["-c", &format!("alias.zz={sleeper}"), "zz"]
-        .iter()
-        .map(|x| x.to_string())
-        .collect();
+    let sleeper = if cfg!(windows) { "!powershell -NoProfile -Command Start-Sleep 30" } else { "!sleep 30" };
+    let args: Vec<String> = ["-c", &format!("alias.zz={sleeper}"), "zz"].iter().map(|x| x.to_string()).collect();
     let out = run::run_git(&s(&r.a), &args, Duration::from_millis(1500), true);
     assert!(out.timed_out, "{out:?}");
-    assert!(
-        t0.elapsed() < Duration::from_secs(15),
-        "the tree was killed, not waited for: {:?}",
-        t0.elapsed()
-    );
+    assert!(t0.elapsed() < Duration::from_secs(15), "the tree was killed, not waited for: {:?}", t0.elapsed());
 }

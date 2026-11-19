@@ -115,7 +115,8 @@ fn check_app(remote: &RemoteOptions) -> Check {
     }
     match rx.recv_timeout(Duration::from_secs(8)) {
         Ok(Ok(tools)) => Check::new(name, CheckStatus::Ok, format!("CodeShellManager is running ({} tools).", tools.len())),
-        Ok(Err(e)) => Check::new(name, CheckStatus::Warn, e.to_string()).fix("Start CodeShellManager, or run csm with --start. Setup and doctor work without it."),
+        Ok(Err(e)) => Check::new(name, CheckStatus::Warn, e.to_string())
+            .fix("Start CodeShellManager, or run csm with --start. Setup and doctor work without it."),
         Err(_) => Check::new(name, CheckStatus::Fail, "CodeShellManager did not answer within 8 seconds.")
             .fix("It may be stuck: quit it from the task manager and start it again."),
     }
@@ -130,8 +131,14 @@ fn check_conpty(req: &DoctorRequest) -> Check {
     let files = ["conpty.dll", "OpenConsole.exe"];
     let missing: Vec<&str> = files.iter().copied().filter(|f| !dir.join(f).is_file()).collect();
     if !missing.is_empty() {
-        return Check::new(name, CheckStatus::Warn, format!("{} not found beside the app in {}; terminals fall back to the older built-in ConPTY.", missing.join(" and "), dir.display()))
-            .fix("Reinstall CodeShellManager (the installer puts both files beside the program), or run scripts\\get-conpty.ps1 for a development build.");
+        return Check::new(
+            name,
+            CheckStatus::Warn,
+            format!("{} not found beside the app in {}; terminals fall back to the older built-in ConPTY.", missing.join(" and "), dir.display()),
+        )
+        .fix(
+            "Reinstall CodeShellManager (the installer puts both files beside the program), or run scripts\\get-conpty.ps1 for a development build.",
+        );
     }
     if !req.check_signing {
         return Check::new(name, CheckStatus::Ok, "conpty.dll and OpenConsole.exe are present.");
@@ -143,7 +150,10 @@ fn check_conpty(req: &DoctorRequest) -> Check {
                 return Check::new(name, CheckStatus::Fail, format!("{f} is not validly signed by Microsoft (status {status}, signer {subject:?})."))
                     .fix("Replace it with the original from the Microsoft.Windows.Console.ConPTY package (scripts\\get-conpty.ps1) or reinstall.");
             }
-            Err(e) => return Check::new(name, CheckStatus::Warn, format!("could not check the signature of {f}: {e}")).fix("Run: Get-AuthenticodeSignature on the file in PowerShell."),
+            Err(e) => {
+                return Check::new(name, CheckStatus::Warn, format!("could not check the signature of {f}: {e}"))
+                    .fix("Run: Get-AuthenticodeSignature on the file in PowerShell.");
+            }
         }
     }
     Check::new(name, CheckStatus::Ok, "conpty.dll and OpenConsole.exe are present and signed by Microsoft.")
@@ -153,7 +163,12 @@ fn check_conpty(req: &DoctorRequest) -> Check {
 /// script text, so no file name can become code.
 fn signature(path: &Path) -> Result<(String, String), String> {
     let mut cmd = Command::new("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", "$s = Get-AuthenticodeSignature -LiteralPath $env:CSM_CHECK_FILE; $s.Status; $s.SignerCertificate.Subject"]);
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$s = Get-AuthenticodeSignature -LiteralPath $env:CSM_CHECK_FILE; $s.Status; $s.SignerCertificate.Subject",
+    ]);
     cmd.env("CSM_CHECK_FILE", path);
     let out = proc::run_ok(&mut cmd, Duration::from_secs(20)).ok_or("PowerShell did not answer")?;
     let mut lines = out.lines().map(str::trim);
@@ -180,7 +195,8 @@ fn check_claude(host: &Host) -> Check {
         None => Check::new(name, CheckStatus::Warn, "claude was not found on PATH or in the usual install folders.").fix(fix),
         Some(p) => match version_of(&p) {
             Some(v) if !v.is_empty() => {
-                let via = host.var("CLAUDE_CONFIG_DIR").map(|d| format!(" (config folder {} from CLAUDE_CONFIG_DIR)", d.display())).unwrap_or_default();
+                let via =
+                    host.var("CLAUDE_CONFIG_DIR").map(|d| format!(" (config folder {} from CLAUDE_CONFIG_DIR)", d.display())).unwrap_or_default();
                 Check::new(name, CheckStatus::Ok, format!("{v} at {}{via}", p.display()))
             }
             _ => Check::new(name, CheckStatus::Warn, format!("{} was found but `--version` did not answer.", p.display()))
@@ -192,10 +208,12 @@ fn check_claude(host: &Host) -> Check {
 fn check_git() -> Check {
     let name = "git";
     match which::which("git") {
-        None => Check::new(name, CheckStatus::Warn, "git was not found; the git chip and worktrees will be unavailable.").fix("Install Git (https://git-scm.com/downloads) and restart CodeShellManager."),
+        None => Check::new(name, CheckStatus::Warn, "git was not found; the git chip and worktrees will be unavailable.")
+            .fix("Install Git (https://git-scm.com/downloads) and restart CodeShellManager."),
         Some(p) => match version_of(&p) {
             Some(v) => Check::new(name, CheckStatus::Ok, format!("{v} at {}", p.display())),
-            None => Check::new(name, CheckStatus::Warn, format!("{} was found but `--version` did not answer.", p.display())).fix("Run `git --version` in a terminal to see the error."),
+            None => Check::new(name, CheckStatus::Warn, format!("{} was found but `--version` did not answer.", p.display()))
+                .fix("Run `git --version` in a terminal to see the error."),
         },
     }
 }
@@ -224,9 +242,14 @@ fn check_clients(host: &Host) -> Vec<Check> {
             let a = inspect_client(c, &command);
             match a.kind {
                 ActionKind::Unchanged => Check::new(name, CheckStatus::Ok, format!("{} is connected ({}).", c.display, c.config.display())),
-                ActionKind::Blocked => Check::new(name, CheckStatus::Warn, format!("{}: {}", c.display, a.reason.unwrap_or_default())).fix(format!("Fix the file, then run: csm setup --client {}", c.id)),
-                ActionKind::Update => Check::new(name, CheckStatus::Warn, format!("{} points {SERVER_NAME} at a different csm.", c.display)).fix(format!("Run: csm setup --client {}", c.id)),
-                ActionKind::Create | ActionKind::Add => Check::new(name, CheckStatus::Warn, format!("{} is installed but not connected to CodeShellManager.", c.display)).fix(format!("Run: csm setup --client {}  (add --dry-run to see the change first)", c.id)),
+                ActionKind::Blocked => Check::new(name, CheckStatus::Warn, format!("{}: {}", c.display, a.reason.unwrap_or_default()))
+                    .fix(format!("Fix the file, then run: csm setup --client {}", c.id)),
+                ActionKind::Update => Check::new(name, CheckStatus::Warn, format!("{} points {SERVER_NAME} at a different csm.", c.display))
+                    .fix(format!("Run: csm setup --client {}", c.id)),
+                ActionKind::Create | ActionKind::Add => {
+                    Check::new(name, CheckStatus::Warn, format!("{} is installed but not connected to CodeShellManager.", c.display))
+                        .fix(format!("Run: csm setup --client {}  (add --dry-run to see the change first)", c.id))
+                }
             }
         })
         .collect()
@@ -297,7 +320,11 @@ pub fn mcp_self_test(program: &str, args: &[String], timeout: Duration) -> Check
     if server != SERVER_NAME || protocol.is_empty() {
         return Check::new(name, CheckStatus::Fail, format!("Unexpected initialize reply (server {server:?}, protocol {protocol:?}).")).fix(how);
     }
-    let tools: Vec<&str> = list.as_ref().and_then(|l| l["result"]["tools"].as_array()).map(|a| a.iter().filter_map(|t| t["name"].as_str()).collect()).unwrap_or_default();
+    let tools: Vec<&str> = list
+        .as_ref()
+        .and_then(|l| l["result"]["tools"].as_array())
+        .map(|a| a.iter().filter_map(|t| t["name"].as_str()).collect())
+        .unwrap_or_default();
     if tools.is_empty() {
         return Check::new(name, CheckStatus::Fail, "The MCP server listed no tools.").fix(how);
     }

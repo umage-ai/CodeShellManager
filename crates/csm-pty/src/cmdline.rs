@@ -39,8 +39,7 @@ impl std::error::Error for CmdLineError {}
 
 /// Appends one non-program argument, quoted by the MSVCRT rules.
 pub fn push_quoted_arg(out: &mut Vec<u16>, arg: &[u16]) {
-    let needs_quotes = arg.is_empty()
-        || arg.iter().any(|&c| c == SPACE || c == TAB || c == NEWLINE || c == VTAB || c == QUOTE);
+    let needs_quotes = arg.is_empty() || arg.iter().any(|&c| c == SPACE || c == TAB || c == NEWLINE || c == VTAB || c == QUOTE);
     if !needs_quotes {
         out.extend_from_slice(arg);
         return;

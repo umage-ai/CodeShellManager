@@ -49,15 +49,7 @@ pub struct ProgramStatusReport {
 impl ProgramStatusReport {
     /// A report carrying only a state (everything else absent).
     pub fn new(state: ProgramState) -> Self {
-        Self {
-            state,
-            kind: BlockedKind::None,
-            progress: None,
-            app: None,
-            id: None,
-            title: None,
-            message: None,
-        }
+        Self { state, kind: BlockedKind::None, progress: None, app: None, id: None, title: None, message: None }
     }
 }
 
@@ -158,10 +150,7 @@ pub fn try_parse(payload: &str) -> Option<ProgramStatusReport> {
     };
 
     // app: 1-32 of [A-Za-z0-9_.+-]; anything else is treated as absent (only a grouping label).
-    let app = fields
-        .get("app")
-        .filter(|t| is_identifier_segment(t, MAX_APP_BYTES))
-        .map(|t| (*t).to_owned());
+    let app = fields.get("app").filter(|t| is_identifier_segment(t, MAX_APP_BYTES)).map(|t| (*t).to_owned());
 
     let title = match fields.get("title") {
         Some(b64) => {
@@ -202,15 +191,7 @@ pub fn try_parse(payload: &str) -> Option<ProgramStatusReport> {
         None
     };
 
-    Some(ProgramStatusReport {
-        state,
-        kind,
-        progress,
-        app,
-        id,
-        title: title.filter(|t| !t.is_empty()),
-        message: message.filter(|t| !t.is_empty()),
-    })
+    Some(ProgramStatusReport { state, kind, progress, app, id, title: title.filter(|t| !t.is_empty()), message: message.filter(|t| !t.is_empty()) })
 }
 
 /// `[a-z]+`, any length; the 16-byte cap is a limit, checked separately.
@@ -229,9 +210,7 @@ pub(crate) fn is_identifier_segment(s: &str, max_len: usize) -> bool {
 
 /// `[A-Za-z0-9_.,+/=-]*`
 pub(crate) fn is_valid_value(value: &str) -> bool {
-    value.bytes().all(|b| {
-        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b',' | b'+' | b'/' | b'=' | b'-')
-    })
+    value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b',' | b'+' | b'/' | b'=' | b'-'))
 }
 
 /// Slash path: 1-8 segments of `[A-Za-z0-9_.+-]{1,32}`, at most 128 bytes in all.
@@ -302,10 +281,8 @@ pub(crate) fn try_decode_text(b64: &str, max_decoded_bytes: usize) -> Option<Str
     // Padding was validated above, so `body` is decoded unpadded. Like .NET's
     // Convert.TryFromBase64String (checked against .NET 11), non-zero unused trailing bits are
     // rejected, which is the base64 crate's default.
-    const STRICT: GeneralPurpose = GeneralPurpose::new(
-        &alphabet::STANDARD,
-        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
-    );
+    const STRICT: GeneralPurpose =
+        GeneralPurpose::new(&alphabet::STANDARD, GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent));
     let bytes = STRICT.decode(body).ok()?;
     if bytes.len() > max_decoded_bytes {
         return None;
@@ -375,10 +352,7 @@ mod tests {
         assert_eq!(events.len(), PROBE_REPLY.encode_utf16().count());
         assert_eq!(events[0], "\x1b[0;0;27;1;0;1"); // ESC
         assert_eq!(events[1], "\x1b[0;0;93;1;0;1"); // ]
-        let decoded: String = events
-            .iter()
-            .map(|e| char::from_u32(e.split(';').nth(2).unwrap().parse().unwrap()).unwrap())
-            .collect();
+        let decoded: String = events.iter().map(|e| char::from_u32(e.split(';').nth(2).unwrap().parse().unwrap()).unwrap()).collect();
         assert_eq!(decoded, PROBE_REPLY);
         assert!(!encoded.contains("\x1b]")); // no raw OSC left to drop
     }
@@ -395,23 +369,13 @@ mod tests {
             ("error", ProgramState::Error),
             ("clear", ProgramState::Clear),
         ] {
-            assert_eq!(
-                parse(&format!("state={text}")).unwrap().state,
-                expected,
-                "{text}"
-            );
+            assert_eq!(parse(&format!("state={text}")).unwrap().state, expected, "{text}");
         }
     }
 
     #[test]
     fn missing_or_unknown_state_ignores_the_report() {
-        for p in [
-            "",
-            "app=x",
-            "state=sleeping",
-            "state=Working", /* case-sensitive */
-            "state=",
-        ] {
+        for p in ["", "app=x", "state=sleeping", "state=Working" /* case-sensitive */, "state="] {
             assert_eq!(parse(p), None, "{p:?}");
         }
     }
@@ -419,11 +383,7 @@ mod tests {
     #[test]
     fn claude_code_shaped_report_parses() {
         // Exactly the field order Claude Code 2.1.319 emits.
-        let r = parse(&format!(
-            "state=blocked:app=claude-code:kind=permission:progress=40:msg={}",
-            b64("Run npm test?")
-        ))
-        .unwrap();
+        let r = parse(&format!("state=blocked:app=claude-code:kind=permission:progress=40:msg={}", b64("Run npm test?"))).unwrap();
         assert_eq!(r.state, ProgramState::Blocked);
         assert_eq!(r.kind, BlockedKind::Permission);
         assert_eq!(r.progress, Some(40));
@@ -436,18 +396,12 @@ mod tests {
 
     #[test]
     fn whitespace_around_pairs_is_trimmed() {
-        assert_eq!(
-            parse("  state = working :  progress=5 ").unwrap().state,
-            ProgramState::Working
-        );
+        assert_eq!(parse("  state = working :  progress=5 ").unwrap().state, ProgramState::Working);
     }
 
     #[test]
     fn repeated_key_last_wins() {
-        assert_eq!(
-            parse("state=working:state=done").unwrap().state,
-            ProgramState::Done
-        );
+        assert_eq!(parse("state=working:state=done").unwrap().state, ProgramState::Done);
     }
 
     #[test]
@@ -486,46 +440,29 @@ mod tests {
 
     #[test]
     fn kind_parses_for_blocked() {
-        for (kind, expected) in [
-            ("permission", BlockedKind::Permission),
-            ("question", BlockedKind::Question),
-            ("auth", BlockedKind::Auth),
-            ("other", BlockedKind::None),
-        ] {
-            assert_eq!(
-                parse(&format!("state=blocked:kind={kind}")).unwrap().kind,
-                expected,
-                "{kind}"
-            );
+        for (kind, expected) in
+            [("permission", BlockedKind::Permission), ("question", BlockedKind::Question), ("auth", BlockedKind::Auth), ("other", BlockedKind::None)]
+        {
+            assert_eq!(parse(&format!("state=blocked:kind={kind}")).unwrap().kind, expected, "{kind}");
         }
     }
 
     #[test]
     fn kind_is_ignored_outside_blocked() {
-        assert_eq!(
-            parse("state=working:kind=permission").unwrap().kind,
-            BlockedKind::None
-        );
+        assert_eq!(parse("state=working:kind=permission").unwrap().kind, BlockedKind::None);
     }
 
     #[test]
     fn progress_accepts_0_to_100() {
         for (text, expected) in [("0", 0), ("100", 100), ("040", 40)] {
-            assert_eq!(
-                parse(&format!("state=working:progress={text}"))
-                    .unwrap()
-                    .progress,
-                Some(expected),
-                "{text}"
-            );
+            assert_eq!(parse(&format!("state=working:progress={text}")).unwrap().progress, Some(expected), "{text}");
         }
     }
 
     #[test]
     fn invalid_progress_is_indeterminate_not_fatal() {
         for text in ["101", "-1", "4.5", "1000", "", "+5"] {
-            let r = parse(&format!("state=working:progress={text}"))
-                .unwrap_or_else(|| panic!("{text}"));
+            let r = parse(&format!("state=working:progress={text}")).unwrap_or_else(|| panic!("{text}"));
             assert_eq!(r.progress, None, "{text:?}");
         }
     }
@@ -533,40 +470,21 @@ mod tests {
     #[test]
     fn progress_is_ignored_outside_working_and_blocked() {
         for state in ["idle", "done", "error"] {
-            assert_eq!(
-                parse(&format!("state={state}:progress=50"))
-                    .unwrap()
-                    .progress,
-                None,
-                "{state}"
-            );
+            assert_eq!(parse(&format!("state={state}:progress=50")).unwrap().progress, None, "{state}");
         }
     }
 
     #[test]
     fn blocked_carries_progress() {
-        assert_eq!(
-            parse("state=blocked:progress=70").unwrap().progress,
-            Some(70)
-        );
+        assert_eq!(parse("state=blocked:progress=70").unwrap().progress, Some(70));
     }
 
     // ---- id / app ----
 
     #[test]
     fn valid_ids_parse() {
-        for id in [
-            "build",
-            "build/test/unit",
-            "a/b/c/d/e/f/g/h", /* 8 levels */
-        ] {
-            assert_eq!(
-                parse(&format!("state=working:id={id}"))
-                    .unwrap()
-                    .id
-                    .as_deref(),
-                Some(id)
-            );
+        for id in ["build", "build/test/unit", "a/b/c/d/e/f/g/h" /* 8 levels */] {
+            assert_eq!(parse(&format!("state=working:id={id}")).unwrap().id.as_deref(), Some(id));
         }
     }
 
@@ -605,28 +523,13 @@ mod tests {
     #[test]
     fn app_allows_32_identifier_bytes() {
         let long = "x".repeat(32);
-        assert_eq!(
-            parse(&format!("state=idle:app={long}"))
-                .unwrap()
-                .app
-                .as_deref(),
-            Some(long.as_str())
-        );
-        assert_eq!(
-            parse("state=idle:app=my_app-1.2+x").unwrap().app.as_deref(),
-            Some("my_app-1.2+x")
-        );
+        assert_eq!(parse(&format!("state=idle:app={long}")).unwrap().app.as_deref(), Some(long.as_str()));
+        assert_eq!(parse("state=idle:app=my_app-1.2+x").unwrap().app.as_deref(), Some("my_app-1.2+x"));
     }
 
     #[test]
     fn invalid_app_is_treated_as_absent_not_fatal() {
-        for app in [
-            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", /* 33 */
-            "a/b",
-            "a,b",
-            "a=b",
-            "",
-        ] {
+        for app in ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /* 33 */, "a/b", "a,b", "a=b", ""] {
             let r = parse(&format!("state=working:app={app}")).unwrap_or_else(|| panic!("{app}"));
             assert_eq!(r.app, None, "{app:?}");
             assert_eq!(r.state, ProgramState::Working);
@@ -637,12 +540,7 @@ mod tests {
 
     #[test]
     fn msg_and_title_decode_utf8() {
-        let r = parse(&format!(
-            "state=done:title={}:msg={}",
-            b64("Café ✓"),
-            b64("Tests passed – 42")
-        ))
-        .unwrap();
+        let r = parse(&format!("state=done:title={}:msg={}", b64("Café ✓"), b64("Tests passed – 42"))).unwrap();
         assert_eq!(r.title.as_deref(), Some("Café ✓"));
         assert_eq!(r.message.as_deref(), Some("Tests passed – 42"));
     }
@@ -650,14 +548,7 @@ mod tests {
     #[test]
     fn base64_padding_is_optional() {
         for b in ["SGk" /* "Hi" unpadded */, "SGk=" /* padded */] {
-            assert_eq!(
-                parse(&format!("state=done:msg={b}"))
-                    .unwrap()
-                    .message
-                    .as_deref(),
-                Some("Hi"),
-                "{b}"
-            );
+            assert_eq!(parse(&format!("state=done:msg={b}")).unwrap().message.as_deref(), Some("Hi"), "{b}");
         }
     }
 
@@ -676,25 +567,9 @@ mod tests {
 
     #[test]
     fn control_characters_in_decoded_text_drop_the_report() {
-        for text in [
-            "line1\nline2",
-            "carriage\rreturn",
-            "esc \u{1b}[31m red",
-            "bell\u{7}",
-            "del\u{7f}",
-            "c1\u{9b}",
-            "nul\0",
-        ] {
-            assert_eq!(
-                parse(&format!("state=done:msg={}", b64(text))),
-                None,
-                "{text:?}"
-            );
-            assert_eq!(
-                parse(&format!("state=done:title={}", b64(text))),
-                None,
-                "{text:?}"
-            );
+        for text in ["line1\nline2", "carriage\rreturn", "esc \u{1b}[31m red", "bell\u{7}", "del\u{7f}", "c1\u{9b}", "nul\0"] {
+            assert_eq!(parse(&format!("state=done:msg={}", b64(text))), None, "{text:?}");
+            assert_eq!(parse(&format!("state=done:title={}", b64(text))), None, "{text:?}");
         }
     }
 
@@ -707,11 +582,7 @@ mod tests {
     #[test]
     fn bidi_and_invisible_format_characters_are_neutralised() {
         // U+202E RIGHT-TO-LEFT OVERRIDE, U+200B ZERO WIDTH SPACE, U+2066 LRI.
-        let r = parse(&format!(
-            "state=done:msg={}",
-            b64("ok\u{202e}txt.exe\u{200b}\u{2066}")
-        ))
-        .unwrap();
+        let r = parse(&format!("state=done:msg={}", b64("ok\u{202e}txt.exe\u{200b}\u{2066}"))).unwrap();
         assert_eq!(r.message.as_deref(), Some("oktxt.exe"));
     }
 
@@ -719,41 +590,21 @@ mod tests {
     fn supplementary_plane_format_characters_are_stripped_by_scalar() {
         // U+E0001 LANGUAGE TAG and U+E0041 TAG LATIN CAPITAL A: invisible, category Cf.
         let tagged = "ok\u{E0001}\u{E0041}!";
-        assert_eq!(
-            parse(&format!("state=done:msg={}", b64(tagged)))
-                .unwrap()
-                .message
-                .as_deref(),
-            Some("ok!")
-        );
+        assert_eq!(parse(&format!("state=done:msg={}", b64(tagged))).unwrap().message.as_deref(), Some("ok!"));
     }
 
     #[test]
     fn visible_supplementary_characters_survive() {
         let emoji = "done \u{1F389}";
-        assert_eq!(
-            parse(&format!("state=done:msg={}", b64(emoji)))
-                .unwrap()
-                .message
-                .as_deref(),
-            Some(emoji)
-        );
+        assert_eq!(parse(&format!("state=done:msg={}", b64(emoji))).unwrap().message.as_deref(), Some(emoji));
     }
 
     #[test]
     fn unicode_line_breaks_drop_the_report() {
         for cp in [0x2028u32, 0x2029, 0x0085] {
             let text = format!("a{}b", char::from_u32(cp).unwrap());
-            assert_eq!(
-                parse(&format!("state=done:msg={}", b64(&text))),
-                None,
-                "{cp:x}"
-            );
-            assert_eq!(
-                parse(&format!("state=done:title={}", b64(&text))),
-                None,
-                "{cp:x}"
-            );
+            assert_eq!(parse(&format!("state=done:msg={}", b64(&text))), None, "{cp:x}");
+            assert_eq!(parse(&format!("state=done:title={}", b64(&text))), None, "{cp:x}");
         }
     }
 
@@ -799,28 +650,14 @@ mod tests {
     #[test]
     fn a_bad_field_poisons_the_whole_report_even_with_a_valid_state() {
         // Nothing from a discarded report is applied, not even its state.
-        assert_eq!(
-            parse(&format!(
-                "state=blocked:kind=permission:msg={}",
-                b64("a\nb")
-            )),
-            None
-        );
+        assert_eq!(parse(&format!("state=blocked:kind=permission:msg={}", b64("a\nb"))), None);
     }
 
     // ---- additions: Rust-specific hostile-input checks ----
 
     #[test]
     fn non_ascii_and_multibyte_payloads_never_panic() {
-        for p in [
-            "state=working:é=1",
-            "é=1:state=idle",
-            "state=idle:app=é",
-            "=",
-            ":",
-            "::=::",
-            "state=idle:\u{1F389}=x",
-        ] {
+        for p in ["state=working:é=1", "é=1:state=idle", "state=idle:app=é", "=", ":", "::=::", "state=idle:\u{1F389}=x"] {
             let _ = parse(p);
         }
     }
@@ -833,23 +670,13 @@ mod tests {
         let mut dotnet = Vec::new();
         for line in include_str!("../tests/fixtures/dotnet_format_chars.txt").lines() {
             let (a, b) = line.trim().split_once('-').unwrap();
-            let (a, b) = (
-                u32::from_str_radix(a, 16).unwrap(),
-                u32::from_str_radix(b, 16).unwrap(),
-            );
+            let (a, b) = (u32::from_str_radix(a, 16).unwrap(), u32::from_str_radix(b, 16).unwrap());
             dotnet.extend(a..=b);
         }
-        let ours: Vec<u32> = (0..=0x10FFFFu32)
-            .filter(|cp| char::from_u32(*cp).is_some_and(is_format_char))
-            .collect();
+        let ours: Vec<u32> = (0..=0x10FFFFu32).filter(|cp| char::from_u32(*cp).is_some_and(is_format_char)).collect();
         assert_eq!(ours, dotnet);
         // 65 controls in .NET (Rune.IsControl): U+0000-1F, U+007F-9F.
-        assert_eq!(
-            (0..=0x10FFFFu32)
-                .filter(|cp| char::from_u32(*cp).is_some_and(char::is_control))
-                .count(),
-            65
-        );
+        assert_eq!((0..=0x10FFFFu32).filter(|cp| char::from_u32(*cp).is_some_and(char::is_control)).count(), 65);
     }
 
     #[test]
@@ -857,9 +684,6 @@ mod tests {
         // Verified against .NET: Convert.TryFromBase64String("SGl=") fails (the last symbol
         // carries stray bits), while "SGk=" decodes to "Hi".
         assert_eq!(parse("state=done:msg=SGl"), None);
-        assert_eq!(
-            parse("state=done:msg=SGk").unwrap().message.as_deref(),
-            Some("Hi")
-        );
+        assert_eq!(parse("state=done:msg=SGk").unwrap().message.as_deref(), Some("Hi"));
     }
 }

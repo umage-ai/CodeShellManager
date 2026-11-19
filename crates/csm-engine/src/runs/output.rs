@@ -102,7 +102,15 @@ fn split_utf8(raw: &[u8]) -> (String, &[u8]) {
         .find(|&n| {
             let start = raw.len() - n;
             let lead = raw.get(start).copied().unwrap_or(0);
-            let need = if lead >= 0xF0 { 4 } else if lead >= 0xE0 { 3 } else if lead >= 0xC0 { 2 } else { 0 };
+            let need = if lead >= 0xF0 {
+                4
+            } else if lead >= 0xE0 {
+                3
+            } else if lead >= 0xC0 {
+                2
+            } else {
+                0
+            };
             need > n && raw.get(start + 1..).is_some_and(|c| c.iter().all(|b| (0x80..0xC0).contains(b)))
         })
         .map_or(raw.len(), |n| raw.len() - n);

@@ -58,11 +58,7 @@ fn main() {
         println!("ConPTY: {} — {why}", b.label());
     }
     let cell: Arc<OnceLock<Arc<dyn Pty>>> = Arc::new(OnceLock::new());
-    let term = Arc::new(Mutex::new(Terminal::new(
-        GridSize::new(cols, rows),
-        TermConfig::default(),
-        Arc::new(Replies(cell.clone())),
-    )));
+    let term = Arc::new(Mutex::new(Terminal::new(GridSize::new(cols, rows), TermConfig::default(), Arc::new(Replies(cell.clone())))));
     let mut opts = SpawnOptions::new(argv, PtySize::new(cols, rows));
     opts.cwd = cwd;
     opts.env.push(("TERM".into(), Some("xterm-256color".into())));

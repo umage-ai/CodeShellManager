@@ -16,9 +16,7 @@ fn ext_ok(p: &Path) -> Result<bool, io::Error> {
     match p.extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase) {
         None => Ok(false),
         Some(e) if e == "exe" || e == "com" => Ok(true),
-        Some(e) if e == "bat" || e == "cmd" => {
-            Err(refuse(format!("refusing a batch file as a program: {}", p.display())))
-        }
+        Some(e) if e == "bat" || e == "cmd" => Err(refuse(format!("refusing a batch file as a program: {}", p.display()))),
         // An unknown extension (e.g. "python3.12") is treated as part of the name.
         Some(_) => Ok(false),
     }
@@ -97,8 +95,7 @@ mod tests {
     #[test]
     fn relative_path_entries_are_skipped() {
         // "." on PATH must not make a file in the current directory resolvable.
-        let e = find_program(OsStr::new("definitely-not-a-real-program"), Some(OsStr::new(".")))
-            .unwrap_err();
+        let e = find_program(OsStr::new("definitely-not-a-real-program"), Some(OsStr::new("."))).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::NotFound);
     }
 }

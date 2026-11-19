@@ -33,21 +33,13 @@ pub fn describe_duration(total_targets: i64, claude_targets: i64) -> String {
     let claude = claude_targets.max(0).min(total);
     let others = total - claude;
 
-    let low = CLAUDE_LOW_SECONDS
-        .saturating_mul(claude)
-        .saturating_add(OTHER_LOW_SECONDS.saturating_mul(others));
-    let high = CLAUDE_HIGH_SECONDS
-        .saturating_mul(claude)
-        .saturating_add(OTHER_HIGH_SECONDS.saturating_mul(others));
+    let low = CLAUDE_LOW_SECONDS.saturating_mul(claude).saturating_add(OTHER_LOW_SECONDS.saturating_mul(others));
+    let high = CLAUDE_HIGH_SECONDS.saturating_mul(claude).saturating_add(OTHER_HIGH_SECONDS.saturating_mul(others));
 
     if low < MINUTES_THRESHOLD_SECONDS {
         return format!("about {low}\u{2013}{high} seconds");
     }
-    format!(
-        "roughly {}\u{2013}{} minutes",
-        format_minutes(low as f64 / 60.0),
-        format_minutes(high as f64 / 60.0)
-    )
+    format!("roughly {}\u{2013}{} minutes", format_minutes(low as f64 / 60.0), format_minutes(high as f64 / 60.0))
 }
 
 /// The body of the confirmation dialog. `headline` is the caller's scope-naming first line
@@ -65,22 +57,16 @@ pub fn build_confirm_text(headline: &str, total_targets: i64, claude_targets: i6
         // Naming the Claude count is what makes the estimate look earned: it is the reason the
         // queue is slow. Omitted when there are none, since blaming absent sessions is wrong.
         if claude > 0 {
-            out.push_str(&format!(
-                "{claude} of them are Claude sessions and restart one at a time \u{2014} expect {duration}."
-            ));
+            out.push_str(&format!("{claude} of them are Claude sessions and restart one at a time \u{2014} expect {duration}."));
         } else {
-            out.push_str(&format!(
-                "They restart one at a time \u{2014} expect {duration}."
-            ));
+            out.push_str(&format!("They restart one at a time \u{2014} expect {duration}."));
         }
     } else {
         out.push_str(&format!("Expect {duration}."));
     }
 
     out.push_str("\n\n");
-    out.push_str(
-        "Each running process is terminated and relaunched in turn, and any running session commands are stopped.",
-    );
+    out.push_str("Each running process is terminated and relaunched in turn, and any running session commands are stopped.");
     if claude > 0 {
         out.push_str(" Claude sessions resume their conversation.");
     }
@@ -165,10 +151,7 @@ mod tests {
     #[test]
     fn confirm_text_opens_with_the_headline_on_its_own_line() {
         let text = build_confirm_text("Restart all 55 live sessions?", 55, 52);
-        assert_eq!(
-            text.split('\n').next(),
-            Some("Restart all 55 live sessions?")
-        );
+        assert_eq!(text.split('\n').next(), Some("Restart all 55 live sessions?"));
     }
 
     #[test]
@@ -211,11 +194,7 @@ mod tests {
 
     #[test]
     fn confirm_text_at_the_threshold_warns_about_scale() {
-        let text = build_confirm_text(
-            "Restart all 10 live sessions?",
-            SCALE_WARNING_THRESHOLD,
-            SCALE_WARNING_THRESHOLD,
-        );
+        let text = build_confirm_text("Restart all 10 live sessions?", SCALE_WARNING_THRESHOLD, SCALE_WARNING_THRESHOLD);
         assert!(text.contains("one at a time"));
     }
 

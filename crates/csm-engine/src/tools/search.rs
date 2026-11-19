@@ -90,9 +90,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 // ── Helpers ──────────────────────────────────────────────────────────────────────────────
 
 fn index_of(ctx: &Ctx<'_>) -> Result<Index, ToolError> {
-    ctx.state.rt.index.clone().ok_or_else(|| {
-        ToolError::Refused("search and notes are not available in this run (there is no search index).".into())
-    })
+    ctx.state.rt.index.clone().ok_or_else(|| ToolError::Refused("search and notes are not available in this run (there is no search index).".into()))
 }
 
 fn park(ctx: &mut Ctx<'_>) -> Result<ParkedReply, ToolError> {

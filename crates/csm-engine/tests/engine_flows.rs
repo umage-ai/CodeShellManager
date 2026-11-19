@@ -250,11 +250,7 @@ fn a_failed_start_wake_or_restart_leaves_the_session_asleep_not_deleted() {
     let h = H::start(test_app(), move |o| {
         let inner = o.pty.clone();
         o.pty = std::sync::Arc::new(move |opts| {
-            if f2.load(Ordering::SeqCst) {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "program not found"))
-            } else {
-                inner(opts)
-            }
+            if f2.load(Ordering::SeqCst) { Err(std::io::Error::new(std::io::ErrorKind::NotFound, "program not found")) } else { inner(opts) }
         });
     });
     let id = h.session("claude");
@@ -501,7 +497,13 @@ fn the_wpf_state_imports_as_sleeping_sessions() {
     let mut wpf = AppState::default();
     wpf.groups.push(SessionGroup { id: "g1".into(), name: "Client".into(), ..Default::default() });
     wpf.groups.push(SessionGroup { id: "g2".into(), name: "Ops".into(), sort_order: 1, ..Default::default() });
-    wpf.sessions.push(ShellSession { id: "w1".into(), name: "one".into(), group_id: "g1".into(), working_folder: r"C:\src\one".into(), ..Default::default() });
+    wpf.sessions.push(ShellSession {
+        id: "w1".into(),
+        name: "one".into(),
+        group_id: "g1".into(),
+        working_folder: r"C:\src\one".into(),
+        ..Default::default()
+    });
     let mut ssh = ShellSession { id: "w2".into(), ssh_host: "dev".into(), ..Default::default() };
     ssh.set_is_remote(true);
     wpf.sessions.push(ssh);
@@ -583,13 +585,53 @@ fn every_tool_has_an_object_schema_and_the_catalogue_is_complete() {
     let h = H::new();
     let ids: Vec<&str> = h.engine.registry().all().iter().map(|s| s.id).collect();
     for want in [
-        "session_list", "session_get", "session_new", "session_focus", "session_rename", "session_edit", "session_close",
-        "session_sleep", "session_wake", "session_restart", "session_reopen_closed", "session_send_text",
-        "session_read_screen", "session_read_output", "session_wait", "session_status_clear", "inbox_list", "inbox_next",
-        "group_list", "group_new", "group_rename", "group_delete", "session_move_to_group", "group_restart_all",
-        "group_sleep_all", "group_close_all", "group_tear_off", "group_dock", "view_get", "view_set", "layout_get",
-        "layout_set", "layout_pin", "layout_unpin", "inspector_show", "inbox_panel_set", "recently_closed_list", "app_info",
-        "settings_get", "settings_set", "toolset_enable", "toolset_disable", "state_import_wpf", "app_quit", "grant_list", "grant_revoke", "session_accent_reset",
+        "session_list",
+        "session_get",
+        "session_new",
+        "session_focus",
+        "session_rename",
+        "session_edit",
+        "session_close",
+        "session_sleep",
+        "session_wake",
+        "session_restart",
+        "session_reopen_closed",
+        "session_send_text",
+        "session_read_screen",
+        "session_read_output",
+        "session_wait",
+        "session_status_clear",
+        "inbox_list",
+        "inbox_next",
+        "group_list",
+        "group_new",
+        "group_rename",
+        "group_delete",
+        "session_move_to_group",
+        "group_restart_all",
+        "group_sleep_all",
+        "group_close_all",
+        "group_tear_off",
+        "group_dock",
+        "view_get",
+        "view_set",
+        "layout_get",
+        "layout_set",
+        "layout_pin",
+        "layout_unpin",
+        "inspector_show",
+        "inbox_panel_set",
+        "recently_closed_list",
+        "app_info",
+        "settings_get",
+        "settings_set",
+        "toolset_enable",
+        "toolset_disable",
+        "state_import_wpf",
+        "app_quit",
+        "grant_list",
+        "grant_revoke",
+        "session_accent_reset",
     ] {
         assert!(ids.contains(&want), "missing {want}");
     }

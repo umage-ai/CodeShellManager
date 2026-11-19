@@ -145,13 +145,7 @@ pub fn build(
         };
     }
 
-    let mut p = Painter {
-        mesh: Mesh::with_texture(atlas.texture_id()),
-        origin,
-        ppp,
-        white: atlas.white_uv(),
-        _p: std::marker::PhantomData,
-    };
+    let mut p = Painter { mesh: Mesh::with_texture(atlas.texture_id()), origin, ppp, white: atlas.white_uv(), _p: std::marker::PhantomData };
     let (cw, ch) = (m.cell_w, m.cell_h);
     let px_bits = m.px.to_bits();
 
@@ -193,8 +187,7 @@ pub fn build(
                 let start = col;
                 let mut run = String::new();
                 while let Some(c) = cells.get(col) {
-                    let same_style = c.flags.contains(Flags::BOLD) == style.bold
-                        && c.flags.contains(Flags::ITALIC) == style.italic;
+                    let same_style = c.flags.contains(Flags::BOLD) == style.bold && c.flags.contains(Flags::ITALIC) == style.italic;
                     if !(c.c == ' ' || c.c.is_ascii_graphic()) || !same_style || !c.zerowidth.is_empty() {
                         break;
                     }

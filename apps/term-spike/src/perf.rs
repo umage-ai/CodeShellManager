@@ -57,10 +57,7 @@ impl Perf {
         let mut cpu: Vec<f32> = recent.iter().map(|s| s.cpu_ms).collect();
         cpu.sort_by(f32::total_cmp);
         let pct = |p: f32| cpu.get(((cpu.len() - 1) as f32 * p).round() as usize).copied().unwrap_or(0.0);
-        let mut intervals: Vec<f32> = recent
-            .windows(2)
-            .map(|w| w[1].at.duration_since(w[0].at).as_secs_f32() * 1000.0)
-            .collect();
+        let mut intervals: Vec<f32> = recent.windows(2).map(|w| w[1].at.duration_since(w[0].at).as_secs_f32() * 1000.0).collect();
         intervals.sort_by(f32::total_cmp);
         let interval_p95 = intervals.get(((intervals.len().max(1) - 1) as f32 * 0.95).round() as usize).copied().unwrap_or(0.0);
         let rebuilds: u32 = recent.iter().map(|s| s.counters.rebuilds).sum();
@@ -93,8 +90,23 @@ impl std::fmt::Display for Summary {
         write!(
             f,
             "{} frames in {:.0}s ({:.1} fps, frame interval p95 {:.1} ms) | ui() cpu ms avg {:.2} p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} | mesh rebuilds/frame {:.2} | lock misses {} | avg ms: grid {:.2} (mesh builds {:.2}) floating {:.2} torn-off viewport {:.2} | full frame cpu (ui+tessellate+render, no vsync wait) avg {:.1} p95 {:.1}",
-            self.frames, self.window_s, self.fps, self.interval_p95, self.cpu_avg, self.cpu_p50, self.cpu_p95, self.cpu_p99, self.cpu_max, self.rebuilds_per_frame, self.lock_misses,
-            self.grid_ms_avg, self.build_ms_avg, self.float_ms_avg, self.torn_ms_avg, self.full_frame_cpu_avg, self.full_frame_cpu_p95
+            self.frames,
+            self.window_s,
+            self.fps,
+            self.interval_p95,
+            self.cpu_avg,
+            self.cpu_p50,
+            self.cpu_p95,
+            self.cpu_p99,
+            self.cpu_max,
+            self.rebuilds_per_frame,
+            self.lock_misses,
+            self.grid_ms_avg,
+            self.build_ms_avg,
+            self.float_ms_avg,
+            self.torn_ms_avg,
+            self.full_frame_cpu_avg,
+            self.full_frame_cpu_p95
         )
     }
 }

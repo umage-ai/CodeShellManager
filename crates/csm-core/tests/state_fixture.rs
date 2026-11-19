@@ -11,10 +11,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests may unwrap
 
-use csm_core::models::{
-    AppState, GroupDisplayMode, ProgramStatusProbeMode, RunMode, SessionKind, SessionStatus,
-    SidebarActionIconsMode,
-};
+use csm_core::models::{AppState, GroupDisplayMode, ProgramStatusProbeMode, RunMode, SessionKind, SessionStatus, SidebarActionIconsMode};
 use csm_core::session_manager::SessionManager;
 use csm_core::state::{self, LoadSource};
 use csm_core::time::Timestamp;
@@ -35,64 +32,40 @@ fn reads_a_realistic_csharp_state_file() {
     assert_eq!(s.sessions.len(), 3);
     assert_eq!(s.groups.len(), 2);
     assert_eq!(s.last_layout, "TwoByTwo");
-    assert_eq!(
-        s.group_layouts.get("g-claude").map(String::as_str),
-        Some("TwoByTwo")
-    );
-    assert_eq!(
-        s.group_layouts.get("__ALL__").map(String::as_str),
-        Some("Single")
-    );
+    assert_eq!(s.group_layouts.get("g-claude").map(String::as_str), Some("TwoByTwo"));
+    assert_eq!(s.group_layouts.get("__ALL__").map(String::as_str), Some("Single"));
     assert!(!s.window_maximized);
 
     // Local session with overrides and run commands.
     let local = &s.sessions[0];
     assert_eq!(local.id, "11111111-1111-1111-1111-111111111111");
     assert_eq!(local.name, "CodeShellManager");
-    assert_eq!(
-        local.working_folder,
-        r"C:\Users\Morten\source\repos\umage-ai\CodeShellManager"
-    );
-    assert_eq!(
-        (local.command.as_str(), local.args.as_str()),
-        ("claude", "--model claude-opus-4-6")
-    );
+    assert_eq!(local.working_folder, r"C:\Users\Morten\source\repos\umage-ai\CodeShellManager");
+    assert_eq!((local.command.as_str(), local.args.as_str()), ("claude", "--model claude-opus-4-6"));
     assert_eq!(local.group_id, "g-claude");
     assert_eq!(local.color_override.as_deref(), Some("#a6e3a1"));
     assert_eq!(local.status, SessionStatus::Running);
     assert_eq!(local.kind, SessionKind::Local);
     assert!(!local.is_dormant);
-    assert_eq!(
-        local.created_at.epoch_ms(),
-        Timestamp::from_text("2026-11-01T08:30:15.123Z").epoch_ms()
-    );
+    assert_eq!(local.created_at.epoch_ms(), Timestamp::from_text("2026-11-01T08:30:15.123Z").epoch_ms());
     assert_eq!(local.created_at.as_str(), "2026-11-01T08:30:15.123Z");
     assert_eq!(local.profile_font_family.as_deref(), Some("Cascadia Mono"));
     assert_eq!(local.profile_font_size, Some(15));
     assert_eq!(local.profile_font_ligatures, Some(false));
     assert_eq!(local.profile_cursor_shape.as_deref(), Some("bar"));
     assert_eq!(local.profile_background_opacity, Some(0.85));
-    assert_eq!(
-        local.profile_color_scheme_json.as_deref(),
-        Some(r##"{"background":"#1e1e2e","foreground":"#cdd6f4"}"##)
-    );
+    assert_eq!(local.profile_color_scheme_json.as_deref(), Some(r##"{"background":"#1e1e2e","foreground":"#cdd6f4"}"##));
     assert_eq!(local.run_commands.len(), 2);
     assert!(local.run_commands[0].is_default);
     assert_eq!(local.run_commands[0].mode, RunMode::Process);
     assert_eq!(local.run_commands[1].mode, RunMode::PowerShell);
-    assert_eq!(
-        local.run_commands[1].post_run_url.as_deref(),
-        Some("http://localhost:5173")
-    );
+    assert_eq!(local.run_commands[1].post_run_url.as_deref(), Some("http://localhost:5173"));
 
     // SSH session: Kind 1, plus the legacy key, which must not change the answer.
     let ssh = &s.sessions[1];
     assert_eq!(ssh.kind, SessionKind::Ssh);
     assert!(ssh.is_remote());
-    assert_eq!(
-        (ssh.ssh_user.as_str(), ssh.ssh_host.as_str(), ssh.ssh_port),
-        ("alice", "dev.example.com", 2222)
-    );
+    assert_eq!((ssh.ssh_user.as_str(), ssh.ssh_host.as_str(), ssh.ssh_port), ("alice", "dev.example.com", 2222));
     assert_eq!(ssh.ssh_remote_folder, "/srv/app");
     assert_eq!(ssh.folder_short(), "dev.example.com");
     assert_eq!(ssh.accent_key(), "alice@dev.example.com");
@@ -118,16 +91,7 @@ fn reads_a_realistic_csharp_state_file() {
 
     // Window placement in both generations.
     let placement = s.last_placement.unwrap();
-    assert_eq!(
-        (
-            placement.left,
-            placement.top,
-            placement.width,
-            placement.height,
-            placement.dpi
-        ),
-        (2200, 300, 2400, 1500, 144)
-    );
+    assert_eq!((placement.left, placement.top, placement.width, placement.height, placement.dpi), (2200, 300, 2400, 1500, 144));
     let bounds = s.last_normal_bounds.unwrap();
     assert!((bounds.left - 1466.6666666666667).abs() < 1e-9 && bounds.width == 1600.0);
 
@@ -136,21 +100,12 @@ fn reads_a_realistic_csharp_state_file() {
     assert_eq!(st.program_status_probe, ProgramStatusProbeMode::On);
     assert_eq!(st.group_display_mode, GroupDisplayMode::InlineHeaders);
     assert_eq!(st.sidebar_action_icons_mode, SidebarActionIconsMode::Always);
-    assert_eq!(
-        (st.terminal_letter_spacing, st.claude_launch_stagger_ms),
-        (0.5, 1500)
-    );
+    assert_eq!((st.terminal_letter_spacing, st.claude_launch_stagger_ms), (0.5, 1500));
     assert!(st.open_with_seeded && st.auto_restore_sessions && st.warn_on_close_when_busy);
     assert_eq!(st.open_with.len(), 1);
     assert!(st.open_with[0].is_default);
     assert_eq!(st.open_with[0].local_args.as_deref(), Some("{folder}"));
-    assert!(
-        st.open_with[0]
-            .wsl_args
-            .as_deref()
-            .unwrap()
-            .contains("{distro:uri}")
-    );
+    assert!(st.open_with[0].wsl_args.as_deref().unwrap().contains("{distro:uri}"));
     assert_eq!(st.open_with[0].ssh_args, None);
     assert_eq!(st.launch_commands.len(), 8);
 }
@@ -183,9 +138,7 @@ fn key_sequence(json: &str) -> Vec<String> {
             let rest = t.strip_prefix('"')?;
             let end = rest.find("\":")?;
             let key = &rest[..end];
-            key.chars()
-                .all(|c| c.is_ascii_alphanumeric())
-                .then(|| key.to_owned())
+            key.chars().all(|c| c.is_ascii_alphanumeric()).then(|| key.to_owned())
         })
         .collect()
 }

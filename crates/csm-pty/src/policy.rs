@@ -16,11 +16,7 @@ pub enum BundledDecision {
 /// `base_dir` is the folder of the running executable. Both files must be there: conpty.dll
 /// launches OpenConsole.exe from its own folder, and a conpty.dll without it is not the
 /// implementation that was measured.
-pub fn decide_bundled(
-    prefer_bundled: bool,
-    base_dir: Option<&Path>,
-    file_exists: impl Fn(&Path) -> bool,
-) -> BundledDecision {
+pub fn decide_bundled(prefer_bundled: bool, base_dir: Option<&Path>, file_exists: impl Fn(&Path) -> bool) -> BundledDecision {
     if !prefer_bundled {
         return BundledDecision::Skip { reason: "disabled by setting".into() };
     }
@@ -28,21 +24,14 @@ pub fn decide_bundled(
         return BundledDecision::Skip { reason: "no application directory".into() };
     };
     if !base.is_absolute() {
-        return BundledDecision::Skip {
-            reason: format!("refusing a relative application directory: {}", base.display()),
-        };
+        return BundledDecision::Skip { reason: format!("refusing a relative application directory: {}", base.display()) };
     }
     for name in [CONPTY_DLL, OPENCONSOLE_EXE] {
         if !file_exists(&base.join(name)) {
-            return BundledDecision::Skip {
-                reason: format!("{name} not found in {}", base.display()),
-            };
+            return BundledDecision::Skip { reason: format!("{name} not found in {}", base.display()) };
         }
     }
-    BundledDecision::Try {
-        dll: base.join(CONPTY_DLL),
-        reason: format!("found {CONPTY_DLL} + {OPENCONSOLE_EXE} in {}", base.display()),
-    }
+    BundledDecision::Try { dll: base.join(CONPTY_DLL), reason: format!("found {CONPTY_DLL} + {OPENCONSOLE_EXE} in {}", base.display()) }
 }
 
 /// Repeated bundled `CreatePseudoConsole` failures switch the process to inbox only after

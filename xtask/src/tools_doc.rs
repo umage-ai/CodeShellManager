@@ -60,7 +60,11 @@ pub fn run(check: bool) -> Result<Findings, String> {
     let wanted = splice(&current, &generate()?);
     let same = wanted == current.replace("\r\n", "\n");
     if check {
-        return Ok(if same { Vec::new() } else { vec!["docs/tools.md is out of date with the engine registry; run `cargo xtask tools` and commit".to_owned()] });
+        return Ok(if same {
+            Vec::new()
+        } else {
+            vec!["docs/tools.md is out of date with the engine registry; run `cargo xtask tools` and commit".to_owned()]
+        });
     }
     if !same {
         // Keep the file's own line endings.

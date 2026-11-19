@@ -26,33 +26,23 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use windows_sys::Win32::Foundation::{
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, FARPROC, HANDLE, INVALID_HANDLE_VALUE,
-};
+use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, FARPROC, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::LibraryLoader::{
-    GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
-};
+use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, GetProcessId, INFINITE,
-    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
-    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+    GetExitCodeProcess, GetProcessId, INFINITE, InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
+    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::policy::{BundledDecision, BundledFailurePolicy, decide_bundled};
-use crate::{
-    Backend, EarlyOutputBuffer, ExitCallback, ExitState, OutputSink, Pty, PtySize, SpawnOptions,
-    cmdline,
-};
+use crate::{Backend, EarlyOutputBuffer, ExitCallback, ExitState, OutputSink, Pty, PtySize, SpawnOptions, cmdline};
 
 // ── Binding ──────────────────────────────────────────────────────────────────────────────
 
@@ -87,21 +77,13 @@ fn bind(path: &Path, kind: Backend) -> Result<Api, String> {
     let wide = wide_nul(path.as_os_str());
     // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call; hFile must be null.
     // The flags limit the search for the DLL's own dependencies to its folder and System32.
-    let module = unsafe {
-        LoadLibraryExW(
-            wide.as_ptr(),
-            null_mut(),
-            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
-        )
-    };
+    let module = unsafe { LoadLibraryExW(wide.as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) };
     if module.is_null() {
         return Err(format!("could not load {}: {}", path.display(), io::Error::last_os_error()));
     }
-    let (Some(create), Some(resize), Some(close)) = (
-        export(module, c"CreatePseudoConsole"),
-        export(module, c"ResizePseudoConsole"),
-        export(module, c"ClosePseudoConsole"),
-    ) else {
+    let (Some(create), Some(resize), Some(close)) =
+        (export(module, c"CreatePseudoConsole"), export(module, c"ResizePseudoConsole"), export(module, c"ClosePseudoConsole"))
+    else {
         return Err(format!("{} lacks a ConPTY export", path.display()));
     };
     // SAFETY: these are the documented exports with exactly these signatures (consoleapi.h:
@@ -166,8 +148,7 @@ fn select() -> io::Result<(Arc<Api>, String)> {
         return Ok((s.api.clone(), s.reason.clone()));
     }
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
-    let decision =
-        decide_bundled(PREFER_BUNDLED.load(Ordering::Relaxed), exe_dir.as_deref(), Path::is_file);
+    let decision = decide_bundled(PREFER_BUNDLED.load(Ordering::Relaxed), exe_dir.as_deref(), Path::is_file);
     let (api, reason) = match decision {
         BundledDecision::Try { dll, reason } => match bind(&dll, Backend::BundledConPty) {
             Ok(api) => (Arc::new(api), format!("bundled ({reason}; loaded {})", dll.display())),
@@ -233,9 +214,7 @@ impl PseudoConsole {
         let mut hpc: HPCON = 0;
         // SAFETY: the pipe handles are valid for the call (ConPTY duplicates what it keeps);
         // `hpc` is a valid out-pointer; `create` was bound to the real export.
-        let hr = unsafe {
-            (api.create)(coord(size), input.as_raw_handle(), output.as_raw_handle(), 0, &mut hpc)
-        };
+        let hr = unsafe { (api.create)(coord(size), input.as_raw_handle(), output.as_raw_handle(), 0, &mut hpc) };
         if hr < 0 {
             return Err(hr);
         }
@@ -376,9 +355,7 @@ fn env_block(changes: &[(std::ffi::OsString, Option<std::ffi::OsString>)]) -> Ve
     }
     let mut block = Vec::new();
     for (k, v) in vars.values() {
-        if k.is_empty() || k.encode_wide().any(|c| c == 0 || c == u16::from(b'='))
-            || v.encode_wide().any(|c| c == 0)
-        {
+        if k.is_empty() || k.encode_wide().any(|c| c == 0 || c == u16::from(b'=')) || v.encode_wide().any(|c| c == 0) {
             continue;
         }
         block.extend(k.encode_wide());
@@ -448,9 +425,8 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
         }
         Err(hr) if selected.kind == Backend::BundledConPty => {
             note_bundled_result(false, &format!("bundled CreatePseudoConsole failed: 0x{hr:08X}"));
-            PseudoConsole::create(inbox()?, opts.size, &in_read, &out_write).map_err(|hr| {
-                io::Error::other(format!("CreatePseudoConsole failed: 0x{hr:08X}"))
-            })?
+            PseudoConsole::create(inbox()?, opts.size, &in_read, &out_write)
+                .map_err(|hr| io::Error::other(format!("CreatePseudoConsole failed: 0x{hr:08X}")))?
         }
         Err(hr) => return Err(io::Error::other(format!("CreatePseudoConsole failed: 0x{hr:08X}"))),
     };
@@ -538,15 +514,7 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
     spawn_exit_monitor(&process, pid, exit.clone())?;
 
     log::info!("PTY started pid={pid} on {} {}x{}", pcon.api.kind.label(), opts.size.cols, opts.size.rows);
-    Ok(Arc::new(WinPty {
-        pcon,
-        process,
-        job,
-        pid,
-        writer: Mutex::new(Some(writer)),
-        output,
-        exit,
-    }))
+    Ok(Arc::new(WinPty { pcon, process, job, pid, writer: Mutex::new(Some(writer)), output, exit }))
 }
 
 /// Waits on a DUPLICATE of the process handle, so dropping the PTY (which closes the original)
@@ -554,17 +522,7 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
 fn spawn_exit_monitor(process: &OwnedHandle, pid: u32, exit: Arc<ExitState>) -> io::Result<()> {
     let mut dup: HANDLE = null_mut();
     // SAFETY: valid source handle; pseudo-handle for the current process; valid out-pointer.
-    let ok = unsafe {
-        DuplicateHandle(
-            GetCurrentProcess(),
-            process.as_raw_handle(),
-            GetCurrentProcess(),
-            &mut dup,
-            0,
-            0,
-            DUPLICATE_SAME_ACCESS,
-        )
-    };
+    let ok = unsafe { DuplicateHandle(GetCurrentProcess(), process.as_raw_handle(), GetCurrentProcess(), &mut dup, 0, 0, DUPLICATE_SAME_ACCESS) };
     if ok == 0 {
         log::warn!("PTY DuplicateHandle failed: {} — exit code unknown", io::Error::last_os_error());
         exit.latch(None);
@@ -651,9 +609,7 @@ impl Drop for WinPty {
         // ClosePseudoConsole can block until the reader drains the output pipe; never do that on
         // the caller's (possibly UI) thread. The reader keeps draining, sees EOF, and ends.
         let pcon = self.pcon.clone();
-        let spawned = std::thread::Builder::new()
-            .name(format!("pty-close-{}", self.pid))
-            .spawn(move || pcon.close());
+        let spawned = std::thread::Builder::new().name(format!("pty-close-{}", self.pid)).spawn(move || pcon.close());
         if let Err(e) = spawned {
             log::warn!("PTY close thread failed to start ({e}); closing inline");
             self.pcon.close();

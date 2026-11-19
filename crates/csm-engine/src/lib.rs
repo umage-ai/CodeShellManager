@@ -30,16 +30,16 @@ pub mod which;
 pub mod wsl_probe;
 
 pub use csm_index;
-pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
+/// Re-exported so the UI can build sizes and input without depending on csm-term directly.
+pub use csm_term::{GridSize, input};
 pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};
+pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
 pub use registry::Registry;
 pub use runs::{RunOutputHandle, RunPhase, RunView};
-pub use tools::open::{OpenWithTarget, OpenWithView};
 pub use session::TerminalHandle;
 pub use snapshot::{GroupInfo, GroupView, SessionView, Snapshot};
 pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, real_pty_factory};
 pub use status::{Status, WaitUntil};
 pub use tool::{Caller, Effects, ToolError, ToolFn, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
-/// Re-exported so the UI can build sizes and input without depending on csm-term directly.
-pub use csm_term::{GridSize, input};
+pub use tools::open::{OpenWithTarget, OpenWithView};

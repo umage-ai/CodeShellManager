@@ -117,7 +117,9 @@ impl<B: Backend> McpTools<B> {
             return None;
         }
         let set = info.toolset.id();
-        Some(format!("`{name}` is in the `{set}` toolset, which is not enabled. Call toolset_enable with toolset \"{set}\" first, then call it again."))
+        Some(format!(
+            "`{name}` is in the `{set}` toolset, which is not enabled. Call toolset_enable with toolset \"{set}\" first, then call it again."
+        ))
     }
 
     /// Everything a worker needs to run `name` off the reading thread, or `None` when the call must
@@ -151,8 +153,20 @@ impl<B: Backend> McpTools<B> {
         let sets: Vec<&str> = Toolset::ALL.iter().map(|t| t.id()).chain(std::iter::once("all")).collect();
         let pick = json!({"toolset": {"type": "string", "enum": sets, "description": "A toolset id, or `all`."}});
         vec![
-            tool(TOOLSET_LIST, "List toolsets", "The toolsets of tools, with how many tools each holds and which are enabled. Only enabled toolsets are listed as tools.", object(json!({}), &[]), Effect::ReadOnly),
-            tool(TOOLSET_ENABLE, "Enable a toolset", "Make a toolset's tools available to call. `core` is on already.", object(pick.clone(), &["toolset"]), Effect::Edits),
+            tool(
+                TOOLSET_LIST,
+                "List toolsets",
+                "The toolsets of tools, with how many tools each holds and which are enabled. Only enabled toolsets are listed as tools.",
+                object(json!({}), &[]),
+                Effect::ReadOnly,
+            ),
+            tool(
+                TOOLSET_ENABLE,
+                "Enable a toolset",
+                "Make a toolset's tools available to call. `core` is on already.",
+                object(pick.clone(), &["toolset"]),
+                Effect::Edits,
+            ),
             tool(TOOLSET_DISABLE, "Disable a toolset", "Hide a toolset's tools again to save context.", object(pick, &["toolset"]), Effect::Edits),
         ]
     }
@@ -229,7 +243,10 @@ impl<B: Backend> McpTools<B> {
         let catalog: Vec<ToolInfo> = self.catalog().to_vec();
         let ids: Vec<&str> = catalog.iter().filter(|t| chosen.contains(&t.toolset) && self.is_exposed(t)).map(|t| t.id.as_str()).collect();
         let verb = if enable { "Enabled" } else { "Disabled" };
-        output_result(&ToolOutput::new(format!("{verb} `{wanted}` ({} tools).", ids.len()), json!({"toolset": wanted, "enabled": enable, "tools": ids})))
+        output_result(&ToolOutput::new(
+            format!("{verb} `{wanted}` ({} tools).", ids.len()),
+            json!({"toolset": wanted, "enabled": enable, "tools": ids}),
+        ))
     }
 }
 
@@ -333,7 +350,10 @@ impl<B: Backend> McpService<B> {
         let Some((mut backend, caller)) = self.server.tools().prepare_call(&name, &args) else { return false };
         if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT {
             inflight.fetch_sub(1, Ordering::SeqCst);
-            let busy = text_result(format!("Too many tool calls are running at once ({MAX_IN_FLIGHT}). Wait for one to finish, then call `{name}` again."), true);
+            let busy = text_result(
+                format!("Too many tool calls are running at once ({MAX_IN_FLIGHT}). Wait for one to finish, then call `{name}` again."),
+                true,
+            );
             let _ = write_lines(out, &[response(id, busy).to_string()]);
             return true;
         }

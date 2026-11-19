@@ -192,7 +192,11 @@ impl GitDetails {
                                         .as_array()
                                         .map(|ss| {
                                             ss.iter()
-                                                .map(|x| WorktreeSession { id: s(&x["id"]), name: s(&x["name"]), asleep: x["asleep"].as_bool().unwrap_or(false) })
+                                                .map(|x| WorktreeSession {
+                                                    id: s(&x["id"]),
+                                                    name: s(&x["name"]),
+                                                    asleep: x["asleep"].as_bool().unwrap_or(false),
+                                                })
                                                 .collect()
                                         })
                                         .unwrap_or_default(),

@@ -13,23 +13,41 @@ use serde_json::Value;
 #[non_exhaustive]
 pub enum Event {
     /// A session was created, changed (status, name, branch, group…) or removed.
-    SessionChanged { session_id: String },
-    SessionRemoved { session_id: String },
+    SessionChanged {
+        session_id: String,
+    },
+    SessionRemoved {
+        session_id: String,
+    },
     /// Groups, order, view or layout changed.
     LayoutChanged,
     /// The "Needs you" inbox changed.
     InboxChanged,
     /// The UI should focus this session (raised by `session_focus`, `inbox_next`, …).
-    FocusRequested { session_id: String },
+    FocusRequested {
+        session_id: String,
+    },
     /// A short message for a toast ("Started claude in Odulodo.").
-    Toast { message: String },
+    Toast {
+        message: String,
+    },
     /// An MCP client wants to run a tool that needs consent; show a card.
-    ConsentRequested { request: Value },
-    ConsentResolved { request_id: u64 },
-    Error { message: String },
+    ConsentRequested {
+        request: Value,
+    },
+    ConsentResolved {
+        request_id: u64,
+    },
+    Error {
+        message: String,
+    },
     /// A row of the shutdown board changed: `phase` is `closing`, `clean` (exited by itself in
     /// time) or `forced` (killed: the budget ran out, or it is not a Claude session).
-    QuitProgress { session_id: String, phase: String, elapsed_ms: u64 },
+    QuitProgress {
+        session_id: String,
+        phase: String,
+        elapsed_ms: u64,
+    },
     /// `app_quit` finished: every process is gone and the state is saved. Call
     /// [`crate::Engine::shutdown`] and exit.
     QuitReady,

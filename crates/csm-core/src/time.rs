@@ -52,14 +52,8 @@ impl Timestamp {
         let secs = ms_of_day / 1000;
         let ms = ms_of_day % 1000;
         let (hh, mm, ss) = (secs / 3600, (secs / 60) % 60, secs % 60);
-        let frac = if ms == 0 {
-            String::new()
-        } else {
-            format!(".{ms:03}")
-        };
-        Timestamp(format!(
-            "{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}{frac}Z"
-        ))
+        let frac = if ms == 0 { String::new() } else { format!(".{ms:03}") };
+        Timestamp(format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}{frac}Z"))
     }
 
     /// The stored text.
@@ -144,11 +138,7 @@ fn parse_iso(s: &str) -> Option<i64> {
         None | Some(b'Z' | b'z') => {}
         Some(&sign @ (b'+' | b'-')) => {
             let oh = num(i + 1, 2)?;
-            let om = if b.get(i + 3) == Some(&b':') {
-                num(i + 4, 2)?
-            } else {
-                num(i + 3, 2).unwrap_or(0)
-            };
+            let om = if b.get(i + 3) == Some(&b':') { num(i + 4, 2)? } else { num(i + 3, 2).unwrap_or(0) };
             let total = (oh * 60 + om) * 60_000;
             offset_ms = if sign == b'+' { total } else { -total };
         }
@@ -167,10 +157,7 @@ mod tests {
         for ms in [0, 1_762_430_400_000, 1_762_430_400_123, -1, 951_782_400_000] {
             assert_eq!(Timestamp::from_epoch_ms(ms).epoch_ms(), Some(ms), "{ms}");
         }
-        assert_eq!(
-            Timestamp::from_epoch_ms(1_762_430_400_000).as_str(),
-            "2025-11-06T12:00:00Z"
-        );
+        assert_eq!(Timestamp::from_epoch_ms(1_762_430_400_000).as_str(), "2025-11-06T12:00:00Z");
     }
 
     #[test]
@@ -194,14 +181,7 @@ mod tests {
 
     #[test]
     fn hostile_text_does_not_panic() {
-        for s in [
-            "",
-            "2026",
-            "2026-13-40T99:99:99",
-            "9999-12-31T23:59:59.9999999+99:99",
-            "2026-01-01T00:00:00.",
-            "é",
-        ] {
+        for s in ["", "2026", "2026-13-40T99:99:99", "9999-12-31T23:59:59.9999999+99:99", "2026-01-01T00:00:00.", "é"] {
             let _ = Timestamp::from_text(s).epoch_ms();
         }
     }

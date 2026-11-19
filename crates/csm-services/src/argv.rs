@@ -53,10 +53,7 @@ fn push_n(s: &mut String, c: char, n: usize) {
 /// so there is no string for a metacharacter to be a metacharacter in.
 #[must_use]
 pub fn join_argv<S: AsRef<str>>(args: &[S]) -> String {
-    args.iter()
-        .map(|a| quote_for_cmd(a.as_ref(), false))
-        .collect::<Vec<_>>()
-        .join(" ")
+    args.iter().map(|a| quote_for_cmd(a.as_ref(), false)).collect::<Vec<_>>().join(" ")
 }
 
 /// Wraps a value in POSIX single quotes, escaping an embedded `'` as `'\''`.
@@ -151,11 +148,7 @@ pub fn split_exe_and_args(command_line: &str) -> (String, String) {
             None => (s.trim_matches('"').to_string(), String::new()),
             Some(closing) => {
                 let exe = after_open.get(..closing).unwrap_or("").to_string();
-                let rest = after_open
-                    .get(closing + 1..)
-                    .unwrap_or("")
-                    .trim_start()
-                    .to_string();
+                let rest = after_open.get(closing + 1..).unwrap_or("").trim_start().to_string();
                 (exe, rest)
             }
         };
@@ -163,10 +156,7 @@ pub fn split_exe_and_args(command_line: &str) -> (String, String) {
 
     match s.find(' ') {
         None => (s.to_string(), String::new()),
-        Some(sp) => (
-            s.get(..sp).unwrap_or("").to_string(),
-            s.get(sp + 1..).unwrap_or("").trim_start().to_string(),
-        ),
+        Some(sp) => (s.get(..sp).unwrap_or("").to_string(), s.get(sp + 1..).unwrap_or("").trim_start().to_string()),
     }
 }
 
@@ -288,10 +278,7 @@ mod tests {
 
     #[test]
     fn split_quoted_exe_with_spaces_strips_quotes() {
-        assert_eq!(
-            pair("\"C:\\Program Files\\app.exe\" -x"),
-            ("C:\\Program Files\\app.exe".into(), "-x".into())
-        );
+        assert_eq!(pair("\"C:\\Program Files\\app.exe\" -x"), ("C:\\Program Files\\app.exe".into(), "-x".into()));
     }
 
     #[test]
@@ -301,18 +288,12 @@ mod tests {
 
     #[test]
     fn split_wsl_with_flags() {
-        assert_eq!(
-            pair("wsl.exe -d Ubuntu"),
-            ("wsl.exe".into(), "-d Ubuntu".into())
-        );
+        assert_eq!(pair("wsl.exe -d Ubuntu"), ("wsl.exe".into(), "-d Ubuntu".into()));
     }
 
     #[test]
     fn split_args_containing_quotes_are_preserved_verbatim() {
-        assert_eq!(
-            pair("bash -c \"echo hello\""),
-            ("bash".into(), "-c \"echo hello\"".into())
-        );
+        assert_eq!(pair("bash -c \"echo hello\""), ("bash".into(), "-c \"echo hello\"".into()));
     }
 
     #[test]
@@ -323,17 +304,11 @@ mod tests {
 
     #[test]
     fn split_leading_whitespace_trims() {
-        assert_eq!(
-            pair("  cmd /c echo hi"),
-            ("cmd".into(), "/c echo hi".into())
-        );
+        assert_eq!(pair("  cmd /c echo hi"), ("cmd".into(), "/c echo hi".into()));
     }
 
     #[test]
     fn split_unterminated_quote_returns_trimmed_exe_and_no_args() {
-        assert_eq!(
-            pair("\"C:\\x y\\app.exe -x"),
-            ("C:\\x y\\app.exe -x".into(), String::new())
-        );
+        assert_eq!(pair("\"C:\\x y\\app.exe -x"), ("C:\\x y\\app.exe -x".into(), String::new()));
     }
 }

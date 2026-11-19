@@ -33,7 +33,8 @@ const PROCESS_ALLOWED: &[&str] =
 /// Where `unsafe` may appear.
 const UNSAFE_ALLOWED: &[&str] = &["crates/csm-pty/src/conpty.rs", "crates/csm-pty/src/conpty/"];
 /// UI frame code: nothing here may touch the disk, spawn, or wait.
-const UI_FRAME: &[&str] = &["crates/csm-ui/src/screens/", "crates/csm-ui/src/widgets.rs", "crates/csm-ui/src/terminal/view.rs", "crates/csm-ui/src/terminal/render.rs"];
+const UI_FRAME: &[&str] =
+    &["crates/csm-ui/src/screens/", "crates/csm-ui/src/widgets.rs", "crates/csm-ui/src/terminal/view.rs", "crates/csm-ui/src/terminal/render.rs"];
 /// Crate roots that must carry the clippy denies. Extend as each crate is cleaned up.
 const DENY_ROOTS: &[&str] = &["crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "crates/csm-pty/", "xtask/"];
 const DENY_LINTS: &[&str] = &["unwrap_used", "expect_used", "panic", "unimplemented", "todo", "unreachable"];
@@ -160,7 +161,9 @@ mod quote_free {
         fn to_str(&self) -> String {
             match self {
                 syn::Meta::Path(p) => p.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::"),
-                syn::Meta::List(l) => format!("{} ({})", l.path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::"), l.tokens),
+                syn::Meta::List(l) => {
+                    format!("{} ({})", l.path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::"), l.tokens)
+                }
                 syn::Meta::NameValue(n) => n.path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::"),
             }
         }
@@ -214,15 +217,17 @@ impl Policy<'_> {
                 || s.starts_with(&["std", "thread", "sleep"])
                 || s.starts_with(&["std", "io", "stdin"]);
             if banned {
-                self.problems.push(format!("{}: `{}` in UI frame code (blocking or I/O; send it to a background thread and poll a channel)", self.at(span), s.join("::")));
+                self.problems.push(format!(
+                    "{}: `{}` in UI frame code (blocking or I/O; send it to a background thread and poll a channel)",
+                    self.at(span),
+                    s.join("::")
+                ));
             }
         }
     }
 
     fn check_root(&mut self, attrs: &[syn::Attribute]) {
-        let list = |name: &str| -> Vec<String> {
-            attrs.iter().filter(|a| a.path().is_ident(name)).map(quote_attr).collect()
-        };
+        let list = |name: &str| -> Vec<String> { attrs.iter().filter(|a| a.path().is_ident(name)).map(quote_attr).collect() };
         let forbids = list("forbid").iter().any(|t| t.contains("unsafe_code"));
         let denies_unsafe = list("deny").iter().any(|t| t.contains("unsafe_code"));
         let pty = self.file.starts_with("crates/csm-pty/");
@@ -365,7 +370,12 @@ mod tests {
     #[test]
     fn ui_frame_code_may_not_block() {
         let ui = "crates/csm-ui/src/screens/panes.rs";
-        for src in ["fn f() { let _ = std::fs::read(\"x\"); }", "use std::fs; fn f() { fs::read(\"x\").ok(); }", "fn f() { std::thread::sleep(d); }", "fn f(r: R) { r.recv(); }"] {
+        for src in [
+            "fn f() { let _ = std::fs::read(\"x\"); }",
+            "use std::fs; fn f() { fs::read(\"x\").ok(); }",
+            "fn f() { std::thread::sleep(d); }",
+            "fn f(r: R) { r.recv(); }",
+        ] {
             assert!(!check_source(ui, src).is_empty(), "{src}");
         }
         assert!(check_source(ui, "fn f(r: R) { r.try_recv(); }").is_empty());

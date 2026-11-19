@@ -28,7 +28,11 @@ fn item(id: &str, label: &str, cmd: &str, default: bool) -> RunCommandItem {
 fn rig() -> (H, Seen) {
     let dir = tempfile::tempdir().unwrap();
     let mut app = test_app();
-    app.sessions.push(session("s", &dir.path().display().to_string(), vec![item("build", "Build", "cargo build", false), item("test", "Test", "cargo test", true)]));
+    app.sessions.push(session(
+        "s",
+        &dir.path().display().to_string(),
+        vec![item("build", "Build", "cargo build", false), item("test", "Test", "cargo test", true)],
+    ));
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let s2 = seen.clone();
     let h = H::start(app, move |o| {
@@ -75,7 +79,8 @@ fn start_runs_the_default_on_the_inbox_conpty_and_records_the_exit() {
     assert_eq!(out.data["run_id"], "test", "the default");
     let pty = run_pty(&h, 0);
     wait_phase(&h, "test", RunPhase::Running);
-    let opts = seen.lock().unwrap().iter().find(|o| is_run(&o.argv.iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>())).cloned().unwrap();
+    let opts =
+        seen.lock().unwrap().iter().find(|o| is_run(&o.argv.iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>())).cloned().unwrap();
     assert!(!opts.allow_bundled, "runs stay on the inbox ConPTY");
     if cfg!(windows) {
         assert_eq!(opts.argv, ["cmd.exe"]);
@@ -239,9 +244,7 @@ fn a_start_failure_is_a_failed_run_with_the_reason_in_its_output() {
     app.sessions.push(session("s", &dir.path().display().to_string(), vec![item("r", "Run", "x", true)]));
     let h = H::start(app, |o| {
         let inner = o.pty.clone();
-        o.pty = Arc::new(move |opts: SpawnOptions| {
-            if opts.allow_bundled { inner(opts) } else { Err(std::io::Error::other("no such program")) }
-        });
+        o.pty = Arc::new(move |opts: SpawnOptions| if opts.allow_bundled { inner(opts) } else { Err(std::io::Error::other("no such program")) });
     });
     h.wait_until("live", |v| v.session("s").is_some_and(|s| s.live));
     h.ok("run_start", json!({"session_id": "s"}));

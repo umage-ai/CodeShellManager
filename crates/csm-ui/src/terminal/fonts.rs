@@ -143,11 +143,7 @@ impl FontSet {
     }
 
     fn face(&self, idx: u8) -> &Face {
-        if idx == 0 {
-            &self.primary
-        } else {
-            self.fallbacks.get(usize::from(idx) - 1).unwrap_or(&self.primary)
-        }
+        if idx == 0 { &self.primary } else { self.fallbacks.get(usize::from(idx) - 1).unwrap_or(&self.primary) }
     }
 
     /// Cell metrics at a display scale (pixels per point). Cell sizes are whole pixels so the grid
@@ -241,17 +237,12 @@ impl FontSet {
 
     /// Renders one glyph. CPU only, no I/O.
     pub fn rasterize(&mut self, face_idx: u8, gid: u16, style: Style, px: f32) -> Option<RasterGlyph> {
-        let face = if face_idx == 0 {
-            &self.primary
-        } else {
-            self.fallbacks.get(usize::from(face_idx) - 1)?
-        };
+        let face = if face_idx == 0 { &self.primary } else { self.fallbacks.get(usize::from(face_idx) - 1)? };
         let builder = self.scale_ctx.builder(face.font()).size(px).hint(self.coverage.hint);
         let real_bold = style.bold && face.has_wght;
         let builder = if real_bold { builder.variations(&WGHT_BOLD) } else { builder };
         let mut scaler = builder.build();
-        let mut render =
-            Render::new(&[Source::ColorOutline(0), Source::ColorBitmap(StrikeWith::BestFit), Source::Outline]);
+        let mut render = Render::new(&[Source::ColorOutline(0), Source::ColorBitmap(StrikeWith::BestFit), Source::Outline]);
         render.format(Format::Alpha);
         if style.italic {
             render.transform(Some(Transform::skew(Angle::from_degrees(12.0), Angle::ZERO)));

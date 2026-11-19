@@ -67,13 +67,8 @@ pub fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<AppAuthored> {
             format!("\x1b[{final_byte}").into_bytes()
         }
     };
-    let tilde = |n: u8| -> Vec<u8> {
-        if mods.any() {
-            format!("\x1b[{n};{}~", mods.param()).into_bytes()
-        } else {
-            format!("\x1b[{n}~").into_bytes()
-        }
-    };
+    let tilde =
+        |n: u8| -> Vec<u8> { if mods.any() { format!("\x1b[{n};{}~", mods.param()).into_bytes() } else { format!("\x1b[{n}~").into_bytes() } };
     let alt_prefix = |mut v: Vec<u8>| -> Vec<u8> {
         if mods.alt {
             v.insert(0, 0x1b);
@@ -99,11 +94,7 @@ pub fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<AppAuthored> {
         Key::PageDown => tilde(6),
         Key::F(n @ 1..=4) => {
             let c = (b'P' + (n - 1)) as char;
-            if mods.any() {
-                format!("\x1b[1;{}{c}", mods.param()).into_bytes()
-            } else {
-                format!("\x1bO{c}").into_bytes()
-            }
+            if mods.any() { format!("\x1b[1;{}{c}", mods.param()).into_bytes() } else { format!("\x1bO{c}").into_bytes() }
         }
         Key::F(n @ 5..=12) => tilde([15, 17, 18, 19, 20, 21, 23, 24][usize::from(n - 5)]),
         Key::F(_) => return None,
@@ -152,10 +143,7 @@ pub fn typed(text: &str, alt: bool) -> AppAuthored {
 /// `ESC[200~ … ESC[201~` when the program enabled bracketed paste.
 pub fn paste(text: Untrusted<'_>, mode: TermMode) -> Vec<u8> {
     let normalized = text.0.replace("\r\n", "\r").replace('\n', "\r");
-    let cleaned: String = normalized
-        .chars()
-        .filter(|&c| c == '\t' || c == '\r' || !(c.is_control()))
-        .collect();
+    let cleaned: String = normalized.chars().filter(|&c| c == '\t' || c == '\r' || !(c.is_control())).collect();
     let mut out = Vec::with_capacity(cleaned.len() + 12);
     let bracketed = mode.contains(TermMode::BRACKETED_PASTE);
     if bracketed {
@@ -170,8 +158,7 @@ pub fn paste(text: Untrusted<'_>, mode: TermMode) -> Vec<u8> {
 
 /// Focus in/out report, when the program asked for them (`CSI ? 1004 h`).
 pub fn focus(focused: bool, mode: TermMode) -> Option<AppAuthored> {
-    mode.contains(TermMode::FOCUS_IN_OUT)
-        .then(|| AppAuthored(if focused { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() }))
+    mode.contains(TermMode::FOCUS_IN_OUT).then(|| AppAuthored(if focused { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +173,9 @@ pub enum MouseAction {
     Press(MouseButton),
     Release(MouseButton),
     /// Pointer moved; `held` is the button held, if any.
-    Motion { held: Option<MouseButton> },
+    Motion {
+        held: Option<MouseButton>,
+    },
     WheelUp,
     WheelDown,
 }
@@ -211,8 +200,7 @@ pub fn encode_mouse(action: MouseAction, col: u32, row: u32, mods: Mods, mode: T
         MouseAction::Press(b) => (button_code(b), false),
         MouseAction::Release(b) => (button_code(b), true),
         MouseAction::Motion { held } => {
-            let reports = mode.contains(TermMode::MOUSE_MOTION)
-                || (held.is_some() && mode.contains(TermMode::MOUSE_DRAG));
+            let reports = mode.contains(TermMode::MOUSE_MOTION) || (held.is_some() && mode.contains(TermMode::MOUSE_DRAG));
             if !reports {
                 return None;
             }

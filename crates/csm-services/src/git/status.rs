@@ -72,10 +72,7 @@ pub fn parse_status_v2(output: &str) -> GitRepoStatus {
             // "# branch.ab +<ahead> -<behind>"
             let parts: Vec<&str> = v.split(' ').filter(|p| !p.is_empty()).collect();
             if let [a, b] = parts.as_slice()
-                && let (Ok(a), Ok(b)) = (
-                    a.trim_start_matches('+').parse::<i32>(),
-                    b.trim_start_matches('-').parse::<i32>(),
-                )
+                && let (Ok(a), Ok(b)) = (a.trim_start_matches('+').parse::<i32>(), b.trim_start_matches('-').parse::<i32>())
             {
                 ahead = Some(a);
                 behind = Some(b);
@@ -83,10 +80,7 @@ pub fn parse_status_v2(output: &str) -> GitRepoStatus {
         } else if first == '#' || line.starts_with("! ") {
             // other headers; ignored files are only listed with --ignored, never by us
         } else if let Some(path) = line.strip_prefix("? ") {
-            changes.push(GitFileChange {
-                code: "??".to_string(),
-                path: unquote_c_path(path),
-            });
+            changes.push(GitFileChange { code: "??".to_string(), path: unquote_c_path(path) });
         } else {
             // 1 XY sub mH mI mW hH hI <path>
             // 2 XY sub mH mI mW hH hI Xscore <path>\t<origPath>
@@ -108,11 +102,9 @@ pub fn parse_status_v2(output: &str) -> GitRepoStatus {
                 // A tab or newline INSIDE a name is always C-quoted (\t, \n), so the first
                 // literal tab is the separator: split before unquoting, never after.
                 match raw_path.find('\t') {
-                    Some(tab) => format!(
-                        "{} → {}",
-                        unquote_c_path(raw_path.get(tab + 1..).unwrap_or("")),
-                        unquote_c_path(raw_path.get(..tab).unwrap_or(""))
-                    ),
+                    Some(tab) => {
+                        format!("{} → {}", unquote_c_path(raw_path.get(tab + 1..).unwrap_or("")), unquote_c_path(raw_path.get(..tab).unwrap_or("")))
+                    }
                     None => unquote_c_path(raw_path),
                 }
             } else {
@@ -120,22 +112,12 @@ pub fn parse_status_v2(output: &str) -> GitRepoStatus {
             };
             // Unmerged entries keep their real XY: AA, DU, UD, AU, UA, DD and UU each say
             // something different about the conflict.
-            changes.push(GitFileChange {
-                code: xy.replace('.', " "),
-                path,
-            });
+            changes.push(GitFileChange { code: xy.replace('.', " "), path });
         }
     }
 
     let detached = head.as_deref() == Some("(detached)");
-    GitRepoStatus {
-        branch: if detached { None } else { head },
-        is_detached: detached,
-        upstream,
-        ahead,
-        behind,
-        changes,
-    }
+    GitRepoStatus { branch: if detached { None } else { head }, is_detached: detached, upstream, ahead, behind, changes }
 }
 
 /// Undoes git's C-style path quoting.
@@ -230,16 +212,7 @@ mod tests {
         let s = parse_status_v2(CAPTURED);
         assert!(s.is_dirty());
         let paths: Vec<&str> = s.changes.iter().map(|c| c.path.as_str()).collect();
-        assert_eq!(
-            paths,
-            [
-                "a.txt",
-                "my file.txt",
-                "old.txt → new.txt",
-                "sub dir/æø.txt",
-                "untracked.txt"
-            ]
-        );
+        assert_eq!(paths, ["a.txt", "my file.txt", "old.txt → new.txt", "sub dir/æø.txt", "untracked.txt"]);
         let codes: Vec<&str> = s.changes.iter().map(|c| c.code.as_str()).collect();
         assert_eq!(codes, [" M", " M", "R ", "A ", "??"]);
     }
@@ -265,9 +238,7 @@ mod tests {
     #[test]
     fn upstream_whose_remote_branch_is_gone_has_no_counts() {
         // git omits branch.ab in this case
-        let s = parse_status_v2(
-            "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n",
-        );
+        let s = parse_status_v2("# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n");
         assert_eq!(s.upstream.as_deref(), Some("origin/main"));
         assert_eq!(s.ahead, None);
     }
@@ -331,15 +302,7 @@ mod tests {
         let paths: Vec<&str> = s.changes.iter().map(|c| c.path.as_str()).collect();
         assert_eq!(
             paths,
-            [
-                "q\"uote.txt",
-                "tab\there.txt",
-                "back\\slash.txt",
-                "new\nline.txt",
-                "æø \"q\".txt",
-                "from\\plain.txt → to \"x\".txt",
-                "un\ttracked",
-            ]
+            ["q\"uote.txt", "tab\there.txt", "back\\slash.txt", "new\nline.txt", "æø \"q\".txt", "from\\plain.txt → to \"x\".txt", "un\ttracked",]
         );
     }
 
@@ -369,16 +332,7 @@ mod tests {
 
     #[test]
     fn unquote_c_path_edge_cases_never_panic() {
-        for s in [
-            "\"",
-            "",
-            "\"\\\"",
-            "\"\\3\"",
-            "\"\\30\"",
-            "\"\\377\\377\"",
-            "\"\\400\"",
-            "\"é\\",
-        ] {
+        for s in ["\"", "", "\"\\\"", "\"\\3\"", "\"\\30\"", "\"\\377\\377\"", "\"\\400\"", "\"é\\"] {
             let _ = unquote_c_path(s);
         }
         // invalid UTF-8 from octal bytes is replaced, not fatal
@@ -398,9 +352,7 @@ mod tests {
     #[test]
     fn ignored_entries_are_skipped_and_odd_xy_is_dropped() {
         let h = "a".repeat(40);
-        let s = parse_status_v2(&format!(
-            "# branch.head main\n! ignored.log\n1 X N... 100644 100644 100644 {h} {h} short-xy.txt\n"
-        ));
+        let s = parse_status_v2(&format!("# branch.head main\n! ignored.log\n1 X N... 100644 100644 100644 {h} {h} short-xy.txt\n"));
         assert!(s.changes.is_empty());
     }
 

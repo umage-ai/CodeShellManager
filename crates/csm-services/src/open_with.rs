@@ -51,10 +51,41 @@ impl Rules {
 /// Extra names refused as programs under the POSIX rules: shells, interpreters and launchers that
 /// run their arguments.
 const POSIX_SHELL_LIKE: &[&str] = &[
-    "zsh", "fish", "dash", "ksh", "csh", "tcsh", "env", "sudo", "doas", "su", "xargs", "nohup",
-    "osascript", "awk", "gawk", "sed", "find", "python3", "php", "lua", "tclsh",
-    "xdg-open", "gio", "flatpak", "snap", "systemd-run", "setsid", "script", "expect", "screen",
-    "tmux", "terminal", "gnome-terminal", "konsole", "xterm",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "env",
+    "sudo",
+    "doas",
+    "su",
+    "xargs",
+    "nohup",
+    "osascript",
+    "awk",
+    "gawk",
+    "sed",
+    "find",
+    "python3",
+    "php",
+    "lua",
+    "tclsh",
+    "xdg-open",
+    "gio",
+    "flatpak",
+    "snap",
+    "systemd-run",
+    "setsid",
+    "script",
+    "expect",
+    "screen",
+    "tmux",
+    "terminal",
+    "gnome-terminal",
+    "konsole",
+    "xterm",
 ];
 
 /// Script extensions refused under the POSIX rules (a script is a program text, not an editor).
@@ -169,8 +200,7 @@ const SHELL_LIKE_NAMES: &[&str] = &[
 /// Seeded VS Code templates (single `--folder-uri` token for the remote forms).
 pub const VSCODE_LOCAL_ARGS: &str = "{folder}";
 pub const VSCODE_WSL_ARGS: &str = "--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}";
-pub const VSCODE_SSH_ARGS: &str =
-    "--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}";
+pub const VSCODE_SSH_ARGS: &str = "--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}";
 
 /// One "Open with" entry. Mirrors `Models.OpenWithEntry` (unify with `csm-core` later).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,15 +218,7 @@ pub struct OpenWithEntry {
 
 impl Default for OpenWithEntry {
     fn default() -> Self {
-        Self {
-            id: new_id(),
-            label: String::new(),
-            executable: String::new(),
-            local_args: None,
-            wsl_args: None,
-            ssh_args: None,
-            is_default: false,
-        }
+        Self { id: new_id(), label: String::new(), executable: String::new(), local_args: None, wsl_args: None, ssh_args: None, is_default: false }
     }
 }
 
@@ -252,9 +274,7 @@ pub fn new_id() -> String {
     use std::hash::{BuildHasher, Hasher};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let mut h1 = RandomState::new().build_hasher();
     h1.write_u64(n);
     h1.write_u128(nanos);
@@ -407,11 +427,7 @@ fn is_shell_like(name: &str) -> bool {
 /// cwd; no UNC/device path, so nothing runs from a share), a `.exe` (or `.cmd`/`.bat` only
 /// when `allow_batch`), not under `system_root`, and not a known shell or script host.
 #[must_use]
-pub fn validate_executable_with(
-    path: &str,
-    allow_batch: bool,
-    system_root: &str,
-) -> Option<String> {
+pub fn validate_executable_with(path: &str, allow_batch: bool, system_root: &str) -> Option<String> {
     if path.trim().is_empty() {
         return Some("No program is set.".to_string());
     }
@@ -419,24 +435,15 @@ pub fn validate_executable_with(
         return Some("The program path contains control characters.".to_string());
     }
     if path.starts_with(r"\\") || path.starts_with("//") {
-        return Some(
-            "Network and device paths are not accepted — use a program on this machine."
-                .to_string(),
-        );
+        return Some("Network and device paths are not accepted — use a program on this machine.".to_string());
     }
     if !winpath::is_fully_qualified(path) {
-        return Some(
-            "The program must be a full path, e.g. C:\\Program Files\\Editor\\editor.exe."
-                .to_string(),
-        );
+        return Some("The program must be a full path, e.g. C:\\Program Files\\Editor\\editor.exe.".to_string());
     }
 
     if is_batch(path) {
         if !allow_batch {
-            return Some(
-                "Batch files (.cmd/.bat) run through cmd.exe and are not accepted here — point at the program's .exe."
-                    .to_string(),
-            );
+            return Some("Batch files (.cmd/.bat) run through cmd.exe and are not accepted here — point at the program's .exe.".to_string());
         }
     } else if !winpath::extension(path).eq_ignore_ascii_case(".exe") {
         return Some("The program must be an .exe.".to_string());
@@ -448,10 +455,7 @@ pub fn validate_executable_with(
         ));
     }
     if is_shell_like(winpath::file_name_without_extension(path)) {
-        return Some(format!(
-            "{} is a shell or script host, not an editor — it is not accepted.",
-            winpath::file_name(path)
-        ));
+        return Some(format!("{} is a shell or script host, not an editor — it is not accepted.", winpath::file_name(path)));
     }
     None
 }
@@ -492,20 +496,13 @@ fn remove_ignore_ascii_case(haystack: &str, needle: &str) -> String {
 /// (mapped or subst'd onto a share), and the PE original file name checked too, so a renamed
 /// copy of a known shell is caught. A program that doesn't exist yet passes (it fails at launch).
 #[must_use]
-pub fn validate_executable_on_disk(
-    path: &str,
-    allow_batch: bool,
-    probe: &dyn DiskProbe,
-) -> Option<String> {
+pub fn validate_executable_on_disk(path: &str, allow_batch: bool, probe: &dyn DiskProbe) -> Option<String> {
     let shape_error = validate_executable(path, allow_batch);
     if shape_error.is_some() {
         return shape_error;
     }
     if probe.drive_is_network(&winpath::path_root(path)) {
-        return Some(
-            "Programs on a network drive are not accepted — use a program on this machine."
-                .to_string(),
-        );
+        return Some("Programs on a network drive are not accepted — use a program on this machine.".to_string());
     }
     if !probe.file_exists(path) {
         return None;
@@ -515,15 +512,10 @@ pub fn validate_executable_on_disk(
         && !winpath::eq_ic(&real, path)
     {
         if real.starts_with(r"\\") {
-            return Some(
-                "That program resolves to a network location — it is not accepted.".to_string(),
-            );
+            return Some("That program resolves to a network location — it is not accepted.".to_string());
         }
         if probe.drive_is_network(&winpath::path_root(&real)) {
-            return Some(
-                "Programs on a network drive are not accepted — use a program on this machine."
-                    .to_string(),
-            );
+            return Some("Programs on a network drive are not accepted — use a program on this machine.".to_string());
         }
         let real_error = validate_executable(&real, allow_batch);
         if real_error.is_some() {
@@ -538,11 +530,7 @@ pub fn validate_executable_on_disk(
         let stripped = remove_ignore_ascii_case(name.trim(), ".mui");
         let bare = winpath::file_name_without_extension(&stripped);
         if is_shell_like(bare) {
-            return Some(format!(
-                "{} is a copy of {}, a shell or script host — it is not accepted.",
-                winpath::file_name(path),
-                name.trim()
-            ));
+            return Some(format!("{} is a copy of {}, a shell or script host — it is not accepted.", winpath::file_name(path), name.trim()));
         }
     }
     None
@@ -625,12 +613,7 @@ fn find_placeholders(token: &str) -> Vec<Placeholder> {
             i += 1;
             continue;
         };
-        out.push(Placeholder {
-            start: i,
-            end,
-            name,
-            uri,
-        });
+        out.push(Placeholder { start: i, end, name, uri });
         i = end;
     }
     out
@@ -652,28 +635,18 @@ pub fn validate_template(template: &str, kind: SessionKind) -> Option<String> {
         return Some("Unbalanced quote in the arguments.".to_string());
     };
     let allowed = placeholders_for(kind);
-    let allowed_list = allowed
-        .iter()
-        .map(|a| format!("{{{a}}}"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let allowed_list = allowed.iter().map(|a| format!("{{{a}}}")).collect::<Vec<_>>().join(", ");
     let mut count = 0usize;
     for token in &tokens {
         for m in find_placeholders(token) {
             count += 1;
             if !allowed.contains(&m.name.as_str()) {
-                return Some(format!(
-                    "{{{}}} is not available for {} sessions (use {allowed_list}).",
-                    m.name,
-                    kind_name(kind)
-                ));
+                return Some(format!("{{{}}} is not available for {} sessions (use {allowed_list}).", m.name, kind_name(kind)));
             }
         }
     }
     if count == 0 {
-        return Some(format!(
-            "The arguments must use a placeholder for the session's location (e.g. {allowed_list})."
-        ));
+        return Some(format!("The arguments must use a placeholder for the session's location (e.g. {allowed_list})."));
     }
     None
 }
@@ -700,11 +673,7 @@ pub fn build_for(entry: &OpenWithEntry, ctx: &OpenWithContext, rules: Rules) -> 
     let template = match entry.args_for(ctx.kind) {
         Some(t) if !t.trim().is_empty() => t,
         _ => {
-            return Err(format!(
-                "\"{}\" has no arguments for {} sessions.",
-                entry.label,
-                kind_name(ctx.kind)
-            ));
+            return Err(format!("\"{}\" has no arguments for {} sessions.", entry.label, kind_name(ctx.kind)));
         }
     };
     if let Some(e) = validate_template(template, ctx.kind) {
@@ -723,11 +692,7 @@ pub fn build_for(entry: &OpenWithEntry, ctx: &OpenWithContext, rules: Rules) -> 
 
         // A token that is nothing but one placeholder, whose value is empty, is dropped rather
         // than passed as "".
-        if matches.len() == 1
-            && first.start == 0
-            && first.end == token.len()
-            && value_of(&first.name).is_empty()
-        {
+        if matches.len() == 1 && first.start == 0 && first.end == token.len() && value_of(&first.name).is_empty() {
             continue;
         }
 
@@ -780,22 +745,19 @@ pub fn build_for(entry: &OpenWithEntry, ctx: &OpenWithContext, rules: Rules) -> 
         }
     }
 
-    Ok(OpenWithCommand {
-        executable: entry.executable.clone(),
-        arguments: args,
-    })
+    Ok(OpenWithCommand { executable: entry.executable.clone(), arguments: args })
 }
 
 fn lookup<'a>(values: &'a [(&'static str, String)], name: &str) -> &'a str {
-    values
-        .iter()
-        .find(|(k, _)| *k == name)
-        .map_or("", |(_, v)| v.as_str())
+    values.iter().find(|(k, _)| *k == name).map_or("", |(_, v)| v.as_str())
 }
 
 fn missing_value_message(name: &str, kind: SessionKind) -> String {
     match name {
-        "remoteFolder" => "This SSH session has no remote folder. Set one with Edit session…, or use an editor entry that can open a host without a folder.".to_string(),
+        "remoteFolder" => {
+            "This SSH session has no remote folder. Set one with Edit session…, or use an editor entry that can open a host without a folder."
+                .to_string()
+        }
         "linuxPath" => "Couldn't work out this WSL session's Linux folder. Set one with Edit session….".to_string(),
         _ => format!("This {} session has no {name}.", kind_name(kind)),
     }
@@ -812,11 +774,7 @@ pub fn encode(name: &str, value: &str, uri: bool) -> String {
         return value.to_string();
     }
     if is_path_placeholder(name) {
-        return value
-            .split('/')
-            .map(escape_data_string)
-            .collect::<Vec<_>>()
-            .join("/");
+        return value.split('/').map(escape_data_string).collect::<Vec<_>>().join("/");
     }
     escape_data_string(value)
 }
@@ -839,11 +797,7 @@ pub fn escape_data_string(s: &str) -> String {
 fn values_for(ctx: &OpenWithContext) -> Vec<(&'static str, String)> {
     let user = ctx.user.trim().to_string();
     let host = ctx.host.trim().to_string();
-    let user_at_host = if user.is_empty() {
-        host.clone()
-    } else {
-        format!("{user}@{host}")
-    };
+    let user_at_host = if user.is_empty() { host.clone() } else { format!("{user}@{host}") };
     vec![
         ("folder", ctx.folder.clone()),
         ("distro", ctx.distro.trim().to_string()),
@@ -866,9 +820,7 @@ fn validate_value(name: &str, value: &str, rules: Rules) -> Option<String> {
     // An option-shaped value (-x, --foo) could be taken by the editor as a flag. Refused
     // wherever it sits: stricter than needed, never wrong for a path, host or distro.
     if value.starts_with('-') {
-        return Some(format!(
-            "The session's {name} starts with '-', which the program could read as an option."
-        ));
+        return Some(format!("The session's {name} starts with '-', which the program could read as an option."));
     }
     match name {
         "folder" => {
@@ -905,11 +857,7 @@ pub fn applicable_to(list: &[OpenWithEntry], kind: SessionKind) -> Vec<&OpenWith
 #[must_use]
 pub fn default_for(list: &[OpenWithEntry], kind: SessionKind) -> Option<&OpenWithEntry> {
     let applicable = applicable_to(list, kind);
-    applicable
-        .iter()
-        .find(|e| e.is_default)
-        .or_else(|| applicable.first())
-        .copied()
+    applicable.iter().find(|e| e.is_default).or_else(|| applicable.first()).copied()
 }
 
 /// What a click on `entry` for this session would run, or why it can't: for menu tooltips, so a
@@ -941,11 +889,7 @@ pub fn describe_for_review(list: &[OpenWithEntry]) -> String {
             let Some(t) = e.args_for(kind).filter(|t| !t.trim().is_empty()) else {
                 continue;
             };
-            out.push_str(&format!(
-                "    {}: {} {t}\n",
-                kind_name(kind),
-                quote_for_cmd(&e.executable, false)
-            ));
+            out.push_str(&format!("    {}: {} {t}\n", kind_name(kind), quote_for_cmd(&e.executable, false)));
         }
     }
     out
@@ -974,11 +918,7 @@ pub fn same_commands(a: &[OpenWithEntry], b: &[OpenWithEntry]) -> bool {
 /// (the user may have chosen a batch file in the editor); an import passes `false`. Pure.
 /// `log` receives one line per drop or clear.
 #[must_use]
-pub fn sanitize(
-    list: &[Option<OpenWithEntry>],
-    allow_batch: bool,
-    log: &mut dyn FnMut(&str),
-) -> Vec<OpenWithEntry> {
+pub fn sanitize(list: &[Option<OpenWithEntry>], allow_batch: bool, log: &mut dyn FnMut(&str)) -> Vec<OpenWithEntry> {
     sanitize_core(list, &|e| validate_executable(e, allow_batch), log)
 }
 
@@ -990,19 +930,11 @@ pub fn sanitize_for(list: &[Option<OpenWithEntry>], allow_batch: bool, rules: Ru
 
 /// [`sanitize`] plus [`validate_executable_on_disk`] per program (no batch files).
 #[must_use]
-pub fn sanitize_imported(
-    list: &[Option<OpenWithEntry>],
-    probe: &dyn DiskProbe,
-    log: &mut dyn FnMut(&str),
-) -> Vec<OpenWithEntry> {
+pub fn sanitize_imported(list: &[Option<OpenWithEntry>], probe: &dyn DiskProbe, log: &mut dyn FnMut(&str)) -> Vec<OpenWithEntry> {
     sanitize_core(list, &|e| validate_executable_on_disk(e, false, probe), log)
 }
 
-fn sanitize_core(
-    list: &[Option<OpenWithEntry>],
-    validate_exe: &dyn Fn(&str) -> Option<String>,
-    log: &mut dyn FnMut(&str),
-) -> Vec<OpenWithEntry> {
+fn sanitize_core(list: &[Option<OpenWithEntry>], validate_exe: &dyn Fn(&str) -> Option<String>, log: &mut dyn FnMut(&str)) -> Vec<OpenWithEntry> {
     let mut result: Vec<OpenWithEntry> = Vec::new();
     let mut ids: Vec<String> = Vec::new();
     for raw in list.iter().flatten() {
@@ -1020,21 +952,13 @@ fn sanitize_core(
         e.wsl_args = clean_template(e.wsl_args.as_deref(), SessionKind::Wsl, &e.label, log);
         e.ssh_args = clean_template(e.ssh_args.as_deref(), SessionKind::Ssh, &e.label, log);
         if e.local_args.is_none() && e.wsl_args.is_none() && e.ssh_args.is_none() {
-            log(&format!(
-                "dropped '{}' ({}): no usable arguments for any session kind",
-                e.label, e.executable
-            ));
+            log(&format!("dropped '{}' ({}): no usable arguments for any session kind", e.label, e.executable));
             continue;
         }
         e.label = if e.label.trim().is_empty() {
             winpath::file_name_without_extension(&e.executable).to_string()
         } else {
-            e.label
-                .trim()
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(80)
-                .collect()
+            e.label.trim().chars().filter(|c| !c.is_control()).take(80).collect()
         };
         if e.id.trim().is_empty() || ids.contains(&e.id) {
             e.id = new_id();
@@ -1046,20 +970,12 @@ fn sanitize_core(
     result
 }
 
-fn clean_template(
-    template: Option<&str>,
-    kind: SessionKind,
-    label: &str,
-    log: &mut dyn FnMut(&str),
-) -> Option<String> {
+fn clean_template(template: Option<&str>, kind: SessionKind, label: &str, log: &mut dyn FnMut(&str)) -> Option<String> {
     let t = template.filter(|t| !t.trim().is_empty())?;
     match validate_template(t, kind) {
         None => Some(t.trim().to_string()),
         Some(err) => {
-            log(&format!(
-                "'{label}': cleared {} arguments: {err}",
-                kind_name(kind)
-            ));
+            log(&format!("'{label}': cleared {} arguments: {err}", kind_name(kind)));
             None
         }
     }
@@ -1129,10 +1045,7 @@ pub fn script_exe_candidates(script_text: &str) -> Vec<String> {
         }
         // content up to the next quote on the same line
         let mut j = i + 1;
-        while chars
-            .get(j)
-            .is_some_and(|&x| x != '"' && x != '\r' && x != '\n')
-        {
+        while chars.get(j).is_some_and(|&x| x != '"' && x != '\r' && x != '\n') {
             j += 1;
         }
         let closes = chars.get(j) == Some(&'"');
@@ -1161,10 +1074,7 @@ pub fn script_exe_candidates(script_text: &str) -> Vec<String> {
 /// ambiguous and returns `None` rather than a guess (JetBrains Toolbox scripts have the
 /// one-candidate shape).
 #[must_use]
-pub fn resolve_shim_from_script(
-    script_text: &str,
-    exists: &dyn Fn(&str) -> bool,
-) -> Option<String> {
+pub fn resolve_shim_from_script(script_text: &str, exists: &dyn Fn(&str) -> bool) -> Option<String> {
     let mut candidates: Vec<String> = Vec::new();
     for exe in script_exe_candidates(script_text) {
         if validate_executable(&exe, false).is_none() && exists(&exe) {
@@ -1198,26 +1108,18 @@ pub trait OpenWithHost: DiskProbe {
 ///
 /// # Errors
 /// A sentence for the user.
-pub fn prepare(
-    entry: &OpenWithEntry,
-    ctx: &OpenWithContext,
-    host: &dyn OpenWithHost,
-) -> Result<OpenWithCommand, String> {
+pub fn prepare(entry: &OpenWithEntry, ctx: &OpenWithContext, host: &dyn OpenWithHost) -> Result<OpenWithCommand, String> {
     let template = entry.args_for(ctx.kind);
     let uses_folder = template.is_some_and(|t| t.contains("{folder"));
     let lp = ctx.linux_path.trim();
-    let needs_home = ctx.kind == SessionKind::Wsl
-        && template.is_some_and(|t| t.contains("{linuxPath"))
-        && (lp.is_empty() || lp == "~" || lp.starts_with("~/"));
+    let needs_home =
+        ctx.kind == SessionKind::Wsl && template.is_some_and(|t| t.contains("{linuxPath")) && (lp.is_empty() || lp == "~" || lp.starts_with("~/"));
     let after_tilde = lp.strip_prefix('~').unwrap_or("");
 
     // 1. Pure validation, with a stand-in for the not-yet-resolved home folder.
     let mut ctx = ctx.clone();
     if needs_home {
-        let stand_in = OpenWithContext {
-            linux_path: format!("/home/stand-in{after_tilde}"),
-            ..ctx.clone()
-        };
+        let stand_in = OpenWithContext { linux_path: format!("/home/stand-in{after_tilde}"), ..ctx.clone() };
         build(entry, &stand_in)?;
     } else {
         build(entry, &ctx)?;
@@ -1228,10 +1130,7 @@ pub fn prepare(
         return Err(e);
     }
     if !host.file_exists(&entry.executable) {
-        return Err(format!(
-            "{}: program not found at {}. Edit the entry under Open with → Edit…",
-            entry.label, entry.executable
-        ));
+        return Err(format!("{}: program not found at {}. Edit the entry under Open with → Edit…", entry.label, entry.executable));
     }
 
     // 3. Only now the side-effecting probe: a blank Linux folder means $HOME.
@@ -1248,10 +1147,7 @@ pub fn prepare(
         match host.folder_target(&ctx.folder) {
             Some(target) => ctx.folder = target,
             None => {
-                return Err(format!(
-                    "The session's folder doesn't exist: {}",
-                    ctx.folder
-                ));
+                return Err(format!("The session's folder doesn't exist: {}", ctx.folder));
             }
         }
     }
@@ -1273,35 +1169,18 @@ mod tests {
     }
 
     fn local(folder: &str) -> OpenWithContext {
-        OpenWithContext {
-            folder: folder.into(),
-            ..OpenWithContext::new(SessionKind::Local)
-        }
+        OpenWithContext { folder: folder.into(), ..OpenWithContext::new(SessionKind::Local) }
     }
 
     fn wsl_ctx(distro: &str, linux: &str) -> OpenWithContext {
-        OpenWithContext {
-            distro: distro.into(),
-            linux_path: linux.into(),
-            ..OpenWithContext::new(SessionKind::Wsl)
-        }
+        OpenWithContext { distro: distro.into(), linux_path: linux.into(), ..OpenWithContext::new(SessionKind::Wsl) }
     }
 
     fn ssh_ctx(user: &str, host: &str, remote: &str) -> OpenWithContext {
-        OpenWithContext {
-            user: user.into(),
-            host: host.into(),
-            remote_folder: remote.into(),
-            ..OpenWithContext::new(SessionKind::Ssh)
-        }
+        OpenWithContext { user: user.into(), host: host.into(), remote_folder: remote.into(), ..OpenWithContext::new(SessionKind::Ssh) }
     }
 
-    fn entry(
-        exe: &str,
-        local: Option<&str>,
-        wsl: Option<&str>,
-        ssh: Option<&str>,
-    ) -> OpenWithEntry {
+    fn entry(exe: &str, local: Option<&str>, wsl: Option<&str>, ssh: Option<&str>) -> OpenWithEntry {
         OpenWithEntry {
             executable: exe.into(),
             local_args: local.map(Into::into),
@@ -1312,13 +1191,7 @@ mod tests {
     }
 
     fn argv_of(cmd: &OpenWithCommand) -> Vec<String> {
-        split_command_line(
-            &cmd.arguments
-                .iter()
-                .map(|a| quote_for_cmd(a, false))
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
+        split_command_line(&cmd.arguments.iter().map(|a| quote_for_cmd(a, false)).collect::<Vec<_>>().join(" "))
     }
 
     fn strs(v: &[&str]) -> Vec<String> {
@@ -1350,47 +1223,21 @@ mod tests {
 
     #[test]
     fn placeholder_inside_a_token_stays_inside_that_token() {
-        let e = entry(
-            EXE,
-            Some("--folder-uri=file:///{folder} --reuse-window"),
-            None,
-            None,
-        );
+        let e = entry(EXE, Some("--folder-uri=file:///{folder} --reuse-window"), None, None);
         let cmd = build(&e, &local(r"C:\a b")).unwrap();
-        assert_eq!(
-            cmd.arguments,
-            strs(&[r"--folder-uri=file:///C:\a b", "--reuse-window"])
-        );
+        assert_eq!(cmd.arguments, strs(&[r"--folder-uri=file:///C:\a b", "--reuse-window"]));
         assert_eq!(argv_of(&cmd), cmd.arguments);
     }
 
     #[test]
     fn wsl_vscode_folder_uri_is_one_encoded_argument() {
         for (linux, uri) in [
-            (
-                "/home/alice/proj",
-                "vscode-remote://wsl+Ubuntu/home/alice/proj",
-            ),
-            (
-                "/home/alice/my proj",
-                "vscode-remote://wsl+Ubuntu/home/alice/my%20proj",
-            ),
-            (
-                "/home/alice/$(id)",
-                "vscode-remote://wsl+Ubuntu/home/alice/%24%28id%29",
-            ),
-            (
-                "/home/a/x\" --disable-extensions \"y",
-                "vscode-remote://wsl+Ubuntu/home/a/x%22%20--disable-extensions%20%22y",
-            ),
-            (
-                "/home/a/#tag?q=1&100%",
-                "vscode-remote://wsl+Ubuntu/home/a/%23tag%3Fq%3D1%26100%25",
-            ),
-            (
-                "/home/a/ünï",
-                "vscode-remote://wsl+Ubuntu/home/a/%C3%BCn%C3%AF",
-            ),
+            ("/home/alice/proj", "vscode-remote://wsl+Ubuntu/home/alice/proj"),
+            ("/home/alice/my proj", "vscode-remote://wsl+Ubuntu/home/alice/my%20proj"),
+            ("/home/alice/$(id)", "vscode-remote://wsl+Ubuntu/home/alice/%24%28id%29"),
+            ("/home/a/x\" --disable-extensions \"y", "vscode-remote://wsl+Ubuntu/home/a/x%22%20--disable-extensions%20%22y"),
+            ("/home/a/#tag?q=1&100%", "vscode-remote://wsl+Ubuntu/home/a/%23tag%3Fq%3D1%26100%25"),
+            ("/home/a/ünï", "vscode-remote://wsl+Ubuntu/home/a/%C3%BCn%C3%AF"),
         ] {
             let mut ctx = wsl_ctx("Ubuntu", linux);
             ctx.folder = r"\\wsl$\Ubuntu\home".into();
@@ -1430,22 +1277,13 @@ mod tests {
     fn ssh_user_at_host_is_percent_encoded_in_the_authority() {
         // '@' would otherwise be URI user-info; VS Code decodes %40 back to "alice@box".
         let cmd = build(&vs(), &ssh_ctx("alice", "box", "/srv/my app")).unwrap();
-        assert_eq!(
-            cmd.arguments,
-            strs(&[
-                "--folder-uri",
-                "vscode-remote://ssh-remote+alice%40box/srv/my%20app"
-            ])
-        );
+        assert_eq!(cmd.arguments, strs(&["--folder-uri", "vscode-remote://ssh-remote+alice%40box/srv/my%20app"]));
     }
 
     #[test]
     fn ssh_host_only() {
         let cmd = build(&vs(), &ssh_ctx("", "box", "/srv")).unwrap();
-        assert_eq!(
-            cmd.arguments,
-            strs(&["--folder-uri", "vscode-remote://ssh-remote+box/srv"])
-        );
+        assert_eq!(cmd.arguments, strs(&["--folder-uri", "vscode-remote://ssh-remote+box/srv"]));
     }
 
     #[test]
@@ -1488,36 +1326,23 @@ mod tests {
         let e = entry(EXE, None, None, Some("--host {host} --port {port}"));
         let mut ctx = ssh_ctx("", "h", "");
         ctx.port = 2222;
-        assert_eq!(
-            build(&e, &ctx).unwrap().arguments,
-            strs(&["--host", "h", "--port", "2222"])
-        );
+        assert_eq!(build(&e, &ctx).unwrap().arguments, strs(&["--host", "h", "--port", "2222"]));
     }
 
     #[test]
     fn quoted_template_token_keeps_spaces() {
         let e = entry(EXE, Some("\"--title=My Editor\" {folder}"), None, None);
-        assert_eq!(
-            build(&e, &local(r"C:\x")).unwrap().arguments,
-            strs(&["--title=My Editor", r"C:\x"])
-        );
+        assert_eq!(build(&e, &local(r"C:\x")).unwrap().arguments, strs(&["--title=My Editor", r"C:\x"]));
     }
 
     // ── Value rules ────────────────────────────────────────────────────────────────────
 
     #[test]
     fn option_shaped_values_are_refused() {
-        let cases: [(SessionKind, &str, &str); 3] = [
-            (SessionKind::Ssh, "-oProxyCommand=calc", ""),
-            (SessionKind::Ssh, "box", "--help"),
-            (SessionKind::Wsl, "-x", ""),
-        ];
+        let cases: [(SessionKind, &str, &str); 3] =
+            [(SessionKind::Ssh, "-oProxyCommand=calc", ""), (SessionKind::Ssh, "box", "--help"), (SessionKind::Wsl, "-x", "")];
         for (kind, first, second) in cases {
-            let ctx = if kind == SessionKind::Ssh {
-                ssh_ctx("", first, second)
-            } else {
-                wsl_ctx(first, "/home")
-            };
+            let ctx = if kind == SessionKind::Ssh { ssh_ctx("", first, second) } else { wsl_ctx(first, "/home") };
             let err = build(&vs(), &ctx).unwrap_err();
             assert!(err.contains("'-'"), "{first}: {err}");
         }
@@ -1589,15 +1414,9 @@ mod tests {
             ("{folder}", SessionKind::Local),
             ("--remote wsl+{distro} {linuxPath}", SessionKind::Wsl),
             ("{folder}", SessionKind::Wsl),
-            (
-                "--remote ssh-remote+{userAtHost} {remoteFolder}",
-                SessionKind::Ssh,
-            ),
+            ("--remote ssh-remote+{userAtHost} {remoteFolder}", SessionKind::Ssh),
             ("", SessionKind::Ssh),
-            (
-                "--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}",
-                SessionKind::Wsl,
-            ),
+            ("--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}", SessionKind::Wsl),
         ] {
             assert_eq!(validate_template(template, kind), None, "{template}");
         }
@@ -1619,11 +1438,7 @@ mod tests {
 
     #[test]
     fn control_chars_in_a_template_are_refused() {
-        assert!(
-            validate_template("{folder}\u{7}", SessionKind::Local)
-                .unwrap()
-                .contains("control")
-        );
+        assert!(validate_template("{folder}\u{7}", SessionKind::Local).unwrap().contains("control"));
     }
 
     #[test]
@@ -1641,21 +1456,17 @@ mod tests {
         for (path, allow_batch, ok) in [
             (r"C:\Tools\editor.exe", false, true),
             (r"C:\Tools\EDITOR.EXE", false, true),
-            ("editor.exe", false, false), // relative: would resolve via PATH/cwd
-            ("C:editor.exe", false, false), // drive-relative
+            ("editor.exe", false, false),                   // relative: would resolve via PATH/cwd
+            ("C:editor.exe", false, false),                 // drive-relative
             (r"\\attacker\share\editor.exe", false, false), // network
-            (r"\\?\C:\Tools\editor.exe", false, false), // device path
+            (r"\\?\C:\Tools\editor.exe", false, false),     // device path
             (r"C:\Tools\script.ps1", false, false),
             (r"C:\Tools\thing.com", false, false),
             (r"C:\Tools\launch.cmd", false, false),
             (r"C:\Tools\launch.cmd", true, true),
             (r"C:\Tools\launch.bat", true, true),
             (r"C:\Windows\System32\cmd.exe", true, false),
-            (
-                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-                true,
-                false,
-            ),
+            (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", true, false),
             (r"C:\Program Files\PowerShell\7\pwsh.exe", true, false),
             (r"C:\Windows\System32\wsl.exe", true, false),
             (r"C:\Windows\System32\mshta.exe", true, false),
@@ -1663,11 +1474,7 @@ mod tests {
             (r"C:\Windows\System32\cmd.cmd", true, false),
             ("", true, false),
         ] {
-            assert_eq!(
-                validate_executable_with(path, allow_batch, r"C:\Windows").is_none(),
-                ok,
-                "{path} batch={allow_batch}"
-            );
+            assert_eq!(validate_executable_with(path, allow_batch, r"C:\Windows").is_none(), ok, "{path} batch={allow_batch}");
         }
     }
 
@@ -1689,10 +1496,7 @@ mod tests {
             r"C:\Windows .\System32\anything.exe",
             r"C:/Windows/System32/anything.exe",
         ] {
-            assert!(
-                validate_executable_with(path, true, r"C:\Windows").is_some(),
-                "{path}"
-            );
+            assert!(validate_executable_with(path, true, r"C:\Windows").is_some(), "{path}");
         }
         // a sibling folder that merely starts with the root's name is fine
         assert!(validate_executable_with(r"C:\WindowsApps\x.exe", true, r"C:\Windows").is_none());
@@ -1700,17 +1504,8 @@ mod tests {
 
     #[test]
     fn command_running_tools_outside_system_root_are_refused_by_name() {
-        for path in [
-            r"C:\Tools\ssh.exe",
-            r"C:\Tools\wmic.exe",
-            r"C:\Tools\explorer.exe",
-            r"C:\Tools\MSBuild.exe",
-            r"C:\Tools\node.exe",
-        ] {
-            assert!(
-                validate_executable_with(path, true, r"C:\Windows").is_some(),
-                "{path}"
-            );
+        for path in [r"C:\Tools\ssh.exe", r"C:\Tools\wmic.exe", r"C:\Tools\explorer.exe", r"C:\Tools\MSBuild.exe", r"C:\Tools\node.exe"] {
+            assert!(validate_executable_with(path, true, r"C:\Windows").is_some(), "{path}");
         }
     }
 
@@ -1755,10 +1550,7 @@ mod tests {
     const TMP_EXE: &str = r"C:\Users\u\AppData\Local\Temp\csm\Code.exe";
 
     fn host_with_exe() -> FakeHost {
-        let mut h = FakeHost {
-            home: Some("/home/u".into()),
-            ..FakeHost::default()
-        };
+        let mut h = FakeHost { home: Some("/home/u".into()), ..FakeHost::default() };
         h.files.insert(TMP_EXE.into());
         h
     }
@@ -1782,14 +1574,12 @@ mod tests {
         let copy = r"C:\Users\u\Temp\editor.exe";
         let mut h = FakeHost::default();
         h.files.insert(copy.into());
-        h.version_names
-            .insert(copy.into(), vec!["".into(), "PowerShell.EXE.mui".into()]);
+        h.version_names.insert(copy.into(), vec!["".into(), "PowerShell.EXE.mui".into()]);
         assert_eq!(validate_executable(copy, false), None);
         let err = validate_executable_on_disk(copy, false, &h).unwrap();
         assert!(err.contains("copy of"), "{err}");
         // an ordinary editor's version info passes
-        h.version_names
-            .insert(copy.into(), vec!["Code.exe".into(), "code".into()]);
+        h.version_names.insert(copy.into(), vec!["Code.exe".into(), "code".into()]);
         assert_eq!(validate_executable_on_disk(copy, false, &h), None);
     }
 
@@ -1806,30 +1596,18 @@ mod tests {
         let p = r"C:\Tools\editor.exe";
         let mut h = FakeHost::default();
         h.files.insert(p.into());
-        h.final_paths
-            .insert(p.into(), r"\\server\share\editor.exe".into());
-        assert!(
-            validate_executable_on_disk(p, false, &h)
-                .unwrap()
-                .contains("network location")
-        );
+        h.final_paths.insert(p.into(), r"\\server\share\editor.exe".into());
+        assert!(validate_executable_on_disk(p, false, &h).unwrap().contains("network location"));
         h.final_paths.insert(p.into(), r"Y:\editor.exe".into());
         h.network_drives.insert(r"Y:\".into());
-        assert!(
-            validate_executable_on_disk(p, false, &h)
-                .unwrap()
-                .contains("network drive")
-        );
+        assert!(validate_executable_on_disk(p, false, &h).unwrap().contains("network drive"));
     }
 
     #[test]
     fn local_program_passes_on_disk_and_a_missing_one_passes_until_launch() {
         let h = host_with_exe();
         assert_eq!(validate_executable_on_disk(TMP_EXE, false, &h), None);
-        assert_eq!(
-            validate_executable_on_disk(r"C:\nope\x.exe", false, &h),
-            None
-        );
+        assert_eq!(validate_executable_on_disk(r"C:\nope\x.exe", false, &h), None);
     }
 
     // ── BatBadBut ──────────────────────────────────────────────────────────────────────
@@ -1906,10 +1684,7 @@ mod tests {
         assert!(ctx.has_target());
         assert_eq!(ctx.distro, "Ubuntu");
         assert_eq!(ctx.linux_path, "/home/a");
-        let ssh = LaunchSpec {
-            kind: SessionKind::Ssh,
-            ..LaunchSpec::default()
-        };
+        let ssh = LaunchSpec { kind: SessionKind::Ssh, ..LaunchSpec::default() };
         assert!(!OpenWithContext::from_spec(&ssh).has_target());
     }
 
@@ -1942,13 +1717,7 @@ mod tests {
 
     #[test]
     fn sanitize_clears_bad_templates_drops_entries_left_with_none_fixes_ids_and_default() {
-        let mk = |id: &str,
-                  label: &str,
-                  exe: &str,
-                  local: Option<&str>,
-                  wsl: Option<&str>,
-                  ssh: Option<&str>,
-                  def: bool| {
+        let mk = |id: &str, label: &str, exe: &str, local: Option<&str>, wsl: Option<&str>, ssh: Option<&str>, def: bool| {
             let mut e = entry(exe, local, wsl, ssh);
             e.id = id.into();
             e.label = label.into();
@@ -1956,15 +1725,7 @@ mod tests {
             Some(e)
         };
         let list = vec![
-            mk(
-                "x",
-                " A ",
-                r"C:\a.exe",
-                Some("{folder}"),
-                None,
-                Some("{folder}"),
-                false,
-            ),
+            mk("x", " A ", r"C:\a.exe", Some("{folder}"), None, Some("{folder}"), false),
             mk("x", "", r"C:\b.exe", None, Some("{distro}"), None, true),
             mk("y", "C", r"C:\c.exe", Some("{nope}"), None, None, false),
             mk("z", "D", r"C:\d.exe", Some("{folder}"), None, None, true),
@@ -1985,9 +1746,7 @@ mod tests {
 
     #[test]
     fn sanitize_caps_entries() {
-        let list: Vec<Option<OpenWithEntry>> = (0..80)
-            .map(|i| labelled(&format!("e{i}"), &format!(r"C:\e{i}.exe"), Some("{folder}")))
-            .collect();
+        let list: Vec<Option<OpenWithEntry>> = (0..80).map(|i| labelled(&format!("e{i}"), &format!(r"C:\e{i}.exe"), Some("{folder}"))).collect();
         assert_eq!(sanitize(&list, true, &mut quiet()).len(), MAX_ENTRIES);
     }
 
@@ -2005,11 +1764,7 @@ mod tests {
         let list = vec![
             Some(vs()),
             labelled("shim", r"C:\Tools\code.cmd", Some("{folder}")),
-            labelled(
-                "evil",
-                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-                Some("-c calc"),
-            ),
+            labelled("evil", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", Some("-c calc")),
         ];
         let h = FakeHost::default();
         let result = sanitize_imported(&list, &h, &mut quiet());
@@ -2022,8 +1777,7 @@ mod tests {
         let mut h = FakeHost::default();
         let sneaky = r"C:\Users\u\Temp\editor.exe";
         h.files.insert(sneaky.into());
-        h.version_names
-            .insert(sneaky.into(), vec!["cmd.exe".into()]);
+        h.version_names.insert(sneaky.into(), vec!["cmd.exe".into()]);
         let list = vec![labelled("sneaky", sneaky, Some("{folder}"))];
         assert!(sanitize_imported(&list, &h, &mut quiet()).is_empty());
     }
@@ -2032,26 +1786,14 @@ mod tests {
     fn ensure_single_default_keeps_the_first_flagged_or_the_first() {
         let mut list = vec![
             OpenWithEntry::default(),
-            OpenWithEntry {
-                is_default: true,
-                ..OpenWithEntry::default()
-            },
-            OpenWithEntry {
-                is_default: true,
-                ..OpenWithEntry::default()
-            },
+            OpenWithEntry { is_default: true, ..OpenWithEntry::default() },
+            OpenWithEntry { is_default: true, ..OpenWithEntry::default() },
         ];
         ensure_single_default(&mut list);
-        assert_eq!(
-            list.iter().map(|e| e.is_default).collect::<Vec<_>>(),
-            [false, true, false]
-        );
+        assert_eq!(list.iter().map(|e| e.is_default).collect::<Vec<_>>(), [false, true, false]);
         let mut none = vec![OpenWithEntry::default(), OpenWithEntry::default()];
         ensure_single_default(&mut none);
-        assert_eq!(
-            none.iter().map(|e| e.is_default).collect::<Vec<_>>(),
-            [true, false]
-        );
+        assert_eq!(none.iter().map(|e| e.is_default).collect::<Vec<_>>(), [true, false]);
         ensure_single_default(&mut []);
     }
 
@@ -2094,8 +1836,7 @@ mod tests {
     #[test]
     fn prepare_normalizes_the_folder_through_the_host() {
         let mut h = host_with_exe();
-        h.folders
-            .insert("C:/t/wt feat/".into(), r"C:\t\wt feat".into());
+        h.folders.insert("C:/t/wt feat/".into(), r"C:\t\wt feat".into());
         let cmd = prepare(&vs_at(TMP_EXE), &local("C:/t/wt feat/"), &h).unwrap();
         assert_eq!(cmd.arguments, strs(&[r"C:\t\wt feat"]));
     }
@@ -2204,10 +1945,7 @@ mod tests {
         let exe = r"C:\Tools\rider64.exe";
         let script = format!("@echo off\r\nstart \"\" \"{exe}\" %*\r\n");
         let exists = |p: &str| p == exe;
-        assert_eq!(
-            resolve_shim_from_script(&script, &exists).as_deref(),
-            Some(exe)
-        );
+        assert_eq!(resolve_shim_from_script(&script, &exists).as_deref(), Some(exe));
     }
 
     #[test]
@@ -2220,9 +1958,7 @@ mod tests {
     #[test]
     fn shim_two_candidates_is_ambiguous() {
         let (a, b) = (r"C:\Tools\rider64.exe", r"C:\Tools\other.exe");
-        let script = format!(
-            "@echo off\r\nif exist \"{b}\" start \"\" \"{b}\" %*\r\nstart \"\" \"{a}\" %*\r\n"
-        );
+        let script = format!("@echo off\r\nif exist \"{b}\" start \"\" \"{b}\" %*\r\nstart \"\" \"{a}\" %*\r\n");
         let exists = |_: &str| true;
         assert_eq!(resolve_shim_from_script(&script, &exists), None);
     }
@@ -2232,16 +1968,10 @@ mod tests {
         let a = r"C:\Tools\rider64.exe";
         let script = format!("@echo off\r\nif exist \"{a}\" start \"\" \"{a}\" %*\r\n");
         let exists = |_: &str| true;
-        assert_eq!(
-            resolve_shim_from_script(&script, &exists).as_deref(),
-            Some(a)
-        );
+        assert_eq!(resolve_shim_from_script(&script, &exists).as_deref(), Some(a));
         // a case difference is the same program
         let script2 = format!("\"{a}\" \"{}\"", a.to_uppercase());
-        assert_eq!(
-            resolve_shim_from_script(&script2, &exists).as_deref(),
-            Some(a)
-        );
+        assert_eq!(resolve_shim_from_script(&script2, &exists).as_deref(), Some(a));
     }
 
     #[test]
@@ -2250,10 +1980,7 @@ mod tests {
         assert!(script_exe_candidates("\"x:\\a.txt\"").is_empty());
         assert!(script_exe_candidates("\"relative\\a.exe\"").is_empty());
         assert!(script_exe_candidates("\"C:\\.exe\"").is_empty());
-        assert_eq!(
-            script_exe_candidates("echo \"foo\" \"C:\\x\\a.EXE\""),
-            [r"C:\x\a.EXE"]
-        );
+        assert_eq!(script_exe_candidates("echo \"foo\" \"C:\\x\\a.EXE\""), [r"C:\x\a.EXE"]);
         let _ = script_exe_candidates("\"é\"\"\"\"");
     }
 
@@ -2301,10 +2028,7 @@ mod tests {
             local_args: Some("--run {folder}".into()),
             ..OpenWithEntry::default()
         };
-        assert_eq!(
-            describe(&e, &local(r"C:\repo")),
-            r"C:\Tools\evil.exe --run C:\repo"
-        );
+        assert_eq!(describe(&e, &local(r"C:\repo")), r"C:\Tools\evil.exe --run C:\repo");
         // an unbuildable command is described with its reason instead
         let msg = describe(&e, &local("relative"));
         assert!(msg.starts_with(r"C:\Tools\evil.exe — "), "{msg}");

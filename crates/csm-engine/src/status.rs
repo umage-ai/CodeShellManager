@@ -136,11 +136,7 @@ pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>)
     }
     let sum = rt.records.summarize();
     let reported = match sum.state {
-        Some(ProgramState::Blocked) => Some(if sum.kind == BlockedKind::Permission {
-            Status::NeedsYouApproval
-        } else {
-            Status::NeedsYouQuestion
-        }),
+        Some(ProgramState::Blocked) => Some(if sum.kind == BlockedKind::Permission { Status::NeedsYouApproval } else { Status::NeedsYouQuestion }),
         Some(ProgramState::Working) => Some(Status::Working),
         Some(ProgramState::Error) => Some(Status::Error),
         Some(ProgramState::Done) => Some(Status::DoneUnseen),

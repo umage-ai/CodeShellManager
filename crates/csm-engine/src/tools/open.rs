@@ -36,7 +36,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
     let t = |id, title, summary, effects, input_schema, run| ToolSpec { id, title, summary, toolset: Toolset::App, effects, input_schema, run };
     let state_launch = Effects::from_bits_truncate(Effects::MUTATES_STATE.bits() | Effects::LAUNCHES_PROCESS.bits());
     vec![
-        t("open_folder", "Open folder", "Open the session's folder in the file manager (existing folders only; local and WSL sessions).", Effects::LAUNCHES_PROCESS, schema_of::<SessionParams>, open_folder),
+        t(
+            "open_folder",
+            "Open folder",
+            "Open the session's folder in the file manager (existing folders only; local and WSL sessions).",
+            Effects::LAUNCHES_PROCESS,
+            schema_of::<SessionParams>,
+            open_folder,
+        ),
         t(
             "open_with",
             "Open with…",
@@ -61,7 +68,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<SetParams>,
             open_with_set,
         ),
-        t("open_with_detect", "Detect installed editors", "Look for installed editors and IDEs and add the ones not listed yet.", state_launch, empty_schema, open_with_detect),
+        t(
+            "open_with_detect",
+            "Detect installed editors",
+            "Look for installed editors and IDEs and add the ones not listed yet.",
+            state_launch,
+            empty_schema,
+            open_with_detect,
+        ),
     ]
 }
 
@@ -80,7 +94,15 @@ fn to_svc(e: &CoreEntry) -> SvcEntry {
 }
 
 fn to_core(e: SvcEntry) -> CoreEntry {
-    CoreEntry { id: e.id, label: e.label, executable: e.executable, local_args: e.local_args, wsl_args: e.wsl_args, ssh_args: e.ssh_args, is_default: e.is_default }
+    CoreEntry {
+        id: e.id,
+        label: e.label,
+        executable: e.executable,
+        local_args: e.local_args,
+        wsl_args: e.wsl_args,
+        ssh_args: e.ssh_args,
+        is_default: e.is_default,
+    }
 }
 
 fn svc_kind(k: SessionKind) -> csm_services::launch::SessionKind {
@@ -319,9 +341,9 @@ fn open_with(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             .find(|e| e.id == want || e.label.eq_ignore_ascii_case(want))
             .cloned()
             .ok_or_else(|| ToolError::NotFound(format!("no Open with entry `{want}`; open_with_list shows them")))?,
-        None => ow::default_for(&list, ctxv.kind)
-            .cloned()
-            .ok_or_else(|| ToolError::NotFound("no editor in the Open with list applies to this session; add one (open_with_detect or the editor)".into()))?,
+        None => ow::default_for(&list, ctxv.kind).cloned().ok_or_else(|| {
+            ToolError::NotFound("no editor in the Open with list applies to this session; add one (open_with_detect or the editor)".into())
+        })?,
     };
     if !entry.applies_to(ctxv.kind) {
         return Err(ToolError::Refused(format!("\"{}\" has no arguments for {} sessions", entry.label, ow::kind_name(ctxv.kind))));
@@ -334,7 +356,8 @@ fn open_with(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             prepare_posix(&entry, &ctxv).map_err(ToolError::Failed)?
         };
         let shown = cmd.display();
-        spawn_detached(Path::new(&cmd.executable), &cmd.arguments, None).map_err(|e| ToolError::Failed(format!("could not start {}: {e}", entry.label)))?;
+        spawn_detached(Path::new(&cmd.executable), &cmd.arguments, None)
+            .map_err(|e| ToolError::Failed(format!("could not start {}: {e}", entry.label)))?;
         Ok(ToolOutput::new(format!("Opening in {}.", entry.label), json!({"entry": entry.id, "label": entry.label, "command": shown})))
     })
 }
@@ -395,14 +418,18 @@ fn open_with_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let spawned = std::thread::Builder::new().name("csm-open-with-set".into()).spawn(move || {
         let problems: Vec<String> = raw
             .iter()
-            .filter_map(|e| on_disk_error(&e.executable).map(|err| format!("{}: {err}", if e.label.trim().is_empty() { program_name(&e.executable) } else { e.label.clone() })))
+            .filter_map(|e| {
+                on_disk_error(&e.executable)
+                    .map(|err| format!("{}: {err}", if e.label.trim().is_empty() { program_name(&e.executable) } else { e.label.clone() }))
+            })
             .collect();
         engine.post(Box::new(move |ctx| {
             let r = if let Some(first) = problems.first() {
                 Err(ToolError::InvalidParams(first.clone()))
             } else {
                 let wrapped: Vec<Option<SvcEntry>> = raw.into_iter().map(Some).collect();
-                let clean: Vec<CoreEntry> = ow::sanitize_for(&wrapped, true, Rules::native(), &mut |m| log::warn!("open with: {m}")).into_iter().map(to_core).collect();
+                let clean: Vec<CoreEntry> =
+                    ow::sanitize_for(&wrapped, true, Rules::native(), &mut |m| log::warn!("open with: {m}")).into_iter().map(to_core).collect();
                 let n = clean.len();
                 ctx.state.app.settings.open_with = clean;
                 ctx.state.app.settings.open_with_seeded = true;
@@ -436,7 +463,8 @@ fn open_with_detect(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
                 (_, n) => format!("Added {n} editors."),
             };
             if let Some(reply) = reply {
-                reply.send(Ok(ToolOutput::new(msg, json!({"found": total, "added": added, "entries": list_view(&ctx.state.app.settings.open_with)}))));
+                reply
+                    .send(Ok(ToolOutput::new(msg, json!({"found": total, "added": added, "entries": list_view(&ctx.state.app.settings.open_with)}))));
             }
         }));
     });
@@ -505,7 +533,9 @@ fn system32_or_windows(exe: &str, system32: bool) -> PathBuf {
 pub(crate) fn open_url_detached(url: String) {
     let _ = std::thread::Builder::new().name("csm-open-url".into()).spawn(move || {
         let r = match Platform::native() {
-            Platform::Windows => spawn_detached(&system32_or_windows("rundll32.exe", true), &["url.dll,FileProtocolHandler".to_owned(), url.clone()], None),
+            Platform::Windows => {
+                spawn_detached(&system32_or_windows("rundll32.exe", true), &["url.dll,FileProtocolHandler".to_owned(), url.clone()], None)
+            }
             Platform::Mac => spawn_detached(Path::new("/usr/bin/open"), std::slice::from_ref(&url), None),
             Platform::Linux => spawn_detached(Path::new("xdg-open"), std::slice::from_ref(&url), None),
         };
@@ -736,7 +766,9 @@ impl DetectEnv for RealEnv {
         Path::new(path).is_dir()
     }
     fn list(&self, dir: &str) -> Vec<String> {
-        std::fs::read_dir(dir).map(|r| r.filter_map(Result::ok).take(2000).map(|e| e.path().to_string_lossy().into_owned()).collect()).unwrap_or_default()
+        std::fs::read_dir(dir)
+            .map(|r| r.filter_map(Result::ok).take(2000).map(|e| e.path().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default()
     }
     fn read_text(&self, path: &str) -> Option<String> {
         let m = std::fs::metadata(path).ok()?;
@@ -897,7 +929,13 @@ mod tests {
                 is_default: true,
                 ..Default::default()
             },
-            CoreEntry { id: "np".into(), label: "Notepad++".into(), executable: r"C:\npp\notepad++.exe".into(), local_args: Some("-openFoldersAsWorkspace {folder}".into()), ..Default::default() },
+            CoreEntry {
+                id: "np".into(),
+                label: "Notepad++".into(),
+                executable: r"C:\npp\notepad++.exe".into(),
+                local_args: Some("-openFoldersAsWorkspace {folder}".into()),
+                ..Default::default()
+            },
         ];
         let s = ShellSession { id: "s".into(), working_folder: r"C:\src\a b".into(), ..Default::default() };
         let t = targets(&list, &s);
@@ -907,7 +945,8 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(t[0].command, r#""C:\Program Files\Microsoft VS Code\Code.exe" "C:\src\a b""#);
         }
-        let ssh = ShellSession { id: "r".into(), kind: SessionKind::Ssh, ssh_host: "box".into(), ssh_remote_folder: "/srv".into(), ..Default::default() };
+        let ssh =
+            ShellSession { id: "r".into(), kind: SessionKind::Ssh, ssh_host: "box".into(), ssh_remote_folder: "/srv".into(), ..Default::default() };
         let t = targets(&list, &ssh);
         assert_eq!(t.len(), 1, "Notepad++ has no SSH form");
         assert_eq!(t[0].entry_id, "vs");

@@ -28,12 +28,7 @@ impl Default for SessionGroup {
     /// C# also mints a GUID `Id`; this crate has no random source, so `id` is left to the
     /// caller.
     fn default() -> Self {
-        Self {
-            id: String::new(),
-            name: default_name(),
-            sort_order: 0,
-            is_expanded: true,
-        }
+        Self { id: String::new(), name: default_name(), sort_order: 0, is_expanded: true }
     }
 }
 
@@ -44,9 +39,6 @@ mod tests {
     #[test]
     fn defaults_match_the_csharp_initialisers() {
         let g: SessionGroup = serde_json::from_str(r#"{"Id":"g"}"#).unwrap();
-        assert_eq!(
-            (g.name.as_str(), g.sort_order, g.is_expanded),
-            ("Default", 0, true)
-        );
+        assert_eq!((g.name.as_str(), g.sort_order, g.is_expanded), ("Default", 0, true));
     }
 }

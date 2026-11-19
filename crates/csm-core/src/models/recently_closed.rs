@@ -68,10 +68,7 @@ pub struct RecentlyClosedEntry {
     pub profile_cursor_blink: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_padding: Option<String>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "ser_opt_f64"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64")]
     pub profile_background_opacity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_retro_effect: Option<bool>,
@@ -140,11 +137,7 @@ impl RecentlyClosedEntry {
     /// Copies the persistable fields of a session. Run commands are deep-copied with fresh
     /// ids (from `new_id`) so editing the reopened session cannot mutate the entry still in
     /// the ring buffer. `now` stamps `closed_at` (C# read the clock here).
-    pub fn from_session(
-        s: &ShellSession,
-        now: Timestamp,
-        mut new_id: impl FnMut() -> String,
-    ) -> Self {
+    pub fn from_session(s: &ShellSession, now: Timestamp, mut new_id: impl FnMut() -> String) -> Self {
         Self {
             name: s.name.clone(),
             working_folder: s.working_folder.clone(),
@@ -265,14 +258,7 @@ mod tests {
         };
         let e = RecentlyClosedEntry::from_session(&s, Timestamp::never(), fresh_ids());
         assert_eq!(e.kind, SessionKind::Wsl);
-        assert_eq!(
-            (
-                e.wsl_distro.as_str(),
-                e.wsl_user.as_str(),
-                e.wsl_working_folder.as_str()
-            ),
-            ("Ubuntu", "bob", "/srv/app")
-        );
+        assert_eq!((e.wsl_distro.as_str(), e.wsl_user.as_str(), e.wsl_working_folder.as_str()), ("Ubuntu", "bob", "/srv/app"));
     }
 
     #[test]
@@ -302,10 +288,7 @@ mod tests {
         assert_eq!(e.profile_padding.as_deref(), Some("8 8 8 8"));
         assert_eq!(e.profile_background_opacity, Some(0.85));
         assert_eq!(e.profile_retro_effect, Some(true));
-        assert_eq!(
-            e.profile_color_scheme_json.as_deref(),
-            Some("{\"foreground\":\"#fff\"}")
-        );
+        assert_eq!(e.profile_color_scheme_json.as_deref(), Some("{\"foreground\":\"#fff\"}"));
     }
 
     #[test]
@@ -349,37 +332,21 @@ mod tests {
 
     #[test]
     fn subtitle_remote_session_without_user_returns_host_only() {
-        let e = RecentlyClosedEntry {
-            kind: SessionKind::Ssh,
-            ssh_host: "dev.local".into(),
-            ..Default::default()
-        };
+        let e = RecentlyClosedEntry { kind: SessionKind::Ssh, ssh_host: "dev.local".into(), ..Default::default() };
         assert_eq!(e.subtitle(), "dev.local");
     }
 
     #[test]
     fn subtitle_local_session_returns_working_folder() {
-        let e = RecentlyClosedEntry {
-            working_folder: r"C:\proj".into(),
-            ..Default::default()
-        };
+        let e = RecentlyClosedEntry { working_folder: r"C:\proj".into(), ..Default::default() };
         assert_eq!(e.subtitle(), r"C:\proj");
     }
 
     #[test]
     fn subtitle_wsl_session() {
-        let e = RecentlyClosedEntry {
-            kind: SessionKind::Wsl,
-            wsl_distro: "Ubuntu".into(),
-            wsl_working_folder: "/srv".into(),
-            ..Default::default()
-        };
+        let e = RecentlyClosedEntry { kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), wsl_working_folder: "/srv".into(), ..Default::default() };
         assert_eq!(e.subtitle(), "Ubuntu: /srv");
-        let home = RecentlyClosedEntry {
-            kind: SessionKind::Wsl,
-            wsl_distro: "Ubuntu".into(),
-            ..Default::default()
-        };
+        let home = RecentlyClosedEntry { kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), ..Default::default() };
         assert_eq!(home.subtitle(), "Ubuntu");
     }
 }

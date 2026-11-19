@@ -28,27 +28,13 @@ pub struct WorktreeInfo {
 #[must_use]
 pub fn parse_worktree_list(raw: &str) -> Vec<WorktreeInfo> {
     let mut results = Vec::new();
-    let mut cur = WorktreeInfo {
-        path: String::new(),
-        branch: None,
-        is_bare: false,
-        is_detached: false,
-        is_locked: false,
-        is_prunable: false,
-    };
+    let mut cur = WorktreeInfo { path: String::new(), branch: None, is_bare: false, is_detached: false, is_locked: false, is_prunable: false };
     let empty = |path: &str| path.is_empty();
     let flush = |cur: &mut WorktreeInfo, results: &mut Vec<WorktreeInfo>| {
         if !empty(&cur.path) {
             results.push(cur.clone());
         }
-        *cur = WorktreeInfo {
-            path: String::new(),
-            branch: None,
-            is_bare: false,
-            is_detached: false,
-            is_locked: false,
-            is_prunable: false,
-        };
+        *cur = WorktreeInfo { path: String::new(), branch: None, is_bare: false, is_detached: false, is_locked: false, is_prunable: false };
     };
     for line in raw.replace('\r', "").split('\n') {
         if line.is_empty() {
@@ -82,9 +68,7 @@ pub fn normalize(path: &str) -> String {
     }
     let n = path.replace('\\', "/").trim_end_matches('/').to_string();
     const LOCALHOST: &str = "//wsl.localhost/";
-    if n.get(..LOCALHOST.len())
-        .is_some_and(|h| h.eq_ignore_ascii_case(LOCALHOST))
-    {
+    if n.get(..LOCALHOST.len()).is_some_and(|h| h.eq_ignore_ascii_case(LOCALHOST)) {
         return format!("//wsl$/{}", n.get(LOCALHOST.len()..).unwrap_or(""));
     }
     n
@@ -108,10 +92,7 @@ fn key(path: &str) -> (String, Case) {
         Some(i) => (after.get(..i).unwrap_or(""), after.get(i..).unwrap_or("")),
         None => (after, ""),
     };
-    (
-        format!("{WSL}{}{rest}", distro.to_lowercase()),
-        Case::Sensitive,
-    )
+    (format!("{WSL}{}{rest}", distro.to_lowercase()), Case::Sensitive)
 }
 
 fn eq_case(a: &str, b: &str, c: Case) -> bool {
@@ -146,11 +127,7 @@ pub fn busy_key(repo_root: Option<&str>, working_folder: Option<&str>) -> String
         _ => working_folder.unwrap_or(""),
     };
     let (k, c) = key(source);
-    if c == Case::Insensitive {
-        k.to_lowercase()
-    } else {
-        k
-    }
+    if c == Case::Insensitive { k.to_lowercase() } else { k }
 }
 
 /// True when `folder` is `root` or below it. A plain prefix test is wrong: `C:/repo-wt` starts
@@ -170,10 +147,7 @@ pub fn is_inside(folder: &str, root: &str) -> bool {
 #[must_use]
 pub fn containing<'a>(worktrees: &'a [WorktreeInfo], folder: &str) -> Option<&'a WorktreeInfo> {
     let mut best: Option<(&WorktreeInfo, usize)> = None;
-    for w in worktrees
-        .iter()
-        .filter(|w| !w.is_bare && is_inside(folder, &w.path))
-    {
+    for w in worktrees.iter().filter(|w| !w.is_bare && is_inside(folder, &w.path)) {
         let len = normalize(&w.path).chars().count();
         // strictly longer wins: ties keep the first, like a stable OrderByDescending
         if best.is_none_or(|(_, l)| len > l) {
@@ -186,9 +160,7 @@ pub fn containing<'a>(worktrees: &'a [WorktreeInfo], folder: &str) -> Option<&'a
 /// git lists the main worktree first; every other entry is a linked one.
 #[must_use]
 pub fn is_main(worktrees: &[WorktreeInfo], wt: &WorktreeInfo) -> bool {
-    worktrees
-        .first()
-        .is_some_and(|first| same_path(&first.path, &wt.path))
+    worktrees.first().is_some_and(|first| same_path(&first.path, &wt.path))
 }
 
 /// Branches checked out in a worktree OTHER than `current`, mapped to that worktree, in listing
@@ -196,10 +168,7 @@ pub fn is_main(worktrees: &[WorktreeInfo], wt: &WorktreeInfo) -> bool {
 /// switching to one of these always fails ("already used by worktree at ..."); the menu offers
 /// to go there instead.
 #[must_use]
-pub fn branches_elsewhere<'a>(
-    worktrees: &'a [WorktreeInfo],
-    current: Option<&WorktreeInfo>,
-) -> Vec<(&'a str, &'a WorktreeInfo)> {
+pub fn branches_elsewhere<'a>(worktrees: &'a [WorktreeInfo], current: Option<&WorktreeInfo>) -> Vec<(&'a str, &'a WorktreeInfo)> {
     let mut map: Vec<(&str, &WorktreeInfo)> = Vec::new();
     for w in worktrees {
         let Some(branch) = w.branch.as_deref().filter(|b| !b.is_empty()) else {
@@ -224,16 +193,8 @@ pub fn branches_elsewhere<'a>(
 /// the outer one exited 0 and deleted the inner one with its uncommitted file. So the menu
 /// refuses while any are listed.
 #[must_use]
-pub fn nested_inside<'a>(
-    worktrees: &'a [WorktreeInfo],
-    target: &WorktreeInfo,
-) -> Vec<&'a WorktreeInfo> {
-    worktrees
-        .iter()
-        .filter(|w| {
-            !w.is_bare && !same_path(&w.path, &target.path) && is_inside(&w.path, &target.path)
-        })
-        .collect()
+pub fn nested_inside<'a>(worktrees: &'a [WorktreeInfo], target: &WorktreeInfo) -> Vec<&'a WorktreeInfo> {
+    worktrees.iter().filter(|w| !w.is_bare && !same_path(&w.path, &target.path) && is_inside(&w.path, &target.path)).collect()
 }
 
 /// The worktree's folder name, which is what the menus show.
@@ -322,34 +283,19 @@ mod tests {
     #[test]
     fn busy_key_prefers_the_repo_root_over_the_folder() {
         // Two worktrees of one repo: different folders, one RepoRoot (the main working tree).
-        assert_eq!(
-            busy_key(Some("C:/src/app"), Some(r"C:\src\app-wt-feature")),
-            busy_key(Some("C:/src/app"), Some(r"C:\src\app\sub"))
-        );
-        assert_eq!(
-            busy_key(None, Some(r"C:\src\app")),
-            busy_key(Some(""), Some("C:/src/app/"))
-        );
+        assert_eq!(busy_key(Some("C:/src/app"), Some(r"C:\src\app-wt-feature")), busy_key(Some("C:/src/app"), Some(r"C:\src\app\sub")));
+        assert_eq!(busy_key(None, Some(r"C:\src\app")), busy_key(Some(""), Some("C:/src/app/")));
     }
 
     #[test]
     fn busy_key_folds_spelling_and_case_on_windows() {
-        assert_eq!(
-            busy_key(Some(r"C:\Src\App\"), None),
-            busy_key(Some("c:/src/app"), None)
-        );
+        assert_eq!(busy_key(Some(r"C:\Src\App\"), None), busy_key(Some("c:/src/app"), None));
     }
 
     #[test]
     fn busy_key_is_case_sensitive_inside_wsl_but_not_for_the_distro() {
-        assert_eq!(
-            busy_key(Some(r"\\wsl.localhost\Ubuntu\home\u\repo"), None),
-            busy_key(Some(r"\\wsl$\ubuntu\home\u\repo"), None)
-        );
-        assert_ne!(
-            busy_key(Some(r"\\wsl$\Ubuntu\home\u\Repo"), None),
-            busy_key(Some(r"\\wsl$\Ubuntu\home\u\repo"), None)
-        );
+        assert_eq!(busy_key(Some(r"\\wsl.localhost\Ubuntu\home\u\repo"), None), busy_key(Some(r"\\wsl$\ubuntu\home\u\repo"), None));
+        assert_ne!(busy_key(Some(r"\\wsl$\Ubuntu\home\u\Repo"), None), busy_key(Some(r"\\wsl$\Ubuntu\home\u\repo"), None));
     }
 
     #[test]
@@ -372,52 +318,24 @@ mod tests {
         // Inside a distro, Linux paths are case-sensitive: /home/u/WT is a different folder,
         // and matching it would close (and delete the sleeping) sessions of the wrong worktree.
         for (folder, root, expected) in [
-            (
-                r"\\wsl$\Ubuntu\home\u\WT",
-                r"\\wsl$\Ubuntu\home\u\wt",
-                false,
-            ),
-            (
-                r"\\wsl$\Ubuntu\home\u\wt\src",
-                r"\\wsl$\Ubuntu\home\u\wt",
-                true,
-            ),
+            (r"\\wsl$\Ubuntu\home\u\WT", r"\\wsl$\Ubuntu\home\u\wt", false),
+            (r"\\wsl$\Ubuntu\home\u\wt\src", r"\\wsl$\Ubuntu\home\u\wt", true),
             // ...but the distro name is not, and the two share spellings are the same place.
             (r"\\wsl$\ubuntu\home\u\wt", r"\\wsl$\Ubuntu\home\u\wt", true),
-            (
-                r"\\wsl.localhost\Ubuntu\home\u\wt",
-                r"\\wsl$\Ubuntu\home\u\wt",
-                true,
-            ),
-            (
-                r"\\WSL.LOCALHOST\Ubuntu\home\u\wt\x",
-                r"\\wsl$\Ubuntu\home\u\wt",
-                true,
-            ),
+            (r"\\wsl.localhost\Ubuntu\home\u\wt", r"\\wsl$\Ubuntu\home\u\wt", true),
+            (r"\\WSL.LOCALHOST\Ubuntu\home\u\wt\x", r"\\wsl$\Ubuntu\home\u\wt", true),
         ] {
             assert_eq!(is_inside(folder, root), expected, "{folder} in {root}");
             let strictly_below = folder.ends_with(r"\src") || folder.ends_with(r"\x");
-            assert_eq!(
-                same_path(folder, root),
-                expected && !strictly_below,
-                "{folder}"
-            );
+            assert_eq!(same_path(folder, root), expected && !strictly_below, "{folder}");
         }
     }
 
     #[test]
     fn nested_inside_finds_worktrees_living_in_the_target_folder_only() {
         let outer = wt("C:/w/a", Some("a"));
-        let wts = vec![
-            wt("C:/w/main", Some("main")),
-            outer.clone(),
-            wt("C:/w/a/.worktrees/b", Some("b")),
-            wt("C:/w/a-sibling", Some("s")),
-        ];
-        let nested: Vec<_> = nested_inside(&wts, &outer)
-            .iter()
-            .map(|w| w.branch.clone())
-            .collect();
+        let wts = vec![wt("C:/w/main", Some("main")), outer.clone(), wt("C:/w/a/.worktrees/b", Some("b")), wt("C:/w/a-sibling", Some("s"))];
+        let nested: Vec<_> = nested_inside(&wts, &outer).iter().map(|w| w.branch.clone()).collect();
         assert_eq!(nested, [Some("b".to_string())]);
         assert!(nested_inside(&wts, &wts[2]).is_empty());
     }
@@ -425,22 +343,9 @@ mod tests {
     #[test]
     fn containing_picks_the_deepest_worktree() {
         // A worktree may legally live inside another one's folder.
-        let wts = vec![
-            wt("C:/repo", Some("main")),
-            wt("C:/repo/.wt/feat", Some("feat")),
-            wt("C:/repo-other", Some("x")),
-        ];
-        assert_eq!(
-            containing(&wts, "C:/repo/.wt/feat/src")
-                .unwrap()
-                .branch
-                .as_deref(),
-            Some("feat")
-        );
-        assert_eq!(
-            containing(&wts, "C:/repo/src").unwrap().branch.as_deref(),
-            Some("main")
-        );
+        let wts = vec![wt("C:/repo", Some("main")), wt("C:/repo/.wt/feat", Some("feat")), wt("C:/repo-other", Some("x"))];
+        assert_eq!(containing(&wts, "C:/repo/.wt/feat/src").unwrap().branch.as_deref(), Some("feat"));
+        assert_eq!(containing(&wts, "C:/repo/src").unwrap().branch.as_deref(), Some("main"));
         assert!(containing(&wts, "D:/elsewhere").is_none());
     }
 
@@ -449,13 +354,7 @@ mod tests {
         let mut bare = wt("C:/repo.git", None);
         bare.is_bare = true;
         let wts = vec![bare, wt("C:/repo.git/wt", Some("feat"))];
-        assert_eq!(
-            containing(&wts, "C:/repo.git/wt")
-                .unwrap()
-                .branch
-                .as_deref(),
-            Some("feat")
-        );
+        assert_eq!(containing(&wts, "C:/repo.git/wt").unwrap().branch.as_deref(), Some("feat"));
         assert!(containing(&wts[..1], "C:/repo.git/sub").is_none());
     }
 
@@ -498,15 +397,9 @@ mod tests {
             upstream: Some("origin/feat".into()),
             ahead: Some(1),
             behind: Some(2),
-            changes: vec![GitFileChange {
-                code: ".M".into(),
-                path: "a.txt".into(),
-            }],
+            changes: vec![GitFileChange { code: ".M".into(), path: "a.txt".into() }],
         };
-        assert_eq!(
-            label(&wt("C:/x/wt-feat", Some("feat")), Some(&dirty_ahead)),
-            "wt-feat  ⎇ feat ● ↑1 ↓2"
-        );
+        assert_eq!(label(&wt("C:/x/wt-feat", Some("feat")), Some(&dirty_ahead)), "wt-feat  ⎇ feat ● ↑1 ↓2");
         let mut detached = wt("C:/wt", None);
         detached.is_detached = true;
         assert_eq!(label(&detached, None), "wt  ⎇ detached");
@@ -559,44 +452,21 @@ mod tests {
 
     #[test]
     fn linked_worktree_is_told_apart_from_a_submodule() {
-        assert_eq!(
-            linked_worktree_of(
-                "gitdir: C:/src/main/.git/worktrees/wt-feat\n",
-                Some("C:/src/main")
-            )
-            .as_deref(),
-            Some("main")
-        );
+        assert_eq!(linked_worktree_of("gitdir: C:/src/main/.git/worktrees/wt-feat\n", Some("C:/src/main")).as_deref(), Some("main"));
         // no repo root: derived from the path in the pointer
-        assert_eq!(
-            linked_worktree_of("gitdir: C:/src/CodeShellManager/.git/worktrees/wt\n", None)
-                .as_deref(),
-            Some("CodeShellManager")
-        );
-        assert_eq!(
-            linked_worktree_of("gitdir: /x/worktrees/y", None).as_deref(),
-            Some("another checkout")
-        );
+        assert_eq!(linked_worktree_of("gitdir: C:/src/CodeShellManager/.git/worktrees/wt\n", None).as_deref(), Some("CodeShellManager"));
+        assert_eq!(linked_worktree_of("gitdir: /x/worktrees/y", None).as_deref(), Some("another checkout"));
         // A submodule's .git is also a file, but points into .git/modules, not worktrees.
-        assert_eq!(
-            linked_worktree_of("gitdir: ../main/.git/modules/sub\n", Some("C:/x")),
-            None
-        );
+        assert_eq!(linked_worktree_of("gitdir: ../main/.git/modules/sub\n", Some("C:/x")), None);
         assert_eq!(linked_worktree_of("not a pointer", None), None);
         assert_eq!(linked_worktree_of("", None), None);
         assert_eq!(linked_worktree_of("é", None), None);
-        assert_eq!(
-            linked_worktree_of("GITDIR: C:/a/.git/worktrees/b", Some("C:/a")).as_deref(),
-            Some("a")
-        );
+        assert_eq!(linked_worktree_of("GITDIR: C:/a/.git/worktrees/b", Some("C:/a")).as_deref(), Some("a"));
     }
 
     #[test]
     fn normalize_folds_the_wsl_spellings() {
-        assert_eq!(
-            normalize(r"\\wsl.localhost\Ubuntu\home\u\"),
-            "//wsl$/Ubuntu/home/u"
-        );
+        assert_eq!(normalize(r"\\wsl.localhost\Ubuntu\home\u\"), "//wsl$/Ubuntu/home/u");
         assert_eq!(normalize(r"C:\x\"), "C:/x");
         assert_eq!(normalize(""), "");
     }

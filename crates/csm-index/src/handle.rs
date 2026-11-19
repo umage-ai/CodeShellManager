@@ -79,10 +79,7 @@ impl std::fmt::Debug for Index {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)).unwrap_or(0)
 }
 
 impl Index {
@@ -144,10 +141,7 @@ impl Index {
     }
 
     /// [`Index::call`] and wait. For tests and one-shot tools, never for a UI or engine thread.
-    pub fn call_blocking<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Db) -> Result<T, IndexError> + Send + 'static,
-    ) -> Result<T, IndexError> {
+    pub fn call_blocking<T: Send + 'static>(&self, f: impl FnOnce(&mut Db) -> Result<T, IndexError> + Send + 'static) -> Result<T, IndexError> {
         let (tx, rx) = mpsc::channel();
         self.call(f, move |r| {
             let _ = tx.send(r);

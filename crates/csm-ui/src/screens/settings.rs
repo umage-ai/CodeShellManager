@@ -38,7 +38,13 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
         let ir = Rect::from_min_size(pos2(r.min.x + space::ROW_X, r.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, sec.icon(), icon::MD, if on { t.blue } else { t.muted });
-        ui.painter().text(pos2(ir.max.x + space::SM, r.center().y), Align2::LEFT_CENTER, sec.label(), theme::medium(text::BODY), if on { t.fg } else { t.fg2 });
+        ui.painter().text(
+            pos2(ir.max.x + space::SM, r.center().y),
+            Align2::LEFT_CENTER,
+            sec.label(),
+            theme::medium(text::BODY),
+            if on { t.fg } else { t.fg2 },
+        );
         let label = format!("Settings: {}", sec.label());
         resp.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label.clone()));
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -46,7 +52,11 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
     }
     let close = Rect::from_min_size(pos2(nav.min.x + space::SM, nav.max.y - size::CONTROL - space::MD), vec2(nav.width() - space::LG, size::CONTROL));
-    if ui.scope_builder(UiBuilder::new().max_rect(close), |ui| widgets::button(ui, ButtonKind::Ghost, Some("x"), "Close settings", Some("Esc"))).inner.clicked() {
+    if ui
+        .scope_builder(UiBuilder::new().max_rect(close), |ui| widgets::button(ui, ButtonKind::Ghost, Some("x"), "Close settings", Some("Esc")))
+        .inner
+        .clicked()
+    {
         actions.push(Action::CloseSettings);
     }
 
@@ -123,7 +133,15 @@ fn bool_setting(ui: &mut Ui, app: &CsmApp, key: &str, label: &str, hint: &str, a
 }
 
 /// A whole-number setting with a drag value; saved when the drag or the typing ends.
-fn number_setting(ui: &mut Ui, app: &mut CsmApp, key: &str, label: &str, range: std::ops::RangeInclusive<i64>, unit: &str, actions: &mut Vec<Action>) {
+fn number_setting(
+    ui: &mut Ui,
+    app: &mut CsmApp,
+    key: &str,
+    label: &str,
+    range: std::ops::RangeInclusive<i64>,
+    unit: &str,
+    actions: &mut Vec<Action>,
+) {
     let t = Tokens::get(ui.ctx());
     let saved = app.ui.settings.num(key).map_or(0, |n| n as i64);
     let draft_key = format!("#{key}");
@@ -188,7 +206,11 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
         }
         if cmds.is_empty() {
-            ui.label(egui::RichText::new("No commands: the New session panel offers the default command only.").font(theme::regular(text::CAPTION)).color(t.muted));
+            ui.label(
+                egui::RichText::new("No commands: the New session panel offers the default command only.")
+                    .font(theme::regular(text::CAPTION))
+                    .color(t.muted),
+            );
         }
     });
     ui.horizontal(|ui| {
@@ -212,9 +234,30 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
     });
     section(ui, "Starting and closing");
-    bool_setting(ui, app, "AutoRestoreSessions", "Restore sessions on start", "Sessions that were open when the app closed start again, one at a time.", actions);
-    bool_setting(ui, app, "AutoResumeClaude", "Resume Claude conversations", "A restored or restarted Claude session continues its conversation (--resume).", actions);
-    bool_setting(ui, app, "WarnOnCloseWhenBusy", "Warn when closing busy sessions", "Ask before quitting while a session is working or waiting on you.", actions);
+    bool_setting(
+        ui,
+        app,
+        "AutoRestoreSessions",
+        "Restore sessions on start",
+        "Sessions that were open when the app closed start again, one at a time.",
+        actions,
+    );
+    bool_setting(
+        ui,
+        app,
+        "AutoResumeClaude",
+        "Resume Claude conversations",
+        "A restored or restarted Claude session continues its conversation (--resume).",
+        actions,
+    );
+    bool_setting(
+        ui,
+        app,
+        "WarnOnCloseWhenBusy",
+        "Warn when closing busy sessions",
+        "Ask before quitting while a session is working or waiting on you.",
+        actions,
+    );
     number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
     caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
 }
@@ -270,7 +313,10 @@ fn groups(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let v = ["rail", "headers", "flat"].get(i).copied().unwrap_or("rail");
         actions.push(Action::Tool("view_set", json!({"view": v})));
     }
-    caption(ui, "Rail: one group at a time, a tab per group, and the panes follow the tab. Headers: every group in one list, collapsible. Flat: no groups.");
+    caption(
+        ui,
+        "Rail: one group at a time, a tab per group, and the panes follow the tab. Headers: every group in one list, collapsible. Flat: no groups.",
+    );
     caption(ui, "The same switch sits next to SESSIONS in the sidebar. Each group keeps its own layout.");
     section(ui, "Sidebar");
     let inbox = model.inbox_panel.open;
@@ -300,7 +346,13 @@ fn mcp(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 0.0;
         if grants.is_empty() {
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::hover());
-            ui.painter().text(pos2(r.min.x, r.center().y), Align2::LEFT_CENTER, "No client has an “Always” grant.", theme::regular(text::BODY), t.muted);
+            ui.painter().text(
+                pos2(r.min.x, r.center().y),
+                Align2::LEFT_CENTER,
+                "No client has an “Always” grant.",
+                theme::regular(text::BODY),
+                t.muted,
+            );
         }
         for (i, g) in grants.iter().enumerate() {
             let client = g["client"].as_str().unwrap_or_default().to_string();
@@ -312,9 +364,21 @@ fn mcp(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let cr = ui.painter().text(pos2(r.min.x, r.center().y), Align2::LEFT_CENTER, &client, theme::medium(text::BODY), t.fg);
             let title = app.dispatch.registry().get(&tool).map_or(tool.clone(), |s| s.title.to_string());
             let b = Rect::from_min_max(pos2(r.max.x - size::MENU_W / 2.0 + space::XL, r.min.y + space::XS), pos2(r.max.x, r.max.y - space::XS));
-            widgets::paint_text(ui, pos2(cr.max.x + space::SM, r.center().y), Align2::LEFT_CENTER, &format!("may run {title} ({tool})"), theme::regular(text::CAPTION), t.muted, b.min.x - cr.max.x - space::LG);
+            widgets::paint_text(
+                ui,
+                pos2(cr.max.x + space::SM, r.center().y),
+                Align2::LEFT_CENTER,
+                &format!("may run {title} ({tool})"),
+                theme::regular(text::CAPTION),
+                t.muted,
+                b.min.x - cr.max.x - space::LG,
+            );
             let label = format!("Revoke {client} · {tool}");
-            let resp = ui.scope_builder(UiBuilder::new().max_rect(b).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| widgets::button(ui, ButtonKind::Danger, None, "Revoke", None)).inner;
+            let resp = ui
+                .scope_builder(UiBuilder::new().max_rect(b).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                    widgets::button(ui, ButtonKind::Danger, None, "Revoke", None)
+                })
+                .inner;
             resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
             if resp.clicked() {
                 actions.push(Action::Tool("grant_revoke", json!({"client": client, "tool": tool})));

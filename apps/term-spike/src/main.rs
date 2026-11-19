@@ -6,9 +6,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use term_spike::app::{Config, SpikeApp};
 use csm_ui::terminal::TerminalRenderer;
 use csm_ui::terminal::fonts::{FontSet, default_paths, load_face};
+use term_spike::app::{Config, SpikeApp};
 use term_spike::view::{FrameCounters, Shared};
 use term_spike::{logging, theme};
 

@@ -165,14 +165,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     // The screen heuristic, for Claude sessions that don't report their status. A plain shell
     // sitting at its prompt (`C:\work>`, `$ `) is idle, not "needs you": the WPF app flagged every
     // waiting shell, which with an inbox and toasts is noise.
-    let claude_ids: std::collections::HashSet<String> = ctx
-        .state
-        .app
-        .sessions
-        .iter()
-        .filter(|s| crate::launch::is_claude_command(&s.command))
-        .map(|s| s.id.clone())
-        .collect();
+    let claude_ids: std::collections::HashSet<String> =
+        ctx.state.app.sessions.iter().filter(|s| crate::launch::is_claude_command(&s.command)).map(|s| s.id.clone()).collect();
     for (id, rt) in ctx.state.rt.sessions.iter_mut() {
         if rt.has_program_status || rt.phase != Phase::Live || !claude_ids.contains(id) {
             continue;
@@ -191,10 +185,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         for w in waits {
             if now >= w.deadline {
                 let status = ctx.state.rt.prev.session(&w.session_id).map_or("gone", |v| v.status.id());
-                w.reply.send(Err(ToolError::TimedOut(format!(
-                    "the session did not reach `{}` in time; it is {status}",
-                    until_id(w.until)
-                ))));
+                w.reply.send(Err(ToolError::TimedOut(format!("the session did not reach `{}` in time; it is {status}", until_id(w.until)))));
             } else {
                 ctx.state.rt.waits.push(w);
             }
@@ -340,7 +331,6 @@ fn publish_step(state: &mut State, engine: &Engine) {
             }
         }
     }
-
 }
 
 pub(crate) fn wait_output(v: &snapshot::SessionView) -> ToolOutput {
@@ -466,10 +456,7 @@ impl SpawnJob {
             return Err("the session was closed before it started".into());
         }
         let program = plan.argv.first().cloned().unwrap_or_default();
-        let mut opts = SpawnOptions::new(
-            plan.argv.into_iter().map(OsString::from).collect(),
-            PtySize::new(self.size.cols, self.size.rows),
-        );
+        let mut opts = SpawnOptions::new(plan.argv.into_iter().map(OsString::from).collect(), PtySize::new(self.size.cols, self.size.rows));
         opts.cwd = plan.cwd;
         if let Some(path) = plan.path {
             opts.env.push(("PATH".into(), Some(path)));
@@ -776,9 +763,7 @@ pub(crate) fn close_session(ctx: &mut Ctx<'_>, id: &str, force: bool) -> Result<
     };
     let name = display_name(ctx.state, id);
     if !force && let Some(why) = busy_reason(ctx.state, id) {
-        return Err(ToolError::Refused(format!(
-            "{name} is busy ({why}). Closing it would cut that off; pass force: true to close it anyway."
-        )));
+        return Err(ToolError::Refused(format!("{name} is busy ({why}). Closing it would cut that off; pass force: true to close it anyway.")));
     }
     let claude = is_claude(ctx.state, id);
     if let Some(s) = ctx.state.app.sessions.get(i) {
@@ -918,7 +903,8 @@ pub(crate) fn restart_refusal(state: &State) -> Option<ToolError> {
     }
     if state.rt.restore.is_some() {
         return Some(ToolError::Refused(
-            "sessions are still being restored; restart when the restore has finished (two loops starting Claude at once would race on its config)".into(),
+            "sessions are still being restored; restart when the restore has finished (two loops starting Claude at once would race on its config)"
+                .into(),
         ));
     }
     if state.rt.restart_active {
@@ -972,10 +958,7 @@ fn finish_restart(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>, results: Vec<(S
     ctx.state.rt.restart = None;
     ctx.state.touch();
     let ok = results.iter().filter(|(_, r)| r.is_ok()).count();
-    let failed: Vec<_> = results
-        .iter()
-        .filter_map(|(id, r)| r.as_ref().err().map(|e| json!({"session_id": id, "error": e})))
-        .collect();
+    let failed: Vec<_> = results.iter().filter_map(|(id, r)| r.as_ref().err().map(|e| json!({"session_id": id, "error": e}))).collect();
     let mut message = match (ok, results.len()) {
         (1, 1) => format!("Restarted {}.", results.first().map(|(id, _)| display_name(ctx.state, id)).unwrap_or_default()),
         (o, n) => format!("Restarted {o} of {n} sessions."),

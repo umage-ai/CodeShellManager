@@ -204,8 +204,12 @@ fn wsl_session(s: &ShellSession) -> Result<ShellSession, String> {
     out.wsl_working_folder = if folder == "~" {
         String::new()
     } else if let Some(rest) = folder.strip_prefix("~/") {
-        let home = wsl_probe::home(&s.wsl_distro, &s.wsl_user)
-            .ok_or_else(|| format!("Could not find the home folder in WSL distro `{}` (is it starting?). Try again, or edit the session and type the full Linux path.", s.wsl_distro.trim()))?;
+        let home = wsl_probe::home(&s.wsl_distro, &s.wsl_user).ok_or_else(|| {
+            format!(
+                "Could not find the home folder in WSL distro `{}` (is it starting?). Try again, or edit the session and type the full Linux path.",
+                s.wsl_distro.trim()
+            )
+        })?;
         format!("{}/{rest}", home.trim_end_matches('/'))
     } else {
         folder.to_owned()
@@ -285,7 +289,14 @@ mod tests {
     }
 
     fn wsl(folder: &str) -> ShellSession {
-        ShellSession { id: "w".into(), kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), wsl_working_folder: folder.into(), command: "claude".into(), ..Default::default() }
+        ShellSession {
+            id: "w".into(),
+            kind: SessionKind::Wsl,
+            wsl_distro: "Ubuntu".into(),
+            wsl_working_folder: folder.into(),
+            command: "claude".into(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -381,7 +392,6 @@ mod tests {
     }
 }
 
-
 /// Where a Claude session's MCP config is written, and the `csm` binary it points at.
 #[derive(Debug, Clone)]
 pub struct McpOffer {
@@ -456,7 +466,8 @@ mod mcp_offer_tests {
     fn only_local_claude_sessions_get_the_offer() {
         let dir = std::env::temp_dir().join(format!("csm-mcp-offer-{}", std::process::id()));
         let offer = McpOffer { dir: dir.clone(), csm: PathBuf::from("csm") };
-        let mut s = ShellSession { id: "s1".into(), command: "claude".into(), working_folder: dir.to_string_lossy().into_owned(), ..Default::default() };
+        let mut s =
+            ShellSession { id: "s1".into(), command: "claude".into(), working_folder: dir.to_string_lossy().into_owned(), ..Default::default() };
         let p = resolve(&s, false, Some(&offer)).unwrap();
         assert!(p.argv.join(" ").contains("--mcp-config"), "{:?}", p.argv);
         assert!(dir.join("mcp-s1.json").is_file());

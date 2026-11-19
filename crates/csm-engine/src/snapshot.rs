@@ -190,10 +190,7 @@ pub(crate) fn layout_key(state: &State) -> String {
 pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) -> SessionView {
     let rt = state.rt.sessions.get(&s.id);
     let (st, progress, message) = status::derive(s.is_dormant, state.rt.restarting.contains(&s.id), rt);
-    let accent = s
-        .color_override
-        .clone()
-        .unwrap_or_else(|| csm_core::color::hex_color(&s.accent_key()).to_owned());
+    let accent = s.color_override.clone().unwrap_or_else(|| csm_core::color::hex_color(&s.accent_key()).to_owned());
     let name = if s.name.trim().is_empty() { s.default_display_name() } else { s.name.clone() };
     let git = crate::tools::git::view_fields(state, s);
     SessionView {
@@ -288,12 +285,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         })
         .collect();
 
-    let terminals = state
-        .rt
-        .sessions
-        .iter()
-        .map(|(id, rt)| (id.clone(), TerminalHandle(rt.io.clone())))
-        .collect();
+    let terminals = state.rt.sessions.iter().map(|(id, rt)| (id.clone(), TerminalHandle(rt.io.clone()))).collect();
 
     let ui = &state.app.ui;
     let layouts = ui.layouts.clone();

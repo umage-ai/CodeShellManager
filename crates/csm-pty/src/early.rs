@@ -161,12 +161,7 @@ mod tests {
             buf.subscribe(sink);
             writer.join().unwrap();
             let bytes = out.lock().unwrap().clone();
-            let got: Vec<u32> = bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| u32::from_le_bytes(*c))
-                .collect();
+            let got: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
             let expected: Vec<u32> = (0..2000).collect();
             assert_eq!(got, expected);
         }

@@ -13,12 +13,40 @@ use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schem
 pub(super) fn specs() -> Vec<ToolSpec> {
     let t = |id, title, summary, effects, input_schema, run| ToolSpec { id, title, summary, toolset: Toolset::Groups, effects, input_schema, run };
     vec![
-        t("group_list", "List groups", "Every group in order: id, name, session count, how many need you.", Effects::READ_ONLY, empty_schema, group_list),
+        t(
+            "group_list",
+            "List groups",
+            "Every group in order: id, name, session count, how many need you.",
+            Effects::READ_ONLY,
+            empty_schema,
+            group_list,
+        ),
         t("group_new", "New group…", "Create a group.", Effects::MUTATES_STATE, schema_of::<NameParams>, group_new),
         t("group_rename", "Rename group…", "Rename a group.", Effects::MUTATES_STATE, schema_of::<RenameParams>, group_rename),
-        t("group_delete", "Delete group", "Delete a group; its sessions move to Ungrouped (nothing is closed).", Effects::MUTATES_STATE, schema_of::<GroupParams>, group_delete),
-        t("group_move", "Move group", "Move a group to a position in the group order (0 = first).", Effects::MUTATES_STATE, schema_of::<MoveGroupParams>, group_move),
-        t("group_collapse", "Collapse group", "Collapse or expand a group's section in the headers view.", Effects::UI, schema_of::<CollapseParams>, group_collapse),
+        t(
+            "group_delete",
+            "Delete group",
+            "Delete a group; its sessions move to Ungrouped (nothing is closed).",
+            Effects::MUTATES_STATE,
+            schema_of::<GroupParams>,
+            group_delete,
+        ),
+        t(
+            "group_move",
+            "Move group",
+            "Move a group to a position in the group order (0 = first).",
+            Effects::MUTATES_STATE,
+            schema_of::<MoveGroupParams>,
+            group_move,
+        ),
+        t(
+            "group_collapse",
+            "Collapse group",
+            "Collapse or expand a group's section in the headers view.",
+            Effects::UI,
+            schema_of::<CollapseParams>,
+            group_collapse,
+        ),
         t(
             "session_move_to_group",
             "Move to group…",
@@ -35,7 +63,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<ForceGroupParams>,
             group_restart_all,
         ),
-        t("group_sleep_all", "Sleep all in group", "Put every live session of a group to sleep.", Effects::MAY_DISCARD_DATA.union(Effects::MUTATES_STATE), schema_of::<GroupParams>, group_sleep_all),
+        t(
+            "group_sleep_all",
+            "Sleep all in group",
+            "Put every live session of a group to sleep.",
+            Effects::MAY_DISCARD_DATA.union(Effects::MUTATES_STATE),
+            schema_of::<GroupParams>,
+            group_sleep_all,
+        ),
         t(
             "group_close_all",
             "Close all in group…",
@@ -44,7 +79,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<ForceGroupParams>,
             group_close_all,
         ),
-        t("group_tear_off", "Move group to its own window", "Show a group in its own OS window.", Effects::UI, schema_of::<GroupParams>, group_tear_off),
+        t(
+            "group_tear_off",
+            "Move group to its own window",
+            "Show a group in its own OS window.",
+            Effects::UI,
+            schema_of::<GroupParams>,
+            group_tear_off,
+        ),
         t("group_dock", "Dock group", "Bring a torn-off group back into the main window.", Effects::UI, schema_of::<GroupParams>, group_dock),
     ]
 }
@@ -245,13 +287,7 @@ fn group_restart_all(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         return Err(err);
     }
     if ids.len() > 1 && !p.force {
-        let claude = ctx
-            .state
-            .app
-            .sessions
-            .iter()
-            .filter(|s| ids.contains(&s.id) && crate::launch::is_claude_command(&s.command))
-            .count();
+        let claude = ctx.state.app.sessions.iter().filter(|s| ids.contains(&s.id) && crate::launch::is_claude_command(&s.command)).count();
         let total = i64::try_from(ids.len()).unwrap_or(i64::MAX);
         let name = ctx.state.app.groups.get(gi).map(|g| g.name.clone()).unwrap_or_default();
         let text = csm_core::bulk_restart::build_confirm_text(&format!("Restart all in {name}?"), total, i64::try_from(claude).unwrap_or(0));
@@ -280,16 +316,9 @@ fn group_close_all(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     find_group(ctx.state, &p.group_id)?;
     let ids: Vec<String> = ctx.state.app.sessions.iter().filter(|s| s.group_id == p.group_id).map(|s| s.id.clone()).collect();
     if !p.force {
-        let busy: Vec<String> = ids
-            .iter()
-            .filter_map(|id| lifecycle::busy_reason(ctx.state, id).map(|why| format!("{id} ({why})")))
-            .collect();
+        let busy: Vec<String> = ids.iter().filter_map(|id| lifecycle::busy_reason(ctx.state, id).map(|why| format!("{id} ({why})"))).collect();
         if !busy.is_empty() {
-            return Err(ToolError::Refused(format!(
-                "{} sessions are busy: {}. Pass force: true to close them anyway.",
-                busy.len(),
-                busy.join(", ")
-            )));
+            return Err(ToolError::Refused(format!("{} sessions are busy: {}. Pass force: true to close them anyway.", busy.len(), busy.join(", "))));
         }
     }
     let mut n = 0;

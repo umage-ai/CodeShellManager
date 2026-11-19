@@ -25,21 +25,14 @@ const MAX_MESSAGE_UNITS: usize = 100;
 // either leak its payload into prompt matching or lazily swallow real output up to the next
 // BEL. The `?` in the CSI class covers private-mode sequences (ESC[?25h). Same pattern as
 // OutputIndexer.AnsiPattern in the C# app; keep the two in step.
-static ANSI: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(r"\x1B\[[?0-9;]*[mGKHFJABCDsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]").ok()
-});
+static ANSI: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\x1B\[[?0-9;]*[mGKHFJABCDsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]").ok());
 
 // Claude's prompt (U+276F), generic y/n prompts, and "?" questions.
-static PROMPT: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(r"(?i)(\[y/N\]|\[Y/n\]|\[yes/no\]|\(y/n\)|\(yes/no\)|>\s*$|\x{276f}\s*$|\?\s*\x{203a}|\?\s*$)").ok()
-});
+static PROMPT: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?i)(\[y/N\]|\[Y/n\]|\[yes/no\]|\(y/n\)|\(yes/no\)|>\s*$|\x{276f}\s*$|\?\s*\x{203a}|\?\s*$)").ok());
 
-static APPROVAL: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(Do you want to|Allow|Approve|Bash command|Continue\?|Proceed\?|tool_use|permission)",
-    )
-    .ok()
-});
+static APPROVAL: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?i)(Do you want to|Allow|Approve|Bash command|Continue\?|Proceed\?|tool_use|permission)").ok());
 
 /// Removes ANSI escape sequences (CSI, BEL- or ST-terminated OSC, and `ESC =` / `ESC >`).
 pub fn strip_ansi(raw: &str) -> String {
@@ -133,9 +126,7 @@ impl AlertDetector {
     pub fn notify_user_interacted(&mut self) -> AlertCleared {
         self.alert_fired = false;
         self.deadline_ms = None;
-        AlertCleared {
-            session_id: self.session_id.clone(),
-        }
+        AlertCleared { session_id: self.session_id.clone() }
     }
 
     /// Advances the clock to `now_ms`. If the idle period has elapsed, judges the last line
@@ -173,20 +164,11 @@ impl AlertDetector {
         let message = if utf16_len(&self.last_line) > MAX_MESSAGE_UNITS {
             // C# cuts at 100 UTF-16 units and may leave half a surrogate pair; a Rust string
             // cannot, so a pair straddling the cut is dropped whole (99 units).
-            format!(
-                "{}\u{2026}",
-                prefix_utf16(&self.last_line, MAX_MESSAGE_UNITS)
-            )
+            format!("{}\u{2026}", prefix_utf16(&self.last_line, MAX_MESSAGE_UNITS))
         } else {
             self.last_line.clone()
         };
-        Some(AlertEvent {
-            session_id: self.session_id.clone(),
-            session_name: self.session_name.clone(),
-            message,
-            alert_type,
-            timestamp_ms: now_ms,
-        })
+        Some(AlertEvent { session_id: self.session_id.clone(), session_name: self.session_name.clone(), message, alert_type, timestamp_ms: now_ms })
     }
 }
 
@@ -220,8 +202,7 @@ mod tests {
             "tool_use requested",
             "Grant permission to read",
         ] {
-            let e =
-                alert_for(&format!("{line}\n")).unwrap_or_else(|| panic!("no alert for: {line}"));
+            let e = alert_for(&format!("{line}\n")).unwrap_or_else(|| panic!("no alert for: {line}"));
             assert_eq!(e.alert_type, AlertType::ToolApproval, "{line}");
             assert_eq!(e.session_id, "s1");
             assert_eq!(e.session_name, "session");
@@ -243,8 +224,7 @@ mod tests {
             "Pick an option ? \u{203a}", // "? >" pattern (U+203A)
             "What now?",                 // trailing "?"
         ] {
-            let e =
-                alert_for(&format!("{line}\n")).unwrap_or_else(|| panic!("no alert for: {line}"));
+            let e = alert_for(&format!("{line}\n")).unwrap_or_else(|| panic!("no alert for: {line}"));
             assert_eq!(e.alert_type, AlertType::InputRequired, "{line}");
         }
     }
@@ -260,11 +240,7 @@ mod tests {
 
     #[test]
     fn feed_non_matching_line_does_not_raise_alert() {
-        for line in [
-            "just some regular log output",
-            "Compilation succeeded.",
-            "12 files indexed",
-        ] {
+        for line in ["just some regular log output", "Compilation succeeded.", "12 files indexed"] {
             assert_eq!(alert_for(&format!("{line}\n")), None, "{line}");
         }
     }
@@ -306,12 +282,7 @@ mod tests {
     #[test]
     fn notify_user_interacted_raises_alert_cleared() {
         let mut d = AlertDetector::new("s1", "session");
-        assert_eq!(
-            d.notify_user_interacted(),
-            AlertCleared {
-                session_id: "s1".into()
-            }
-        );
+        assert_eq!(d.notify_user_interacted(), AlertCleared { session_id: "s1".into() });
     }
 
     #[test]
@@ -416,29 +387,19 @@ mod tests {
 
     #[test]
     fn strip_ansi_osc_terminated_with_bel_is_removed() {
-        assert_eq!(
-            strip_ansi(&format!("before {ESC}]0;window title{BEL}after")),
-            "before after"
-        );
+        assert_eq!(strip_ansi(&format!("before {ESC}]0;window title{BEL}after")), "before after");
     }
 
     #[test]
     fn strip_ansi_osc_terminated_with_st_is_removed() {
-        assert_eq!(
-            strip_ansi(&format!(
-                "before {ESC}]9001;color=#a6e3a1;title=demo?{ST}after"
-            )),
-            "before after"
-        );
+        assert_eq!(strip_ansi(&format!("before {ESC}]9001;color=#a6e3a1;title=demo?{ST}after")), "before after");
     }
 
     #[test]
     fn strip_ansi_st_terminated_osc_does_not_swallow_following_output_up_to_a_later_bel() {
         // With a BEL-only regex the lazy match runs from the first OSC through the real text to
         // the BEL that ends the *second* OSC, deleting "Do you want to proceed?".
-        let raw = format!(
-            "{ESC}]9001;git-branch=main{ST}Do you want to proceed?{ESC}]0;window title{BEL}"
-        );
+        let raw = format!("{ESC}]9001;git-branch=main{ST}Do you want to proceed?{ESC}]0;window title{BEL}");
         assert_eq!(strip_ansi(&raw), "Do you want to proceed?");
     }
 
@@ -451,10 +412,7 @@ mod tests {
     fn strip_ansi_removes_the_bundled_conpty_opening_bytes() {
         // OpenConsole opens with ESC[1t ESC[c ESC[?1004h ESC[?9001h; `c` and `t` are in the
         // final-byte class so they do not reach the output.
-        assert_eq!(
-            strip_ansi("\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hhello"),
-            "hello"
-        );
+        assert_eq!(strip_ansi("\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hhello"), "hello");
     }
 
     #[test]
@@ -467,14 +425,7 @@ mod tests {
     #[test]
     fn hostile_output_never_panics() {
         let mut d = AlertDetector::new("s", "n");
-        for chunk in [
-            "\0\0\0",
-            "\u{1F600}".repeat(1000).as_str(),
-            "\x1b[",
-            "\x1b]",
-            "\r\r\r\n\n",
-            "\u{85}\u{2028}",
-        ] {
+        for chunk in ["\0\0\0", "\u{1F600}".repeat(1000).as_str(), "\x1b[", "\x1b]", "\r\r\r\n\n", "\u{85}\u{2028}"] {
             d.feed(chunk, 0);
             let _ = d.poll(IDLE_MS);
         }

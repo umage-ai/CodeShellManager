@@ -72,8 +72,11 @@ impl RemoteBackend {
     /// The newest live instance, started first when allowed.
     fn find_record(&self) -> Result<InstanceRecord, BridgeError> {
         let dir = self.runtime()?;
-        let mut found: Vec<InstanceRecord> =
-            Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().filter(|r| r.app == APP_ID).collect();
+        let mut found: Vec<InstanceRecord> = Discovery::scan(&dir)
+            .map_err(|e| unreachable("could not look for CodeShellManager", &e))?
+            .into_iter()
+            .filter(|r| r.app == APP_ID)
+            .collect();
         found.sort_by_key(|r| r.pid);
         if let Some(r) = found.pop() {
             return Ok(r);
@@ -86,7 +89,9 @@ impl RemoteBackend {
             None => match std::env::var_os(APP_ENV) {
                 Some(p) if !p.is_empty() => PathBuf::from(p),
                 _ => craft_ipc::launch::resolve(APP_ID).map_err(|e| {
-                    BridgeError::Unreachable(format!("cannot find the CodeShellManager app to start ({e}). Set {APP_ENV} or pass --app with its full path."))
+                    BridgeError::Unreachable(format!(
+                        "cannot find the CodeShellManager app to start ({e}). Set {APP_ENV} or pass --app with its full path."
+                    ))
                 })?,
             },
         };
@@ -176,13 +181,16 @@ impl Backend for RemoteBackend {
     fn tools(&mut self) -> Result<Vec<ToolInfo>, BridgeError> {
         let v = self.with(|c| c.call(wire::METHOD_TOOLS, json!({})))?;
         let list = v.get("tools").cloned().unwrap_or(Value::Null);
-        serde_json::from_value(list)
-            .map_err(|e| BridgeError::Unreachable(format!("the app sent a tool list this version of csm cannot read ({e}); update csm and the app together")))
+        serde_json::from_value(list).map_err(|e| {
+            BridgeError::Unreachable(format!("the app sent a tool list this version of csm cannot read ({e}); update csm and the app together"))
+        })
     }
 
     fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError> {
         let started = Instant::now();
-        let submitted = self.with(|c| c.call(wire::METHOD_SUBMIT, json!({"caller": serde_json::to_value(caller).unwrap_or(Value::Null), "tool": tool, "params": params})))?;
+        let submitted = self.with(|c| {
+            c.call(wire::METHOD_SUBMIT, json!({"caller": serde_json::to_value(caller).unwrap_or(Value::Null), "tool": tool, "params": params}))
+        })?;
         let Some(ticket) = submitted.get("ticket").and_then(Value::as_u64) else {
             return Err(BridgeError::Unreachable("the app did not accept the call".to_string()));
         };

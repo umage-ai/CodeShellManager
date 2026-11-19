@@ -142,7 +142,13 @@ fn input_row(ui: &mut Ui, icon_name: &str, buf: &mut String, hint: &str, focus: 
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::PALETTE_INPUT), Sense::hover());
     ui.painter().hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
-    icons::paint(ui, Rect::from_min_size(pos2(rect.min.x + space::MD + space::XXS, rect.center().y - icon::XXL / 2.0), Vec2::splat(icon::XXL)), icon_name, icon::XXL, t.muted);
+    icons::paint(
+        ui,
+        Rect::from_min_size(pos2(rect.min.x + space::MD + space::XXS, rect.center().y - icon::XXL / 2.0), Vec2::splat(icon::XXL)),
+        icon_name,
+        icon::XXL,
+        t.muted,
+    );
     let kw = widgets::kbd_width(ui, "Esc");
     widgets::paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::MD - kw / 2.0, rect.center().y), vec2(kw, size::KBD)), "Esc");
     let er = Rect::from_min_max(pos2(rect.min.x + space::XXL + space::LG, rect.min.y), pos2(rect.max.x - space::XL - kw, rect.max.y));
@@ -232,7 +238,11 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 let label = match row {
                     PalRow::Session { id, idx } => {
                         let Some(s) = model.session(id) else { continue };
-                        ui.painter().rect_filled(Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)), CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+                        ui.painter().rect_filled(
+                            Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
+                            CornerRadius::same(radius::SM / 2),
+                            t.accent(s.accent),
+                        );
                         x += size::STRIPE + space::ROW_X;
                         let job = highlighted(ui, &s.name, idx, t.fg);
                         let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
@@ -240,10 +250,24 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
                         let right_text = if s.status == Status::Asleep { "Asleep · Enter wakes".to_string() } else { s.status_text() };
                         let rw = widgets::text_width(ui, &right_text, theme::regular(text::CAPTION));
-                        let rr = ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, &right_text, theme::regular(text::CAPTION), t.muted);
+                        let rr = ui.painter().text(
+                            pos2(rect.max.x - space::SM, cy),
+                            Align2::RIGHT_CENTER,
+                            &right_text,
+                            theme::regular(text::CAPTION),
+                            t.muted,
+                        );
                         let gr = Rect::from_min_size(pos2(rr.min.x - space::SM - icon::SM, cy - icon::SM / 2.0), Vec2::splat(icon::SM));
                         icons::paint_status(ui, gr, s.status, icon::SM);
-                        widgets::paint_text(ui, pos2(x + gw + space::ROW_X, cy), Align2::LEFT_CENTER, &s.folder, theme::regular(text::CAPTION), t.muted, (gr.min.x - x - gw - space::LG - rw * 0.0).max(0.0));
+                        widgets::paint_text(
+                            ui,
+                            pos2(x + gw + space::ROW_X, cy),
+                            Align2::LEFT_CENTER,
+                            &s.folder,
+                            theme::regular(text::CAPTION),
+                            t.muted,
+                            (gr.min.x - x - gw - space::LG - rw * 0.0).max(0.0),
+                        );
                         s.name.clone()
                     }
                     PalRow::Search(q) => {
@@ -270,7 +294,15 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                             right -= kw + space::SM;
                         }
                         if let Some(spec) = spec {
-                            widgets::paint_text(ui, pos2(x + gw + space::ROW_X, cy), Align2::LEFT_CENTER, spec.summary, theme::regular(text::CAPTION), t.faint, (right - x - gw - space::LG).max(0.0));
+                            widgets::paint_text(
+                                ui,
+                                pos2(x + gw + space::ROW_X, cy),
+                                Align2::LEFT_CENTER,
+                                spec.summary,
+                                theme::regular(text::CAPTION),
+                                t.faint,
+                                (right - x - gw - space::LG).max(0.0),
+                            );
                         }
                         title.to_string()
                     }
@@ -296,7 +328,13 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let r = ui.painter().text(pos2(fx + space::XXS, fy), Align2::LEFT_CENTER, what, theme::regular(text::CAPTION), t.muted);
             fx = r.max.x + space::LG;
         }
-        ui.painter().text(pos2(frect.max.x - space::MD, fy), Align2::RIGHT_CENTER, "Asleep sessions wake when you pick them", theme::regular(text::CAPTION), t.muted);
+        ui.painter().text(
+            pos2(frect.max.x - space::MD, fy),
+            Align2::RIGHT_CENTER,
+            "Asleep sessions wake when you pick them",
+            theme::regular(text::CAPTION),
+            t.muted,
+        );
     });
     app.ui.palette.focus_input = focus;
     if changed {
@@ -442,7 +480,9 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
                 let program = if program == "claude" { "bash".to_string() } else { program };
                 json!({"command": program, "args": args, "kind": "ssh", "group": q.group, "ssh": ssh_params(q)})
             }
-            RemoteKind::Wsl => json!({"command": split_command(&cmd).0, "args": split_command(&cmd).1, "kind": "wsl", "group": q.group, "wsl": wsl_params(q)}),
+            RemoteKind::Wsl => {
+                json!({"command": split_command(&cmd).0, "args": split_command(&cmd).1, "kind": "wsl", "group": q.group, "wsl": wsl_params(q)})
+            }
         };
         out.push(Action::Tool("session_new", params));
         return out;
@@ -530,8 +570,17 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             let accent = model.session(id).map_or(t.blue, |s| t.accent(s.accent));
             let stripe = Rect::from_center_size(pos2(hr.min.x + space::LG + size::STRIPE / 2.0, hr.center().y), vec2(size::STRIPE, space::LG));
             ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), accent);
-            let tr = ui.painter().text(pos2(stripe.max.x + space::SM, hr.center().y), Align2::LEFT_CENTER, "Edit session", theme::semibold(text::BODY), t.fg);
-            let nr = Rect::from_min_max(pos2(tr.max.x + space::LG, hr.min.y + space::XS + space::XXS), pos2(hr.max.x - space::LG, hr.max.y - space::XS - space::XXS));
+            let tr = ui.painter().text(
+                pos2(stripe.max.x + space::SM, hr.center().y),
+                Align2::LEFT_CENTER,
+                "Edit session",
+                theme::semibold(text::BODY),
+                t.fg,
+            );
+            let nr = Rect::from_min_max(
+                pos2(tr.max.x + space::LG, hr.min.y + space::XS + space::XXS),
+                pos2(hr.max.x - space::LG, hr.max.y - space::XS - space::XXS),
+            );
             let name = egui::TextEdit::singleline(&mut q.name)
                 .id(Id::new("quick-name"))
                 .hint_text(egui::RichText::new("Name").color(t.faint))
@@ -563,7 +612,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             ui.add_space(space::XS);
             if rows.is_empty() {
                 ui.add_space(space::LG);
-                ui.vertical_centered(|ui| ui.label(egui::RichText::new(format!("No folder matches. Enter starts in “{}” if it exists.", q.query.trim())).color(t.muted)));
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(format!("No folder matches. Enter starts in “{}” if it exists.", q.query.trim())).color(t.muted))
+                });
                 ui.add_space(space::LG);
             }
             for (i, (fi, idx)) in rows.iter().enumerate() {
@@ -579,22 +630,43 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 }
                 let cy = rect.center().y;
                 let x = rect.min.x + space::SM;
-                icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), if f.recent { "history" } else { "folder" }, icon::LG, t.muted);
+                icons::paint(
+                    ui,
+                    Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)),
+                    if f.recent { "history" } else { "folder" },
+                    icon::LG,
+                    t.muted,
+                );
                 let job = highlighted(ui, &f.name, idx, t.fg);
                 let g = ui.ctx().fonts_mut(|fo| fo.layout_job(job));
                 let gw = g.size().x;
                 let nx = x + icon::LG + space::ROW_X;
                 ui.painter().galley(pos2(nx, cy - g.size().y / 2.0), g, t.fg);
-                let tag = if f.open > 0 { format!("{} open", f.open) } else if f.tag.starts_with("Repo under") { "repo".into() } else { f.tag.clone() };
+                let tag = if f.open > 0 {
+                    format!("{} open", f.open)
+                } else if f.tag.starts_with("Repo under") {
+                    "repo".into()
+                } else {
+                    f.tag.clone()
+                };
                 let tr = ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, &tag, theme::regular(text::CAPTION), t.muted);
                 let mut right = tr.min.x - space::SM;
                 if let Some(b) = &f.branch {
-                    let cw = (widgets::text_width(ui, b, theme::mono(text::MONO_SM)) + icon::XS + space::SM + space::XS).min(size::BRANCH_MAX_W + space::XXL);
+                    let cw = (widgets::text_width(ui, b, theme::mono(text::MONO_SM)) + icon::XS + space::SM + space::XS)
+                        .min(size::BRANCH_MAX_W + space::XXL);
                     let cr = Rect::from_min_size(pos2(right - cw, cy - size::CHIP / 2.0), vec2(cw, size::CHIP));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(cr), |ui| widgets::branch_chip(ui, b, false, 0, cw, false));
                     right = cr.min.x - space::SM;
                 }
-                widgets::paint_text(ui, pos2(nx + gw + space::ROW_X, cy), Align2::LEFT_CENTER, &f.path, theme::mono(text::MONO_SM), t.muted, (right - nx - gw - space::ROW_X).max(0.0));
+                widgets::paint_text(
+                    ui,
+                    pos2(nx + gw + space::ROW_X, cy),
+                    Align2::LEFT_CENTER,
+                    &f.path,
+                    theme::mono(text::MONO_SM),
+                    t.muted,
+                    (right - nx - gw - space::ROW_X).max(0.0),
+                );
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Folder: {}", f.name)));
                 if r.clicked() {
                     if q.edit.is_some() {
@@ -645,7 +717,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                     }
                     if q.edit.is_none() {
                         let gname = q.group.as_deref().and_then(|g| model.group(g)).map_or_else(|| "Ungrouped".to_string(), |g| g.name.clone());
-                        let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None).on_hover_text("Group: suggested from the scope; pick another");
+                        let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None)
+                            .on_hover_text("Group: suggested from the scope; pick another");
                         if gr.clicked() {
                             open_group_menu = Some(gr.rect.left_bottom());
                         }
@@ -735,10 +808,22 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         }
         let tail = if q.edit.is_some() { "A new folder, command or connection needs a restart" } else { "Repos are found under your roots" };
         let save_w = if q.edit.is_some() { widgets::text_width(ui, "Save", theme::medium(text::BODY)) + space::ROW_X * 2.0 } else { 0.0 };
-        widgets::paint_text(ui, pos2(frect.max.x - space::MD - save_w - if save_w > 0.0 { space::SM } else { 0.0 }, fy), Align2::RIGHT_CENTER, tail, theme::regular(text::CAPTION), t.muted, (frect.max.x - fx - save_w - space::XL).max(0.0));
+        widgets::paint_text(
+            ui,
+            pos2(frect.max.x - space::MD - save_w - if save_w > 0.0 { space::SM } else { 0.0 }, fy),
+            Align2::RIGHT_CENTER,
+            tail,
+            theme::regular(text::CAPTION),
+            t.muted,
+            (frect.max.x - fx - save_w - space::XL).max(0.0),
+        );
         if q.edit.is_some() {
             let br = Rect::from_min_size(pos2(frect.max.x - space::MD - save_w, fy - size::CONTROL / 2.0), vec2(save_w, size::CONTROL));
-            if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Primary, None, "Save", None)).inner.clicked() {
+            if ui
+                .scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Primary, None, "Save", None))
+                .inner
+                .clicked()
+            {
                 save_clicked = true;
             }
         }
