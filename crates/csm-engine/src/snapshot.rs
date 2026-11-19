@@ -40,6 +40,9 @@ pub struct SessionView {
     pub group_id: String,
     /// `#rrggbb` (or an OSC 9001 override).
     pub accent: String,
+    /// The accent was pushed by the program (OSC 9001); `session_accent_reset` goes back to the
+    /// folder's colour.
+    pub accent_override: bool,
     pub status: Status,
     /// One word for `status`.
     pub status_label: &'static str,
@@ -170,6 +173,7 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         command: s.command.clone(),
         group_id: s.group_id.clone(),
         accent,
+        accent_override: s.color_override.is_some(),
         status: st,
         status_label: st.label(),
         progress,

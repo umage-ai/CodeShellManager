@@ -172,6 +172,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: session_status_clear,
         },
         ToolSpec {
+            id: "session_accent_reset",
+            title: "Reset accent colour",
+            summary: "Forget the accent colour a program pushed with OSC 9001; the session goes back to its folder's colour.",
+            toolset: Toolset::Core,
+            effects: Effects::MUTATES_STATE.union(Effects::IDEMPOTENT),
+            input_schema: schema_of::<IdParams>,
+            run: session_accent_reset,
+        },
+        ToolSpec {
             id: "inbox_list",
             title: "Needs you",
             summary: "Sessions waiting for you (oldest first), then finished or failed turns you have not seen.",
@@ -597,6 +606,17 @@ struct CloseParams {
     /// Close even when it is busy (working, waiting mid-task, or printing).
     #[serde(default)]
     force: bool,
+}
+
+fn session_accent_reset(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: IdParams = parse_params(params)?;
+    let i = find(ctx.state, &p.session_id)?;
+    let Some(s) = ctx.state.app.sessions.get_mut(i) else { return Err(ToolError::NotFound("gone".into())) };
+    let had = s.color_override.take().is_some();
+    let name = s.name.clone();
+    ctx.state.persist();
+    let msg = if had { format!("{name} is back to its folder's colour.") } else { format!("{name} already uses its folder's colour.") };
+    Ok(ToolOutput::new(msg, json!({"session_id": p.session_id, "changed": had})))
 }
 
 fn session_close(ctx: &mut Ctx<'_>, params: Value) -> Reply {

@@ -38,11 +38,21 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "app_quit",
             "Quit",
-            "Close every session (Claude ones get time to exit cleanly), save, then signal the app to exit. Sessions restore next time.",
+            "Close every session (Claude ones get time to exit cleanly), save, then signal the app to exit. Sessions restore next time. force: true skips the exit waits (also while a quit is already running).",
             Toolset::App,
             Effects::MAY_DISCARD_DATA,
-            empty_schema,
+            schema_of::<QuitParams>,
             app_quit,
+        ),
+        t("grant_list", "MCP grants", "Clients allowed to call a tool without asking (\"Always for this client\" on a consent card).", Toolset::App, Effects::READ_ONLY, empty_schema, grant_list),
+        t(
+            "grant_revoke",
+            "Revoke an MCP grant",
+            "Make a client ask again before calling a tool (or, without `tool`, before calling any tool).",
+            Toolset::App,
+            Effects::MUTATES_STATE.union(Effects::IDEMPOTENT),
+            schema_of::<RevokeParams>,
+            grant_revoke,
         ),
         t("toolset_enable", "Enable toolset", "Offer a toolset's tools to this MCP client (core is always on).", Toolset::Core, Effects::IDEMPOTENT, schema_of::<ToolsetParams>, toolset_switch),
         t("toolset_disable", "Disable toolset", "Stop offering a toolset's tools to this MCP client.", Toolset::Core, Effects::IDEMPOTENT, schema_of::<ToolsetParams>, toolset_switch),
@@ -242,14 +252,51 @@ fn merge(ctx: &mut Ctx<'_>, mut imported: csm_core::models::AppState) -> ToolOut
     )
 }
 
-fn app_quit(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+#[serde(default, deny_unknown_fields)]
+struct QuitParams {
+    /// Stop waiting for sessions to exit on their own: everything still running is stopped now.
+    /// Also works while a quit is already running (the shutdown board's "Force close now").
+    force: bool,
+}
+
+fn app_quit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: QuitParams = if params.is_null() { QuitParams::default() } else { parse_params(params)? };
     if matches!(ctx.caller, Caller::External { .. }) {
         // Allowed (it needs consent), but say what happens.
         log::info!("quit requested by an MCP client");
     }
     let reply = ctx.park();
-    lifecycle::quit(ctx, reply);
+    lifecycle::quit(ctx, p.force, reply);
     Ok(ToolOutput::message("Quitting."))
+}
+
+fn grant_list(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    let list: Vec<Value> = ctx.state.app.mcp_grants.iter().map(|g| json!({"client": g.client, "tool": g.tool})).collect();
+    Ok(ToolOutput::new(format!("{} grants", list.len()), json!(list)))
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RevokeParams {
+    /// The client name, as `grant_list` shows it.
+    client: String,
+    /// One tool id; omit to revoke every grant this client has.
+    #[serde(default)]
+    tool: Option<String>,
+}
+
+fn grant_revoke(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: RevokeParams = parse_params(params)?;
+    let before = ctx.state.app.mcp_grants.len();
+    ctx.state.app.mcp_grants.retain(|g| !(g.client == p.client && p.tool.as_ref().is_none_or(|t| &g.tool == t)));
+    let removed = before - ctx.state.app.mcp_grants.len();
+    if removed > 0 {
+        ctx.state.persist();
+    }
+    let what = p.tool.as_deref().map_or_else(|| "any tool".to_string(), |t| format!("`{t}`"));
+    let msg = if removed == 0 { format!("{} had no grant for {what}.", p.client) } else { format!("{} asks again before calling {what}.", p.client) };
+    Ok(ToolOutput::new(msg, json!({"client": p.client, "tool": p.tool, "removed": removed})))
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

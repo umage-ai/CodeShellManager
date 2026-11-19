@@ -119,6 +119,8 @@ pub(crate) struct Runtime {
     pub restart_cancel: bool,
     pub shutting_down: bool,
     pub quit: Option<Progress>,
+    /// `app_quit { force: true }` while a quit runs: skip the remaining Claude exit waits.
+    pub quit_force: Arc<std::sync::atomic::AtomicBool>,
     pub waits: Vec<Wait>,
     /// When the session entered the inbox (epoch ms), for "oldest first".
     pub inbox_since: HashMap<String, i64>,

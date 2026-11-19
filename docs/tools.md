@@ -80,6 +80,7 @@ Status: ✅ built · 🚧 in progress · ⬜ planned. Params in brief; the schem
 | `inbox_list` ✅ | | read | sessions that need you, oldest first, plus unseen done/error |
 | `inbox_next` ✅ | | ui | focus the next one (Ctrl+J) |
 | `session_status_clear` ✅ | session_id | state | "Clear status" |
+| `session_accent_reset` ✅ | session_id | state | "Reset accent colour": forget an OSC 9001 colour |
 | `toolset_enable` / `toolset_disable` ✅ | toolset | (MCP only) | |
 
 ### groups
@@ -95,7 +96,7 @@ whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group v
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
 `inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
 
-### Not built yet (runs, git, notes, search, `open_folder`, `open_with`, `grant_list` / `grant_revoke`)
+### Not built yet (runs, git, notes, search, `open_folder`, `open_with`)
 
 The app registers these ids with their real params and effects, as **stand-ins that validate the
 params and then refuse with "This isn't built yet"** (`csm-ui`'s `demo::tools::stand_ins`), so
@@ -117,11 +118,13 @@ versions instead, applied to the demo's own model.
 `note_get` / `note_set` (folder or session_id), `search_output` (query, limit), `search_notes`.
 
 ### app
-✅ `app_info`, `settings_get/set`, `recently_closed_list`, `state_import_wpf`, `app_quit`; ⬜ the rest.
+✅ `app_info`, `settings_get/set`, `recently_closed_list`, `state_import_wpf`, `app_quit` (force?), `grant_list` / `grant_revoke`; ⬜ the rest.
 `app_info` (version, ConPTY in use, paths), `settings_get` / `settings_set` (key, value),
 `recently_closed_list`, `open_folder` (session_id), `open_with` (session_id, entry?),
 `consent_list` ✅, `consent_answer` ✅ (UI only), `grant_list` / `grant_revoke`,
-`state_import_wpf` (path to the old `state.json`), `app_quit`.
+`state_import_wpf` (path to the old `state.json`), `app_quit` (`force: true` skips the remaining exit
+waits, also while a quit already runs: the shutdown board's "Force close now"). Grants are kept in
+`state.json` (`McpGrants`); `grant_revoke` takes `client` and an optional `tool` (none = all).
 
 ## Exposing CSM to Claude sessions
 

@@ -34,6 +34,7 @@ fn not_built<P: DeserializeOwned>(_: &mut Ctx<'_>, v: Value) -> Reply {
     Err(csm_engine::ToolError::Failed(NOT_BUILT.into()))
 }
 
+#[allow(dead_code)] // for no-param stand-ins
 fn not_built_none(_: &mut Ctx<'_>, _: Value) -> Reply {
     Err(csm_engine::ToolError::Failed(NOT_BUILT.into()))
 }
@@ -41,6 +42,7 @@ fn not_built_none(_: &mut Ctx<'_>, _: Value) -> Reply {
 /// What a stand-in answers in the real app.
 pub const NOT_BUILT: &str = "This isn't built yet in this version of CodeShellManager.";
 
+#[allow(dead_code)] // for no-param stand-ins
 fn none(_: &mut Ctx<'_>, v: Value) -> Reply {
     if v.as_object().is_some_and(|o| !o.is_empty()) {
         return Err(csm_engine::ToolError::InvalidParams("this tool takes no params".into()));
@@ -438,13 +440,6 @@ pub struct OpenWithParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct GrantRevokeParams {
-    pub client: String,
-    pub tool: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ImportParams {
     pub path: String,
 }
@@ -489,6 +484,7 @@ fn with<P: DeserializeOwned + Serialize + JsonSchema>(how: StandIn) -> Pair {
     (schema_of::<P>, if how == StandIn::Echo { echo::<P> } else { not_built::<P> })
 }
 
+#[allow(dead_code)] // for no-param stand-ins
 fn no_params(how: StandIn) -> Pair {
     (empty_schema, if how == StandIn::Echo { none } else { not_built_none })
 }
@@ -529,8 +525,6 @@ pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
         // app
         spec("open_folder", "Open folder", "Open the session's folder in the file manager.", App, Effects::LAUNCHES_PROCESS, sid),
         spec("open_with", "Open with…", "Open the session's folder in an editor from the Open with list.", App, Effects::LAUNCHES_PROCESS, with::<OpenWithParams>(how)),
-        spec("grant_list", "MCP grants", "Clients allowed to call tools without asking.", App, READ, no_params(how)),
-        spec("grant_revoke", "Revoke an MCP grant", "Make a client ask again before calling a tool.", App, STATE, with::<GrantRevokeParams>(how)),
     ]
 }
 

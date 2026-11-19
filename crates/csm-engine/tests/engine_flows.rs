@@ -589,11 +589,94 @@ fn every_tool_has_an_object_schema_and_the_catalogue_is_complete() {
         "group_list", "group_new", "group_rename", "group_delete", "session_move_to_group", "group_restart_all",
         "group_sleep_all", "group_close_all", "group_tear_off", "group_dock", "view_get", "view_set", "layout_get",
         "layout_set", "layout_pin", "layout_unpin", "inspector_show", "inbox_panel_set", "recently_closed_list", "app_info",
-        "settings_get", "settings_set", "toolset_enable", "toolset_disable", "state_import_wpf", "app_quit",
+        "settings_get", "settings_set", "toolset_enable", "toolset_disable", "state_import_wpf", "app_quit", "grant_list", "grant_revoke", "session_accent_reset",
     ] {
         assert!(ids.contains(&want), "missing {want}");
     }
     for s in h.engine.registry().all() {
         assert_eq!((s.input_schema)()["type"], "object", "{}", s.id);
     }
+}
+
+#[test]
+fn force_quit_stops_waiting_for_a_wedged_claude() {
+    let h = H::start(test_app(), |o| o.shutdown_budget = Duration::from_secs(30));
+    let _a = h.session("claude");
+    h.pty(0).exit_on_close.store(false, Ordering::SeqCst);
+    let events = h.engine.subscribe();
+    let t0 = Instant::now();
+    // The reply comes when the quit is done, so don't wait for it here.
+    let first = h.engine.submit(Caller::Ui, "app_quit", json!({}));
+    // The quit is waiting on the wedged Claude: a second plain quit is refused, a forced one
+    // cuts the wait short.
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(matches!(h.ui("app_quit", json!({})), Err(ToolError::Refused(_))));
+    h.ok("app_quit", json!({"force": true}));
+    let mut ready = false;
+    let mut forced = false;
+    while let Ok(e) = events.recv_timeout(Duration::from_secs(5)) {
+        match e {
+            Event::QuitProgress { phase, .. } if phase == "forced" => forced = true,
+            Event::QuitReady => {
+                ready = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(ready && forced, "ready {ready}, forced {forced}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "force must not wait out the 30 s budget: {:?}", t0.elapsed());
+    assert!(csm_pty::Pty::has_exited(h.pty(0).as_ref()));
+    first.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+}
+
+#[test]
+fn grants_persist_and_can_be_revoked() {
+    let h = H::new();
+    let id = h.session("pwsh");
+    let events = h.engine.subscribe();
+    let rx = h.engine.submit(ext(None), "session_read_screen", json!({"session_id": id}));
+    let request = loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            Ok(Event::ConsentRequested { request }) => break request,
+            Ok(_) => continue,
+            other => panic!("expected a consent request, got {other:?}"),
+        }
+    };
+    h.ok("consent_answer", json!({"request_id": request["request_id"], "answer": "allow_always"}));
+    rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    let list = h.ok("grant_list", json!({}));
+    assert_eq!(list.data, json!([{"client": "test-mcp", "tool": "session_read_screen"}]));
+    // Granted: runs without a card. The grant is part of the persisted state.
+    assert!(h.engine.call(ext(None), "session_read_screen", json!({"session_id": id})).is_ok());
+    let saved = h.ok("settings_get", json!({}));
+    assert!(saved.data.get("McpGrants").is_none(), "grants are not settings");
+    let out = h.ok("grant_revoke", json!({"client": "test-mcp", "tool": "session_read_screen"}));
+    assert_eq!(out.data["removed"], 1);
+    assert_eq!(h.ok("grant_list", json!({})).data, json!([]));
+    let r = h.engine.submit(ext(None), "session_read_screen", json!({"session_id": id}));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(r.try_recv().is_err(), "revoked: asks again");
+    // Round trip through state.json.
+    let mut app = AppState::default();
+    app.mcp_grants.push(csm_core::models::McpGrant { client: "c".into(), tool: "t".into() });
+    let back: AppState = serde_json::from_str(&app.to_json().unwrap()).unwrap();
+    assert_eq!(back.mcp_grants, app.mcp_grants);
+    assert!(!AppState::default().to_json().unwrap().contains("McpGrants"), "absent when empty (WPF files stay clean)");
+}
+
+#[test]
+fn an_osc_9001_accent_can_be_reset() {
+    let h = H::new();
+    let id = h.session("pwsh");
+    let folder_colour = h.engine.view().session(&id).unwrap().accent.clone();
+    h.pty(0).emit(b"]9001;color=#112233\\");
+    let v = h.wait_until("accent pushed", |v| v.session(&id).is_some_and(|s| s.accent_override));
+    assert_eq!(v.session(&id).unwrap().accent, "#112233");
+    let out = h.ok("session_accent_reset", json!({"session_id": id}));
+    assert_eq!(out.data["changed"], true);
+    let v = h.engine.view();
+    assert!(!v.session(&id).unwrap().accent_override);
+    assert_eq!(v.session(&id).unwrap().accent, folder_colour);
+    assert_eq!(h.ok("session_accent_reset", json!({"session_id": id})).data["changed"], false);
 }
