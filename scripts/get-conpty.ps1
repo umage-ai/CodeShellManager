@@ -51,6 +51,9 @@ foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
         Remove-Item $p -Force
         throw "$f is not validly Microsoft-signed ($($sig.Status)); removed"
     }
+    # Copy-Item and zip extraction keep the file's original (old) timestamp, which cargo reads as
+    # "unchanged since the last build" and so never reruns build.rs to copy it beside the exe.
+    (Get-Item $p).LastWriteTime = Get-Date
     Write-Host "ok  $p  ($($sig.SignerCertificate.Subject.Split(',')[0]))"
 }
-Write-Host "Next: cargo build -p term-spike  (build.rs copies these beside the exe)"
+Write-Host "Next: cargo build -p codeshell  (its build.rs, like term-spike's, copies these beside the exe)"
