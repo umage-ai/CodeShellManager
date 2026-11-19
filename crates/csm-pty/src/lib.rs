@@ -113,6 +113,13 @@ pub trait Pty: Send + Sync {
     fn exit_code(&self) -> Option<i32>;
     /// Kills the whole process tree. Output already produced can still be read.
     fn kill(&self);
+    /// Asks the program to end gracefully: the Windows pseudo console is closed (attached
+    /// processes get `CTRL_CLOSE_EVENT`, as a closed console window would send), on Unix the
+    /// process group gets `SIGHUP`. Never blocks; wait for [`Pty::has_exited`] and fall back to
+    /// [`Pty::kill`]. The default is a kill, for implementations with no gentler way.
+    fn close(&self) {
+        self.kill();
+    }
     fn backend(&self) -> Backend;
     fn pid(&self) -> Option<u32>;
 }

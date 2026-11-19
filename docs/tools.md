@@ -63,32 +63,32 @@ Status: ✅ built · 🚧 in progress · ⬜ planned. Params in brief; the schem
 | id | params | effects | what |
 |---|---|---|---|
 | `tool_list` ✅ | toolset? | read | every tool |
-| `session_list` | group?, status?, include_asleep? | read | id, name, kind, folder, group, status, branch, live/asleep |
-| `session_get` | session_id | read | one session in full, incl. program-status records |
-| `session_new` | folder, command?, name?, group?, kind (local/ssh/wsl)?, ssh{user,host,port,remote_folder}?, wsl{distro,user,folder}?, focus? | launch, state | open a session (the quick-open and the "New session" panel call this) |
-| `session_focus` | session_id | ui | focus it (switches the rail tab; wakes if asleep → `session_wake`) |
-| `session_rename` | session_id, name | state | |
-| `session_edit` | session_id, draft fields… | state (+launch if restart) | apply a `SessionConfigDraft`; `restart: bool` |
-| `session_close` | session_id, force? | discard, state | refuses a busy session without `force`; pushes to recently closed |
-| `session_sleep` / `session_wake` | session_id | discard / launch | |
-| `session_restart` | session_id | discard, launch | waits for exit; guarded against restore/bulk restart |
-| `session_reopen_closed` | index? | launch | Ctrl+Shift+T |
-| `session_send_text` | session_id, text, submit? , force? | input | bracketed paste; refuses self and mid-turn |
-| `session_read_screen` | session_id | read content | the visible screen as text |
-| `session_read_output` | session_id, lines? (≤2000) | read content | tail of scrollback, ANSI-stripped |
-| `session_wait` | session_id, until (idle/done/needs_you/exit/any_change), timeout_s (≤600) | read | completes when the status reaches it; for orchestration |
-| `inbox_list` | | read | sessions that need you, oldest first, plus unseen done/error |
-| `inbox_next` | | ui | focus the next one (Ctrl+J) |
-| `session_status_clear` | session_id | state | "Clear status" |
-| `toolset_enable` / `toolset_disable` | toolset | (MCP only) | |
+| `session_list` ✅ | group?, status?, include_asleep? | read | id, name, kind, folder, group, status, branch, live/asleep |
+| `session_get` ✅ | session_id | read | one session in full, incl. program-status records |
+| `session_new` ✅ | folder, command?, name?, group?, kind (local/ssh/wsl)?, ssh{user,host,port,remote_folder}?, wsl{distro,user,folder}?, focus? | launch, state | open a session (the quick-open and the "New session" panel call this) |
+| `session_focus` ✅ | session_id | ui | focus it (switches the rail tab; wakes if asleep → `session_wake`) |
+| `session_rename` ✅ | session_id, name | state | |
+| `session_edit` ✅ | session_id, draft fields… | state (+launch if restart) | apply a `SessionConfigDraft`; `restart: bool` |
+| `session_close` ✅ | session_id, force? | discard, state | refuses a busy session without `force`; pushes to recently closed |
+| `session_sleep` / `session_wake` ✅ | session_id | discard / launch | |
+| `session_restart` ✅ | session_id | discard, launch | waits for exit; guarded against restore/bulk restart |
+| `session_reopen_closed` ✅ | index? | launch | Ctrl+Shift+T |
+| `session_send_text` ✅ | session_id, text, submit? , force? | input | bracketed paste; refuses self and mid-turn |
+| `session_read_screen` ✅ | session_id | read content | the visible screen as text |
+| `session_read_output` ✅ | session_id, lines? (≤2000) | read content | tail of scrollback, ANSI-stripped |
+| `session_wait` ✅ | session_id, until (idle/done/needs_you/exit/any_change), timeout_s (≤600) | read | completes when the status reaches it; for orchestration |
+| `inbox_list` ✅ | | read | sessions that need you, oldest first, plus unseen done/error |
+| `inbox_next` ✅ | | ui | focus the next one (Ctrl+J) |
+| `session_status_clear` ✅ | session_id | state | "Clear status" |
+| `toolset_enable` / `toolset_disable` ✅ | toolset | (MCP only) | |
 
 ### groups
-`group_list`, `group_new` (name), `group_rename`, `group_delete` (sessions → Ungrouped),
+All ✅, plus `group_move` (index) and `group_collapse` (collapsed). `group_list`, `group_new` (name), `group_rename`, `group_delete` (sessions → Ungrouped),
 `session_move_to_group` (session_id, group_id|null, before?/after? anchor), `group_restart_all`
 (confirm via `force`), `group_sleep_all`, `group_close_all` (force), `group_tear_off` / `group_dock`.
 
 ### layout
-`view_get`, `view_set` (group view: rail/headers/flat; rail tab), `layout_get` (group),
+✅ except `pane_float` / `pane_dock` / `pane_tear_off` (UI-side for now). `view_get`, `view_set` (group view: rail/headers/flat; rail tab), `layout_get` (group),
 `layout_set` (group, mode focus/side/overview/grid/free, grid preset or cols×rows),
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
 `inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
@@ -106,6 +106,7 @@ Status: ✅ built · 🚧 in progress · ⬜ planned. Params in brief; the schem
 `note_get` / `note_set` (folder or session_id), `search_output` (query, limit), `search_notes`.
 
 ### app
+✅ `app_info`, `settings_get/set`, `recently_closed_list`, `state_import_wpf`, `app_quit`; ⬜ the rest.
 `app_info` (version, ConPTY in use, paths), `settings_get` / `settings_set` (key, value),
 `recently_closed_list`, `open_folder` (session_id), `open_with` (session_id, entry?),
 `consent_list` ✅, `consent_answer` ✅ (UI only), `grant_list` / `grant_revoke`,

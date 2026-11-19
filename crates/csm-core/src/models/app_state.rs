@@ -9,6 +9,7 @@ use super::open_with::OpenWithEntry;
 use super::recently_closed::RecentlyClosedEntry;
 use super::serde_util::{null_default as nd, numeric_enum, ser_f64};
 use super::session::ShellSession;
+use super::ui_state::{UiState, lenient};
 
 numeric_enum! {
     /// How the sidebar surfaces session groups.
@@ -250,6 +251,19 @@ pub struct AppState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_placement: Option<WindowPlacementState>,
     pub window_maximized: bool,
+
+    /// The Rust app's own UI memory (rail tab, layouts per group, panels). Absent in WPF files;
+    /// read leniently so a bad value never costs the sessions.
+    #[serde(
+        deserialize_with = "lenient",
+        skip_serializing_if = "UiState::is_default"
+    )]
+    pub ui: UiState,
+
+    /// Version of the Rust app's file format; absent in files the WPF app wrote. The Rust app
+    /// stamps it on every save.
+    #[serde(rename = "CsmRsVersion", skip_serializing_if = "Option::is_none")]
+    pub csm_rs_version: Option<u32>,
 }
 
 fn nd_settings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<AppSettings, D::Error> {
@@ -269,6 +283,8 @@ impl Default for AppState {
             last_normal_bounds: None,
             last_placement: None,
             window_maximized: false,
+            ui: UiState::default(),
+            csm_rs_version: None,
         }
     }
 }
@@ -330,5 +346,10 @@ mod tests {
         assert!(!s.open_with_seeded && s.use_bundled_con_pty);
         let st: AppState = serde_json::from_str("{}").unwrap();
         assert_eq!(st.last_layout, "Single");
+        // A malformed Ui key never costs the rest of the file.
+        let st: AppState =
+            serde_json::from_str(r#"{"Ui": {"Layouts": 7}, "Sessions": [{"Id": "a"}]}"#).unwrap();
+        assert_eq!(st.sessions.len(), 1);
+        assert!(st.ui.layouts.is_empty());
     }
 }

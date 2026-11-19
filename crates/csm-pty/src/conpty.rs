@@ -605,6 +605,17 @@ impl Pty for WinPty {
         self.kill_tree();
     }
 
+    fn close(&self) {
+        // ClosePseudoConsole can block until the reader drains the output pipe, so it runs on
+        // its own thread (as in Drop). Closing twice is harmless: the HPCON is taken once.
+        let pcon = self.pcon.clone();
+        let spawned = std::thread::Builder::new().name(format!("pty-close-{}", self.pid)).spawn(move || pcon.close());
+        if let Err(e) = spawned {
+            log::warn!("PTY close thread failed to start ({e}); killing instead");
+            self.kill_tree();
+        }
+    }
+
     fn backend(&self) -> Backend {
         self.pcon.api.kind
     }
