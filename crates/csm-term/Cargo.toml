@@ -1,0 +1,16 @@
+[package]
+name = "csm-term"
+description = "Terminal emulation (alacritty_terminal) with an OSC tap for 9001 / 7501 / 133 / 7"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alacritty_terminal = "0.26"
+vte = "0.15"
+log = "0.4"
