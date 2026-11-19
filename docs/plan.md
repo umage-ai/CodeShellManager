@@ -37,8 +37,11 @@ There are two ways it could help. Only the second one is worth doing.
 | Finding Claude Code, `claude auth status`, cost parsing | `crates/ai/src/cli_agents` | small reuse |
 | i18n | `craft-libs/craft-i18n` | optional, later |
 
-Pinning: craft-libs consumers use git tags (`tag = "v0.1.0"`). Pin each dependency to a commit,
-since the libraries are young and change quickly.
+Pinning (corrected 2026-11-19, see section 7): the only craft-libs release, `v0.1.0` (egui 0.36),
+contains just ui, settings, quit, atomic and print. Everything newer (mcp-server, ipc, control,
+keymap, menu, window, update's egui UI) is on `main`, which is on **egui 0.37 with patched egui
+forks**. One commit pin for every craft-libs dependency; egui-free crates only until the egui
+decision in section 7 is made.
 
 ### What the Craft ecosystem does not have: an interactive terminal widget
 
@@ -286,3 +289,70 @@ the stack holds.
    safe-only rule holds everywhere else.
 5. **Redesign review:** Morten and Allan go through the mock-ups before Phase 3. Mock-ups are
    published as a private page.
+
+## 7. From the Craft ecosystem (survey, 2026-11-19)
+
+A read-only survey of craft-libs, craft-anything and the suite docs. Adopted items are marked
+with the phase they land in.
+
+### Decisions needed
+1. **egui 0.36 or 0.37.** craft-libs `main` (where mcp-server, ipc, control, keymap, menu, window
+   and update live) is on egui 0.37 with storytold's egui forks patched in. A `[patch]` in a
+   dependency's workspace does not apply to us, so taking its egui-using crates means moving to
+   0.37 and to the same forks. **Recommendation: move to 0.37 + the forks at the start of
+   Phase 3** (the UI work), once the suite rollout (`craft-libs/docs/egui-037-suite-rollout.md`)
+   settles; until then use only egui-free craft-libs crates and copy egui code with attribution.
+2. **Is CodeShellManager a "Craft app"?** The suite house rules ban Tauri/webview shells for
+   native Craft apps, which conflicts with the Phase 0 Tauri fallback. If CSM stays a umage
+   product that only *uses* craft-libs, the fallback stands.
+
+### Crates (egui-free unless noted)
+| Crate | Use | Phase |
+|---|---|---|
+| `craft-mcp-server`, `craft-ipc` | `csm mcp` and CLI → app bridge. ipc's Windows named-pipe path has never run on Windows: our tests are its first run; `craft-control` (loopback TCP + per-launch token) is the fallback | 1–2 (in progress) |
+| `craft-dialogs` | Folder/file pickers that never block the event loop (a blocking rfd dialog aborts the app on macOS) | 3 |
+| `craft-update` | Release check, verified download, self-update; leaves the update to winget/choco/scoop when they own the install. Core is egui-free; its dialogs are egui 0.37 | 4 |
+| `craft-platform` (`appearance`) | Follow the Linux/BSD desktop dark/light preference | 4 |
+
+### Patterns to copy (craft-anything, MIT/Apache)
+- **Graphics start-up fallback** (`apps/craft-anything/src/start_guard.rs`, `renderer.rs`): a mark
+  file around the first frames to detect a driver crash on the previous start; renderer chain
+  DX12 → WARP → Vulkan → GL saved per app version (DX12 only first on Windows); `WGPU_*`
+  overrides; `desktop.log`. Phase 3.
+- **Pitfalls** (`docs/pitfalls.md`): image paste (egui-winit drops Ctrl+V when the clipboard has
+  no text, so pass the raw key through to the PTY or pasting a screenshot into Claude Code does
+  nothing); per-frame repaint from spinners; `scroll_to_me` every frame; `CREATE_NO_WINDOW` for
+  every child process; `.cmd` shims and the macOS Dock PATH when finding `claude` (`which.rs`).
+  Passed to the engine and UI agents.
+- **Settings location**: `--config-dir`, then `CSM_CONFIG_DIR` (set but empty means isolated),
+  then a `portable` marker beside the exe, then the platform data dir; caches and the search
+  index in local (non-roaming) app data; a version field in every persisted file. Phase 1
+  (in progress).
+- **Crash recovery records** (`cli_agents/unfinished.rs`): OS-file-locked records swept on the next
+  start; for sessions that were mid-restart or mid-shutdown when the app died. Phase 2.
+- **Deadlock-reporting mutex** (`platform/src/sync.rs`), enforced by clippy `disallowed-types`
+  for `std::sync::Mutex`. Phase 1.
+
+### Dev tooling (adopt in Phase 1)
+- `cargo xtask`: `layers` (crate dependencies against the L0–L4 map), source policy via `syn`
+  (`std::process::Command` only in the process module, no I/O or spawning in UI code, which
+  enforces "never block the UI"), `tools --check` (generated `docs/tools.md` catalogue in sync
+  with the registry), `secrets` + a pre-commit hook, `ci` running all of them.
+- CI with `-D warnings`; the production crate roots `#![deny(clippy::unwrap_used,
+  expect_used, panic, unimplemented, todo, unreachable)]` as the suite does (today they are only
+  workspace warnings). Record the ConPTY module as the named `unsafe` exception.
+- `cargo-deny` (licence allowlist, check alacritty_terminal and the font stack) and
+  `cargo-about` (third-party licence file for the MSI).
+- Suite `rustfmt.toml` (`max_width = 160`, `use_small_heuristics = "Max"`).
+- `artcraft/scripts/mcp-probe.py` to measure `csm mcp` tool definitions per toolset.
+
+### Agent integration (Phase 2)
+- `csm setup [--dry-run]` / `csm doctor` / `csm uninstall` after craft-anything's `crates/setup`.
+  `setup` detects Claude Code (honouring `CLAUDE_CONFIG_DIR`), Codex and others, and merges
+  `csm mcp` into their config without losing comments, with backup, verification and rollback.
+  `doctor` gives a remedy for each failed check and self-tests the MCP server (spawn,
+  initialize, tools/list). This complements the per-session `--mcp-config` opt-in.
+- Suite CLI conventions: `csm commands`, `csm mcp --compact`, folder limits
+  (`--automation-read-root` / `--automation-write-root`).
+- Note: Claude Code's `--permission-prompt-tool` only applies to headless `-p` runs, not to our
+  interactive sessions; "Needs you" stays on OSC 7501 plus the heuristic.
