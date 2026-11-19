@@ -12,7 +12,7 @@ use egui::{CentralPanel, Frame, Id, Panel, Rect, Sense, ViewportBuilder, Viewpor
 use crate::pane::{Pane, Placement};
 use crate::perf::{Perf, Sample};
 use crate::theme;
-use crate::view::{PaneAction, Shared, pane_ui};
+use crate::view::{FrameCounters, PaneAction, Shared, pane_ui};
 
 pub struct Config {
     pub panes: usize,
@@ -22,6 +22,7 @@ pub struct Config {
     pub bench: Option<Duration>,
     pub cwd: Option<PathBuf>,
     pub conpty: String,
+    pub spin: bool,
 }
 
 pub struct SpikeApp {
@@ -35,6 +36,7 @@ pub struct SpikeApp {
     conpty: String,
     last_bytes: (Instant, u64),
     ingest_mb_s: f32,
+    spin: bool,
 }
 
 impl SpikeApp {
@@ -62,6 +64,7 @@ impl SpikeApp {
             conpty: cfg.conpty,
             last_bytes: (now, 0),
             ingest_mb_s: 0.0,
+            spin: cfg.spin,
         }
     }
 
@@ -111,14 +114,23 @@ fn grid_cells(area: Rect, n: usize) -> Vec<Rect> {
 }
 
 impl eframe::App for SpikeApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let t0 = Instant::now();
-        self.shared.frame = Default::default();
+        self.shared.frame = FrameCounters {
+            prev_frame_cpu_ms: frame.info().cpu_usage.unwrap_or(0.0) * 1000.0,
+            ..Default::default()
+        };
         let ctx = ui.ctx().clone();
+        if std::env::var_os("CSM_LOG_REPAINT_CAUSES").is_some() {
+            let causes = ctx.repaint_causes();
+            let input_events = ctx.input(|i| i.events.len());
+            log::info!("frame: repaint causes {causes:?}; {input_events} input events");
+        }
         let mut actions: Vec<(usize, PaneAction)> = Vec::new();
 
         Panel::top("hud").frame(Frame::NONE.fill(theme::TOOLBAR).inner_margin(4.0)).show(ui, |ui| self.hud(ui));
 
+        let tg = Instant::now();
         CentralPanel::default().frame(Frame::NONE.fill(theme::PANEL).inner_margin(theme::PANE_GAP)).show(ui, |ui| {
             let area = ui.max_rect();
             let grid: Vec<usize> = (0..self.panes.len()).filter(|&i| self.panes[i].placement == Placement::Grid).collect();
@@ -131,6 +143,8 @@ impl eframe::App for SpikeApp {
             }
         });
 
+        self.shared.frame.grid_ms = tg.elapsed().as_secs_f32() * 1000.0;
+        let tf = Instant::now();
         // Floating panes: an egui window over the canvas (no airspace problem with a native renderer).
         for i in 0..self.panes.len() {
             if self.panes[i].placement != Placement::Floating {
@@ -153,6 +167,8 @@ impl eframe::App for SpikeApp {
                 });
         }
 
+        self.shared.frame.float_ms = tf.elapsed().as_secs_f32() * 1000.0;
+        let tt = Instant::now();
         // Torn-off panes: a second OS window each (multi-viewport, immediate mode).
         for i in 0..self.panes.len() {
             if self.panes[i].placement != Placement::TornOff {
@@ -183,6 +199,7 @@ impl eframe::App for SpikeApp {
             }
         }
 
+        self.shared.frame.torn_ms = tt.elapsed().as_secs_f32() * 1000.0;
         for (i, a) in actions {
             if let Some(p) = self.panes.get_mut(i) {
                 p.placement = match a {
@@ -195,6 +212,10 @@ impl eframe::App for SpikeApp {
             }
         }
 
+        if self.spin {
+            // Control experiment: repaint continuously with whatever is on screen.
+            ctx.request_repaint();
+        }
         let now = Instant::now();
         let cpu_ms = now.duration_since(t0).as_secs_f32() * 1000.0;
         self.perf.record(Sample { at: now, cpu_ms, counters: self.shared.frame });
@@ -215,7 +236,7 @@ impl eframe::App for SpikeApp {
                 let s = self.perf.summary(now, window);
                 let total: u64 = self.panes.iter().map(|p| p.bytes.load(Ordering::Relaxed)).sum();
                 let msg = format!(
-                    "BENCH panes={} {} | total PTY bytes {:.1} MB | atlas uploads {}",
+                    "BENCH panes={} {} | total PTY bytes {:.3} MB | atlas uploads {}",
                     self.panes.len(),
                     s,
                     total as f64 / 1e6,
@@ -223,6 +244,14 @@ impl eframe::App for SpikeApp {
                 );
                 log::info!("{msg}");
                 println!("{msg}");
+                for p in &self.panes {
+                    let st = crate::pane::lock(&p.status).clone();
+                    log::info!(
+                        "BENCH pane {} '{}' {:?} backend={:?} first_grid={:?} grid={:?} bytes={} probe_answered={:?} 7501={:?} exit={:?}",
+                        p.id, p.name, p.placement, p.backend, p.first_grid.map(|g| (g.cols, g.rows)), p.grid.map(|g| (g.cols, g.rows)),
+                        p.bytes.load(Ordering::Relaxed), st.probe_answered, st.program_status, st.exit
+                    );
+                }
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             } else {
                 // One wake-up at the end of the bench; idle panes otherwise cause no frames.

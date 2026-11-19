@@ -84,7 +84,11 @@ fn main() {
     {
         let term = term.clone();
         let seen = seen.clone();
+        let trace = std::env::var_os("CSM_TRACE_BYTES").is_some();
         pty.subscribe(Box::new(move |bytes| {
+            if trace {
+                println!("{:>7.3}s  {} bytes: {}", t0.elapsed().as_secs_f32(), bytes.len(), bytes.escape_ascii());
+            }
             let mut t = term.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             t.advance(bytes);
             let evs = t.take_events();

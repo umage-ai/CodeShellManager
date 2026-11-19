@@ -21,6 +21,8 @@ const USAGE: &str = "term-spike [--panes N] [--stress] [--rate LINES_PER_SEC] [-
   --no-extra       no floating / torn-off panes
   --bench SECS     run, log a frame-time summary of the second half, exit
   --inbox          prefer the inbox ConPTY over the bundled one
+  --no-vsync       present without waiting for vsync (measures raw throughput)
+  --spin           repaint continuously (control experiment for the presentation path)
   -- PROGRAM ...   what grid panes run (default: pwsh -NoLogo, else cmd)";
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -38,6 +40,8 @@ fn main() {
     let mut font: Option<PathBuf> = None;
     let mut font_size = theme::DEFAULT_FONT_SIZE;
     let mut ligatures = true;
+    let mut vsync = true;
+    let mut spin = false;
     let mut cwd = None;
     let mut log_path = PathBuf::from("term-spike.log");
     let mut program: Vec<OsString> = Vec::new();
@@ -53,6 +57,8 @@ fn main() {
             "--font" => font = Some(PathBuf::from(value())),
             "--font-size" => font_size = value().parse().unwrap_or(font_size),
             "--no-ligatures" => ligatures = false,
+            "--no-vsync" => vsync = false,
+            "--spin" => spin = true,
             "--inbox" => csm_pty::set_prefer_bundled(false),
             "--cwd" => cwd = Some(PathBuf::from(value())),
             "--log" => log_path = PathBuf::from(value()),
@@ -109,11 +115,14 @@ fn main() {
     };
     log::info!("ConPTY selection: {conpty}");
 
-    let cfg = Config { panes, grid_argv, shell_argv, extra, bench, cwd, conpty };
-    let options = eframe::NativeOptions {
+    let cfg = Config { panes, grid_argv, shell_argv, extra, bench, cwd, conpty, spin };
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("CSM term-spike").with_inner_size([1500.0, 950.0]),
         ..Default::default()
     };
+    if !vsync {
+        options.wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+    }
     let result = eframe::run_native(
         "csm-term-spike",
         options,

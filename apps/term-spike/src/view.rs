@@ -25,6 +25,16 @@ pub struct FrameCounters {
     pub panes: u32,
     pub rebuilds: u32,
     pub lock_misses: u32,
+    /// Time spent building meshes (ms).
+    pub build_ms: f32,
+    /// Time inside the torn-off viewports' immediate callbacks, which also render and present
+    /// those windows (ms).
+    pub torn_ms: f32,
+    pub grid_ms: f32,
+    pub float_ms: f32,
+    /// eframe's CPU time for the PREVIOUS frame: ui() + tessellation + rendering, excluding
+    /// vsync waiting (ms).
+    pub prev_frame_cpu_ms: f32,
 }
 
 /// Render resources shared by every pane in every window.
@@ -173,8 +183,10 @@ pub fn pane_ui(ui: &mut Ui, pane: &mut Pane, shared: &mut Shared, rect: Rect) ->
                     u32::from(cols) << 16 | u32::from(rows),
                 );
                 if pane.cache.as_ref().map(|c| c.key) != Some(key) {
+                    let tb = Instant::now();
                     let built = render::build(&t, &mut shared.fonts, atlas, origin, ppp, m, focused);
                     shared.frame.rebuilds += 1;
+                    shared.frame.build_ms += tb.elapsed().as_secs_f32() * 1000.0;
                     if atlas.full {
                         atlas.clear();
                         ctx.request_repaint();

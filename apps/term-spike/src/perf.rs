@@ -31,6 +31,12 @@ pub struct Summary {
     pub interval_p95: f32,
     pub rebuilds_per_frame: f32,
     pub lock_misses: u32,
+    pub build_ms_avg: f32,
+    pub grid_ms_avg: f32,
+    pub float_ms_avg: f32,
+    pub torn_ms_avg: f32,
+    pub full_frame_cpu_avg: f32,
+    pub full_frame_cpu_p95: f32,
 }
 
 const KEEP: Duration = Duration::from_secs(120);
@@ -58,6 +64,8 @@ impl Perf {
         intervals.sort_by(f32::total_cmp);
         let interval_p95 = intervals.get(((intervals.len().max(1) - 1) as f32 * 0.95).round() as usize).copied().unwrap_or(0.0);
         let rebuilds: u32 = recent.iter().map(|s| s.counters.rebuilds).sum();
+        let mut full: Vec<f32> = recent.iter().map(|s| s.counters.prev_frame_cpu_ms).filter(|&v| v > 0.0).collect();
+        full.sort_by(f32::total_cmp);
         Summary {
             frames: recent.len(),
             window_s: window.as_secs_f32(),
@@ -70,6 +78,12 @@ impl Perf {
             interval_p95,
             rebuilds_per_frame: rebuilds as f32 / recent.len() as f32,
             lock_misses: recent.iter().map(|s| s.counters.lock_misses).sum(),
+            build_ms_avg: recent.iter().map(|s| s.counters.build_ms).sum::<f32>() / recent.len() as f32,
+            grid_ms_avg: recent.iter().map(|s| s.counters.grid_ms).sum::<f32>() / recent.len() as f32,
+            float_ms_avg: recent.iter().map(|s| s.counters.float_ms).sum::<f32>() / recent.len() as f32,
+            torn_ms_avg: recent.iter().map(|s| s.counters.torn_ms).sum::<f32>() / recent.len() as f32,
+            full_frame_cpu_avg: full.iter().sum::<f32>() / full.len().max(1) as f32,
+            full_frame_cpu_p95: full.get(((full.len().max(1) - 1) as f32 * 0.95).round() as usize).copied().unwrap_or(0.0),
         }
     }
 }
@@ -78,8 +92,9 @@ impl std::fmt::Display for Summary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} frames in {:.0}s ({:.1} fps, frame interval p95 {:.1} ms) | ui() cpu ms avg {:.2} p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} | mesh rebuilds/frame {:.2} | lock misses {}",
-            self.frames, self.window_s, self.fps, self.interval_p95, self.cpu_avg, self.cpu_p50, self.cpu_p95, self.cpu_p99, self.cpu_max, self.rebuilds_per_frame, self.lock_misses
+            "{} frames in {:.0}s ({:.1} fps, frame interval p95 {:.1} ms) | ui() cpu ms avg {:.2} p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} | mesh rebuilds/frame {:.2} | lock misses {} | avg ms: grid {:.2} (mesh builds {:.2}) floating {:.2} torn-off viewport {:.2} | full frame cpu (ui+tessellate+render, no vsync wait) avg {:.1} p95 {:.1}",
+            self.frames, self.window_s, self.fps, self.interval_p95, self.cpu_avg, self.cpu_p50, self.cpu_p95, self.cpu_p99, self.cpu_max, self.rebuilds_per_frame, self.lock_misses,
+            self.grid_ms_avg, self.build_ms_avg, self.float_ms_avg, self.torn_ms_avg, self.full_frame_cpu_avg, self.full_frame_cpu_p95
         )
     }
 }

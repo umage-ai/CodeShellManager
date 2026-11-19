@@ -191,7 +191,11 @@ impl Pane {
                     let sink_term = term.clone();
                     let sink_status = status.clone();
                     let sink_ctx = ctx.clone();
+                    let spawned_at = Instant::now();
                     pty.subscribe(Box::new(move |bytes| {
+                        if bytes_counter.load(Ordering::Relaxed) == 0 {
+                            log::info!("pane {id}: first output ({} bytes) {} ms after spawn", bytes.len(), spawned_at.elapsed().as_millis());
+                        }
                         // Parse in slices, releasing the lock between them so the UI's
                         // try_lock gets a turn even while output streams.
                         for piece in bytes.chunks(16 * 1024) {
