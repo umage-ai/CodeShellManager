@@ -283,13 +283,30 @@ fn a_failed_start_wake_or_restart_leaves_the_session_asleep_not_deleted() {
 #[test]
 fn the_screen_heuristic_raises_needs_you_when_no_status_is_reported() {
     let h = H::new();
-    let id = h.session("pwsh");
+    // Only Claude sessions are judged by the screen heuristic (an old Claude that doesn't speak 7501).
+    let id = h.session("claude");
     h.pty(0).emit(b"Do you want to continue? (y/N) ");
     let v = h.wait_until("heuristic alert", |v| v.session(&id).is_some_and(|s| s.status.needs_you()));
     assert_eq!(v.inbox, vec![id.clone()]);
     // A real keystroke acknowledges it.
     h.engine.terminal(&id).unwrap().send_key(csm_engine::input::typed("y", false));
     h.wait_status(&id, Status::Idle);
+}
+
+#[test]
+fn a_shell_waiting_at_its_prompt_is_idle_not_needs_you() {
+    // The WPF heuristic matched any line ending in `>` or `(y/N)`, so every idle shell showed as
+    // "needs you". Plain shells are no longer judged by the screen heuristic.
+    let h = H::new();
+    let id = h.session("cmd");
+    h.pty(0).emit(b"Microsoft Windows\r\nC:\\work> ");
+    h.pty(0).emit(b"Overwrite? (y/N) ");
+    // Past the heuristic's 1.5 s idle window.
+    std::thread::sleep(Duration::from_millis(2500));
+    let v = h.engine.view();
+    let s = v.session(&id).expect("session");
+    assert!(!s.status.needs_you(), "a shell prompt must not be needs-you, got {:?}", s.status);
+    assert!(v.inbox.is_empty());
 }
 
 #[test]

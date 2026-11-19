@@ -150,9 +150,19 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         start_spawn(ctx, &id, instance);
     }
 
-    // The screen heuristic, for sessions that don't report their status.
-    for rt in ctx.state.rt.sessions.values_mut() {
-        if rt.has_program_status || rt.phase != Phase::Live {
+    // The screen heuristic, for Claude sessions that don't report their status. A plain shell
+    // sitting at its prompt (`C:\work>`, `$ `) is idle, not "needs you": the WPF app flagged every
+    // waiting shell, which with an inbox and toasts is noise.
+    let claude_ids: std::collections::HashSet<String> = ctx
+        .state
+        .app
+        .sessions
+        .iter()
+        .filter(|s| crate::launch::is_claude_command(&s.command))
+        .map(|s| s.id.clone())
+        .collect();
+    for (id, rt) in ctx.state.rt.sessions.iter_mut() {
+        if rt.has_program_status || rt.phase != Phase::Live || !claude_ids.contains(id) {
             continue;
         }
         let alert = rt.io.detector().poll(now_ms);
@@ -1066,7 +1076,12 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>) {
             save_now(ctx.state);
             ctx.events.emit(Event::QuitReady);
             if let Some(r) = reply {
-                r.send(Ok(ToolOutput::new("Every session is closed and the state is saved.", json!({"sessions": total}))));
+                let msg = if ctx.state.options.saves() {
+                    "Every session is closed and the state is saved."
+                } else {
+                    "Every session is closed (nothing is saved in this mode)."
+                };
+                r.send(Ok(ToolOutput::new(msg, json!({"sessions": total}))));
             }
         }));
     };
