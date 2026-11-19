@@ -1,5 +1,5 @@
 //! The engine's tools (docs/tools.md): sessions and the inbox, groups, layout and view, app.
-//! Git, run commands, notes and search are separate modules not built yet.
+//! Notes and search are in `search`; git and run commands are separate modules not built yet.
 
 mod app;
 mod groups;

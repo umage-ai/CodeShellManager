@@ -95,7 +95,7 @@ whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group v
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
 `inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
 
-### Not built yet (runs, git, notes, search, `open_folder`, `open_with`, `grant_list` / `grant_revoke`)
+### Not built yet (runs, git, `open_folder`, `open_with`, `grant_list` / `grant_revoke`)
 
 The app registers these ids with their real params and effects, as **stand-ins that validate the
 params and then refuse with "This isn't built yet"** (`csm-ui`'s `demo::tools::stand_ins`), so
@@ -113,8 +113,19 @@ versions instead, applied to the demo's own model.
 `git_branches`, `worktree_list`, `worktree_new` (branch, open_session?), `worktree_remove`
 (refuses dirty/nested; `delete_branch?` uses `-d`). All argv-built via `csm-services::git`.
 
-### notes, search
-`note_get` / `note_set` (folder or session_id), `search_output` (query, limit), `search_notes`.
+### notes, search ✅
+Built in `csm-engine` (`tools/search.rs`) over the `csm-index` crate (SQLite + FTS5, one DB thread that owns the connection: this replaces the WPF `DbGate`).
+
+| id | params | effects | what |
+|---|---|---|---|
+| `note_get` ✅ | folder? \| session_id? | read content | the note for a folder (sessions in one folder share it); returns `text`, `updated_at`, `shared_by`. Refused for SSH sessions and sessions with no folder |
+| `note_set` ✅ | folder? \| session_id?, text | state | replace the note (blank deletes; ≤ 256 KiB; control characters other than tab/newline dropped) |
+| `notes_import_wpf` ✅ | path? | state, read content | import `project_notes` from the WPF app's `output.db` (opened read-only; newer wins) |
+| `search_output` ✅ | query, limit? (≤ 500), session_id?, group_id?, advanced? | read content | FTS5 search of everything sessions printed, newest first: session, time, excerpt, matched ranges. The query is one quoted phrase unless `advanced: true` (AND / OR / NOT / prefix*); a syntax error is a plain message |
+| `search_notes` ✅ | query, limit? | read content | case-insensitive literal search over notes (and folder names) |
+| `search_reopen_session` ✅ | session_id | state, launch | reopen a session a search result named but that is closed, from its kept configuration (`session_history`) |
+
+**Storage.** `index.db` in the *local* (non-roaming) app data dir, `CodeShellManager-rs\index.db`; a state file elsewhere (`--config-dir`, `CSM_CONFIG_DIR`, `CSM_STATE_PATH`, portable) gets it beside it. `--clean` and an isolated run (`CSM_CONFIG_DIR` empty) index **in memory**: nothing reaches the disk. Output is fed from the PTY reader thread as raw bytes (non-blocking; over a byte bound a chunk is dropped and counted), then ANSI-stripped (including the bundled ConPTY's `ESC[1t ESC[c`), cut into lines, batched and written on the DB thread, and trimmed to the newest 20 MiB per session. Schema is versioned with `PRAGMA user_version`; a file that cannot be opened is moved aside as `index.db.bad-<ms>`.
 
 ### app
 ✅ `app_info`, `settings_get/set`, `recently_closed_list`, `state_import_wpf`, `app_quit`; ⬜ the rest.

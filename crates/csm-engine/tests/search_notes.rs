@@ -1,6 +1,8 @@
 //! Notes and search through `Engine::call`: output typed into a fake PTY is searchable, notes are
 //! shared per folder, hostile queries come back as plain messages, `--clean` never writes.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use std::time::{Duration, Instant};

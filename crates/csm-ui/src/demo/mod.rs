@@ -869,13 +869,12 @@ impl DemoBackend {
             }
             "note_set" => {
                 if let Some(p) = parse::<NoteSetParams>(call) {
-                    self.model.notes.insert(p.folder, p.text);
+                    let folder = p.folder.or_else(|| p.session_id.as_deref().and_then(|s| self.model.session(s)).map(|s| s.folder.clone()));
+                    if let Some(f) = folder {
+                        self.model.notes.insert(f, p.text);
+                    }
                 }
                 vec![]
-            }
-            "search_output" => {
-                let q = parse::<SearchParams>(call).map(|p| p.query).unwrap_or_default();
-                toast(format!("Searched all terminal output and notes for “{q}”: 14 matches in 5 sessions."))
             }
             "settings_set" => {
                 if let Some(p) = parse::<SettingsSetParams>(call)
