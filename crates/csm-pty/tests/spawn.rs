@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::ffi::OsString;
+#[cfg(windows)]
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -114,4 +115,22 @@ fn alive(pid: u32) -> bool {
 #[test]
 fn empty_argv_is_an_error_not_a_panic() {
     assert!(spawn(SpawnOptions::new(Vec::new(), PtySize::new(80, 24))).is_err());
+}
+
+/// The Unix PTY path (openpty via portable-pty): output reaches the subscriber, the exit code is
+/// reported and the reported size is the one asked for. Runs on the macOS and Linux CI jobs.
+#[cfg(unix)]
+#[test]
+fn unix_output_reaches_the_subscriber_and_the_exit_code_is_reported() {
+    let opts = SpawnOptions::new(argv(&["/bin/sh", "-c", "stty size; echo csm-unix-ok; exit 3"]), PtySize::new(100, 30));
+    let pty = spawn(opts).unwrap();
+    let out = collect(&pty);
+    assert!(wait_for(&out, "csm-unix-ok", Duration::from_secs(10)), "output: {}", String::from_utf8_lossy(&out.lock().unwrap()));
+    assert!(wait_for(&out, "30 100", Duration::from_secs(5)), "size: {}", String::from_utf8_lossy(&out.lock().unwrap()));
+    let start = Instant::now();
+    while !pty.has_exited() && start.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(pty.has_exited());
+    assert_eq!(pty.exit_code(), Some(3));
 }

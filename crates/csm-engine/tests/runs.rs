@@ -11,7 +11,7 @@ use common::{FakePty, H, test_app};
 use csm_core::models::{RunCommandItem, RunMode, ShellSession};
 use csm_engine::{Caller, RunPhase, ToolError};
 use csm_pty::SpawnOptions;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// What each spawn was asked for (session PTYs and run PTYs alike).
 type Seen = Arc<Mutex<Vec<SpawnOptions>>>;
@@ -296,7 +296,7 @@ fn a_real_cmd_echo_run_reaches_cmd_verbatim() {
         std::thread::sleep(Duration::from_millis(20));
     }
     e.call(Caller::Ui, "run_start", json!({"session_id": "s"})).unwrap();
-    let mut last = Value::Null;
+    let mut last = serde_json::Value::Null;
     while Instant::now() < deadline {
         last = e.call(Caller::Ui, "run_output", json!({"session_id": "s"})).unwrap().data;
         // The reader can still be draining after the exit is seen: wait for the last line.

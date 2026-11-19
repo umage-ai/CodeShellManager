@@ -55,10 +55,10 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<UnixPty>> {
 
 impl UnixPty {
     fn kill_tree(&self) {
-        if let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok()) {
-            if let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGKILL) {
-                log::debug!("killpg({pid}) failed: {e}");
-            }
+        if let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok())
+            && let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGKILL)
+        {
+            log::debug!("killpg({pid}) failed: {e}");
         }
     }
 }
@@ -86,10 +86,10 @@ impl Pty for UnixPty {
         self.kill_tree();
     }
     fn close(&self) {
-        if let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok()) {
-            if let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGHUP) {
-                log::debug!("killpg({pid}, SIGHUP) failed: {e}");
-            }
+        if let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok())
+            && let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGHUP)
+        {
+            log::debug!("killpg({pid}, SIGHUP) failed: {e}");
         }
     }
     fn backend(&self) -> Backend {
