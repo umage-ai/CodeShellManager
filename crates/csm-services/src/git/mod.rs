@@ -1,6 +1,7 @@
 //! Git: command lines (argv only), output parsing, user-facing wording and worktree rules.
 //!
-//! No process is spawned here. The invariants this carries over from the WPF `GitService`:
+//! [`run`] and [`watch`] are the I/O half (they spawn git and watch `.git`; call them from a
+//! worker thread); everything else is pure, and no process is spawned there. The invariants this carries over from the WPF `GitService`:
 //!
 //! * Values go in as argv elements and the process is exec'd directly; no shell. Under WSL the
 //!   form is `-e sh -lc 'exec "$0" "$@"' git ...` ([`args::build_wsl_git_command_line`]).
@@ -9,8 +10,10 @@
 //! * `status --porcelain=v2 --branch` is the one call that feeds the chip, the poll and the menu.
 
 pub mod args;
+pub mod run;
 pub mod status;
 pub mod text;
+pub mod watch;
 pub mod worktrees;
 
 pub use args::*;

@@ -20,3 +20,10 @@ name = "csm-argv-echo"
 path = "src/bin/csm-argv-echo.rs"
 test = false
 doc = false
+
+[dependencies]
+log = "0.4"
+notify = "8"
+
+[dev-dependencies]
+tempfile = "3"

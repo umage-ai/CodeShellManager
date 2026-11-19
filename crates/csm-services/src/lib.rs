@@ -1,6 +1,8 @@
-//! CodeShellManager services, pure parts.
+//! CodeShellManager services.
 //!
-//! Everything here is a function of its inputs: no process spawn, no file or network I/O.
+//! Everything here is a function of its inputs (no process spawn, no file or network I/O),
+//! except [`git::run`] and [`git::watch`], the git process layer and the `.git` watcher,
+//! which block and must be called from a worker thread.
 //! The security-critical rules of the WPF app live here (see the repo's CLAUDE.md):
 //!
 //! * [`argv`]: MSVCRT argv quoting and splitting. Never interpolate a value into a command line.
