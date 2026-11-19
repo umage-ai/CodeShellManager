@@ -102,7 +102,10 @@ pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_
             if cfg!(windows) {
                 split_command_line(&sl::build_cmd_line(command, &full, wrapper))
             } else if is_passthrough_shell(command) {
-                split_command_line(&full)
+                // POSIX words, not the Windows MSVCRT rules: `sh -c 'echo hi'` must reach sh as
+                // three arguments. Windows splitting ignores single quotes, so on Unix a quoted
+                // argument used to arrive in pieces ("Unterminated quoted string").
+                shlex::split(&full).ok_or_else(|| format!("The command line has an unbalanced quote: {full}"))?
             } else {
                 vec![unix_shell.to_owned(), "-l".into(), "-i".into(), "-c".into(), full]
             }
@@ -437,6 +440,23 @@ fn mcp_config_arg(file: &std::path::Path) -> Result<String, String> {
         return Err(format!("the config path can't be passed safely: {p}"));
     }
     Ok(format!("--mcp-config '{p}'"))
+}
+
+#[cfg(test)]
+mod posix_split_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_session_on_unix_keeps_quoted_arguments_whole() {
+        if cfg!(windows) {
+            return;
+        }
+        let s = ShellSession { id: "a".into(), command: "sh".into(), args: "-c 'echo hi from csm'".into(), ..Default::default() };
+        let p = plan(&s, None, "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(p.argv, vec!["sh", "-c", "echo hi from csm"]);
+        let bad = ShellSession { args: "-c 'echo hi".into(), ..s };
+        assert!(plan(&bad, None, "pwsh.exe", "/bin/sh").unwrap_err().contains("unbalanced quote"));
+    }
 }
 
 #[cfg(test)]

@@ -183,13 +183,13 @@ fn restart_and_close_kill_runs_too() {
     h.ok("run_start", json!({"session_id": "s"}));
     let p = run_pty(&h, 0);
     wait_phase(&h, "test", RunPhase::Running);
-    let _ = h.ui("session_restart", json!({"session_id": "s"}));
-    assert!(p.killed.load(std::sync::atomic::Ordering::SeqCst), "restart kills the runs");
+    let restarted = h.ui("session_restart", json!({"session_id": "s"}));
+    assert!(killed_within(&p.killed, Duration::from_secs(10)), "restart kills the runs (restart replied {restarted:?})");
     h.wait_until("live again", |v| v.session("s").is_some_and(|s| s.live && s.status != csm_engine::Status::Starting));
     h.ok("run_start", json!({"session_id": "s"}));
     let p2 = run_pty(&h, 1);
     h.ok("session_close", json!({"session_id": "s", "force": true}));
-    assert!(p2.killed.load(std::sync::atomic::Ordering::SeqCst), "close kills the runs");
+    assert!(killed_within(&p2.killed, Duration::from_secs(10)), "close kills the runs");
     h.engine.shutdown();
 }
 
@@ -311,4 +311,17 @@ fn a_real_cmd_echo_run_reaches_cmd_verbatim() {
     assert!(text.contains("\"a b\""), "{text:?}");
     assert!(text.contains("csm-s-done"), "{text:?}");
     e.shutdown();
+}
+
+/// The kill happens during teardown; on a slow runner give it a bounded moment rather than
+/// reading the flag the instant the tool replied.
+fn killed_within(flag: &std::sync::atomic::AtomicBool, limit: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+        if start.elapsed() > limit {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
 }

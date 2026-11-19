@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
+exclude = ["vendor/*"]
 
 [workspace.package]
 version = "0.0.1"
@@ -27,3 +28,7 @@ opt-level = 2
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# craft-ipc with one macOS fix (accepted sockets inherit nonblocking mode). vendor/craft-ipc/CSM_PATCH.md.
+[patch."https://github.com/storytold/craft-libs"]
+craft-ipc = { path = "vendor/craft-ipc" }

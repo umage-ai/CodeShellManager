@@ -620,7 +620,7 @@ dependencies = [
  "find-msvc-tools",
  "jobserver",
  "libc",
- "shlex",
+ "shlex 2.0.1",
 ]
 
 [[package]]
@@ -798,7 +798,6 @@ dependencies = [
 [[package]]
 name = "craft-ipc"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=692a7fe5c95947e11850eeefc4e071623d4bbf47#692a7fe5c95947e11850eeefc4e071623d4bbf47"
 dependencies = [
  "chrono",
  "getrandom 0.2.17",
@@ -909,6 +908,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "shlex 1.3.0",
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
@@ -3457,6 +3457,12 @@ name = "shell-words"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
+
+[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shlex"

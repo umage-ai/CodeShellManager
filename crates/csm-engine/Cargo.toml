@@ -17,6 +17,8 @@ csm-term = { path = "../csm-term" }
 csm-services = { path = "../csm-services" }
 csm-index = { path = "../csm-index" }
 log = "0.4"
+# POSIX word splitting for Unix shell sessions (launch.rs).
+shlex = "1.3"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
