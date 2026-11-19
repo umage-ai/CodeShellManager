@@ -40,8 +40,8 @@ There are two ways it could help. Only the second one is worth doing.
 Pinning (corrected 2026-11-19, see section 7): the only craft-libs release, `v0.1.0` (egui 0.36),
 contains just ui, settings, quit, atomic and print. Everything newer (mcp-server, ipc, control,
 keymap, menu, window, update's egui UI) is on `main`, which is on **egui 0.37 with patched egui
-forks**. One commit pin for every craft-libs dependency; egui-free crates only until the egui
-decision in section 7 is made.
+forks**. One commit pin for every craft-libs dependency, and egui-free crates only (decided in
+section 7: upstream egui, no forks).
 
 ### What the Craft ecosystem does not have: an interactive terminal widget
 
@@ -295,16 +295,18 @@ the stack holds.
 A read-only survey of craft-libs, craft-anything and the suite docs. Adopted items are marked
 with the phase they land in.
 
-### Decisions needed
-1. **egui 0.36 or 0.37.** craft-libs `main` (where mcp-server, ipc, control, keymap, menu, window
-   and update live) is on egui 0.37 with storytold's egui forks patched in. A `[patch]` in a
-   dependency's workspace does not apply to us, so taking its egui-using crates means moving to
-   0.37 and to the same forks. **Recommendation: move to 0.37 + the forks at the start of
-   Phase 3** (the UI work), once the suite rollout (`craft-libs/docs/egui-037-suite-rollout.md`)
-   settles; until then use only egui-free craft-libs crates and copy egui code with attribution.
-2. **Is CodeShellManager a "Craft app"?** The suite house rules ban Tauri/webview shells for
-   native Craft apps, which conflicts with the Phase 0 Tauri fallback. If CSM stays a umage
-   product that only *uses* craft-libs, the fallback stands.
+### Decisions (2026-11-19)
+1. **CodeShellManager is a umage.ai app, not a Craft app.** It uses the relevant, best parts of
+   the Craft ecosystem (crates, patterns, tooling) and isn't bound by the suite's house rules.
+   The Phase 0 Tauri fallback therefore stands.
+2. **Upstream egui only.** craft-libs `main` is on egui 0.37 with storytold's egui forks patched
+   in; we don't take a dependency on another project's egui forks. So:
+   - we depend only on **egui-free** craft-libs crates, all at one commit pin;
+   - from egui-using crates (craft-ui, keymap's dialog, menu, window, update's dialogs) we
+     **copy code with attribution** (MIT/Apache) into `csm-ui`;
+   - we move to upstream egui 0.37 as its own step **after** the engine/MCP/UI branches are
+     merged, not in the middle of the UI work. If a craft-libs egui crate later works on upstream
+     egui, it can replace our copy then.
 
 ### Crates (egui-free unless noted)
 | Crate | Use | Phase |
