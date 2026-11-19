@@ -81,8 +81,20 @@ fn pascal(key: &str) -> String {
         .collect()
 }
 
+/// Every setting, including the Rust app's own ones that `state.json` leaves out while they are
+/// at their defaults (so a file the WPF app reads back stays as it wrote it).
+fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
+    let mut v = serde_json::to_value(s)?;
+    if let Value::Object(m) = &mut v {
+        m.entry("OfferMcpToClaude").or_insert(json!(s.offer_mcp_to_claude));
+        m.entry("TerminalPadding").or_insert(json!(s.terminal_padding));
+        m.entry("TerminalFontPoints").or_insert(json!(s.terminal_font_points));
+    }
+    Ok(v)
+}
+
 fn settings_map(s: &AppSettings) -> Result<Map<String, Value>, ToolError> {
-    match serde_json::to_value(s) {
+    match full_settings(s) {
         Ok(Value::Object(mut m)) => {
             for k in SECRET_KEYS {
                 if let Some(v) = m.get_mut(k) {
@@ -146,7 +158,7 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if ctx.caller.is_external() && APP_ONLY_KEYS.contains(&key.as_str()) {
         return Err(ToolError::Refused(format!("`{key}` decides what runs; change it in the app's settings")));
     }
-    let Ok(Value::Object(mut m)) = serde_json::to_value(&ctx.state.app.settings) else {
+    let Ok(Value::Object(mut m)) = full_settings(&ctx.state.app.settings) else {
         return Err(ToolError::Failed("could not read the settings".into()));
     };
     if !m.contains_key(&key) {

@@ -155,13 +155,27 @@ pub struct AppSettings {
     pub launch_commands: Vec<String>,
 
     /// Offer CodeShellManager's tools to the Claude sessions it launches (`--mcp-config`).
-    /// Opt-in: it changes the user's `claude` command line.
+    /// Opt-in: it changes the user's `claude` command line. (The Rust app's own settings below
+    /// are written only when changed, so a file the WPF app reads back stays as it wrote it.)
+    #[serde(skip_serializing_if = "is_false")]
     pub offer_mcp_to_claude: bool,
     /// Space between a pane's edge and the terminal cells, in points.
+    #[serde(skip_serializing_if = "is_default_padding")]
     pub terminal_padding: i32,
     /// The terminal font size in the Rust app's points; 0 = the app's default. (The WPF
     /// `TerminalFontSize` is CSS pixels for xterm.js and stays as it was.)
+    #[serde(skip_serializing_if = "is_zero")]
     pub terminal_font_points: i32,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+fn is_zero(n: &i32) -> bool {
+    *n == 0
+}
+fn is_default_padding(n: &i32) -> bool {
+    *n == default_padding()
 }
 
 impl Default for AppSettings {
