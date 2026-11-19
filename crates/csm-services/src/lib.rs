@@ -27,5 +27,6 @@
 pub mod argv;
 pub mod git;
 pub mod launch;
+pub mod open_with;
 pub mod winpath;
 pub mod wsl;
