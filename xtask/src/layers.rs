@@ -15,6 +15,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-pty", 1),
     ("csm-term", 1),
     ("csm-services", 2),
+    ("csm-index", 2), // FTS5 output index + notes; csm-core only
     ("csm-engine", 3),
     ("csm-mcp", 4),
     ("csm-ui", 4),
