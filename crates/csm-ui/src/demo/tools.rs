@@ -1,5 +1,5 @@
 //! Tool params the screens send, and stand-ins for the ids in `docs/tools.md` the engine doesn't
-//! register yet (runs, git, notes, search, open folder / with, grants).
+//! register yet (git, notes, search, grants).
 //!
 //! - [`stand_ins`] with [`StandIn::NotBuilt`] is what the real app registers: each validates its
 //!   params against the schema the real tool will take and then refuses with "not built yet", so
@@ -368,7 +368,11 @@ pub struct RunParams {
 #[serde(deny_unknown_fields)]
 pub struct RunEditParams {
     pub session_id: String,
+    #[serde(default)]
     pub runs: Vec<Value>,
+    /// Replace the list with the folder's project-type template.
+    #[serde(default)]
+    pub detect: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -473,7 +477,6 @@ pub struct DemoStatusParams {
 const READ: Effects = Effects::READ_ONLY;
 const UI: Effects = Effects::UI;
 const STATE: Effects = Effects::MUTATES_STATE;
-const CONTENT: Effects = Effects::from_bits_truncate(Effects::IDEMPOTENT.bits() | Effects::READS_SESSION_CONTENT.bits());
 
 /// How a stand-in answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,21 +506,11 @@ fn spec(id: &'static str, title: &'static str, summary: &'static str, toolset: T
 /// what the real tools will use.
 pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
     use Toolset::*;
-    let sid = with::<SessionIdParams>(how);
-    let run = with::<RunParams>(how);
     vec![
-        // runs
-        spec("run_list", "Run commands", "A session's run commands and their last result.", Runs, READ, sid),
-        spec("run_start", "Run", "Start a run command (default: the session's default) in its own background terminal.", Runs, Effects::LAUNCHES_PROCESS, run),
-        spec("run_stop", "Stop run", "Stop a running run command.", Runs, Effects::MAY_DISCARD_DATA, run),
-        spec("run_output", "Run output", "The output of a run command.", Runs, CONTENT, run),
-        spec("run_edit", "Edit run commands…", "Replace a session's list of run commands.", Runs, STATE, with::<RunEditParams>(how)),
-        // git, notes, search: real engine tools (csm-engine tools/git, tools/search), so no
-        // stand-ins. In `--demo` the engine's git tools answer "no session" for the demo's
-        // sessions and the demo backend applies its own effect (`DemoBackend::apply`).
+        // runs, git, notes, search, open folder / with: real engine tools (csm-engine tools/runs,
+        // tools/open, tools/git, tools/search), so no stand-ins. In `--demo` they answer "no session"
+        // for the demo's sessions and the demo backend applies its own effect (`DemoBackend::apply`).
         // app
-        spec("open_folder", "Open folder", "Open the session's folder in the file manager.", App, Effects::LAUNCHES_PROCESS, sid),
-        spec("open_with", "Open with…", "Open the session's folder in an editor from the Open with list.", App, Effects::LAUNCHES_PROCESS, with::<OpenWithParams>(how)),
         spec("grant_list", "MCP grants", "Clients allowed to call tools without asking.", App, READ, no_params(how)),
         spec("grant_revoke", "Revoke an MCP grant", "Make a client ask again before calling a tool.", App, STATE, with::<GrantRevokeParams>(how)),
     ]

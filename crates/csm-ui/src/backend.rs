@@ -58,6 +58,11 @@ pub trait Backend {
     fn tick(&mut self, _ctx: &egui::Context) -> Vec<Notice> {
         Vec::new()
     }
+    /// The live output of a run command's last run (the Runs tab reads its tail when the
+    /// generation changes). `None`: the model's `RunView::output` is all there is (the demo).
+    fn run_output(&self, _session: &str, _run: &str) -> Option<csm_engine::RunOutputHandle> {
+        None
+    }
 }
 
 /// Submits tool calls and polls their replies and the engine's events. Never blocks.

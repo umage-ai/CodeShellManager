@@ -95,7 +95,7 @@ whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group v
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
 `inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
 
-### Not built yet (runs, `open_folder`, `open_with`, `grant_list` / `grant_revoke`)
+### Not built yet (`grant_list` / `grant_revoke`)
 
 The app registers these ids with their real params and effects, as **stand-ins that validate the
 params and then refuse with "This isn't built yet"** (`csm-ui`'s `demo::tools::stand_ins`), so
@@ -104,9 +104,26 @@ Implementing one in the engine means deleting its stand-in (the registry refuses
 which `stand_ins_do_not_collide_with_engine_tools` checks). `codeshell --demo` registers echoing
 versions instead, applied to the demo's own model.
 
-### runs
-`run_list` (session_id), `run_start` (session_id, run_id? = default), `run_stop`, `run_output`
-(read content), `run_edit` (the list).
+### runs ✅
+Built in `csm-engine` (`runs/`, `tools/runs.rs`).
+
+| id | params | effects | what |
+|---|---|---|---|
+| `run_list` ✅ | session_id | read | the session's run commands with each one's last run: phase (idle/starting/running/ok/failed/stopped), exit code, times |
+| `run_start` ✅ | session_id, run_id? (id or label; default: the default) | launch | start it in its own headless PTY (restarts it if running); refused while asleep or closing |
+| `run_stop` ✅ | session_id, run_id? | discard | kill the run's whole tree (Job Object / process group) |
+| `run_output` ✅ | session_id, run_id?, max_chars? | read content | ANSI-stripped output, kept up to 1 MB per run |
+| `run_edit` ✅ | session_id, runs [{id?, label, command_line, is_default?, mode? process/powershell, post_run_url?}] \| detect: true | state | replace the list (≤ 50; one default, the last marked; one-line command lines; URL http/https only), or take the folder's project template. **Refused for MCP clients**: it decides what F5 runs |
+
+Rules carried from the WPF app: a run never types into its session; runs use the **inbox**
+ConPTY (`allow_bundled = false`: a headless PTY has nobody to answer OpenConsole's DA1); Process
+mode is `cmd.exe /c "<command>"` passed to CreateProcess verbatim (`SpawnOptions::verbatim_args`:
+cmd does not parse MSVCRT quoting), PowerShell mode `-EncodedCommand`, SSH and WSL parents go
+through `build_run_ssh_args` / `build_run_wsl_args` (`-e`, never `--`). Runs die with their
+session (close, sleep, restart) and with the app. `PostRunUrl` opens only after exit 0 and only
+an absolute `http(s)` URL (Windows: `rundll32 url.dll,FileProtocolHandler`, argv). New local and
+WSL sessions are seeded from a top-level folder scan on a worker: dotnet → cargo → node (pnpm /
+yarn / bun / npm) → python → make.
 
 ### git
 All ✅ (`crates/csm-engine/src/tools/git`, git run by `csm-services::git::run` on worker threads, argv only).
@@ -145,11 +162,28 @@ Built in `csm-engine` (`tools/search.rs`) over the `csm-index` crate (SQLite + F
 **Storage.** `index.db` in the *local* (non-roaming) app data dir, `CodeShellManager-rs\index.db`; a state file elsewhere (`--config-dir`, `CSM_CONFIG_DIR`, `CSM_STATE_PATH`, portable) gets it beside it. `--clean` and an isolated run (`CSM_CONFIG_DIR` empty) index **in memory**: nothing reaches the disk. Output is fed from the PTY reader thread as raw bytes (non-blocking; over a byte bound a chunk is dropped and counted), then ANSI-stripped (including the bundled ConPTY's `ESC[1t ESC[c`), cut into lines, batched and written on the DB thread, and trimmed to the newest 20 MiB per session. Schema is versioned with `PRAGMA user_version`; a file that cannot be opened is moved aside as `index.db.bad-<ms>`.
 
 ### app
-✅ `app_info`, `settings_get/set`, `recently_closed_list`, `state_import_wpf`, `app_quit`, `wsl_distros` (read; the new-session panel's distro list, probed off the engine thread); ⬜ the rest.
+✅ `app_info`, `settings_get/set`, `recently_closed_list`, `state_import_wpf`, `app_quit`, `wsl_distros` (read; the new-session panel's distro list, probed off the engine thread), `open_folder`, `open_with`, `open_with_list`, `open_with_set`, `open_with_detect`; ⬜ the rest.
 `app_info` (version, ConPTY in use, paths), `settings_get` / `settings_set` (key, value),
-`recently_closed_list`, `open_folder` (session_id), `open_with` (session_id, entry?),
-`consent_list` ✅, `consent_answer` ✅ (UI only), `grant_list` / `grant_revoke`,
+`recently_closed_list`, `consent_list` ✅, `consent_answer` ✅ (UI only), `grant_list` / `grant_revoke`,
 `state_import_wpf` (path to the old `state.json`), `app_quit`.
+
+**Open folder / Open with** (`tools/open.rs`, rules in `csm-services::open_with`). `open_folder`
+(session_id) opens only an existing *directory* (a file would be run); Windows normalises to
+backslashes and hands Explorer the path as one always-quoted argument — measured on Windows 11, a
+forward-slash path or an unquoted path with a comma opened Documents instead; macOS `open`, Linux
+`xdg-open`; SSH sessions are refused. `open_with` (session_id, entry? id or label) runs
+`prepare` (template split first, one placeholder = one argv element, nothing option-shaped, no
+`/switch` on Windows, batch files refuse cmd metacharacters, the program's real path via
+`std::fs::canonicalize`: not on a network drive, not under `%SystemRoot%`, not a shell, not a
+renamed shell by its PE `OriginalFilename`) and starts the program with argv, no shell.
+`open_with_list` (session_id?) adds each entry's exact command for that session (the menus show
+it as the tooltip, with the program's file name beside the label). `open_with_set` (entries)
+replaces the list after the same checks and is **refused for MCP clients** (as `settings_set`
+refuses `OpenWith`). `open_with_detect` finds VS Code / Insiders / Cursor / Windsurf / VSCodium
+(PATH shim → exe, App Paths, install folders, Scoop), Visual Studio (vswhere), JetBrains
+(standalone, Toolbox 1.x and 2.x), Zed, Sublime, Notepad++; on macOS `/Applications` bundles via
+`open -a`, on Linux `.desktop` files and PATH. The list from state.json is sanitised on load and
+seeded once by detection (`OpenWithSeeded` set only when something was found).
 
 ## Exposing CSM to Claude sessions
 
@@ -205,7 +239,7 @@ below must match the registry: run `cargo xtask tools` after adding a tool), `se
 
 <!-- xtask:tools:begin (generated by `cargo xtask tools`; do not edit by hand) -->
 
-### Engine registry (65 tools)
+### Engine registry (75 tools)
 
 Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the person's consent.
 
@@ -269,6 +303,16 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `worktree_new` | git | state, launch, files | asks | git worktree add for a branch (created from `base` or HEAD when it doesn't exist), next to the main checkout by default; opens a session there with the same command, placed after this one, unless open_session is false. |
 | `worktree_remove` | git | state, launch, discard, files | asks | Remove a linked worktree with git worktree remove (no --force). Refuses the main checkout, a worktree with changes, and one with another repository inside it. Closes the sessions in that folder first (needs force: true when there are any) and waits for them to exit; delete_branch uses branch -d, which keeps an unmerged branch. |
 | `worktree_prune` | git | launch, files | asks | git worktree prune: forgets worktrees whose folder is already gone. Only git's bookkeeping; never a working tree. |
+| `run_list` | runs | read | no | A session's run commands and the state of each one's last run (running, ok, failed, stopped). |
+| `run_start` | runs | launch | asks | Start a run command (default: the session's default) in its own background terminal; never types into the session. Restarts it if it is already running. |
+| `run_stop` | runs | discard | asks | Stop a running run command (default: the default one) and everything it started. |
+| `run_output` | runs | content | asks | The ANSI-stripped output of a run command's last run (kept up to 1 MB; `max_chars` returns the tail). |
+| `run_edit` | runs | state | no | Replace a session's run commands (label, command line, mode process/powershell, post-run URL, default), or `detect: true` to take the project-type template. App and CLI only. |
+| `open_folder` | app | launch | asks | Open the session's folder in the file manager (existing folders only; local and WSL sessions). |
+| `open_with` | app | launch | asks | Open the session's folder in an editor from the Open with list (default: the default entry). `entry` is an entry id or label. |
+| `open_with_list` | app | read | no | The Open with list; with `session_id`, also the exact command each entry would run for that session. |
+| `open_with_set` | app | state | no | Replace the Open with list (label, program, argument templates per session kind, default). Checked and cleaned; app and CLI only. |
+| `open_with_detect` | app | state, launch | asks | Look for installed editors and IDEs and add the ones not listed yet. |
 | `wsl_distros` | app | read | no | The installed WSL distributions (name, version, state, default), default first. Empty when WSL is not installed or this is not Windows. |
 | `note_get` | notes | content | asks | The note kept for a folder (give folder, or session_id to use that session's folder). Sessions in one folder share one note; SSH sessions have none. |
 | `note_set` | notes | state | no | Replace the note kept for a folder (folder or session_id). An empty text deletes the note. Refused for SSH sessions and sessions without a folder. |

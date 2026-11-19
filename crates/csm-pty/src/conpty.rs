@@ -415,11 +415,23 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
     };
     let app = crate::resolve::find_program(program, path.as_deref())?;
 
-    let mut argv16: Vec<Vec<u16>> = Vec::with_capacity(opts.argv.len());
-    argv16.push(app.as_os_str().encode_wide().collect());
-    argv16.extend(opts.argv.iter().skip(1).map(|a| a.encode_wide().collect()));
-    let mut cmd_line = cmdline::build_command_line(&argv16)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut cmd_line = match &opts.verbatim_args {
+        Some(tail) => {
+            if opts.argv.len() > 1 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "verbatim_args with more than one argv element"));
+            }
+            let program: Vec<u16> = app.as_os_str().encode_wide().collect();
+            let tail: Vec<u16> = tail.encode_wide().collect();
+            cmdline::build_command_line_verbatim(&program, &tail)
+        }
+        None => {
+            let mut argv16: Vec<Vec<u16>> = Vec::with_capacity(opts.argv.len());
+            argv16.push(app.as_os_str().encode_wide().collect());
+            argv16.extend(opts.argv.iter().skip(1).map(|a| a.encode_wide().collect()));
+            cmdline::build_command_line(&argv16)
+        }
+    }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     log::info!("PTY CreateProcess {}", cmdline::display_command_line(&cmd_line));
     cmd_line.push(0);
 

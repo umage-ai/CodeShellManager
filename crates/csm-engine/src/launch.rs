@@ -224,7 +224,7 @@ pub fn last_claude_session_id(folder: &str, claude_home: &Path) -> Option<String
 
 /// `pwsh.exe` when it is on PATH and actually runs, else `powershell.exe` (`PwshLocator`).
 /// Resolved once per run.
-fn pwsh() -> &'static str {
+pub(crate) fn pwsh() -> &'static str {
     static PWSH: OnceLock<&'static str> = OnceLock::new();
     PWSH.get_or_init(|| {
         let where_exe = std::env::var_os("SystemRoot")

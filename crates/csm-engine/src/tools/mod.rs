@@ -5,6 +5,8 @@ mod app;
 pub(crate) mod git;
 mod groups;
 mod layout;
+pub mod open;
+mod runs;
 mod platform;
 mod search;
 mod sessions;
@@ -22,6 +24,8 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(layout::specs());
     v.extend(app::specs());
     v.extend(git::specs());
+    v.extend(runs::specs());
+    v.extend(open::specs());
     v.extend(platform::specs());
     v.extend(search::specs());
     v

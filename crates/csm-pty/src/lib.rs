@@ -67,11 +67,15 @@ pub struct SpawnOptions {
     /// Windows only: false keeps this PTY on the inbox ConPTY whatever the process-wide choice
     /// (headless run commands, which have no terminal to answer OpenConsole's DA1).
     pub allow_bundled: bool,
+    /// Windows only: when set, the command line is `argv[0]` followed by this text verbatim, and
+    /// `argv[1..]` must be empty. For `cmd.exe /c "<command>"` run commands, whose parser is not
+    /// MSVCRT's (see [`cmdline::build_command_line_verbatim`]). Ignored elsewhere (argv is used).
+    pub verbatim_args: Option<OsString>,
 }
 
 impl SpawnOptions {
     pub fn new(argv: Vec<OsString>, size: PtySize) -> Self {
-        Self { argv, cwd: None, env: Vec::new(), size, allow_bundled: true }
+        Self { argv, cwd: None, env: Vec::new(), size, allow_bundled: true, verbatim_args: None }
     }
 }
 

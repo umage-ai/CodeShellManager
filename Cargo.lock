@@ -953,6 +953,7 @@ version = "0.0.1"
 dependencies = [
  "log",
  "notify",
+ "serde_json",
  "tempfile",
 ]
 

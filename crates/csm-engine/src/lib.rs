@@ -18,13 +18,14 @@ mod lifecycle;
 pub mod persist;
 pub mod proc;
 pub mod registry;
+pub mod runs;
 mod screen;
 mod session;
 pub mod snapshot;
 pub mod state;
 pub mod status;
 pub mod tool;
-mod tools;
+pub(crate) mod tools;
 pub mod which;
 pub mod wsl_probe;
 
@@ -33,6 +34,8 @@ pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output
 pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};
 pub use registry::Registry;
+pub use runs::{RunOutputHandle, RunPhase, RunView};
+pub use tools::open::{OpenWithTarget, OpenWithView};
 pub use session::TerminalHandle;
 pub use snapshot::{GroupInfo, GroupView, SessionView, Snapshot};
 pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, real_pty_factory};

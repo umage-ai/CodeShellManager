@@ -2,13 +2,13 @@
 //! the active session. Notes and Session are live; Runs shows the session's run commands from the
 //! model; Git is [`super::git`].
 
-use egui::{Align2, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2};
+use egui::{Align2, CornerRadius, Id, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
 use serde_json::json;
 
 use crate::app::{Action, CsmApp};
 use crate::icons;
-use crate::model::{InspectorTab, Kind, RunState, SessionView, Status};
-use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
+use crate::model::{InspectorTab, Kind, SessionView, Status};
+use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
 /// How long a note waits after the last keystroke before it is saved (`note_set`).
@@ -69,7 +69,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = space::SM;
         match tab {
             InspectorTab::Notes => notes(ui, app, &s, actions),
-            InspectorTab::Runs => runs(ui, &s, actions),
+            InspectorTab::Runs => super::runs::show(ui, app, &s, actions),
             InspectorTab::Git => git(ui, app, &s, actions),
             InspectorTab::Session => session(ui, app, &s, actions),
         }
@@ -139,90 +139,6 @@ fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Actio
     let where_ = if same > 1 { format!(" · shared by {same} sessions in this folder") } else { " · kept per folder".to_string() };
     meta(ui, if dirty { "pencil" } else { "check" }, &format!("{}{where_}", if dirty { "Editing" } else { "Saved" }));
     meta(ui, "search", "Notes show up in Ctrl+F search");
-}
-
-fn runs(ui: &mut Ui, s: &SessionView, actions: &mut Vec<Action>) {
-    let t = Tokens::get(ui.ctx());
-    if s.runs.is_empty() {
-        widgets::card_frame(&t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("No run commands yet").font(semibold(text::BODY)).color(t.fg));
-            ui.label(egui::RichText::new("Run commands start in their own background terminal, so they never type into this session.").font(theme::regular(text::CAPTION)).color(t.muted));
-            ui.horizontal(|ui| {
-                if widgets::button(ui, ButtonKind::Secondary, Some("plus"), "Add from template", None).clicked() {
-                    actions.push(Action::Tool("run_edit", json!({"session_id": s.id, "runs": []})));
-                }
-            });
-        });
-        return;
-    }
-    widgets::caps(ui, "Commands");
-    for (i, r) in s.runs.iter().enumerate() {
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::LG), Sense::hover());
-        if i == 0 {
-            ui.painter().rect(rect, CornerRadius::same(radius::MD), t.field, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
-        }
-        let running = r.state == RunState::Running;
-        let b = Rect::from_min_size(pos2(rect.min.x + space::SM, rect.min.y + space::SM - space::XXS), Vec2::splat(size::CONTROL_SM));
-        let tip = if running { "Stop" } else { "Run" };
-        if widgets::icon_button_at(ui, b, Id::new(("run-btn", s.id.clone(), r.id.clone())), if running { "stop" } else { "play" }, false, &format!("{tip} {}", r.label)).clicked() {
-            actions.push(Action::Tool(if running { "run_stop" } else { "run_start" }, json!({"session_id": s.id, "run_id": r.id})));
-        }
-        let lr = ui.painter().text(pos2(b.max.x + space::SM, b.center().y), Align2::LEFT_CENTER, &r.label, semibold(text::BODY), t.fg);
-        if r.is_default {
-            let dr = Rect::from_min_size(pos2(lr.max.x + space::XS + space::XXS, b.center().y - space::SM + space::XXS), vec2(space::LG + space::XS + space::XXS, space::LG - space::XXS));
-            ui.painter().rect_stroke(dr, CornerRadius::same(radius::SM - 1), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
-            ui.painter().text(dr.center(), Align2::CENTER_CENTER, "F5", theme::medium(text::CAPS), t.muted);
-        }
-        let (c, ic) = match r.state {
-            RunState::Running => (t.blue, None),
-            RunState::Passed => (t.green, Some("check")),
-            RunState::Failed => (t.red, Some("x")),
-            RunState::NotRun => (t.muted, None),
-        };
-        let dw = widgets::text_width(ui, &r.detail, theme::medium(text::TINY)) + space::LG + icon::XS;
-        let chip = Rect::from_min_size(pos2(rect.max.x - space::SM - dw, b.center().y - space::SM - space::XXS / 2.0), vec2(dw, space::LG + size::HAIRLINE));
-        if r.state != RunState::NotRun {
-            ui.painter().rect_filled(chip, CornerRadius::same(radius::PILL), Tokens::tint(c, alpha::PILL));
-        }
-        let ir = Rect::from_min_size(pos2(chip.min.x + space::XS + space::XXS, chip.center().y - icon::XS / 2.0), Vec2::splat(icon::XS));
-        if running {
-            icons::paint_status(ui, ir, Status::Working, icon::XS);
-            icons::request_spinner_repaint(ui);
-        } else if let Some(n) = ic {
-            icons::paint(ui, ir, n, icon::XS, c);
-        }
-        ui.painter().text(pos2(ir.max.x + space::XS, chip.center().y), Align2::LEFT_CENTER, &r.detail, theme::medium(text::TINY), t.fg);
-        widgets::paint_text(ui, pos2(b.max.x + space::SM, rect.max.y - space::SM - space::XXS), Align2::LEFT_CENTER, &r.command_line, theme::mono(text::MONO_SM), t.muted, rect.width() - space::XXL * 2.0);
-    }
-    let first = s.default_run();
-    if let Some(r) = first {
-        widgets::caps(ui, &format!("Output · {}", r.label));
-        let h = (ui.available_height() - size::CONTROL - space::LG).max(size::CONTROL_LG * 2.0);
-        egui::Frame::new()
-            .fill(t.term_bg)
-            .stroke(Stroke::new(size::HAIRLINE, t.surface0))
-            .corner_radius(CornerRadius::same(radius::MD))
-            .inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::SM as i8))
-            .show(ui, |ui| {
-                ui.set_min_size(vec2(ui.available_width(), h));
-                let text_ = if r.output.is_empty() { "No output yet." } else { r.output.as_str() };
-                ui.label(egui::RichText::new(text_).font(theme::mono(text::MONO_SM)).color(t.term_fg));
-            });
-        ui.horizontal_wrapped(|ui| {
-            if widgets::button(ui, ButtonKind::Secondary, Some("stop"), "Stop", None).clicked() {
-                actions.push(Action::Tool("run_stop", json!({"session_id": s.id, "run_id": r.id})));
-            }
-            if widgets::button(ui, ButtonKind::Secondary, Some("copy"), "Copy", None).clicked() {
-                actions.push(Action::CopyText(r.output.clone()));
-            }
-            if s.is_claude() && widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send to Claude", None).clicked() {
-                // Untrusted text: pasted with bracketed paste, never submitted.
-                let fenced = format!("Output of `{}`:\n```\n{}\n```\n", r.command_line, r.output);
-                actions.push(Action::Tool("session_send_text", json!({"session_id": s.id, "text": fenced, "submit": false})));
-            }
-        });
-    }
 }
 
 /// The Git tab lives in [`super::git`].

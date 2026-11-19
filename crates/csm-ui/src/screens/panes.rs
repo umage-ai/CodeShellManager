@@ -600,6 +600,13 @@ pub fn pane(
                 actions.push(Action::Tool(id, json!({"session_id": s.id, "group": scope.key()})));
             }
         }
+        // `{ }`: open the folder in the default editor; the full list is in the ⋯ menu.
+        if let Some(o) = s.open_with.iter().find(|o| o.is_default).or(s.open_with.first()) {
+            let tip = format!("Open in {} ({})\n{}", o.label, o.program, o.command);
+            if ctl(ui, "braces", false, &tip, &mut x) {
+                actions.push(Action::Tool("open_with", json!({"session_id": s.id, "entry": o.entry_id})));
+            }
+        }
         if let Some(run) = s.default_run() {
             // The Run split button: ▶ label | ▾.
             let label = run.label.clone();

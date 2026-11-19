@@ -93,6 +93,7 @@ fn session(id: &str, group: &str, name: &str, kind: Kind, cmd: &str, folder: &st
         status,
         accent: Accent::Palette(accent),
         started: "2 h 14 min ago · resumes on restart".into(),
+        open_with: demo_targets(kind, folder),
         ..SessionView::default()
     }
 }
@@ -107,6 +108,7 @@ fn runs_dotnet() -> Vec<RunView> {
             state: RunState::Passed,
             detail: "passed · exit 0".into(),
             output: "Restore complete (0.6s)\n  Odulodo.Core succeeded → bin/Release/net10.0/Odulodo.Core.dll\n  Odulodo.Api succeeded → bin/Release/net10.0/Odulodo.Api.dll\n\nBuild succeeded in 8.4s\n    0 Warning(s)\n    0 Error(s)".into(),
+            ..RunView::default()
         },
         RunView { id: "test".into(), label: "test".into(), command_line: "dotnet test --no-build".into(), state: RunState::Running, detail: "running · 38 s".into(), ..RunView::default() },
         RunView { id: "publish".into(), label: "publish".into(), command_line: "dotnet publish -r win-x64".into(), detail: "not run yet".into(), ..RunView::default() },
@@ -123,6 +125,7 @@ fn runs_npm() -> Vec<RunView> {
             state: RunState::Running,
             detail: "running · 4 min".into(),
             output: "> odulodo-web@2.14.0 dev\n> vite\n\n  VITE v6.2.0  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n\n09:41:12 [vite] hmr update /src/search/FacetPanel.tsx\n09:42:03 [vite] hmr update /src/search/facets.ts".into(),
+            ..RunView::default()
         },
         RunView { id: "test".into(), label: "test".into(), command_line: "npm test -- --run".into(), state: RunState::Passed, detail: "passed · exit 0".into(), ..RunView::default() },
         RunView { id: "build".into(), label: "build".into(), command_line: "npm run build".into(), state: RunState::Failed, detail: "failed · exit 1".into(), ..RunView::default() },
@@ -257,7 +260,36 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         now_ms: now,
         wpf_import: None,
         git: crate::git_model::demo_details(),
+        open_with: demo_open_with(),
     }
+}
+
+/// The mock-up's Open with list.
+pub fn demo_open_with() -> Vec<OpenWithEntryView> {
+    let e = |id: &str, label: &str, exe: &str, remote: bool, default: bool| OpenWithEntryView {
+        id: id.into(),
+        label: label.into(),
+        executable: exe.into(),
+        program: exe.rsplit(['\\', '/']).next().unwrap_or(exe).into(),
+        local_args: Some("{folder}".into()),
+        wsl_args: remote.then(|| "--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}".into()),
+        ssh_args: remote.then(|| "--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}".into()),
+        is_default: default,
+    };
+    vec![
+        e("vscode", "VS Code", r"C:\Users\you\AppData\Local\Programs\Microsoft VS Code\Code.exe", true, true),
+        e("vs", "Visual Studio 2026", r"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\devenv.exe", false, false),
+        e("rider", "Rider", r"C:\Users\you\AppData\Local\Programs\Rider\bin\rider64.exe", false, false),
+    ]
+}
+
+/// What the demo's menus show for a session: the entries for its kind, with a plausible command.
+fn demo_targets(kind: Kind, folder: &str) -> Vec<OpenWithItem> {
+    demo_open_with()
+        .into_iter()
+        .filter(|e| kind == Kind::Local || e.ssh_args.is_some())
+        .map(|e| OpenWithItem { command: format!("\"{}\" \"{folder}\"", e.executable), entry_id: e.id, label: e.label, program: e.program, is_default: e.is_default })
+        .collect()
 }
 
 fn parse<P: DeserializeOwned>(call: &Call) -> Option<P> {

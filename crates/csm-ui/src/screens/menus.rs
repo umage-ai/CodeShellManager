@@ -18,6 +18,8 @@ pub enum Entry {
     Sep,
     Item { icon: &'static str, label: String, hint: Option<String>, danger: bool, action: Action },
     Sub { icon: &'static str, label: String, items: Vec<Entry> },
+    /// An item with a hover tooltip (Open with: the exact command it runs).
+    ItemTip { icon: &'static str, label: String, hint: Option<String>, tip: String, action: Action },
 }
 
 fn item(icon: &'static str, label: impl Into<String>, action: Action) -> Entry {
@@ -32,19 +34,26 @@ fn tool(id: &'static str, params: serde_json::Value) -> Action {
     Action::Tool(id, params)
 }
 
-fn open_with(session: &str) -> Entry {
-    let e = |label: &str, hint: &str| hinted("braces", label, hint, tool("open_with", json!({"session_id": session, "entry": label})));
-    Entry::Sub {
-        icon: "braces",
-        label: "Open with".into(),
-        items: vec![
-            e("VS Code", "default · Code.exe"),
-            e("Visual Studio 2026", "devenv.exe"),
-            e("Rider", "rider64.exe"),
-            Entry::Sep,
-            item("pencil", "Edit the list…", Action::Toast("The Open with list is edited in Settings › Open with.".into())),
-        ],
+/// The Open with submenu: every entry for the session's kind, each showing its program's file
+/// name and, as its tooltip, the exact command it runs (a label can't hide what runs).
+pub fn open_with(s: &crate::model::SessionView) -> Entry {
+    let mut items: Vec<Entry> = s
+        .open_with
+        .iter()
+        .map(|o| Entry::ItemTip {
+            icon: "braces",
+            label: o.label.clone(),
+            hint: Some(if o.is_default { format!("default · {}", o.program) } else { o.program.clone() }),
+            tip: o.command.clone(),
+            action: tool("open_with", json!({"session_id": s.id, "entry": o.entry_id})),
+        })
+        .collect();
+    if items.is_empty() {
+        items.push(item("search", "No editors yet: detect installed…", tool("open_with_detect", json!({}))));
     }
+    items.push(Entry::Sep);
+    items.push(item("pencil", "Edit…", Action::OpenWithEditor));
+    Entry::Sub { icon: "braces", label: "Open with".into(), items }
 }
 
 const DEMO_STATUS: &str = "Demo: set status";
@@ -72,7 +81,7 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         item("branch", "Git", insp("git")),
         Entry::Sep,
         item("folder", "Open folder", tool("open_folder", sid.clone())),
-        open_with(id),
+        open_with(s),
         hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
         item("copy", "Copy path", Action::CopyText(s.folder.clone())),
         Entry::Sep,
@@ -115,7 +124,8 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         ),
         hinted("pencil", "Rename", "F2", Action::StartRename(id.to_string())),
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
-        open_with(id),
+        item("folder", "Open folder", tool("open_folder", sid.clone())),
+        open_with(s),
         Entry::Sep,
     ];
     if s.is_claude() && s.status.is_live() {
@@ -181,7 +191,7 @@ fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         v.push(Entry::Item { icon: "play", label: r.label.clone(), hint: Some(hint), danger: false, action: tool("run_start", json!({"session_id": id, "run_id": r.id})) });
     }
     v.push(Entry::Sep);
-    v.push(item("pencil", "Edit commands…", tool("inspector_show", json!({"tab": "runs"}))));
+    v.push(item("pencil", "Edit commands…", Action::EditRuns(id.to_string())));
     v
 }
 
@@ -222,6 +232,16 @@ fn menu_area(ctx: &egui::Context, app: &mut CsmApp, id: Id, at: Pos2, entries: &
                     Entry::Sep => widgets::separator(ui),
                     Entry::Item { icon, label, hint, danger, action } => {
                         let r = widgets::menu_item(ui, icon, label, hint.as_deref(), *danger);
+                        if r.hovered() && depth == 0 {
+                            app.ui.submenu = None;
+                        }
+                        if r.clicked() {
+                            actions.push(action.clone());
+                            actions.push(Action::CloseMenu);
+                        }
+                    }
+                    Entry::ItemTip { icon, label, hint, tip, action } => {
+                        let r = widgets::menu_item(ui, icon, label, hint.as_deref(), false).on_hover_text(tip.as_str());
                         if r.hovered() && depth == 0 {
                             app.ui.submenu = None;
                         }
@@ -388,7 +408,7 @@ fn row_width(ui: &egui::Ui, e: &Entry) -> f32 {
     let label = |s: &str| widgets::text_width(ui, s, theme::regular(text::BODY));
     let base = space::SM + icon::LG + space::ROW_X * 2.0;
     match e {
-        Entry::Item { label: l, hint, .. } => base + label(l) + hint.as_ref().map_or(0.0, |h| widgets::text_width(ui, h, theme::mono(text::TINY)) + space::LG),
+        Entry::Item { label: l, hint, .. } | Entry::ItemTip { label: l, hint, .. } => base + label(l) + hint.as_ref().map_or(0.0, |h| widgets::text_width(ui, h, theme::mono(text::TINY)) + space::LG),
         Entry::Sub { label: l, .. } => base + label(l) + icon::MD + space::LG,
         Entry::Head(_) | Entry::Sep => 0.0,
     }

@@ -93,6 +93,23 @@ pub fn build_command_line(argv: &[Vec<u16>]) -> Result<Vec<u16>, CmdLineError> {
     Ok(out)
 }
 
+/// A command line whose arguments are one verbatim tail: the program quoted by CreateProcess's
+/// rule, then a space and `tail` exactly as given. Only for `cmd.exe /c "<the user's own
+/// command>"` (run commands), because cmd.exe does not split its command line by the MSVCRT
+/// rules and an argv-quoted payload would reach it with `\"` escapes it doesn't understand. The
+/// payload is the user's own command line, so a shell is the point; no app value goes in it.
+pub fn build_command_line_verbatim(program: &[u16], tail: &[u16]) -> Result<Vec<u16>, CmdLineError> {
+    if tail.contains(&0) {
+        return Err(CmdLineError::Nul);
+    }
+    let mut out = build_command_line(&[program.to_vec()])?;
+    if !tail.is_empty() {
+        out.push(SPACE);
+        out.extend_from_slice(tail);
+    }
+    Ok(out)
+}
+
 /// The command line as text, for logging and display only (lossy for unpaired surrogates).
 pub fn display_command_line(line: &[u16]) -> String {
     String::from_utf16_lossy(line)
@@ -128,6 +145,14 @@ mod tests {
         assert_eq!(line(&["x", "c:\\dir with space\\"]), "x \"c:\\dir with space\\\\\"");
         // No quoting needed → backslashes untouched.
         assert_eq!(line(&["x", "c:\\dir\\"]), "x c:\\dir\\");
+    }
+
+    #[test]
+    fn verbatim_tail_is_appended_unchanged() {
+        let l = build_command_line_verbatim(&w(r"C:\Windows\System32\cmd.exe"), &w(r#"/c "dotnet run --project "a b"""#)).unwrap();
+        assert_eq!(String::from_utf16(&l).unwrap(), r#"C:\Windows\System32\cmd.exe /c "dotnet run --project "a b"""#);
+        assert_eq!(build_command_line_verbatim(&w("x"), &w("a\0b")), Err(CmdLineError::Nul));
+        assert_eq!(String::from_utf16(&build_command_line_verbatim(&w("x y"), &[]).unwrap()).unwrap(), "\"x y\"");
     }
 
     #[test]

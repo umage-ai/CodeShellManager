@@ -104,6 +104,29 @@ pub fn run_ok(cmd: &mut Command, timeout: Duration) -> Option<String> {
     run_capture(cmd, timeout).filter(|c| c.success).map(|c| c.text())
 }
 
+/// Starts a GUI program (an editor, the file manager, the browser opener) with argv: no shell,
+/// no console window, no stdio, and a thread that reaps it so it never lingers as a zombie. Does
+/// not wait for it. `raw` (Windows only) is appended verbatim after `args`, for a program with
+/// its own argument parser (Explorer: a path with a comma must arrive quoted). Callers pass only
+/// values they have validated.
+pub fn spawn_detached(program: &std::path::Path, args: &[String], raw: Option<&str>) -> std::io::Result<()> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    no_window(&mut cmd);
+    #[cfg(windows)]
+    if let Some(r) = raw {
+        use std::os::windows::process::CommandExt;
+        cmd.raw_arg(r);
+    }
+    #[cfg(not(windows))]
+    let _ = raw;
+    let mut child = cmd.spawn()?;
+    let _ = std::thread::Builder::new().name("csm-reap".into()).spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
