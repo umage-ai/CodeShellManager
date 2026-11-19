@@ -100,6 +100,10 @@ struct Rig {
 
 /// The app as `codeshell` builds it, minus the window and the IPC bridge.
 fn rig(exit_on_close: bool) -> Rig {
+    rig_with(exit_on_close, Duration::from_millis(1200))
+}
+
+fn rig_with(exit_on_close: bool, shutdown_budget: Duration) -> Rig {
     let ptys: Ptys = Arc::new(Mutex::new(Vec::new()));
     let list = ptys.clone();
     let options = StateOptions {
@@ -118,7 +122,7 @@ fn rig(exit_on_close: bool) -> Rig {
         }),
         // Long, so only a measured pane can be what starts the PTY.
         first_size_timeout: Duration::from_secs(30),
-        shutdown_budget: Duration::from_millis(1200),
+        shutdown_budget,
         exit_wait: Duration::from_millis(500),
         restore_on_start: false,
         ..StateOptions::default()
@@ -326,4 +330,93 @@ fn stand_ins_do_not_collide_with_engine_tools() {
     let l = r.engine.view().current_layout();
     assert_eq!(l.mode, csm_core::models::LayoutMode::Free);
     assert_eq!(l.free_tree.unwrap()["floats"][0]["session"], id.as_str());
+}
+
+#[test]
+fn editing_a_live_session_asks_restart_now_and_restarts_it() {
+    let mut r = rig(true);
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    let id = r.new_session(1); // pwsh -NoLogo
+    r.until("the PTY", |r| r.pty(0).is_some());
+    let ctx = r.h.ctx.clone();
+    r.h.state_mut().run(&ctx, csm_ui::Action::EditSession(id.clone()));
+    // session_get fills the panel in: the command with its arguments.
+    r.until("the edit panel, filled in", |r| r.h.state().ui.quick.loaded);
+    assert_eq!(r.h.state().ui.quick.cmd, 1, "pwsh -NoLogo is the second launch command");
+    assert_eq!(r.h.state().ui.quick.query, r.folder);
+    r.h.key_press(egui::Key::Tab); // → claude: a new command needs a new process
+    r.h.step();
+    r.h.key_press(egui::Key::Enter);
+    r.until("the question", |r| r.has("Restart now"));
+    let saved = r.engine.call(Caller::Ui, "session_get", json!({"session_id": id})).unwrap();
+    assert_eq!(saved.data["config"]["command"], "claude", "saved before asking");
+    r.h.get_by_label("Restart now").click();
+    r.until("the restart", |r| r.pty(1).is_some());
+    assert!(r.pty(1).unwrap().argv.iter().any(|a| a.contains("claude")), "{:?}", r.pty(1).unwrap().argv);
+    assert!(r.h.state().submitted().iter().any(|c| c.id == "session_restart"));
+}
+
+#[test]
+fn force_close_now_stops_waiting_for_a_wedged_claude() {
+    // A Claude that ignores the console close, and a 30 s budget: without force, the board
+    // would wait it out.
+    let mut r = rig_with(false, Duration::from_secs(30));
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    let id = r.new_session(0); // claude
+    r.until("the PTY", |r| r.pty(0).is_some());
+    r.until("live", |r| r.engine.view().session(&id).is_some_and(|s| s.status != csm_engine::Status::Starting));
+    let ctx = r.h.ctx.clone();
+    r.h.state_mut().run(&ctx, csm_ui::Action::AskQuit);
+    r.until("the board", |r| r.has("Force close now"));
+    let t0 = Instant::now();
+    r.h.get_by_label("Force close now").click();
+    r.until("QuitReady", |r| r.h.state().quit_ready);
+    assert!(t0.elapsed() < Duration::from_secs(5), "force must not wait out the budget: {:?}", t0.elapsed());
+    let call = r.h.state().submitted().iter().rev().find(|c| c.id == "app_quit").cloned().unwrap();
+    assert_eq!(call.params, json!({"force": true}));
+    assert_eq!(r.board_rows(), vec![ShutdownRowState::Forced]);
+    assert!(r.pty(0).unwrap().has_exited());
+}
+
+#[test]
+fn an_always_grant_is_listed_in_settings_and_revoked_there() {
+    let mut r = rig(true);
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    let id = r.new_session(1);
+    r.until("the PTY", |r| r.pty(0).is_some());
+    let caller = Caller::External { client: "test-client".into(), session_id: None };
+    let reply = r.engine.submit(caller.clone(), "session_read_screen", json!({"session_id": id}));
+    r.until("the card", |r| r.has("Always for this client"));
+    r.h.get_by_label("Always for this client").click();
+    r.until("the answer", |r| !r.has("Always for this client"));
+    reply.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    assert_eq!(r.engine.call(Caller::Ui, "grant_list", json!({})).unwrap().data.as_array().unwrap().len(), 1);
+
+    let ctx = r.h.ctx.clone();
+    r.h.state_mut().run(&ctx, csm_ui::Action::OpenSettings);
+    r.until("the page", |r| r.has("Settings: MCP"));
+    r.h.get_by_label("Settings: MCP").click();
+    r.until("the grant", |r| r.has("Revoke test-client · session_read_screen"));
+    r.h.get_by_label("Revoke test-client · session_read_screen").click();
+    r.until("the empty list", |r| r.h.state().ui.settings.grants.is_empty() && r.h.state().submitted().iter().any(|c| c.id == "grant_revoke"));
+    assert_eq!(r.engine.call(Caller::Ui, "grant_list", json!({})).unwrap().data, json!([]));
+    // Revoked: the next call asks again.
+    let again = r.engine.submit(caller, "session_read_screen", json!({"session_id": id}));
+    r.until("a new card", |r| r.has("Allow once"));
+    assert!(again.try_recv().is_err());
+}
+
+#[test]
+fn settings_change_through_the_page_and_the_engine_keeps_them() {
+    let mut r = rig(true);
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    let ctx = r.h.ctx.clone();
+    r.h.state_mut().run(&ctx, csm_ui::Action::OpenSettings);
+    r.until("the values", |r| r.has("Warn when closing busy sessions"));
+    r.h.get_by_label("Warn when closing busy sessions").click();
+    r.until("the engine's answer", |r| !r.h.state().prefs.warn_on_close_when_busy);
+    let v = r.engine.call(Caller::Ui, "settings_get", json!({"key": "WarnOnCloseWhenBusy"})).unwrap();
+    assert_eq!(v.data["value"], false);
+    r.h.get_by_label("Settings: About").click();
+    r.until("app_info", |r| r.has_contains("CodeShellManager 0."));
 }
