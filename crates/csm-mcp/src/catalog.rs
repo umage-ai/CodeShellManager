@@ -102,3 +102,13 @@ impl Backend for LocalBackend {
         self.engine.call(caller.clone(), tool, params).map_err(BridgeError::Tool)
     }
 }
+
+impl Backend for Box<dyn Backend> {
+    fn tools(&mut self) -> Result<Vec<ToolInfo>, BridgeError> {
+        (**self).tools()
+    }
+
+    fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError> {
+        (**self).call(caller, tool, params)
+    }
+}

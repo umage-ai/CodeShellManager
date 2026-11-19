@@ -10,6 +10,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "csm_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "csm"
 path = "src/main.rs"
@@ -21,4 +25,5 @@ clap = { version = "4", default-features = false, features = ["std", "help", "us
 serde_json = "1"
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
 tempfile = "3"

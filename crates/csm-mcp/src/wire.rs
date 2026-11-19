@@ -68,7 +68,7 @@ pub fn accept_caller(v: Option<&Value>) -> Result<Caller, String> {
 
 /// `ToolError` derives `Serialize` with an internal tag, which serde cannot apply to its
 /// string-carrying variants (serializing one fails), so the bridge spells errors out itself.
-pub(crate) fn encode_error(e: &ToolError) -> Value {
+pub fn encode_error(e: &ToolError) -> Value {
     let (code, message) = match e {
         ToolError::UnknownTool(m) => ("unknown_tool", m),
         ToolError::InvalidParams(m) => ("invalid_params", m),

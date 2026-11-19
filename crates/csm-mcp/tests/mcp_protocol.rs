@@ -1,4 +1,5 @@
 //! The MCP protocol end to end, in process: initialize, toolsets, calls, errors and consent.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
 

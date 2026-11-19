@@ -1,6 +1,6 @@
 //! Small fake tools for the tests: the real tools belong to the engine work, and the registry is
 //! all this crate may depend on.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use csm_engine::{Ctx, Effects, Engine, State, ToolError, ToolOutput, ToolSpec, Toolset, parse_params};
 use serde::Deserialize;

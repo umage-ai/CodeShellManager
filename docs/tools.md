@@ -118,3 +118,16 @@ Claude session launched by CSM gets `--mcp-config` pointing at `csm mcp --sessio
 calls carry `Caller::External { session_id }` and the consent card can say "Claude in Odulodo
 wants to…". Off by default because it changes the user's `claude` command line. Any MCP client
 can be pointed at `csm mcp` by hand.
+
+## The bridge (`crates/csm-mcp`, `apps/csm-cli`)
+
+The app calls `csm_mcp::serve_ipc(engine)` once at start-up; `csm` and `csm mcp` find the instance
+record (craft-ipc discovery, app id `codeshell`), authenticate with its token and forward calls.
+A call is `csm.submit` + repeated `csm.wait` long polls, so a call may wait out the 120 s consent
+timeout (craft-ipc replies within 60 s otherwise). Remote callers are `Cli` or `External`, never
+`Ui`. **Windows uses craft-ipc's loopback TCP transport**: its named pipe stalls any line over
+about 512 bytes (measured on Windows 11), see `USE_TCP_BY_DEFAULT`. Environment: `CSM_APP` (binary
+for `--start`), `CSM_RUNTIME_DIR` (instance directory, for tests).
+
+Register with Claude Code: `claude mcp add codeshell -- csm mcp` (add `--session <id>` when CSM
+launches the Claude session itself).

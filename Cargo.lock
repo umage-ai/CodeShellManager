@@ -856,6 +856,7 @@ dependencies = [
  "clap",
  "csm-engine",
  "csm-mcp",
+ "serde",
  "serde_json",
  "tempfile",
 ]

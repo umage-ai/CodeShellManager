@@ -1,4 +1,5 @@
 //! The bridge end to end over a real local socket (a named pipe on Windows) in a temp directory.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
 
@@ -264,12 +265,29 @@ fn a_reconnect_after_the_app_restarts() {
     handle.shutdown().unwrap();
     let t = Instant::now();
     let r = remote.tools();
-    eprintln!("after shutdown: {r:?} in {:?}", t.elapsed());
+    assert!(t.elapsed() < Duration::from_secs(20), "a gone app must be noticed from its record, not by waiting on its pipe");
     assert!(matches!(r, Err(BridgeError::Unreachable(_))));
     let runtime = RuntimeDir::at(dir.path().join("rt")).unwrap();
     let _again = serve_ipc_with(engine, IpcOptions { runtime: Some(runtime), ..IpcOptions::default() }).unwrap();
-    let t = Instant::now();
     let r = remote.tools();
-    eprintln!("after restart: {:?} in {:?}", r.as_ref().map(|v| v.len()), t.elapsed());
     assert!(r.is_ok(), "the next call finds the new instance: {r:?}");
+}
+
+/// The socket / named pipe transport, with messages short enough for Windows' pipe (see
+/// `USE_TCP_BY_DEFAULT`); on Unix this is the transport everything else uses.
+#[test]
+fn the_socket_transport_works_for_short_messages() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = common::engine();
+    let runtime = RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let handle = serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime.clone()), tcp: Some(false), ..IpcOptions::default() }).unwrap();
+    assert!(handle.record().unwrap().tcp_port().is_none());
+    let mut remote = RemoteBackend::new(RemoteOptions { runtime: Some(runtime), tcp: Some(false), ..RemoteOptions::default() });
+    let mut raw_ok = false;
+    if let Ok(out) = remote.call(&Caller::Cli, "fake_toast", json!({})) {
+        raw_ok = out.message == "Toasted.";
+    }
+    assert!(raw_ok);
+    handle.shutdown().unwrap();
 }
