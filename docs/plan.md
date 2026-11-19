@@ -109,11 +109,14 @@ crates/
                     launch stagger, shutdown budget), wsl (cfg windows), ssh args, open-with,
                     settings (craft-settings), import of the old state.json
   csm-engine    L3  session supervisor: launch / sleep / wake / restart / close state machine,
-                    restore loop, attention inbox, command registry ("everything is a command")
+                    restore loop, attention inbox, and the tool registry: every action is a
+                    ToolSpec (docs/tools.md), with consent for MCP callers derived from effects
+  csm-mcp       L4  craft-mcp-server `Tools` over the registry; progressive toolsets
   csm-ui        L4  egui: the terminal renderer widget, sidebar, panes, palette, inspector
 apps/
   codeshell     desktop app
-  csm-cli       `csm open <folder>`, `csm list`, `csm send` (talks to the running app over craft-ipc)
+  csm-cli       `csm mcp` (stdio MCP server) and every tool as `csm <tool-id>`; both talk to the
+                running app over craft-ipc and start it if needed
 ```
 
 Rules carried over from both projects:

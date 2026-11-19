@@ -7,6 +7,12 @@ read its section there and carry over the invariant, not the C# shape.
 
 ## Rules (mandatory)
 
+- **Everything is a tool** (`docs/tools.md`). Every user-visible action is a `ToolSpec` in
+  `csm-engine`, dispatched by id from the UI, palette, keymap, CLI (`csm <tool>`) and MCP
+  (`csm mcp`). A button that does something no tool can do is unfinished. Effects are declared
+  honestly; consent for MCP callers is derived from them. Widget-level input (keystrokes into the
+  focused pane, scrolling, selection, resize) goes straight to the session's terminal handle and
+  is not a tool; programmatic input is (`session_send_text`).
 - **Local commits only.** Never push, never add a remote unless the maintainer asks.
 - **Layering:** `csm-core` (pure) → `csm-pty`, `csm-term` → `csm-services` → `csm-engine` →
   `csm-ui` → `apps/*`. Lower crates never depend on higher ones; only `csm-ui` and apps use egui.
