@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 
 use crate::events::{Event, Events};
 use crate::registry::Registry;
+use crate::session::TerminalHandle;
+use crate::snapshot::Snapshot;
 use crate::state::State;
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 
@@ -39,6 +41,32 @@ pub struct Ctx<'a> {
     /// Lets a tool hand work to a background thread that later re-enters the engine
     /// (`engine.post(...)`) without holding the state.
     pub engine: &'a Engine,
+    /// The reply channel of the running call, for tools that answer later ([`Ctx::park`]).
+    reply: Option<Sender<Reply>>,
+}
+
+impl Ctx<'_> {
+    /// Takes over the reply of the running call: the tool's own return value is then ignored,
+    /// and the reply is sent later with [`ParkedReply::send`] (from a job or an event). `None`
+    /// outside a tool call (a posted job has nobody to answer).
+    pub fn park(&mut self) -> Option<ParkedReply> {
+        self.reply.take().map(ParkedReply)
+    }
+}
+
+/// The reply of a call that completes later (`session_wait`, a restart, a screen read).
+pub struct ParkedReply(Sender<Reply>);
+
+impl ParkedReply {
+    pub fn send(self, reply: Reply) {
+        let _ = self.0.send(reply);
+    }
+}
+
+impl std::fmt::Debug for ParkedReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ParkedReply")
+    }
 }
 
 /// Work posted back to the engine thread by a background worker.
@@ -73,15 +101,26 @@ pub struct Engine {
     events: Events,
     registry: Arc<Registry>,
     joined: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    view: Arc<Mutex<Arc<Snapshot>>>,
 }
 
 impl Engine {
-    /// Start the engine thread with `state` and the given tool modules (each a `specs()` list).
+    /// Start the engine thread with `state` and any extra tools (each a `specs()` list). Every
+    /// engine tool (sessions, groups, layout, app) is always registered; `tools` adds more.
+    /// The restore loop starts right away when `state` has sessions to restore.
     pub fn start(state: State, tools: Vec<ToolSpec>) -> Result<Engine, ToolError> {
-        let registry = Arc::new(Registry::new(builtin_specs().into_iter().chain(tools).collect())?);
+        let registry = Arc::new(Registry::new(
+            builtin_specs().into_iter().chain(crate::tools::specs()).chain(tools).collect(),
+        )?);
         let (tx, rx) = mpsc::channel::<Msg>();
         let events = Events::default();
-        let engine = Engine { tx, events: events.clone(), registry: registry.clone(), joined: Arc::new(Mutex::new(None)) };
+        let engine = Engine {
+            tx,
+            events: events.clone(),
+            registry: registry.clone(),
+            joined: Arc::new(Mutex::new(None)),
+            view: Arc::new(Mutex::new(Arc::new(Snapshot::default()))),
+        };
         let worker = engine.clone();
         let handle = thread::Builder::new()
             .name("csm-engine".into())
@@ -98,6 +137,25 @@ impl Engine {
     /// Subscribe to engine events (UI, IPC clients, the MCP bridge).
     pub fn subscribe(&self) -> Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// The current read model, republished after every state change. One short lock to clone
+    /// an `Arc`: safe to call every frame from the UI thread.
+    pub fn view(&self) -> Arc<Snapshot> {
+        self.view.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The terminal of a live session, for rendering and widget-level input.
+    pub fn terminal(&self, session_id: &str) -> Option<TerminalHandle> {
+        self.view().terminal(session_id).cloned()
+    }
+
+    pub(crate) fn publish(&self, snapshot: Arc<Snapshot>) {
+        *self.view.lock().unwrap_or_else(PoisonError::into_inner) = snapshot;
+    }
+
+    pub(crate) fn events(&self) -> &Events {
+        &self.events
     }
 
     /// Run a tool and wait for its result. Never call this from the UI thread or from inside a tool.
@@ -131,22 +189,60 @@ impl Engine {
     }
 }
 
+/// How often the engine wakes with nothing to do (fallback starts, waits, heuristics, saves).
+const TICK: Duration = Duration::from_millis(100);
+
 fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
     let mut pending: HashMap<u64, Pending> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut grants: Vec<Grant> = Vec::new();
+    {
+        let mut c = ctx(&mut state, &Caller::Ui, &engine, None);
+        if catch_unwind(AssertUnwindSafe(|| crate::lifecycle::on_start(&mut c))).is_err() {
+            engine.events.emit(Event::Error { message: "Restoring the sessions failed unexpectedly.".into() });
+        }
+    }
+    crate::lifecycle::after_step(&mut state, &engine);
     loop {
-        let msg = match rx.recv_timeout(Duration::from_millis(500)) {
+        let msg = match rx.recv_timeout(TICK) {
             Ok(m) => Some(m),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => break,
         };
         expire(&mut pending, &engine.events);
-        let Some(msg) = msg else { continue };
+        {
+            let mut c = ctx(&mut state, &Caller::Ui, &engine, None);
+            if catch_unwind(AssertUnwindSafe(|| crate::lifecycle::tick(&mut c))).is_err() {
+                engine.events.emit(Event::Error { message: "A scheduled task failed unexpectedly.".into() });
+            }
+        }
+        if let Some(msg) = msg
+            && !handle(msg, &engine, &mut state, &mut pending, &mut next_id, &mut grants)
+        {
+            break;
+        }
+        crate::lifecycle::after_step(&mut state, &engine);
+    }
+    for (_, p) in pending.drain() {
+        let _ = p.reply.send(Err(ToolError::Failed("the app is closing".into())));
+    }
+    crate::lifecycle::on_exit(&mut state);
+}
+
+/// One message. Returns false to stop the loop.
+fn handle(
+    msg: Msg,
+    engine: &Engine,
+    state: &mut State,
+    pending: &mut HashMap<u64, Pending>,
+    next_id: &mut u64,
+    grants: &mut Vec<Grant>,
+) -> bool {
+    {
         match msg {
-            Msg::Shutdown => break,
+            Msg::Shutdown => return false,
             Msg::Post(job) => {
-                let mut ctx = ctx(&mut state, &Caller::Ui, &engine);
+                let mut ctx = ctx(state, &Caller::Ui, engine, None);
                 if catch_unwind(AssertUnwindSafe(|| job(&mut ctx))).is_err() {
                     engine.events.emit(Event::Error { message: "A background task failed unexpectedly.".into() });
                 }
@@ -155,52 +251,58 @@ fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
                 // Consent bookkeeping is handled here, not in a tool, so no tool can skip it.
                 match id.as_str() {
                     "consent_answer" => {
-                        let r = answer(&caller, params, &mut pending, &mut grants, &mut state, &engine);
+                        let r = answer(&caller, params, pending, grants, state, engine);
                         let _ = reply.send(r);
-                        continue;
+                        return true;
                     }
                     "consent_list" => {
                         let list: Vec<Value> = pending.iter().map(|(k, p)| pending_json(*k, p)).collect();
                         let _ = reply.send(Ok(ToolOutput::new(format!("{} waiting", list.len()), json!(list))));
-                        continue;
+                        return true;
                     }
                     _ => {}
                 }
                 let Some(spec) = engine.registry.get(&id).copied() else {
                     let _ = reply.send(Err(ToolError::UnknownTool(id)));
-                    continue;
+                    return true;
                 };
+                // Rules that hold whatever the person would answer are checked before asking.
+                if let Some(err) = crate::tools::precheck(spec.id, &caller, &params, state) {
+                    let _ = reply.send(Err(err));
+                    return true;
+                }
                 if let Caller::External { client, .. } = &caller {
                     let granted = grants.iter().any(|g| &g.client == client && g.tool == spec.id);
                     if spec.effects.needs_consent() && !granted {
-                        let key = next_id;
-                        next_id = next_id.saturating_add(1);
+                        let key = *next_id;
+                        *next_id = next_id.saturating_add(1);
                         let p = Pending { caller: caller.clone(), spec, params, reply, asked_at: Instant::now() };
                         engine.events.emit(Event::ConsentRequested { request: pending_json(key, &p) });
                         pending.insert(key, p);
-                        continue;
+                        return true;
                     }
                 }
-                let r = run_tool(&spec, &mut state, &caller, params, &engine);
-                let _ = reply.send(r);
+                run_tool(&spec, state, &caller, params, engine, reply);
             }
         }
     }
-    for (_, p) in pending.drain() {
-        let _ = p.reply.send(Err(ToolError::Failed("the app is closing".into())));
-    }
+    true
 }
 
-fn ctx<'a>(state: &'a mut State, caller: &'a Caller, engine: &'a Engine) -> Ctx<'a> {
-    Ctx { state, caller, events: &engine.events, registry: &engine.registry, engine }
+fn ctx<'a>(state: &'a mut State, caller: &'a Caller, engine: &'a Engine, reply: Option<Sender<Reply>>) -> Ctx<'a> {
+    Ctx { state, caller, events: &engine.events, registry: &engine.registry, engine, reply }
 }
 
-fn run_tool(spec: &ToolSpec, state: &mut State, caller: &Caller, params: Value, engine: &Engine) -> Reply {
-    let mut c = ctx(state, caller, engine);
+/// Runs a tool and answers `reply`, unless the tool parked it.
+fn run_tool(spec: &ToolSpec, state: &mut State, caller: &Caller, params: Value, engine: &Engine, reply: Sender<Reply>) {
+    let mut c = ctx(state, caller, engine, Some(reply));
     let run = spec.run;
-    match catch_unwind(AssertUnwindSafe(|| run(&mut c, params))) {
+    let r = match catch_unwind(AssertUnwindSafe(|| run(&mut c, params))) {
         Ok(r) => r,
         Err(_) => Err(ToolError::Failed(format!("`{}` failed unexpectedly; nothing else was affected", spec.id))),
+    };
+    if let Some(reply) = c.reply.take() {
+        let _ = reply.send(r);
     }
 }
 
@@ -266,8 +368,10 @@ fn answer(
         return Err(ToolError::NotFound(format!("no waiting request {}", p.request_id)));
     };
     engine.events.emit(Event::ConsentResolved { request_id: p.request_id });
-    let result = match p.answer {
-        ConsentChoice::Deny => Err(ToolError::Declined(format!("`{}` was not allowed", req.spec.id))),
+    match p.answer {
+        ConsentChoice::Deny => {
+            let _ = req.reply.send(Err(ToolError::Declined(format!("`{}` was not allowed", req.spec.id))));
+        }
         choice => {
             if choice == ConsentChoice::AllowAlways
                 && let Caller::External { client, .. } = &req.caller
@@ -277,10 +381,15 @@ fn answer(
                     grants.push(g);
                 }
             }
-            run_tool(&req.spec, state, &req.caller, req.params, engine)
+            // The state may have changed while the person decided: check the rules again.
+            match crate::tools::precheck(req.spec.id, &req.caller, &req.params, state) {
+                Some(err) => {
+                    let _ = req.reply.send(Err(err));
+                }
+                None => run_tool(&req.spec, state, &req.caller, req.params, engine, req.reply),
+            }
         }
-    };
-    let _ = req.reply.send(result);
+    }
     Ok(ToolOutput::message("Answered."))
 }
 

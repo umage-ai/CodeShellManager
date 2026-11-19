@@ -27,6 +27,12 @@ pub enum Event {
     ConsentRequested { request: Value },
     ConsentResolved { request_id: u64 },
     Error { message: String },
+    /// A row of the shutdown board changed: `phase` is `closing`, `clean` (exited by itself in
+    /// time) or `forced` (killed: the budget ran out, or it is not a Claude session).
+    QuitProgress { session_id: String, phase: String, elapsed_ms: u64 },
+    /// `app_quit` finished: every process is gone and the state is saved. Call
+    /// [`crate::Engine::shutdown`] and exit.
+    QuitReady,
 }
 
 /// Fan-out to any number of subscribers; a dropped receiver is pruned on the next emit.
