@@ -5,19 +5,19 @@
 #![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use csm_term::alacritty_terminal::grid::Dimensions;
 use csm_term::alacritty_terminal::index::{Column, Line};
+use csm_ui::terminal::fonts::{FontSet, default_paths, load_face};
+use csm_ui::terminal::{TerminalRenderer, TerminalSource, lock};
 use egui::{Event, Id, Key, Modifiers, PointerButton, pos2, vec2};
 use egui_kittest::Harness;
-use term_spike::fonts::{FontSet, default_paths, load_face};
-use term_spike::pane::{Pane, Placement, lock};
+use term_spike::pane::{Pane, Placement};
 use term_spike::view::{FrameCounters, Shared, pane_ui};
 
 struct State {
-    pane: Pane,
+    pane: Option<Pane>,
     shared: Shared,
 }
 
@@ -28,8 +28,8 @@ fn fonts() -> FontSet {
 }
 
 fn screen(pane: &Pane) -> String {
-    let Some(term) = &pane.term else { return String::new() };
-    let t = lock(term);
+    let Some(term) = pane.term.terminal() else { return String::new() };
+    let t = lock(&term);
     let grid = t.term().grid();
     let mut out = String::new();
     for row in 0..grid.screen_lines() {
@@ -40,6 +40,10 @@ fn screen(pane: &Pane) -> String {
     out
 }
 
+fn pane(s: &State) -> &Pane {
+    s.pane.as_ref().expect("pane created on the first frame")
+}
+
 fn step_until(h: &mut Harness<'_, State>, what: &str, timeout: Duration, mut done: impl FnMut(&State) -> bool) {
     let start = Instant::now();
     loop {
@@ -47,7 +51,7 @@ fn step_until(h: &mut Harness<'_, State>, what: &str, timeout: Duration, mut don
         if done(h.state()) {
             return;
         }
-        assert!(start.elapsed() < timeout, "timed out waiting for {what}; screen:\n{}", screen(&h.state().pane));
+        assert!(start.elapsed() < timeout, "timed out waiting for {what}; screen:\n{}", screen(pane(h.state())));
         std::thread::sleep(Duration::from_millis(30));
     }
 }
@@ -61,22 +65,24 @@ fn type_line(h: &mut Harness<'_, State>, text: &str) {
 #[test]
 fn first_frame_size_focus_typing_and_resize() {
     let dir = std::env::temp_dir();
-    let pane = Pane::new(0, "kittest".into(), vec!["cmd".into(), "/q".into(), "/k".into()], Some(dir), Placement::Grid);
-    let state = State { pane, shared: Shared { fonts: fonts(), atlas: None, frame: FrameCounters::default() } };
+    let state = State { pane: None, shared: Shared { renderer: TerminalRenderer::new(fonts()), frame: FrameCounters::default() } };
     let mut h = Harness::builder().with_size(vec2(900.0, 420.0)).build_ui_state(
-        |ui, s: &mut State| {
+        move |ui, s: &mut State| {
             let rect = ui.max_rect();
-            pane_ui(ui, &mut s.pane, &mut s.shared, rect);
+            let pane = s.pane.get_or_insert_with(|| {
+                Pane::new(0, "kittest".into(), vec!["cmd".into(), "/q".into(), "/k".into()], Some(dir.clone()), Placement::Grid, ui.ctx())
+            });
+            pane_ui(ui, pane, &mut s.shared, rect);
         },
         state,
     );
 
     // Frame 1 creates the terminal at the measured grid; there is no placeholder size.
     h.step();
-    let first = h.state().pane.first_grid.expect("grid measured on the first frame");
+    let first = pane(h.state()).term.first_grid().expect("grid measured on the first frame");
     assert!(first.cols > 50 && first.rows > 10, "implausible first grid {first:?}");
-    step_until(&mut h, "the PTY", Duration::from_secs(15), |s| s.pane.pty().is_some() && s.pane.bytes.load(Ordering::Relaxed) > 0);
-    assert_eq!(h.state().pane.grid, Some(first), "grid changed without a resize");
+    step_until(&mut h, "the PTY", Duration::from_secs(15), |s| pane(s).term.pty().is_some() && pane(s).term.bytes_read() > 0);
+    assert_eq!(pane(h.state()).view.grid(), Some(first), "grid changed without a resize");
 
     // Click to focus.
     let c = pos2(450.0, 220.0);
@@ -91,21 +97,21 @@ fn first_frame_size_focus_typing_and_resize() {
     // The child sees the first-frame width before any resize.
     type_line(&mut h, "mode con");
     let want = format!("Columns:        {}", first.cols);
-    step_until(&mut h, &want, Duration::from_secs(10), |s| screen(&s.pane).contains(&want));
+    step_until(&mut h, &want, Duration::from_secs(10), |s| screen(pane(s)).contains(&want));
 
     // Typed text and Enter reach the child.
     type_line(&mut h, "echo kittest-%COMPUTERNAME%-ok");
     let host = std::env::var("COMPUTERNAME").unwrap_or_default();
     let echoed = format!("kittest-{host}-ok");
-    step_until(&mut h, "the echo", Duration::from_secs(10), |s| screen(&s.pane).contains(&echoed));
+    step_until(&mut h, "the echo", Duration::from_secs(10), |s| screen(pane(s)).contains(&echoed));
 
     // A resize reaches the terminal and the PTY.
     h.set_size(vec2(600.0, 300.0));
     h.step();
     h.step();
-    let resized = h.state().pane.grid.unwrap();
+    let resized = pane(h.state()).view.grid().unwrap();
     assert!(resized.cols < first.cols && resized.rows < first.rows, "{resized:?} vs {first:?}");
     type_line(&mut h, "cls & mode con");
     let want = format!("Columns:        {}", resized.cols);
-    step_until(&mut h, &want, Duration::from_secs(10), |s| screen(&s.pane).contains(&want));
+    step_until(&mut h, &want, Duration::from_secs(10), |s| screen(pane(s)).contains(&want));
 }

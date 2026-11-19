@@ -4,7 +4,6 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use egui::{CentralPanel, Frame, Id, Panel, Rect, Sense, ViewportBuilder, ViewportClass, ViewportCommand, ViewportId, pos2, vec2};
@@ -40,17 +39,17 @@ pub struct SpikeApp {
 }
 
 impl SpikeApp {
-    pub fn new(cfg: Config, shared: Shared) -> Self {
+    pub fn new(cfg: Config, shared: Shared, ctx: &egui::Context) -> Self {
         let mut panes = Vec::new();
         let grid_name = cfg.grid_argv.first().map(short).unwrap_or_default();
         for i in 0..cfg.panes {
-            panes.push(Pane::new(i, format!("#{i} {grid_name}"), cfg.grid_argv.clone(), cfg.cwd.clone(), Placement::Grid));
+            panes.push(Pane::new(i, format!("#{i} {grid_name}"), cfg.grid_argv.clone(), cfg.cwd.clone(), Placement::Grid, ctx));
         }
         if cfg.extra {
             let shell = cfg.shell_argv.first().map(short).unwrap_or_default();
             let n = panes.len();
-            panes.push(Pane::new(n, format!("#{n} {shell} (floating)"), cfg.shell_argv.clone(), cfg.cwd.clone(), Placement::Floating));
-            panes.push(Pane::new(n + 1, format!("#{} {shell} (torn off)", n + 1), cfg.shell_argv.clone(), cfg.cwd.clone(), Placement::TornOff));
+            panes.push(Pane::new(n, format!("#{n} {shell} (floating)"), cfg.shell_argv.clone(), cfg.cwd.clone(), Placement::Floating, ctx));
+            panes.push(Pane::new(n + 1, format!("#{} {shell} (torn off)", n + 1), cfg.shell_argv.clone(), cfg.cwd.clone(), Placement::TornOff, ctx));
         }
         let now = Instant::now();
         Self {
@@ -71,7 +70,7 @@ impl SpikeApp {
     fn hud(&mut self, ui: &mut egui::Ui) {
         let now = Instant::now();
         let s = self.perf.summary(now, Duration::from_secs(2));
-        let total: u64 = self.panes.iter().map(|p| p.bytes.load(Ordering::Relaxed)).sum();
+        let total: u64 = self.panes.iter().map(|p| p.term.bytes_read()).sum();
         let dt = now.duration_since(self.last_bytes.0).as_secs_f32();
         if dt >= 1.0 {
             self.ingest_mb_s = (total - self.last_bytes.1) as f32 / dt / 1_000_000.0;
@@ -87,7 +86,7 @@ impl SpikeApp {
                 ),
             );
         });
-        ui.colored_label(theme::MUTED, format!("ConPTY: {} · font: {}", self.conpty, self.shared.fonts.describe()));
+        ui.colored_label(theme::MUTED, format!("ConPTY: {} · font: {}", self.conpty, self.shared.renderer.fonts.describe()));
     }
 }
 
@@ -207,7 +206,7 @@ impl eframe::App for SpikeApp {
                     PaneAction::TearOff => Placement::TornOff,
                     PaneAction::Dock => Placement::Grid,
                 };
-                p.cache = None;
+                p.view = csm_ui::terminal::TerminalView::new(egui::Id::new(("csm-term-pane", p.id)));
                 log::info!("pane {i} → {:?}", p.placement);
             }
         }
@@ -234,22 +233,22 @@ impl eframe::App for SpikeApp {
                 // Measure the second half only: the first half covers startup and spawns.
                 let window = bench / 2;
                 let s = self.perf.summary(now, window);
-                let total: u64 = self.panes.iter().map(|p| p.bytes.load(Ordering::Relaxed)).sum();
+                let total: u64 = self.panes.iter().map(|p| p.term.bytes_read()).sum();
                 let msg = format!(
                     "BENCH panes={} {} | total PTY bytes {:.3} MB | atlas uploads {}",
                     self.panes.len(),
                     s,
                     total as f64 / 1e6,
-                    self.shared.atlas.as_ref().map_or(0, |a| a.uploads)
+                    self.shared.renderer.atlas.as_ref().map_or(0, |a| a.uploads)
                 );
                 log::info!("{msg}");
                 println!("{msg}");
                 for p in &self.panes {
-                    let st = crate::pane::lock(&p.status).clone();
+                    let st = p.term.status();
                     log::info!(
                         "BENCH pane {} '{}' {:?} backend={:?} first_grid={:?} grid={:?} bytes={} probe_answered={:?} 7501={:?} exit={:?}",
-                        p.id, p.name, p.placement, p.backend, p.first_grid.map(|g| (g.cols, g.rows)), p.grid.map(|g| (g.cols, g.rows)),
-                        p.bytes.load(Ordering::Relaxed), st.probe_answered, st.program_status, st.exit
+                        p.id, p.name, p.placement, p.term.backend(), p.term.first_grid().map(|g| (g.cols, g.rows)), p.view.grid().map(|g| (g.cols, g.rows)),
+                        p.term.bytes_read(), st.probe_answered, st.program_status, st.exit
                     );
                 }
                 ctx.send_viewport_cmd(ViewportCommand::Close);

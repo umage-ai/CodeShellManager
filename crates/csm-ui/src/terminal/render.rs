@@ -9,10 +9,27 @@ use csm_term::alacritty_terminal::grid::Dimensions;
 use csm_term::alacritty_terminal::term::cell::Flags;
 use csm_term::alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
-use crate::atlas::{GlyphAtlas, GlyphKey};
-use crate::boxdraw;
-use crate::fonts::{CellMetrics, FontSet, Style};
-use crate::theme;
+use crate::terminal::atlas::{GlyphAtlas, GlyphKey};
+use crate::terminal::boxdraw;
+use crate::terminal::fonts::{CellMetrics, FontSet, Style};
+use csm_term::Palette;
+
+/// How a terminal is coloured on screen: the app theme's terminal palette (so a theme switch
+/// recolours running terminals; OSC colour overrides from the program still win) and the
+/// selection colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TermStyle {
+    pub palette: Palette,
+    pub selection: Color32,
+}
+
+impl Default for TermStyle {
+    fn default() -> Self {
+        let palette = Palette::default();
+        let s = palette.ansi[8];
+        Self { selection: Color32::from_rgb(s.r, s.g, s.b), palette }
+    }
+}
 
 pub struct Built {
     pub mesh: Mesh,
@@ -53,13 +70,14 @@ impl Painter<'_> {
 }
 
 fn c32(c: Rgb) -> Color32 {
-    theme::rgb(c)
+    Color32::from_rgb(c.r, c.g, c.b)
 }
 
 fn dim(c: Color32) -> Color32 {
     Color32::from_rgb((c.r() as u16 * 2 / 3) as u8, (c.g() as u16 * 2 / 3) as u8, (c.b() as u16 * 2 / 3) as u8)
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Builds the pane mesh. `origin` is the top-left of the cell grid in points, already snapped to
 /// a physical pixel.
 pub fn build(
@@ -70,9 +88,10 @@ pub fn build(
     ppp: f32,
     m: CellMetrics,
     focused: bool,
+    style: &TermStyle,
 ) -> Built {
     let term = terminal.term();
-    let palette = terminal.palette();
+    let palette = &style.palette;
     let content = term.renderable_content();
     let colors = content.colors;
     let default_bg = c32(palette.slot(257, colors));
@@ -107,7 +126,7 @@ pub fn build(
             fg = bg;
         }
         if selection.is_some_and(|s| s.contains_cell(&indexed, cursor.point, cursor.shape)) {
-            bg = theme::SELECTION;
+            bg = style.selection;
         }
         if block_cursor && indexed.point == cursor.point {
             bg = cursor_color;

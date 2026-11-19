@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, ColorImage, Context, Pos2, Rect, TextureHandle, TextureOptions};
 
-use crate::fonts::{FontSet, Style};
+use crate::terminal::fonts::{FontSet, Style};
 
 pub const ATLAS_SIZE: usize = 2048;
 const PAD: usize = 1;
