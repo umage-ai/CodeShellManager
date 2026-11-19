@@ -88,10 +88,21 @@ All ✅, plus `group_move` (index) and `group_collapse` (collapsed). `group_list
 (confirm via `force`), `group_sleep_all`, `group_close_all` (force), `group_tear_off` / `group_dock`.
 
 ### layout
-✅ except `pane_float` / `pane_dock` / `pane_tear_off` (UI-side for now). `view_get`, `view_set` (group view: rail/headers/flat; rail tab), `layout_get` (group),
-`layout_set` (group, mode focus/side/overview/grid/free, grid preset or cols×rows),
+All ✅. `pane_float` / `pane_dock` / `pane_tear_off` are registered by the app (`csm-ui`'s
+`pane_tools`), because the Free layout they edit is stored by the engine as an opaque object
+whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group view: rail/headers/flat; rail tab), `layout_get` (group),
+`layout_set` (group, mode focus/side/overview/grid/free, grid preset or cols×rows, `free`: the Free layout as an opaque object ≤ 64 KiB),
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
 `inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
+
+### Not built yet (runs, git, notes, search, `open_folder`, `open_with`, `grant_list` / `grant_revoke`)
+
+The app registers these ids with their real params and effects, as **stand-ins that validate the
+params and then refuse with "This isn't built yet"** (`csm-ui`'s `demo::tools::stand_ins`), so
+the UI, the palette, the CLI and MCP clients see the whole catalogue and get an honest answer.
+Implementing one in the engine means deleting its stand-in (the registry refuses duplicate ids,
+which `stand_ins_do_not_collide_with_engine_tools` checks). `codeshell --demo` registers echoing
+versions instead, applied to the demo's own model.
 
 ### runs
 `run_list` (session_id), `run_start` (session_id, run_id? = default), `run_stop`, `run_output`
