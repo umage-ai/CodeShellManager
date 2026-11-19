@@ -179,7 +179,7 @@ pub fn last_claude_session_id(folder: &str, claude_home: &Path) -> Option<String
 
 /// `pwsh.exe` when it is on PATH and actually runs, else `powershell.exe` (`PwshLocator`).
 /// Resolved once per run.
-fn pwsh() -> &'static str {
+pub(crate) fn pwsh() -> &'static str {
     static PWSH: OnceLock<&'static str> = OnceLock::new();
     PWSH.get_or_init(|| {
         let where_exe = std::env::var_os("SystemRoot")
@@ -215,7 +215,7 @@ impl sl::RunnableProbe for FsProbe {
 }
 
 /// Runs a probe process (no shell, no stdin) and returns its stdout when it exits 0 in time.
-fn run_with_timeout(cmd: &mut std::process::Command, timeout: Duration) -> Option<String> {
+pub(crate) fn run_with_timeout(cmd: &mut std::process::Command, timeout: Duration) -> Option<String> {
     use std::io::Read;
     use std::process::Stdio;
     // A windowed app must not flash a console for a probe (CREATE_NO_WINDOW). ConPTY sessions

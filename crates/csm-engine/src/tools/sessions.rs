@@ -460,6 +460,7 @@ fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         }
         return Err(ToolError::Failed(format!("The session could not be started: {msg}")));
     }
+    crate::runs::seed_async(ctx, &id);
     if p.focus.unwrap_or(!ctx.caller.is_external()) {
         lifecycle::focus(ctx, &id)?;
     }

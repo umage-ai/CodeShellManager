@@ -49,6 +49,9 @@ pub struct StateOptions {
     pub save_debounce: Duration,
     /// Run the restore loop when the engine starts.
     pub restore_on_start: bool,
+    /// Detect installed editors once to seed the Open with list (production only: detection
+    /// spawns vswhere and reads the registry, which tests must not depend on).
+    pub seed_editors: bool,
 }
 
 impl Default for StateOptions {
@@ -63,6 +66,7 @@ impl Default for StateOptions {
             exit_wait: Duration::from_millis(10_000),
             save_debounce: Duration::from_millis(500),
             restore_on_start: true,
+            seed_editors: false,
         }
     }
 }
@@ -70,7 +74,7 @@ impl Default for StateOptions {
 impl StateOptions {
     /// The production options: the state file at [`persist::default_state_path`].
     pub fn production() -> Self {
-        Self { save_path: persist::default_state_path(), ..Self::default() }
+        Self { save_path: persist::default_state_path(), seed_editors: true, ..Self::default() }
     }
 
     pub(crate) fn saves(&self) -> bool {
@@ -133,6 +137,8 @@ pub(crate) struct Runtime {
     pub saver: Option<persist::Saver>,
     /// The ConPTY in use and why (resolved once off the engine thread).
     pub conpty: Arc<OnceLock<String>>,
+    /// Run commands' invocations, by session id.
+    pub runs: crate::runs::Runs,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].

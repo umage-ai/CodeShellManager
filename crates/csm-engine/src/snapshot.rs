@@ -64,6 +64,10 @@ pub struct SessionView {
     pub inbox_since_ms: Option<i64>,
     /// "bundled ConPTY" / "inbox ConPTY" / "openpty", once started.
     pub backend: Option<&'static str>,
+    /// Its run commands and each one's last run (the Run button, the chips, the Runs tab).
+    pub runs: Vec<crate::runs::RunView>,
+    /// The Open with entries that apply to it, with the exact command each would run.
+    pub open_with: Vec<crate::tools::open::OpenWithTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -105,8 +109,13 @@ pub struct Snapshot {
     pub restart: Option<Progress>,
     /// Quit progress (the shutdown board) while it runs.
     pub quit: Option<Progress>,
+    /// The Open with list (the editor in Settings).
+    pub open_with: Vec<crate::tools::open::OpenWithView>,
     #[serde(skip)]
     pub(crate) terminals: HashMap<String, TerminalHandle>,
+    /// Output of each run command's last run, by `(session id, run id)`.
+    #[serde(skip)]
+    pub(crate) run_outputs: HashMap<(String, String), crate::runs::RunOutputHandle>,
 }
 
 impl Snapshot {
@@ -117,6 +126,11 @@ impl Snapshot {
     /// The terminal of a live session (the same as [`crate::Engine::terminal`]).
     pub fn terminal(&self, id: &str) -> Option<&TerminalHandle> {
         self.terminals.get(id)
+    }
+
+    /// The output of a run command's last run (read it at most once a frame).
+    pub fn run_output(&self, session_id: &str, run_id: &str) -> Option<&crate::runs::RunOutputHandle> {
+        self.run_outputs.get(&(session_id.to_owned(), run_id.to_owned()))
     }
 
     /// The layout of the current context (default when never set).
@@ -188,6 +202,8 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         last_activity_ms: s.last_activity_at.epoch_ms(),
         inbox_since_ms: state.rt.inbox_since.get(&s.id).copied(),
         backend: rt.and_then(|r| r.backend).map(|b| b.label()),
+        runs: crate::runs::views(state, s),
+        open_with: crate::tools::open::targets(&state.app.settings.open_with, s),
     }
 }
 
@@ -263,6 +279,8 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         restore: state.rt.restore,
         restart: state.rt.restart,
         quit: state.rt.quit,
+        open_with: crate::tools::open::list_view(&state.app.settings.open_with),
         terminals,
+        run_outputs: crate::runs::handles(state),
     }
 }

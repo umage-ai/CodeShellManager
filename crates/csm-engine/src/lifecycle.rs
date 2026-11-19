@@ -77,6 +77,7 @@ pub(crate) fn on_start(ctx: &mut Ctx<'_>) {
         log::info!("PTY: {text}");
         let _ = cell.set(text);
     });
+    crate::tools::open::on_start(ctx);
     if ctx.state.options.restore_on_start {
         begin_restore(ctx);
     }
@@ -233,6 +234,7 @@ pub(crate) fn save_now(state: &mut State) {
 
 /// The engine thread is ending: kill what is left and write the state one last time.
 pub(crate) fn on_exit(state: &mut State) {
+    crate::runs::kill_everything(state);
     let ids: Vec<String> = state.rt.sessions.keys().cloned().collect();
     for id in ids {
         if let Some(rt) = state.rt.sessions.remove(&id) {
@@ -651,6 +653,8 @@ pub(crate) fn user_interacted(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
 /// Removes a session's runtime and returns its PTY (the caller retires it). Anything waiting
 /// for it to start is told it won't.
 pub(crate) fn teardown(ctx: &mut Ctx<'_>, id: &str) -> Option<Arc<dyn Pty>> {
+    // A session's run commands go with it (close, sleep, restart, quit), whole trees.
+    crate::runs::stop_all(ctx.state, id);
     let mut rt = ctx.state.rt.sessions.remove(id)?;
     rt.io.closed.store(true, Ordering::Release);
     finish_restore_item(ctx.state, id);
