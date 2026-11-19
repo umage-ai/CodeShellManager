@@ -4,5 +4,6 @@
 
 pub mod args;
 mod run;
+mod setup_cmd;
 
 pub use run::{EXIT_APP, EXIT_OK, EXIT_TOOL, EXIT_USAGE, Env, run};

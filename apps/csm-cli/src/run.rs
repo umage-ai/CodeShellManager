@@ -10,6 +10,7 @@ use csm_mcp::{Backend, BridgeError, LocalBackend, McpOptions, McpService, Remote
 use serde_json::{Value, json};
 
 use crate::args::{self, Output};
+use crate::setup_cmd;
 
 pub const EXIT_OK: i32 = 0;
 /// The tool ran and failed, or the engine refused it.
@@ -143,7 +144,7 @@ pub fn run(argv: &[String], env: &Env) -> i32 {
     };
 
     // The commands are the registry's, so ask it, unless the command does not use them.
-    let needs_tools = !matches!(pre.first.as_deref(), Some("mcp" | "events"));
+    let needs_tools = !matches!(pre.first.as_deref(), Some("mcp" | "events" | "setup" | "doctor" | "uninstall"));
     let listing = pre.help || matches!(pre.first.as_deref(), None | Some("tools" | "commands" | "help"));
     let mut note = None;
     let tools = if needs_tools {
@@ -178,6 +179,9 @@ pub fn run(argv: &[String], env: &Env) -> i32 {
         Some(("mcp", m)) => run_mcp(m, backend, &mode),
         Some(("tools", m)) => run_tools(m, &tools, note.as_deref()),
         Some(("events", _)) => run_events(&pre, env),
+        Some(("setup", m)) => setup_cmd::run_setup(m),
+        Some(("doctor", m)) => setup_cmd::run_doctor(m, env),
+        Some(("uninstall", m)) => setup_cmd::run_uninstall(m),
         Some((name, m)) => match tools.iter().find(|t| t.cli_name() == name) {
             Some(info) => run_tool(info, m, backend.as_mut()),
             None => {
