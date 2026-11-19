@@ -1,0 +1,21 @@
+[package]
+name = "csm-mcp"
+description = "MCP server and local bridge for CodeShellManager: the engine's tools over stdio MCP, and over a token-authenticated local socket for the csm CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csm-engine = { path = "../csm-engine" }
+craft-mcp-server = { git = "https://github.com/storytold/craft-libs", rev = "692a7fe5c95947e11850eeefc4e071623d4bbf47" }
+craft-ipc = { git = "https://github.com/storytold/craft-libs", rev = "692a7fe5c95947e11850eeefc4e071623d4bbf47" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

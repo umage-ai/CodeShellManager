@@ -1,0 +1,29 @@
+[package]
+name = "csm-cli"
+description = "csm: every CodeShellManager tool on the command line, and the MCP server (csm mcp)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "csm_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "csm"
+path = "src/main.rs"
+
+[dependencies]
+csm-engine = { path = "../../crates/csm-engine" }
+csm-mcp = { path = "../../crates/csm-mcp" }
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "string"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"

@@ -152,7 +152,7 @@ impl Caller {
 
 /// The error contract. Every message is plain English and says what to do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[serde(tag = "code", rename_all = "snake_case")]
+#[serde(tag = "code", content = "message", rename_all = "snake_case")]
 pub enum ToolError {
     #[error("no tool called `{0}`")]
     UnknownTool(String),
@@ -252,6 +252,15 @@ mod tests {
         assert!(!Effects::UI.needs_consent());
         assert!(Effects::SENDS_INPUT.needs_consent());
         assert!(Effects::READS_SESSION_CONTENT.needs_consent());
+    }
+
+    #[test]
+    fn tool_error_serializes_and_round_trips() {
+        // A tagged enum of newtype string variants needs `content`, or serde_json fails at runtime.
+        let e = ToolError::Refused("busy".into());
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v, serde_json::json!({"code": "refused", "message": "busy"}));
+        assert_eq!(serde_json::from_value::<ToolError>(v).unwrap(), e);
     }
 
     #[test]
