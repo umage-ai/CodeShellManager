@@ -1,0 +1,231 @@
+{
+  "Sessions": [
+    {
+      "Id": "11111111-1111-1111-1111-111111111111",
+      "Name": "CodeShellManager",
+      "WorkingFolder": "C:\\Users\\Morten\\source\\repos\\umage-ai\\CodeShellManager",
+      "Command": "claude",
+      "Args": "--model claude-opus-4-6",
+      "GroupId": "g-claude",
+      "ColorOverride": "#a6e3a1",
+      "Status": 1,
+      "CreatedAt": "2026-11-01T08:30:15.123Z",
+      "LastActivityAt": "2026-11-06T11:59:00Z",
+      "IsDormant": false,
+      "Kind": 0,
+      "SshUser": "",
+      "SshHost": "",
+      "SshPort": 22,
+      "SshRemoteFolder": "",
+      "WslDistro": "",
+      "WslUser": "",
+      "WslWorkingFolder": "",
+      "ProfileFontFamily": "Cascadia Mono",
+      "ProfileFontSize": 15,
+      "ProfileFontWeight": "bold",
+      "ProfileFontLigatures": false,
+      "ProfileCursorShape": "bar",
+      "ProfileCursorBlink": true,
+      "ProfilePadding": "8px 12px",
+      "ProfileBackgroundOpacity": 0.85,
+      "ProfileRetroEffect": false,
+      "ProfileColorSchemeJson": "{\u0022background\u0022:\u0022#1e1e2e\u0022,\u0022foreground\u0022:\u0022#cdd6f4\u0022}",
+      "RunCommands": [
+        {
+          "Id": "r1",
+          "Label": "Build",
+          "CommandLine": "dotnet build",
+          "IsDefault": true,
+          "Mode": 0
+        },
+        {
+          "Id": "r2",
+          "Label": "Dev server",
+          "CommandLine": "$env:PORT=5173; npm run dev",
+          "IsDefault": false,
+          "Mode": 1,
+          "PostRunUrl": "http://localhost:5173"
+        }
+      ]
+    },
+    {
+      "Id": "22222222-2222-2222-2222-222222222222",
+      "Name": "prod box",
+      "WorkingFolder": "",
+      "Command": "bash",
+      "Args": "",
+      "GroupId": "",
+      "Status": 0,
+      "CreatedAt": "2026-10-02T09:00:00Z",
+      "LastActivityAt": "2026-11-05T17:00:00Z",
+      "IsDormant": false,
+      "Kind": 1,
+      "IsRemote": true,
+      "SshUser": "alice",
+      "SshHost": "dev.example.com",
+      "SshPort": 2222,
+      "SshRemoteFolder": "/srv/app",
+      "WslDistro": "",
+      "WslUser": "",
+      "WslWorkingFolder": "",
+      "RunCommands": []
+    },
+    {
+      "Id": "33333333-3333-3333-3333-333333333333",
+      "Name": "wsl dev",
+      "WorkingFolder": "\\\\wsl$\\Ubuntu\\home\\alice\\proj",
+      "Command": "claude",
+      "Args": "",
+      "GroupId": "",
+      "Status": 3,
+      "CreatedAt": "2026-09-20T09:00:00Z",
+      "LastActivityAt": "0001-01-01T00:00:00",
+      "IsDormant": true,
+      "Kind": 2,
+      "SshUser": "",
+      "SshHost": "",
+      "SshPort": 22,
+      "SshRemoteFolder": "",
+      "WslDistro": "Ubuntu",
+      "WslUser": "alice",
+      "WslWorkingFolder": "/home/alice/proj",
+      "RunCommands": []
+    }
+  ],
+  "Groups": [
+    {
+      "Id": "g-claude",
+      "Name": "Claude",
+      "SortOrder": 0,
+      "IsExpanded": true
+    },
+    {
+      "Id": "g-ops",
+      "Name": "Ops \u00E9",
+      "SortOrder": 1,
+      "IsExpanded": false
+    }
+  ],
+  "RecentlyClosed": [
+    {
+      "Name": "old ssh",
+      "WorkingFolder": "",
+      "Command": "bash",
+      "Args": "",
+      "GroupId": "",
+      "Kind": 1,
+      "IsRemote": true,
+      "SshUser": "bob",
+      "SshHost": "old.example.com",
+      "SshPort": 22,
+      "SshRemoteFolder": "",
+      "WslDistro": "",
+      "WslUser": "",
+      "WslWorkingFolder": "",
+      "RunCommands": [
+        {
+          "Id": "x",
+          "Label": "Tail",
+          "CommandLine": "tail -f log",
+          "IsDefault": true,
+          "Mode": 0
+        }
+      ],
+      "ClosedAt": "2026-11-04T10:00:00Z"
+    },
+    {
+      "Name": "old local",
+      "WorkingFolder": "C:\\src\\thing",
+      "Command": "claude",
+      "Args": "",
+      "GroupId": "",
+      "Kind": 0,
+      "SshUser": "",
+      "SshHost": "",
+      "SshPort": 22,
+      "SshRemoteFolder": "",
+      "WslDistro": "",
+      "WslUser": "",
+      "WslWorkingFolder": "",
+      "RunCommands": [],
+      "ClosedAt": "2026-11-03T10:00:00Z"
+    }
+  ],
+  "LastLayout": "TwoByTwo",
+  "GroupLayouts": {
+    "g-claude": "TwoByTwo",
+    "__ALL__": "Single"
+  },
+  "Settings": {
+    "AutoRestoreSessions": true,
+    "AutoResumeClaude": true,
+    "ClaudeLaunchStaggerMs": 1500,
+    "AutoFocusTerminalOnSelect": true,
+    "WarnOnCloseWhenBusy": true,
+    "ShowToastNotifications": false,
+    "ShowNotificationSound": false,
+    "AnthropicApiKey": "",
+    "DefaultCommand": "claude",
+    "DefaultWorkingFolder": "",
+    "ShowGitBranch": true,
+    "GroupDisplayMode": 2,
+    "FilterGridByActiveGroup": true,
+    "PerGroupLayout": true,
+    "ShowGroupsTab": true,
+    "ShowWorktreeClusters": true,
+    "UngroupedSectionExpanded": true,
+    "LegacyDefaultGroupCleared": false,
+    "SearchCollapseAfterNavigate": true,
+    "Theme": "dark",
+    "MaxSearchResults": 100,
+    "ShowTerminalStatusDot": true,
+    "ImportWindowsTerminalProfiles": false,
+    "SidebarActionIconsMode": 2,
+    "IndexTerminalOutput": true,
+    "OutputRetentionDays": 30,
+    "DebugTerminalTrace": false,
+    "UseBundledConPty": true,
+    "ProgramStatusProbe": 1,
+    "TerminalFontFamily": "\u0027Cascadia Code\u0027, \u0027Cascadia Mono\u0027, Consolas, \u0027Courier New\u0027, monospace",
+    "TerminalFontSize": 14,
+    "TerminalFontLigatures": true,
+    "TerminalFontWeight": "normal",
+    "TerminalLetterSpacing": 0.5,
+    "TerminalLineHeight": 1,
+    "OpenWith": [
+      {
+        "Id": "ow1",
+        "Label": "VS Code",
+        "Executable": "C:\\Users\\Morten\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+        "LocalArgs": "{folder}",
+        "WslArgs": "--folder-uri vscode-remote://wsl\u002B{distro:uri}{linuxPath:uri}",
+        "IsDefault": true
+      }
+    ],
+    "OpenWithSeeded": true,
+    "LaunchCommands": [
+      "claude",
+      "claude --continue",
+      "claude --model claude-opus-4-6",
+      "claude --dangerously-skip-permissions",
+      "codex",
+      "gh copilot suggest",
+      "pwsh",
+      "cmd"
+    ]
+  },
+  "LastNormalBounds": {
+    "Left": 1466.6666666666667,
+    "Top": 200,
+    "Width": 1600,
+    "Height": 1000
+  },
+  "LastPlacement": {
+    "Left": 2200,
+    "Top": 300,
+    "Width": 2400,
+    "Height": 1500,
+    "Dpi": 144
+  },
+  "WindowMaximized": false
+}
