@@ -156,6 +156,13 @@ tested as in craft's `theme.rs`):
 - **"Needs you" inbox.** A strip at the top of the sidebar listing the sessions waiting on the
   user, oldest first. One shortcut (e.g. `Ctrl+J`) jumps to the next one. Running many Claude
   sessions comes down to answering them in turn, and today that is spread over pink badges.
+  The inbox can be closed (a count badge next to "Sessions" reopens it; `Ctrl+J` keeps working),
+  and the divider between it and the session list drags vertically (double-click resets). Both
+  the open state and the height persist.
+- **Groups** are collapsible sidebar sections. A collapsed group still shows the status glyph of
+  any of its sessions that need you. Right-clicking a header gives: new session in the group,
+  rename, layout (per group), move to its own window / dock back, collapse, restart all, sleep
+  all, delete group (sessions move to Ungrouped), close all.
 - **Slim pane header.** Accent stripe, name, branch chip, status, and a single `⋯` menu. Run
   (▶) appears only when the session has run commands. Everything else (folder, editor, notes,
   git, restart, sleep, edit) moves to the `⋯` menu, the palette and the inspector.
