@@ -132,7 +132,26 @@ pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_
 /// [`plan`] plus its I/O: the Claude resume lookup (only when `resume` is set), the PowerShell
 /// to wrap with, and a folder that no longer exists falling back to home (the WPF rule).
 /// Blocking; worker threads only.
-pub fn resolve(s: &ShellSession, resume: bool) -> Result<Plan, String> {
+pub fn resolve(s: &ShellSession, resume: bool, mcp: Option<&McpOffer>) -> Result<Plan, String> {
+    // "Offer CodeShellManager's tools to Claude sessions" (Settings → MCP, off by default): a local
+    // Claude session gets `--mcp-config <file>` pointing at `csm mcp --session <id>`, so its calls
+    // carry the session id and the consent card can say "Claude in <name> wants to…".
+    let with_mcp;
+    let s = match mcp.filter(|_| s.kind == SessionKind::Local && is_claude_command(&s.command) && !s.args.contains("--mcp-config")) {
+        Some(offer) => match offer.write_config(&s.id) {
+            Ok(arg) => {
+                let mut c = s.clone();
+                c.args = if c.args.trim().is_empty() { arg } else { format!("{arg} {}", c.args.trim()) };
+                with_mcp = c;
+                &with_mcp
+            }
+            Err(e) => {
+                log::warn!("not offering CodeShellManager's MCP tools to '{}': {e}", s.working_folder);
+                s
+            }
+        },
+        None => s,
+    };
     let resume_id = if resume
         && s.kind == SessionKind::Local
         && is_claude_command(&s.command)
@@ -359,5 +378,91 @@ mod tests {
         let id = last_claude_session_id(r"C:\src\x", home.path());
         assert!(matches!(id.as_deref(), Some("newer-2") | Some("older-1")), "{id:?}");
         assert_eq!(last_claude_session_id(r"C:\nowhere", home.path()), None);
+    }
+}
+
+
+/// Where a Claude session's MCP config is written, and the `csm` binary it points at.
+#[derive(Debug, Clone)]
+pub struct McpOffer {
+    pub dir: PathBuf,
+    pub csm: PathBuf,
+}
+
+impl McpOffer {
+    /// The `csm` beside the running app, if it is there (a dev build or test binary has none).
+    pub fn beside_app(dir: PathBuf) -> Option<McpOffer> {
+        let exe = std::env::current_exe().ok()?;
+        let csm = exe.parent()?.join(if cfg!(windows) { "csm.exe" } else { "csm" });
+        csm.is_file().then_some(McpOffer { dir, csm })
+    }
+
+    /// Writes `<dir>/mcp-<id>.json` and returns the `--mcp-config '<path>'` argument. Worker only.
+    fn write_config(&self, session_id: &str) -> Result<String, String> {
+        let (json, file) = mcp_config(&self.csm, session_id, &self.dir)?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("could not create {}: {e}", self.dir.display()))?;
+        std::fs::write(&file, json).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+        mcp_config_arg(&file)
+    }
+}
+
+/// The config JSON and its file name for one session. The session id becomes part of a file name
+/// and an argv element, so only `[A-Za-z0-9_-]` is accepted.
+fn mcp_config(csm: &std::path::Path, session_id: &str, dir: &std::path::Path) -> Result<(String, PathBuf), String> {
+    if session_id.is_empty() || !session_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(format!("unexpected session id `{session_id}`"));
+    }
+    let json = serde_json::json!({
+        "mcpServers": { "codeshell": { "command": csm.to_string_lossy(), "args": ["mcp", "--session", session_id] } }
+    });
+    Ok((json.to_string(), dir.join(format!("mcp-{session_id}.json"))))
+}
+
+/// `--mcp-config '<path>'`. The arguments reach claude through `pwsh -Command` (Windows) or
+/// `sh -c` (Unix); single quotes are literal in both, so a path containing one is refused rather
+/// than escaped.
+fn mcp_config_arg(file: &std::path::Path) -> Result<String, String> {
+    let p = file.to_string_lossy();
+    if p.contains('\'') || p.chars().any(char::is_control) {
+        return Err(format!("the config path can't be passed safely: {p}"));
+    }
+    Ok(format!("--mcp-config '{p}'"))
+}
+
+#[cfg(test)]
+mod mcp_offer_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn config_points_at_csm_mcp_with_the_session() {
+        let (json, file) = mcp_config(Path::new("C:/apps/csm.exe"), "abc-123", Path::new("C:/state")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["mcpServers"]["codeshell"]["args"], serde_json::json!(["mcp", "--session", "abc-123"]));
+        assert_eq!(v["mcpServers"]["codeshell"]["command"], "C:/apps/csm.exe");
+        assert!(file.ends_with("mcp-abc-123.json"));
+    }
+
+    #[test]
+    fn hostile_ids_and_paths_are_refused() {
+        for id in ["", "a b", "a;b", "../x", "a'b", "$(id)"] {
+            assert!(mcp_config(Path::new("csm"), id, Path::new("d")).is_err(), "{id}");
+        }
+        assert!(mcp_config_arg(Path::new("C:/it's/mcp.json")).is_err());
+        assert_eq!(mcp_config_arg(Path::new("C:/a b/mcp.json")).unwrap(), "--mcp-config 'C:/a b/mcp.json'");
+    }
+
+    #[test]
+    fn only_local_claude_sessions_get_the_offer() {
+        let dir = std::env::temp_dir().join(format!("csm-mcp-offer-{}", std::process::id()));
+        let offer = McpOffer { dir: dir.clone(), csm: PathBuf::from("csm") };
+        let mut s = ShellSession { id: "s1".into(), command: "claude".into(), working_folder: dir.to_string_lossy().into_owned(), ..Default::default() };
+        let p = resolve(&s, false, Some(&offer)).unwrap();
+        assert!(p.argv.join(" ").contains("--mcp-config"), "{:?}", p.argv);
+        assert!(dir.join("mcp-s1.json").is_file());
+        s.command = "pwsh".into();
+        let p = resolve(&s, false, Some(&offer)).unwrap();
+        assert!(!p.argv.join(" ").contains("--mcp-config"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

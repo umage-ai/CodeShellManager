@@ -428,6 +428,7 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
         stagger: Duration::from_millis(u64::try_from(state.app.settings.claude_launch_stagger_ms).unwrap_or(0)),
         resume: rt.restoring && state.app.settings.auto_resume_claude,
         probe: state.app.settings.program_status_probe,
+        mcp: state.app.settings.offer_mcp_to_claude.then(|| mcp_offer_dir(state)).flatten().and_then(crate::launch::McpOffer::beside_app),
         engine: ctx.engine.clone(),
     };
     let (id2, engine) = (id.to_owned(), ctx.engine.clone());
@@ -449,13 +450,15 @@ struct SpawnJob {
     stagger: Duration,
     resume: bool,
     probe: ProgramStatusProbeMode,
+    /// Set when Settings → MCP offers our tools to Claude sessions.
+    mcp: Option<crate::launch::McpOffer>,
     engine: Engine,
 }
 
 impl SpawnJob {
     /// On a worker: resolve argv, wait for the Claude slot, spawn, wire the reader and exit.
     fn run(self) -> Result<Arc<dyn Pty>, String> {
-        let plan = crate::launch::resolve(&self.session, self.resume)?;
+        let plan = crate::launch::resolve(&self.session, self.resume, self.mcp.as_ref())?;
         if plan.is_claude && !self.stagger.is_zero() {
             wait_for_claude_slot(&self.gate, self.stagger);
         }
@@ -1164,5 +1167,13 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     if let Err(e) = thread::Builder::new().name("csm-quit".into()).spawn(worker) {
         log::error!("quit: no worker thread: {e}");
         ctx.events.emit(Event::QuitReady);
+    }
+}
+
+/// Where per-session MCP configs go: beside the state file, or a temp folder when nothing is saved.
+fn mcp_offer_dir(state: &State) -> Option<std::path::PathBuf> {
+    match state.options.save_path.as_deref().and_then(std::path::Path::parent) {
+        Some(d) if state.options.saves() => Some(d.join("mcp")),
+        _ => Some(std::env::temp_dir().join("CodeShellManager-rs-mcp")),
     }
 }
