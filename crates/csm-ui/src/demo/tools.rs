@@ -410,7 +410,8 @@ pub struct NoteGetParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NoteSetParams {
-    pub folder: String,
+    pub folder: Option<String>,
+    pub session_id: Option<String>,
     pub text: String,
 }
 
@@ -521,11 +522,7 @@ pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
         spec("worktree_list", "Worktrees", "The repo's worktrees with branch and status.", Git, Effects::LAUNCHES_PROCESS, sid),
         spec("worktree_new", "New worktree…", "Create a worktree from a branch and optionally open a session in it.", Git, GIT_WRITE, with::<WorktreeNewParams>(how)),
         spec("worktree_remove", "Remove worktree…", "Remove a clean worktree (refuses dirty or nested ones).", Git, wt_remove, with::<WorktreeRemoveParams>(how)),
-        // notes, search
-        spec("note_get", "Notes", "The note kept for a folder.", Notes, CONTENT, with::<NoteGetParams>(how)),
-        spec("note_set", "Save note", "Replace the note kept for a folder.", Notes, STATE, with::<NoteSetParams>(how)),
-        spec("search_output", "Search all output", "Full-text search of every session's output.", Search, CONTENT, with::<SearchParams>(how)),
-        spec("search_notes", "Search notes", "Search every folder's notes.", Search, CONTENT, with::<SearchParams>(how)),
+        // notes, search: real engine tools (csm-engine tools/search.rs)
         // app
         spec("open_folder", "Open folder", "Open the session's folder in the file manager.", App, Effects::LAUNCHES_PROCESS, sid),
         spec("open_with", "Open with…", "Open the session's folder in an editor from the Open with list.", App, Effects::LAUNCHES_PROCESS, with::<OpenWithParams>(how)),

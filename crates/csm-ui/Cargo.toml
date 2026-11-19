@@ -26,3 +26,4 @@ log = "0.4"
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+tempfile = "3"

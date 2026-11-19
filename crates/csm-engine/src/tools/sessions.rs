@@ -655,7 +655,7 @@ struct ReopenParams {
     index: usize,
 }
 
-fn session_reopen_closed(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+pub(super) fn session_reopen_closed(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: ReopenParams = parse_params(params)?;
     if ctx.state.rt.shutting_down {
         return Err(ToolError::Refused("the app is closing".into()));

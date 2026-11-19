@@ -213,7 +213,9 @@ fn buttons_submit_their_tool() {
 
     h.get_by_label_contains("Inspector  Ctrl+I").click();
     settle(&mut h);
-    assert_eq!(last_call(&h), ("inspector_show".to_string(), serde_json::json!({"tab": "notes"})));
+    // The Notes tab then asks the notes store for the note (`note_get`), so the button's call is not the last one.
+    assert!(h.state().submitted().iter().any(|c| c.id == "inspector_show" && c.params == serde_json::json!({"tab": "notes"})));
+    assert!(h.state().submitted().iter().any(|c| c.id == "note_get"));
     h.get_by_label("Inspector: Session").click();
     settle(&mut h);
     assert_eq!(h.state().model.inspector, Some(csm_ui::model::InspectorTab::Session));

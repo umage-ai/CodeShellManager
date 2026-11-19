@@ -340,7 +340,7 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
     let mut out = vec![Action::CloseOverlays];
     match row {
         PalRow::Session { id, .. } => out.push(Action::Tool("session_focus", json!({"session_id": id}))),
-        PalRow::Search(q) => out.push(Action::Tool("search_output", json!({"query": q}))),
+        PalRow::Search(q) => out.push(Action::OpenSearch(q.clone())),
         PalRow::Tool { id, .. } => {
             // A layout tool from the palette: cycle to the next mode.
             if *id == "layout_set" {

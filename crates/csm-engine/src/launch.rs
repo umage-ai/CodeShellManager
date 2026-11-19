@@ -286,6 +286,7 @@ mod tests {
     }
 
     /// What `wsl_session` does to a folder that needs no probe.
+    #[cfg(windows)]
     fn wsl_session_no_probe(folder: &str) -> ShellSession {
         wsl_session(&wsl(folder)).unwrap()
     }
