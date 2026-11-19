@@ -1,0 +1,4 @@
+# The Craft suite's formatting. Not applied workspace-wide yet: run `cargo fmt --all` once, in
+# one commit, after the feature branches are merged (formatting now would conflict with all of them).
+max_width = 150
+use_small_heuristics = "Max"

@@ -7,8 +7,11 @@
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use craft_mcp_server::{Effect, Incoming, Info, Server, Tools, object, read_message, response, text_result, tool};
+use craft_mcp_server::{Effect, Incoming, Info, Server, Tools, check_arguments, object, read_message, response, text_result, tool};
 use csm_engine::{Caller, ToolOutput, Toolset};
 use serde_json::{Value, json};
 
@@ -24,6 +27,14 @@ const TOOLSET_DISABLE: &str = "toolset_disable";
 const HIDDEN: [&str; 1] = ["consent_answer"];
 
 const MAX_LINE: usize = 8 * 1024 * 1024;
+
+/// Most tool calls in flight at once. Past it a call is refused at once with a message saying so,
+/// rather than queueing threads without bound behind a client that never waits for answers.
+pub const MAX_IN_FLIGHT: usize = 16;
+
+/// At end of input, how long to wait for calls still running before returning. A call parked on a
+/// consent card can outlive its client; the process must still be able to exit.
+const DRAIN: Duration = Duration::from_secs(5);
 
 const INSTRUCTIONS: &str = "CodeShellManager hosts many terminal sessions (Claude Code and other CLIs) in one desktop app; these tools drive it. \
 Only the `core` toolset is listed at first: call toolset_list to see the others (groups, layout, runs, git, notes, search, app) and toolset_enable to add one. \
@@ -107,6 +118,22 @@ impl<B: Backend> McpTools<B> {
         }
         let set = info.toolset.id();
         Some(format!("`{name}` is in the `{set}` toolset, which is not enabled. Call toolset_enable with toolset \"{set}\" first, then call it again."))
+    }
+
+    /// Everything a worker needs to run `name` off the reading thread, or `None` when the call must
+    /// take the ordinary path (a toolset tool, an unknown or disabled tool, bad arguments, or a
+    /// backend that cannot fork): that path produces the right error or answer itself.
+    pub(crate) fn prepare_call(&mut self, name: &str, args: &Value) -> Option<(Box<dyn Backend>, Caller)> {
+        if Self::is_meta(name) || self.disabled_hint(name).is_some() {
+            return None;
+        }
+        let listing = self.list();
+        check_arguments(&listing, name, args).ok()?;
+        if !self.catalog().iter().any(|t| t.id == name) {
+            return None;
+        }
+        let backend = self.backend.fork()?;
+        Some((backend, Caller::External { client: self.client.clone(), session_id: self.session_id.clone() }))
     }
 
     pub(crate) fn take_list_changed(&mut self) -> bool {
@@ -261,21 +288,73 @@ impl<B: Backend> McpService<B> {
         McpService { server: Server::new(info, McpTools::new(backend, options)) }
     }
 
-    /// Serve newline-delimited JSON-RPC until `input` closes. Calls run one at a time: while a call
-    /// waits for the person's approval (up to two minutes) this server answers nothing else.
-    pub fn serve(&mut self, mut input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+    /// Serve newline-delimited JSON-RPC until `input` closes. Tool calls run concurrently, each on
+    /// its own worker with its own backend ([`Backend::fork`]), and each reply is written as soon
+    /// as its call finishes, so a call parked on a consent card does not hold up `session_list`.
+    /// Everything else (lifecycle, listing, toolset changes) is answered in order on this thread,
+    /// so a notification always follows the reply that caused it. At most [`MAX_IN_FLIGHT`] calls
+    /// run at once. At end of input, calls still running get a few seconds to finish.
+    pub fn serve<R: BufRead, W: Write + Send + 'static>(&mut self, mut input: R, output: W) -> std::io::Result<()> {
+        let out = Arc::new(Mutex::new(output));
+        let inflight = Arc::new(AtomicUsize::new(0));
         while let Some(incoming) = read_message(&mut input, MAX_LINE)? {
             let lines = match incoming {
-                Incoming::Line(line) => self.handle_line(&line),
+                Incoming::Line(line) => {
+                    if self.dispatch_concurrently(&line, &out, &inflight) {
+                        continue;
+                    }
+                    self.handle_line(&line)
+                }
                 Incoming::Refused(reply) => vec![reply],
             };
-            for line in lines {
-                output.write_all(line.as_bytes())?;
-                output.write_all(b"\n")?;
-            }
-            output.flush()?;
+            write_lines(&out, &lines)?;
+        }
+        let deadline = Instant::now() + DRAIN;
+        while inflight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())
+    }
+
+    /// Start a worker for a `tools/call` line when it can run on its own; `false` leaves the line
+    /// to [`Self::handle_line`].
+    fn dispatch_concurrently<W: Write + Send + 'static>(&mut self, line: &str, out: &Arc<Mutex<W>>, inflight: &Arc<AtomicUsize>) -> bool {
+        let Ok(Value::Object(msg)) = serde_json::from_str::<Value>(line) else { return false };
+        if msg.get("method").and_then(Value::as_str) != Some("tools/call") {
+            return false;
+        }
+        let Some(id) = msg.get("id").cloned() else { return false };
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        let Some(name) = params.get("name").and_then(Value::as_str).map(str::to_owned) else { return false };
+        let args = match params.get("arguments") {
+            None | Some(Value::Null) => json!({}),
+            Some(a) => a.clone(),
+        };
+        let Some((mut backend, caller)) = self.server.tools().prepare_call(&name, &args) else { return false };
+        if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT {
+            inflight.fetch_sub(1, Ordering::SeqCst);
+            let busy = text_result(format!("Too many tool calls are running at once ({MAX_IN_FLIGHT}). Wait for one to finish, then call `{name}` again."), true);
+            let _ = write_lines(out, &[response(id, busy).to_string()]);
+            return true;
+        }
+        let spawned = std::thread::Builder::new().name("csm-mcp-call".into()).spawn({
+            let (id, out, inflight) = (id.clone(), Arc::clone(out), Arc::clone(inflight));
+            move || {
+                let result = match backend.call(&caller, &name, args) {
+                    Ok(o) => output_result(&o),
+                    Err(BridgeError::Tool(e)) => text_result(e.to_string(), true),
+                    Err(BridgeError::Unreachable(m)) => text_result(m, true),
+                };
+                let _ = write_lines(&out, &[response(id, result).to_string()]);
+                inflight.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        if spawned.is_err() {
+            inflight.fetch_sub(1, Ordering::SeqCst);
+            let failed = text_result("Could not start a worker for this call; try again.".to_string(), true);
+            let _ = write_lines(out, &[response(id, failed).to_string()]);
+        }
+        true
     }
 
     /// One line in, zero or more lines out (the reply, then any notification it caused).
@@ -320,4 +399,14 @@ impl<B: Backend> McpService<B> {
     pub fn tools(&mut self) -> &mut McpTools<B> {
         self.server.tools()
     }
+}
+
+/// Write whole lines under the lock, so replies from different workers never interleave.
+fn write_lines<W: Write>(out: &Mutex<W>, lines: &[String]) -> std::io::Result<()> {
+    let mut w = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for line in lines {
+        w.write_all(line.as_bytes())?;
+        w.write_all(b"\n")?;
+    }
+    w.flush()
 }

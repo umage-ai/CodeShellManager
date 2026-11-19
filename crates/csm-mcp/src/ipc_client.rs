@@ -167,6 +167,12 @@ impl RemoteBackend {
 }
 
 impl Backend for RemoteBackend {
+    /// A fresh backend with the same options and no connection yet: each concurrent call makes
+    /// (and drops) a connection of its own, so one parked on consent blocks nothing else.
+    fn fork(&self) -> Option<Box<dyn Backend>> {
+        Some(Box::new(RemoteBackend::new(self.options.clone())))
+    }
+
     fn tools(&mut self) -> Result<Vec<ToolInfo>, BridgeError> {
         let v = self.with(|c| c.call(wire::METHOD_TOOLS, json!({})))?;
         let list = v.get("tools").cloned().unwrap_or(Value::Null);

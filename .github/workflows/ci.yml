@@ -1,0 +1,73 @@
+name: CI
+
+# Pushes to main and pull requests. Feature branches are merged locally first; this is the check
+# that the merge is green on all three platforms.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build, test, clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # egui / winit / wgpu need these to compile and link on Linux.
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+
+      # The bundled ConPTY (conpty.dll + OpenConsole.exe, Microsoft-signed) is fetched, never
+      # committed. Without it the app and the tests fall back to the inbox ConPTY.
+      - name: Bundled ConPTY
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/get-conpty.ps1
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Layers, source policy, the generated tool catalogue and secrets. Clippy and the tests ran
+      # above, so skip them here.
+      - name: xtask ci
+        run: cargo xtask ci --skip-cargo
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

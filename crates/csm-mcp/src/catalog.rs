@@ -75,6 +75,12 @@ pub trait Backend: Send {
     /// answer (the engine gives up after [`csm_engine::CONSENT_TIMEOUT`]); a backend must not
     /// time out sooner than that.
     fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError>;
+
+    /// An independent backend to the same place, for running one call on its own thread. `None`
+    /// (the default) means calls cannot overlap, and the MCP server runs them one at a time.
+    fn fork(&self) -> Option<Box<dyn Backend>> {
+        None
+    }
 }
 
 /// An engine in this process.
@@ -101,6 +107,10 @@ impl Backend for LocalBackend {
     fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError> {
         self.engine.call(caller.clone(), tool, params).map_err(BridgeError::Tool)
     }
+
+    fn fork(&self) -> Option<Box<dyn Backend>> {
+        Some(Box::new(self.clone()))
+    }
 }
 
 impl Backend for Box<dyn Backend> {
@@ -110,5 +120,9 @@ impl Backend for Box<dyn Backend> {
 
     fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError> {
         (**self).call(caller, tool, params)
+    }
+
+    fn fork(&self) -> Option<Box<dyn Backend>> {
+        (**self).fork()
     }
 }

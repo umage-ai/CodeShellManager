@@ -680,3 +680,15 @@ fn an_osc_9001_accent_can_be_reset() {
     assert_eq!(v.session(&id).unwrap().accent, folder_colour);
     assert_eq!(h.ok("session_accent_reset", json!({"session_id": id})).data["changed"], false);
 }
+
+#[test]
+fn wsl_distros_answers_off_the_engine_thread_and_needs_no_consent() {
+    let h = H::new();
+    // An MCP caller gets the answer without a consent card: it is declared read-only.
+    let r = h.engine.call(ext(None), "wsl_distros", json!({}));
+    let out = r.expect("wsl_distros is read-only, so no consent");
+    assert!(out.data.is_array(), "{:?}", out.data);
+    if !cfg!(windows) {
+        assert_eq!(out.data.as_array().unwrap().len(), 0);
+    }
+}

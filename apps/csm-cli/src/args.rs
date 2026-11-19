@@ -222,9 +222,39 @@ pub fn build(tools: &[ToolInfo], note: Option<&str>) -> Command {
         .subcommand(
             Command::new("events")
                 .about("Print engine events from the running app as JSON lines until interrupted"),
+        )
+        .subcommand(
+            Command::new("setup")
+                .about("Connect `csm mcp` to Claude Code, Claude Desktop, Codex and Cursor (comments kept, backup made, verified)")
+                .arg(client_arg())
+                .arg(Arg::new("command").long("command").value_name("PATH").help("The csm program to register (default: this one)"))
+                .arg(Arg::new("dry_run").long("dry-run").action(ArgAction::SetTrue).help("Show the exact change and write nothing"))
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON")),
+        )
+        .subcommand(
+            Command::new("doctor")
+                .about("Check the install and print the fix for anything wrong")
+                .arg(Arg::new("skip_self_test").long("skip-self-test").action(ArgAction::SetTrue).help("Do not start `csm mcp --in-process` to test it"))
+                .arg(Arg::new("skip_signature").long("skip-signature").action(ArgAction::SetTrue).help("Do not check the ConPTY files' signatures (starts PowerShell)"))
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON")),
+        )
+        .subcommand(
+            Command::new("uninstall")
+                .about("Remove the entries `csm setup` added (and only those)")
+                .arg(client_arg())
+                .arg(Arg::new("dry_run").long("dry-run").action(ArgAction::SetTrue).help("Show what would be removed"))
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON")),
         );
     for t in tools {
         cmd = cmd.subcommand(tool_command(t));
     }
     cmd
+}
+
+fn client_arg() -> Arg {
+    Arg::new("client")
+        .long("client")
+        .value_name("ID")
+        .action(ArgAction::Append)
+        .help("An app: claude_code, claude_desktop, codex, cursor (repeatable; default: the ones found)")
 }
