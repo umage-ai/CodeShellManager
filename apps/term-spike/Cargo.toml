@@ -21,4 +21,4 @@ arboard = { version = "3.6", default-features = false }
 log = "0.4"
 
 [dev-dependencies]
-egui_kittest = "0.36"
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }

@@ -278,3 +278,25 @@ impl FontSet {
         &self.face(idx).name
     }
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    fn coverage(fonts: &mut FontSet, bold: bool) -> u64 {
+        let (face, gid) = fonts.lookup('m').unwrap();
+        let g = fonts.rasterize(face, gid, Style { bold, italic: false }, 26.0).unwrap();
+        g.rgba.chunks_exact(4).map(|p| u64::from(p[3])).sum()
+    }
+
+    #[test]
+    fn bold_is_heavier_than_regular() {
+        let (primary, _) = default_paths();
+        let face = primary.iter().find_map(|p| load_face(p, 0).ok()).unwrap();
+        let name = face.name.clone();
+        let mut fonts = FontSet::new(face, Vec::new(), 13.0, true);
+        let (r, b) = (coverage(&mut fonts, false), coverage(&mut fonts, true));
+        eprintln!("{name}: regular {r} bold {b}");
+        assert!(b as f64 > r as f64 * 1.15, "bold {b} not heavier than regular {r}");
+    }
+}
