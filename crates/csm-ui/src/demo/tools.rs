@@ -383,6 +383,8 @@ pub struct SwitchBranchParams {
 pub struct WorktreeNewParams {
     pub session_id: String,
     pub branch: String,
+    pub base: Option<String>,
+    pub path: Option<String>,
     pub open_session: Option<bool>,
 }
 
@@ -390,8 +392,11 @@ pub struct WorktreeNewParams {
 #[serde(deny_unknown_fields)]
 pub struct WorktreeRemoveParams {
     pub session_id: String,
+    pub path: Option<String>,
     #[serde(default)]
     pub delete_branch: bool,
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -469,10 +474,6 @@ const READ: Effects = Effects::READ_ONLY;
 const UI: Effects = Effects::UI;
 const STATE: Effects = Effects::MUTATES_STATE;
 const CONTENT: Effects = Effects::from_bits_truncate(Effects::IDEMPOTENT.bits() | Effects::READS_SESSION_CONTENT.bits());
-const NET: Effects = Effects::from_bits_truncate(
-    Effects::LAUNCHES_PROCESS.bits() | Effects::ACCESSES_NETWORK.bits() | Effects::WRITES_FILESYSTEM.bits(),
-);
-const GIT_WRITE: Effects = Effects::from_bits_truncate(Effects::LAUNCHES_PROCESS.bits() | Effects::WRITES_FILESYSTEM.bits());
 
 /// How a stand-in answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -504,8 +505,6 @@ pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
     use Toolset::*;
     let sid = with::<SessionIdParams>(how);
     let run = with::<RunParams>(how);
-    let git_read = Effects::from_bits_truncate(Effects::IDEMPOTENT.bits() | Effects::LAUNCHES_PROCESS.bits());
-    let wt_remove = Effects::from_bits_truncate(GIT_WRITE.bits() | Effects::MAY_DISCARD_DATA.bits());
     vec![
         // runs
         spec("run_list", "Run commands", "A session's run commands and their last result.", Runs, READ, sid),
@@ -513,16 +512,9 @@ pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
         spec("run_stop", "Stop run", "Stop a running run command.", Runs, Effects::MAY_DISCARD_DATA, run),
         spec("run_output", "Run output", "The output of a run command.", Runs, CONTENT, run),
         spec("run_edit", "Edit run commands…", "Replace a session's list of run commands.", Runs, STATE, with::<RunEditParams>(how)),
-        // git
-        spec("git_status", "Git status", "Branch, upstream, ahead/behind and changed files.", Git, git_read, sid),
-        spec("git_fetch", "Fetch", "git fetch for the session's repo.", Git, NET, sid),
-        spec("git_pull", "Pull (fast-forward only)", "git pull --ff-only; refuses a diverged branch.", Git, NET, sid),
-        spec("git_switch_branch", "Switch branch", "git switch to a local branch.", Git, GIT_WRITE, with::<SwitchBranchParams>(how)),
-        spec("git_branches", "Branches", "Local branches and which worktree holds each.", Git, Effects::LAUNCHES_PROCESS, sid),
-        spec("worktree_list", "Worktrees", "The repo's worktrees with branch and status.", Git, Effects::LAUNCHES_PROCESS, sid),
-        spec("worktree_new", "New worktree…", "Create a worktree from a branch and optionally open a session in it.", Git, GIT_WRITE, with::<WorktreeNewParams>(how)),
-        spec("worktree_remove", "Remove worktree…", "Remove a clean worktree (refuses dirty or nested ones).", Git, wt_remove, with::<WorktreeRemoveParams>(how)),
-        // notes, search: real engine tools (csm-engine tools/search.rs)
+        // git, notes, search: real engine tools (csm-engine tools/git, tools/search), so no
+        // stand-ins. In `--demo` the engine's git tools answer "no session" for the demo's
+        // sessions and the demo backend applies its own effect (`DemoBackend::apply`).
         // app
         spec("open_folder", "Open folder", "Open the session's folder in the file manager.", App, Effects::LAUNCHES_PROCESS, sid),
         spec("open_with", "Open with…", "Open the session's folder in an editor from the Open with list.", App, Effects::LAUNCHES_PROCESS, with::<OpenWithParams>(how)),

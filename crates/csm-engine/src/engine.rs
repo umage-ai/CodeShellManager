@@ -10,6 +10,7 @@
 //!   this client") skips the question next time.
 //! - A panicking tool becomes [`ToolError::Failed`]; the engine thread keeps running.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -58,8 +59,30 @@ impl Ctx<'_> {
 pub struct ParkedReply(Sender<Reply>);
 
 impl ParkedReply {
+    /// Sent from the engine thread (a tool, or a job posted back by a worker), the reply is held
+    /// until the next snapshot is published, so a caller that reads `engine.view()` right after
+    /// the reply sees the change it describes. From any other thread it goes out at once: a worker
+    /// that hasn't touched the state has nothing to publish.
     pub fn send(self, reply: Reply) {
-        let _ = self.0.send(reply);
+        if ON_ENGINE_THREAD.with(Cell::get) {
+            DEFERRED.with(|d| d.borrow_mut().push((self.0, reply)));
+        } else {
+            let _ = self.0.send(reply);
+        }
+    }
+}
+
+thread_local! {
+    static ON_ENGINE_THREAD: Cell<bool> = const { Cell::new(false) };
+    static DEFERRED: RefCell<Vec<(Sender<Reply>, Reply)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Send the replies held by [`ParkedReply::send`]. Called right after a snapshot is published
+/// (`lifecycle::after_step`) and when the engine thread ends.
+pub(crate) fn flush_deferred_replies() {
+    let held = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    for (tx, reply) in held {
+        let _ = tx.send(reply);
     }
 }
 
@@ -193,6 +216,7 @@ impl Engine {
 const TICK: Duration = Duration::from_millis(100);
 
 fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
+    ON_ENGINE_THREAD.with(|f| f.set(true));
     let mut pending: HashMap<u64, Pending> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut grants: Vec<Grant> = Vec::new();
@@ -227,6 +251,7 @@ fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
         let _ = p.reply.send(Err(ToolError::Failed("the app is closing".into())));
     }
     crate::lifecycle::on_exit(&mut state);
+    flush_deferred_replies();
 }
 
 /// One message. Returns false to stop the loop.

@@ -139,6 +139,8 @@ pub(crate) struct Runtime {
     pub conpty: Arc<OnceLock<String>>,
     /// The search index and notes store, when the run has one.
     pub index: Option<csm_index::Index>,
+    /// Git status per live session, the `.git` watchers and the per-repo busy slots.
+    pub git: crate::tools::git::GitRt,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].

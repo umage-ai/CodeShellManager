@@ -200,6 +200,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         }
     }
 
+    // Git: track live sessions, start due status probes (on workers).
+    crate::tools::git::tick(ctx);
+
     if ctx.state.rt.save_due.is_some_and(|d| now >= d) {
         ctx.state.rt.save_due = None;
         save_now(ctx.state);
@@ -271,6 +274,12 @@ pub(crate) fn on_exit(state: &mut State) {
 /// the difference, so no tool can forget one: `SessionChanged` / `SessionRemoved` per session,
 /// `InboxChanged`, `LayoutChanged`, status toasts, and `session_wait` completions.
 pub(crate) fn after_step(state: &mut State, engine: &Engine) {
+    publish_step(state, engine);
+    // Replies parked during this step go out only now, after the snapshot that reflects them.
+    crate::engine::flush_deferred_replies();
+}
+
+fn publish_step(state: &mut State, engine: &Engine) {
     if !state.rt.dirty {
         return;
     }
@@ -605,8 +614,14 @@ pub(crate) fn apply_term_events(ctx: &mut Ctx<'_>, id: &str, instance: u64, even
                                 persist = true;
                             }
                         }
-                        "git-branch" => rt.git_branch = si::sanitize_branch(&v),
-                        "git-dirty" => rt.git_dirty = si::parse_dirty(&v),
+                        "git-branch" => {
+                            rt.git_branch = si::sanitize_branch(&v);
+                            rt.git_osc = true;
+                        }
+                        "git-dirty" => {
+                            rt.git_dirty = si::parse_dirty(&v);
+                            rt.git_osc = true;
+                        }
                         "title" => {
                             if let Some(t) = si::sanitize_title(&v)
                                 && let Some(s) = state.app.sessions.get_mut(i)

@@ -58,6 +58,9 @@ pub(crate) struct SessionRt {
     /// Pushed by OSC 9001 (`git-branch`, `git-dirty`); display only.
     pub git_branch: Option<String>,
     pub git_dirty: bool,
+    /// The program pushed git state with OSC 9001: the git poll stands down for this run (the
+    /// pushed value describes a remote or overlay repo the local folder can't see).
+    pub git_osc: bool,
     /// The terminal title (OSC 0/2).
     pub title: Option<String>,
     /// OSC 7 working directory, raw.
@@ -81,6 +84,7 @@ impl SessionRt {
             heuristic_message: None,
             git_branch: None,
             git_dirty: false,
+            git_osc: false,
             title: None,
             cwd: None,
             restoring,

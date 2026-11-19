@@ -147,6 +147,17 @@ pub struct SessionView {
     pub dirty: bool,
     pub ahead: u32,
     pub behind: u32,
+    /// What the branch tracks (`origin/main`).
+    pub upstream: Option<String>,
+    /// Changed paths.
+    pub changes: u32,
+    /// The git header line (`main → origin/main · ↑2 · 3 changed · worktree of X`): the chip's
+    /// tooltip and the Git tab's first line.
+    pub git_summary: Option<String>,
+    /// In a linked worktree: the main repo's name.
+    pub worktree_of: Option<String>,
+    /// A git operation is running on this session's repository.
+    pub git_busy: bool,
     pub status: Status,
     /// Working progress, 0–100, when the program reports one.
     pub progress: Option<u8>,
@@ -664,6 +675,8 @@ pub struct UiModel {
     /// The WPF app's state file, when one was found at start-up: the empty screen offers to
     /// import it (`state_import_wpf`).
     pub wpf_import: Option<String>,
+    /// The Git tab's details per session, from git tool replies (`crate::git_model`).
+    pub git: BTreeMap<SessionId, crate::git_model::GitDetail>,
 }
 
 impl UiModel {

@@ -22,7 +22,14 @@ use syn::visit::Visit;
 use crate::Findings;
 
 /// Files where `std::process::Command` may be named (a prefix match on `/`-separated paths).
-const PROCESS_ALLOWED: &[&str] = &["crates/csm-engine/src/proc.rs", "crates/csm-pty/", "crates/csm-setup/src/", "xtask/"];
+///
+/// `crates/csm-services/src/git/run.rs` is the git process layer: it needs what `csm_engine::proc`
+/// doesn't give (stderr, the git environment and `WSLENV`, the builders' MSVCRT-quoted raw argv,
+/// and a whole-tree kill on timeout, since a fetch's real work is in child processes), and
+/// csm-services (L2) can't depend on the engine (L3). Same guarantees as `proc`: no console
+/// window, closed stdin, a deadline, capped capture; blocking, called from workers only.
+const PROCESS_ALLOWED: &[&str] =
+    &["crates/csm-engine/src/proc.rs", "crates/csm-pty/", "crates/csm-setup/src/", "crates/csm-services/src/git/run.rs", "xtask/"];
 /// Where `unsafe` may appear.
 const UNSAFE_ALLOWED: &[&str] = &["crates/csm-pty/src/conpty.rs", "crates/csm-pty/src/conpty/"];
 /// UI frame code: nothing here may touch the disk, spawn, or wait.

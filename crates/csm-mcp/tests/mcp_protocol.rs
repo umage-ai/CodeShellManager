@@ -138,18 +138,23 @@ fn definitions_carry_schema_and_annotations_from_effects() {
 
 #[test]
 fn enabling_a_toolset_lists_its_tools_and_notifies() {
-    let (_e, mut c) = start();
+    let (e, mut c) = start();
     c.initialize("claude-code");
+    // The engine's own git tools plus the fake one.
+    let git_tools: Vec<String> = e.registry().all().iter().filter(|s| s.toolset == csm_engine::Toolset::Git).map(|s| s.id.to_string()).collect();
+    assert!(git_tools.contains(&"fake_branch".to_string()));
 
     let list = c.call("toolset_list", json!({}));
     let sets = list["result"]["structuredContent"]["toolsets"].as_array().unwrap().clone();
     let git = sets.iter().find(|s| s["id"] == "git").unwrap();
     assert_eq!(git["enabled"], false);
-    assert_eq!(git["tools"], 1);
+    assert_eq!(git["tools"], git_tools.len());
 
     let (reply, extra) = c.request_all("tools/call", json!({"name": "toolset_enable", "arguments": {"toolset": "git"}}));
     assert!(reply["result"].get("isError").is_none(), "{reply}");
-    assert_eq!(reply["result"]["structuredContent"]["tools"], json!(["fake_branch"]));
+    let enabled: Vec<String> = serde_json::from_value(reply["result"]["structuredContent"]["tools"].clone()).unwrap();
+    assert_eq!(enabled.len(), git_tools.len(), "{enabled:?}");
+    assert!(enabled.contains(&"fake_branch".to_string()));
     assert!(extra.iter().any(|m| m["method"] == "notifications/tools/list_changed"), "{extra:?}");
     assert!(c.tool_names().contains(&"fake_branch".to_string()));
 

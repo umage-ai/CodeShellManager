@@ -1,6 +1,6 @@
 //! The inspector (`.insp`): one right-hand panel with Notes · Runs · Git · Session tabs, following
-//! the active session. Notes and Session are live; Runs and Git show the session's run commands
-//! and git state from the model, with actions wired to their tools (their engine side comes later).
+//! the active session. Notes and Session are live; Runs shows the session's run commands from the
+//! model; Git is [`super::git`].
 
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2};
 use serde_json::json;
@@ -225,76 +225,9 @@ fn runs(ui: &mut Ui, s: &SessionView, actions: &mut Vec<Action>) {
     }
 }
 
+/// The Git tab lives in [`super::git`].
 fn git(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) {
-    let t = Tokens::get(ui.ctx());
-    let Some(branch) = &s.branch else {
-        widgets::card_frame(&t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("No git info for this session").font(semibold(text::BODY)).color(t.fg));
-            ui.label(egui::RichText::new("SSH sessions can push their branch with OSC 9001; git actions need a local or WSL folder.").font(theme::regular(text::CAPTION)).color(t.muted));
-        });
-        return;
-    };
-    widgets::card_frame(&t).inner_margin(egui::Margin::symmetric(space::MD as i8, space::ROW_X as i8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            icons::show(ui, "branch", icon::MD, t.fg);
-            ui.label(egui::RichText::new(branch).font(theme::mono(text::BODY)).color(t.fg).strong());
-            ui.label(egui::RichText::new("→").color(t.muted));
-            ui.label(egui::RichText::new(format!("origin/{branch}")).font(theme::mono(text::MONO)).color(t.fg2));
-        });
-        let wt = s.parent.as_deref().and_then(|p| app.model.session(p)).map(|p| format!(" · worktree of {}", p.name)).unwrap_or_default();
-        let changed = if s.dirty { "3 changed" } else { "clean" };
-        ui.label(egui::RichText::new(format!("↑{} ↓{} · {changed}{wt}", s.ahead, s.behind)).font(theme::mono(text::MONO)).color(t.muted));
-    });
-    ui.horizontal_wrapped(|ui| {
-        let sid = json!({"session_id": s.id});
-        if widgets::button(ui, ButtonKind::Secondary, Some("fetch"), "Fetch", None).clicked() {
-            actions.push(Action::Tool("git_fetch", sid.clone()));
-        }
-        if widgets::button(ui, ButtonKind::Secondary, Some("download"), "Pull", None).clicked() {
-            actions.push(Action::Tool("git_pull", sid.clone()));
-        }
-        if widgets::button(ui, ButtonKind::Secondary, Some("branch"), "Switch branch", None).clicked() {
-            actions.push(Action::Tool("git_branches", sid.clone()));
-            actions.push(Action::Toast("The branch list comes with the engine's git tools (git_branches).".into()));
-        }
-    });
-    if s.dirty {
-        widgets::caps(ui, "Changes");
-        for (x, f, added) in [("M", "src/search/FacetPanel.tsx", false), ("M", "src/search/facets.ts", false), ("A", "src/search/api/brand.ts", true)] {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(x).font(theme::mono(text::MONO)).color(if added { t.green } else { t.peach }).strong());
-                ui.label(egui::RichText::new(f).font(theme::mono(text::MONO)).color(t.fg));
-            });
-        }
-    }
-    widgets::caps(ui, "Worktrees");
-    let siblings: Vec<&SessionView> =
-        app.model.sessions.iter().filter(|x| x.id == s.id || x.parent.as_deref() == Some(s.id.as_str()) || s.parent.as_deref() == Some(x.id.as_str()) || (s.parent.is_some() && x.parent == s.parent)).collect();
-    for w in siblings {
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::SM), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
-        }
-        let y1 = rect.min.y + space::MD;
-        let nr = ui.painter().text(pos2(rect.min.x + space::SM, y1), Align2::LEFT_CENTER, &w.name, semibold(text::BODY), t.fg);
-        ui.painter().text(pos2(nr.max.x + space::XS + space::XXS, y1), Align2::LEFT_CENTER, w.branch.clone().unwrap_or_default(), theme::regular(text::BODY), t.muted);
-        icons::paint_status(ui, Rect::from_min_size(pos2(rect.max.x - space::SM - icon::SM, y1 - icon::SM / 2.0), Vec2::splat(icon::SM)), w.status, icon::SM);
-        widgets::paint_text(ui, pos2(rect.min.x + space::SM, rect.max.y - space::SM - space::XXS), Align2::LEFT_CENTER, &w.folder, theme::mono(text::MONO_SM), t.muted, rect.width() - space::LG);
-        if resp.clicked() && w.id != s.id {
-            actions.push(Action::Tool("session_focus", json!({"session_id": w.id})));
-        }
-    }
-    ui.horizontal_wrapped(|ui| {
-        if widgets::button(ui, ButtonKind::Ghost, Some("plus"), "New worktree…", None).clicked() {
-            actions.push(Action::Toast("New worktree asks for a branch name (worktree_new) — next round.".into()));
-        }
-        if widgets::button(ui, ButtonKind::Danger, Some("trash"), "Remove…", None).clicked() {
-            actions.push(Action::Tool("worktree_remove", json!({"session_id": s.id, "delete_branch": false})));
-        }
-    });
-    ui.label(egui::RichText::new("No commit, push or merge here: Claude is editing this tree.").font(theme::regular(text::CAPTION)).color(t.muted));
+    super::git::tab(ui, app, s, actions);
 }
 
 fn session(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) {
