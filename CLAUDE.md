@@ -13,7 +13,9 @@ read its section there and carry over the invariant, not the C# shape.
   honestly; consent for MCP callers is derived from them. Widget-level input (keystrokes into the
   focused pane, scrolling, selection, resize) goes straight to the session's terminal handle and
   is not a tool; programmatic input is (`session_send_text`).
-- **Local commits only.** Never push, never add a remote unless the maintainer asks.
+- **Remote:** `github.com/umage-ai/CodeShellManager-rs` (private). Only `main` is pushed, after a
+  merge that passes `cargo test --workspace` and clippy. Agents working on feature branches never
+  push and never add remotes.
 - **Layering:** `csm-core` (pure) → `csm-pty`, `csm-term` → `csm-services` → `csm-engine` →
   `csm-ui` → `apps/*`. Lower crates never depend on higher ones; only `csm-ui` and apps use egui.
 - **`unsafe`:** workspace lint is `deny`; every crate root has `#![forbid(unsafe_code)]` except
