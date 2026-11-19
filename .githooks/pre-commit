@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .githooks
+# Blocks a commit that stages something shaped like a token or a private key.
+exec cargo xtask secrets --staged

@@ -15,6 +15,7 @@ pub mod events;
 mod launch;
 mod lifecycle;
 pub mod persist;
+pub mod proc;
 pub mod registry;
 mod screen;
 mod session;
@@ -23,6 +24,8 @@ pub mod state;
 pub mod status;
 pub mod tool;
 mod tools;
+pub mod which;
+pub mod wsl_probe;
 
 pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};

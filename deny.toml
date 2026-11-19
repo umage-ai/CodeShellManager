@@ -1,0 +1,51 @@
+# cargo-deny config (after craft-anything's deny.toml, MIT OR Apache-2.0). Run `cargo deny check`.
+# Policy: permissive licences only. We never link or bundle copyleft code.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisories: vulnerable and unmaintained crates are reported.
+yanked = "warn"
+ignore = []
+
+[licenses]
+# Dual-licensed crates (r-efi, self_cell, ...) pass through their permissive option.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",         # egui's embedded default fonts (epaint_default_fonts)
+    "Ubuntu-font-1.0", # same crate
+]
+confidence-threshold = 0.9
+# MPL-2.0 is file-level copyleft: allowed only for named crates, used unmodified.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "option-ext" }, # via dirs
+]
+
+[licenses.private]
+# Our own crates are `publish = false`.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# The Craft libraries, pinned to one commit in csm-mcp's manifest (egui-free crates only).
+allow-git = ["https://github.com/storytold/craft-libs"]
