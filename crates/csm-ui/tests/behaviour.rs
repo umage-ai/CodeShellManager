@@ -597,3 +597,27 @@ fn an_idle_window_does_not_repaint() {
     let d = delay(&h);
     assert!(d >= std::time::Duration::from_millis(50) && d < std::time::Duration::from_secs(1), "spinner cadence: {d:?}");
 }
+
+#[test]
+fn the_wsl_fields_ask_for_the_installed_distributions_once() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    settle(&mut h);
+    h.state_mut().ui.quick.remote = true;
+    h.state_mut().ui.quick.rkind = csm_ui::app::RemoteKind::Wsl;
+    for _ in 0..3 {
+        settle(&mut h);
+    }
+    let asked = h.state().submitted().iter().filter(|c| c.id == "wsl_distros").count();
+    assert_eq!(asked, 1, "asked once, not every frame");
+    assert!(h.state().ui.quick.distros.is_some());
+}
+
+#[test]
+fn the_window_icon_is_the_logo() {
+    let icon = csm_ui::app::app_icon(64);
+    assert_eq!((icon.width, icon.height, icon.rgba.len()), (64, 64, 64 * 64 * 4));
+    assert_eq!(icon.rgba[3], 0, "rounded corner: transparent");
+    assert_eq!(icon.rgba[(32 * 64 + 4) * 4 + 3], 255, "the square is opaque");
+}

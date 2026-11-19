@@ -239,6 +239,8 @@ pub struct QuickOpenState {
     pub wsl_user: String,
     /// Edit mode: `session_get` filled the fields in.
     pub loaded: bool,
+    /// WSL: the installed distributions (`wsl_distros`, asked once the WSL fields show).
+    pub distros: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -421,6 +423,16 @@ impl CsmApp {
                 }
             }
             "app_info" => self.ui.settings.info = out.data.clone(),
+            "wsl_distros" => {
+                let list = out.data.as_array().cloned().unwrap_or_default();
+                let names: Vec<String> = list.iter().filter_map(|d| d["name"].as_str().map(String::from)).collect();
+                if self.ui.quick.distro.trim().is_empty()
+                    && let Some(d) = list.iter().find(|d| d["default"] == true).or(list.first()).and_then(|d| d["name"].as_str())
+                {
+                    self.ui.quick.distro = d.to_string();
+                }
+                self.ui.quick.distros = Some(names);
+            }
             "grant_list" => self.ui.settings.grants = out.data.as_array().cloned().unwrap_or_default(),
             "grant_revoke" => self.dispatch.submit("grant_list", json!({})),
             "session_get" => {
@@ -1075,4 +1087,44 @@ pub fn setup(ctx: &egui::Context, kind: ThemeKind) {
     theme::install_fonts(ctx);
     egui_extras::install_image_loaders(ctx);
     theme::apply(ctx, kind);
+}
+
+/// The window icon: the title bar's logo (a blue rounded square with a prompt), drawn at
+/// `side` pixels so no image file is needed.
+pub fn app_icon(side: u32) -> egui::IconData {
+    let t = theme::Tokens::for_kind(ThemeKind::Mocha);
+    let (bg, ink) = (t.blue, t.on_accent);
+    let n = side.max(16) as f32;
+    let radius = n * 0.22;
+    let mut rgba = Vec::with_capacity((side * side * 4) as usize);
+    // Coverage of the rounded square at a pixel centre, with a one-pixel soft edge.
+    let square = |x: f32, y: f32| -> f32 {
+        let dx = (x - n / 2.0).abs() - (n / 2.0 - radius);
+        let dy = (y - n / 2.0).abs() - (n / 2.0 - radius);
+        let d = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius;
+        (0.5 - d).clamp(0.0, 1.0)
+    };
+    // Distance from a point to a segment, for the ">" and "_" strokes.
+    let seg = |px: f32, py: f32, a: (f32, f32), b: (f32, f32)| -> f32 {
+        let (vx, vy) = (b.0 - a.0, b.1 - a.1);
+        let h = (((px - a.0) * vx + (py - a.1) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+        (px - a.0 - vx * h).hypot(py - a.1 - vy * h)
+    };
+    let w = n * 0.085;
+    let strokes = [
+        ((0.28, 0.32), (0.46, 0.50)),
+        ((0.46, 0.50), (0.28, 0.68)),
+        ((0.54, 0.70), (0.74, 0.70)),
+    ];
+    for y in 0..side {
+        for x in 0..side {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let a = square(px, py);
+            let d = strokes.iter().map(|(p, q)| seg(px, py, (p.0 * n, p.1 * n), (q.0 * n, q.1 * n))).fold(f32::MAX, f32::min);
+            let k = (w - d + 0.5).clamp(0.0, 1.0);
+            let mix = |c0: u8, c1: u8| (f32::from(c0) * (1.0 - k) + f32::from(c1) * k).round() as u8;
+            rgba.extend_from_slice(&[mix(bg.r(), ink.r()), mix(bg.g(), ink.g()), mix(bg.b(), ink.b()), (a * 255.0).round() as u8]);
+        }
+    }
+    egui::IconData { rgba, width: side, height: side }
 }

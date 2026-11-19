@@ -519,6 +519,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     let mut changed = false;
     let mut open_group_menu = None;
     let mut save_clicked = false;
+    let mut ask_distros = false;
     card(ctx, "quick-open", size::PALETTE_W, |ui| {
         let t = Tokens::get(ui.ctx());
         if let Some(id) = &q.edit {
@@ -542,9 +543,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         let (icon_name, hint) = if q.edit.is_some() { ("folder", "Folder: a path") } else { ("plus", "Folder to start in: type a name or a path") };
         let resp = if q.remote && q.edit.is_some() {
             // An SSH or WSL session's folder is in the connection fields below.
-            let (rr, _) = ui.allocate_exact_size(vec2(ui.available_width(), space::XS), Sense::hover());
-            let _ = rr;
-            ui.allocate_response(Vec2::ZERO, Sense::hover())
+            ui.allocate_response(vec2(ui.available_width(), space::XS), Sense::hover())
         } else {
             input_row(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input")
         };
@@ -655,7 +654,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             });
         });
         if q.remote {
-            let (rr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG * 2.0 + space::LG), Sense::hover());
+            let picker = q.rkind == RemoteKind::Wsl && q.distros.as_ref().is_some_and(|d| !d.is_empty());
+            let extra = if picker { size::CONTROL + space::SM } else { 0.0 };
+            let (rr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG * 2.0 + space::LG + extra), Sense::hover());
             ui.painter().rect_filled(rr, 0.0, t.mantle);
             ui.painter().hline(rr.x_range(), rr.min.y, Stroke::new(size::HAIRLINE, t.surface0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(rr.shrink2(vec2(space::MD + space::XXS, space::MD))), |ui| {
@@ -689,12 +690,30 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             field(ui, "Remote folder", &mut q.remote_folder, "/srv/app");
                         }
                         RemoteKind::Wsl => {
+                            if q.distros.is_none() {
+                                // Asked once, off the engine thread (`wsl.exe` can boot a VM).
+                                q.distros = Some(Vec::new());
+                                ask_distros = true;
+                            }
                             field(ui, "Distro", &mut q.distro, "Ubuntu");
                             field(ui, "User", &mut q.wsl_user, "default");
                             field(ui, "Linux folder", &mut q.linux_folder, "~/src (blank: home)");
                         }
                     }
                 });
+                // The installed distributions, one click each.
+                let installed: Vec<String> = q.distros.clone().unwrap_or_default();
+                if q.rkind == RemoteKind::Wsl && !installed.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Installed").font(theme::regular(text::CAPTION)).color(t.muted));
+                        for d in &installed {
+                            let kind = if q.distro == *d { ButtonKind::Primary } else { ButtonKind::Ghost };
+                            if widgets::button(ui, kind, None, d, None).clicked() {
+                                q.distro = d.clone();
+                            }
+                        }
+                    });
+                }
             });
         }
         // Footer.
@@ -726,6 +745,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     });
     if changed {
         q.sel = 0;
+    }
+    if ask_distros {
+        actions.push(Action::Tool("wsl_distros", json!({})));
     }
     if save_clicked {
         app.ui.quick = q;
