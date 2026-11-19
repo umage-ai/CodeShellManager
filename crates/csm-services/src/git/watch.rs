@@ -59,13 +59,17 @@ pub struct WatchGuard {
 
 impl std::fmt::Debug for WatchGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WatchGuard").field("git_dir", &self.key).finish()
+        f.debug_struct("WatchGuard")
+            .field("git_dir", &self.key)
+            .finish()
     }
 }
 
 impl Drop for WatchGuard {
     fn drop(&mut self) {
-        let Some(map) = self.owner.upgrade() else { return };
+        let Some(map) = self.owner.upgrade() else {
+            return;
+        };
         let gone = {
             let mut m = map.lock().unwrap_or_else(PoisonError::into_inner);
             let empty = match m.get_mut(&self.key) {
@@ -83,19 +87,28 @@ impl Drop for WatchGuard {
 }
 
 fn is_watched_name(p: &Path) -> bool {
-    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n == "HEAD" || n == "index")
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "HEAD" || n == "index")
 }
 
 impl RepoWatchers {
     #[must_use]
     pub fn new(debounce: Duration) -> Self {
-        Self { inner: Arc::new(Mutex::new(HashMap::new())), debounce, next: Arc::new(AtomicU64::new(1)) }
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            debounce,
+            next: Arc::new(AtomicU64::new(1)),
+        }
     }
 
     /// How many git directories are watched (tests, diagnostics).
     #[must_use]
     pub fn watched(&self) -> usize {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Subscribes `cb` to `git_dir`'s `HEAD` and `index`. `None` when the directory can't be
@@ -106,7 +119,11 @@ impl RepoWatchers {
         let mut m = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(e) = m.get_mut(&key) {
             e.subs.push((id, cb));
-            return Some(WatchGuard { owner: Arc::downgrade(&self.inner), key, id });
+            return Some(WatchGuard {
+                owner: Arc::downgrade(&self.inner),
+                key,
+                id,
+            });
         }
         let (tx, rx) = mpsc::channel::<()>();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -121,12 +138,24 @@ impl RepoWatchers {
         let weak = Arc::downgrade(&self.inner);
         let debounce = self.debounce;
         let dkey = key.clone();
-        let spawned = thread::Builder::new().name("csm-git-watch".into()).spawn(move || debounce_loop(&rx, debounce, &weak, &dkey));
+        let spawned = thread::Builder::new()
+            .name("csm-git-watch".into())
+            .spawn(move || debounce_loop(&rx, debounce, &weak, &dkey));
         if spawned.is_err() {
             return None;
         }
-        m.insert(key.clone(), Entry { _watcher: watcher, subs: vec![(id, cb)] });
-        Some(WatchGuard { owner: Arc::downgrade(&self.inner), key, id })
+        m.insert(
+            key.clone(),
+            Entry {
+                _watcher: watcher,
+                subs: vec![(id, cb)],
+            },
+        );
+        Some(WatchGuard {
+            owner: Arc::downgrade(&self.inner),
+            key,
+            id,
+        })
     }
 }
 
