@@ -88,8 +88,21 @@ fn meta(ui: &mut Ui, icon_name: &str, s: &str) {
 fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let now = ui.input(|i| i.time);
+    if s.kind == Kind::Ssh {
+        meta(ui, "note", "Notes are kept per local folder: an SSH session has none.");
+        return;
+    }
+    // Ask the notes store for this session's note once per session shown (the reply fills the cache).
+    if app.ui.notes_cache.asked.as_deref() != Some(s.id.as_str()) {
+        app.ui.notes_cache.asked = Some(s.id.clone());
+        actions.push(Action::Tool("note_get", json!({"session_id": s.id})));
+    }
+    if let Some(why) = app.ui.notes_cache.unavailable.get(&s.id) {
+        meta(ui, "note", why);
+        return;
+    }
     let folder = s.folder.clone();
-    let saved = app.model.note(&folder).to_string();
+    let saved = app.ui.notes_cache.saved.get(&s.id).cloned().unwrap_or_else(|| app.model.note(&folder).to_string());
     let (mut buf, mut last) = app.ui.notes.get(&folder).cloned().unwrap_or((saved.clone(), 0.0));
     let h = ui.available_height() - space::XXL * 2.0 - space::LG;
     let frame = egui::Frame::new()
@@ -112,7 +125,7 @@ fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Actio
     }
     let dirty = buf != saved;
     if dirty && last > 0.0 && now - last >= NOTE_DEBOUNCE_S {
-        actions.push(Action::Tool("note_set", json!({"folder": folder, "text": buf})));
+        actions.push(Action::Tool("note_set", json!({"session_id": s.id, "text": buf})));
         last = 0.0;
     } else if dirty {
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(NOTE_DEBOUNCE_S));
@@ -122,10 +135,10 @@ fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Actio
     } else {
         app.ui.notes.remove(&folder);
     }
-    let same = app.model.sessions.iter().filter(|x| x.folder == s.folder).count();
+    let same = app.ui.notes_cache.shared.get(&s.id).copied().unwrap_or_else(|| app.model.sessions.iter().filter(|x| x.folder == s.folder).count());
     let where_ = if same > 1 { format!(" · shared by {same} sessions in this folder") } else { " · kept per folder".to_string() };
     meta(ui, if dirty { "pencil" } else { "check" }, &format!("{}{where_}", if dirty { "Editing" } else { "Saved" }));
-    meta(ui, "search", "Notes show up in Ctrl+K search");
+    meta(ui, "search", "Notes show up in Ctrl+F search");
 }
 
 fn git(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) {

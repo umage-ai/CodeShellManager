@@ -149,10 +149,12 @@ pub(crate) struct SessionIo {
     /// A keystroke arrived and the engine has not been told yet.
     interacted: AtomicBool,
     engine: Engine,
+    /// Where this session's output is indexed for search, when the run has an index.
+    index: Option<csm_index::Index>,
 }
 
 impl SessionIo {
-    pub(crate) fn new(id: &str, name: &str, instance: u64, size: GridSize, engine: Engine) -> Arc<Self> {
+    pub(crate) fn new(id: &str, name: &str, instance: u64, size: GridSize, engine: Engine, index: Option<csm_index::Index>) -> Arc<Self> {
         let cell: Arc<OnceLock<Arc<dyn Pty>>> = Arc::new(OnceLock::new());
         let term = Terminal::new(size, TermConfig::default(), Arc::new(Replies(cell.clone())));
         let mode = term.shared_mode();
@@ -171,6 +173,7 @@ impl SessionIo {
             detector_active: AtomicBool::new(true),
             interacted: AtomicBool::new(false),
             engine,
+            index,
         })
     }
 
@@ -228,6 +231,10 @@ impl SessionIo {
             let Some(io) = weak.upgrade() else { return };
             let now = now_ms();
             io.last_output_ms.store(now, Ordering::Release);
+            if let Some(ix) = &io.index {
+                // Non-blocking: queues the raw bytes for the index thread (drops and counts on overflow).
+                ix.feed(&io.id, bytes);
+            }
             let events = {
                 let mut t = io.lock_terminal();
                 t.advance(bytes);

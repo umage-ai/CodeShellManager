@@ -10,13 +10,16 @@
 //! [`plan`] is pure. [`resolve`] does the I/O (Claude resume lookup, pwsh location, folder
 //! check) and must run on a worker thread.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use csm_core::models::{SessionKind, ShellSession};
 use csm_services::argv::split_command_line;
 use csm_services::launch::{self as sl, LaunchSpec};
+
+use crate::{proc, which, wsl_probe};
 
 /// `ClaudeSessionService.IsClaudeCommand`.
 pub fn is_claude_command(command: &str) -> bool {
@@ -31,9 +34,12 @@ pub struct Plan {
     /// `None`: the user's home folder.
     pub cwd: Option<PathBuf>,
     pub is_claude: bool,
+    /// `PATH` for the child: the app's own plus the folders installers use, so `claude` resolves
+    /// when the app was started from Explorer or the Dock with a short `PATH`. `None` leaves it.
+    pub path: Option<OsString>,
 }
 
-fn spec_of(s: &ShellSession) -> LaunchSpec {
+fn spec_of(s: &ShellSession, wsl_shell: Option<&str>) -> LaunchSpec {
     LaunchSpec {
         kind: match s.kind {
             SessionKind::Local => sl::SessionKind::Local,
@@ -50,7 +56,7 @@ fn spec_of(s: &ShellSession) -> LaunchSpec {
         wsl_distro: s.wsl_distro.clone(),
         wsl_user: s.wsl_user.clone(),
         wsl_working_folder: s.wsl_working_folder.clone(),
-        resolved_wsl_shell: None,
+        resolved_wsl_shell: wsl_shell.map(str::to_owned),
     }
 }
 
@@ -72,6 +78,12 @@ fn is_passthrough_shell(command: &str) -> bool {
 /// `wrapper` is the PowerShell that hosts non-shell commands on Windows; `unix_shell` is the
 /// login shell elsewhere.
 pub fn plan(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell: &str) -> Result<Plan, String> {
+    plan_with(s, resume_id, wrapper, unix_shell, None)
+}
+
+/// [`plan`] with the WSL login shell the distro probe found (`ResolvedWslShell`; `bash` when
+/// `None`).
+pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell: &str, wsl_shell: Option<&str>) -> Result<Plan, String> {
     let is_claude = is_claude_command(&s.command);
     if let Some(msg) = s.launch_validation_error() {
         return Err(msg.to_owned());
@@ -96,14 +108,14 @@ pub fn plan(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell
             }
         }
         SessionKind::Ssh => {
-            let args = sl::build_ssh_args(&spec_of(s)).map_err(|e| e.to_string())?;
+            let args = sl::build_ssh_args(&spec_of(s, None)).map_err(|e| e.to_string())?;
             std::iter::once("ssh".to_owned()).chain(split_command_line(&args)).collect()
         }
         SessionKind::Wsl => {
             if !cfg!(windows) {
                 return Err("WSL sessions run on Windows only.".into());
             }
-            let args = sl::build_wsl_args(&spec_of(s), None).map_err(|e| e.to_string())?;
+            let args = sl::build_wsl_args(&spec_of(s, wsl_shell), None).map_err(|e| e.to_string())?;
             std::iter::once("wsl.exe".to_owned()).chain(split_command_line(&args)).collect()
         }
     };
@@ -114,7 +126,7 @@ pub fn plan(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell
         SessionKind::Local if !s.working_folder.trim().is_empty() => Some(PathBuf::from(s.working_folder.trim())),
         _ => None,
     };
-    Ok(Plan { argv, cwd, is_claude })
+    Ok(Plan { argv, cwd, is_claude, path: None })
 }
 
 /// [`plan`] plus its I/O: the Claude resume lookup (only when `resume` is set), the PowerShell
@@ -138,7 +150,17 @@ pub fn resolve(s: &ShellSession, resume: bool) -> Result<Plan, String> {
     };
     let wrapper = if cfg!(windows) { pwsh() } else { "pwsh.exe" };
     let unix_shell = std::env::var("SHELL").ok().filter(|v| v.starts_with('/')).unwrap_or_else(|| "/bin/sh".into());
-    let mut p = plan(s, resume_id.as_deref(), wrapper, &unix_shell)?;
+    let mut p = if s.kind == SessionKind::Wsl {
+        let wsl = wsl_session(s)?;
+        let shell = wsl_probe::login_shell(&wsl.wsl_distro, &wsl.wsl_user);
+        plan_with(&wsl, resume_id.as_deref(), wrapper, &unix_shell, Some(&shell))?
+    } else {
+        plan(s, resume_id.as_deref(), wrapper, &unix_shell)?
+    };
+    p.path = which::search_path();
+    if s.kind == SessionKind::Local && !is_passthrough_shell(&s.command) && which::which(first_word(&s.command)).is_none() {
+        log::warn!("`{}` was not found on PATH or in the usual install folders; the shell may not find it either", first_word(&s.command));
+    }
     if p.cwd.as_deref().is_some_and(|c| !c.is_dir()) {
         log::warn!("session folder '{}' does not exist; starting in home", s.working_folder);
         p.cwd = None;
@@ -147,6 +169,29 @@ pub fn resolve(s: &ShellSession, resume: bool) -> Result<Plan, String> {
         p.cwd = dirs::home_dir();
     }
     Ok(p)
+}
+
+fn first_word(command: &str) -> &str {
+    command.split_whitespace().next().unwrap_or("")
+}
+
+/// The WSL session with its Linux folder made concrete (`WslDiscoveryService` rules): blank or
+/// `~` stays blank, which `build_wsl_args` turns into an unquoted `--cd ~` (quoting it would make
+/// a folder literally called `~`); `~/x` becomes `$HOME/x`, because wsl.exe expands only the bare
+/// `~` token and would treat `~/x` as a Windows path. Blocking: probes `$HOME` when it needs it.
+fn wsl_session(s: &ShellSession) -> Result<ShellSession, String> {
+    let mut out = s.clone();
+    let folder = s.wsl_working_folder.trim();
+    out.wsl_working_folder = if folder == "~" {
+        String::new()
+    } else if let Some(rest) = folder.strip_prefix("~/") {
+        let home = wsl_probe::home(&s.wsl_distro, &s.wsl_user)
+            .ok_or_else(|| format!("Could not find the home folder in WSL distro `{}` (is it starting?). Try again, or edit the session and type the full Linux path.", s.wsl_distro.trim()))?;
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    } else {
+        folder.to_owned()
+    };
+    Ok(out)
 }
 
 /// `CLAUDE_CONFIG_DIR`, else `~/.claude` (a stale `~/.claude` must not win over the env var).
@@ -185,7 +230,7 @@ pub(crate) fn pwsh() -> &'static str {
         let where_exe = std::env::var_os("SystemRoot")
             .map(|r| PathBuf::from(r).join("System32").join("where.exe"))
             .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\where.exe"));
-        let out = run_with_timeout(std::process::Command::new(where_exe).arg("pwsh.exe"), Duration::from_secs(3));
+        let out = proc::capture_ok(where_exe, ["pwsh.exe"], Duration::from_secs(3));
         let choice = sl::choose_pwsh(out.as_deref(), &FsProbe);
         log::info!("session wrapper shell: {choice}");
         choice
@@ -208,41 +253,7 @@ impl sl::RunnableProbe for FsProbe {
     }
 
     fn can_execute(&self, path: &str) -> bool {
-        let mut c = std::process::Command::new(path);
-        c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"]);
-        run_with_timeout(&mut c, Duration::from_secs(5)).is_some()
-    }
-}
-
-/// Runs a probe process (no shell, no stdin) and returns its stdout when it exits 0 in time.
-pub(crate) fn run_with_timeout(cmd: &mut std::process::Command, timeout: Duration) -> Option<String> {
-    use std::io::Read;
-    use std::process::Stdio;
-    // A windowed app must not flash a console for a probe (CREATE_NO_WINDOW). ConPTY sessions
-    // are the exception: they have a pseudo console.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut so) = child.stdout.take() {
-                    let _ = so.read_to_string(&mut out);
-                }
-                return status.success().then_some(out);
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+        proc::capture_ok(path, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], Duration::from_secs(5)).is_some()
     }
 }
 
@@ -252,6 +263,41 @@ mod tests {
 
     fn local(command: &str, args: &str) -> ShellSession {
         ShellSession { id: "s".into(), command: command.into(), args: args.into(), working_folder: r"C:\src\a b".into(), ..Default::default() }
+    }
+
+    fn wsl(folder: &str) -> ShellSession {
+        ShellSession { id: "w".into(), kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), wsl_working_folder: folder.into(), command: "claude".into(), ..Default::default() }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn wsl_blank_and_tilde_folders_mean_home_unquoted() {
+        for folder in ["", "  ", "~"] {
+            let p = plan_with(&wsl_session_no_probe(folder), None, "pwsh.exe", "/bin/sh", Some("sh")).unwrap();
+            let at = p.argv.iter().position(|a| a == "--cd").unwrap();
+            assert_eq!(p.argv[at + 1], "~", "{folder:?} -> {:?}", p.argv);
+        }
+        let p = plan_with(&wsl("/home/a b"), None, "pwsh.exe", "/bin/sh", Some("sh")).unwrap();
+        assert_eq!(p.argv[0], "wsl.exe");
+        assert!(p.argv.windows(2).any(|w| w == ["-e", "sh"]), "the probed shell is the login shell: {:?}", p.argv);
+        assert!(p.argv.contains(&"/home/a b".to_owned()));
+        let p = plan_with(&wsl("/x"), None, "pwsh.exe", "/bin/sh", None).unwrap();
+        assert!(p.argv.windows(2).any(|w| w == ["-e", "bash"]), "{:?}", p.argv);
+    }
+
+    /// What `wsl_session` does to a folder that needs no probe.
+    fn wsl_session_no_probe(folder: &str) -> ShellSession {
+        wsl_session(&wsl(folder)).unwrap()
+    }
+
+    #[test]
+    fn wsl_tilde_folders_are_normalised_without_a_probe_when_bare() {
+        assert_eq!(wsl_session(&wsl("~")).unwrap().wsl_working_folder, "");
+        assert_eq!(wsl_session(&wsl("/srv/x")).unwrap().wsl_working_folder, "/srv/x");
+        // `~/x` needs `$HOME`: without a probe result it is an error, never a literal `~/x`.
+        if !cfg!(windows) {
+            assert!(wsl_session(&wsl("~/proj")).is_err());
+        }
     }
 
     #[test]

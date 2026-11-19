@@ -40,12 +40,32 @@ pub fn app_tools() -> Vec<csm_engine::ToolSpec> {
     v
 }
 
+/// An in-memory search index with a little of what the demo's sessions "printed", so Ctrl+F and
+/// the palette's search row show real results in `--demo`, screenshots and UI tests.
+fn demo_index() -> csm_engine::IndexSetting {
+    use csm_engine::csm_index::{Index, IndexOptions};
+    let Ok(ix) = Index::start(IndexOptions::memory()) else { return csm_engine::IndexSetting::Off };
+    let lines: [(&str, &str, &str, &str); 6] = [
+        ("odulodo", "Odulodo", r"C:\GitHub\Odulodo", "Do you want to run `dotnet ef database update`? approval needed for the migration"),
+        ("web", "Odulodo.Web", r"C:\GitHub\Odulodo.Web", "error TS2345: Argument of type 'BrandFacet' is not assignable to parameter of type 'Facet'"),
+        ("web", "Odulodo.Web", r"C:\GitHub\Odulodo.Web", "vite v6 building for production... 214 modules transformed"),
+        ("rs", "CodeShellManager-rs", r"C:\GitHub\CodeShellManager-rs", "test result: ok. 142 passed; 0 failed; the terminal widget keeps pace with 4 MB/s of output"),
+        ("csm", "CodeShellManager", r"C:\GitHub\CodeShellManager", "Merged the migration: the terminal search index moved to the local app data folder"),
+        ("craft", "craft-anything", r"C:\src\craft-anything", "error[E0599]: no method named `frobnicate` found for struct `Engine` in the current scope"),
+    ];
+    for (id, name, folder, text) in lines {
+        ix.note_session(id, name, folder, "");
+        ix.feed(id, format!("{text}\r\n").as_bytes());
+    }
+    csm_engine::IndexSetting::Handle(ix)
+}
+
 /// Starts an engine for the demo backend: echoing stand-ins and `demo_set_status`, and a PTY
 /// factory that refuses, so nothing the demo submits ever starts a process. The demo's sessions
 /// live in [`demo::DemoBackend`], not in this engine.
 pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
     let pty: csm_engine::PtyFactory = std::sync::Arc::new(|_| Err(std::io::Error::other("the demo starts no processes")));
-    let options = csm_engine::StateOptions { pty, restore_on_start: false, ..csm_engine::StateOptions::default() };
+    let options = csm_engine::StateOptions { pty, restore_on_start: false, index: demo_index(), ..csm_engine::StateOptions::default() };
     let state = csm_engine::State::new(csm_core::models::AppState::default(), options);
     let mut tools = demo::tools::stand_ins(demo::tools::StandIn::Echo);
     tools.extend(demo::tools::demo_only());

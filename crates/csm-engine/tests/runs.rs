@@ -296,7 +296,9 @@ fn a_real_cmd_echo_run_reaches_cmd_verbatim() {
     let mut last = Value::Null;
     while Instant::now() < deadline {
         last = e.call(Caller::Ui, "run_output", json!({"session_id": "s"})).unwrap().data;
-        if last["phase"] == "ok" || last["phase"] == "failed" {
+        // The reader can still be draining after the exit is seen: wait for the last line.
+        let done = last["phase"] == "ok" || last["phase"] == "failed";
+        if done && (last["output"].as_str().is_some_and(|t| t.contains("-done")) || last["phase"] == "failed") {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));

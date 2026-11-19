@@ -408,7 +408,8 @@ pub struct NoteGetParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NoteSetParams {
-    pub folder: String,
+    pub folder: Option<String>,
+    pub session_id: Option<String>,
     pub text: String,
 }
 
@@ -471,7 +472,6 @@ pub struct DemoStatusParams {
 const READ: Effects = Effects::READ_ONLY;
 const UI: Effects = Effects::UI;
 const STATE: Effects = Effects::MUTATES_STATE;
-const CONTENT: Effects = Effects::from_bits_truncate(Effects::IDEMPOTENT.bits() | Effects::READS_SESSION_CONTENT.bits());
 const NET: Effects = Effects::from_bits_truncate(
     Effects::LAUNCHES_PROCESS.bits() | Effects::ACCESSES_NETWORK.bits() | Effects::WRITES_FILESYSTEM.bits(),
 );
@@ -518,11 +518,7 @@ pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
         spec("worktree_list", "Worktrees", "The repo's worktrees with branch and status.", Git, Effects::LAUNCHES_PROCESS, sid),
         spec("worktree_new", "New worktree…", "Create a worktree from a branch and optionally open a session in it.", Git, GIT_WRITE, with::<WorktreeNewParams>(how)),
         spec("worktree_remove", "Remove worktree…", "Remove a clean worktree (refuses dirty or nested ones).", Git, wt_remove, with::<WorktreeRemoveParams>(how)),
-        // notes, search
-        spec("note_get", "Notes", "The note kept for a folder.", Notes, CONTENT, with::<NoteGetParams>(how)),
-        spec("note_set", "Save note", "Replace the note kept for a folder.", Notes, STATE, with::<NoteSetParams>(how)),
-        spec("search_output", "Search all output", "Full-text search of every session's output.", Search, CONTENT, with::<SearchParams>(how)),
-        spec("search_notes", "Search notes", "Search every folder's notes.", Search, CONTENT, with::<SearchParams>(how)),
+        // notes, search: real engine tools (csm-engine tools/search.rs)
         // app
         spec("grant_list", "MCP grants", "Clients allowed to call tools without asking.", App, READ, no_params(how)),
         spec("grant_revoke", "Revoke an MCP grant", "Make a client ask again before calling a tool.", App, STATE, with::<GrantRevokeParams>(how)),

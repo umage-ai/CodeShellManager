@@ -1,11 +1,13 @@
 //! The engine's tools (docs/tools.md): sessions and the inbox, groups, layout and view, app.
-//! Git, run commands, notes and search are separate modules not built yet.
+//! Notes and search are in `search`; git and run commands are separate modules not built yet.
 
 mod app;
 mod groups;
 mod layout;
 pub mod open;
 mod runs;
+mod platform;
+mod search;
 mod sessions;
 
 use serde_json::Value;
@@ -22,6 +24,8 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(app::specs());
     v.extend(runs::specs());
     v.extend(open::specs());
+    v.extend(platform::specs());
+    v.extend(search::specs());
     v
 }
 

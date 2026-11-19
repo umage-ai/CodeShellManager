@@ -7,5 +7,6 @@ pub mod overlays;
 pub mod palette;
 pub mod panes;
 pub mod runs;
+pub mod search;
 pub mod sidebar;
 pub mod titlebar;

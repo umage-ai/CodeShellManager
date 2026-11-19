@@ -12,9 +12,11 @@
 
 mod engine;
 pub mod events;
+mod index;
 mod launch;
 mod lifecycle;
 pub mod persist;
+pub mod proc;
 pub mod registry;
 pub mod runs;
 mod screen;
@@ -24,7 +26,11 @@ pub mod state;
 pub mod status;
 pub mod tool;
 pub(crate) mod tools;
+pub mod which;
+pub mod wsl_probe;
 
+pub use csm_index;
+pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
 pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};
 pub use registry::Registry;

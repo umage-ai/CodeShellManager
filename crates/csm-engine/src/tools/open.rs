@@ -5,7 +5,7 @@
 //! substituted inside their own token, nothing option-shaped, programs absolute and not a shell,
 //! not under `%SystemRoot%`, batch arguments with cmd metacharacters refused. This module does
 //! the I/O those rules ask about — always on a worker, never the engine or UI thread — and
-//! launches the program with **argv** (`std::process::Command`, no shell, `CREATE_NO_WINDOW`).
+//! launches the program with **argv** (`crate::proc`, no shell, `CREATE_NO_WINDOW`).
 //!
 //! **Open folder** (`FolderOpener`): only an existing DIRECTORY is ever opened (ShellExecute or
 //! `open` on a *file* runs it, and a folder comes from state.json and imports). On Windows the
@@ -515,28 +515,8 @@ pub(crate) fn open_url_detached(url: String) {
     });
 }
 
-/// Starts a GUI program with argv (no shell, no console window, no inherited handles) and
-/// reaps it on a thread so it never lingers as a zombie. `raw` (Windows) is appended verbatim
-/// after the args, for Explorer's quoting.
 fn spawn_detached(program: &Path, args: &[String], raw: Option<&str>) -> std::io::Result<()> {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-        if let Some(r) = raw {
-            cmd.raw_arg(r);
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = raw;
-    let mut child = cmd.spawn()?;
-    let _ = std::thread::Builder::new().name("csm-reap".into()).spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    crate::proc::spawn_detached(program, args, raw)
 }
 
 // ── The real machine, for the pure rules ─────────────────────────────────────────────────
@@ -582,21 +562,10 @@ impl ow::OpenWithHost for RealHost {
     }
 }
 
-/// `$HOME` in a WSL distro for a user (`wsl.exe -d <distro> [-u <user>] -e sh -c 'cd ~ && pwd'`,
-/// argv only, 3 s cap). May boot the distro: workers only.
+/// `$HOME` in a WSL distro for a user (the shared, cached `wsl_probe`). May boot the distro:
+/// workers only.
 fn wsl_home(distro: &str, user: &str) -> Option<String> {
-    if distro.trim().is_empty() || distro.starts_with('-') || user.starts_with('-') {
-        return None;
-    }
-    let mut c = std::process::Command::new(system32_or_windows("wsl.exe", true));
-    c.args(["-d", distro.trim()]);
-    if !user.trim().is_empty() {
-        c.args(["-u", user.trim()]);
-    }
-    c.args(["-e", "sh", "-c", "cd ~ && pwd"]);
-    let out = crate::launch::run_with_timeout(&mut c, Duration::from_secs(3))?;
-    let home = out.lines().next()?.trim().to_owned();
-    home.starts_with('/').then_some(home)
+    crate::wsl_probe::home(distro, user)
 }
 
 /// POSIX: the same order as `prepare` — pure rules first, then the program on disk (real path,
@@ -786,9 +755,7 @@ impl DetectEnv for RealEnv {
         }
         for hive in ["HKCU", "HKLM"] {
             let key = format!(r"{hive}\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}");
-            let mut c = std::process::Command::new(system32_or_windows("reg.exe", true));
-            c.args(["query", &key, "/ve"]);
-            if let Some(out) = crate::launch::run_with_timeout(&mut c, Duration::from_secs(3))
+            if let Some(out) = crate::proc::capture_ok(system32_or_windows("reg.exe", true), ["query", key.as_str(), "/ve"], Duration::from_secs(3))
                 && let Some(v) = parse_reg_default(&out)
             {
                 let expanded = expand_env(&v);
@@ -808,9 +775,7 @@ impl DetectEnv for RealEnv {
         if !vswhere.is_file() {
             return None;
         }
-        let mut c = std::process::Command::new(vswhere);
-        c.args(["-all", "-prerelease", "-format", "json", "-utf8", "-nologo"]);
-        crate::launch::run_with_timeout(&mut c, Duration::from_secs(5))
+        crate::proc::capture_ok(vswhere, ["-all", "-prerelease", "-format", "json", "-utf8", "-nologo"], Duration::from_secs(5))
     }
     fn real_path(&self, path: &str) -> Option<String> {
         final_path(path)

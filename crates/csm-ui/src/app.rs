@@ -45,6 +45,10 @@ pub enum Action {
     AskQuit,
     /// A consent card was answered.
     Consent { request_id: u64, answer: &'static str },
+    /// Open the search panel (Ctrl+F, the palette row) with this query; a non-empty one searches at once.
+    OpenSearch(String),
+    /// Run the search panel's current query (`search_output` + `search_notes`).
+    RunSearch,
     /// Pane divider drag finished in Free mode, or a float moved: persist the layout.
     Toast(String),
 }
@@ -73,6 +77,8 @@ pub enum Overlay {
     Palette,
     QuickOpen,
     Busy,
+    /// Search all output and notes (Ctrl+F).
+    Search,
     /// A one-line text prompt (rename, new group).
     Prompt,
 }
@@ -86,6 +92,37 @@ pub struct PaletteState {
     pub focus_input: bool,
 }
 
+
+/// The search panel's state: what was asked, and what the two search tools answered.
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    pub query: String,
+    pub focus_input: bool,
+    /// The query the results below belong to (late replies for an older one are dropped).
+    pub searched: Option<String>,
+    /// Searches submitted and not yet answered.
+    pub pending: u8,
+    /// `search_output` results: `{session_id, session_name, folder, ts, excerpt, matches, reopenable}`.
+    pub output: Vec<Value>,
+    /// `search_notes` results: `{folder, excerpt, matches, session_ids}`.
+    pub notes: Vec<Value>,
+    pub error: Option<String>,
+    /// A result whose session is gone and can be reopened: (session id, name).
+    pub offer: Option<(SessionId, String)>,
+}
+
+/// What `note_get` / `note_set` last told the Notes tab, by session.
+#[derive(Debug, Clone, Default)]
+pub struct NotesCache {
+    /// The saved text, as the engine's notes store has it.
+    pub saved: HashMap<SessionId, String>,
+    /// How many sessions share the note (the store counts them).
+    pub shared: HashMap<SessionId, usize>,
+    /// Why a session has no note (SSH, no folder, no index).
+    pub unavailable: HashMap<SessionId, String>,
+    /// The session whose note was last asked for: it is asked again when the tab shows another one.
+    pub asked: Option<SessionId>,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RemoteKind {
     #[default]
@@ -155,6 +192,8 @@ pub struct UiState {
     pub drags: Drags,
     /// Notes being edited, by folder (saved with `note_set` after a pause).
     pub notes: HashMap<String, (String, f64)>,
+    pub notes_cache: NotesCache,
+    pub search: SearchState,
     pub focus_terminal: Option<SessionId>,
     /// The last active session seen, to move keyboard focus when it changes.
     pub last_active: Option<SessionId>,
@@ -232,10 +271,80 @@ impl CsmApp {
         }
     }
 
+    /// Asks both search tools for the panel's query. The replies land in [`SearchState`] (see
+    /// [`CsmApp::on_tool_reply`]); nothing waits.
+    fn submit_search(&mut self, ctx: &egui::Context) {
+        let q = self.ui.search.query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        let s = &mut self.ui.search;
+        s.searched = Some(q.clone());
+        s.pending = 2;
+        s.output.clear();
+        s.notes.clear();
+        s.error = None;
+        s.offer = None;
+        self.dispatch.submit("search_output", json!({"query": q, "limit": 100}));
+        self.dispatch.submit("search_notes", json!({"query": q, "limit": 30}));
+        ctx.request_repaint();
+    }
+
+    /// Replies the screens act on: search results and the notes store's answers.
+    fn on_tool_reply(&mut self, call: &Call, reply: &csm_engine::Reply) {
+        match call.id.as_str() {
+            "search_output" | "search_notes" => {
+                let s = &mut self.ui.search;
+                if call.params["query"].as_str() != s.searched.as_deref() {
+                    return; // an older search answering late
+                }
+                s.pending = s.pending.saturating_sub(1);
+                let rows = |o: &csm_engine::ToolOutput| o.data["results"].as_array().cloned().unwrap_or_default();
+                match (call.id.as_str(), reply) {
+                    ("search_output", Ok(o)) => s.output = rows(o),
+                    ("search_notes", Ok(o)) => s.notes = rows(o),
+                    (_, Err(e)) => s.error = Some(e.to_string()),
+                    _ => {}
+                }
+            }
+            "note_get" | "note_set" => {
+                let Some(sid) = call.params["session_id"].as_str() else { return };
+                let n = &mut self.ui.notes_cache;
+                match reply {
+                    Ok(o) => {
+                        n.unavailable.remove(sid);
+                        let text = if call.id == "note_get" { o.data["text"].as_str().map(str::to_owned) } else { call.params["text"].as_str().map(str::to_owned) };
+                        let shared = o.data["shared_by"].as_u64().and_then(|v| usize::try_from(v).ok());
+                        // Sessions in one folder share the note: they all see the new text.
+                        let folder = self.model.session(sid).map(|s| s.folder.clone());
+                        let same: Vec<SessionId> = match (&folder, call.id.as_str()) {
+                            (Some(f), "note_set") => self.model.sessions.iter().filter(|s| &s.folder == f).map(|s| s.id.clone()).collect(),
+                            _ => vec![sid.to_owned()],
+                        };
+                        for id in same {
+                            if let Some(t) = &text {
+                                n.saved.insert(id.clone(), t.clone());
+                            }
+                            if let Some(c) = shared {
+                                n.shared.insert(id, c);
+                            }
+                        }
+                    }
+                    Err(csm_engine::ToolError::Refused(m)) => {
+                        n.unavailable.insert(sid.to_owned(), m.clone());
+                    }
+                    Err(_) => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Poll replies and events; refresh the snapshot.
     fn poll(&mut self, ctx: &egui::Context) {
         let (done, events) = self.dispatch.poll();
         for (call, reply) in done {
+            self.on_tool_reply(&call, &reply);
             let n = self.backend.on_reply(&call, &reply);
             self.notices(ctx, n);
         }
@@ -384,6 +493,18 @@ impl CsmApp {
                 self.ui.submenu = None;
                 screens::open_with::open(ctx, &self.model.open_with);
             }
+            Action::OpenSearch(q) => {
+                self.ui.menu = None;
+                self.ui.submenu = None;
+                self.ui.overlay = Overlay::Search;
+                self.ui.search.focus_input = true;
+                if q.trim().is_empty() {
+                    return;
+                }
+                self.ui.search.query = q;
+                self.run(ctx, Action::RunSearch);
+            }
+            Action::RunSearch => self.submit_search(ctx),
             Action::PaletteTool(id) => self.palette_tool(ctx, id),
             Action::FocusTerminal(id) => self.ui.focus_terminal = Some(id),
             Action::AskQuit => {
@@ -431,6 +552,7 @@ impl CsmApp {
                 }
                 return;
             }
+            "search_output" | "search_notes" => return self.run(ctx, Action::OpenSearch(String::new())),
             "app_quit" => return self.run(ctx, Action::AskQuit),
             "inspector_show" => {
                 let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
@@ -480,6 +602,13 @@ impl CsmApp {
                 self.run(ctx, Action::CloseOverlays);
             } else {
                 self.run(ctx, Action::OpenPalette);
+            }
+        }
+        if pressed(ctx, cmd, Key::F) {
+            if self.ui.overlay == Overlay::Search {
+                self.run(ctx, Action::CloseOverlays);
+            } else {
+                self.run(ctx, Action::OpenSearch(String::new()));
             }
         }
         if pressed(ctx, cmd, Key::T) {
@@ -578,6 +707,9 @@ impl CsmApp {
         screens::open_with::show(&ctx, self, &mut actions);
         screens::menus::show(&ctx, self, &mut actions);
         screens::palette::show(&ctx, self, &mut actions);
+        if self.ui.overlay == Overlay::Search {
+            screens::search::show(&ctx, self, &mut actions);
+        }
         screens::overlays::show(&ctx, self, &mut actions);
 
         for a in actions {

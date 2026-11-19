@@ -407,7 +407,13 @@ pub(crate) struct WinPty {
 
 pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
     let program = opts.argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
-    let app = crate::resolve::find_program(program, std::env::var_os("PATH").as_deref())?;
+    // A PATH the caller set for the child is also where its program is looked up.
+    let child_path = opts.env.iter().rev().find(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone());
+    let path = match child_path {
+        Some(set) => set,
+        None => std::env::var_os("PATH"),
+    };
+    let app = crate::resolve::find_program(program, path.as_deref())?;
 
     let mut cmd_line = match &opts.verbatim_args {
         Some(tail) => {
