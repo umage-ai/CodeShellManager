@@ -6,31 +6,17 @@
 //! - Widget-level input (keys into the focused pane, scroll, selection, resize) goes straight to
 //!   the session's [`TerminalSource`]; it is not a tool.
 //!
-//! # Integrating the real engine
+//! # The two backends
 //!
-//! Today [`crate::demo::DemoBackend`] implements [`Backend`]: it registers demo `ToolSpec`s for
-//! the ids in `docs/tools.md` that the engine doesn't have yet (they validate their params and
-//! echo them), and applies each tool's effect to its own model when the reply comes back.
-//! Swapping in the real engine is a mapping job:
+//! - [`crate::EngineBackend`] (the real app): `model()` maps `engine.view()`, `terminal()` adapts
+//!   the engine's `TerminalHandle`, `on_reply` only reports (the engine applied the effect),
+//!   `on_event` turns `FocusRequested`, `Toast`, `QuitProgress` and `QuitReady` into notices.
+//! - [`crate::demo::DemoBackend`] (`codeshell --demo`, screenshots, UI tests): the mock-up's data,
+//!   applying each call's effect to its own model.
 //!
-//! 1. `Backend::model` returns `engine.view()` mapped to [`UiModel`] (or `UiModel` becomes the
-//!    engine's `Snapshot`): sessions → [`SessionView`](crate::model::SessionView) (status from
-//!    the 7501 records / heuristic, `accent` = index of `csm_core::color::hex_color` in the
-//!    palette or the OSC 9001 override, `runs`, `parent` for worktrees), groups, `group_mode` +
-//!    `rail` (`view_get`), `layouts` (`layout_get` per group), `active`, `inspector`,
-//!    `inbox_panel`, restore / shutdown progress, folder suggestions, launch presets, notes and
-//!    the theme setting.
-//! 2. `Backend::terminal` returns `engine.terminal(id)` (the `TerminalHandle` implements
-//!    [`TerminalSource`]: emulator behind a mutex, `set_grid` starts the PTY at the first
-//!    measured size, `write` queues widget input).
-//! 3. `Backend::on_reply` does nothing (the engine applied the effect and emitted events);
-//!    `on_event` maps `SessionChanged`/`LayoutChanged`/… to "take a new snapshot".
-//! 4. Delete `demo::tools()` from the registry and register the engine's modules instead; the
-//!    ids, params and effects are the same, so no screen changes. `demo_set_status` is the only
-//!    demo-only tool (the review's status switcher) and goes away.
-//! 5. Ephemeral UI state that is *not* a tool today and should be decided on: group collapse in
-//!    headers view, the palette/quick-open query text, open menus, an in-progress divider drag
-//!    (the drag's end *is* a tool call: `layout_set` / `inbox_panel_set`).
+//! Ephemeral UI state that is deliberately not a tool: the palette/quick-open query text, open
+//! menus, an in-progress divider drag (the drag's end *is* a tool call: `layout_set` /
+//! `inbox_panel_set`).
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -54,6 +40,8 @@ pub enum Notice {
     Toast(String),
     /// Bring this session into view (switch rail tab, focus its pane).
     Focus(SessionId),
+    /// `app_quit` finished (every process is gone, the state is saved): close the window.
+    QuitReady,
 }
 
 /// What owns the state the screens draw. See the module docs for the real-engine mapping.
@@ -67,7 +55,9 @@ pub trait Backend {
     /// An engine event.
     fn on_event(&mut self, event: &Event) -> Vec<Notice>;
     /// Once a frame, before drawing (timers, repaint scheduling).
-    fn tick(&mut self, _ctx: &egui::Context) {}
+    fn tick(&mut self, _ctx: &egui::Context) -> Vec<Notice> {
+        Vec::new()
+    }
 }
 
 /// Submits tool calls and polls their replies and the engine's events. Never blocks.

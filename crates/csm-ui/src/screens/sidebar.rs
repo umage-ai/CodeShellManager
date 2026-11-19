@@ -86,7 +86,7 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         named(&resp, WidgetType::Button, format!("Group tab: {name}"));
         let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
         if resp.clicked() {
-            actions.push(Action::Tool("view_set", json!({"rail": scope.key()})));
+            actions.push(Action::Tool("view_set", json!({"rail_tab": scope.key()})));
         }
         if let Scope::Group(g) = &scope
             && resp.secondary_clicked()
@@ -316,7 +316,7 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         icons::paint(ui, b, name, icon::SM, if on || resp.hovered() { t.fg } else { t.faint });
         named(&resp, WidgetType::RadioButton, format!("Group view: {}", name));
         if resp.on_hover_text(*tip).clicked() && !on {
-            actions.push(Action::Tool("view_set", json!({"mode": match mode { GroupMode::Rail => "rail", GroupMode::Headers => "headers", GroupMode::Flat => "flat" }})));
+            actions.push(Action::Tool("view_set", json!({"view": match mode { GroupMode::Rail => "rail", GroupMode::Headers => "headers", GroupMode::Flat => "flat" }})));
         }
     }
     if model.group_mode != GroupMode::Rail {
@@ -359,7 +359,7 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             Scope::Group(g) => g.clone(),
             Scope::All => "ungrouped".into(),
         };
-        let collapsed = app.ui.collapsed.contains(&gid);
+        let collapsed = app.model.group(&gid).is_some_and(|g| g.collapsed);
         ui.add_space(space::XS);
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::ROW), Sense::hover());
         let resp = ui.interact(rect, Id::new(("group-header", gid.clone())), Sense::click());

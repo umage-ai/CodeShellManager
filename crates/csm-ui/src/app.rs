@@ -2,7 +2,7 @@
 //! action that changes anything is a tool call ([`Action::Tool`]); the rest is ephemeral UI state
 //! (which menu is open, what the palette's query is).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use csm_engine::Engine;
@@ -25,7 +25,7 @@ pub enum Action {
     CloseOverlays,
     OpenMenu(Menu),
     CloseMenu,
-    /// Headers view: fold a group (UI state; see backend.rs "not a tool today").
+    /// Headers view: fold or unfold a group (`group_collapse`).
     ToggleCollapse(GroupId),
     StartRename(SessionId),
     StartGroupRename(GroupId),
@@ -144,7 +144,6 @@ pub struct UiState {
     pub menu: Option<Menu>,
     /// The submenu open inside the current menu (by label).
     pub submenu: Option<String>,
-    pub collapsed: BTreeSet<GroupId>,
     pub toasts: Vec<Toast>,
     pub consents: Vec<Value>,
     pub drags: Drags,
@@ -178,6 +177,8 @@ pub struct CsmApp {
     pub remote_actions: Arc<Mutex<Vec<Action>>>,
     theme_applied: Option<ThemeKind>,
     fonts_installed: bool,
+    /// `app_quit` finished: the window may close now.
+    pub quit_ready: bool,
 }
 
 impl CsmApp {
@@ -192,6 +193,7 @@ impl CsmApp {
             remote_actions: Arc::new(Mutex::new(Vec::new())),
             theme_applied: None,
             fonts_installed: false,
+            quit_ready: false,
         }
     }
 
@@ -216,6 +218,10 @@ impl CsmApp {
                 Notice::Toast(t) if !t.is_empty() => self.toast(ctx, t),
                 Notice::Toast(_) => {}
                 Notice::Focus(id) => self.ui.focus_terminal = Some(id),
+                Notice::QuitReady => {
+                    self.quit_ready = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
     }
@@ -239,7 +245,8 @@ impl CsmApp {
             let n = self.backend.on_event(&e);
             self.notices(ctx, n);
         }
-        self.backend.tick(ctx);
+        let n = self.backend.tick(ctx);
+        self.notices(ctx, n);
         self.model = self.backend.model();
         if self.dispatch.busy() {
             ctx.request_repaint();
@@ -306,10 +313,6 @@ impl CsmApp {
                 self.ui.quick = QuickOpenState {
                     group,
                     focus_input: true,
-                    host: "deploy@build-01".into(),
-                    remote_folder: "/srv/odulodo".into(),
-                    distro: "Ubuntu-24.04".into(),
-                    linux_folder: "~/src".into(),
                     ..QuickOpenState::default()
                 };
             }
@@ -331,10 +334,8 @@ impl CsmApp {
                 self.ui.submenu = None;
             }
             Action::ToggleCollapse(g) => {
-                self.ui.menu = None;
-                if !self.ui.collapsed.remove(&g) {
-                    self.ui.collapsed.insert(g);
-                }
+                let collapsed = self.model.group(&g).is_some_and(|x| x.collapsed);
+                self.run(ctx, Action::Tool("group_collapse", json!({"group_id": g, "collapsed": !collapsed})));
             }
             Action::StartRename(id) => {
                 let text = self.model.session(&id).map(|s| s.name.clone()).unwrap_or_default();
@@ -362,6 +363,10 @@ impl CsmApp {
             Action::FocusTerminal(id) => self.ui.focus_terminal = Some(id),
             Action::AskQuit => {
                 self.ui.menu = None;
+                if self.model.shutdown.is_some() {
+                    // Already closing: the board is up.
+                    return;
+                }
                 let busy = self.model.sessions.iter().any(|s| matches!(s.status, Status::Working | Status::Approval | Status::Question));
                 if busy {
                     self.ui.overlay = Overlay::Busy;
@@ -485,6 +490,12 @@ impl CsmApp {
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        // Closing the window is quitting: sessions get their time to exit (the shutdown board),
+        // and the window closes on `QuitReady`.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.run(&ctx, Action::AskQuit);
+        }
         if !self.apply_theme(&ctx) {
             return;
         }

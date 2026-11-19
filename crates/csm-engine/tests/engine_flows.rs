@@ -542,6 +542,13 @@ fn layout_view_and_settings_tools() {
     let v = h.engine.view();
     assert!(!v.inbox_open && v.inbox_height == Some(180.0));
     assert!(h.ui("layout_set", json!({"preset": "7x7"})).is_err());
+    // Free mode's tree is the UI's: stored as given, never interpreted; objects only, capped.
+    let free = json!({"tree": {"leaf": {"session": id}}, "floats": []});
+    h.ok("layout_set", json!({"group": g, "free": free}));
+    let l = h.ok("layout_get", json!({"group": g}));
+    assert_eq!(l.data["layout"]["FreeTree"], free);
+    assert!(h.ui("layout_set", json!({"free": [1, 2]})).is_err());
+    assert!(h.ui("layout_set", json!({"free": {"x": "y".repeat(70_000)}})).is_err());
     // Settings: by snake_case or PascalCase; secrets hidden; launch settings app-only.
     h.ok("settings_set", json!({"key": "show_git_branch", "value": false}));
     assert_eq!(h.ok("settings_get", json!({"key": "ShowGitBranch"})).data["value"], false);

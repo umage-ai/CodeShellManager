@@ -58,7 +58,13 @@ struct LayoutSetParams {
     cols: Option<u8>,
     /// Custom grid rows (1-8). Implies mode grid.
     rows: Option<u8>,
+    /// Free mode's split tree, floating and torn-off panes. Opaque to the engine (the UI owns its
+    /// shape); must be a JSON object of at most 64 KiB. Does not change the mode.
+    free: Option<Value>,
 }
+
+/// Largest `free` layout accepted (serialized), so a client can't bloat state.json.
+const MAX_FREE_BYTES: usize = 64 * 1024;
 
 #[derive(Deserialize, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -210,6 +216,15 @@ fn layout_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             }
             l.mode = LayoutMode::Grid;
         }
+    }
+    if let Some(free) = p.free {
+        if !free.is_object() {
+            return Err(ToolError::InvalidParams("`free` must be a JSON object".into()));
+        }
+        if serde_json::to_string(&free).map_or(usize::MAX, |t| t.len()) > MAX_FREE_BYTES {
+            return Err(ToolError::InvalidParams("`free` is larger than 64 KiB".into()));
+        }
+        l.free_tree = Some(free);
     }
     ctx.state.app.ui.layouts.insert(key.clone(), l.clone());
     ctx.state.persist();

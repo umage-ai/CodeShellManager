@@ -393,10 +393,12 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
                     Some((u, h)) => (Some(u.to_string()), h.to_string()),
                     None => (None, q.host.clone()),
                 };
-                json!({"folder": q.remote_folder, "command": if cmd == "claude" { "bash".to_string() } else { cmd.clone() }, "kind": "ssh", "group": q.group,
+                let (program, args) = split_command(&cmd);
+                let program = if program == "claude" { "bash".to_string() } else { program };
+                json!({"command": program, "args": args, "kind": "ssh", "group": q.group,
                        "ssh": {"user": user, "host": host, "remote_folder": q.remote_folder}})
             }
-            RemoteKind::Wsl => json!({"folder": q.linux_folder, "command": cmd, "kind": "wsl", "group": q.group,
+            RemoteKind::Wsl => json!({"command": split_command(&cmd).0, "args": split_command(&cmd).1, "kind": "wsl", "group": q.group,
                                       "wsl": {"distro": q.distro, "folder": q.linux_folder}}),
         };
         out.push(Action::Tool("session_new", params));
@@ -408,8 +410,19 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
         None if !q.query.trim().is_empty() => q.query.trim().to_string(),
         None => return out,
     };
-    out.push(Action::Tool("session_new", json!({"folder": folder, "command": cmd, "group": q.group})));
+    let (program, args) = split_command(&cmd);
+    out.push(Action::Tool("session_new", json!({"folder": folder, "command": program, "args": args, "group": q.group})));
     out
+}
+
+/// A launch command as `session_new` takes it: the program, then the rest as typed arguments
+/// (`claude --continue` → `claude`, `--continue`).
+pub fn split_command(cmd: &str) -> (String, Option<String>) {
+    let cmd = cmd.trim();
+    match cmd.split_once(char::is_whitespace) {
+        Some((p, a)) if !a.trim().is_empty() => (p.to_string(), Some(a.trim().to_string())),
+        _ => (cmd.to_string(), None),
+    }
 }
 
 fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
@@ -565,20 +578,21 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                         });
                     });
                     ui.add_space(space::MD);
-                    let field = |ui: &mut Ui, label: &str, buf: &mut String| {
+                    let field = |ui: &mut Ui, label: &str, buf: &mut String, hint: &str| {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(label).font(theme::regular(text::CAPTION)).color(t.muted));
-                            ui.add(egui::TextEdit::singleline(buf).font(theme::mono(text::MONO)).desired_width(size::MENU_W - space::XXL));
+                            let edit = egui::TextEdit::singleline(buf).hint_text(egui::RichText::new(hint).color(t.faint));
+                            ui.add(edit.font(theme::mono(text::MONO)).desired_width(size::MENU_W - space::XXL));
                         });
                     };
                     match q.rkind {
                         RemoteKind::Ssh => {
-                            field(ui, "Host", &mut q.host);
-                            field(ui, "Remote folder", &mut q.remote_folder);
+                            field(ui, "Host", &mut q.host, "user@host");
+                            field(ui, "Remote folder", &mut q.remote_folder, "/srv/app");
                         }
                         RemoteKind::Wsl => {
-                            field(ui, "Distro", &mut q.distro);
-                            field(ui, "Linux folder", &mut q.linux_folder);
+                            field(ui, "Distro", &mut q.distro, "Ubuntu");
+                            field(ui, "Linux folder", &mut q.linux_folder, "~/src (blank: home)");
                         }
                     }
                 });

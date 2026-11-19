@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use csm_term::alacritty_terminal::term::TermMode;
+use csm_term::input::{self, Untrusted};
 use csm_term::{GridSize, ReplySink, TermConfig, Terminal, load_mode};
 
 /// Lock a std mutex, recovering from poisoning (a panicking thread must not wedge the UI).
@@ -35,9 +36,33 @@ pub trait TerminalSource: Send + Sync {
     /// emulator and, for a live source, starts the process at exactly that size: there is no
     /// placeholder size anywhere. Later calls resize the emulator and the PTY when it changed.
     fn set_grid(&self, grid: GridSize);
-    /// Bytes from widget input (keystrokes, mouse reports, a bracketed paste the view built).
+    /// Raw bytes for the PTY. The view uses the typed methods below; a source with no notion of
+    /// "who typed" implements only this and gets them for free.
     fn write(&self, bytes: &[u8]);
     fn state(&self) -> SourceState;
+
+    /// A keystroke, typed text or an IME commit from the person (encoded by the view). The
+    /// engine treats it as the person having seen the session.
+    fn send_key(&self, bytes: &[u8]) {
+        self.write(bytes);
+    }
+
+    /// Mouse reports: input, but not the person answering the session.
+    fn send_mouse(&self, bytes: &[u8]) {
+        self.write(bytes);
+    }
+
+    /// Clipboard text or a drop: untrusted, bracketed when the program asked for it.
+    fn paste(&self, text: &str) {
+        self.write(&input::paste(Untrusted(text), self.mode()));
+    }
+
+    /// Focus in/out reports, when the program asked for them.
+    fn focus_changed(&self, focused: bool) {
+        if let Some(b) = input::focus(focused, self.mode()) {
+            self.write(&b.0);
+        }
+    }
 }
 
 /// Replies the emulator writes (DA1 answers and the like). A static terminal has no process, so

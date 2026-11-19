@@ -47,10 +47,12 @@ fn open_with(session: &str) -> Entry {
     }
 }
 
+const DEMO_STATUS: &str = "Demo: set status";
+
 fn demo_status(session: &str) -> Entry {
     Entry::Sub {
         icon: "sliders",
-        label: "Demo: set status".into(),
+        label: DEMO_STATUS.into(),
         items: Status::ALL
             .iter()
             .map(|s| item("blank", s.label(), tool("demo_set_status", json!({"session_id": session, "status": s.id()}))))
@@ -259,16 +261,25 @@ fn menu_area(ctx: &egui::Context, app: &mut CsmApp, id: Id, at: Pos2, entries: &
     rects
 }
 
+/// The review's status switcher only where `demo_set_status` exists (the demo engine).
+fn with_demo(mut v: Vec<Entry>, demo: bool) -> Vec<Entry> {
+    if !demo {
+        v.retain(|e| !matches!(e, Entry::Sub { label, .. } if label == DEMO_STATUS));
+    }
+    v
+}
+
 pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let Some(menu) = app.ui.menu.clone() else { return };
     let model = app.model.clone();
+    let demo = app.dispatch.registry().get("demo_set_status").is_some();
     let rects = match &menu {
         Menu::Pane { session, at } => {
-            let e = pane_menu(&model, session);
+            let e = with_demo(pane_menu(&model, session), demo);
             let at = pos2(at.x - size::MENU_W, at.y);
             menu_area(ctx, app, Id::new("menu-pane"), at, &e, 0, false, actions)
         }
-        Menu::Row { session, at } => menu_area(ctx, app, Id::new("menu-row"), *at + vec2(space::XS + space::XXS, -space::XS), &row_menu(&model, session), 0, false, actions),
+        Menu::Row { session, at } => menu_area(ctx, app, Id::new("menu-row"), *at + vec2(space::XS + space::XXS, -space::XS), &with_demo(row_menu(&model, session), demo), 0, false, actions),
         Menu::Group { group, at } => menu_area(ctx, app, Id::new("menu-group"), *at, &group_menu(&model, group), 0, false, actions),
         Menu::Runs { session, at } => menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions),
         Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
@@ -341,7 +352,7 @@ fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut V
                         if r.clicked() {
                             match tile {
                                 Some(g) => {
-                                    actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": "grid", "grid": {"cols": g.cols, "rows": g.rows}})));
+                                    actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": "grid", "cols": g.cols, "rows": g.rows})));
                                     actions.push(Action::CloseMenu);
                                 }
                                 None => app.ui.submenu = Some("custom-grid".into()),
@@ -360,7 +371,7 @@ fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut V
                     ui.label("Rows");
                     ui.add(egui::DragValue::new(&mut r).range(1..=6));
                     if widgets::button(ui, widgets::ButtonKind::Primary, None, "Apply", None).clicked() {
-                        actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": "grid", "grid": {"cols": c, "rows": r}})));
+                        actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": "grid", "cols": c, "rows": r})));
                         actions.push(Action::CloseMenu);
                     }
                 });

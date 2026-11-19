@@ -160,6 +160,10 @@ pub struct SessionView {
     pub runs: Vec<RunView>,
     /// "2 h 14 min ago · resumes on restart".
     pub started: String,
+    /// The process ended by itself. Shown as Idle with "Exited" as its word (and the code), so
+    /// the status vocabulary keeps its seven states; the pane stays until closed or restarted.
+    pub exited: bool,
+    pub exit_code: Option<i32>,
 }
 
 impl SessionView {
@@ -171,6 +175,10 @@ impl SessionView {
     pub fn status_text(&self) -> String {
         match (self.status, self.progress) {
             (Status::Working, Some(p)) => format!("Working · {p}%"),
+            (Status::Idle, _) if self.exited => match self.exit_code {
+                Some(c) => format!("Exited · code {c}"),
+                None => "Exited".to_string(),
+            },
             (s, _) => s.label().to_string(),
         }
     }
@@ -186,6 +194,8 @@ pub struct GroupView {
     pub name: String,
     /// Lives in its own OS window (`group_tear_off`).
     pub torn_off: bool,
+    /// Folded in the headers view (`group_collapse`).
+    pub collapsed: bool,
 }
 
 /// How groups appear in the sidebar.
@@ -440,6 +450,27 @@ pub struct FloatPane {
     pub rect: [f32; 4],
 }
 
+/// The part of a [`Layout`] only Free mode uses. The engine stores it as an opaque object
+/// (`layout_set { free }`, `GroupLayout::free_tree`): its shape is the UI's.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FreeLayout {
+    pub tree: Option<SplitNode>,
+    pub floats: Vec<FloatPane>,
+    pub torn: Vec<SessionId>,
+}
+
+impl FreeLayout {
+    /// Reads a stored blob; anything unreadable is an empty layout (the file is untrusted).
+    pub fn from_value(v: Option<&serde_json::Value>) -> FreeLayout {
+        v.and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+    }
+
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
 /// One group's (or All's) layout. Each group remembers its own.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Layout {
@@ -451,6 +482,62 @@ pub struct Layout {
     pub floats: Vec<FloatPane>,
     /// Panes in their own OS window.
     pub torn: Vec<SessionId>,
+}
+
+impl Layout {
+    /// The Free-mode part, as `layout_set { free }` takes it.
+    pub fn free(&self) -> FreeLayout {
+        FreeLayout { tree: self.tree.clone(), floats: self.floats.clone(), torn: self.torn.clone() }
+    }
+
+    pub fn set_free(&mut self, f: FreeLayout) {
+        self.tree = f.tree;
+        self.floats = f.floats;
+        self.torn = f.torn;
+    }
+
+    /// `pane_float`: switch to Free and float `id` over the split tree (`live` are the scope's
+    /// live sessions, to seed a tree when there is none).
+    pub fn float_pane(&mut self, id: &str, live: &[SessionId]) {
+        self.mode = LayoutMode::Free;
+        if self.tree.is_none() {
+            let ids: Vec<SessionId> = if self.pinned.is_empty() { live.to_vec() } else { self.pinned.clone() };
+            self.tree = SplitNode::row(&ids);
+        }
+        // A pane already floating docks first, so one floats at a time per click.
+        self.tree = self.tree.as_ref().and_then(|t| t.without(id));
+        if self.tree.is_none()
+            && let Some(other) = live.iter().find(|x| x.as_str() != id)
+        {
+            self.tree = Some(SplitNode::leaf(other));
+        }
+        self.floats.retain(|f| f.session != id);
+        let [w, h] = crate::theme::size::FLOAT_DEFAULT;
+        self.floats.push(FloatPane { session: id.to_string(), rect: [440.0, 220.0, w, h] });
+    }
+
+    /// `pane_dock`: bring a floating or torn-off pane back; in Free mode it joins the tree on the
+    /// right. Returns whether it was torn off.
+    pub fn dock_pane(&mut self, id: &str) -> bool {
+        let was_torn = self.torn.iter().any(|t| t == id);
+        self.floats.retain(|f| f.session != id);
+        self.torn.retain(|t| t != id);
+        if self.mode == LayoutMode::Free && !self.tree.as_ref().is_some_and(|t| t.contains(id)) {
+            self.tree = Some(match self.tree.take() {
+                Some(t) => t.with_added(id, SplitDir::Row),
+                None => SplitNode::leaf(id),
+            });
+        }
+        was_torn
+    }
+
+    /// `pane_tear_off`: show the pane in its own OS window.
+    pub fn tear_off_pane(&mut self, id: &str) {
+        self.floats.retain(|f| f.session != id);
+        if !self.torn.iter().any(|t| t == id) {
+            self.torn.push(id.to_string());
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -574,6 +661,9 @@ pub struct UiModel {
     pub theme: ThemeKind,
     /// The snapshot's clock (ms since the epoch), for ages.
     pub now_ms: u64,
+    /// The WPF app's state file, when one was found at start-up: the empty screen offers to
+    /// import it (`state_import_wpf`).
+    pub wpf_import: Option<String>,
 }
 
 impl UiModel {

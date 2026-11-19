@@ -28,7 +28,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         busy_dialog(ctx, app, actions);
     }
     if app.model.shutdown.is_some() {
-        shutdown_board(ctx, app, actions);
+        shutdown_board(ctx, app);
     }
 }
 
@@ -167,7 +167,7 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
                     }
                     if widgets::button(ui, ButtonKind::Danger, None, "Close anyway", None).clicked() {
                         actions.push(Action::CloseOverlays);
-                        actions.push(Action::Tool("app_quit", json!({"force": true})));
+                        actions.push(Action::Tool("app_quit", json!({})));
                     }
                 });
             });
@@ -176,7 +176,7 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
     });
 }
 
-fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
+fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp) {
     let Some(board) = app.model.shutdown.clone() else { return };
     let t = Tokens::get(ctx);
     scrim(ctx, "shutdown-scrim");
@@ -244,14 +244,9 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
             lab(ui, "Wait budget", format!("{:.1} s of {:.0} s", board.budget_used_s, board.budget_s));
             widgets::bar(ui, board.budget_used_s / board.budget_s.max(1.0), t.peach, size::BAR);
             ui.add_space(space::SM);
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(egui::RichText::new(hint).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, ButtonKind::Secondary, None, "Force close now", None).clicked() {
-                        actions.push(Action::Tool("app_quit", json!({"force": true})));
-                    }
-                });
-            });
+            // No "Force close now": the engine's quit already bounds a wedged session with the
+            // budget, and has no way to cut it shorter yet.
+            ui.add(egui::Label::new(egui::RichText::new(hint).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
         });
     });
 }

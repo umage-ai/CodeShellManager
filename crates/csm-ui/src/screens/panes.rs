@@ -234,6 +234,10 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.painter().text(inner.center(), Align2::CENTER_CENTER, format!("{} lives in its own window.", model.scope_name(&scope)), theme::regular(text::BODY), t.muted);
         return;
     }
+    if model.sessions.is_empty() {
+        first_run(ui, &model, inner, actions);
+        return;
+    }
     let planned = plan(&model, &scope, &layout, inner);
     if planned.is_empty() {
         let msg = if model.scope_sessions(&scope).is_empty() { "No sessions here yet. Ctrl+T starts one." } else { "Every session here is asleep. Click one in the sidebar to wake it." };
@@ -305,12 +309,11 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     let stopped = d == Vec2::ZERO && ui.ctx().input(|i| !i.pointer.any_down());
                     if stopped {
                         app.ui.drags.float = None;
-                        let floats: Vec<serde_json::Value> = layout
-                            .floats
-                            .iter()
-                            .map(|x| if x.session == f.session { json!({"session": x.session, "rect": nr}) } else { json!({"session": x.session, "rect": x.rect}) })
-                            .collect();
-                        actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "floats": floats})));
+                        let mut free = layout.free();
+                        if let Some(x) = free.floats.iter_mut().find(|x| x.session == f.session) {
+                            x.rect = nr;
+                        }
+                        actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "free": free.to_value()})));
                     } else {
                         app.ui.drags.float = Some((f.session.clone(), nr));
                     }
@@ -318,6 +321,34 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
         }
     }
+}
+
+/// No sessions at all (a first run, or everything closed): say what to do, and offer the WPF
+/// app's sessions when its state file exists.
+fn first_run(ui: &mut Ui, model: &UiModel, area: Rect, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let card = Rect::from_center_size(area.center(), vec2(size::DIALOG_W.min(area.width()), size::DIALOG_W.min(area.height()) * 0.5));
+    ui.scope_builder(UiBuilder::new().max_rect(card), |ui| {
+        ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing.y = space::SM;
+            ui.label(egui::RichText::new("No sessions yet").font(semibold(text::TITLE)).color(t.fg));
+            ui.label(egui::RichText::new("Open a folder and Claude (or a shell) starts there. Ctrl+T works from anywhere.").font(theme::regular(text::BODY)).color(t.fg2));
+            ui.add_space(space::SM);
+            let new = widgets::button(ui, ButtonKind::Primary, Some("plus"), "New session", Some("Ctrl T"));
+            named(&new, WidgetType::Button, "New session");
+            if new.clicked() {
+                actions.push(Action::OpenQuickOpen { group: None });
+            }
+            if let Some(path) = &model.wpf_import {
+                let import = widgets::button(ui, ButtonKind::Secondary, Some("history"), "Import from CodeShellManager (WPF)", None)
+                    .on_hover_text(format!("Sessions and groups from {path}. They arrive asleep; nothing starts until you wake one."));
+                named(&import, WidgetType::Button, "Import from CodeShellManager (WPF)");
+                if import.clicked() {
+                    actions.push(Action::Tool("state_import_wpf", json!({"path": path})));
+                }
+            }
+        });
+    });
 }
 
 fn dashed_rect(ui: &Ui, r: Rect, color: egui::Color32) {
@@ -372,7 +403,9 @@ fn dividers(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, area: Rect, scope: &
         if resp.drag_stopped()
             && let Some(tree) = app.ui.drags.tree.take()
         {
-            actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "tree": tree})));
+            let mut free = layout.free();
+            free.tree = Some(tree);
+            actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "free": free.to_value()})));
         }
     }
 }

@@ -1,7 +1,13 @@
-//! The demo backend: the mock-up's sessions and groups, Claude sessions shown as transcripts,
-//! shells as live `csm-pty` + `csm-term` terminals (pwsh or cmd), and every tool's effect applied
-//! to its own model when the engine's reply comes back. It makes the app runnable and reviewable
-//! before the engine owns sessions; see `backend.rs` for what replaces it.
+//! The demo backend (`codeshell --demo`, screenshots, UI tests): the mock-up's sessions and
+//! groups, Claude sessions shown as transcripts, shells as live `csm-pty` + `csm-term` terminals
+//! (pwsh or cmd), and every tool's effect applied to its own model when the engine's reply comes
+//! back.
+//!
+//! The calls still go through a real engine ([`crate::demo_engine`]) with the real tools, so
+//! params are checked against the real schemas. But the demo's sessions and groups are not in
+//! that engine, so an engine-owned tool usually answers "not found": the demo applies a call
+//! unless the engine rejected the params themselves (`InvalidParams`, `UnknownTool`). The demo
+//! engine's PTY factory refuses, so nothing here starts a process through it.
 
 pub mod tools;
 pub mod transcripts;
@@ -182,9 +188,9 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
     set(&mut s, "gw", &|x| x.progress = Some(70));
 
     let groups = vec![
-        GroupView { id: "odulodo".into(), name: "Odulodo".into(), torn_off: false },
-        GroupView { id: "umage".into(), name: "Umage".into(), torn_off: false },
-        GroupView { id: "ops".into(), name: "Ops".into(), torn_off: false },
+        GroupView { id: "odulodo".into(), name: "Odulodo".into(), torn_off: false, collapsed: false },
+        GroupView { id: "umage".into(), name: "Umage".into(), torn_off: false, collapsed: false },
+        GroupView { id: "ops".into(), name: "Ops".into(), torn_off: false, collapsed: false },
     ];
     let side = |pinned: &[&str], grid: GridPreset| Layout {
         mode: LayoutMode::Side,
@@ -249,6 +255,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         notes,
         theme,
         now_ms: now,
+        wpf_import: None,
     }
 }
 
@@ -469,7 +476,11 @@ impl DemoBackend {
     fn new_session(&mut self, p: SessionNewParams) -> Vec<Notice> {
         let id = format!("n{}", self.next_id);
         self.next_id += 1;
-        let command = p.command.clone().unwrap_or_else(|| "claude".into());
+        let program = p.command.clone().unwrap_or_else(|| "claude".into());
+        let command = match p.args.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            Some(a) => format!("{program} {a}"),
+            None => program,
+        };
         let kind: Kind = p.kind.clone().map(Into::into).unwrap_or_default();
         let leaf = p.folder.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(&p.folder).to_string();
         let first = command.split_whitespace().next().unwrap_or("claude").to_string();
@@ -626,7 +637,7 @@ impl DemoBackend {
                 let Some(p) = parse::<GroupNewParams>(call) else { return vec![] };
                 let id = format!("g{}", self.next_id);
                 self.next_id += 1;
-                self.model.groups.push(GroupView { id: id.clone(), name: p.name.clone(), torn_off: false });
+                self.model.groups.push(GroupView { id: id.clone(), name: p.name.clone(), torn_off: false, collapsed: false });
                 if self.model.group_mode == GroupMode::Rail {
                     self.model.rail = Scope::Group(id);
                 }
@@ -708,7 +719,7 @@ impl DemoBackend {
             }
             "view_set" => {
                 let Some(p) = parse::<ViewSetParams>(call) else { return vec![] };
-                if let Some(m) = p.mode {
+                if let Some(m) = p.view {
                     self.model.group_mode = m.into();
                     if self.model.group_mode == GroupMode::Rail
                         && let Some(g) = self.model.active_session().and_then(|s| s.group.clone())
@@ -716,7 +727,7 @@ impl DemoBackend {
                         self.model.rail = Scope::Group(g);
                     }
                 }
-                if let Some(r) = p.rail {
+                if let Some(r) = p.rail_tab {
                     let scope = Scope::from_key(&r);
                     self.model.rail = scope.clone();
                     // The panes follow the tab: keep the active session inside it.
@@ -736,18 +747,25 @@ impl DemoBackend {
             }
             "layout_set" => {
                 let Some(p) = parse::<LayoutSetParams>(call) else { return vec![] };
-                let l = self.layout_mut(&p.group);
+                let key = p.group.clone().unwrap_or_else(|| self.scope_key());
+                let l = self.layout_mut(&key);
                 if let Some(m) = p.mode {
                     l.mode = m.into();
                 }
-                if let Some(g) = p.grid {
-                    l.grid = g.preset();
+                let preset = p.preset.as_deref().and_then(|x| {
+                    let (c, r) = x.split_once(['x', '×']).unwrap_or((x, "1"));
+                    Some(GridPreset::new(c.trim().parse().ok()?, r.trim().parse().ok()?))
+                });
+                if let Some(g) = preset {
+                    l.grid = g;
+                    l.mode = LayoutMode::Grid;
                 }
-                if let Some(t) = p.tree {
-                    l.tree = Some(t);
+                if p.cols.is_some() || p.rows.is_some() {
+                    l.grid = GridPreset::new(p.cols.unwrap_or(l.grid.cols), p.rows.unwrap_or(l.grid.rows));
+                    l.mode = LayoutMode::Grid;
                 }
-                if let Some(f) = p.floats {
-                    l.floats = f;
+                if let Some(f) = &p.free {
+                    l.set_free(FreeLayout::from_value(Some(f)));
                 }
                 vec![]
             }
@@ -767,48 +785,28 @@ impl DemoBackend {
                 let Some(p) = parse::<PaneParams>(call) else { return vec![] };
                 let key = p.group.clone().unwrap_or_else(|| self.scope_key());
                 let live: Vec<SessionId> = self.model.scope_sessions(&Scope::from_key(&key)).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
-                let l = self.layout_mut(&key);
-                l.mode = LayoutMode::Free;
-                if l.tree.is_none() {
-                    let ids: Vec<SessionId> = if l.pinned.is_empty() { live.clone() } else { l.pinned.clone() };
-                    l.tree = SplitNode::row(&ids);
-                }
-                // A pane already floating docks first, so one floats at a time per click.
-                l.tree = l.tree.as_ref().and_then(|t| t.without(&p.session_id));
-                if l.tree.is_none()
-                    && let Some(other) = live.iter().find(|x| **x != p.session_id)
-                {
-                    l.tree = Some(SplitNode::leaf(other));
-                }
-                l.floats.retain(|f| f.session != p.session_id);
-                let [w, h] = crate::theme::size::FLOAT_DEFAULT;
-                l.floats.push(FloatPane { session: p.session_id, rect: [440.0, 220.0, w, h] });
+                self.layout_mut(&key).float_pane(&p.session_id, &live);
                 toast("Floating. Drag its header to move it.".into())
             }
             "pane_dock" => {
                 let Some(p) = parse::<PaneParams>(call) else { return vec![] };
                 let key = p.group.clone().unwrap_or_else(|| self.scope_key());
-                let l = self.layout_mut(&key);
-                let was_torn = l.torn.contains(&p.session_id);
-                l.floats.retain(|f| f.session != p.session_id);
-                l.torn.retain(|t| t != &p.session_id);
-                if l.mode == LayoutMode::Free && !l.tree.as_ref().is_some_and(|t| t.contains(&p.session_id)) {
-                    l.tree = Some(match l.tree.take() {
-                        Some(t) => t.with_added(&p.session_id, SplitDir::Row),
-                        None => SplitNode::leaf(&p.session_id),
-                    });
-                }
+                let was_torn = self.layout_mut(&key).dock_pane(&p.session_id);
                 toast(if was_torn { "Docked back into the main window.".into() } else { "Docked to the right of the split tree.".into() })
             }
             "pane_tear_off" => {
                 let Some(p) = parse::<PaneParams>(call) else { return vec![] };
                 let key = p.group.clone().unwrap_or_else(|| self.scope_key());
-                let l = self.layout_mut(&key);
-                l.floats.retain(|f| f.session != p.session_id);
-                if !l.torn.contains(&p.session_id) {
-                    l.torn.push(p.session_id.clone());
-                }
+                self.layout_mut(&key).tear_off_pane(&p.session_id);
                 toast("In its own window now. Closing that window docks it back.".into())
+            }
+            "group_collapse" => {
+                if let Some(p) = parse::<CollapseParams>(call)
+                    && let Some(g) = self.model.groups.iter_mut().find(|g| g.id == p.group_id)
+                {
+                    g.collapsed = p.collapsed;
+                }
+                vec![]
             }
             "inspector_show" => {
                 if let Some(p) = parse::<InspectorShowParams>(call) {
@@ -881,9 +879,10 @@ impl DemoBackend {
             }
             "settings_set" => {
                 if let Some(p) = parse::<SettingsSetParams>(call)
-                    && p.key == "theme"
-                    && let Some(k) = p.value.as_str().and_then(ThemeKind::from_id)
+                    && p.key.eq_ignore_ascii_case("theme")
+                    && let Some(v) = p.value.as_str()
                 {
+                    let k = ThemeKind::from_id(v).unwrap_or_else(|| crate::engine_backend::theme_from_setting(v));
                     self.model.theme = k;
                     // Transcripts carry theme colours in their bytes: redraw them. Live terminals
                     // recolour by themselves (the view draws with the theme's palette).
@@ -914,17 +913,20 @@ impl Backend for DemoBackend {
     }
 
     fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice> {
+        use csm_engine::ToolError;
         let out = match reply {
-            Ok(_) => self.apply(call),
-            Err(e) => vec![Notice::Toast(e.to_string())],
+            Err(e @ (ToolError::InvalidParams(_) | ToolError::UnknownTool(_))) => vec![Notice::Toast(e.to_string())],
+            // The demo's sessions aren't the engine's: its "not found" (and the like) is about
+            // the engine's empty state, not the demo's.
+            _ => self.apply(call),
         };
         self.publish();
         out
     }
 
     fn on_event(&mut self, event: &Event) -> Vec<Notice> {
+        // The demo engine's own toasts and quit are about its empty state: the demo shows its own.
         match event {
-            Event::Toast { message } => vec![Notice::Toast(message.clone())],
             Event::FocusRequested { session_id } => {
                 let out = self.focus(session_id);
                 self.publish();
@@ -934,14 +936,16 @@ impl Backend for DemoBackend {
         }
     }
 
-    fn tick(&mut self, ctx: &egui::Context) {
+    fn tick(&mut self, ctx: &egui::Context) -> Vec<Notice> {
         let _ = self.started;
+        let mut out = Vec::new();
         if let Some(t0) = self.quitting {
             let t = t0.elapsed().as_secs_f32() * 2.0;
             self.model.shutdown = Some(self.board_at(t));
             self.publish();
             if t > 24.0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quitting = None;
+                out.push(Notice::QuitReady);
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
@@ -958,6 +962,7 @@ impl Backend for DemoBackend {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
         }
+        out
     }
 }
 

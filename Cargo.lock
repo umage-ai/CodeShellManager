@@ -689,6 +689,7 @@ name = "codeshell"
 version = "0.0.1"
 dependencies = [
  "csm-engine",
+ "csm-mcp",
  "csm-pty",
  "csm-ui",
  "eframe",

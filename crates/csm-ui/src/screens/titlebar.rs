@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::app::{Action, CsmApp};
 use crate::model::Status;
-use crate::theme::{Tokens, icon, radius, semibold, size, space, text};
+use crate::theme::{ThemeKind, Tokens, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, paint_kbd};
 use crate::{icons, theme};
 
@@ -67,7 +67,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if btn(ui, "sliders", false, "Settings") {
         actions.push(Action::Toast("Settings open as a page in the inspector area (not in this round).".into()));
     }
-    let next = if t.dark() { "latte" } else { "mocha" };
+    let next = crate::engine_backend::theme_setting(if t.dark() { ThemeKind::Latte } else { ThemeKind::Mocha });
     let theme_icon = if t.dark() { "moon" } else { "sun" };
     if btn(ui, theme_icon, false, "Theme: Mocha (dark) or Latte (light)") {
         actions.push(Action::Tool("settings_set", json!({"key": "theme", "value": next})));

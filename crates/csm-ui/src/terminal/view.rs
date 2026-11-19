@@ -11,7 +11,7 @@ use std::time::Instant;
 use csm_term::alacritty_terminal::index::{Column, Line, Point, Side};
 use csm_term::alacritty_terminal::selection::{Selection, SelectionType};
 use csm_term::alacritty_terminal::term::TermMode;
-use csm_term::input::{self, Key, MouseAction, MouseButton, Mods, Untrusted};
+use csm_term::input::{self, Key, MouseAction, MouseButton, Mods};
 use csm_term::{GridSize, Terminal};
 use egui::{Color32, Event, Id, ImeEvent, Mesh, Pos2, Rect, Response, Sense, Shape, Ui, Vec2, pos2, vec2};
 
@@ -290,9 +290,7 @@ impl TerminalView {
         let mode = source.mode();
         if opts.interactive && focused != self.was_focused {
             self.was_focused = focused;
-            if let Some(b) = input::focus(focused, mode) {
-                source.write(&b.0);
-            }
+            source.focus_changed(focused);
         }
         if opts.interactive
             && let Some(g) = grid
@@ -426,7 +424,7 @@ impl TerminalView {
         if focused && self.paste.step(&events, ui.input(|i| i.modifiers)) {
             // A paste of something that isn't text (an image): pass the raw ^V through, as a
             // terminal does, so the program (Claude Code) reads the clipboard itself.
-            source.write(&[0x16]);
+            source.send_key(&[0x16]);
             typed = true;
         }
         for ev in events {
@@ -434,7 +432,7 @@ impl TerminalView {
                 Event::Text(text) if focused => {
                     let alt_only = ui.input(|i| i.modifiers.alt && !i.modifiers.ctrl);
                     if !alt_only {
-                        source.write(&input::typed(&text, false).0);
+                        source.send_key(&input::typed(&text, false).0);
                         typed = true;
                     }
                 }
@@ -442,7 +440,7 @@ impl TerminalView {
                     if let Some(k) = map_key(key, modifiers)
                         && let Some(bytes) = input::encode_key(k, mods(modifiers), mode)
                     {
-                        source.write(&bytes.0);
+                        source.send_key(&bytes.0);
                         typed = true;
                     }
                 }
@@ -450,23 +448,23 @@ impl TerminalView {
                     if self.has_selection {
                         self.ops.push(Op::Copy);
                     } else {
-                        source.write(&[0x03]);
+                        source.send_key(&[0x03]);
                         typed = true;
                     }
                 }
                 Event::Cut if focused => {
-                    source.write(&[0x18]);
+                    source.send_key(&[0x18]);
                     typed = true;
                 }
                 Event::Paste(text) if focused => {
                     // Clipboard text is untrusted: bracketed paste, never typed.
-                    source.write(&input::paste(Untrusted(&text), mode));
+                    source.paste(&text);
                     typed = true;
                 }
                 Event::Ime(ImeEvent::Preedit { text, .. }) if focused => self.preedit = text,
                 Event::Ime(ImeEvent::Commit(text)) if focused => {
                     self.preedit.clear();
-                    source.write(&input::typed(&text, false).0);
+                    source.send_key(&input::typed(&text, false).0);
                     typed = true;
                 }
                 Event::PointerButton { pos, button, pressed, modifiers } => {
@@ -481,7 +479,7 @@ impl TerminalView {
                     if pressed && body.contains(pos) && hovered {
                         if report {
                             if let Some(bytes) = input::encode_mouse(MouseAction::Press(b), col as u32, row as u32, mods(modifiers), mode) {
-                                source.write(&bytes.0);
+                                source.send_mouse(&bytes.0);
                             }
                             self.mouse_down = Some(b);
                         } else if b == MouseButton::Left {
@@ -500,7 +498,7 @@ impl TerminalView {
                         if report
                             && let Some(bytes) = input::encode_mouse(MouseAction::Release(b), col as u32, row as u32, mods(modifiers), mode)
                         {
-                            source.write(&bytes.0);
+                            source.send_mouse(&bytes.0);
                         }
                         if !report && !self.has_selection {
                             self.ops.push(Op::SelClear);
@@ -516,7 +514,7 @@ impl TerminalView {
                     match self.mouse_down {
                         Some(b) if report => {
                             if let Some(bytes) = input::encode_mouse(MouseAction::Motion { held: Some(b) }, col as u32, row as u32, Mods::default(), mode) {
-                                source.write(&bytes.0);
+                                source.send_mouse(&bytes.0);
                             }
                         }
                         Some(MouseButton::Left) => {
@@ -528,7 +526,7 @@ impl TerminalView {
                         Some(_) => {}
                         None if report && hovered && body.contains(pos) => {
                             if let Some(bytes) = input::encode_mouse(MouseAction::Motion { held: None }, col as u32, row as u32, Mods::default(), mode) {
-                                source.write(&bytes.0);
+                                source.send_mouse(&bytes.0);
                             }
                         }
                         None => {}
@@ -552,14 +550,14 @@ impl TerminalView {
                         let action = if n > 0 { MouseAction::WheelUp } else { MouseAction::WheelDown };
                         for _ in 0..n.unsigned_abs().min(10) {
                             if let Some(bytes) = input::encode_mouse(action, col as u32, row as u32, mods(modifiers), mode) {
-                                source.write(&bytes.0);
+                                source.send_mouse(&bytes.0);
                             }
                         }
                     } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
                         let key = if n > 0 { Key::Up } else { Key::Down };
                         for _ in 0..n.unsigned_abs().min(10) {
                             if let Some(bytes) = input::encode_key(key, Mods::default(), mode) {
-                                source.write(&bytes.0);
+                                source.send_mouse(&bytes.0);
                             }
                         }
                     } else {

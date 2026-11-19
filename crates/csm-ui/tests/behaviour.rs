@@ -133,7 +133,7 @@ fn layout_modes_and_grid_presets() {
     assert_eq!(layout(&h).grid, GridPreset::new(3, 2));
     let (id, params) = last_call(&h);
     assert_eq!(id, "layout_set");
-    assert_eq!(params["grid"], serde_json::json!({"cols": 3, "rows": 2}));
+    assert_eq!((params["cols"].as_u64(), params["rows"].as_u64()), (Some(3), Some(2)));
     // Four live sessions in six cells: two empty slots.
     assert_eq!(h.query_all_by_label("Empty slot").count(), 2);
 
@@ -154,7 +154,7 @@ fn free_mode_divider_drag_persists_the_ratio() {
     drag(&mut h, div, vec2(-80.0, 0.0));
     let (id, params) = last_call(&h);
     assert_eq!(id, "layout_set");
-    assert!(params.get("tree").is_some());
+    assert!(params["free"].get("tree").is_some(), "the Free layout goes to the engine as one blob");
     let after = layout(&h).tree.unwrap();
     assert_ne!(before, after, "the ratio changed and was stored");
 }
@@ -220,7 +220,7 @@ fn buttons_submit_their_tool() {
 
     h.get_by_label("Group view: layers").click();
     settle(&mut h);
-    assert_eq!(last_call(&h), ("view_set".to_string(), serde_json::json!({"mode": "headers"})));
+    assert_eq!(last_call(&h), ("view_set".to_string(), serde_json::json!({"view": "headers"})));
     assert!(has(&h, "Group: Umage"), "headers view lists every group");
 }
 

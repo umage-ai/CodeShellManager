@@ -6,7 +6,9 @@
 //! - [`model`]: the plain-data snapshot the screens draw ([`model::UiModel`]).
 //! - [`backend`]: the seam to whatever owns the state ([`backend::Backend`], [`backend::Dispatcher`]);
 //!   every action is `engine.submit(Caller::Ui, "<tool_id>", params)`.
-//! - [`demo`]: a backend with the mock-up's data and live shells, until the engine owns sessions.
+//! - [`engine_backend`]: the real backend over `csm-engine` ([`EngineBackend`]).
+//! - [`demo`]: a backend with the mock-up's data (`codeshell --demo`, screenshots, UI tests).
+//! - [`pane_tools`]: the `pane_*` tools (the Free layout's shape is the UI's).
 //! - [`app`] and [`screens`]: the window.
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -14,9 +16,11 @@
 pub mod app;
 pub mod backend;
 pub mod demo;
+pub mod engine_backend;
 mod icon_data;
 pub mod icons;
 pub mod model;
+pub mod pane_tools;
 pub mod screens;
 pub mod terminal;
 pub mod theme;
@@ -25,7 +29,26 @@ pub mod widgets;
 pub use app::{Action, CsmApp};
 pub use backend::{Backend, Call, Dispatcher, Notice};
 
-/// Starts an engine with the demo tools registered (the ids of `docs/tools.md`).
+pub use engine_backend::{EngineBackend, EngineOptions};
+
+/// The tools the app registers on top of the engine's own: the `pane_*` tools and honest
+/// "not built yet" stand-ins for the ids the engine doesn't have yet (runs, git, notes, search,
+/// open folder / with, grants). Pass to [`csm_engine::Engine::start`].
+pub fn app_tools() -> Vec<csm_engine::ToolSpec> {
+    let mut v = demo::tools::stand_ins(demo::tools::StandIn::NotBuilt);
+    v.extend(pane_tools::tools());
+    v
+}
+
+/// Starts an engine for the demo backend: echoing stand-ins and `demo_set_status`, and a PTY
+/// factory that refuses, so nothing the demo submits ever starts a process. The demo's sessions
+/// live in [`demo::DemoBackend`], not in this engine.
 pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
-    csm_engine::Engine::start(csm_engine::State::default(), demo::tools::tools())
+    let pty: csm_engine::PtyFactory = std::sync::Arc::new(|_| Err(std::io::Error::other("the demo starts no processes")));
+    let options = csm_engine::StateOptions { pty, restore_on_start: false, ..csm_engine::StateOptions::default() };
+    let state = csm_engine::State::new(csm_core::models::AppState::default(), options);
+    let mut tools = demo::tools::stand_ins(demo::tools::StandIn::Echo);
+    tools.extend(demo::tools::demo_only());
+    tools.extend(pane_tools::tools());
+    csm_engine::Engine::start(state, tools)
 }
