@@ -1,7 +1,30 @@
-//! CodeShellManager services, pure parts. See the final lib.rs for the module map.
+//! CodeShellManager services, pure parts.
+//!
+//! Everything here is a function of its inputs: no process spawn, no file or network I/O.
+//! The security-critical rules of the WPF app live here (see the repo's CLAUDE.md):
+//!
+//! * [`argv`]: MSVCRT argv quoting and splitting. Never interpolate a value into a command line.
+//! * [`launch`]: ssh / wsl.exe / run-command argument builders and launch validation.
+//! * [`wsl`]: `wsl -l -v` parsing and the `\wsl$` UNC mirror.
+//! * [`git`]: git command lines, `status --porcelain=v2` parsing, wording, worktree rules.
+//! * [`open_with`]: "Open with..." templates, validation and sanitising.
+//!
+//! The input types defined locally ([`launch::LaunchSpec`], [`open_with::OpenWithEntry`],
+//! [`git::WorktreeInfo`], ...) are the minimum these modules need; unify them with `csm-core`
+//! models later.
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing)]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 pub mod argv;
+pub mod launch;
 pub mod winpath;
+pub mod wsl;
