@@ -28,6 +28,76 @@ use crate::launch::{LaunchSpec, SessionKind};
 use crate::winpath;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod detect;
+
+/// Which platform's path and program rules apply. The Windows rules are the WPF app's, measured
+/// against real Windows programs; the POSIX rules (macOS, Linux) keep the same shape (absolute
+/// program, no shell or script host, one placeholder = one argv element, nothing option-shaped)
+/// with POSIX paths, and without the Windows-only `/switch` and batch-file fences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rules {
+    Windows,
+    Posix,
+}
+
+impl Rules {
+    /// The rules of the platform this build runs on.
+    #[must_use]
+    pub fn native() -> Rules {
+        if cfg!(windows) { Rules::Windows } else { Rules::Posix }
+    }
+}
+
+/// Extra names refused as programs under the POSIX rules: shells, interpreters and launchers that
+/// run their arguments.
+const POSIX_SHELL_LIKE: &[&str] = &[
+    "zsh", "fish", "dash", "ksh", "csh", "tcsh", "env", "sudo", "doas", "su", "xargs", "nohup",
+    "osascript", "awk", "gawk", "sed", "find", "python3", "php", "lua", "tclsh",
+    "xdg-open", "gio", "flatpak", "snap", "systemd-run", "setsid", "script", "expect", "screen",
+    "tmux", "terminal", "gnome-terminal", "konsole", "xterm",
+];
+
+/// Script extensions refused under the POSIX rules (a script is a program text, not an editor).
+const POSIX_SCRIPT_EXTS: &[&str] = &[".sh", ".bash", ".zsh", ".command", ".py", ".pl", ".rb", ".js", ".scpt", ".applescript", ".tool"];
+
+/// `None` when `path` is acceptable as an entry's program under `rules`, else the reason.
+#[must_use]
+pub fn validate_executable_for(path: &str, allow_batch: bool, rules: Rules) -> Option<String> {
+    match rules {
+        Rules::Windows => validate_executable(path, allow_batch),
+        Rules::Posix => validate_executable_posix(path),
+    }
+}
+
+/// The POSIX program rules: an absolute path, no control characters, not a shell, interpreter,
+/// launcher or script. Pure; the caller also checks the real path and a `#!` first line on disk.
+#[must_use]
+pub fn validate_executable_posix(path: &str) -> Option<String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Some("No program is set.".to_string());
+    }
+    if path.chars().any(char::is_control) {
+        return Some("The program path contains control characters.".to_string());
+    }
+    if !p.starts_with('/') || p.starts_with("//") {
+        return Some("The program must be a full path, e.g. /usr/bin/open.".to_string());
+    }
+    if p.split('/').any(|seg| seg == "..") {
+        return Some("The program path must not contain `..`.".to_string());
+    }
+    let leaf = p.rsplit('/').next().unwrap_or("");
+    let lower = leaf.to_lowercase();
+    if POSIX_SCRIPT_EXTS.iter().any(|e| lower.ends_with(e)) {
+        return Some(format!("{leaf} is a script, not an editor — point at the program itself."));
+    }
+    let stem = lower.split('.').next().unwrap_or("");
+    if is_shell_like(stem) || POSIX_SHELL_LIKE.contains(&stem) {
+        return Some(format!("{leaf} is a shell or script host, not an editor — it is not accepted."));
+    }
+    None
+}
+
 /// Maximum entries kept when sanitising a list.
 pub const MAX_ENTRIES: usize = 50;
 
@@ -616,7 +686,15 @@ pub fn validate_template(template: &str, kind: SessionKind) -> Option<String> {
 /// # Errors
 /// A sentence for the user.
 pub fn build(entry: &OpenWithEntry, ctx: &OpenWithContext) -> Result<OpenWithCommand, String> {
-    if let Some(e) = validate_executable(&entry.executable, true) {
+    build_for(entry, ctx, Rules::Windows)
+}
+
+/// [`build`] under the given platform's [`Rules`].
+///
+/// # Errors
+/// A sentence for the user.
+pub fn build_for(entry: &OpenWithEntry, ctx: &OpenWithContext, rules: Rules) -> Result<OpenWithCommand, String> {
+    if let Some(e) = validate_executable_for(&entry.executable, true, rules) {
         return Err(e);
     }
     let template = match entry.args_for(ctx.kind) {
@@ -655,7 +733,7 @@ pub fn build(entry: &OpenWithEntry, ctx: &OpenWithContext) -> Result<OpenWithCom
 
         for m in &matches {
             let value = value_of(&m.name);
-            if let Some(e) = validate_value(&m.name, value) {
+            if let Some(e) = validate_value(&m.name, value, rules) {
                 return Err(e);
             }
             // Empty inside a larger token (`vscode-remote://ssh-remote+box{remoteFolder:uri}`)
@@ -678,7 +756,7 @@ pub fn build(entry: &OpenWithEntry, ctx: &OpenWithContext) -> Result<OpenWithCom
         // refused for every value already; '/' is refused here because Chromium/Electron parse
         // /name=value as a switch on Windows (see the module docs).
         if first.start == 0
-            && let Some(c) = arg.chars().next().filter(|c| *c == '-' || *c == '/')
+            && let Some(c) = arg.chars().next().filter(|c| *c == '-' || (*c == '/' && rules == Rules::Windows))
         {
             return Err(format!(
                 "The session's {} would start an argument with '{c}', which the program could read as a switch.                  Put it inside a larger argument (e.g. --folder-uri vscode-remote://…{{linuxPath:uri}}).",
@@ -688,7 +766,7 @@ pub fn build(entry: &OpenWithEntry, ctx: &OpenWithContext) -> Result<OpenWithCom
         args.push(arg);
     }
 
-    if is_batch(&entry.executable) {
+    if rules == Rules::Windows && is_batch(&entry.executable) {
         // BatBadBut: cmd.exe re-parses a batch file's arguments. Refuse, never escape: there
         // is no escaping that is correct for every batch script.
         for a in &args {
@@ -781,7 +859,7 @@ fn values_for(ctx: &OpenWithContext) -> Vec<(&'static str, String)> {
 /// Rules for a substituted value. Every value comes from state.json, an import or the user's own
 /// session: untrusted. Argv quoting already keeps it one element; these stop it being read as
 /// something else by the program that receives it.
-fn validate_value(name: &str, value: &str) -> Option<String> {
+fn validate_value(name: &str, value: &str, rules: Rules) -> Option<String> {
     if value.chars().any(char::is_control) {
         return Some(format!("The session's {name} contains control characters."));
     }
@@ -794,7 +872,11 @@ fn validate_value(name: &str, value: &str) -> Option<String> {
     }
     match name {
         "folder" => {
-            if !value.is_empty() && !winpath::is_fully_qualified(value) {
+            let full = match rules {
+                Rules::Windows => winpath::is_fully_qualified(value),
+                Rules::Posix => value.starts_with('/'),
+            };
+            if !value.is_empty() && !full {
                 return Some("The session's folder is not a full path.".to_string());
             }
         }
@@ -834,7 +916,13 @@ pub fn default_for(list: &[OpenWithEntry], kind: SessionKind) -> Option<&OpenWit
 /// friendly label can't hide the program or its arguments.
 #[must_use]
 pub fn describe(entry: &OpenWithEntry, ctx: &OpenWithContext) -> String {
-    match build(entry, ctx) {
+    describe_for(entry, ctx, Rules::Windows)
+}
+
+/// [`describe`] under the given platform's [`Rules`].
+#[must_use]
+pub fn describe_for(entry: &OpenWithEntry, ctx: &OpenWithContext, rules: Rules) -> String {
+    match build_for(entry, ctx, rules) {
         Ok(cmd) => cmd.display(),
         Err(error) => format!("{} — {error}", quote_for_cmd(&entry.executable, false)),
     }
@@ -892,6 +980,12 @@ pub fn sanitize(
     log: &mut dyn FnMut(&str),
 ) -> Vec<OpenWithEntry> {
     sanitize_core(list, &|e| validate_executable(e, allow_batch), log)
+}
+
+/// [`sanitize`] under the given platform's [`Rules`] (state.json on macOS and Linux).
+#[must_use]
+pub fn sanitize_for(list: &[Option<OpenWithEntry>], allow_batch: bool, rules: Rules, log: &mut dyn FnMut(&str)) -> Vec<OpenWithEntry> {
+    sanitize_core(list, &|e| validate_executable_for(e, allow_batch, rules), log)
 }
 
 /// [`sanitize`] plus [`validate_executable_on_disk`] per program (no batch files).
