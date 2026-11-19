@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.97"
+publish = false
+
+[workspace.lints.rust]
+# Deny, not forbid: exactly one module (csm-pty's Windows ConPTY binding) may opt back in.
+# Every other crate root carries #![forbid(unsafe_code)]. See docs/plan.md section 6.4.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
