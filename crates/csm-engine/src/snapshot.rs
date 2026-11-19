@@ -128,6 +128,11 @@ impl Snapshot {
         self.terminals.get(id)
     }
 
+    /// Every run output handle (the UI's waker sums their generations to repaint on output).
+    pub fn run_outputs(&self) -> impl Iterator<Item = &crate::runs::RunOutputHandle> {
+        self.run_outputs.values()
+    }
+
     /// The output of a run command's last run (read it at most once a frame).
     pub fn run_output(&self, session_id: &str, run_id: &str) -> Option<&crate::runs::RunOutputHandle> {
         self.run_outputs.get(&(session_id.to_owned(), run_id.to_owned()))

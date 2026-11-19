@@ -31,6 +31,12 @@ pub enum Action {
     StartGroupRename(GroupId),
     NewGroupPrompt,
     CopyText(String),
+    /// Copy text and say so (`(text, toast)`).
+    CopyAs(String, String),
+    /// Open the Runs tab with its editor on this session's run commands.
+    EditRuns(SessionId),
+    /// The Open with editor (`open_with_set`, `open_with_detect`).
+    OpenWithEditor,
     /// Run a registered tool from the palette, filling params from context.
     PaletteTool(&'static str),
     /// Keyboard focus into a pane's terminal.
@@ -359,6 +365,25 @@ impl CsmApp {
                 ctx.copy_text(t);
                 self.toast(ctx, "Copied the folder path.");
             }
+            Action::CopyAs(text, toast) => {
+                self.ui.menu = None;
+                ctx.copy_text(text);
+                self.toast(ctx, toast);
+            }
+            Action::EditRuns(id) => {
+                if let Some(s) = self.model.session(&id).cloned() {
+                    screens::runs::open_editor(ctx, &s);
+                }
+                if self.model.active.as_deref() != Some(id.as_str()) {
+                    self.run(ctx, Action::Tool("session_focus", json!({"session_id": id})));
+                }
+                self.run(ctx, Action::Tool("inspector_show", json!({"tab": "runs"})));
+            }
+            Action::OpenWithEditor => {
+                self.ui.menu = None;
+                self.ui.submenu = None;
+                screens::open_with::open(ctx, &self.model.open_with);
+            }
             Action::PaletteTool(id) => self.palette_tool(ctx, id),
             Action::FocusTerminal(id) => self.ui.focus_terminal = Some(id),
             Action::AskQuit => {
@@ -550,6 +575,7 @@ impl CsmApp {
         screens::panes::torn_windows(&ctx, self);
 
         // Overlays, top-most last.
+        screens::open_with::show(&ctx, self, &mut actions);
         screens::menus::show(&ctx, self, &mut actions);
         screens::palette::show(&ctx, self, &mut actions);
         screens::overlays::show(&ctx, self, &mut actions);

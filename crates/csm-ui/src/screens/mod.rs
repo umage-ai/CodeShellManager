@@ -2,8 +2,10 @@
 
 pub mod inspector;
 pub mod menus;
+pub mod open_with;
 pub mod overlays;
 pub mod palette;
 pub mod panes;
+pub mod runs;
 pub mod sidebar;
 pub mod titlebar;

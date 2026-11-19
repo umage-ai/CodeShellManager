@@ -185,6 +185,7 @@ fn waker(engine: Engine, ctx: egui::Context, stop: Arc<AtomicBool>) {
         }
         let view = engine.view();
         let sum = view.sessions.iter().filter_map(|s| view.terminal(&s.id)).fold(view.version, |a, t| a.wrapping_add(t.generation()));
+        let sum = view.run_outputs().fold(sum, |a, r| a.wrapping_add(r.generation()));
         if sum != last {
             last = sum;
             wake = true;
@@ -257,6 +258,10 @@ impl Backend for EngineBackend {
             }
             _ => vec![],
         }
+    }
+
+    fn run_output(&self, session: &str, run: &str) -> Option<csm_engine::RunOutputHandle> {
+        self.engine.view().run_output(session, run).cloned()
     }
 
     fn tick(&mut self, ctx: &egui::Context) -> Vec<Notice> {
@@ -383,10 +388,61 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         status_since_ms: s.inbox_since_ms.and_then(|t| u64::try_from(t).ok()),
         accent: accent_from_hex(&s.accent),
         parent: None,
-        runs: Vec::new(),
+        runs: s.runs.iter().map(run_from_engine).collect(),
+        open_with: s
+            .open_with
+            .iter()
+            .map(|o| OpenWithItem { entry_id: o.entry_id.clone(), label: o.label.clone(), program: o.program.clone(), command: o.command.clone(), is_default: o.is_default })
+            .collect(),
         started,
         exited,
         exit_code: s.exit_code,
+    }
+}
+
+/// How long, in words ("12 s", "4 min", "2 h").
+fn took(ms: i64) -> String {
+    let s = (ms.max(0) + 500) / 1000;
+    match s {
+        0..60 => format!("{s} s"),
+        60..3600 => format!("{} min", s / 60),
+        _ => format!("{} h", s / 3600),
+    }
+}
+
+/// A run command as the Run button, the menu and the Runs tab show it.
+pub fn run_from_engine(r: &csm_engine::RunView) -> RunView {
+    use csm_engine::RunPhase as P;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let dur = match (r.started_ms, r.ended_ms) {
+        (Some(a), Some(b)) => Some(took(b - a)),
+        (Some(a), None) => Some(took(now - a)),
+        _ => None,
+    };
+    let with = |s: &str| dur.as_ref().map_or_else(|| s.to_string(), |d| format!("{s} · {d}"));
+    let (state, detail) = match r.phase {
+        P::Idle => (RunState::NotRun, "not run yet".to_string()),
+        P::Starting => (RunState::Running, "starting".to_string()),
+        P::Running => (RunState::Running, with("running")),
+        P::Ok => (RunState::Passed, with("passed · exit 0")),
+        P::Failed => match r.exit_code {
+            Some(-1) => (RunState::Failed, "could not start".to_string()),
+            Some(c) => (RunState::Failed, with(&format!("failed · exit {c}"))),
+            None => (RunState::Failed, with("failed")),
+        },
+        P::Stopped => (RunState::NotRun, with("stopped")),
+    };
+    RunView {
+        id: r.id.clone(),
+        label: r.label.clone(),
+        command_line: r.command_line.clone(),
+        is_default: r.is_default,
+        state,
+        detail,
+        output: String::new(),
+        mode: r.mode.to_string(),
+        post_run_url: r.post_run_url.clone(),
+        exit_code: r.exit_code,
     }
 }
 
@@ -462,6 +518,20 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         theme,
         now_ms,
         wpf_import: if sessions.is_empty() { opts.wpf_import.clone() } else { None },
+        open_with: view
+            .open_with
+            .iter()
+            .map(|e| OpenWithEntryView {
+                id: e.id.clone(),
+                label: e.label.clone(),
+                executable: e.executable.clone(),
+                program: e.program.clone(),
+                local_args: e.local_args.clone(),
+                wsl_args: e.wsl_args.clone(),
+                ssh_args: e.ssh_args.clone(),
+                is_default: e.is_default,
+            })
+            .collect(),
         sessions,
         groups,
     }

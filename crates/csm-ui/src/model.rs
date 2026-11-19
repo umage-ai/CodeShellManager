@@ -129,8 +129,39 @@ pub struct RunView {
     pub state: RunState,
     /// "running · 4 min", "failed · exit 1".
     pub detail: String,
-    /// The last lines of output (ANSI-stripped).
+    /// The last lines of output (ANSI-stripped). The real backend reads output through
+    /// [`crate::Backend::run_output`] instead; this is the demo's.
     pub output: String,
+    /// `process` (cmd /c, the login shell elsewhere) or `powershell`.
+    pub mode: String,
+    /// Opened in the browser after the run exits 0 (absolute http/https only).
+    pub post_run_url: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
+/// One "Open with" entry as a session's menus show it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OpenWithItem {
+    pub entry_id: String,
+    pub label: String,
+    /// The program's file name, shown beside the label.
+    pub program: String,
+    /// The exact command it would run for this session (the tooltip), or why it can't.
+    pub command: String,
+    pub is_default: bool,
+}
+
+/// One entry of the Open with list, as the editor shows it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OpenWithEntryView {
+    pub id: String,
+    pub label: String,
+    pub executable: String,
+    pub program: String,
+    pub local_args: Option<String>,
+    pub wsl_args: Option<String>,
+    pub ssh_args: Option<String>,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -158,6 +189,8 @@ pub struct SessionView {
     /// The repo session this worktree session belongs under.
     pub parent: Option<SessionId>,
     pub runs: Vec<RunView>,
+    /// The Open with entries that apply to this session.
+    pub open_with: Vec<OpenWithItem>,
     /// "2 h 14 min ago · resumes on restart".
     pub started: String,
     /// The process ended by itself. Shown as Idle with "Exited" as its word (and the code), so
@@ -664,6 +697,8 @@ pub struct UiModel {
     /// The WPF app's state file, when one was found at start-up: the empty screen offers to
     /// import it (`state_import_wpf`).
     pub wpf_import: Option<String>,
+    /// The Open with list (the editor).
+    pub open_with: Vec<OpenWithEntryView>,
 }
 
 impl UiModel {
