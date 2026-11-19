@@ -5,6 +5,7 @@
 //! `cargo xtask policy` allows `std::process::Command` only here (and in `csm-pty`, the CLI's
 //! setup code and tests). Blocking: call from a worker thread, never from the engine or UI thread.
 
+use std::ffi::OsStr;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -78,6 +79,24 @@ pub fn run_capture(cmd: &mut Command, timeout: Duration) -> Option<Captured> {
     };
     let stdout = reader.and_then(|r| r.join().ok()).unwrap_or_default();
     status.map(|s| Captured { success: s.success(), code: s.code(), stdout })
+}
+
+/// Runs `program` with `args` (argv, never a command line) under the rules of [`run_capture`].
+pub fn capture<I, S>(program: impl AsRef<OsStr>, args: I, timeout: Duration) -> Option<Captured>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_capture(Command::new(program).args(args), timeout)
+}
+
+/// [`capture`], keeping stdout only when the program exited 0.
+pub fn capture_ok<I, S>(program: impl AsRef<OsStr>, args: I, timeout: Duration) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    capture(program, args, timeout).filter(|c| c.success).map(|c| c.text())
 }
 
 /// [`run_capture`], keeping stdout only when the program exited 0.

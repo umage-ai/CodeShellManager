@@ -230,7 +230,7 @@ fn pwsh() -> &'static str {
         let where_exe = std::env::var_os("SystemRoot")
             .map(|r| PathBuf::from(r).join("System32").join("where.exe"))
             .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\where.exe"));
-        let out = proc::run_ok(std::process::Command::new(where_exe).arg("pwsh.exe"), Duration::from_secs(3));
+        let out = proc::capture_ok(where_exe, ["pwsh.exe"], Duration::from_secs(3));
         let choice = sl::choose_pwsh(out.as_deref(), &FsProbe);
         log::info!("session wrapper shell: {choice}");
         choice
@@ -253,9 +253,7 @@ impl sl::RunnableProbe for FsProbe {
     }
 
     fn can_execute(&self, path: &str) -> bool {
-        let mut c = std::process::Command::new(path);
-        c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"]);
-        proc::run_ok(&mut c, Duration::from_secs(5)).is_some()
+        proc::capture_ok(path, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], Duration::from_secs(5)).is_some()
     }
 }
 

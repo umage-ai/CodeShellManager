@@ -8,7 +8,6 @@
 //! (wsl.exe would read it as an option). The script text is fixed.
 
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -69,9 +68,7 @@ pub fn distros() -> Vec<WslDistro> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    let mut cmd = Command::new("wsl.exe");
-    cmd.args(["-l", "-v"]);
-    let Some(out) = proc::run_capture(&mut cmd, PROBE_TIMEOUT).filter(|c| c.success) else { return Vec::new() };
+    let Some(out) = proc::capture("wsl.exe", ["-l", "-v"], PROBE_TIMEOUT).filter(|c| c.success) else { return Vec::new() };
     parse_distros(&decode_wsl_output(&out.stdout))
 }
 
@@ -88,9 +85,7 @@ pub fn login_shell(distro: &str, user: &str) -> String {
 }
 
 fn proc_stdout(argv: &[String]) -> Option<String> {
-    let mut cmd = Command::new("wsl.exe");
-    cmd.args(argv);
-    proc::run_ok(&mut cmd, PROBE_TIMEOUT)
+    proc::capture_ok("wsl.exe", argv, PROBE_TIMEOUT)
 }
 
 fn cached(cache: &Mutex<Option<HashMap<Key, String>>>, distro: &str, user: &str, run: impl FnOnce(&[String]) -> Option<String>, script: &str) -> Option<String> {
