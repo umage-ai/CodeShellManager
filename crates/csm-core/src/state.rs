@@ -72,15 +72,27 @@ pub fn normalize(mut state: AppState) -> AppState {
 /// `None` means the file does not exist; `Some(text)` means it exists (and may be torn).
 pub fn load(primary: Option<&str>, backup: Option<&str>) -> Loaded {
     if let Some(Ok(state)) = primary.map(parse) {
-        return Loaded { state, source: LoadSource::Primary };
+        return Loaded {
+            state,
+            source: LoadSource::Primary,
+        };
     }
     if primary.is_none() && backup.is_none() {
-        return Loaded { state: AppState::default(), source: LoadSource::FirstRun };
+        return Loaded {
+            state: AppState::default(),
+            source: LoadSource::FirstRun,
+        };
     }
     if let Some(Ok(state)) = backup.map(parse) {
-        return Loaded { state, source: LoadSource::Backup };
+        return Loaded {
+            state,
+            source: LoadSource::Backup,
+        };
     }
-    Loaded { state: AppState::default(), source: LoadSource::Unreadable }
+    Loaded {
+        state: AppState::default(),
+        source: LoadSource::Unreadable,
+    }
 }
 
 /// The window fields of the state file, and nothing else (C# `StateService.SavedWindowState`).
@@ -137,15 +149,29 @@ mod tests {
     fn read_window_state_round_trips_placement_and_legacy_bounds() {
         let mut s = with_sessions(&["a"]);
         s.window_maximized = true;
-        s.last_normal_bounds = Some(WindowBounds { left: 10.0, top: 20.0, width: 800.0, height: 600.0 });
-        s.last_placement = Some(WindowPlacementState { left: 2000, top: 100, width: 1500, height: 900, dpi: 144 });
+        s.last_normal_bounds = Some(WindowBounds {
+            left: 10.0,
+            top: 20.0,
+            width: 800.0,
+            height: 600.0,
+        });
+        s.last_placement = Some(WindowPlacementState {
+            left: 2000,
+            top: 100,
+            width: 1500,
+            height: 900,
+            dpi: 144,
+        });
         let json = s.to_json().unwrap();
 
         let w = read_window_state(Some(&json), None).unwrap();
         assert!(w.window_maximized);
         assert_eq!(w.last_normal_bounds.unwrap().width, 800.0);
         let p = w.last_placement.unwrap();
-        assert_eq!((p.left, p.top, p.width, p.height, p.dpi), (2000, 100, 1500, 900, 144));
+        assert_eq!(
+            (p.left, p.top, p.width, p.height, p.dpi),
+            (2000, 100, 1500, 900, 144)
+        );
     }
 
     #[test]
@@ -158,7 +184,10 @@ mod tests {
 
     #[test]
     fn read_window_state_falls_back_to_backup_when_primary_is_torn() {
-        let w = read_window_state(Some("{ \"Sessions\": [ { \"Id\": "), Some(r#"{ "WindowMaximized": true }"#));
+        let w = read_window_state(
+            Some("{ \"Sessions\": [ { \"Id\": "),
+            Some(r#"{ "WindowMaximized": true }"#),
+        );
         assert!(w.unwrap().window_maximized);
     }
 
@@ -168,7 +197,13 @@ mod tests {
     fn save_round_trips_sessions() {
         let original = with_sessions(&["a", "b"]);
         let back = parse(&original.to_json().unwrap()).unwrap();
-        assert_eq!(back.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(
+            back.sessions
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
         assert_eq!(back.sessions[0].working_folder, r"C:\a");
         assert_eq!(back, original);
     }
@@ -202,7 +237,10 @@ mod tests {
         let newer = with_sessions(&["newer"]).to_json().unwrap();
         let older = with_sessions(&["older"]).to_json().unwrap();
         let loaded = load(Some(&newer), Some(&older));
-        assert_eq!((loaded.source, loaded.state.sessions[0].id.as_str()), (LoadSource::Primary, "newer"));
+        assert_eq!(
+            (loaded.source, loaded.state.sessions[0].id.as_str()),
+            (LoadSource::Primary, "newer")
+        );
     }
 
     #[test]
@@ -216,7 +254,9 @@ mod tests {
         // Property initialisers only apply when a key is absent, not when it is explicitly
         // null; an import can hand the loader any JSON file.
         let loaded = load(
-            Some(r#"{"Sessions":null,"Groups":null,"RecentlyClosed":null,"GroupLayouts":null,"Settings":null,"LastLayout":"Single"}"#),
+            Some(
+                r#"{"Sessions":null,"Groups":null,"RecentlyClosed":null,"GroupLayouts":null,"Settings":null,"LastLayout":"Single"}"#,
+            ),
             None,
         );
         assert_eq!(loaded.source, LoadSource::Primary);
@@ -286,7 +326,8 @@ mod tests {
 
     #[test]
     fn normalize_kind_wsl_with_stray_legacy_false_stays_wsl() {
-        let mixed = r#"{ "Sessions": [ { "Kind": 2, "IsRemote": false, "WslDistro": "Ubuntu" } ] }"#;
+        let mixed =
+            r#"{ "Sessions": [ { "Kind": 2, "IsRemote": false, "WslDistro": "Ubuntu" } ] }"#;
         assert_eq!(load_state(mixed).sessions[0].kind, SessionKind::Wsl);
     }
 
@@ -310,17 +351,31 @@ mod tests {
         // origin/main persists only "IsRemote" and has no Kind at all, so an older build
         // reading this file must still see an SSH session as remote: "IsRemote":true IS
         // written for Ssh. Local/Wsl omit the key entirely.
-        let ssh = ShellSession { kind: SessionKind::Ssh, ssh_host: "h".into(), ..Default::default() };
+        let ssh = ShellSession {
+            kind: SessionKind::Ssh,
+            ssh_host: "h".into(),
+            ..Default::default()
+        };
         let json = ssh.to_json().unwrap();
         assert!(json.contains("\"IsRemote\":true"), "{json}");
         for computed in ["FullCommandLine", "FolderShort", "AccentKey"] {
-            assert!(!json.contains(computed), "{computed} must not be serialised");
+            assert!(
+                !json.contains(computed),
+                "{computed} must not be serialised"
+            );
         }
         assert!(json.contains("\"Kind\":1"), "{json}");
 
-        let local = ShellSession { kind: SessionKind::Local, ..Default::default() };
+        let local = ShellSession {
+            kind: SessionKind::Local,
+            ..Default::default()
+        };
         assert!(!local.to_json().unwrap().contains("\"IsRemote\""));
-        let wsl = ShellSession { kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), ..Default::default() };
+        let wsl = ShellSession {
+            kind: SessionKind::Wsl,
+            wsl_distro: "Ubuntu".into(),
+            ..Default::default()
+        };
         assert!(!wsl.to_json().unwrap().contains("\"IsRemote\""));
     }
 
@@ -328,14 +383,22 @@ mod tests {
     fn serialize_incomplete_ssh_session_does_not_fail() {
         // Regression: FullCommandLine used to be serialised and threw on a blank host, which
         // made every state save fail after a bad edit.
-        let s = ShellSession { kind: SessionKind::Ssh, ssh_host: String::new(), ..Default::default() };
+        let s = ShellSession {
+            kind: SessionKind::Ssh,
+            ssh_host: String::new(),
+            ..Default::default()
+        };
         assert!(s.to_json().is_ok());
         assert_eq!(s.full_command_line().as_deref(), Some("ssh"));
     }
 
     #[test]
     fn roundtrip_ssh_session_through_computed_legacy_is_remote_keeps_kind_ssh() {
-        let original = ShellSession { kind: SessionKind::Ssh, ssh_host: "dev.example.com".into(), ..Default::default() };
+        let original = ShellSession {
+            kind: SessionKind::Ssh,
+            ssh_host: "dev.example.com".into(),
+            ..Default::default()
+        };
         let wrapped = format!("{{ \"Sessions\": [ {} ] }}", original.to_json().unwrap());
         let revived = &load_state(&wrapped).sessions[0];
         assert_eq!(revived.kind, SessionKind::Ssh);
@@ -354,7 +417,14 @@ mod tests {
         };
         let revived: ShellSession = serde_json::from_str(&original.to_json().unwrap()).unwrap();
         assert_eq!(revived.kind, SessionKind::Wsl);
-        assert_eq!((revived.wsl_distro.as_str(), revived.wsl_user.as_str(), revived.wsl_working_folder.as_str()), ("Debian", "bob", "/srv/app"));
+        assert_eq!(
+            (
+                revived.wsl_distro.as_str(),
+                revived.wsl_user.as_str(),
+                revived.wsl_working_folder.as_str()
+            ),
+            ("Debian", "bob", "/srv/app")
+        );
     }
 
     // ---- ShellSessionRunCommandsTests ----
@@ -369,8 +439,20 @@ mod tests {
         use crate::models::RunCommandItem;
         let s = ShellSession {
             run_commands: vec![
-                RunCommandItem { id: "a".into(), label: "run".into(), command_line: "dotnet run".into(), is_default: true, ..Default::default() },
-                RunCommandItem { id: "b".into(), label: "test".into(), command_line: "dotnet test".into(), is_default: false, ..Default::default() },
+                RunCommandItem {
+                    id: "a".into(),
+                    label: "run".into(),
+                    command_line: "dotnet run".into(),
+                    is_default: true,
+                    ..Default::default()
+                },
+                RunCommandItem {
+                    id: "b".into(),
+                    label: "test".into(),
+                    command_line: "dotnet test".into(),
+                    is_default: false,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };

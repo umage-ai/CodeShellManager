@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::group::SessionGroup;
 use super::open_with::OpenWithEntry;
 use super::recently_closed::RecentlyClosedEntry;
-use super::serde_util::{null_default as nd, numeric_enum};
+use super::serde_util::{null_default as nd, numeric_enum, ser_f64};
 use super::session::ShellSession;
 
 numeric_enum! {
@@ -136,7 +136,9 @@ pub struct AppSettings {
     pub terminal_font_size: i32,
     pub terminal_font_ligatures: bool,
     pub terminal_font_weight: String,
+    #[serde(serialize_with = "ser_f64")]
     pub terminal_letter_spacing: f64,
+    #[serde(serialize_with = "ser_f64")]
     pub terminal_line_height: f64,
 
     /// "Open with..." editors. Seeded once by detection, gated on `open_with_seeded`.
@@ -198,9 +200,13 @@ impl Default for AppSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct WindowBounds {
+    #[serde(serialize_with = "ser_f64")]
     pub left: f64,
+    #[serde(serialize_with = "ser_f64")]
     pub top: f64,
+    #[serde(serialize_with = "ser_f64")]
     pub width: f64,
+    #[serde(serialize_with = "ser_f64")]
     pub height: f64,
 }
 
@@ -291,8 +297,10 @@ mod tests {
     fn a_stale_dev_build_key_is_ignored_and_the_mode_defaults_to_auto() {
         // Earlier development builds saved "AnswerProgramStatusProbe": false meaning
         // "experimental, off"; the renamed setting must not read that as a deliberate "off".
-        let settings: AppSettings =
-            serde_json::from_str(r#"{"AnswerProgramStatusProbe": false, "UseBundledConPty": true}"#).unwrap();
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"AnswerProgramStatusProbe": false, "UseBundledConPty": true}"#,
+        )
+        .unwrap();
         assert_eq!(settings.program_status_probe, ProgramStatusProbeMode::Auto);
         assert!(settings.use_bundled_con_pty);
     }

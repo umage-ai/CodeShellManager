@@ -51,12 +51,20 @@ mod tests {
     use super::*;
 
     fn item(label: &str, cmd: &str, default: bool) -> RunCommandItem {
-        RunCommandItem { label: label.into(), command_line: cmd.into(), is_default: default, ..Default::default() }
+        RunCommandItem {
+            label: label.into(),
+            command_line: cmd.into(),
+            is_default: default,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn ensure_single_default_promotes_first_when_none_marked() {
-        let mut list = vec![item("run", "dotnet run", false), item("test", "dotnet test", false)];
+        let mut list = vec![
+            item("run", "dotnet run", false),
+            item("test", "dotnet test", false),
+        ];
         RunCommandItem::ensure_single_default(&mut list);
         assert!(list[0].is_default);
         assert!(!list[1].is_default);
@@ -64,7 +72,11 @@ mod tests {
 
     #[test]
     fn ensure_single_default_keeps_last_true_when_multiple_marked() {
-        let mut list = vec![item("a", "x", true), item("b", "y", true), item("c", "z", false)];
+        let mut list = vec![
+            item("a", "x", true),
+            item("b", "y", true),
+            item("c", "z", false),
+        ];
         RunCommandItem::ensure_single_default(&mut list);
         // The LAST-marked default wins (matches the dialog's click-to-promote behaviour).
         assert!(!list[0].is_default);
@@ -85,14 +97,21 @@ mod tests {
         let item = RunCommandItem::default();
         assert_eq!(item.mode, RunMode::Process);
         assert_eq!(item.post_run_url, None);
-        let parsed: RunCommandItem = serde_json::from_str(r#"{"Id":"r","Label":"Run","CommandLine":"npm run dev","IsDefault":true}"#).unwrap();
+        let parsed: RunCommandItem = serde_json::from_str(
+            r#"{"Id":"r","Label":"Run","CommandLine":"npm run dev","IsDefault":true}"#,
+        )
+        .unwrap();
         assert_eq!(parsed.mode, RunMode::Process);
         assert_eq!(parsed.post_run_url, None);
     }
 
     #[test]
     fn mode_is_stored_as_a_number_and_url_omitted_when_none() {
-        let json = serde_json::to_string(&RunCommandItem { mode: RunMode::PowerShell, ..Default::default() }).unwrap();
+        let json = serde_json::to_string(&RunCommandItem {
+            mode: RunMode::PowerShell,
+            ..Default::default()
+        })
+        .unwrap();
         assert!(json.contains(r#""Mode":1"#), "{json}");
         assert!(!json.contains("PostRunUrl"), "{json}");
     }

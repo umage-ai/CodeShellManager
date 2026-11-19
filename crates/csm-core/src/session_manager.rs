@@ -102,7 +102,10 @@ impl SessionManager {
 
     /// Reorders the session list in place using a comparison. Sorting is a one-shot apply; the
     /// user can keep refining by drag-reorder afterwards. The sort is stable.
-    pub fn sort_sessions(&mut self, mut cmp: impl FnMut(&ShellSession, &ShellSession) -> std::cmp::Ordering) {
+    pub fn sort_sessions(
+        &mut self,
+        mut cmp: impl FnMut(&ShellSession, &ShellSession) -> std::cmp::Ordering,
+    ) {
         self.sessions.sort_by(|a, b| cmp(a, b));
     }
 
@@ -110,8 +113,19 @@ impl SessionManager {
     /// index-based overload: this list holds dormant sessions and every group, so an index
     /// computed anywhere else means a different slot here, which is how a dragged session used
     /// to land elsewhere. Returns true when the order changed.
-    pub fn move_session_relative(&mut self, session_id: &str, anchor_id: &str, after: bool) -> bool {
-        session_order::move_relative(&mut self.sessions, |s| s.id.as_str(), session_id, anchor_id, after)
+    pub fn move_session_relative(
+        &mut self,
+        session_id: &str,
+        anchor_id: &str,
+        after: bool,
+    ) -> bool {
+        session_order::move_relative(
+            &mut self.sessions,
+            |s| s.id.as_str(),
+            session_id,
+            anchor_id,
+            after,
+        )
     }
 
     pub fn update_status(&mut self, id: &str, status: SessionStatus) {
@@ -123,7 +137,12 @@ impl SessionManager {
     /// Adds a group at the end; `sort_order` is its position.
     pub fn add_group(&mut self, id: String, name: &str) -> &SessionGroup {
         let sort_order = i32::try_from(self.groups.len()).unwrap_or(i32::MAX);
-        self.groups.push(SessionGroup { id, name: name.to_owned(), sort_order, is_expanded: true });
+        self.groups.push(SessionGroup {
+            id,
+            name: name.to_owned(),
+            sort_order,
+            is_expanded: true,
+        });
         &self.groups[self.groups.len() - 1]
     }
 
@@ -139,7 +158,9 @@ impl SessionManager {
 
     /// Removes a group. Sessions assigned to it become ungrouped; they are not deleted.
     pub fn remove_group(&mut self, id: &str) {
-        let Some(idx) = self.groups.iter().position(|g| g.id == id) else { return };
+        let Some(idx) = self.groups.iter().position(|g| g.id == id) else {
+            return;
+        };
         for s in &mut self.sessions {
             if s.group_id == id {
                 s.group_id.clear();
@@ -151,9 +172,13 @@ impl SessionManager {
     /// Moves a group to a new position (0-based; `len` means "insert at end") and renumbers
     /// `sort_order` so the order survives persistence.
     pub fn move_group(&mut self, id: &str, new_index: i64) {
-        let Some(cur) = self.groups.iter().position(|g| g.id == id) else { return };
+        let Some(cur) = self.groups.iter().position(|g| g.id == id) else {
+            return;
+        };
         let len = self.groups.len();
-        let mut target = usize::try_from(new_index.clamp(0, i64::try_from(len).unwrap_or(i64::MAX))).unwrap_or(len);
+        let mut target =
+            usize::try_from(new_index.clamp(0, i64::try_from(len).unwrap_or(i64::MAX)))
+                .unwrap_or(len);
         // After the removal, every index above `cur` shifts down by one.
         if cur < target {
             target -= 1;
@@ -195,7 +220,10 @@ impl SessionManager {
         }
 
         if !state.settings.legacy_default_group_cleared {
-            if self.groups.len() == 1 && self.groups[0].name == "Default" && self.groups[0].sort_order == 0 {
+            if self.groups.len() == 1
+                && self.groups[0].name == "Default"
+                && self.groups[0].sort_order == 0
+            {
                 let legacy_id = self.groups[0].id.clone();
                 for s in &mut self.sessions {
                     if s.group_id == legacy_id {
@@ -229,16 +257,19 @@ mod tests {
     #[derive(Default)]
     struct World {
         manager: SessionManager,
-        grid: Vec<String>,                // _vm.Sessions ids
-        repo: HashMap<String, String>,    // SessionViewModel.RepoRoot
-        mode: &'static str,               // None | FilterStrip | Inline
+        grid: Vec<String>,             // _vm.Sessions ids
+        repo: HashMap<String, String>, // SessionViewModel.RepoRoot
+        mode: &'static str,            // None | FilterStrip | Inline
         active_group: Option<String>,
         groups: Vec<String>,
     }
 
     impl World {
         fn new() -> Self {
-            Self { mode: "None", ..Default::default() }
+            Self {
+                mode: "None",
+                ..Default::default()
+            }
         }
 
         fn add(mut self, id: &str) -> Self {
@@ -290,12 +321,16 @@ mod tests {
         fn render(&self) -> Vec<SidebarRow> {
             let mut rows: Vec<(SidebarRowKind, Option<String>)> = Vec::new();
 
-            let live_rows = |rows: &mut Vec<(SidebarRowKind, Option<String>)>, live: Vec<&ShellSession>| {
+            let live_rows = |rows: &mut Vec<(SidebarRowKind, Option<String>)>,
+                             live: Vec<&ShellSession>| {
                 let mut i = 0;
                 while i < live.len() {
                     let mut j = i;
                     let root = self.root_of(&live[i].id);
-                    while root.is_some() && j + 1 < live.len() && self.root_of(&live[j + 1].id) == root {
+                    while root.is_some()
+                        && j + 1 < live.len()
+                        && self.root_of(&live[j + 1].id) == root
+                    {
                         j += 1;
                     }
                     if j > i {
@@ -312,23 +347,43 @@ mod tests {
                 let mut all = vec![String::new()];
                 all.extend(self.groups.iter().cloned());
                 for g in all {
-                    let members: Vec<&ShellSession> = self.manager.sessions().iter().filter(|s| s.group_id == g).collect();
+                    let members: Vec<&ShellSession> = self
+                        .manager
+                        .sessions()
+                        .iter()
+                        .filter(|s| s.group_id == g)
+                        .collect();
                     if g.is_empty() && members.is_empty() {
                         continue;
                     }
-                    rows.push((SidebarRowKind::GroupHeader, (!g.is_empty()).then(|| g.clone())));
-                    live_rows(&mut rows, members.iter().copied().filter(|s| !s.is_dormant).collect());
+                    rows.push((
+                        SidebarRowKind::GroupHeader,
+                        (!g.is_empty()).then(|| g.clone()),
+                    ));
+                    live_rows(
+                        &mut rows,
+                        members.iter().copied().filter(|s| !s.is_dormant).collect(),
+                    );
                     rows.extend(
-                        members.iter().filter(|s| s.is_dormant).map(|s| (SidebarRowKind::Dormant, Some(s.id.clone()))),
+                        members
+                            .iter()
+                            .filter(|s| s.is_dormant)
+                            .map(|s| (SidebarRowKind::Dormant, Some(s.id.clone()))),
                     );
                 }
             } else {
                 let visible = |s: &ShellSession| {
-                    self.mode != "FilterStrip" || self.active_group.is_none() || self.active_group.as_deref() == Some(s.group_id.as_str())
+                    self.mode != "FilterStrip"
+                        || self.active_group.is_none()
+                        || self.active_group.as_deref() == Some(s.group_id.as_str())
                 };
                 live_rows(
                     &mut rows,
-                    self.manager.sessions().iter().filter(|s| !s.is_dormant && visible(s)).collect(),
+                    self.manager
+                        .sessions()
+                        .iter()
+                        .filter(|s| !s.is_dormant && visible(s))
+                        .collect(),
                 );
                 rows.extend(
                     self.manager
@@ -347,7 +402,12 @@ mod tests {
                         SidebarRowKind::GroupHeader => HEADER_H,
                         _ => ROW_H,
                     };
-                    let row = SidebarRow { kind, id, top: y, height: h };
+                    let row = SidebarRow {
+                        kind,
+                        id,
+                        top: y,
+                        height: h,
+                    };
                     y += h;
                     row
                 })
@@ -364,7 +424,13 @@ mod tests {
         }
 
         fn below_everything(&self) -> f64 {
-            self.render().iter().rev().find(|r| r.kind == SidebarRowKind::Session).unwrap().bottom() - 2.0
+            self.render()
+                .iter()
+                .rev()
+                .find(|r| r.kind == SidebarRowKind::Session)
+                .unwrap()
+                .bottom()
+                - 2.0
         }
 
         // Mirrors MainWindow.ApplySessionDrop.
@@ -375,11 +441,21 @@ mod tests {
             } else if let Some(a) = &t.after_session_id {
                 self.manager.move_session_relative(dragged, a, true);
             }
-            let current = self.manager.session(dragged).map(|s| s.group_id.clone()).unwrap_or_default();
+            let current = self
+                .manager
+                .session(dragged)
+                .map(|s| s.group_id.clone())
+                .unwrap_or_default();
             if t.assigns_group && current != t.group_id.clone().unwrap_or_default() {
-                self.manager.set_session_group(dragged, t.group_id.as_deref());
+                self.manager
+                    .set_session_group(dragged, t.group_id.as_deref());
             }
-            let reference: Vec<String> = self.manager.sessions().iter().map(|s| s.id.clone()).collect();
+            let reference: Vec<String> = self
+                .manager
+                .sessions()
+                .iter()
+                .map(|s| s.id.clone())
+                .collect();
             align_to(&mut self.grid, &reference, |s| s.as_str());
         }
 
@@ -415,7 +491,11 @@ mod tests {
 
     #[test]
     fn scenario2_a_worktree_cluster_header_does_not_shift_the_drop() {
-        let mut w = World::new().add("web").add_repo("api", "R").add_repo("api (PS)", "R").add("docs");
+        let mut w = World::new()
+            .add("web")
+            .add_repo("api", "R")
+            .add_repo("api (PS)", "R")
+            .add("docs");
         let y = w.above_row("api");
         w.drop_on("docs", y);
         assert_eq!(w.sidebar(), v(&["web", "docs", "api", "api (PS)"])); // was [web, api, docs, api (PS)]
@@ -423,12 +503,17 @@ mod tests {
 
     #[test]
     fn scenario3_filter_strip_drop_lands_where_aimed_within_the_visible_group() {
-        let mut w = World { mode: "FilterStrip", active_group: Some("claude".into()), groups: v(&["claude", "ps"]), ..Default::default() }
-            .add_group("p1", "ps")
-            .add_group("c1", "claude")
-            .add_group("p2", "ps")
-            .add_group("c2", "claude")
-            .add_group("c3", "claude");
+        let mut w = World {
+            mode: "FilterStrip",
+            active_group: Some("claude".into()),
+            groups: v(&["claude", "ps"]),
+            ..Default::default()
+        }
+        .add_group("p1", "ps")
+        .add_group("c1", "claude")
+        .add_group("p2", "ps")
+        .add_group("c2", "claude")
+        .add_group("c3", "claude");
         let y = w.above_row("c2");
         w.drop_on("c3", y);
         assert_eq!(w.live_in("claude"), v(&["c1", "c3", "c2"])); // was [c3, c1, c2]
@@ -436,11 +521,15 @@ mod tests {
     }
 
     fn inline_world() -> World {
-        World { mode: "Inline", groups: v(&["claude", "ps"]), ..Default::default() }
-            .add_dormant("zz", "claude")
-            .add_group("c1", "claude")
-            .add_group("c2", "claude")
-            .add_group("p1", "ps")
+        World {
+            mode: "Inline",
+            groups: v(&["claude", "ps"]),
+            ..Default::default()
+        }
+        .add_dormant("zz", "claude")
+        .add_group("c1", "claude")
+        .add_group("c2", "claude")
+        .add_group("p1", "ps")
     }
 
     #[test]
@@ -457,8 +546,13 @@ mod tests {
         let mut w = inline_world();
         let y = w.above_row("c2");
         w.drop_on("p1", y);
-        let live_sidebar_order: Vec<String> =
-            w.manager.sessions().iter().filter(|s| !s.is_dormant).map(|s| s.id.clone()).collect();
+        let live_sidebar_order: Vec<String> = w
+            .manager
+            .sessions()
+            .iter()
+            .filter(|s| !s.is_dormant)
+            .map(|s| s.id.clone())
+            .collect();
         assert_eq!(live_sidebar_order, w.grid); // grid was [c1, p1, c2] vs sidebar [p1, c1, c2]
     }
 
@@ -468,7 +562,10 @@ mod tests {
         // re-sorting every sibling on the next Add/Remove. That pass now only ever places a
         // session created in this run, and an unrelated new session has nothing to be placed
         // next to.
-        let mut w = World::new().add_repo("api", "R").add_repo("api (PS)", "R").add("web");
+        let mut w = World::new()
+            .add_repo("api", "R")
+            .add_repo("api (PS)", "R")
+            .add("web");
         let y = w.below_everything();
         w.drop_on("api (PS)", y);
         assert_eq!(w.sidebar(), v(&["api", "web", "api (PS)"]));
@@ -491,11 +588,18 @@ mod tests {
 
     #[test]
     fn scenario6b_dropping_within_the_cluster_keeps_both_siblings_together() {
-        let mut w = World::new().add("web").add_repo("api", "R").add_repo("api (PS)", "R");
+        let mut w = World::new()
+            .add("web")
+            .add_repo("api", "R")
+            .add_repo("api (PS)", "R");
         let y = w.above_row("api");
         w.drop_on("api (PS)", y);
         assert_eq!(w.sidebar(), v(&["web", "api (PS)", "api"]));
-        assert!(w.render().iter().any(|r| r.kind == SidebarRowKind::ClusterHeader));
+        assert!(
+            w.render()
+                .iter()
+                .any(|r| r.kind == SidebarRowKind::ClusterHeader)
+        );
     }
 
     // ---- additions: SessionManager behaviour that has no C# unit test of its own ----
@@ -523,13 +627,21 @@ mod tests {
         m.create_session(new_session("d", Some("missing")));
         let ids: Vec<&str> = m.sessions().iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["a", "c", "b", "d"]);
-        assert_eq!(m.session("a").map(|s| s.status), Some(SessionStatus::Running));
+        assert_eq!(
+            m.session("a").map(|s| s.status),
+            Some(SessionStatus::Running)
+        );
     }
 
     #[test]
     fn load_from_state_backfills_last_activity_and_drops_the_legacy_default_group_once() {
         let mut state = AppState::default();
-        state.groups.push(SessionGroup { id: "legacy".into(), name: "Default".into(), sort_order: 0, is_expanded: true });
+        state.groups.push(SessionGroup {
+            id: "legacy".into(),
+            name: "Default".into(),
+            sort_order: 0,
+            is_expanded: true,
+        });
         state.sessions.push(ShellSession {
             id: "s".into(),
             group_id: "legacy".into(),
@@ -538,14 +650,22 @@ mod tests {
         });
         let mut m = SessionManager::new();
         m.load_from_state(&mut state);
-        assert_eq!(m.sessions()[0].last_activity_at, Timestamp::from_epoch_ms(5_000));
+        assert_eq!(
+            m.sessions()[0].last_activity_at,
+            Timestamp::from_epoch_ms(5_000)
+        );
         assert!(m.groups().is_empty());
         assert_eq!(m.sessions()[0].group_id, "");
         assert!(state.settings.legacy_default_group_cleared);
 
         // A user-named "Default" group created later survives, because the flag is now set.
         state.groups.clear();
-        state.groups.push(SessionGroup { id: "mine".into(), name: "Default".into(), sort_order: 0, is_expanded: true });
+        state.groups.push(SessionGroup {
+            id: "mine".into(),
+            name: "Default".into(),
+            sort_order: 0,
+            is_expanded: true,
+        });
         m.load_from_state(&mut state);
         assert_eq!(m.groups().len(), 1);
     }
@@ -557,7 +677,11 @@ mod tests {
         m.add_group("g2".into(), "two");
         m.add_group("g3".into(), "three");
         m.move_group("g1", 3); // "Count is a legal insert-at-end target"
-        let order: Vec<(&str, i32)> = m.groups().iter().map(|g| (g.id.as_str(), g.sort_order)).collect();
+        let order: Vec<(&str, i32)> = m
+            .groups()
+            .iter()
+            .map(|g| (g.id.as_str(), g.sort_order))
+            .collect();
         assert_eq!(order, [("g2", 0), ("g3", 1), ("g1", 2)]);
         m.move_group("g1", 0);
         assert_eq!(m.groups()[0].id, "g1");
@@ -565,9 +689,15 @@ mod tests {
         m.move_group("nope", 1);
         m.rename_group("g2", "  Renamed ");
         m.rename_group("g3", "   ");
-        assert_eq!((m.groups()[1].name.as_str(), m.groups()[2].name.as_str()), ("Renamed", "three"));
+        assert_eq!(
+            (m.groups()[1].name.as_str(), m.groups()[2].name.as_str()),
+            ("Renamed", "three")
+        );
 
-        m.create_session(NewSession { group_id: Some("g2"), ..new_session("s", None) });
+        m.create_session(NewSession {
+            group_id: Some("g2"),
+            ..new_session("s", None)
+        });
         m.remove_group("g2");
         assert_eq!(m.session("s").map(|s| s.group_id.as_str()), Some(""));
         assert_eq!(m.groups().len(), 2);

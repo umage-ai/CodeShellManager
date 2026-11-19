@@ -12,8 +12,8 @@ mod session;
 
 pub use alert_event::{AlertEvent, AlertType};
 pub use app_state::{
-    AppSettings, AppState, GroupDisplayMode, ProgramStatusProbeMode, SidebarActionIconsMode, WindowBounds,
-    WindowPlacementState,
+    AppSettings, AppState, GroupDisplayMode, ProgramStatusProbeMode, SidebarActionIconsMode,
+    WindowBounds, WindowPlacementState,
 };
 pub use group::SessionGroup;
 pub use open_with::OpenWithEntry;

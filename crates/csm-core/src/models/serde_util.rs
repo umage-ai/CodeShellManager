@@ -69,3 +69,22 @@ macro_rules! numeric_enum {
 }
 
 pub(crate) use numeric_enum;
+
+/// Writes a double the way System.Text.Json does: a whole number has no fractional part
+/// (`1000`, not `1000.0`). Both read back identically; this keeps a rewritten `state.json`
+/// textually close to the one the C# app wrote.
+pub(crate) fn ser_f64<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.0e15 {
+        s.serialize_i64(*v as i64)
+    } else {
+        s.serialize_f64(*v)
+    }
+}
+
+/// [`ser_f64`] for an optional field (always paired with `skip_serializing_if = "Option::is_none"`).
+pub(crate) fn ser_opt_f64<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(v) => ser_f64(v, s),
+        None => s.serialize_none(),
+    }
+}

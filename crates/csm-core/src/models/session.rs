@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::run_command::RunCommandItem;
-use super::serde_util::{null_default as nd, numeric_enum};
+use super::serde_util::{null_default as nd, numeric_enum, ser_opt_f64};
 use crate::time::Timestamp;
 
 numeric_enum! {
@@ -103,7 +103,10 @@ pub struct ShellSession {
     pub profile_cursor_blink: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_padding: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64"
+    )]
     pub profile_background_opacity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_retro_effect: Option<bool>,
@@ -333,18 +336,32 @@ mod tests {
 
     #[test]
     fn full_command_line_local_returns_command_and_args() {
-        let s = ShellSession { command: "claude".into(), args: "--continue".into(), ..Default::default() };
+        let s = ShellSession {
+            command: "claude".into(),
+            args: "--continue".into(),
+            ..Default::default()
+        };
         assert_eq!(s.full_command_line().as_deref(), Some("claude --continue"));
-        let bare = ShellSession { command: "pwsh".into(), ..Default::default() };
+        let bare = ShellSession {
+            command: "pwsh".into(),
+            ..Default::default()
+        };
         assert_eq!(bare.full_command_line().as_deref(), Some("pwsh"));
     }
 
     #[test]
     fn incomplete_ssh_session_shows_just_the_executable() {
         // Regression carried over: a blank host must never fail the display string.
-        let s = ShellSession { kind: SessionKind::Ssh, ssh_host: String::new(), ..Default::default() };
+        let s = ShellSession {
+            kind: SessionKind::Ssh,
+            ssh_host: String::new(),
+            ..Default::default()
+        };
         assert_eq!(s.full_command_line().as_deref(), Some("ssh"));
-        let w = ShellSession { kind: SessionKind::Wsl, ..Default::default() };
+        let w = ShellSession {
+            kind: SessionKind::Wsl,
+            ..Default::default()
+        };
         assert_eq!(w.full_command_line().as_deref(), Some("wsl.exe"));
     }
 
@@ -358,7 +375,13 @@ mod tests {
 
     #[test]
     fn is_remote_getter_true_only_for_ssh() {
-        let of = |kind| ShellSession { kind, ..Default::default() }.is_remote();
+        let of = |kind| {
+            ShellSession {
+                kind,
+                ..Default::default()
+            }
+            .is_remote()
+        };
         assert!(!of(SessionKind::Local));
         assert!(of(SessionKind::Ssh));
         assert!(!of(SessionKind::Wsl));
@@ -366,14 +389,20 @@ mod tests {
 
     #[test]
     fn is_remote_setter_false_on_ssh_demotes_to_local() {
-        let mut s = ShellSession { kind: SessionKind::Ssh, ..Default::default() };
+        let mut s = ShellSession {
+            kind: SessionKind::Ssh,
+            ..Default::default()
+        };
         s.set_is_remote(false);
         assert_eq!(s.kind, SessionKind::Local);
     }
 
     #[test]
     fn is_remote_setter_false_on_wsl_leaves_wsl() {
-        let mut s = ShellSession { kind: SessionKind::Wsl, ..Default::default() };
+        let mut s = ShellSession {
+            kind: SessionKind::Wsl,
+            ..Default::default()
+        };
         s.set_is_remote(false);
         assert_eq!(s.kind, SessionKind::Wsl);
     }
@@ -397,7 +426,10 @@ mod tests {
             wsl_working_folder: "/proj".into(),
             ..Default::default()
         };
-        let local = ShellSession { working_folder: "/proj".into(), ..Default::default() };
+        let local = ShellSession {
+            working_folder: "/proj".into(),
+            ..Default::default()
+        };
         assert_ne!(wsl.accent_key(), local.accent_key());
         assert_eq!(wsl.accent_key(), "wsl://Ubuntu/proj");
     }
@@ -411,33 +443,67 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.accent_key(), "alice@dev");
-        let no_user = ShellSession { kind: SessionKind::Ssh, ssh_host: "dev".into(), ..Default::default() };
+        let no_user = ShellSession {
+            kind: SessionKind::Ssh,
+            ssh_host: "dev".into(),
+            ..Default::default()
+        };
         assert_eq!(no_user.accent_key(), "dev");
     }
 
     #[test]
     fn launch_validation_error_cases() {
         let none = |s: ShellSession| s.launch_validation_error().is_none();
-        assert!(none(ShellSession { kind: SessionKind::Local, command: "claude".into(), ..Default::default() }));
-        let ssh = ShellSession { kind: SessionKind::Ssh, ..Default::default() };
-        assert!(ssh.launch_validation_error().is_some_and(|m| m.to_lowercase().contains("host")));
-        let wsl = ShellSession { kind: SessionKind::Wsl, ..Default::default() };
-        assert!(wsl.launch_validation_error().is_some_and(|m| m.to_lowercase().contains("distro")));
-        assert!(none(ShellSession { kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), ..Default::default() }));
+        assert!(none(ShellSession {
+            kind: SessionKind::Local,
+            command: "claude".into(),
+            ..Default::default()
+        }));
+        let ssh = ShellSession {
+            kind: SessionKind::Ssh,
+            ..Default::default()
+        };
+        assert!(
+            ssh.launch_validation_error()
+                .is_some_and(|m| m.to_lowercase().contains("host"))
+        );
+        let wsl = ShellSession {
+            kind: SessionKind::Wsl,
+            ..Default::default()
+        };
+        assert!(
+            wsl.launch_validation_error()
+                .is_some_and(|m| m.to_lowercase().contains("distro"))
+        );
+        assert!(none(ShellSession {
+            kind: SessionKind::Wsl,
+            wsl_distro: "Ubuntu".into(),
+            ..Default::default()
+        }));
     }
 
     #[test]
     fn folder_short_local_working_folder_with_embedded_nul_does_not_panic() {
         // C# regression: DirectoryInfo(...).Name threw on a NUL, reachable from state.json.
-        let s = ShellSession { working_folder: "C:\\src\\web\u{0}oops".into(), ..Default::default() };
+        let s = ShellSession {
+            working_folder: "C:\\src\\web\u{0}oops".into(),
+            ..Default::default()
+        };
         assert_eq!(s.folder_short(), "web\u{0}oops");
     }
 
     #[test]
     fn folder_short_per_kind() {
-        let local = ShellSession { working_folder: "C:\\src\\app\\".into(), ..Default::default() };
+        let local = ShellSession {
+            working_folder: "C:\\src\\app\\".into(),
+            ..Default::default()
+        };
         assert_eq!(local.folder_short(), "app");
-        let ssh = ShellSession { kind: SessionKind::Ssh, ssh_host: "dev".into(), ..Default::default() };
+        let ssh = ShellSession {
+            kind: SessionKind::Ssh,
+            ssh_host: "dev".into(),
+            ..Default::default()
+        };
         assert_eq!(ssh.folder_short(), "dev");
         let wsl = ShellSession {
             kind: SessionKind::Wsl,
@@ -446,18 +512,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wsl.folder_short(), "Ubuntu: proj");
-        let wsl_home = ShellSession { kind: SessionKind::Wsl, wsl_distro: "Ubuntu".into(), ..Default::default() };
+        let wsl_home = ShellSession {
+            kind: SessionKind::Wsl,
+            wsl_distro: "Ubuntu".into(),
+            ..Default::default()
+        };
         assert_eq!(wsl_home.folder_short(), "Ubuntu");
         assert_eq!(ShellSession::default().folder_short(), "");
     }
 
     #[test]
     fn default_display_name_falls_back_per_kind() {
-        let ssh = ShellSession { kind: SessionKind::Ssh, command: "bash".into(), ..Default::default() };
+        let ssh = ShellSession {
+            kind: SessionKind::Ssh,
+            command: "bash".into(),
+            ..Default::default()
+        };
         assert_eq!(ssh.default_display_name(), "bash");
         // C# parity: an empty local folder yields "" (GetFileName never returns null).
         assert_eq!(ShellSession::default().default_display_name(), "");
-        let local = ShellSession { working_folder: "C:\\repos\\csm".into(), ..Default::default() };
+        let local = ShellSession {
+            working_folder: "C:\\repos\\csm".into(),
+            ..Default::default()
+        };
         assert_eq!(local.default_display_name(), "csm");
     }
 

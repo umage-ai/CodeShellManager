@@ -35,7 +35,12 @@ pub struct SidebarRow {
 
 impl SidebarRow {
     pub fn new(kind: SidebarRowKind, id: Option<&str>, top: f64, height: f64) -> Self {
-        Self { kind, id: id.map(str::to_owned), top, height }
+        Self {
+            kind,
+            id: id.map(str::to_owned),
+            top,
+            height,
+        }
     }
 
     pub fn bottom(&self) -> f64 {
@@ -94,7 +99,9 @@ pub fn resolve(rows: &[SidebarRow], y: f64) -> Option<SidebarDropTarget> {
             .find(|(_, r)| r.kind == SidebarRowKind::GroupHeader)
             .map_or(rows.len(), |(i, _)| i);
     }
-    let group_id = header_index.and_then(|h| rows.get(h)).and_then(|r| r.id.clone());
+    let group_id = header_index
+        .and_then(|h| rows.get(h))
+        .and_then(|r| r.id.clone());
 
     // First live row whose midline is below the cursor: insert before it.
     let mut last_session: Option<usize> = None;
@@ -108,7 +115,9 @@ pub fn resolve(rows: &[SidebarRow], y: f64) -> Option<SidebarDropTarget> {
             // dropped session sits before the run, it renders above that header too.
             let mut top = i;
             while top > start
-                && rows.get(top - 1).is_some_and(|r| r.kind == SidebarRowKind::ClusterHeader)
+                && rows
+                    .get(top - 1)
+                    .is_some_and(|r| r.kind == SidebarRowKind::ClusterHeader)
             {
                 top -= 1;
             }
@@ -223,7 +232,13 @@ mod tests {
     fn a_cluster_header_is_not_counted_as_a_row() {
         // Cluster header above api: aiming at api's top half means "before api", and the line
         // is drawn above the header, because that is where the dropped row will render.
-        let rows = stack(&[live("web"), cluster(), live("api"), live("api (PS)"), live("docs")]);
+        let rows = stack(&[
+            live("web"),
+            cluster(),
+            live("api"),
+            live("api (PS)"),
+            live("docs"),
+        ]);
         let t = resolve(&rows, rows[2].top + 5.0).unwrap();
         assert_eq!(t.before_session_id.as_deref(), Some("api"));
         assert_eq!(t.indicator_y, rows[1].top);
@@ -239,7 +254,15 @@ mod tests {
 
     #[test]
     fn inline_the_section_under_the_cursor_decides_the_group() {
-        let rows = stack(&[header(None), live("u1"), header(Some("claude")), live("c1"), live("c2"), header(Some("ps")), live("p1")]);
+        let rows = stack(&[
+            header(None),
+            live("u1"),
+            header(Some("claude")),
+            live("c1"),
+            live("c2"),
+            header(Some("ps")),
+            live("p1"),
+        ]);
         let t = resolve(&rows, rows[4].top + 5.0).unwrap();
         assert!(t.assigns_group);
         assert_eq!(t.group_id.as_deref(), Some("claude"));
@@ -258,7 +281,13 @@ mod tests {
     #[test]
     fn inline_below_the_last_live_row_of_a_section_stays_in_that_section() {
         // Must not slide into the next group's first slot.
-        let rows = stack(&[header(Some("claude")), live("c1"), live("c2"), header(Some("ps")), live("p1")]);
+        let rows = stack(&[
+            header(Some("claude")),
+            live("c1"),
+            live("c2"),
+            header(Some("ps")),
+            live("p1"),
+        ]);
         let t = resolve(&rows, rows[2].bottom() - 5.0).unwrap();
         assert_eq!(t.group_id.as_deref(), Some("claude"));
         assert_eq!(t.after_session_id.as_deref(), Some("c2"));
@@ -266,7 +295,13 @@ mod tests {
 
     #[test]
     fn inline_a_section_with_no_live_rows_assigns_the_group_and_keeps_the_position() {
-        let rows = stack(&[header(Some("claude")), live("c1"), header(Some("ps")), asleep("zz"), header(Some("misc"))]);
+        let rows = stack(&[
+            header(Some("claude")),
+            live("c1"),
+            header(Some("ps")),
+            asleep("zz"),
+            header(Some("misc")),
+        ]);
         let t = resolve(&rows, rows[3].top + 5.0).unwrap();
         assert_eq!(t.group_id.as_deref(), Some("ps"));
         assert_eq!(t.before_session_id, None);

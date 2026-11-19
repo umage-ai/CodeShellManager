@@ -1,0 +1,8 @@
+{
+  "Sessions": [
+    { "Id": "legacy-ssh", "Name": "legacy", "Command": "bash", "IsRemote": true, "SshUser": "al", "SshHost": "old.host", "SshPort": 22, "SshRemoteFolder": "/x", "CreatedAt": "2025-05-01T10:00:00Z" },
+    { "Id": "legacy-local", "WorkingFolder": "C:\\proj", "IsRemote": false }
+  ],
+  "Groups": [ { "Id": "legacy-default", "Name": "Default", "SortOrder": 0, "IsExpanded": true } ],
+  "LastLayout": "SixColumn"
+}

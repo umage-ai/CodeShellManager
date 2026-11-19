@@ -65,18 +65,27 @@ mod tests {
     use super::*;
 
     fn e(default: bool) -> OpenWithEntry {
-        OpenWithEntry { is_default: default, ..Default::default() }
+        OpenWithEntry {
+            is_default: default,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn ensure_single_default_first_flagged_wins_else_first_entry() {
         let mut list = vec![e(false), e(true), e(true)];
         OpenWithEntry::ensure_single_default(&mut list);
-        assert_eq!(list.iter().map(|x| x.is_default).collect::<Vec<_>>(), [false, true, false]);
+        assert_eq!(
+            list.iter().map(|x| x.is_default).collect::<Vec<_>>(),
+            [false, true, false]
+        );
 
         let mut none = vec![e(false), e(false)];
         OpenWithEntry::ensure_single_default(&mut none);
-        assert_eq!(none.iter().map(|x| x.is_default).collect::<Vec<_>>(), [true, false]);
+        assert_eq!(
+            none.iter().map(|x| x.is_default).collect::<Vec<_>>(),
+            [true, false]
+        );
 
         let mut empty: Vec<OpenWithEntry> = Vec::new();
         OpenWithEntry::ensure_single_default(&mut empty);
