@@ -73,8 +73,11 @@ fn c32(c: Rgb) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b)
 }
 
-fn dim(c: Color32) -> Color32 {
-    Color32::from_rgb((c.r() as u16 * 2 / 3) as u8, (c.g() as u16 * 2 / 3) as u8, (c.b() as u16 * 2 / 3) as u8)
+/// Faint (SGR 2): the colour moved 40% of the way to the background, so it reads as quieter on
+/// a light theme too (scaling toward black made light-theme text darker, not fainter).
+fn dim(c: Color32, bg: Color32) -> Color32 {
+    let mix = |a: u8, b: u8| ((u16::from(a) * 3 + u16::from(b) * 2) / 5) as u8;
+    Color32::from_rgb(mix(c.r(), bg.r()), mix(c.g(), bg.g()), mix(c.b(), bg.b()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -117,7 +120,7 @@ pub fn build(
         let mut fg = c32(palette.resolve(cell.fg, colors));
         let mut bg = c32(palette.resolve(cell.bg, colors));
         if cell.flags.contains(Flags::DIM) {
-            fg = dim(fg);
+            fg = dim(fg, default_bg);
         }
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);

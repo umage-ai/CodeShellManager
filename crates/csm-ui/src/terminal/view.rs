@@ -63,6 +63,9 @@ impl Default for ViewOptions {
     }
 }
 
+/// The smallest scale a preview is drawn at (Overview mini-terminals).
+const PREVIEW_MIN_ZOOM: f32 = 0.66;
+
 /// UI → terminal changes, applied when the view next gets the emulator's lock.
 #[derive(Debug, Clone)]
 enum Op {
@@ -254,17 +257,23 @@ impl TerminalView {
         } else {
             let size = term.as_ref().and_then(|t| t.try_lock().ok().map(|t| t.size()));
             let m = renderer.fonts.metrics(ppp);
-            let zoom = size.map_or(1.0, |g| {
-                let w = f32::from(g.cols) * m.cell_w / ppp;
-                let h = f32::from(g.rows) * m.cell_h / ppp;
-                (inner.width() / w).min(inner.height() / h).min(1.0)
-            });
-            (size, zoom.max(0.2))
+            // Previews are small but readable (the mock's 8.5 px), showing the bottom of the
+            // screen where the prompt is; what does not fit is clipped at the top.
+            let zoom = size.map_or(1.0, |g| (inner.width() / (f32::from(g.cols) * m.cell_w / ppp)).min(1.0));
+            (size, zoom.clamp(PREVIEW_MIN_ZOOM, 1.0))
         };
         self.grid = grid.or(self.grid);
         // Metrics at the zoomed scale: cells in physical pixels of a smaller font.
         let m = renderer.fonts.metrics(ppp * zoom);
-        let origin = pos2((inner.min.x * ppp).round() / ppp, (inner.min.y * ppp).round() / ppp);
+        let mut origin = pos2((inner.min.x * ppp).round() / ppp, (inner.min.y * ppp).round() / ppp);
+        if !opts.interactive
+            && let Some(g) = grid
+        {
+            let h = f32::from(g.rows) * m.cell_h / ppp;
+            if h > inner.height() {
+                origin.y = ((inner.max.y - h) * ppp).round() / ppp;
+            }
+        }
 
         if opts.interactive && (opts.request_focus || resp.is_pointer_button_down_on()) && !resp.has_focus() {
             resp.request_focus();
