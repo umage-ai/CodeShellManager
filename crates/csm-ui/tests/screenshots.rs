@@ -92,4 +92,10 @@ fn screens() {
         h.state_mut().run(&ctx, Action::AskQuit);
     });
     shoot("11-inbox-closed", ThemeKind::Mocha, |b| b.model_mut().inbox_panel.open = false, |_| {});
+    // A group in its own window (a deferred viewport; the test harness embeds it as a window).
+    shoot("12-torn-group", ThemeKind::Mocha, |b| {
+        let m = b.model_mut();
+        m.group_mode = csm_ui::model::GroupMode::Headers;
+        if let Some(g) = m.groups.iter_mut().find(|g| g.id == "ops") { g.torn_off = true; }
+    }, |_| {});
 }

@@ -264,6 +264,16 @@ impl CsmApp {
             theme::apply(ctx, self.model.theme);
             self.theme_applied = Some(self.model.theme);
         }
+        // Terminal glyph weight follows the theme (measured against egui's text: see
+        // `tests/text_weight.rs`); glyphs already in the atlas were made with the old curve.
+        let want = crate::terminal::fonts::Coverage::for_dark_theme(self.model.theme == ThemeKind::Mocha);
+        let mut host = lock(&self.host);
+        if host.renderer.fonts.coverage != want {
+            host.renderer.fonts.coverage = want;
+            if let Some(atlas) = host.renderer.atlas.as_mut() {
+                atlas.clear();
+            }
+        }
         true
     }
 

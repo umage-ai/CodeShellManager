@@ -267,3 +267,28 @@ fn quick_open_starts_a_session_with_the_cycled_command() {
     assert_eq!(params["command"], "pwsh");
     assert!(has(&h, "Session: Odulodo.Admin (pwsh)"));
 }
+
+#[test]
+fn a_pane_tears_off_into_its_own_window_and_docks_back() {
+    let mut h = h();
+    h.get_by_label("Layout: Free").click();
+    settle(&mut h);
+    // The pane's ⋯ menu → Move to a new window.
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::OpenMenu(csm_ui::app::Menu::Pane { session: "webps".into(), at: egui::pos2(1200.0, 400.0) }));
+    for _ in 0..3 {
+        h.step();
+    }
+    h.get_by_label("Move to a new window").click();
+    settle(&mut h);
+    assert_eq!(last_call(&h).0, "pane_tear_off");
+    assert_eq!(layout(&h).torn, vec!["webps".to_string()]);
+    // The main window no longer lays it out; its own window (a deferred viewport, embedded as a
+    // window under the test harness) shows it, with a dock button instead of tear-off.
+    assert!(has(&h, "Pane: Odulodo.Web (PS)"));
+    assert!(has(&h, "Dock back into the main window"));
+    h.get_by_label("Dock back into the main window").click();
+    settle(&mut h);
+    assert_eq!(last_call(&h).0, "pane_dock");
+    assert!(layout(&h).torn.is_empty());
+}

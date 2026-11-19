@@ -106,6 +106,9 @@ pub struct FontSet {
     fallbacks: Vec<Face>,
     pub size_pt: f32,
     pub ligatures: bool,
+    /// How glyph coverage becomes alpha (hinting and the coverage curve). Changing it after glyphs
+    /// were rasterised needs an atlas clear.
+    pub coverage: Coverage,
     lookup: HashMap<char, Option<(u8, u16)>>,
     shape_ctx: ShapeContext,
     scale_ctx: ScaleContext,
@@ -124,6 +127,7 @@ impl FontSet {
             fallbacks,
             size_pt,
             ligatures,
+            coverage: Coverage::default(),
             lookup: HashMap::new(),
             shape_ctx: ShapeContext::new(),
             scale_ctx: ScaleContext::new(),
@@ -242,7 +246,7 @@ impl FontSet {
         } else {
             self.fallbacks.get(usize::from(face_idx) - 1)?
         };
-        let builder = self.scale_ctx.builder(face.font()).size(px).hint(true);
+        let builder = self.scale_ctx.builder(face.font()).size(px).hint(self.coverage.hint);
         let real_bold = style.bold && face.has_wght;
         let builder = if real_bold { builder.variations(&WGHT_BOLD) } else { builder };
         let mut scaler = builder.build();
@@ -275,6 +279,7 @@ impl FontSet {
                             .copied()
                             .max()
                             .unwrap_or(0);
+                        let a = self.coverage.apply(a);
                         v.extend_from_slice(&[a, a, a, a]);
                     }
                 }
@@ -322,5 +327,52 @@ mod tests {
         let (r, b) = (coverage(&mut fonts, false), coverage(&mut fonts, true));
         eprintln!("{name}: regular {r} bold {b}");
         assert!(b as f64 > r as f64 * 1.15, "bold {b} not heavier than regular {r}");
+    }
+}
+
+/// How a glyph's coverage becomes the alpha it is drawn with.
+///
+/// The renderer blends in gamma space, as egui does: alpha `a` puts `bg + a·(fg − bg)` on screen.
+/// `hint` snaps outlines to the pixel grid (it thickens stems at small sizes); `curve` reshapes
+/// coverage before blending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Coverage {
+    pub hint: bool,
+    pub curve: Curve,
+}
+
+/// Coverage → alpha, as egui's `FontColorTransferFunction` does for its own text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curve {
+    /// `a = c`: dark text on a light background.
+    Linear,
+    /// `a = 2c − c²`: light text on a dark background (egui's dark-mode default).
+    Lifted,
+}
+
+impl Default for Coverage {
+    fn default() -> Self {
+        Coverage::for_dark_theme(true)
+    }
+}
+
+impl Coverage {
+    /// The spike's setting: hinted, linear.
+    pub const SPIKE: Coverage = Coverage { hint: true, curve: Curve::Linear };
+
+    /// Measured against egui's own text in the same font, size and colours (the `text_weight`
+    /// test): unhinted, with egui's curve for the theme, the terminal's ink matches the UI's text.
+    pub fn for_dark_theme(dark: bool) -> Coverage {
+        Coverage { hint: false, curve: if dark { Curve::Lifted } else { Curve::Linear } }
+    }
+
+    pub fn apply(self, a: u8) -> u8 {
+        match self.curve {
+            Curve::Linear => a,
+            Curve::Lifted => {
+                let c = f32::from(a) / 255.0;
+                ((2.0 * c - c * c) * 255.0).round().clamp(0.0, 255.0) as u8
+            }
+        }
     }
 }
