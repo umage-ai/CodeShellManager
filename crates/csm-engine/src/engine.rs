@@ -140,11 +140,18 @@ impl Engine {
             view: Arc::new(Mutex::new(Arc::new(Snapshot::default()))),
         };
         let worker = engine.clone();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
         let handle = thread::Builder::new()
             .name("csm-engine".into())
-            .spawn(move || run_loop(worker, state, rx))
+            .spawn(move || run_loop(worker, state, rx, ready_tx))
             .map_err(|e| ToolError::Failed(format!("could not start the engine thread: {e}")))?;
         *engine.joined.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
+        // Return only once the first snapshot is published, so `view()` right after `start` is
+        // the loaded state, never the empty placeholder (a slow machine used to show an empty app
+        // for its first frames). Bounded: start-up does no blocking work on this thread.
+        if ready_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+            log::warn!("the engine's first snapshot took more than 10 s");
+        }
         Ok(engine)
     }
 
@@ -210,7 +217,7 @@ impl Engine {
 /// How often the engine wakes with nothing to do (fallback starts, waits, heuristics, saves).
 const TICK: Duration = Duration::from_millis(100);
 
-fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
+fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>, ready: Sender<()>) {
     ON_ENGINE_THREAD.with(|f| f.set(true));
     let mut pending: HashMap<u64, Pending> = HashMap::new();
     let mut next_id: u64 = 1;
@@ -220,7 +227,9 @@ fn run_loop(engine: Engine, mut state: State, rx: Receiver<Msg>) {
             engine.events.emit(Event::Error { message: "Restoring the sessions failed unexpectedly.".into() });
         }
     }
+    state.rt.dirty = true;
     crate::lifecycle::after_step(&mut state, &engine);
+    let _ = ready.send(());
     loop {
         let msg = match rx.recv_timeout(TICK) {
             Ok(m) => Some(m),

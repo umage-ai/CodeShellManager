@@ -85,7 +85,7 @@ fn bridge(rt: &std::path::Path) -> (Engine, csm_mcp::Handle, MutexGuard<'static,
 
 #[test]
 fn against_the_running_app() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let rt = dir.path().join("rt");
     let (engine, handle, _turn) = bridge(&rt);
 
@@ -133,7 +133,7 @@ fn against_the_running_app() {
 
 #[test]
 fn without_the_app_the_exit_code_is_3_and_the_message_says_what_to_do() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let rt = dir.path().join("rt");
     let o = csm(&["fake-echo", "--text", "x"], Some(&rt));
     assert_eq!(o.status.code(), Some(3), "{}", err(&o));
@@ -194,14 +194,14 @@ fn mcp_in_process_speaks_json_rpc_on_stdio() {
 
 #[test]
 fn auto_allow_needs_in_process() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let o = csm(&["mcp", "--auto-allow"], Some(&dir.path().join("rt")));
     assert_eq!(o.status.code(), Some(2));
 }
 
 #[test]
 fn events_stream_from_the_app() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let rt = dir.path().join("rt");
     let (engine, handle, _turn) = bridge(&rt);
     let mut child = Command::new(env!("CARGO_BIN_EXE_csm"))
@@ -243,4 +243,16 @@ fn events_stream_from_the_app() {
     assert!(line["event"] == "consent_requested" || line["event"] == "consent_resolved", "{line}");
     handle.shutdown().unwrap();
     engine.shutdown();
+}
+
+/// A temp folder that craft-ipc accepts as a runtime dir: on Unix it must be private (0700);
+/// `tempfile` creates 0755 under the usual umask.
+fn private_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    dir
 }
