@@ -280,13 +280,14 @@ impl FontSet {
 }
 
 #[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     fn coverage(fonts: &mut FontSet, bold: bool) -> u64 {
         let (face, gid) = fonts.lookup('m').unwrap();
         let g = fonts.rasterize(face, gid, Style { bold, italic: false }, 26.0).unwrap();
-        g.rgba.chunks_exact(4).map(|p| u64::from(p[3])).sum()
+        g.rgba.as_chunks::<4>().0.iter().map(|p| u64::from(p[3])).sum()
     }
 
     #[test]
