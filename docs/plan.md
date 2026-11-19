@@ -138,8 +138,8 @@ Pain points, taken from the current UI and from CLAUDE.md's own history:
    open/close logic, and they shrink the terminal.
 4. **Layout presets are cryptic** (`4 6 6×2 6×3` glyphs). Users choose a geometry when what they
    want is "these sessions, side by side".
-5. **Sidebar rows are tall**, with four hover icons on each, two grouping modes (FilterStrip vs
-   InlineHeaders) plus worktree clusters, and settings that exist only to pick between them.
+5. **Sidebar rows are tall**, with four hover icons on each, and worktree clusters as a separate
+   concept. (The three group views themselves work well and stay; see section 4.)
 6. **New Session is a modal form** with Local / SSH / WSL radios, even though most sessions are
    "this folder, claude".
 7. **Discoverability.** Many actions live only in right-click menus (Restart all, Clear status,
@@ -193,8 +193,19 @@ tested as in craft's `theme.rs`):
   preset). Connection kinds (SSH, WSL) stay as a secondary "Remote…" choice. Editing a session
   uses the same panel.
 - **Sidebar:** compact single-line rows (accent · name · branch · status glyph); a second line only
-  on hover or for the selected row. One grouping model, collapsible groups, with worktrees shown
-  nested under their repo automatically rather than as a separate cluster concept.
+  on hover or for the selected row. Worktrees are shown nested under their repo automatically
+  rather than as a separate cluster concept.
+- **Three group views, kept (decided 2026-11-19)**, switched from a small control next to
+  "Sessions" and in Settings:
+  - *Rail* (the default, as today's FilterStrip): a 48px strip left of the sidebar with an "All"
+    tab and one tab per group. A tab shows initials, two letters for a one-word name so "Odulodo"
+    and "Ops" don't both read "O". Each tab carries its group's Needs-you count, or a dot for
+    done/error. One group at a time: the sidebar *and the panes* show only that group
+    (today's `FilterGridByActiveGroup`), and the layout is that group's own. Jumping to a session
+    in another group (inbox, Ctrl+J, palette, Recent) switches the tab. Right-click a tab for the
+    group menu; drop a session on a tab to move it.
+  - *Headers*: every group in one list, collapsible (as above).
+  - *Flat*: no group UI.
 - **Lifecycle words:** keep Sleep/Wake, show a short tooltip that explains what "asleep" keeps, and
   put Restart in the `⋯` menu with the bulk versions in the palette.
 - **Waiting states:** keep the restore rail and the shutdown board. They become easier now that
