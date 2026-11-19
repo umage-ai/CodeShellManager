@@ -246,15 +246,17 @@ impl CsmApp {
         }
     }
 
-    /// Installs fonts (once) and the theme. Fonts set on a context take effect on the next pass,
-    /// so the first pass only installs them and asks for another (returns false).
+    /// Installs fonts and the theme. Fonts set on a context take effect only from a later pass,
+    /// so until our families are really bound nothing is drawn (returns false) and another pass
+    /// is requested.
     fn apply_theme(&mut self, ctx: &egui::Context) -> bool {
-        if !self.fonts_installed {
-            theme::install_fonts(ctx);
-            egui_extras::install_image_loaders(ctx);
-            theme::apply(ctx, self.model.theme);
-            self.theme_applied = Some(self.model.theme);
-            self.fonts_installed = true;
+        let bound = ctx.fonts_mut(|f| f.definitions().families.contains_key(&theme::semibold_family()));
+        if !bound {
+            if !self.fonts_installed {
+                setup(ctx, self.model.theme);
+                self.theme_applied = Some(self.model.theme);
+                self.fonts_installed = true;
+            }
             ctx.request_repaint();
             return false;
         }
@@ -543,4 +545,12 @@ impl CsmApp {
     pub fn repaint_main(ctx: &egui::Context) {
         ctx.request_repaint_of(ViewportId::ROOT);
     }
+}
+
+/// Fonts, image loaders and the theme on a context. Call it when the context is created (the
+/// eframe creator) so the first frame already has them; the app also does it itself if needed.
+pub fn setup(ctx: &egui::Context, kind: ThemeKind) {
+    theme::install_fonts(ctx);
+    egui_extras::install_image_loaders(ctx);
+    theme::apply(ctx, kind);
 }

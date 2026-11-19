@@ -112,6 +112,7 @@ fn main() {
         "codeshell",
         options,
         Box::new(move |cc| {
+            csm_ui::app::setup(&cc.egui_ctx, theme_kind);
             let ctx = cc.egui_ctx.clone();
             let repaint: csm_ui::terminal::Repaint = Arc::new(move || ctx.request_repaint());
             let opts = DemoOptions { live, shell, cwd, now_ms: None, repaint: Some(repaint), theme: theme_kind };

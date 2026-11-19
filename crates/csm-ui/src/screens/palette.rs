@@ -514,7 +514,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 ui.label(egui::RichText::new("Command").font(theme::regular(text::CAPTION)).color(t.muted));
                 // The cycle control (`.cyc`).
                 let font = theme::mono(text::MONO);
-                let widths: Vec<f32> = model.launch_commands.iter().map(|c| widgets::text_width(ui, c, font.clone()) + space::LG).collect();
+                let widths: Vec<f32> = model.launch_commands.iter().map(|c| widgets::text_width(ui, c, font.clone()) + space::MD).collect();
                 let total: f32 = widths.iter().sum::<f32>() + space::XXS * (widths.len() as f32 + 1.0);
                 let (seg, _) = ui.allocate_exact_size(vec2(total, size::CONTROL), Sense::hover());
                 ui.painter().rect(seg, CornerRadius::same(radius::MD + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
@@ -533,19 +533,17 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                         q.cmd = i;
                     }
                 }
-                widgets::kbd(ui, "Tab");
-                ui.label(egui::RichText::new("cycles").font(theme::regular(text::CAPTION)).color(t.muted));
+                widgets::kbd(ui, "Tab").on_hover_text("Tab cycles the command, Shift+Tab goes back");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let kind = if q.remote { ButtonKind::Primary } else { ButtonKind::Secondary };
                     if widgets::button(ui, kind, Some("server"), "Remote…", None).clicked() {
                         q.remote = !q.remote;
                     }
                     let gname = q.group.as_deref().and_then(|g| model.group(g)).map_or_else(|| "Ungrouped".to_string(), |g| g.name.clone());
-                    let gr = widgets::button(ui, ButtonKind::Secondary, None, &gname, None);
+                    let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None).on_hover_text("Group: suggested from the scope; pick another");
                     if gr.clicked() {
                         open_group_menu = Some(gr.rect.left_bottom());
                     }
-                    ui.label(egui::RichText::new("Group").font(theme::regular(text::CAPTION)).color(t.muted));
                 });
             });
         });

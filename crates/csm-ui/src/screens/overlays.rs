@@ -223,7 +223,7 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
                     ShutdownRowState::Forced => "force-closed after 10 s",
                 };
                 let wc = if row.state == ShutdownRowState::Forced { t.red } else { t.muted };
-                ui.painter().text(pos2(r.max.x - size::CONTROL_LG * 4.0 - space::XS, cy), Align2::LEFT_CENTER, word, theme::regular(text::CAPTION), wc);
+                ui.painter().text(pos2(r.max.x - size::GRID_TILE_W * 2.0, cy), Align2::LEFT_CENTER, word, theme::regular(text::CAPTION), wc);
                 if row.state != ShutdownRowState::Pending {
                     ui.painter().text(pos2(r.max.x, cy), Align2::RIGHT_CENTER, format!("{:.1}s", row.elapsed_s), theme::mono(text::MONO), t.muted);
                 }

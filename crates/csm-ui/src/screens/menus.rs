@@ -210,7 +210,9 @@ fn menu_area(ctx: &egui::Context, app: &mut CsmApp, id: Id, at: Pos2, entries: &
     let pivot = if right { Align2::RIGHT_TOP } else { Align2::LEFT_TOP };
     let resp = egui::Area::new(id).order(Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
         widgets::pop_frame(&t).show(ui, |ui| {
-            ui.set_min_width(size::MENU_W - space::SM);
+            // As wide as the widest row, never narrower than the menu width.
+            let width = entries.iter().map(|e| row_width(ui, e)).fold(size::MENU_W - space::SM, f32::max);
+            ui.set_width(width);
             ui.spacing_mut().item_spacing.y = 0.0;
             for e in entries {
                 match e {
@@ -369,3 +371,14 @@ fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut V
     resp.response.rect
 }
 
+
+/// The width a menu row needs: icon, label, hint or submenu chevron, padding.
+fn row_width(ui: &egui::Ui, e: &Entry) -> f32 {
+    let label = |s: &str| widgets::text_width(ui, s, theme::regular(text::BODY));
+    let base = space::SM + icon::LG + space::ROW_X * 2.0;
+    match e {
+        Entry::Item { label: l, hint, .. } => base + label(l) + hint.as_ref().map_or(0.0, |h| widgets::text_width(ui, h, theme::mono(text::TINY)) + space::LG),
+        Entry::Sub { label: l, .. } => base + label(l) + icon::MD + space::LG,
+        Entry::Head(_) | Entry::Sep => 0.0,
+    }
+}

@@ -91,7 +91,7 @@ fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Actio
     let folder = s.folder.clone();
     let saved = app.model.note(&folder).to_string();
     let (mut buf, mut last) = app.ui.notes.get(&folder).cloned().unwrap_or((saved.clone(), 0.0));
-    let h = ui.available_height() - space::XXL * 2.0;
+    let h = ui.available_height() - space::XXL * 2.0 - space::LG;
     let frame = egui::Frame::new()
         .fill(t.field)
         .stroke(Stroke::new(size::HAIRLINE, t.surface0))
