@@ -52,6 +52,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("min", r#"<path d="M5 12h14"/>', max:'<rect x="5" y="5" width="14" height="14" rx="1"/>"#),
     ("rail", r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M5.5 8h1M5.5 11.5h1M5.5 15h1"/>"#),
     ("list", r#"<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>"#),
+    ("chevU", r#"<path d="m6 15 6-6 6 6"/>"#),
     ("help", r#"<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2 1-1.2 1.8v.5M12 17.2v.1"/>"#),
     ("panelL", r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>"#),
     ("keyboard", r#"<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14h8"/>"#),

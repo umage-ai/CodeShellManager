@@ -19,10 +19,20 @@ fn out_dir() -> std::path::PathBuf {
 }
 
 fn shoot(name: &str, theme: ThemeKind, setup: impl FnOnce(&mut DemoBackend), after: impl FnOnce(&mut egui_kittest::Harness<'static, csm_ui::CsmApp>)) {
+    shoot_sized(name, theme, egui::vec2(1280.0, 800.0), setup, after);
+}
+
+fn shoot_sized(
+    name: &str,
+    theme: ThemeKind,
+    size: egui::Vec2,
+    setup: impl FnOnce(&mut DemoBackend),
+    after: impl FnOnce(&mut egui_kittest::Harness<'static, csm_ui::CsmApp>),
+) {
     let mut b = backend(theme);
     setup(&mut b);
     b.publish();
-    let mut h = harness_wgpu(app_with(b), 1.0);
+    let mut h = harness_wgpu_sized(app_with(b), 1.0, size);
     settle(&mut h);
     after(&mut h);
     settle(&mut h);
@@ -92,6 +102,59 @@ fn screens() {
         h.state_mut().run(&ctx, Action::AskQuit);
     });
     shoot("11-inbox-closed", ThemeKind::Mocha, |b| b.model_mut().inbox_panel.open = false, |_| {});
+    shoot("13-settings-general", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenSettings);
+    });
+    shoot("13-settings-appearance", ThemeKind::Latte, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenSettings);
+        h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Appearance;
+    });
+    shoot("13-settings-mcp", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenSettings);
+        h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Mcp;
+    });
+    shoot("13-settings-about", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenSettings);
+        h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::About;
+    });
+    shoot("14-edit-session", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::EditSession("web".into()));
+    });
+    shoot("14-edit-session-ssh", ThemeKind::Latte, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::Tool("view_set", serde_json::json!({"rail_tab": "ops"})));
+        h.state_mut().run(&ctx, Action::EditSession("build".into()));
+    });
+    shoot("15-help", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::ShowHelp);
+    });
+    shoot("15-rename-in-place", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::StartRename("web".into()));
+    });
+    shoot("16-compact", ThemeKind::Mocha, |_| {}, |_| {});
+    shoot_sized("16-compact-narrow", ThemeKind::Mocha, egui::vec2(900.0, 640.0), |_| {}, |_| {});
+    shoot_sized("16-compact-peek", ThemeKind::Latte, egui::vec2(900.0, 640.0), |_| {}, |h| {
+        h.state_mut().ui.peek_sidebar = true;
+    });
+    shoot("17-empty-group", ThemeKind::Mocha, |b| {
+        let m = b.model_mut();
+        m.groups.push(csm_ui::model::GroupView { id: "client".into(), name: "Client X".into(), torn_off: false, collapsed: false });
+        m.rail = csm_ui::model::Scope::Group("client".into());
+    }, |_| {});
+    shoot("17-first-run", ThemeKind::Latte, |b| {
+        let m = b.model_mut();
+        m.sessions.clear();
+        m.groups.clear();
+        m.rail = csm_ui::model::Scope::All;
+        m.active = None;
+    }, |_| {});
     // A group in its own window (a deferred viewport; the test harness embeds it as a window).
     shoot("12-torn-group", ThemeKind::Mocha, |b| {
         let m = b.model_mut();

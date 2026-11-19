@@ -172,7 +172,9 @@ fn inline_field(ui: &mut Ui, app: &mut CsmApp, rect: Rect, label: &str, hint: &s
         .hint_text(egui::RichText::new(hint).color(t.faint))
         .vertical_align(egui::Align::Center)
         .desired_width(rect.width() - space::SM * 2.0);
-    let r = ui.put(rect.shrink2(vec2(space::SM, size::HAIRLINE)), edit);
+    // A child, not `put`: the field must not move the rows below it.
+    let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(space::SM, size::HAIRLINE))));
+    let r = child.add(edit);
     let label = label.to_string();
     r.widget_info(move || WidgetInfo::labeled(WidgetType::TextEdit, true, label.clone()));
     if e.focus {

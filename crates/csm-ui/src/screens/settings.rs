@@ -181,7 +181,7 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 v.remove(i);
                 actions.push(set("LaunchCommands", json!(v)));
             }
-            if i > 0 && btn(ui, "chevR", &format!("Move “{c}” up")) {
+            if i > 0 && btn(ui, "chevU", &format!("Move “{c}” up")) {
                 let mut v = cmds.clone();
                 v.swap(i, i - 1);
                 actions.push(set("LaunchCommands", json!(v)));

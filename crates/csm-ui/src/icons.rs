@@ -160,9 +160,13 @@ pub fn status(ui: &mut Ui, status: Status, size: f32) -> Response {
     resp.on_hover_text(status.label())
 }
 
-/// Working glyphs animate at a low fixed rate, and only while drawn (never `request_repaint`
-/// every frame: with many panes that pins a core).
+/// Working glyphs animate at a low fixed rate, and only while drawn and on screen (never
+/// `request_repaint` every frame: with many panes that pins a core). A row scrolled out of the
+/// sidebar, or anything clipped away, asks for nothing.
 pub fn request_spinner_repaint(ui: &Ui) {
+    if !ui.is_rect_visible(ui.max_rect()) {
+        return;
+    }
     ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(1.0 / timing::SPINNER_FPS));
 }
 

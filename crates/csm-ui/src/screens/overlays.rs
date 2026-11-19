@@ -118,6 +118,8 @@ fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
                 });
             });
             ui.add_space(space::SM);
+            let max_h = (ctx.content_rect().height() - size::PALETTE_TOP * 2.0).max(size::MENU_W);
+            egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
             egui::Grid::new("help-keys").num_columns(2).spacing(vec2(space::LG, space::XS + space::XXS)).show(ui, |ui| {
                 for (keys, what) in SHORTCUTS {
                     ui.horizontal(|ui| {
@@ -131,6 +133,7 @@ fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
                     r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone()));
                     ui.end_row();
                 }
+            });
             });
             ui.add_space(space::SM);
             ui.label(egui::RichText::new("Every command is also in Ctrl+K, by name.").font(theme::regular(text::CAPTION)).color(t.muted));

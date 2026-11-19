@@ -27,7 +27,11 @@ pub fn harness(app: CsmApp) -> Harness<'static, CsmApp> {
 }
 
 pub fn harness_wgpu(app: CsmApp, ppp: f32) -> Harness<'static, CsmApp> {
-    Harness::builder().with_size(vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).with_pixels_per_point(ppp).wgpu().build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app)
+    harness_wgpu_sized(app, ppp, vec2(1280.0, 800.0))
+}
+
+pub fn harness_wgpu_sized(app: CsmApp, ppp: f32, size: egui::Vec2) -> Harness<'static, CsmApp> {
+    Harness::builder().with_size(size).with_step_dt(1.0 / 60.0).with_pixels_per_point(ppp).wgpu().build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app)
 }
 
 /// Steps until the engine has answered every submitted call (bounded).

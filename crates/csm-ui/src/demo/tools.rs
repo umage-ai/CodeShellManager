@@ -125,7 +125,11 @@ pub struct SessionEditParams {
     pub session_id: String,
     pub name: Option<String>,
     pub command: Option<String>,
+    pub args: Option<String>,
     pub folder: Option<String>,
+    pub kind: Option<KindParam>,
+    pub ssh: Option<SshParams>,
+    pub wsl: Option<WslParams>,
     /// Restart now when the change needs one.
     pub restart: Option<bool>,
 }

@@ -269,7 +269,12 @@ pub fn bar(ui: &mut Ui, fraction: f32, color: Color32, height: f32) {
 pub fn toggle(ui: &mut Ui, on: bool, label: &str, hint: Option<&str>) -> Response {
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
-    let hint_h = if hint.is_some() { space::LG + space::XS } else { 0.0 };
+    // The explanation wraps under the label, inside the clickable row.
+    let hint_galley = hint.map(|h| {
+        let job = egui::text::LayoutJob::simple(h.to_string(), crate::theme::regular(text::CAPTION), t.muted, w - size::SWITCH[0] - space::LG);
+        ui.ctx().fonts_mut(|f| f.layout_job(job))
+    });
+    let hint_h = hint_galley.as_ref().map_or(0.0, |g| g.size().y + space::XS);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CONTROL + hint_h), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect.expand2(vec2(space::XS, 0.0)), CornerRadius::same(radius::MD), t.row_hover);
@@ -285,8 +290,8 @@ pub fn toggle(ui: &mut Ui, on: bool, label: &str, hint: Option<&str>) -> Respons
         ui.painter().rect_stroke(track.expand(size::RING), CornerRadius::same(radius::PILL), Stroke::new(size::RING, t.blue), StrokeKind::Outside);
     }
     paint_text(ui, pos2(rect.min.x, cy), Align2::LEFT_CENTER, label, crate::theme::regular(text::BODY), t.fg, track.min.x - rect.min.x - space::MD);
-    if let Some(h) = hint {
-        paint_text(ui, pos2(rect.min.x, cy + size::CONTROL / 2.0 + space::XS), Align2::LEFT_CENTER, h, crate::theme::regular(text::CAPTION), t.muted, w - space::SM);
+    if let Some(g) = hint_galley {
+        ui.painter().galley(pos2(rect.min.x, cy + size::CONTROL / 2.0 - space::XXS), g, t.muted);
     }
     let label_s = label.to_string();
     resp.widget_info(move || WidgetInfo::selected(WidgetType::Checkbox, true, on, label_s.clone()));
