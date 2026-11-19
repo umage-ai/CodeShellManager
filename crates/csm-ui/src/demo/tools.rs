@@ -1,0 +1,547 @@
+//! Tool params the screens send, and stand-ins for the ids in `docs/tools.md` the engine doesn't
+//! register yet (runs, git, notes, search, open folder / with, grants).
+//!
+//! - [`stand_ins`] with [`StandIn::NotBuilt`] is what the real app registers: each validates its
+//!   params against the schema the real tool will take and then refuses with "not built yet", so
+//!   a button that reaches one says so instead of pretending. Effects are declared honestly, as
+//!   the real tools will, so consent and MCP hints already work.
+//! - [`StandIn::Echo`] is the demo's: it echoes the params and [`super::DemoBackend`] applies the
+//!   effect to its own model.
+//! - [`demo_only`] is `demo_set_status`, the review's status switcher. Never in the real app.
+//!
+//! When the engine registers a real tool with one of these ids, delete the stand-in (the
+//! registry refuses duplicates; `stand_ins_do_not_collide_with_engine_tools` catches it).
+//! The param structs for engine-owned ids stay: the demo parses the calls with them, so they
+//! must match the engine's schemas (same names, same `deny_unknown_fields`).
+
+use csm_engine::{Ctx, Effects, Reply, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::model::{GridPreset, GroupMode, Kind, LayoutMode};
+
+/// Validate params as `P`, then echo them back as the result's data.
+fn echo<P: DeserializeOwned + Serialize>(_: &mut Ctx<'_>, v: Value) -> Reply {
+    let p: P = parse_params(v)?;
+    Ok(ToolOutput::new("", serde_json::to_value(&p).unwrap_or(Value::Null)))
+}
+
+/// The real app's stand-in: params checked, then an honest refusal.
+fn not_built<P: DeserializeOwned>(_: &mut Ctx<'_>, v: Value) -> Reply {
+    let _: P = parse_params(v)?;
+    Err(csm_engine::ToolError::Failed(NOT_BUILT.into()))
+}
+
+fn not_built_none(_: &mut Ctx<'_>, _: Value) -> Reply {
+    Err(csm_engine::ToolError::Failed(NOT_BUILT.into()))
+}
+
+/// What a stand-in answers in the real app.
+pub const NOT_BUILT: &str = "This isn't built yet in this version of CodeShellManager.";
+
+fn none(_: &mut Ctx<'_>, v: Value) -> Reply {
+    if v.as_object().is_some_and(|o| !o.is_empty()) {
+        return Err(csm_engine::ToolError::InvalidParams("this tool takes no params".into()));
+    }
+    Ok(ToolOutput::message(""))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionIdParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SshParams {
+    pub user: Option<String>,
+    pub host: String,
+    pub port: Option<u16>,
+    pub remote_folder: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WslParams {
+    pub distro: String,
+    pub user: Option<String>,
+    pub folder: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KindParam {
+    #[default]
+    Local,
+    Ssh,
+    Wsl,
+}
+
+impl From<KindParam> for Kind {
+    fn from(k: KindParam) -> Kind {
+        match k {
+            KindParam::Local => Kind::Local,
+            KindParam::Ssh => Kind::Ssh,
+            KindParam::Wsl => Kind::Wsl,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionNewParams {
+    /// The folder to start in (local).
+    #[serde(default)]
+    pub folder: String,
+    /// `claude`, `pwsh`, a preset's program. Default: `claude`.
+    pub command: Option<String>,
+    /// Arguments, as typed on a command line (`--continue`).
+    pub args: Option<String>,
+    pub name: Option<String>,
+    pub group: Option<String>,
+    pub kind: Option<KindParam>,
+    pub ssh: Option<SshParams>,
+    pub wsl: Option<WslParams>,
+    /// Focus the new session (default true).
+    pub focus: Option<bool>,
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenameParams {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEditParams {
+    pub session_id: String,
+    pub name: Option<String>,
+    pub command: Option<String>,
+    pub folder: Option<String>,
+    /// Restart now when the change needs one.
+    pub restart: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloseParams {
+    pub session_id: String,
+    /// Close even when busy. Without it a busy session is refused.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReopenParams {
+    pub index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SendTextParams {
+    pub session_id: String,
+    pub text: String,
+    #[serde(default)]
+    pub submit: bool,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadOutputParams {
+    pub session_id: String,
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitParams {
+    pub session_id: String,
+    /// `idle`, `done`, `needs_you`, `exit` or `any_change`.
+    pub until: String,
+    pub timeout_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionListParams {
+    pub group: Option<String>,
+    pub status: Option<String>,
+    pub include_asleep: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupNewParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupIdParams {
+    pub group_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupRenameParams {
+    pub group_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupForceParams {
+    pub group_id: String,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveToGroupParams {
+    pub session_id: String,
+    /// `null` moves it to Ungrouped.
+    pub group_id: Option<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ViewSetParams {
+    /// `rail`, `headers` or `flat`.
+    pub view: Option<GroupModeParam>,
+    /// The rail tab: a group id or `all`.
+    pub rail_tab: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollapseParams {
+    pub group_id: String,
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupModeParam {
+    Rail,
+    Headers,
+    Flat,
+}
+
+impl From<GroupModeParam> for GroupMode {
+    fn from(m: GroupModeParam) -> GroupMode {
+        match m {
+            GroupModeParam::Rail => GroupMode::Rail,
+            GroupModeParam::Headers => GroupMode::Headers,
+            GroupModeParam::Flat => GroupMode::Flat,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutGetParams {
+    /// A group id or `all`.
+    pub group: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutModeParam {
+    Focus,
+    Side,
+    Overview,
+    Grid,
+    Free,
+}
+
+impl From<LayoutModeParam> for LayoutMode {
+    fn from(m: LayoutModeParam) -> LayoutMode {
+        match m {
+            LayoutModeParam::Focus => LayoutMode::Focus,
+            LayoutModeParam::Side => LayoutMode::Side,
+            LayoutModeParam::Overview => LayoutMode::Overview,
+            LayoutModeParam::Grid => LayoutMode::Grid,
+            LayoutModeParam::Free => LayoutMode::Free,
+        }
+    }
+}
+
+impl From<LayoutMode> for LayoutModeParam {
+    fn from(m: LayoutMode) -> LayoutModeParam {
+        match m {
+            LayoutMode::Focus => LayoutModeParam::Focus,
+            LayoutMode::Side => LayoutModeParam::Side,
+            LayoutMode::Overview => LayoutModeParam::Overview,
+            LayoutMode::Grid => LayoutModeParam::Grid,
+            LayoutMode::Free => LayoutModeParam::Free,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GridParam {
+    pub cols: u8,
+    pub rows: u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LayoutSetParams {
+    /// A group id or `all`.
+    pub group: Option<String>,
+    pub mode: Option<LayoutModeParam>,
+    /// Grid preset (`2x2`).
+    pub preset: Option<String>,
+    pub cols: Option<u8>,
+    pub rows: Option<u8>,
+    /// Free mode's split tree, floating and torn-off panes ([`crate::model::FreeLayout`]).
+    pub free: Option<Value>,
+}
+
+impl GridParam {
+    pub fn preset(self) -> GridPreset {
+        GridPreset::new(self.cols, self.rows)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PinParams {
+    pub session_id: String,
+    /// The group whose Side by side set changes (default: the session's own, or `all`).
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PaneParams {
+    pub session_id: String,
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectorParam {
+    Notes,
+    Runs,
+    Git,
+    Session,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InspectorShowParams {
+    pub tab: InspectorParam,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InboxPanelParams {
+    pub open: Option<bool>,
+    /// Height in points.
+    pub height: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunParams {
+    pub session_id: String,
+    /// Default: the session's default run command.
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunEditParams {
+    pub session_id: String,
+    pub runs: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SwitchBranchParams {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeNewParams {
+    pub session_id: String,
+    pub branch: String,
+    pub open_session: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeRemoveParams {
+    pub session_id: String,
+    #[serde(default)]
+    pub delete_branch: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoteGetParams {
+    pub folder: Option<String>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoteSetParams {
+    pub folder: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchParams {
+    pub query: String,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsGetParams {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsSetParams {
+    pub key: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenWithParams {
+    pub session_id: String,
+    /// The entry's label; default: the default entry.
+    pub entry: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GrantRevokeParams {
+    pub client: String,
+    pub tool: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportParams {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuitParams {
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DemoStatusParams {
+    pub session_id: String,
+    /// `working`, `approval`, `question`, `done`, `idle`, `asleep`, `error`, `starting`.
+    pub status: String,
+}
+
+const READ: Effects = Effects::READ_ONLY;
+const UI: Effects = Effects::UI;
+const STATE: Effects = Effects::MUTATES_STATE;
+const CONTENT: Effects = Effects::from_bits_truncate(Effects::IDEMPOTENT.bits() | Effects::READS_SESSION_CONTENT.bits());
+const NET: Effects = Effects::from_bits_truncate(
+    Effects::LAUNCHES_PROCESS.bits() | Effects::ACCESSES_NETWORK.bits() | Effects::WRITES_FILESYSTEM.bits(),
+);
+const GIT_WRITE: Effects = Effects::from_bits_truncate(Effects::LAUNCHES_PROCESS.bits() | Effects::WRITES_FILESYSTEM.bits());
+
+/// How a stand-in answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandIn {
+    /// The demo: echo the params (the demo backend applies the effect to its model).
+    Echo,
+    /// The real app: validate the params, then refuse with "not built yet".
+    NotBuilt,
+}
+
+type Pair = (fn() -> Value, csm_engine::ToolFn);
+
+/// `(schema, run)` for a stand-in taking `P`.
+fn with<P: DeserializeOwned + Serialize + JsonSchema>(how: StandIn) -> Pair {
+    (schema_of::<P>, if how == StandIn::Echo { echo::<P> } else { not_built::<P> })
+}
+
+fn no_params(how: StandIn) -> Pair {
+    (empty_schema, if how == StandIn::Echo { none } else { not_built_none })
+}
+
+fn spec(id: &'static str, title: &'static str, summary: &'static str, toolset: Toolset, effects: Effects, (input_schema, run): Pair) -> ToolSpec {
+    ToolSpec { id, title, summary, toolset, effects, input_schema, run }
+}
+
+/// The ids of `docs/tools.md` the engine doesn't have yet. Ids, titles, params and effects are
+/// what the real tools will use.
+pub fn stand_ins(how: StandIn) -> Vec<ToolSpec> {
+    use Toolset::*;
+    let sid = with::<SessionIdParams>(how);
+    let run = with::<RunParams>(how);
+    let git_read = Effects::from_bits_truncate(Effects::IDEMPOTENT.bits() | Effects::LAUNCHES_PROCESS.bits());
+    let wt_remove = Effects::from_bits_truncate(GIT_WRITE.bits() | Effects::MAY_DISCARD_DATA.bits());
+    vec![
+        // runs
+        spec("run_list", "Run commands", "A session's run commands and their last result.", Runs, READ, sid),
+        spec("run_start", "Run", "Start a run command (default: the session's default) in its own background terminal.", Runs, Effects::LAUNCHES_PROCESS, run),
+        spec("run_stop", "Stop run", "Stop a running run command.", Runs, Effects::MAY_DISCARD_DATA, run),
+        spec("run_output", "Run output", "The output of a run command.", Runs, CONTENT, run),
+        spec("run_edit", "Edit run commands…", "Replace a session's list of run commands.", Runs, STATE, with::<RunEditParams>(how)),
+        // git
+        spec("git_status", "Git status", "Branch, upstream, ahead/behind and changed files.", Git, git_read, sid),
+        spec("git_fetch", "Fetch", "git fetch for the session's repo.", Git, NET, sid),
+        spec("git_pull", "Pull (fast-forward only)", "git pull --ff-only; refuses a diverged branch.", Git, NET, sid),
+        spec("git_switch_branch", "Switch branch", "git switch to a local branch.", Git, GIT_WRITE, with::<SwitchBranchParams>(how)),
+        spec("git_branches", "Branches", "Local branches and which worktree holds each.", Git, Effects::LAUNCHES_PROCESS, sid),
+        spec("worktree_list", "Worktrees", "The repo's worktrees with branch and status.", Git, Effects::LAUNCHES_PROCESS, sid),
+        spec("worktree_new", "New worktree…", "Create a worktree from a branch and optionally open a session in it.", Git, GIT_WRITE, with::<WorktreeNewParams>(how)),
+        spec("worktree_remove", "Remove worktree…", "Remove a clean worktree (refuses dirty or nested ones).", Git, wt_remove, with::<WorktreeRemoveParams>(how)),
+        // notes, search
+        spec("note_get", "Notes", "The note kept for a folder.", Notes, CONTENT, with::<NoteGetParams>(how)),
+        spec("note_set", "Save note", "Replace the note kept for a folder.", Notes, STATE, with::<NoteSetParams>(how)),
+        spec("search_output", "Search all output", "Full-text search of every session's output.", Search, CONTENT, with::<SearchParams>(how)),
+        spec("search_notes", "Search notes", "Search every folder's notes.", Search, CONTENT, with::<SearchParams>(how)),
+        // app
+        spec("open_folder", "Open folder", "Open the session's folder in the file manager.", App, Effects::LAUNCHES_PROCESS, sid),
+        spec("open_with", "Open with…", "Open the session's folder in an editor from the Open with list.", App, Effects::LAUNCHES_PROCESS, with::<OpenWithParams>(how)),
+        spec("grant_list", "MCP grants", "Clients allowed to call tools without asking.", App, READ, no_params(how)),
+        spec("grant_revoke", "Revoke an MCP grant", "Make a client ask again before calling a tool.", App, STATE, with::<GrantRevokeParams>(how)),
+    ]
+}
+
+/// Tools only the demo has: the review's status switcher. Not in docs/tools.md.
+pub fn demo_only() -> Vec<ToolSpec> {
+    vec![spec(
+        "demo_set_status",
+        "Demo: set status",
+        "Demo only: put a session in a status, to review how each one looks.",
+        Toolset::App,
+        UI,
+        (schema_of::<DemoStatusParams>, echo::<DemoStatusParams>),
+    )]
+}

@@ -122,8 +122,17 @@ Build first (see above), then from the repo root:
    means one vsync wait per window per frame (e.g. 2 windows → ~30 fps). The product should use
    `show_viewport_deferred`, which needs the render resources (`FontSet`, atlas) behind
    `Arc<Mutex<…>>`; the terminal state is already shared that way. Measure on hardware first.
+   *Update (feature/ui):* `csm-ui` draws torn-off panes and groups with `show_viewport_deferred`;
+   the renderer and views live in an `Arc<Mutex<PaneHost>>`. Frame cost on hardware still unmeasured.
 3. **Glyph coverage is linear.** Text looks heavier than egui's own text and probably than
    Windows Terminal. Needs a coverage/gamma curve (and maybe subpixel positioning) tuned by eye.
+   *Update (feature/ui):* measured in `crates/csm-ui/tests/text_weight.rs` (same font, size and
+   colours, egui text vs the terminal, summed luminance distance from the background). With the
+   same font the spike's setting (hinted, linear) was 0.81× egui's ink in Mocha and 1.0× in
+   Latte, i.e. lighter, not heavier; the heaviness seen was probably Cascadia Code next to
+   egui's proportional font. The terminal now renders unhinted with egui's curve per theme
+   (2c − c² on dark, linear on light): 1.01× in Mocha, 0.99× in Latte, at 1× and 1.5×. Whether
+   that matches Windows Terminal is still a by-eye check (manual check 6).
 4. **Font fallback is a fixed Windows list** (Segoe UI Emoji, Segoe UI Symbol, Microsoft YaHei,
    Yu Gothic, Malgun Gothic). No system font discovery, no per-OS lists, no italic face (italic is
    a synthetic skew). Emoji in a *single* cell are centred and may overflow it.

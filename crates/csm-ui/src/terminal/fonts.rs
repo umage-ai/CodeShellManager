@@ -29,19 +29,29 @@ impl Face {
 /// Reads a font file. Disk I/O: call before the UI starts or off the UI thread.
 pub fn load_face(path: &Path, index: usize) -> Result<Face, String> {
     let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let font = FontRef::from_index(&data, index).ok_or_else(|| format!("{}: not a font", path.display()))?;
-    let (offset, key) = (font.offset, font.key);
-    let has_wght = font.variations().any(|v| v.tag() == swash::tag_from_bytes(b"wght"));
-    Ok(Face {
-        data: Arc::new(data),
-        offset,
-        key,
-        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        has_wght,
-    })
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    face_from_bytes(data, index, name).ok_or_else(|| format!("{}: not a font", path.display()))
 }
 
-/// The font stack the spike uses on Windows; first primary that loads wins.
+/// A face from font bytes already in memory (an embedded font, or a file read earlier).
+pub fn face_from_bytes(data: Vec<u8>, index: usize, name: String) -> Option<Face> {
+    let font = FontRef::from_index(&data, index)?;
+    let (offset, key) = (font.offset, font.key);
+    let has_wght = font.variations().any(|v| v.tag() == swash::tag_from_bytes(b"wght"));
+    Some(Face { data: Arc::new(data), offset, key, name, has_wght })
+}
+
+/// JetBrains Mono, embedded (OFL, `assets/fonts`): the terminal font of the design, and a primary
+/// face that needs no disk access, so tests and first frames never wait on I/O.
+pub static JETBRAINS_MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
+
+/// The embedded JetBrains Mono face. `None` only if the embedded bytes were corrupted.
+pub fn embedded_mono() -> Option<Face> {
+    face_from_bytes(JETBRAINS_MONO.to_vec(), 0, "JetBrainsMono-Regular.ttf".to_string())
+}
+
+/// Windows system fonts: monospace primaries (first that loads wins) and the fallback stack for
+/// emoji, symbols and CJK. Paths only; loading them is disk I/O.
 pub fn default_paths() -> (Vec<PathBuf>, Vec<(PathBuf, usize)>) {
     let fonts = std::env::var_os("WINDIR").map(|w| PathBuf::from(w).join("Fonts")).unwrap_or_default();
     let primary = vec![fonts.join("CascadiaCode.ttf"), fonts.join("CascadiaMono.ttf"), fonts.join("consola.ttf")];
@@ -96,6 +106,9 @@ pub struct FontSet {
     fallbacks: Vec<Face>,
     pub size_pt: f32,
     pub ligatures: bool,
+    /// How glyph coverage becomes alpha (hinting and the coverage curve). Changing it after glyphs
+    /// were rasterised needs an atlas clear.
+    pub coverage: Coverage,
     lookup: HashMap<char, Option<(u8, u16)>>,
     shape_ctx: ShapeContext,
     scale_ctx: ScaleContext,
@@ -114,6 +127,7 @@ impl FontSet {
             fallbacks,
             size_pt,
             ligatures,
+            coverage: Coverage::default(),
             lookup: HashMap::new(),
             shape_ctx: ShapeContext::new(),
             scale_ctx: ScaleContext::new(),
@@ -232,30 +246,44 @@ impl FontSet {
         } else {
             self.fallbacks.get(usize::from(face_idx) - 1)?
         };
-        let builder = self.scale_ctx.builder(face.font()).size(px).hint(true);
+        let builder = self.scale_ctx.builder(face.font()).size(px).hint(self.coverage.hint);
         let real_bold = style.bold && face.has_wght;
         let builder = if real_bold { builder.variations(&WGHT_BOLD) } else { builder };
         let mut scaler = builder.build();
         let mut render =
             Render::new(&[Source::ColorOutline(0), Source::ColorBitmap(StrikeWith::BestFit), Source::Outline]);
         render.format(Format::Alpha);
-        if style.bold && !real_bold {
-            render.embolden(px / 28.0);
-        }
         if style.italic {
             render.transform(Some(Transform::skew(Angle::from_degrees(12.0), Angle::ZERO)));
         }
         let img = render.render(&mut scaler, gid)?;
-        let (w, h) = (img.placement.width as usize, img.placement.height as usize);
+        let (mut w, h) = (img.placement.width as usize, img.placement.height as usize);
         if w == 0 || h == 0 {
             return None;
         }
         let (rgba, color) = match img.content {
             Content::Mask => {
-                let mut v = Vec::with_capacity(w * h * 4);
-                for &a in img.data.iter().take(w * h) {
-                    v.extend_from_slice(&[a, a, a, a]);
+                // A face without a weight axis gets a synthetic bold: the mask smeared right by
+                // a pixel or two (swash's outline embolden distorts thin glyphs such as `i`).
+                let smear = if style.bold && !real_bold { ((px / 20.0).round() as usize).max(1) } else { 0 };
+                let src: Vec<u8> = img.data.iter().take(w * h).copied().collect();
+                if src.len() != w * h {
+                    return None;
                 }
+                let ow = w + smear;
+                let mut v = Vec::with_capacity(ow * h * 4);
+                for y in 0..h {
+                    for x in 0..ow {
+                        let a = (0..=smear)
+                            .filter_map(|d| x.checked_sub(d).filter(|&sx| sx < w).and_then(|sx| src.get(y * w + sx)))
+                            .copied()
+                            .max()
+                            .unwrap_or(0);
+                        let a = self.coverage.apply(a);
+                        v.extend_from_slice(&[a, a, a, a]);
+                    }
+                }
+                w = ow;
                 (v, false)
             }
             Content::Color => {
@@ -299,5 +327,52 @@ mod tests {
         let (r, b) = (coverage(&mut fonts, false), coverage(&mut fonts, true));
         eprintln!("{name}: regular {r} bold {b}");
         assert!(b as f64 > r as f64 * 1.15, "bold {b} not heavier than regular {r}");
+    }
+}
+
+/// How a glyph's coverage becomes the alpha it is drawn with.
+///
+/// The renderer blends in gamma space, as egui does: alpha `a` puts `bg + a·(fg − bg)` on screen.
+/// `hint` snaps outlines to the pixel grid (it thickens stems at small sizes); `curve` reshapes
+/// coverage before blending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Coverage {
+    pub hint: bool,
+    pub curve: Curve,
+}
+
+/// Coverage → alpha, as egui's `FontColorTransferFunction` does for its own text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curve {
+    /// `a = c`: dark text on a light background.
+    Linear,
+    /// `a = 2c − c²`: light text on a dark background (egui's dark-mode default).
+    Lifted,
+}
+
+impl Default for Coverage {
+    fn default() -> Self {
+        Coverage::for_dark_theme(true)
+    }
+}
+
+impl Coverage {
+    /// The spike's setting: hinted, linear.
+    pub const SPIKE: Coverage = Coverage { hint: true, curve: Curve::Linear };
+
+    /// Measured against egui's own text in the same font, size and colours (the `text_weight`
+    /// test): unhinted, with egui's curve for the theme, the terminal's ink matches the UI's text.
+    pub fn for_dark_theme(dark: bool) -> Coverage {
+        Coverage { hint: false, curve: if dark { Curve::Lifted } else { Curve::Linear } }
+    }
+
+    pub fn apply(self, a: u8) -> u8 {
+        match self.curve {
+            Curve::Linear => a,
+            Curve::Lifted => {
+                let c = f32::from(a) / 255.0;
+                ((2.0 * c - c * c) * 255.0).round().clamp(0.0, 255.0) as u8
+            }
+        }
     }
 }

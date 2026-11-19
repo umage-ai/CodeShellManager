@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use term_spike::app::{Config, SpikeApp};
-use term_spike::fonts::{FontSet, default_paths, load_face};
+use csm_ui::terminal::TerminalRenderer;
+use csm_ui::terminal::fonts::{FontSet, default_paths, load_face};
 use term_spike::view::{FrameCounters, Shared};
 use term_spike::{logging, theme};
 
@@ -128,8 +129,8 @@ fn main() {
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            let shared = Shared { fonts, atlas: None, frame: FrameCounters::default() };
-            Ok(Box::new(SpikeApp::new(cfg, shared)))
+            let shared = Shared { renderer: TerminalRenderer::new(fonts), frame: FrameCounters::default() };
+            Ok(Box::new(SpikeApp::new(cfg, shared, &cc.egui_ctx)))
         }),
     );
     if let Err(e) = result {
