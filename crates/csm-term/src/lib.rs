@@ -33,6 +33,9 @@ pub use colors::Palette;
 pub use probe::ProbeReply;
 pub use tap::{PromptMark, TapEvent};
 
+/// The XTVERSION answer: `DCS > | name(version) ST`.
+pub const XTVERSION_REPLY: &[u8] = concat!("P>|CodeShellManager(", env!("CARGO_PKG_VERSION"), ")\\").as_bytes();
+
 /// Where the terminal's own replies go (the PTY input). Called on whatever thread drives
 /// [`Terminal::advance`]; implementations queue, they never block.
 pub trait ReplySink: Send + Sync {
@@ -199,6 +202,9 @@ impl Terminal {
             self.processor.advance(&mut self.term, segment);
             if std::mem::take(&mut self.tap.colors_changed) {
                 self.refresh_colors();
+            }
+            if std::mem::take(&mut self.tap.xtversion_query) {
+                self.shared.replies.send(XTVERSION_REPLY);
             }
             let events = std::mem::take(&mut self.tap.events);
             for event in events {

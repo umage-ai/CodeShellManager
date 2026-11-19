@@ -54,6 +54,8 @@ pub struct OscTap {
     pub(crate) colors_changed: bool,
     /// win32-input-mode requested by the ConPTY (`CSI ? 9001 h`, cleared by `l`).
     pub(crate) win32_input_mode: bool,
+    /// An XTVERSION query (`CSI > q` / `CSI > 0 q`) to answer after this segment.
+    pub(crate) xtversion_query: bool,
     stop: bool,
 }
 
@@ -153,6 +155,14 @@ impl Perform for OscTap {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        // XTVERSION. alacritty_terminal does not answer it, and programs use the answer to
+        // decide whether to ask about features (Claude Code only asks DECRQM 2026, synchronized
+        // output, after an XTVERSION reply).
+        if intermediates == b">" && action == 'q' && params.iter().all(|p| p.first().is_none_or(|&v| v == 0)) {
+            self.xtversion_query = true;
+            self.stop = true;
+            return;
+        }
         if intermediates == b"?" && (action == 'h' || action == 'l') {
             for p in params.iter() {
                 if p.first() == Some(&9001) {

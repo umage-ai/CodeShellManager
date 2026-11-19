@@ -193,3 +193,14 @@ fn random_bytes_never_panic() {
         let _ = t.take_events();
     }
 }
+
+#[test]
+fn xtversion_answered_in_order() {
+    let input = b"[>q[?2026$p[c";
+    let (_, replies) = run_all_splits(input, ProbeReply::Off);
+    let text = String::from_utf8_lossy(&replies).into_owned();
+    assert!(text.starts_with("P>|CodeShellManager("), "{text:?}");
+    let x = text.find("\\").unwrap();
+    // DECRQM 2026 (synchronized output) is reported by alacritty, then DA1.
+    assert_eq!(&text[x + 2..], "[?2026;2$y[?6c");
+}
