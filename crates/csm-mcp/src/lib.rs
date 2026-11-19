@@ -13,6 +13,8 @@
 //! The bridge lives in this crate rather than a separate `csm-ipc` because it is small, has one
 //! client and one server, and the app needs exactly one dependency to get both halves.
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod catalog;
 mod ipc_client;

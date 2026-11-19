@@ -5,6 +5,7 @@ mod app;
 pub(crate) mod git;
 mod groups;
 mod layout;
+mod platform;
 mod sessions;
 
 use serde_json::Value;
@@ -20,6 +21,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(layout::specs());
     v.extend(app::specs());
     v.extend(git::specs());
+    v.extend(platform::specs());
     v
 }
 

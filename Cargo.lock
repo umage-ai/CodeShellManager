@@ -875,6 +875,7 @@ dependencies = [
  "clap",
  "csm-engine",
  "csm-mcp",
+ "csm-setup",
  "serde",
  "serde_json",
  "tempfile",
@@ -940,6 +941,18 @@ dependencies = [
  "log",
  "notify",
  "tempfile",
+]
+
+[[package]]
+name = "csm-setup"
+version = "0.0.1"
+dependencies = [
+ "csm-engine",
+ "csm-mcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml_edit",
 ]
 
 [[package]]
@@ -3764,6 +3777,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -3775,6 +3789,12 @@ checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.2.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
 
 [[package]]
 name = "tracing"
@@ -4744,6 +4764,17 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xtask"
+version = "0.0.1"
+dependencies = [
+ "csm-engine",
+ "csm-mcp",
+ "proc-macro2",
+ "serde_json",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "yazi"

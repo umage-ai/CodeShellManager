@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 csm-engine = { path = "../../crates/csm-engine" }
 csm-mcp = { path = "../../crates/csm-mcp" }
+csm-setup = { path = "../../crates/csm-setup" }
 clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "string"] }
 serde_json = "1"
 

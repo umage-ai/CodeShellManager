@@ -1,0 +1,21 @@
+[package]
+name = "csm-setup"
+description = "csm setup / doctor / uninstall: connect CodeShellManager's MCP server to coding-agent apps, safely, and check the install"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csm-engine = { path = "../csm-engine" }
+csm-mcp = { path = "../csm-mcp" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml_edit = "0.25"
+
+[dev-dependencies]
+tempfile = "3"
