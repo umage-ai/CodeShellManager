@@ -12,5 +12,5 @@ workspace = true
 
 [dependencies]
 alacritty_terminal = "0.26"
-vte = "0.15"
+
 log = "0.4"
