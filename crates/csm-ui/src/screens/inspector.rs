@@ -312,7 +312,14 @@ fn session(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::splat(space::MD), Sense::hover());
             ui.painter().rect_filled(r, CornerRadius::same(radius::SM - 1), t.accent(s.accent));
-            ui.label(egui::RichText::new("from folder").font(theme::regular(text::SMALL)));
+            if s.accent_overridden {
+                ui.label(egui::RichText::new("set by the program").font(theme::regular(text::SMALL)));
+                if ui.link(egui::RichText::new("Reset").font(theme::regular(text::SMALL))).on_hover_text("Back to the folder's colour").clicked() {
+                    actions.push(Action::Tool("session_accent_reset", json!({"session_id": s.id})));
+                }
+            } else {
+                ui.label(egui::RichText::new("from folder").font(theme::regular(text::SMALL)));
+            }
         });
         ui.end_row();
         k(ui, "Started");
@@ -345,7 +352,7 @@ fn session(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
     ui.horizontal_wrapped(|ui| {
         let sid = json!({"session_id": s.id});
         if widgets::button(ui, ButtonKind::Secondary, Some("pencil"), "Edit…", None).clicked() {
-            actions.push(Action::Toast("Edit opens the New session panel, filled in (session_edit) — next round.".into()));
+            actions.push(Action::EditSession(s.id.clone()));
         }
         if widgets::button(ui, ButtonKind::Secondary, Some("restart"), "Restart", None).clicked() {
             actions.push(Action::Tool("session_restart", sid.clone()));

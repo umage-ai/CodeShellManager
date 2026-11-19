@@ -263,3 +263,62 @@ pub fn bar(ui: &mut Ui, fraction: f32, color: Color32, height: f32) {
     fill.set_width(rect.width() * fraction.clamp(0.0, 1.0));
     ui.painter().rect_filled(fill, r, color);
 }
+
+/// An on/off switch with its label and an optional explanation under it. Returns the response
+/// of the whole row (clicked = flip it).
+pub fn toggle(ui: &mut Ui, on: bool, label: &str, hint: Option<&str>) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let w = ui.available_width();
+    let hint_h = if hint.is_some() { space::LG + space::XS } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CONTROL + hint_h), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.expand2(vec2(space::XS, 0.0)), CornerRadius::same(radius::MD), t.row_hover);
+    }
+    let cy = rect.min.y + size::CONTROL / 2.0;
+    let track = Rect::from_min_size(pos2(rect.max.x - size::SWITCH[0], cy - size::SWITCH[1] / 2.0), vec2(size::SWITCH[0], size::SWITCH[1]));
+    let (bg, knob) = if on { (t.blue, t.on_accent) } else { (t.surface1, t.fg2) };
+    ui.painter().rect_filled(track, CornerRadius::same(radius::PILL), bg);
+    let r = size::SWITCH[1] / 2.0 - space::XXS;
+    let kx = if on { track.max.x - r - space::XXS } else { track.min.x + r + space::XXS };
+    ui.painter().circle_filled(pos2(kx, cy), r, knob);
+    if resp.has_focus() {
+        ui.painter().rect_stroke(track.expand(size::RING), CornerRadius::same(radius::PILL), Stroke::new(size::RING, t.blue), StrokeKind::Outside);
+    }
+    paint_text(ui, pos2(rect.min.x, cy), Align2::LEFT_CENTER, label, crate::theme::regular(text::BODY), t.fg, track.min.x - rect.min.x - space::MD);
+    if let Some(h) = hint {
+        paint_text(ui, pos2(rect.min.x, cy + size::CONTROL / 2.0 + space::XS), Align2::LEFT_CENTER, h, crate::theme::regular(text::CAPTION), t.muted, w - space::SM);
+    }
+    let label_s = label.to_string();
+    resp.widget_info(move || WidgetInfo::selected(WidgetType::Checkbox, true, on, label_s.clone()));
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A segmented control (`.seg`): one of `options` is on. Returns the index clicked, if any.
+pub fn segmented(ui: &mut Ui, id: &str, options: &[&str], selected: Option<usize>) -> Option<usize> {
+    let t = Tokens::get(ui.ctx());
+    let font = crate::theme::medium(text::SMALL);
+    let widths: Vec<f32> = options.iter().map(|o| text_width(ui, o, font.clone()) + space::LG + space::XS).collect();
+    let total: f32 = widths.iter().sum::<f32>() + space::XXS * (widths.len() as f32 + 1.0);
+    let (seg, _) = ui.allocate_exact_size(vec2(total, size::CONTROL), Sense::hover());
+    ui.painter().rect(seg, CornerRadius::same(radius::MD + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    let mut x = seg.min.x + space::XXS;
+    let mut picked = None;
+    for (i, (o, w)) in options.iter().zip(widths).enumerate() {
+        let b = Rect::from_min_size(pos2(x, seg.min.y + space::XXS), vec2(w, size::CONTROL - space::XS));
+        x += w + space::XXS;
+        let r = ui.interact(b, ui.id().with((id, i)), Sense::click());
+        let on = selected == Some(i);
+        if on {
+            ui.painter().rect_filled(b, CornerRadius::same(radius::SM + 1), t.field);
+        } else if r.hovered() {
+            ui.painter().rect_filled(b, CornerRadius::same(radius::SM + 1), t.row_hover);
+        }
+        ui.painter().text(b.center(), Align2::CENTER_CENTER, *o, font.clone(), if on || r.hovered() { t.fg } else { t.muted });
+        let label = format!("{id}: {o}");
+        r.widget_info(move || WidgetInfo::selected(WidgetType::RadioButton, true, on, label.clone()));
+        if r.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            picked = Some(i);
+        }
+    }
+    picked
+}

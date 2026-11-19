@@ -159,6 +159,9 @@ pub struct AppSettings {
     pub offer_mcp_to_claude: bool,
     /// Space between a pane's edge and the terminal cells, in points.
     pub terminal_padding: i32,
+    /// The terminal font size in the Rust app's points; 0 = the app's default. (The WPF
+    /// `TerminalFontSize` is CSS pixels for xterm.js and stays as it was.)
+    pub terminal_font_points: i32,
 }
 
 impl Default for AppSettings {
@@ -204,6 +207,7 @@ impl Default for AppSettings {
             launch_commands: default_launch_commands(),
             offer_mcp_to_claude: false,
             terminal_padding: default_padding(),
+            terminal_font_points: 0,
         }
     }
 }
