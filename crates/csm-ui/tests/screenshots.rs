@@ -138,7 +138,6 @@ fn screens() {
         let ctx = h.ctx.clone();
         h.state_mut().run(&ctx, Action::StartRename("web".into()));
     });
-    shoot("16-compact", ThemeKind::Mocha, |_| {}, |_| {});
     shoot_sized("16-compact-narrow", ThemeKind::Mocha, egui::vec2(900.0, 640.0), |_| {}, |_| {});
     shoot_sized("16-compact-peek", ThemeKind::Latte, egui::vec2(900.0, 640.0), |_| {}, |h| {
         h.state_mut().ui.peek_sidebar = true;

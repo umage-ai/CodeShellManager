@@ -737,12 +737,20 @@ impl CsmApp {
         match s.kind {
             crate::model::Kind::Local => q.query = s.folder.clone(),
             crate::model::Kind::Ssh => {
+                // `user@host:/path` until `session_get` gives the exact fields.
                 q.remote = true;
                 q.rkind = RemoteKind::Ssh;
+                let (host, folder) = s.folder.split_once(':').unwrap_or((s.folder.as_str(), ""));
+                q.host = host.trim().to_string();
+                q.remote_folder = folder.trim().to_string();
             }
             crate::model::Kind::Wsl => {
+                // `Distro · ~/folder` likewise.
                 q.remote = true;
                 q.rkind = RemoteKind::Wsl;
+                let (distro, folder) = s.folder.split_once('·').unwrap_or((s.folder.as_str(), ""));
+                q.distro = distro.trim().to_string();
+                q.linux_folder = folder.trim().to_string();
             }
         }
         set_edit_command(&mut q, &s.command, &self.model.launch_commands);

@@ -248,7 +248,11 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
 /// The primary terminal face's name.
 fn lock_face(app: &CsmApp) -> String {
     let host = crate::terminal::lock(&app.host);
-    host.renderer.fonts.describe().split(" (").next().unwrap_or_default().to_string()
+    let d = host.renderer.fonts.describe();
+    let name = d.split(" (").next().unwrap_or_default();
+    // "<face> <size>pt": the face is what this row is about.
+    let face = name.rsplit_once(' ').map_or(name, |(f, _)| f);
+    if face.starts_with("JetBrainsMono") { "JetBrains Mono (built in)".to_string() } else { face.to_string() }
 }
 
 fn groups(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
