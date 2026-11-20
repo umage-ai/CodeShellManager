@@ -232,8 +232,7 @@ fn a_default_cursor_and_palette_can_be_set_and_programs_still_override_the_curso
     t.advance(b"\x1b[0 q");
     assert_eq!(t.term().cursor_style().shape, CursorShape::Beam);
     // OSC 11 answers with the palette that was set.
-    let mut p = csm_term::Palette::default();
-    p.background = Rgb { r: 0x01, g: 0x24, b: 0x56 };
+    let p = csm_term::Palette { background: Rgb { r: 0x01, g: 0x24, b: 0x56 }, ..Default::default() };
     let g = t.generation();
     t.set_palette(p.clone());
     assert!(t.generation() != g);
