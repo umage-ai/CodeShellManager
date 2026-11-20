@@ -255,7 +255,12 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
         }
     );
     let mut data = summary;
-    data["imported"] = json!({"sessions": n_s, "groups": n_g, "open_with_adopted": adopt});
+    data["imported"] = json!({
+        "sessions": n_s,
+        "groups": n_g,
+        "open_with_adopted": adopt,
+        "launch_commands": ctx.state.app.settings.launch_commands,
+    });
     Ok(ToolOutput::new(msg, data))
 }
 
@@ -308,17 +313,16 @@ fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Optio
     ours.search_collapse_after_navigate = theirs.search_collapse_after_navigate;
     ours.max_search_results = theirs.max_search_results;
     ours.show_terminal_status_dot = theirs.show_terminal_status_dot;
-    ours.launch_commands = theirs
-        .launch_commands
-        .iter()
-        .map(|c| c.trim().to_owned())
-        .filter(|c| !c.is_empty() && !c.chars().any(char::is_control))
-        .fold(Vec::new(), |mut v, c| {
-            if !v.contains(&c) {
-                v.push(c);
-            }
-            v
-        });
+    ours.launch_commands =
+        theirs.launch_commands.iter().map(|c| c.trim().to_owned()).filter(|c| !c.is_empty() && !c.chars().any(char::is_control)).fold(
+            Vec::new(),
+            |mut v, c| {
+                if !v.contains(&c) {
+                    v.push(c);
+                }
+                v
+            },
+        );
     if let Some(list) = open_with {
         ours.open_with = list;
         ours.open_with_seeded = true;
@@ -339,7 +343,13 @@ mod tests {
     use super::*;
 
     fn entry(label: &str, exe: &str) -> OpenWithEntry {
-        OpenWithEntry { id: label.into(), label: label.into(), executable: exe.into(), local_args: Some("{folder}".into()), ..OpenWithEntry::default() }
+        OpenWithEntry {
+            id: label.into(),
+            label: label.into(),
+            executable: exe.into(),
+            local_args: Some("{folder}".into()),
+            ..OpenWithEntry::default()
+        }
     }
 
     #[test]

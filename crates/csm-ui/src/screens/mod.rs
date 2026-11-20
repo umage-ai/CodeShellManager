@@ -1,5 +1,7 @@
 //! The screens of the mock-up, each a function over the app and its snapshot.
 
+pub mod backup;
+pub mod file_drop;
 pub mod git;
 pub mod inspector;
 pub mod menus;

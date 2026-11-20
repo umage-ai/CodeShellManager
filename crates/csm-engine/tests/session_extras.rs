@@ -142,7 +142,13 @@ fn an_imported_open_with_list_is_sanitised_and_only_adopted_on_request() {
     let mut backup = test_app();
     backup.settings.open_with_seeded = true;
     backup.settings.open_with = vec![
-        OpenWithEntry { id: "a".into(), label: "Real".into(), executable: exe.clone(), local_args: Some("{folder}".into()), ..OpenWithEntry::default() },
+        OpenWithEntry {
+            id: "a".into(),
+            label: "Real".into(),
+            executable: exe.clone(),
+            local_args: Some("{folder}".into()),
+            ..OpenWithEntry::default()
+        },
         OpenWithEntry { id: "b".into(), label: "Batch".into(), executable: bat, local_args: Some("{folder}".into()), ..OpenWithEntry::default() },
         OpenWithEntry {
             id: "c".into(),

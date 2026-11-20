@@ -260,6 +260,18 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         };
         ui.painter().text(inner.center(), Align2::CENTER_CENTER, msg, theme::regular(text::BODY), t.muted);
     }
+    // Files dragged over the window go to a live pane: floats (on top) first.
+    let mut drop_panes: Vec<(SessionId, Rect)> = Vec::new();
+    if layout.mode == LayoutMode::Free {
+        for f in layout.floats.iter().rev() {
+            if model.session(&f.session).is_some_and(|s| s.status.is_live()) {
+                drop_panes.push((f.session.clone(), Rect::from_min_size(inner.min + vec2(f.rect[0], f.rect[1]), vec2(f.rect[2], f.rect[3]))));
+            }
+        }
+    }
+    drop_panes.extend(
+        planned.iter().filter(|(id, _, o)| !o.mini && model.session(id).is_some_and(|s| s.status.is_live())).map(|(id, r, _)| (id.clone(), *r)),
+    );
     let focus = app.ui.focus_terminal.clone();
     let host = app.host.clone();
     {
@@ -359,6 +371,7 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
         }
     }
+    super::file_drop::show(ui, &model, &drop_panes, actions);
 }
 
 /// No sessions at all (a first run, or everything closed): say what to do, and offer the WPF

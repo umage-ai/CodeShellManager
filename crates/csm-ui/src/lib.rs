@@ -78,6 +78,13 @@ fn demo_index() -> csm_engine::IndexSetting {
         ix.note_session(id, name, folder, "");
         ix.feed(id, format!("{text}\r\n").as_bytes());
     }
+    // Settings → Usage.
+    for (command, sessions, seconds) in [("claude", 42, 31 * 3600 + 20 * 60), ("pwsh", 17, 4 * 3600 + 5 * 60), ("codex", 3, 40 * 60)] {
+        for _ in 0..sessions {
+            ix.record_usage_start(command);
+        }
+        ix.record_usage_seconds(command, seconds);
+    }
     csm_engine::IndexSetting::Handle(ix)
 }
 

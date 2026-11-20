@@ -231,6 +231,13 @@ impl Backend for EngineBackend {
                     self.opts.launch_commands = list.iter().filter_map(|v| v.as_str().map(String::from)).collect();
                     self.refresh(true);
                 }
+                // …and an imported setup's.
+                if call.id == "state_import"
+                    && let Some(list) = out.data["imported"]["launch_commands"].as_array()
+                {
+                    self.opts.launch_commands = list.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    self.refresh(true);
+                }
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
                 let effects = self.engine.registry().get(&call.id).map(|s| s.effects);
                 let say = call.id == "state_import_wpf" || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));

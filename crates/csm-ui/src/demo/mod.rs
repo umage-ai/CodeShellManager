@@ -695,6 +695,16 @@ impl DemoBackend {
                 }
                 toast("Sent.".into())
             }
+            "session_send_command" => {
+                // The demo's sessions aren't the engine's: type the command into the demo terminal.
+                let sid = call.params["session_id"].as_str().unwrap_or_default();
+                let Some(cmd) = call.params["command"].as_str() else { return vec![] };
+                if let Some(t) = self.terms.get(sid) {
+                    t.write(&csm_term::input::typed(cmd, false).0);
+                    t.write(b"\r");
+                }
+                toast(format!("Sent {cmd}."))
+            }
             "group_new" => {
                 let Some(p) = parse::<GroupNewParams>(call) else { return vec![] };
                 let id = format!("g{}", self.next_id);
