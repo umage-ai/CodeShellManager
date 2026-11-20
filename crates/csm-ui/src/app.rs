@@ -1015,6 +1015,15 @@ impl CsmApp {
                 let at = self.ui.sort_at.unwrap_or_else(|| ctx.content_rect().center());
                 return self.run(ctx, Action::OpenMenu(Menu::Sort { at }));
             }
+            // Its group is optional (none = Ungrouped), so filling only the required ids would
+            // silently ungroup the selection: open the selection's row menu (Move to group).
+            "session_move_many" => {
+                let Some(first) = self.ui.selection.ids().first().cloned() else {
+                    return self.toast(ctx, "Select sessions first: Ctrl-click or Shift-click rows in the sidebar.");
+                };
+                let at = self.ui.sort_at.unwrap_or_else(|| ctx.content_rect().center());
+                return self.run(ctx, Action::OpenMenu(Menu::Row { session: first, at }));
+            }
             "app_quit" => return self.run(ctx, Action::AskQuit),
             "inspector_show" => {
                 let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
@@ -1149,11 +1158,21 @@ impl CsmApp {
         let open = self.ui.overlay != Overlay::None || self.ui.menu.is_some();
         if open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseOverlays);
-        } else if !self.ui.selection.is_empty() && self.ui.inline.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        } else if !self.ui.selection.is_empty()
+            && self.ui.inline.is_none()
+            && !self.terminal_focused(ctx)
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
             self.run(ctx, Action::ClearSelection);
         } else if self.ui.settings.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseSettings);
         }
+    }
+
+    /// A terminal pane has keyboard focus: its keys (Esc above all) belong to the program in it.
+    fn terminal_focused(&self, ctx: &egui::Context) -> bool {
+        let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
+        lock(&self.host).views.values().any(|v| v.id() == focused)
     }
 
     /// Focuses the live session `step` places after (or before) the active one, in the order the
@@ -1189,7 +1208,7 @@ impl CsmApp {
         for a in remote {
             self.run(&ctx, a);
         }
-        let model = self.model.clone();
+        let model = &self.model;
         self.ui.selection.retain(|id| model.session(id).is_some());
         self.shortcuts(&ctx);
         // The active session changed (inbox, palette, click): keyboard follows.

@@ -64,7 +64,11 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             p.rect_stroke(r, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
             if released && let (Some(sid), Scope::Group(g)) = (&dragging, &scope) {
                 if moving.len() > 1 {
-                    actions.push(Action::Tool("session_move_many", json!({"session_ids": moving, "group_id": g})));
+                    // Dropped on the tab they all are in already: nothing to move (the tool
+                    // would send the block to the end of the group).
+                    if moving.iter().any(|m| model.session(m).is_some_and(|s| s.group.as_deref() != Some(g.as_str()))) {
+                        actions.push(Action::Tool("session_move_many", json!({"session_ids": moving, "group_id": g})));
+                    }
                 } else if model.session(sid).is_some_and(|s| s.group.as_deref() != Some(g.as_str())) {
                     actions.push(Action::Tool("session_move_to_group", json!({"session_id": sid, "group_id": g})));
                 }
@@ -372,12 +376,14 @@ fn drop_between_rows(ui: &mut Ui, app: &mut CsmApp, rows: &[SidebarRow], list: R
         // A dragged selection moves as one block. Dropped among its own rows it stays put; onto
         // a group header whose first row is selected, it goes to the end of that group.
         let mut params = json!({"session_ids": moving, "group_id": group});
-        match (&target.before_session_id, &target.after_session_id) {
-            (Some(b), _) if !moving.contains(b) => params["before"] = json!(b),
-            (None, Some(a)) if !moving.contains(a) => params["after"] = json!(a),
-            (None, None) => {}
-            _ if target.assigns_group => {}
-            _ => return,
+        // Anchor on a neighbour outside the block (a selected neighbour can't be one).
+        let free = |x: &Option<String>| x.as_ref().filter(|id| !moving.contains(id)).cloned();
+        match (free(&target.before_session_id), free(&target.after_session_id)) {
+            (Some(b), _) => params["before"] = json!(b),
+            (None, Some(a)) => params["after"] = json!(a),
+            (None, None) if target.before_session_id.is_none() && target.after_session_id.is_none() => {}
+            (None, None) if target.assigns_group => {}
+            (None, None) => return,
         }
         actions.push(Action::Tool("session_move_many", params));
         return;

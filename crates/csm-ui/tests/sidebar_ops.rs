@@ -234,3 +234,67 @@ fn ctrl_alt_t_duplicates_the_active_session_after_it() {
     assert_eq!(h.state().submitted().last().unwrap().params, json!({"session_id": "web"}));
     assert!(h.state().model.sessions.iter().any(|s| s.name == "Odulodo.Web (3)"));
 }
+
+#[test]
+fn esc_in_a_focused_terminal_reaches_the_program_and_keeps_the_selection() {
+    let mut h = h();
+    click_row(&mut h, "Odulodo", Modifiers::CTRL);
+    click_row(&mut h, "search-sort", Modifiers::CTRL);
+    let term = h.state().host.lock().unwrap().views.values().next().map(|v| v.id()).expect("a terminal pane is drawn");
+    h.ctx.memory_mut(|m| m.request_focus(term));
+    settle(&mut h);
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(term), "the terminal has keyboard focus");
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    assert_eq!(selected(&h), ["odulodo", "wt"], "Esc went to the terminal, not to the selection");
+
+    // With the focus elsewhere, Esc clears it.
+    h.ctx.memory_mut(|m| m.surrender_focus(term));
+    settle(&mut h);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    assert!(selected(&h).is_empty());
+}
+
+#[test]
+fn move_to_group_from_the_palette_opens_the_selection_menu_and_never_ungroups() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    let before = h.state().submitted().len();
+    // Nothing selected: a hint, no call.
+    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_move_many"));
+    settle(&mut h);
+    assert!(h.state().ui.menu.is_none());
+    click_row(&mut h, "Odulodo", Modifiers::CTRL);
+    click_row(&mut h, "search-sort", Modifiers::CTRL);
+    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_move_many"));
+    settle(&mut h);
+    assert!(calls_since(&h, before, "session_move_many").is_empty(), "nothing moves before a group is picked");
+    assert!(matches!(h.state().ui.menu, Some(Menu::Row { .. })));
+    assert!(has(&h, "Move to group (2)"));
+    assert_eq!(h.state().model.session("odulodo").unwrap().group.as_deref(), Some("odulodo"));
+}
+
+#[test]
+fn dropping_a_selection_on_the_tab_it_is_in_moves_nothing() {
+    let mut h = h();
+    click_row(&mut h, "Odulodo", Modifiers::CTRL);
+    click_row(&mut h, "Odulodo.Web (PS)", Modifiers::CTRL);
+    let before = h.state().submitted().len();
+    let o = order(&h);
+    let from = h.get_by_label("Session: Odulodo.Web (PS)").rect().center();
+    let to = h.get_by_label("Group tab: Odulodo").rect().center();
+    h.event(Event::PointerMoved(from));
+    h.step();
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.step();
+    for i in 1..=6 {
+        h.event(Event::PointerMoved(from + (to - from) * (i as f32 / 6.0)));
+        h.step();
+    }
+    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.step();
+    settle(&mut h);
+    assert!(calls_since(&h, before, "session_move_many").is_empty());
+    assert_eq!(order(&h), o);
+}
