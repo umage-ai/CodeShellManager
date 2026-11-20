@@ -32,6 +32,11 @@ impl Default for TermStyle {
 }
 
 impl TermStyle {
+    /// The terminal background as an egui colour (a pane's placeholder fills with it).
+    pub fn background(&self) -> Color32 {
+        c32(self.palette.background)
+    }
+
     /// This style with a session's own colours (its look) over it; a colour the look leaves out
     /// stays the theme's.
     pub fn with_colors(mut self, c: &csm_core::look::ResolvedColors) -> Self {

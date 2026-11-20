@@ -28,8 +28,9 @@ fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize) -> Vec<(Stri
 // ── Every shortcut the UI shows is bound ───────────────────────────────────────────────────
 
 /// Shortcuts that only mean something inside one panel (the palette, the new-session panel, a
-/// dialog), where their own tests press them, and the mouse chord (tested below).
-const IN_PANEL: [&str; 3] = ["Ctrl+Enter", "Shift+Tab", "Ctrl+click"];
+/// dialog), where their own tests press them, and the mouse chords (Ctrl+click on a link, tested
+/// below; Shift+click in the sidebar, tested in sidebar_ops.rs).
+const IN_PANEL: [&str; 4] = ["Ctrl+Enter", "Shift+Tab", "Ctrl+click", "Shift+click"];
 
 /// Every chord shown in a string literal in `src/` (tooltips, menu hints, the palette, the help
 /// list, toasts), normalised to `Ctrl+Shift+T`. A chord is one or more of Ctrl / Shift / Alt
@@ -303,6 +304,9 @@ fn ctrl_shift_e_enter_flips_between_two_sessions_and_digits_pick() {
 fn recently_closed_sessions_are_listed_and_reopen_by_position() {
     let mut h = h();
     h.key_press_modifiers(Modifiers::COMMAND, Key::W); // closes web
+    settle(&mut h);
+    // web is working: Ctrl+W asks first, like every close from the UI.
+    h.get_by_label_contains("Close anyway").click();
     settle(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
     h.run();

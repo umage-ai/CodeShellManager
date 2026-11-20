@@ -872,7 +872,7 @@ pub fn pane(
             Some(c) => t.terminal_style().with_colors(&c.resolve()),
             None => t.terminal_style(),
         };
-        let body_bg = egui::Color32::from_rgb(style.palette.background.r, style.palette.background.g, style.palette.background.b);
+        let body_bg = style.background();
         let edges = look.and_then(csm_core::look::Look::padding_edges).map(|e| e.map(f32::from));
         let font_pt = look.and_then(|l| l.font_size).map(|n| n as f32);
         let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, ..ViewOptions::default() };
