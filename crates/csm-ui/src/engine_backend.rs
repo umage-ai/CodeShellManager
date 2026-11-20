@@ -345,6 +345,8 @@ pub fn layout_from_core(l: &GroupLayout) -> Layout {
         mode: layout_mode_from_core(l.mode),
         pinned: l.pinned.clone(),
         grid: GridPreset::new(l.grid_cols, l.grid_rows),
+        minimized: l.minimized.clone(),
+        maximized: l.maximized.clone(),
         ..Layout::default()
     };
     out.set_free(FreeLayout::from_value(l.free_tree.as_ref()));
@@ -357,6 +359,8 @@ pub fn layout_into_core(l: &Layout, core: &mut GroupLayout) {
     core.pinned = l.pinned.clone();
     core.grid_cols = l.grid.cols;
     core.grid_rows = l.grid.rows;
+    core.minimized = l.minimized.clone();
+    core.maximized = l.maximized.clone();
     let free = l.free();
     core.free_tree = (free != FreeLayout::default()).then(|| free.to_value());
 }

@@ -111,19 +111,40 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     if s.accent_overridden {
         v.push(item("palette", "Reset accent colour", tool("session_accent_reset", sid.clone())));
     }
-    v.extend([
-        Entry::Sep,
-        item("float", "Float in this window", tool("pane_float", json!({"session_id": id, "group": scope}))),
-        item("tear", "Move to a new window", tool("pane_tear_off", json!({"session_id": id, "group": scope}))),
-        Entry::Sep,
-    ]);
-    v.push(Entry::Item {
-        icon: "x",
-        label: "Close".into(),
-        hint: Some("Ctrl W".into()),
-        danger: true,
-        action: tool("session_close", json!({"session_id": id, "force": false})),
-    });
+    // The window bar's actions, and the header controls a narrow pane leaves out.
+    let lay = model.layout(&model.pane_scope());
+    let pane = json!({"session_id": id, "group": scope});
+    let maxed = lay.maximized.as_deref() == Some(id);
+    // A torn-off pane has its OS window's own minimize and maximize; in Focus the one pane
+    // already fills the canvas.
+    let torn = lay.torn.iter().any(|t| t == id);
+    v.push(Entry::Sep);
+    if !torn {
+        v.push(item("min", "Minimize", tool("pane_minimize", pane.clone())));
+        if maxed {
+            v.push(item("unmax", "Restore", tool("pane_restore", pane.clone())));
+        } else if lay.mode != crate::model::LayoutMode::Focus {
+            v.push(item("max", "Maximize", tool("pane_maximize", pane.clone())));
+        }
+    }
+    if torn || lay.floats.iter().any(|f| f.session == id) {
+        v.push(item("dock", "Dock", tool("pane_dock", pane.clone())));
+    } else {
+        v.push(item("float", "Float in this window", tool("pane_float", pane.clone())));
+    }
+    if !torn {
+        v.push(item("tear", "Move to a new window", tool("pane_tear_off", pane.clone())));
+    }
+    if lay.mode == crate::model::LayoutMode::Side {
+        let pinned = lay.pinned.iter().any(|p| p == id);
+        let (label, tid) = if pinned { ("Unpin from Side by side", "layout_unpin") } else { ("Pin to Side by side", "layout_pin") };
+        v.push(item("pin", label, tool(tid, pane.clone())));
+    }
+    if let Some(run) = s.default_run() {
+        v.push(hinted("play", format!("Run {}", run.label), "F5", tool("run_start", sid.clone())));
+    }
+    v.push(Entry::Sep);
+    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some("Ctrl W".into()), danger: true, action: Action::CloseSession(id.to_string()) });
     v
 }
 
@@ -171,13 +192,7 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     } else {
         v.push(item("power", "Wake", tool("session_wake", sid.clone())));
     }
-    v.push(Entry::Item {
-        icon: "x",
-        label: "Close".into(),
-        hint: None,
-        danger: true,
-        action: tool("session_close", json!({"session_id": id, "force": false})),
-    });
+    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: None, danger: true, action: Action::CloseSession(id.to_string()) });
     v
 }
 

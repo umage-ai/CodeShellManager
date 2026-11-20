@@ -348,6 +348,47 @@ fn stand_ins_do_not_collide_with_engine_tools() {
 }
 
 #[test]
+fn minimize_maximize_restore_are_real_and_focus_restores() {
+    let r = rig(true);
+    let folder = r.folder.clone();
+    let new = |r: &Rig| {
+        r.engine.call(Caller::Ui, "session_new", json!({"folder": folder, "command": "pwsh", "focus": true})).unwrap().data["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (a, b) = (new(&r), new(&r));
+    // Minimized is stored in the engine's layout (so it persists with it).
+    r.engine.call(Caller::Ui, "pane_minimize", json!({"session_id": a})).unwrap();
+    assert_eq!(r.engine.view().current_layout().minimized, vec![a.clone()]);
+    // Focusing it from anywhere (sidebar, palette, inbox, CLI) brings it back.
+    r.engine.call(Caller::Ui, "session_focus", json!({"session_id": a})).unwrap();
+    assert!(r.engine.view().current_layout().minimized.is_empty());
+    // Maximize, then focusing a different session restores the layout so it can be seen.
+    r.engine.call(Caller::Ui, "pane_maximize", json!({"session_id": a})).unwrap();
+    assert_eq!(r.engine.view().current_layout().maximized.as_deref(), Some(a.as_str()));
+    r.engine.call(Caller::Ui, "session_focus", json!({"session_id": b})).unwrap();
+    assert_eq!(r.engine.view().current_layout().maximized, None);
+    // pane_restore undoes either.
+    r.engine.call(Caller::Ui, "pane_maximize", json!({"session_id": b})).unwrap();
+    let out = r.engine.call(Caller::Ui, "pane_restore", json!({"session_id": b})).unwrap();
+    assert_eq!(out.data["maximized"], serde_json::Value::Null);
+    assert_eq!(r.engine.view().current_layout().maximized, None);
+    // A group's layout only takes its own sessions.
+    let g = r.engine.call(Caller::Ui, "group_new", json!({"name": "Elsewhere"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    assert!(r.engine.call(Caller::Ui, "pane_minimize", json!({"session_id": b, "group": g})).is_err());
+    assert!(r.engine.view().layouts.get(&g).is_none_or(|l| l.minimized.is_empty()));
+    // Closing a minimized session forgets it.
+    r.engine.call(Caller::Ui, "pane_minimize", json!({"session_id": b})).unwrap();
+    r.engine.call(Caller::Ui, "session_close", json!({"session_id": b, "force": true})).unwrap();
+    assert!(r.engine.view().current_layout().minimized.is_empty());
+    // Effects are declared honestly: UI state only.
+    for id in ["pane_minimize", "pane_maximize", "pane_restore"] {
+        assert_eq!(r.engine.registry().get(id).unwrap().effects, csm_engine::Effects::UI, "{id}");
+    }
+}
+
+#[test]
 fn editing_a_live_session_asks_restart_now_and_restarts_it() {
     let mut r = rig(true);
     r.until("the empty screen", |r| r.has("No sessions yet"));

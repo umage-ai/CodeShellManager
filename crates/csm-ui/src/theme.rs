@@ -377,6 +377,16 @@ pub mod size {
     pub const GRID_GLYPH: [f32; 2] = [56.0, 36.0];
     pub const MIN_PANE: f32 = 120.0;
     pub const FLOAT_DEFAULT: [f32; 2] = [440.0, 300.0];
+    /// The smallest a floating pane resizes to: room for its header's window bar and a few rows.
+    pub const FLOAT_MIN: [f32; 2] = [MIN_PANE * 2.0, MIN_PANE];
+    /// A floating pane's resize band, straddling each edge.
+    pub const RESIZE_EDGE: f32 = 6.0;
+    /// The "Drag to resize" grip in a floating pane's bottom-right corner.
+    pub const RESIZE_GRIP: f32 = 14.0;
+    /// The strip under the pane canvas holding the minimized panes' chips.
+    pub const MINIMIZED_STRIP: f32 = 30.0;
+    /// A minimized pane's chip: the widest it gets before its name elides.
+    pub const MINIMIZED_CHIP_MAX_W: f32 = 180.0;
     pub const BRANCH_MAX_W: f32 = 68.0;
     pub const PANE_NAME_MIN_W: f32 = 72.0;
     pub const TEAR_OFF: [f32; 2] = [960.0, 560.0];
