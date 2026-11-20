@@ -95,4 +95,8 @@ pub const ICONS: &[(&str, &str)] = &[
         "grip",
         r#"<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>"#,
     ),
+    // The sidebar's sort control and its direction arrows.
+    ("sort", r#"<path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16"/>"#),
+    ("arrowUp", r#"<path d="M12 19V5M5 12l7-7 7 7"/>"#),
+    ("arrowDown", r#"<path d="M12 5v14M19 12l-7 7-7-7"/>"#),
 ];

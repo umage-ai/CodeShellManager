@@ -5,7 +5,9 @@
 use egui::{Align2, CornerRadius, Id, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 use serde_json::json;
 
-use crate::app::{Action, CsmApp, Menu};
+use csm_core::session_sort::SortField;
+
+use crate::app::{Action, ConfirmState, CsmApp, Menu};
 use crate::icons;
 use crate::model::{GridPreset, GroupMode, LayoutMode, Scope, Status, UiModel};
 use crate::theme::{self, Tokens, alpha, icon, radius, size, space, text};
@@ -147,6 +149,7 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         Entry::Head("Session".into()),
         hinted("pencil", "Edit session…", "folder, command", Action::EditSession(id.to_string())),
         hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
+        hinted("copy", "Duplicate", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
         hinted("restart", "Restart", "Ctrl Shift R", tool("session_restart", sid.clone())),
         hinted("moon", "Sleep", "keeps it in the sidebar", tool("session_sleep", sid.clone())),
         demo_status(id),
@@ -191,7 +194,12 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     v
 }
 
-pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+/// The sidebar row's menu. `targets` is what an action applies to (C# `ResolveActionTargets`):
+/// the whole selection when the row is part of it, else the row alone.
+pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
+    if targets.len() > 1 {
+        return bulk_menu(model, targets);
+    }
     let Some(s) = model.session(id) else { return vec![] };
     let sid = json!({"session_id": id});
     let scope = model.pane_scope();
@@ -219,6 +227,7 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
         item("folder", "Open folder", tool("open_folder", sid.clone())),
         open_with(s),
+        hinted("copy", "Duplicate session", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
     ];
     v.extend(worktree_entries(model, s));
     v.push(Entry::Sep);
@@ -237,6 +246,115 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         v.push(item("power", "Wake", tool("session_wake", sid.clone())));
     }
     v.push(Entry::Item { icon: "x", label: "Close".into(), hint: None, danger: true, action: Action::CloseSession(id.to_string()) });
+    v
+}
+
+/// The row menu with several rows selected: each action names its count and applies to all of
+/// them (the `*_many` tools). Restart and Close ask first, like the group menu's "… all".
+pub fn bulk_menu(model: &UiModel, targets: &[String]) -> Vec<Entry> {
+    let n = targets.len();
+    let ids = json!(targets);
+    let sessions: Vec<&crate::model::SessionView> = targets.iter().filter_map(|id| model.session(id)).collect();
+    let live: Vec<String> = sessions.iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
+    let asleep: Vec<String> = sessions.iter().filter(|s| !s.status.is_live()).map(|s| s.id.clone()).collect();
+    let busy = sessions.iter().filter(|s| matches!(s.status, Status::Working | Status::Approval | Status::Question)).count();
+    let mut groups: Vec<Entry> = model
+        .groups
+        .iter()
+        .map(|g| {
+            let all_here = sessions.iter().all(|s| s.group.as_deref() == Some(g.id.as_str()));
+            item(if all_here { "check" } else { "blank" }, g.name.clone(), tool("session_move_many", json!({"session_ids": ids, "group_id": g.id})))
+        })
+        .collect();
+    groups.push(Entry::Sep);
+    groups.push(item("blank", "Ungrouped", tool("session_move_many", json!({"session_ids": ids, "group_id": null}))));
+    let mut v = vec![
+        Entry::Head(format!("{n} sessions selected")),
+        Entry::Sub { icon: "layers", label: format!("Move to group ({n})"), items: groups },
+        Entry::Sep,
+    ];
+    if !asleep.is_empty() {
+        v.push(item("power", format!("Wake ({})", asleep.len()), tool("session_wake_many", json!({"session_ids": asleep}))));
+    }
+    if !live.is_empty() {
+        let k = live.len();
+        let restart = tool("session_restart_many", json!({"session_ids": live, "force": true}));
+        v.push(item(
+            "restart",
+            format!("Restart ({k})…"),
+            if k > 1 {
+                Action::Confirm(ConfirmState {
+                    title: format!("Restart {k} sessions?"),
+                    body: "They restart one after another; Claude sessions resume their conversations. Running run commands stop.".into(),
+                    yes_label: "Restart".into(),
+                    no_label: "Cancel".into(),
+                    yes: Box::new(restart),
+                })
+            } else {
+                restart
+            },
+        ));
+        v.push(item("moon", format!("Sleep ({k})"), tool("session_sleep_many", json!({"session_ids": live}))));
+    }
+    let body = match busy {
+        0 => "They go to Recently closed (Ctrl+Shift+T reopens them one by one).".to_string(),
+        b => format!(
+            "{b} of them {} working or waiting for you; closing cuts that off. They go to Recently closed.",
+            if b == 1 { "is" } else { "are" }
+        ),
+    };
+    v.push(Entry::Item {
+        icon: "x",
+        label: format!("Close ({n})…"),
+        hint: None,
+        danger: true,
+        action: Action::Confirm(ConfirmState {
+            title: format!("Close {n} sessions?"),
+            body,
+            yes_label: "Close".into(),
+            no_label: "Cancel".into(),
+            yes: Box::new(tool("session_close_many", json!({"session_ids": ids, "force": true}))),
+        }),
+    });
+    v.push(Entry::Sep);
+    v.push(hinted("blank", "Clear selection", "Esc", Action::ClearSelection));
+    v
+}
+
+/// The sort control's menu (C# `BuildSortSessionsMenu`): one-shot sorts of the sidebar scope.
+/// Each item's arrow is the direction picking it applies: the field sorted last flips, the
+/// others start in their natural direction.
+pub fn sort_menu(model: &UiModel, last: Option<(SortField, bool)>) -> Vec<Entry> {
+    let scope = match model.group_mode {
+        GroupMode::Rail => model.rail.clone(),
+        _ => Scope::All,
+    };
+    let group = match &scope {
+        Scope::All => "all".to_string(),
+        Scope::Group(g) => g.clone(),
+    };
+    let entry = |f: SortField| {
+        let current = last.filter(|(lf, _)| *lf == f);
+        let desc = current.map_or_else(|| f.default_descending(), |(_, d)| !d);
+        let words = match (f, desc) {
+            (SortField::LastActive, true) => "newest first",
+            (SortField::LastActive, false) => "oldest first",
+            (SortField::Dirty, true) => "dirty first",
+            (SortField::Dirty, false) => "clean first",
+            (_, false) => "A to Z",
+            (_, true) => "Z to A",
+        };
+        Entry::Item {
+            icon: if desc { "arrowDown" } else { "arrowUp" },
+            label: f.label().into(),
+            hint: Some(if current.is_some() { format!("again: {words}") } else { words.into() }),
+            danger: false,
+            action: tool("session_sort", json!({"by": f.id(), "descending": desc, "group": group})),
+        }
+    };
+    let mut v = vec![Entry::Head(format!("Sort {}", if scope == Scope::All { "all sessions".into() } else { model.scope_name(&scope) }))];
+    v.extend([SortField::Name, SortField::Folder, SortField::LastActive].map(entry));
+    v.push(Entry::Sub { icon: "branch", label: "Git".into(), items: [SortField::Branch, SortField::Dirty, SortField::Repo].map(entry).to_vec() });
     v
 }
 
@@ -460,16 +578,24 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let at = pos2(at.x - size::MENU_W, at.y);
             menu_area(ctx, app, Id::new("menu-pane"), at, &e, 0, false, actions)
         }
-        Menu::Row { session, at } => menu_area(
-            ctx,
-            app,
-            Id::new("menu-row"),
-            *at + vec2(space::XS + space::XXS, -space::XS),
-            &with_demo(row_menu(&model, session), demo),
-            0,
-            false,
-            actions,
-        ),
+        Menu::Row { session, at } => {
+            let order: Vec<&str> = model.sessions.iter().map(|s| s.id.as_str()).collect();
+            let targets = app.ui.selection.targets(session, &order);
+            menu_area(
+                ctx,
+                app,
+                Id::new("menu-row"),
+                *at + vec2(space::XS + space::XXS, -space::XS),
+                &with_demo(row_menu(&model, session, &targets), demo),
+                0,
+                false,
+                actions,
+            )
+        }
+        Menu::Sort { at } => {
+            let e = sort_menu(&model, app.ui.sort);
+            menu_area(ctx, app, Id::new("menu-sort"), *at, &e, 0, false, actions)
+        }
         Menu::Group { group, at } => menu_area(ctx, app, Id::new("menu-group"), *at, &group_menu(&model, group), 0, false, actions),
         Menu::Runs { session, at } => {
             menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)

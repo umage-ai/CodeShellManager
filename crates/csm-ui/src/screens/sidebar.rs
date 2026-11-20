@@ -47,6 +47,8 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let mut y = rect.min.y + space::SM;
     let cx = rect.center().x;
     let dragging = app.ui.drags.row.clone();
+    // A dragged selection lands on a tab as a whole.
+    let moving: Vec<String> = dragging.as_deref().map(|d| drag_targets(app, d)).unwrap_or_default();
     let released = ui.input(|i| i.pointer.any_released());
     let pointer = ui.ctx().pointer_latest_pos();
     let mut tab = |ui: &mut Ui, scope: Scope, label: String, y: &mut f32| {
@@ -60,11 +62,16 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         if drop_here {
             p.rect_filled(r, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP * 2.0));
             p.rect_stroke(r, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
-            if released
-                && let (Some(sid), Scope::Group(g)) = (&dragging, &scope)
-                && model.session(sid).is_some_and(|s| s.group.as_deref() != Some(g.as_str()))
-            {
-                actions.push(Action::Tool("session_move_to_group", json!({"session_id": sid, "group_id": g})));
+            if released && let (Some(sid), Scope::Group(g)) = (&dragging, &scope) {
+                if moving.len() > 1 {
+                    // Dropped on the tab they all are in already: nothing to move (the tool
+                    // would send the block to the end of the group).
+                    if moving.iter().any(|m| model.session(m).is_some_and(|s| s.group.as_deref() != Some(g.as_str()))) {
+                        actions.push(Action::Tool("session_move_many", json!({"session_ids": moving, "group_id": g})));
+                    }
+                } else if model.session(sid).is_some_and(|s| s.group.as_deref() != Some(g.as_str())) {
+                    actions.push(Action::Tool("session_move_to_group", json!({"session_id": sid, "group_id": g})));
+                }
             }
         } else if on || resp.hovered() {
             p.rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
@@ -300,6 +307,8 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let list_rect = Rect::from_min_max(pos2(list.min.x, list_top), list.max);
         drop_between_rows(ui, app, &rows, list_rect, actions);
     });
+    // Shift-click's range runs over the rows as drawn (collapsed groups and other tabs excluded).
+    app.ui.sidebar_visible = rows.iter().filter(|r| r.kind != SidebarRowKind::GroupHeader).filter_map(|r| r.id.clone()).collect();
     drag_ghost(ui.ctx(), app);
 }
 
@@ -359,6 +368,23 @@ fn drop_between_rows(ui: &mut Ui, app: &mut CsmApp, rows: &[SidebarRow], list: R
     } else {
         anchor.and_then(|a| model.session(a)).map_or_else(|| model.session(&dragged).and_then(|s| s.group.clone()), |s| s.group.clone())
     };
+    let moving = drag_targets(app, &dragged);
+    if moving.len() > 1 {
+        // A dragged selection moves as one block. Dropped among its own rows it stays put; onto
+        // a group header whose first row is selected, it goes to the end of that group.
+        let mut params = json!({"session_ids": moving, "group_id": group});
+        // Anchor on a neighbour outside the block (a selected neighbour can't be one).
+        let free = |x: &Option<String>| x.as_ref().filter(|id| !moving.contains(id)).cloned();
+        match (free(&target.before_session_id), free(&target.after_session_id)) {
+            (Some(b), _) => params["before"] = json!(b),
+            (None, Some(a)) => params["after"] = json!(a),
+            (None, None) if target.before_session_id.is_none() && target.after_session_id.is_none() => {}
+            (None, None) if target.assigns_group => {}
+            (None, None) => return,
+        }
+        actions.push(Action::Tool("session_move_many", params));
+        return;
+    }
     let mut params = json!({"session_id": dragged, "group_id": group});
     if let Some(b) = &target.before_session_id {
         params["before"] = json!(b);
@@ -368,18 +394,26 @@ fn drop_between_rows(ui: &mut Ui, app: &mut CsmApp, rows: &[SidebarRow], list: R
     actions.push(Action::Tool("session_move_to_group", params));
 }
 
+/// What a drag of `dragged` moves: the selection when the row is part of it, else that row.
+fn drag_targets(app: &CsmApp, dragged: &str) -> Vec<String> {
+    let order: Vec<&str> = app.model.sessions.iter().map(|s| s.id.as_str()).collect();
+    app.ui.selection.targets(dragged, &order)
+}
+
 /// The dragged row, following the pointer.
 fn drag_ghost(ctx: &egui::Context, app: &CsmApp) {
     let Some(id) = &app.ui.drags.row else { return };
     let (Some(s), Some(p)) = (app.model.session(id), ctx.pointer_latest_pos()) else { return };
     let t = Tokens::get(ctx);
+    let n = drag_targets(app, id).len();
+    let label = if n > 1 { format!("{} + {} more", s.name, n - 1) } else { s.name.clone() };
     ctx.set_cursor_icon(CursorIcon::Grabbing);
     egui::Area::new(Id::new("row-ghost")).order(Order::Tooltip).interactable(false).fixed_pos(p + vec2(space::MD, space::XS)).show(ctx, |ui| {
         widgets::pop_frame(&t).inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::XS as i8)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(size::STRIPE, icon::MD), Sense::hover());
                 ui.painter().rect_filled(r, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
-                ui.label(egui::RichText::new(&s.name).font(theme::medium(text::BODY)).color(t.fg));
+                ui.label(egui::RichText::new(&label).font(theme::medium(text::BODY)).color(t.fg));
             });
         });
     });
@@ -655,7 +689,14 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
         x = br.max.x + space::XS;
     }
-    let _ = x;
+    // The sort control (C# "⇅"): a one-shot sort of what the list shows.
+    let sr = Rect::from_min_size(pos2(x, cy - size::CONTROL_SM / 2.0), Vec2::splat(size::CONTROL_SM));
+    let open = matches!(app.ui.menu, Some(Menu::Sort { .. }));
+    let at = pos2(sr.min.x, sr.max.y + space::XS);
+    app.ui.sort_at = Some(at);
+    if widgets::icon_button_at(ui, sr, Id::new("sort-sessions"), "sort", open, "Sort sessions").clicked() {
+        actions.push(Action::OpenMenu(Menu::Sort { at }));
+    }
     // The group-view switch.
     let views = [
         (GroupMode::Rail, "rail", "Group rail: one group at a time, panes follow it"),
@@ -903,8 +944,13 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
         child.set_opacity(alpha::ASLEEP);
     }
     let p = child.painter().clone();
+    // Multi-selected (Ctrl/Shift-click): a blue tint and outline, over the active row's fill.
+    let picked = app.ui.selection.contains(&s.id);
     if selected || resp.hovered() {
         p.rect_filled(rect, CornerRadius::same(radius::SM), if selected { t.row_sel } else { t.row_hover });
+    }
+    if picked {
+        p.rect(rect, CornerRadius::same(radius::SM), Tokens::tint(t.blue, alpha::PICKED), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
     }
     if resp.has_focus() {
         p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
@@ -959,14 +1005,41 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
             rect.max.x - lr.max.x - space::SM,
         );
     }
-    named(&resp, WidgetType::Button, format!("Session: {}", s.name));
+    let label = format!("Session: {}", s.name);
+    resp.widget_info(move || WidgetInfo::selected(WidgetType::Button, true, picked, label.clone()));
     let tip = if asleep {
-        format!("{} · Asleep keeps the session, its group, notes and run commands. Click to wake.", s.name)
+        format!("{} · Asleep keeps the session, its group, notes and run commands. Click to wake.\nCtrl-click or Shift-click selects.", s.name)
     } else {
-        format!("{} · {}\n{}\nDrag onto a group tab or header to move it; F2 renames.", s.name, s.status_text(), s.folder)
+        format!(
+            "{} · {}\n{}\nDrag onto a group tab or header to move it; F2 renames. Ctrl-click or Shift-click selects.",
+            s.name,
+            s.status_text(),
+            s.folder
+        )
     };
     let resp = if app.ui.drags.row.is_some() { resp } else { resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand) };
-    if resp.clicked() || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+    if resp.clicked() {
+        // Ctrl/Shift drive the multi-selection instead of focusing (C# MouseLeftButtonDown).
+        // The modifiers the release carried (the frame's latest state may already be cleared).
+        let m = ui.input(|i| {
+            i.events
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    egui::Event::PointerButton { pressed: false, button: egui::PointerButton::Primary, modifiers, .. } => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or(i.modifiers)
+        });
+        if m.shift {
+            actions.push(Action::SelectRange(s.id.clone()));
+        } else if m.command || m.ctrl {
+            actions.push(Action::SelectToggle(s.id.clone()));
+        } else {
+            app.ui.selection.click(&s.id);
+            actions.push(Action::Tool("session_focus", json!({"session_id": s.id})));
+        }
+    } else if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         actions.push(Action::Tool("session_focus", json!({"session_id": s.id})));
     }
     if resp.secondary_clicked() {

@@ -832,6 +832,104 @@ impl DemoBackend {
                 }
                 vec![]
             }
+            "session_sleep_many" | "session_wake_many" | "session_restart_many" | "session_close_many" => {
+                let Some(p) = parse::<SessionIdsParams>(call) else { return vec![] };
+                let mut n = 0;
+                for id in &p.session_ids {
+                    let live = self.model.session(id).is_some_and(|s| s.status.is_live());
+                    match call.id.as_str() {
+                        "session_sleep_many" if live => drop(self.sleep(id)),
+                        "session_wake_many" if !live => drop(self.wake(id)),
+                        "session_restart_many" if live => self.make_terminal(id),
+                        "session_close_many" => drop(self.close(id)),
+                        _ => continue,
+                    }
+                    n += 1;
+                }
+                toast(match call.id.as_str() {
+                    "session_sleep_many" => format!("{n} sessions are asleep."),
+                    "session_wake_many" => format!("Waking {n} sessions."),
+                    "session_restart_many" => format!("Restarting {n} sessions, one at a time."),
+                    _ => format!("Closed {n} sessions. Ctrl+Shift+T reopens them one by one."),
+                })
+            }
+            "session_move_many" => {
+                let Some(p) = parse::<MoveManyParams>(call) else { return vec![] };
+                let ids: Vec<SessionId> = self.model.sessions.iter().filter(|s| p.session_ids.contains(&s.id)).map(|s| s.id.clone()).collect();
+                for id in &ids {
+                    if let Some(s) = self.session_mut(id) {
+                        s.group = p.group_id.clone();
+                    }
+                }
+                // As the engine: the block goes before / after the anchor (or after the group's
+                // last other row), in sidebar order.
+                let anchor = p.before.clone().map(|a| (a, false)).or_else(|| p.after.clone().map(|a| (a, true))).or_else(|| {
+                    self.model.sessions.iter().rev().find(|s| s.group == p.group_id && !ids.contains(&s.id)).map(|s| (s.id.clone(), true))
+                });
+                if let Some((a, after)) = anchor.filter(|(a, _)| !ids.contains(a)) {
+                    let block: Vec<SessionView> = self.model.sessions.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
+                    self.model.sessions.retain(|s| !ids.contains(&s.id));
+                    let at = self.model.sessions.iter().position(|s| s.id == a).map_or(self.model.sessions.len(), |j| if after { j + 1 } else { j });
+                    let at = at.min(self.model.sessions.len());
+                    self.model.sessions.splice(at..at, block);
+                }
+                let gname = p.group_id.as_deref().and_then(|g| self.model.group(g)).map_or("Ungrouped".to_string(), |g| g.name.clone());
+                toast(format!("Moved {} sessions to {gname}.", ids.len()))
+            }
+            "session_sort" => {
+                use csm_core::session_sort::{self as sort, SortField, SortKey};
+                let Some(p) = parse::<SortParams>(call) else { return vec![] };
+                let Some(field) = SortField::from_id(&p.by) else { return vec![] };
+                let desc = p.descending.unwrap_or_else(|| field.default_descending());
+                let scope: Option<Option<String>> = match p.group.as_deref() {
+                    None | Some("all") => None,
+                    Some("") => Some(None),
+                    Some(g) => Some(Some(g.to_string())),
+                };
+                let in_scope = |s: &SessionView| scope.as_ref().is_none_or(|g| &s.group == g);
+                let keys: Vec<SortKey> = self
+                    .model
+                    .sessions
+                    .iter()
+                    .filter(|s| in_scope(s))
+                    .map(|s| SortKey {
+                        id: s.id.clone(),
+                        name: s.name.clone(),
+                        folder: s.folder.clone(),
+                        last_active_ms: s.status_since_ms.and_then(|m| i64::try_from(m).ok()),
+                        branch: s.branch.clone(),
+                        dirty: s.status.is_live().then_some(s.dirty),
+                        repo_root: s.worktree_of.clone().or_else(|| s.branch.as_ref().map(|_| s.folder.clone())),
+                    })
+                    .collect();
+                let order = sort::sorted_ids(&keys, field, desc);
+                sort::reorder_in_place(&mut self.model.sessions, |s| s.id.as_str(), in_scope, &order);
+                toast(format!("Sorted {} sessions by {}.", order.len(), field.label().to_lowercase()))
+            }
+            "session_duplicate" => {
+                let Some(p) = parse::<DuplicateParams>(call) else { return vec![] };
+                let Some(i) = self.model.sessions.iter().position(|s| s.id == p.session_id) else { return vec![] };
+                let Some(parent) = self.model.sessions.get(i).cloned() else { return vec![] };
+                let taken: Vec<String> = self.model.sessions.iter().map(|s| s.name.clone()).collect();
+                let id = format!("n{}", self.next_id);
+                self.next_id += 1;
+                let name = csm_core::session_names::duplicate_name(&parent.name, &taken);
+                let copy = SessionView {
+                    id: id.clone(),
+                    name: name.clone(),
+                    status: Status::Idle,
+                    detail: String::new(),
+                    status_since_ms: None,
+                    accent_overridden: false,
+                    started: "just now".into(),
+                    ..parent.clone()
+                };
+                self.model.sessions.insert(i + 1, copy);
+                self.make_terminal(&id);
+                let mut out = if p.focus.unwrap_or(true) { self.focus(&id) } else { vec![] };
+                out.push(Notice::Toast(format!("Duplicated {} as {name}.", parent.name)));
+                out
+            }
             "group_tear_off" | "group_dock" => {
                 let Some(p) = parse::<GroupIdParams>(call) else { return vec![] };
                 let torn = call.id == "group_tear_off";

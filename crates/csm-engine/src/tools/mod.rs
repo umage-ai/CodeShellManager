@@ -2,6 +2,7 @@
 //! Git is in [`git`]; notes and search are in `search`; run commands are a separate module not built yet.
 
 mod app;
+mod bulk;
 pub(crate) mod git;
 mod groups;
 mod layout;
@@ -22,6 +23,7 @@ use crate::tool::{Caller, ToolError, ToolSpec};
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut v = sessions::specs();
     v.extend(groups::specs());
+    v.extend(bulk::specs());
     v.extend(layout::specs());
     v.extend(app::specs());
     v.extend(git::specs());
