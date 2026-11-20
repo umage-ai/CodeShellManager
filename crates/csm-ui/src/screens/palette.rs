@@ -19,9 +19,23 @@ const BROWSE: &str = "Browse…";
 /// One row of the palette.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PalRow {
-    Session { id: String, idx: Vec<usize> },
+    Session {
+        id: String,
+        idx: Vec<usize>,
+    },
     Search(String),
-    Tool { id: &'static str, title: &'static str, idx: Vec<usize>, hint: Option<&'static str> },
+    Tool {
+        id: &'static str,
+        title: &'static str,
+        idx: Vec<usize>,
+        hint: Option<&'static str>,
+    },
+    /// A Claude slash command for the active Claude session (`session_send_command`).
+    Slash {
+        command: String,
+        description: String,
+        idx: Vec<usize>,
+    },
 }
 
 /// Keyboard hints for tools that have a shortcut.
@@ -64,6 +78,15 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
         }
         if !q.is_empty() {
             out.push(PalRow::Search(q.to_string()));
+        }
+    }
+    // The active Claude session's slash commands: typed `/c…`, or listed with ">".
+    if model.active.as_deref().and_then(|a| model.session(a)).is_some_and(|s| s.is_claude() && s.status.is_live()) {
+        for c in crate::screens::menus::claude_commands(app) {
+            let hit = if q.is_empty() { commands_only.then(Vec::new) } else { fuzzy(q, &c.command).map(|(_, idx)| idx) };
+            if let Some(idx) = hit {
+                out.push(PalRow::Slash { command: c.command, description: c.description, idx });
+            }
         }
     }
     let reg = app.dispatch.registry();
@@ -240,6 +263,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     PalRow::Session { .. } => "Sessions",
                     PalRow::Search(_) => "Search",
                     PalRow::Tool { .. } => "Commands",
+                    PalRow::Slash { .. } => "Claude commands",
                 };
                 if section != last_section {
                     last_section = section;
@@ -332,6 +356,26 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         }
                         title.to_string()
                     }
+                    PalRow::Slash { command, description, idx } => {
+                        icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), "send", icon::LG, t.muted);
+                        x += icon::LG + space::ROW_X;
+                        let job = highlighted(ui, command, idx, t.fg);
+                        let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                        let gw = g.size().x;
+                        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
+                        let who = model.active.as_deref().and_then(|a| model.session(a)).map(|s| s.name.clone()).unwrap_or_default();
+                        let detail = if description.is_empty() { format!("into {who}") } else { format!("{description} · into {who}") };
+                        widgets::paint_text(
+                            ui,
+                            pos2(x + gw + space::ROW_X, cy),
+                            Align2::LEFT_CENTER,
+                            &detail,
+                            theme::regular(text::CAPTION),
+                            t.faint,
+                            (rect.max.x - space::SM - x - gw - space::LG).max(0.0),
+                        );
+                        command.clone()
+                    }
                 };
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Palette: {label}")));
                 if r.clicked() {
@@ -408,6 +452,12 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
     match row {
         PalRow::Session { id, .. } => out.push(Action::Tool("session_focus", json!({"session_id": id}))),
         PalRow::Search(q) => out.push(Action::OpenSearch(q.clone())),
+        PalRow::Slash { command, .. } => {
+            if let Some(a) = &app.model.active {
+                out.push(Action::Tool("session_send_command", json!({"session_id": a, "command": command, "force": true})));
+                out.push(Action::FocusTerminal(a.clone()));
+            }
+        }
         PalRow::Tool { id, .. } => {
             // A layout tool from the palette: cycle to the next mode.
             if *id == "layout_set" {
@@ -1170,7 +1220,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             .map(str::to_string)
             .or_else(|| rows.get(q.sel).and_then(|(i, _)| model.folders.get(*i)).map(|f| f.path.clone()))
             .unwrap_or_default();
-        app.ui.folder_request = Some(start);
+        app.ui.dialog_request = Some(crate::app::DialogRequest::Folder { start });
     }
     if ask_distros {
         actions.push(Action::Tool("wsl_distros", json!({})));

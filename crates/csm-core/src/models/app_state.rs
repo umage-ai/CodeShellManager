@@ -9,6 +9,7 @@ use super::open_with::OpenWithEntry;
 use super::recently_closed::RecentlyClosedEntry;
 use super::serde_util::{null_default as nd, numeric_enum, ser_f64};
 use super::session::ShellSession;
+use super::slash_command::SlashCommand;
 use super::ui_state::{UiState, lenient};
 
 numeric_enum! {
@@ -166,6 +167,11 @@ pub struct AppSettings {
     /// `TerminalFontSize` is CSS pixels for xterm.js and stays as it was.)
     #[serde(skip_serializing_if = "is_zero")]
     pub terminal_font_points: i32,
+    /// The Claude slash commands a Claude pane's menu offers ("Claude commands ▸", the WPF
+    /// ⚡ Commands panel), sent typed plus Enter by `session_send_command`. Written only when
+    /// changed from the defaults.
+    #[serde(deserialize_with = "nd", skip_serializing_if = "SlashCommand::is_default_list")]
+    pub claude_commands: Vec<SlashCommand>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -222,6 +228,7 @@ impl Default for AppSettings {
             offer_mcp_to_claude: false,
             terminal_padding: default_padding(),
             terminal_font_points: 0,
+            claude_commands: SlashCommand::defaults(),
         }
     }
 }

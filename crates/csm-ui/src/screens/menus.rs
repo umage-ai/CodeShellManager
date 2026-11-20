@@ -114,6 +114,40 @@ fn worktree_entries(model: &UiModel, s: &crate::model::SessionView) -> Vec<Entry
     vec![Entry::Sub { icon: "fork", label: SIBLING_WORKTREE.into(), items }, item("plus", NEW_WORKTREE, Action::NewWorktree(s.id.clone()))]
 }
 
+/// The Claude slash commands the person configured (`ClaudeCommands`, as `settings_get` last
+/// told the app; the defaults until it answered), cleaned like the engine cleans them.
+pub fn claude_commands(app: &CsmApp) -> Vec<csm_core::models::SlashCommand> {
+    use csm_core::models::SlashCommand;
+    let list = app
+        .ui
+        .settings
+        .values
+        .get("ClaudeCommands")
+        .and_then(|v| serde_json::from_value::<Vec<SlashCommand>>(v.clone()).ok())
+        .unwrap_or_else(SlashCommand::defaults);
+    SlashCommand::clean_list(&list)
+}
+
+/// "Claude commands ▸" (the WPF ⚡ Commands panel): each one is typed into the session and
+/// entered (`session_send_command`). Only for a live Claude session.
+pub fn claude_commands_entry(s: &crate::model::SessionView, presets: &[csm_core::models::SlashCommand]) -> Option<Entry> {
+    if !s.is_claude() || !s.status.is_live() || presets.is_empty() {
+        return None;
+    }
+    let items = presets
+        .iter()
+        .map(|c| Entry::Item {
+            icon: "send",
+            label: c.command.clone(),
+            hint: (!c.description.is_empty()).then(|| c.description.clone()),
+            danger: false,
+            // The person picked it: like typing, it goes in even mid-turn.
+            action: tool("session_send_command", json!({"session_id": s.id, "command": c.command, "force": true})),
+        })
+        .collect();
+    Some(Entry::Sub { icon: "send", label: "Claude commands".into(), items })
+}
+
 const DEMO_STATUS: &str = "Demo: set status";
 
 fn demo_status(session: &str) -> Entry {
@@ -574,7 +608,12 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     let rects = match &menu {
         Menu::Pane { session, at } => {
-            let e = with_demo(pane_menu(&model, session), demo);
+            let mut e = with_demo(pane_menu(&model, session), demo);
+            if let Some(sub) = model.session(session).and_then(|s| claude_commands_entry(s, &claude_commands(app))) {
+                // At the end of the first block, before the Session section.
+                let at = e.iter().position(|x| matches!(x, Entry::Head(h) if h == "Session")).map_or(e.len(), |i| i.saturating_sub(1));
+                e.insert(at, sub);
+            }
             let at = pos2(at.x - size::MENU_W, at.y);
             menu_area(ctx, app, Id::new("menu-pane"), at, &e, 0, false, actions)
         }

@@ -49,6 +49,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         resp.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label.clone()));
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.ui.settings.section = sec;
+            if sec == SettingsSection::Usage {
+                app.ui.settings.usage = crate::screens::backup::UsageState::default();
+            }
         }
     }
     let close = Rect::from_min_size(pos2(nav.min.x + space::SM, nav.max.y - size::CONTROL - space::MD), vec2(nav.width() - space::LG, size::CONTROL));
@@ -79,6 +82,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 SettingsSection::Appearance => appearance(ui, app, actions),
                 SettingsSection::Groups => groups(ui, app, actions),
                 SettingsSection::Mcp => mcp(ui, app, actions),
+                SettingsSection::Usage => crate::screens::backup::usage(ui, app, actions),
                 SettingsSection::About => about(ui, app, actions),
             }
             ui.add_space(space::XL);
@@ -86,12 +90,12 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
 }
 
-fn caption(ui: &mut Ui, s: &str) {
+pub(crate) fn caption(ui: &mut Ui, s: &str) {
     let t = Tokens::get(ui.ctx());
     ui.add(egui::Label::new(egui::RichText::new(s).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
 }
 
-fn section(ui: &mut Ui, s: &str) {
+pub(crate) fn section(ui: &mut Ui, s: &str) {
     ui.add_space(space::SM);
     widgets::caps(ui, s);
 }
@@ -260,6 +264,8 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     );
     number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
     caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
+    crate::screens::claude_commands::show(ui, app, actions);
+    crate::screens::backup::general(ui, app, actions);
     notifications(ui, app, actions);
 }
 

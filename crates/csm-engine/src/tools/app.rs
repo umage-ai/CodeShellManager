@@ -126,8 +126,17 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 }
 
 /// Settings an MCP client may not change: they decide what runs, or are secrets.
-const APP_ONLY_KEYS: [&str; 7] =
-    ["AnthropicApiKey", "DefaultCommand", "DefaultWorkingFolder", "LaunchCommands", "OpenWith", "OpenWithSeeded", "UseBundledConPty"];
+/// (`ClaudeCommands` is text the app types into sessions.)
+const APP_ONLY_KEYS: [&str; 8] = [
+    "AnthropicApiKey",
+    "DefaultCommand",
+    "DefaultWorkingFolder",
+    "LaunchCommands",
+    "OpenWith",
+    "OpenWithSeeded",
+    "UseBundledConPty",
+    "ClaudeCommands",
+];
 const SECRET_KEYS: [&str; 1] = ["AnthropicApiKey"];
 
 /// `snake_case` → `PascalCase` (keys are PascalCase in state.json).
@@ -155,6 +164,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("OfferMcpToClaude").or_insert(json!(s.offer_mcp_to_claude));
         m.entry("TerminalPadding").or_insert(json!(s.terminal_padding));
         m.entry("TerminalFontPoints").or_insert(json!(s.terminal_font_points));
+        m.entry("ClaudeCommands").or_insert(json!(s.claude_commands));
     }
     Ok(v)
 }

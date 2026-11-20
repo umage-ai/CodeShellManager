@@ -230,7 +230,7 @@ pub(crate) fn is_valid_id(id: &str) -> bool {
 
 /// Is `c` in Unicode general category Cf (Format)? A fixed table (Unicode 15.1) because std has
 /// no general-category API; C# asks `Rune.GetUnicodeCategory`.
-fn is_format_char(c: char) -> bool {
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(u32::from(c),
         0x00AD
         | 0x0600..=0x0605

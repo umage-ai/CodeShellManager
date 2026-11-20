@@ -2,6 +2,7 @@
 //! Git is in [`git`]; notes and search are in `search`; run commands are a separate module not built yet.
 
 mod app;
+mod backup;
 mod bulk;
 pub(crate) mod git;
 mod groups;
@@ -12,6 +13,8 @@ mod platform;
 mod runs;
 mod search;
 mod sessions;
+mod slash;
+mod usage;
 
 use serde_json::Value;
 
@@ -32,17 +35,23 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(platform::specs());
     v.extend(look::specs());
     v.extend(search::specs());
+    v.extend(slash::specs());
+    v.extend(backup::specs());
+    v.extend(usage::specs());
     v
 }
 
 /// Rules that hold whatever the person would answer, checked before a consent card is shown
 /// (and again after it is answered).
 pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, _state: &State) -> Option<ToolError> {
-    if id == "session_send_text"
+    if matches!(id, "session_send_text" | "session_send_command")
         && let Caller::External { session_id: Some(own), .. } = caller
         && params.get("session_id").and_then(Value::as_str) == Some(own.as_str())
     {
         return Some(ToolError::Refused("a session cannot send input to itself; that would be an agent typing into its own prompt".into()));
+    }
+    if let Some(e) = backup::precheck(id, caller) {
+        return Some(e);
     }
     None
 }

@@ -28,6 +28,7 @@ use serde_json::json;
 
 use csm_core::window_placement::{MonitorArea, PixelRect};
 use csm_engine::{Engine, State, StateOptions, persist};
+use csm_ui::app::DialogRequest;
 use csm_ui::demo::{DemoBackend, DemoOptions};
 use csm_ui::placement::Monitors;
 use csm_ui::terminal::TerminalRenderer;
@@ -111,7 +112,7 @@ struct App {
     app: csm_ui::CsmApp,
     /// Native dialogs, shown after the frame with this window as their parent; answers arrive on a
     /// later frame, so the event loop never blocks.
-    dialogs: craft_dialogs::Dialogs<()>,
+    dialogs: craft_dialogs::Dialogs<DialogRequest>,
     /// The real app's tray icon, OS notifications, and the sessions whose notification was
     /// clicked. `None` in the demo (its sessions aren't real) and where there is no tray.
     tray: Option<tray::TrayHost>,
@@ -152,25 +153,33 @@ impl App {
         }
     }
 
-    /// The quick-open's Browse…: ask for a folder, and hand back what came in.
-    fn folder_dialog(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        if let Some(start) = self.app.take_folder_request() {
-            let mut d = craft_dialogs::FileDialog::folder().title("Folder to start the session in");
-            if !start.is_empty() {
-                d = d.directory(start);
-            }
-            self.dialogs.ask(d, ());
+    /// The file dialogs the UI asks for (the quick-open's Browse…, Settings' Export… and
+    /// Import…): shown with this window as their parent, the answer handed back on a later frame.
+    fn file_dialogs(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if let Some(req) = self.app.take_dialog_request() {
+            const BACKUP: (&str, &[&str]) = ("CodeShellManager backup", &["csm"]);
+            let d = match &req {
+                DialogRequest::Folder { start } => {
+                    let d = craft_dialogs::FileDialog::folder().title("Folder to start the session in");
+                    if start.is_empty() { d } else { d.directory(start) }
+                }
+                DialogRequest::SaveBackup { file_name } => {
+                    craft_dialogs::FileDialog::save().title("Export CodeShellManager setup").filter(BACKUP.0, BACKUP.1).file_name(file_name)
+                }
+                DialogRequest::OpenBackup => craft_dialogs::FileDialog::open().title("Import CodeShellManager setup").filter(BACKUP.0, BACKUP.1),
+            };
+            self.dialogs.ask(d, req);
         }
         self.dialogs.show_pending(Some(frame));
-        for ((), answer) in self.dialogs.take_answers() {
+        for (req, answer) in self.dialogs.take_answers() {
             match answer {
-                craft_dialogs::Answer::Paths(p) => self.app.folder_picked(p.first().map(|p| p.display().to_string())),
+                craft_dialogs::Answer::Paths(p) => self.app.dialog_answered(req, p.first().map(|p| p.display().to_string())),
                 craft_dialogs::Answer::Unavailable(why) => {
-                    log::warn!("folder dialog: {why}");
-                    self.app.toast(ctx, format!("The folder dialog couldn't open: {why}"));
-                    self.app.folder_picked(None);
+                    log::warn!("file dialog: {why}");
+                    self.app.toast(ctx, format!("The file dialog couldn't open: {why}"));
+                    self.app.dialog_answered(req, None);
                 }
-                _ => self.app.folder_picked(None),
+                _ => self.app.dialog_answered(req, None),
             }
         }
     }
@@ -180,7 +189,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.frame(ui);
         let ctx = ui.ctx().clone();
-        self.folder_dialog(&ctx, frame);
+        self.file_dialogs(&ctx, frame);
         self.tray_and_notifications(&ctx);
     }
 

@@ -155,12 +155,20 @@ pub enum SettingsSection {
     Appearance,
     Groups,
     Mcp,
+    /// Sessions and running time per command (`usage_stats`).
+    Usage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 5] =
-        [SettingsSection::General, SettingsSection::Appearance, SettingsSection::Groups, SettingsSection::Mcp, SettingsSection::About];
+    pub const ALL: [SettingsSection; 6] = [
+        SettingsSection::General,
+        SettingsSection::Appearance,
+        SettingsSection::Groups,
+        SettingsSection::Mcp,
+        SettingsSection::Usage,
+        SettingsSection::About,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -168,6 +176,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Groups => "Group view",
             SettingsSection::Mcp => "MCP",
+            SettingsSection::Usage => "Usage",
             SettingsSection::About => "About",
         }
     }
@@ -178,6 +187,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "sun",
             SettingsSection::Groups => "layers",
             SettingsSection::Mcp => "server",
+            SettingsSection::Usage => "history",
             SettingsSection::About => "terminal",
         }
     }
@@ -197,6 +207,10 @@ pub struct SettingsState {
     pub drafts: HashMap<String, String>,
     /// A launch command being added.
     pub new_command: String,
+    /// Settings → Usage: what `usage_stats` answered (asked again each time the section opens).
+    pub usage: crate::screens::backup::UsageState,
+    /// Settings → General → Import…: the backup being reviewed before it replaces anything.
+    pub import: Option<crate::screens::backup::ImportReview>,
 }
 
 impl SettingsState {
@@ -402,10 +416,6 @@ pub struct UiState {
     pub compact: bool,
     /// Compact: the sidebar shown over the panes (the rail's last button).
     pub peek_sidebar: bool,
-    /// The quick-open's Browse…: a native folder dialog to show, starting in this folder (empty:
-    /// the system's choice). The host owns the window handle, so it shows the dialog
-    /// ([`CsmApp::take_folder_request`]) and answers with [`CsmApp::folder_picked`].
-    pub folder_request: Option<String>,
     /// OS notifications decided here and sent by the host ([`CsmApp::take_notifications`]).
     pub notify: crate::notify::NotifyState,
     /// The sidebar's multi-selection (Ctrl/Shift-click).
@@ -417,6 +427,22 @@ pub struct UiState {
     pub sort: Option<(csm_core::session_sort::SortField, bool)>,
     /// Where the sort control drew last (the palette's "Sort sessions…" opens its menu there).
     pub sort_at: Option<egui::Pos2>,
+    /// A native file dialog to show (the quick-open's Browse…, Settings' Export… / Import…). The
+    /// host owns the window handle, so it shows the dialog ([`CsmApp::take_dialog_request`])
+    /// and answers with [`CsmApp::dialog_answered`].
+    pub dialog_request: Option<DialogRequest>,
+}
+
+/// A native dialog the UI asks the host for. The answer comes back on a later frame; the frame
+/// loop never waits for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogRequest {
+    /// The quick-open's Browse…: a folder, starting in this one (empty: the system's choice).
+    Folder { start: String },
+    /// Settings → Export…: where to save the `.csm` backup (`state_export`).
+    SaveBackup { file_name: String },
+    /// Settings → Import…: the `.csm` backup to read (`state_import`).
+    OpenBackup,
 }
 
 /// Terminal views and the renderer, shared with torn-off windows (deferred viewports draw from
@@ -492,7 +518,28 @@ impl CsmApp {
     /// system's choice. The host shows it without blocking the frame loop and answers with
     /// [`Self::folder_picked`].
     pub fn take_folder_request(&mut self) -> Option<String> {
-        self.ui.folder_request.take()
+        match self.ui.dialog_request.take() {
+            Some(DialogRequest::Folder { start }) => Some(start),
+            other => {
+                self.ui.dialog_request = other;
+                None
+            }
+        }
+    }
+
+    /// A native dialog the UI asked for (Browse…, Export…, Import…). The host shows it without
+    /// blocking the frame loop and answers with [`Self::dialog_answered`].
+    pub fn take_dialog_request(&mut self) -> Option<DialogRequest> {
+        self.ui.dialog_request.take()
+    }
+
+    /// A dialog's answer (`None`: cancelled): a folder fills the quick-open, a save path exports
+    /// the setup there, an opened backup is read for review (`state_import` with `dry_run`).
+    pub fn dialog_answered(&mut self, request: DialogRequest, path: Option<String>) {
+        match request {
+            DialogRequest::Folder { .. } => self.folder_picked(path),
+            DialogRequest::SaveBackup { .. } | DialogRequest::OpenBackup => screens::backup::dialog_answered(self, &request, path),
+        }
     }
 
     /// The folder dialog's answer (`None`: cancelled). The path fills the quick-open's folder
@@ -714,6 +761,7 @@ impl CsmApp {
         for (call, reply) in done {
             self.on_app_reply(ctx, &call, &reply);
             self.on_tool_reply(&call, &reply);
+            screens::backup::on_reply(self, ctx, &call, &reply);
             let n = self.backend.on_reply(&call, &reply);
             self.notices(ctx, n);
         }
@@ -1104,6 +1152,8 @@ impl CsmApp {
                 return self.run(ctx, Action::OpenMenu(Menu::Row { session: first, at }));
             }
             "app_quit" => return self.run(ctx, Action::AskQuit),
+            // Backup and Usage: the same path as Settings' buttons (file dialog, then the review).
+            "state_export" | "state_import" | "usage_stats" => return screens::backup::from_palette(self, ctx, id),
             "inspector_show" => {
                 let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
                 return self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
