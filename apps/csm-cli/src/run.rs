@@ -203,7 +203,7 @@ fn run_tool(info: &ToolInfo, m: &ArgMatches, backend: &mut dyn Backend) -> i32 {
     match backend.call(&Caller::Cli, &info.id, params) {
         Ok(out) => {
             match output {
-                Output::Message => println!("{}", out.message),
+                Output::Message => println!("{}", human_text(&info.id, &out.message, &out.data)),
                 Output::Json => {
                     let v = json!({"message": out.message, "data": out.data});
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -215,6 +215,22 @@ fn run_tool(info: &ToolInfo, m: &ArgMatches, backend: &mut dyn Backend) -> i32 {
             print_error(&e, matches!(output, Output::Json));
             exit_for(&e)
         }
+    }
+}
+
+/// What a tool prints without `--json`: its message, or, for the tools that read text (the
+/// screen, the scrollback, a run's output, a note), that text itself. Their message only counts
+/// it ("24 lines"), which is not what `csm session-read-screen` is asked for.
+pub fn human_text(tool_id: &str, message: &str, data: &Value) -> String {
+    let field = match tool_id {
+        "session_read_screen" | "session_read_output" | "note_get" => "text",
+        "run_output" => "output",
+        _ => return message.to_owned(),
+    };
+    match data.get(field).and_then(Value::as_str) {
+        // `println!` adds the final newline.
+        Some(text) => text.strip_suffix('\n').unwrap_or(text).to_owned(),
+        None => message.to_owned(),
     }
 }
 
@@ -324,4 +340,29 @@ fn spawn_auto_allow(engine: &Engine) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_text;
+    use serde_json::json;
+
+    #[test]
+    fn reading_tools_print_their_text_not_the_count() {
+        let data = json!({"session_id": "s", "text": "PS C:\\> dir\nhello\n"});
+        assert_eq!(human_text("session_read_screen", "2 lines", &data), "PS C:\\> dir\nhello");
+        assert_eq!(human_text("session_read_output", "2 lines", &data), "PS C:\\> dir\nhello");
+        assert_eq!(human_text("run_output", "Build — 3 characters.", &json!({"output": "ok\n"})), "ok");
+        assert_eq!(human_text("note_get", "Note", &json!({"text": "todo"})), "todo");
+        // An empty screen prints an empty line, not "0 lines".
+        assert_eq!(human_text("session_read_screen", "0 lines", &json!({"text": ""})), "");
+    }
+
+    #[test]
+    fn other_tools_and_odd_replies_print_the_message() {
+        assert_eq!(human_text("session_list", "3 sessions", &json!({"text": "x"})), "3 sessions");
+        // A reply without the text (a parked "reading" answer, a wrong shape) falls back.
+        assert_eq!(human_text("session_read_screen", "reading", &json!({})), "reading");
+        assert_eq!(human_text("session_read_screen", "2 lines", &json!({"text": 5})), "2 lines");
+    }
 }
