@@ -1,6 +1,7 @@
 //! The command palette (Ctrl+K: sessions, live or asleep, and every registered tool by title,
-//! fuzzy), the new-session quick-open (Ctrl+T: recent folders, Tab cycles the command, Remote…
-//! for SSH and WSL) and the one-line prompt (rename, new group).
+//! fuzzy), the new-session quick-open (Ctrl+T: recent folders, a typed path or Browse… for the
+//! system's folder dialog, Tab cycles the command, Remote… for SSH and WSL) and the one-line
+//! prompt (rename, new group).
 
 use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use serde_json::json;
@@ -10,6 +11,9 @@ use crate::icons;
 use crate::model::{SessionView, Status, fuzzy};
 use crate::theme::{self, Tokens, icon, radius, size, space, text};
 use crate::widgets::{self, ButtonKind};
+
+/// The quick-open's folder-dialog button.
+const BROWSE: &str = "Browse…";
 
 /// One row of the palette.
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +143,12 @@ fn card(ctx: &egui::Context, id: &str, w: f32, body: impl FnOnce(&mut Ui)) {
 }
 
 fn input_row(ui: &mut Ui, icon_name: &str, buf: &mut String, hint: &str, focus: &mut bool, id: &str) -> egui::Response {
+    input_row_with(ui, icon_name, buf, hint, focus, id, 0.0).0
+}
+
+/// [`input_row`] with `reserve` points kept free left of the Esc key cap; returns that slot
+/// (empty when `reserve` is 0) for a control the caller draws there.
+fn input_row_with(ui: &mut Ui, icon_name: &str, buf: &mut String, hint: &str, focus: &mut bool, id: &str, reserve: f32) -> (egui::Response, Rect) {
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::PALETTE_INPUT), Sense::hover());
     ui.painter().hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
@@ -151,7 +161,9 @@ fn input_row(ui: &mut Ui, icon_name: &str, buf: &mut String, hint: &str, focus: 
     );
     let kw = widgets::kbd_width(ui, "Esc");
     widgets::paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::MD - kw / 2.0, rect.center().y), vec2(kw, size::KBD)), "Esc");
-    let er = Rect::from_min_max(pos2(rect.min.x + space::XXL + space::LG, rect.min.y), pos2(rect.max.x - space::XL - kw, rect.max.y));
+    let slot_w = if reserve > 0.0 { reserve + space::SM } else { 0.0 };
+    let er = Rect::from_min_max(pos2(rect.min.x + space::XXL + space::LG, rect.min.y), pos2(rect.max.x - space::XL - kw - slot_w, rect.max.y));
+    let slot = Rect::from_min_max(pos2(er.max.x + space::SM, rect.min.y), pos2(er.max.x + slot_w, rect.max.y));
     let edit = egui::TextEdit::singleline(buf)
         .id(Id::new(id))
         .frame(egui::Frame::NONE)
@@ -164,7 +176,20 @@ fn input_row(ui: &mut Ui, icon_name: &str, buf: &mut String, hint: &str, focus: 
         resp.request_focus();
         *focus = false;
     }
-    resp
+    (resp, slot)
+}
+
+/// A typed absolute path in the quick-open's field, by this platform's rule (`C:\src\app` and
+/// `\\server\share` on Windows, `/srv/app` elsewhere). Pure: whether it exists is the engine's
+/// call when the session starts.
+pub fn typed_path(query: &str) -> Option<&str> {
+    let q = query.trim();
+    std::path::Path::new(q).is_absolute().then_some(q)
+}
+
+/// The quick-open is showing a typed path that Enter will use as is (no row is picked).
+fn typed_path_wins(q: &crate::app::QuickOpenState) -> bool {
+    q.edit.is_none() && !q.navigated && typed_path(&q.query).is_some()
 }
 
 fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
@@ -489,6 +514,9 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
     }
     let rows = folder_rows(app, &q.query);
     let folder = match rows.get(q.sel.min(rows.len().saturating_sub(1))).and_then(|(i, _)| app.model.folders.get(*i)) {
+        // A typed (or browsed-to) path wins over a suggestion it merely resembles:
+        // `C:\src\app` must not start in the suggested `C:\src\app-old`.
+        _ if typed_path_wins(q) => q.query.trim().to_string(),
         Some(f) => f.path.clone(),
         None if !q.query.trim().is_empty() => q.query.trim().to_string(),
         None => return out,
@@ -525,12 +553,15 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         )
     });
     if n > 0 && down {
-        app.ui.quick.sel = (app.ui.quick.sel + 1) % n;
+        // The first arrow from a typed path lands on the first row, not the second.
+        app.ui.quick.sel = if typed_path_wins(&app.ui.quick) { 0 } else { (app.ui.quick.sel + 1) % n };
         app.ui.quick.scroll_to_sel = true;
+        app.ui.quick.navigated = true;
     }
     if n > 0 && up {
         app.ui.quick.sel = (app.ui.quick.sel + n - 1) % n;
         app.ui.quick.scroll_to_sel = true;
+        app.ui.quick.navigated = true;
     }
     if tab {
         app.ui.quick.cmd = (app.ui.quick.cmd + 1) % ncmd;
@@ -560,6 +591,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     let mut open_group_menu = None;
     let mut save_clicked = false;
     let mut ask_distros = false;
+    let mut browse = false;
     card(ctx, "quick-open", size::PALETTE_W, |ui| {
         let t = Tokens::get(ui.ctx());
         if let Some(id) = &q.edit {
@@ -593,11 +625,24 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         let resp = if q.remote && q.edit.is_some() {
             // An SSH or WSL session's folder is in the connection fields below.
             ui.allocate_response(vec2(ui.available_width(), space::XS), Sense::hover())
-        } else {
+        } else if q.remote {
+            // A remote folder is typed in the connection fields: nothing local to browse to.
             input_row(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input")
+        } else {
+            // Browse…: a native folder dialog, shown by the host after this frame.
+            let bw = widgets::button_width(ui, Some("folder"), BROWSE, None);
+            let (resp, slot) = input_row_with(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input", bw);
+            let br = Rect::from_center_size(pos2(slot.max.x - bw / 2.0, slot.center().y), vec2(bw, size::CONTROL));
+            let b = ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("folder"), BROWSE, None)).inner;
+            if b.on_hover_text("Choose a folder with the system's folder dialog").clicked() {
+                browse = true;
+            }
+            resp
         };
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder"));
         changed = resp.changed();
+        // Typing resets `navigated` (below, after the card), so a change this frame counts as unset.
+        let path_wins = q.edit.is_none() && (changed || !q.navigated) && typed_path(&q.query).is_some();
         let list_h = if q.edit.is_some() { size::PALETTE_LIST_H / 2.0 } else { size::PALETTE_LIST_H };
         let show_list = !(q.remote && q.edit.is_some());
         egui::ScrollArea::vertical().max_height(if show_list { list_h } else { 0.0 }).auto_shrink([false, true]).show(ui, |ui| {
@@ -613,16 +658,27 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             if rows.is_empty() {
                 ui.add_space(space::LG);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(format!("No folder matches. Enter starts in “{}” if it exists.", q.query.trim())).color(t.muted))
+                    let msg = if q.query.trim().is_empty() {
+                        "No recent folders yet. Type a path, or Browse… for one.".to_string()
+                    } else {
+                        format!("No folder matches. Enter starts in “{}” if it exists.", q.query.trim())
+                    };
+                    ui.label(egui::RichText::new(msg).color(t.muted))
                 });
                 ui.add_space(space::LG);
+            } else if path_wins {
+                ui.horizontal(|ui| {
+                    ui.add_space(space::MD + space::XS);
+                    ui.label(egui::RichText::new(format!("Enter starts in “{}”. ↓ picks a folder below.", q.query.trim())).color(t.muted));
+                });
+                ui.add_space(space::XS);
             }
             for (i, (fi, idx)) in rows.iter().enumerate() {
                 let Some(f) = model.folders.get(*fi) else { continue };
                 let (outer, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::PALETTE_ROW), Sense::hover());
                 let rect = outer.shrink2(vec2(space::XS + space::XXS, 0.0));
                 let r = ui.interact(rect, Id::new(("qo-row", i)), Sense::click());
-                if i == q.sel || r.hovered() {
+                if (i == q.sel && !path_wins) || r.hovered() {
                     ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
                 }
                 if i == q.sel && scroll {
@@ -669,6 +725,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 );
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Folder: {}", f.name)));
                 if r.clicked() {
+                    q.navigated = true;
                     if q.edit.is_some() {
                         // Edit: a row fills the field; Save is separate.
                         q.query = f.path.clone();
@@ -806,7 +863,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             let r = ui.painter().text(pos2(fx + kw + space::XS + space::XXS, fy), Align2::LEFT_CENTER, what, theme::regular(text::CAPTION), t.muted);
             fx = r.max.x + space::LG;
         }
-        let tail = if q.edit.is_some() { "A new folder, command or connection needs a restart" } else { "Repos are found under your roots" };
+        let tail = if q.edit.is_some() { "A new folder, command or connection needs a restart" } else { "Type a path or a folder name" };
         let save_w = if q.edit.is_some() { widgets::text_width(ui, "Save", theme::medium(text::BODY)) + space::ROW_X * 2.0 } else { 0.0 };
         widgets::paint_text(
             ui,
@@ -830,6 +887,15 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     });
     if changed {
         q.sel = 0;
+        q.navigated = false;
+    }
+    if browse {
+        // Start where the field points when it's a path, else in the selected suggestion.
+        let start = typed_path(&q.query)
+            .map(str::to_string)
+            .or_else(|| rows.get(q.sel).and_then(|(i, _)| model.folders.get(*i)).map(|f| f.path.clone()))
+            .unwrap_or_default();
+        app.ui.folder_request = Some(start);
     }
     if ask_distros {
         actions.push(Action::Tool("wsl_distros", json!({})));

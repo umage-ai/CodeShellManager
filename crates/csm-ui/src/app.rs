@@ -276,6 +276,9 @@ pub struct QuickOpenState {
     pub group: Option<GroupId>,
     pub focus_input: bool,
     pub scroll_to_sel: bool,
+    /// The user moved through the folder list (arrows or a click) since last typing. Until then a
+    /// typed absolute path wins over the suggestions it happens to match.
+    pub navigated: bool,
     /// Edit mode: the session being edited (`session_edit` instead of `session_new`).
     pub edit: Option<SessionId>,
     /// Edit mode: the name field.
@@ -354,6 +357,10 @@ pub struct UiState {
     pub compact: bool,
     /// Compact: the sidebar shown over the panes (the rail's last button).
     pub peek_sidebar: bool,
+    /// The quick-open's Browse…: a native folder dialog to show, starting in this folder (empty:
+    /// the system's choice). The host owns the window handle, so it shows the dialog
+    /// ([`CsmApp::take_folder_request`]) and answers with [`CsmApp::folder_picked`].
+    pub folder_request: Option<String>,
 }
 
 /// Terminal views and the renderer, shared with torn-off windows (deferred viewports draw from
@@ -417,6 +424,29 @@ impl CsmApp {
     /// Calls the UI submitted (most recent last).
     pub fn submitted(&self) -> &[Call] {
         self.dispatch.submitted()
+    }
+
+    /// A folder dialog the quick-open asked for (Browse…): the folder to start in, empty for the
+    /// system's choice. The host shows it without blocking the frame loop and answers with
+    /// [`Self::folder_picked`].
+    pub fn take_folder_request(&mut self) -> Option<String> {
+        self.ui.folder_request.take()
+    }
+
+    /// The folder dialog's answer (`None`: cancelled). The path fills the quick-open's folder
+    /// field, as if typed; Enter then starts (or, editing, saves) as usual. Dropped when the
+    /// quick-open closed while the dialog was up.
+    pub fn folder_picked(&mut self, path: Option<String>) {
+        let q = &mut self.ui.quick;
+        q.focus_input = true;
+        if self.ui.overlay != Overlay::QuickOpen || q.remote {
+            return;
+        }
+        if let Some(p) = path.filter(|p| !p.trim().is_empty()) {
+            q.query = p;
+            q.sel = 0;
+            q.navigated = false;
+        }
     }
 
     pub fn toast(&mut self, ctx: &egui::Context, text: impl Into<String>) {

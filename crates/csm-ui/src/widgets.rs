@@ -70,13 +70,19 @@ pub enum ButtonKind {
 }
 
 /// A text button (`.btn`), with an optional leading icon and trailing key cap.
+/// The width [`button`] takes for this icon, label and shortcut (to reserve room before drawing it).
+pub fn button_width(ui: &Ui, icon_name: Option<&str>, label: &str, kbd_text: Option<&str>) -> f32 {
+    let tw = text_width(ui, label, crate::theme::medium(text::BODY));
+    let iw = if icon_name.is_some() { icon::LG + space::XS + space::XXS } else { 0.0 };
+    let kw = kbd_text.map_or(0.0, |k| kbd_width(ui, k) + space::SM);
+    space::ROW_X * 2.0 + iw + tw + kw
+}
+
 pub fn button(ui: &mut Ui, kind: ButtonKind, icon_name: Option<&str>, label: &str, kbd_text: Option<&str>) -> Response {
     let t = Tokens::get(ui.ctx());
     let font = crate::theme::medium(text::BODY);
-    let tw = text_width(ui, label, font.clone());
+    let w = button_width(ui, icon_name, label, kbd_text);
     let iw = if icon_name.is_some() { icon::LG + space::XS + space::XXS } else { 0.0 };
-    let kw = kbd_text.map_or(0.0, |k| kbd_width(ui, k) + space::SM);
-    let w = space::ROW_X * 2.0 + iw + tw + kw;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CONTROL), Sense::click());
     let hovered = resp.hovered();
     let (bg, fg, stroke) = match kind {

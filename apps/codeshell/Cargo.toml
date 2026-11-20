@@ -17,5 +17,8 @@ csm-engine = { path = "../../crates/csm-engine" }
 csm-mcp = { path = "../../crates/csm-mcp" }
 csm-pty = { path = "../../crates/csm-pty" }
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
+# Native folder dialogs that never block the event loop (the quick-open's Browse…). egui-free,
+# at the one craft-libs pin (docs/plan.md section 7).
+craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "692a7fe5c95947e11850eeefc4e071623d4bbf47" }
 egui = "0.36"
 log = "0.4"

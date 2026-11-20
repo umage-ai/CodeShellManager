@@ -95,11 +95,41 @@ fn home() -> Option<PathBuf> {
 
 struct App {
     app: csm_ui::CsmApp,
+    /// Native dialogs, shown after the frame with this window as their parent; answers arrive on a
+    /// later frame, so the event loop never blocks.
+    dialogs: craft_dialogs::Dialogs<()>,
+}
+
+impl App {
+    /// The quick-open's Browse…: ask for a folder, and hand back what came in.
+    fn folder_dialog(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if let Some(start) = self.app.take_folder_request() {
+            let mut d = craft_dialogs::FileDialog::folder().title("Folder to start the session in");
+            if !start.is_empty() {
+                d = d.directory(start);
+            }
+            self.dialogs.ask(d, ());
+        }
+        self.dialogs.show_pending(Some(frame));
+        for ((), answer) in self.dialogs.take_answers() {
+            match answer {
+                craft_dialogs::Answer::Paths(p) => self.app.folder_picked(p.first().map(|p| p.display().to_string())),
+                craft_dialogs::Answer::Unavailable(why) => {
+                    log::warn!("folder dialog: {why}");
+                    self.app.toast(ctx, format!("The folder dialog couldn't open: {why}"));
+                    self.app.folder_picked(None);
+                }
+                _ => self.app.folder_picked(None),
+            }
+        }
+    }
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.frame(ui);
+        let ctx = ui.ctx().clone();
+        self.folder_dialog(&ctx, frame);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -213,7 +243,9 @@ fn main() {
                 }
             };
             let app = csm_ui::CsmApp::new(engine, backend, TerminalRenderer::new(fonts));
-            Ok(Box::new(App { app }))
+            let wake_ctx = cc.egui_ctx.clone();
+            let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
+            Ok(Box::new(App { app, dialogs }))
         }),
     );
     if let Some(h) = ipc

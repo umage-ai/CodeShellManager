@@ -270,6 +270,82 @@ fn quick_open_starts_a_session_with_the_cycled_command() {
     assert!(has(&h, "Session: Odulodo.Admin (pwsh)"));
 }
 
+/// An absolute path for this platform that fuzzy-matches the demo's `C:\GitHub\Odulodo.Admin`
+/// (on Windows) without being it.
+fn near_miss_path() -> &'static str {
+    if cfg!(windows) { "C:\\GitHub\\Odulodo.Ad" } else { "/GitHub/Odulodo.Ad" }
+}
+
+fn open_quick_and_type(h: &mut Harness<'static, csm_ui::CsmApp>, text: &str) {
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    settle(h);
+    h.event(Event::Text(text.into()));
+    h.step();
+    h.step();
+}
+
+#[test]
+fn quick_open_starts_in_a_typed_path_not_a_suggestion_it_resembles() {
+    let mut h = h();
+    open_quick_and_type(&mut h, near_miss_path());
+    if cfg!(windows) {
+        let rows = csm_ui::screens::palette::folder_rows(h.state(), near_miss_path());
+        assert!(!rows.is_empty(), "the near miss matches a suggestion (the case that used to win)");
+    }
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    let (id, params) = last_call(&h);
+    assert_eq!(id, "session_new");
+    assert_eq!(params["folder"], near_miss_path());
+}
+
+#[test]
+fn quick_open_arrow_from_a_typed_path_picks_the_suggestion() {
+    let mut h = h();
+    open_quick_and_type(&mut h, near_miss_path());
+    let first = csm_ui::screens::palette::folder_rows(h.state(), near_miss_path()).first().map(|(i, _)| h.state().model.folders[*i].path.clone());
+    h.key_press(egui::Key::ArrowDown);
+    h.step();
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    let (id, params) = last_call(&h);
+    assert_eq!(id, "session_new");
+    // On Windows the near miss matches a suggestion, and ↓ + Enter starts there; elsewhere nothing
+    // matches and the typed path stands.
+    assert_eq!(params["folder"], first.unwrap_or_else(|| near_miss_path().to_string()).as_str());
+}
+
+#[test]
+fn quick_open_browse_asks_the_host_for_a_folder_and_fills_the_field() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    settle(&mut h);
+    h.get_by_label("Browse…").click();
+    h.step();
+    assert!(h.state_mut().take_folder_request().is_some(), "Browse… queues a folder dialog for the host");
+    assert!(h.state_mut().take_folder_request().is_none(), "once");
+    let picked = if cfg!(windows) { "D:\\work\\picked" } else { "/work/picked" };
+    h.state_mut().folder_picked(Some(picked.into()));
+    h.step();
+    assert_eq!(h.state().ui.quick.query, picked);
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    let (id, params) = last_call(&h);
+    assert_eq!(id, "session_new");
+    assert_eq!(params["folder"], picked);
+}
+
+#[test]
+fn a_cancelled_folder_dialog_leaves_the_field_alone() {
+    let mut h = h();
+    open_quick_and_type(&mut h, "odu");
+    h.state_mut().folder_picked(None);
+    h.step();
+    assert_eq!(h.state().ui.quick.query, "odu");
+}
+
 #[test]
 fn a_pane_tears_off_into_its_own_window_and_docks_back() {
     let mut h = h();
