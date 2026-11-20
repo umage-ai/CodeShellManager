@@ -185,7 +185,7 @@ pub fn list_snapshots(path: &Path) -> Vec<(i64, PathBuf)> {
             state::parse_snapshot_file_name(name.to_str()?).map(|t| (t, e.path()))
         })
         .collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|e| std::cmp::Reverse(e.0));
     out
 }
 
@@ -270,7 +270,7 @@ pub fn set_aside(file: &Path, now_ms: i64, keep_original: bool) -> io::Result<Op
                     .collect()
             })
             .unwrap_or_default();
-        bad.sort_by(|a, b| b.0.cmp(&a.0));
+        bad.sort_by_key(|e| std::cmp::Reverse(e.0));
         for (_, p) in bad.iter().skip(BAD_COPIES_KEPT) {
             let _ = fs::remove_file(p);
         }
@@ -400,8 +400,7 @@ mod tests {
     const T0: i64 = 1_800_000_000_000;
 
     fn state_text(ids: &[&str]) -> String {
-        let mut a = AppState::default();
-        a.sessions = ids.iter().map(|id| ShellSession { id: (*id).into(), ..Default::default() }).collect();
+        let a = AppState { sessions: ids.iter().map(|id| ShellSession { id: (*id).into(), ..Default::default() }).collect(), ..Default::default() };
         a.to_json().unwrap()
     }
 
