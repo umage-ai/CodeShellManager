@@ -37,7 +37,8 @@ pub const MAX_IN_FLIGHT: usize = 16;
 const DRAIN: Duration = Duration::from_secs(5);
 
 const INSTRUCTIONS: &str = "CodeShellManager hosts many terminal sessions (Claude Code and other CLIs) in one desktop app; these tools drive it. \
-Only the `core` toolset is listed at first: call toolset_list to see the others (groups, layout, runs, git, notes, search, app) and toolset_enable to add one. \
+Only the `core` toolset is listed at first: call toolset_list to see the others (groups, layout, runs, git, notes, search, app, tasks) and toolset_enable to add one. \
+The `tasks` toolset is the Board: an agent in one of our sessions may list, create, claim, update, finish and hand off its own project's tasks without asking. \
 Tools that send input to a session, read what a session printed, start processes, write files or can lose work wait for the person to approve them in the app \
 (Allow once, Always for this client, or Don't allow). Such a call can take up to two minutes to return while the card is open, and a refusal comes back as an error that says so. \
 You cannot approve your own request. A session cannot send input to itself, and typing into a session that is mid-turn is refused unless forced. \

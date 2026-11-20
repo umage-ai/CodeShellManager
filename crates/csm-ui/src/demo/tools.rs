@@ -318,6 +318,7 @@ pub enum LayoutModeParam {
     Overview,
     Grid,
     Free,
+    Board,
 }
 
 impl From<LayoutModeParam> for LayoutMode {
@@ -328,6 +329,7 @@ impl From<LayoutModeParam> for LayoutMode {
             LayoutModeParam::Overview => LayoutMode::Overview,
             LayoutModeParam::Grid => LayoutMode::Grid,
             LayoutModeParam::Free => LayoutMode::Free,
+            LayoutModeParam::Board => LayoutMode::Board,
         }
     }
 }
@@ -340,6 +342,7 @@ impl From<LayoutMode> for LayoutModeParam {
             LayoutMode::Overview => LayoutModeParam::Overview,
             LayoutMode::Grid => LayoutModeParam::Grid,
             LayoutMode::Free => LayoutModeParam::Free,
+            LayoutMode::Board => LayoutModeParam::Board,
         }
     }
 }

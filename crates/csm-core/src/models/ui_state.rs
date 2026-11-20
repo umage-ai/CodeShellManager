@@ -26,6 +26,8 @@ pub enum LayoutMode {
     Grid,
     /// Free-hand split tree (ratios are the UI's to persist).
     Free,
+    /// The Board: live sessions as cards in status columns, beside the project's tasks.
+    Board,
 }
 
 /// A tab of the inspector panel.

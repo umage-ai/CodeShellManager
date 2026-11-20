@@ -199,6 +199,15 @@ pub struct SessionView {
     pub detail: String,
     /// When the status was entered (ms since the epoch).
     pub status_since_ms: Option<u64>,
+    /// When it entered the inbox (needs you, or an unseen result): the inbox order.
+    #[serde(default)]
+    pub inbox_since_ms: Option<u64>,
+    /// Its project (`csm_core::tasks::project_key`): the repository, else the group.
+    #[serde(default)]
+    pub project: String,
+    /// The project's name.
+    #[serde(default)]
+    pub project_name: String,
     pub accent: Accent,
     /// The accent was pushed by the program (OSC 9001): "Reset accent colour" is offered.
     pub accent_overridden: bool,
@@ -302,10 +311,12 @@ pub enum LayoutMode {
     Grid,
     /// A split tree with draggable dividers, floating and torn-off panes.
     Free,
+    /// The Board: live sessions as cards in status columns, beside the tasks.
+    Board,
 }
 
 impl LayoutMode {
-    pub const ALL: [LayoutMode; 5] = [LayoutMode::Focus, LayoutMode::Side, LayoutMode::Overview, LayoutMode::Grid, LayoutMode::Free];
+    pub const ALL: [LayoutMode; 6] = [LayoutMode::Focus, LayoutMode::Side, LayoutMode::Overview, LayoutMode::Board, LayoutMode::Grid, LayoutMode::Free];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -314,6 +325,7 @@ impl LayoutMode {
             LayoutMode::Overview => "overview",
             LayoutMode::Grid => "grid",
             LayoutMode::Free => "free",
+            LayoutMode::Board => "board",
         }
     }
 
@@ -324,6 +336,7 @@ impl LayoutMode {
             LayoutMode::Overview => "Overview",
             LayoutMode::Grid => "Grid",
             LayoutMode::Free => "Free",
+            LayoutMode::Board => "Board",
         }
     }
 
@@ -794,6 +807,8 @@ pub struct UiModel {
     /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).
     pub windows: BTreeMap<String, csm_core::models::WindowSlot>,
     pub recently_closed: Vec<ClosedSessionView>,
+    /// The Board's tasks, every project.
+    pub tasks: Vec<csm_core::tasks::Task>,
 }
 
 /// A recently closed session, as the Recent menu lists it.
@@ -854,17 +869,22 @@ impl UiModel {
         s.status_since_ms.map_or(0, |t| self.now_ms.saturating_sub(t))
     }
 
+    /// How long it has waited in the inbox (the inbox order), else in its status.
+    fn inbox_age_ms(&self, s: &SessionView) -> u64 {
+        s.inbox_since_ms.or(s.status_since_ms).map_or(0, |t| self.now_ms.saturating_sub(t))
+    }
+
     /// Sessions that need you, oldest first.
     pub fn needs_you(&self) -> Vec<&SessionView> {
         let mut v: Vec<&SessionView> = self.sessions.iter().filter(|s| s.status.needs_you()).collect();
-        v.sort_by_key(|s| std::cmp::Reverse(self.age_ms(s)));
+        v.sort_by_key(|s| std::cmp::Reverse(self.inbox_age_ms(s)));
         v
     }
 
     /// Done or failed and not seen, oldest first.
     pub fn unseen(&self) -> Vec<&SessionView> {
         let mut v: Vec<&SessionView> = self.sessions.iter().filter(|s| s.status.unseen()).collect();
-        v.sort_by_key(|s| std::cmp::Reverse(self.age_ms(s)));
+        v.sort_by_key(|s| std::cmp::Reverse(self.inbox_age_ms(s)));
         v
     }
 

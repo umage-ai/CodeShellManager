@@ -1258,8 +1258,20 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         PromptKind::RenameGroup(_) => ("Rename group".to_string(), "Name"),
         PromptKind::NewGroup => ("New group".to_string(), "Group name, e.g. Client X"),
         PromptKind::Broadcast(g) => (crate::screens::broadcast::title(&app.model, g), "Text for each session, e.g. git pull"),
+        PromptKind::NewTask { assign_to: Some(s), .. } => {
+            (format!("New task for {}", app.model.session(s).map_or("the session", |x| x.name.as_str())), "What should it do, e.g. Add tests for the parser")
+        }
+        PromptKind::NewTask { project, .. } => {
+            let name = csm_core::tasks::project_label(project, |g| app.model.group(g).map(|x| x.name.clone()));
+            (format!("New task in {name}"), "What should be done, e.g. Add tests for the parser")
+        }
     };
-    let ok = if matches!(p.kind, PromptKind::Broadcast(_)) { "Send…" } else { "Save" };
+    let ok = match &p.kind {
+        PromptKind::Broadcast(_) => "Send…",
+        PromptKind::NewTask { assign_to: Some(_), .. } => "Add and send",
+        PromptKind::NewTask { .. } => "Add",
+        _ => "Save",
+    };
     let enter = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let mut submit = enter;
     card(ctx, "prompt", size::DIALOG_W, |ui| {
@@ -1293,6 +1305,9 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             PromptKind::RenameGroup(id) => Action::Tool("group_rename", json!({"group_id": id, "name": text_})),
             PromptKind::NewGroup => Action::Tool("group_new", json!({"name": text_})),
             PromptKind::Broadcast(g) => crate::screens::broadcast::confirm(&app.model, g, &text_),
+            PromptKind::NewTask { project, assign_to } => {
+                Action::NewTask { project: project.clone(), title: text_.clone(), assign_to: assign_to.clone() }
+            }
         });
     }
     app.ui.prompt = Some(p);

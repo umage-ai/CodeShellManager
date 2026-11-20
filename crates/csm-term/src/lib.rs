@@ -321,6 +321,32 @@ impl Terminal {
         *self.term.mode()
     }
 
+    /// The lowest line of the visible screen with a letter or digit on it, trimmed (the Board's
+    /// "doing now" line). Borders, rules and an empty prompt don't count. `None` when there is
+    /// no such line. At most `max_chars` characters.
+    pub fn last_text_line(&self, max_chars: usize) -> Option<String> {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::cell::Flags;
+        let grid = self.term.grid();
+        let rows = i32::try_from(grid.screen_lines()).unwrap_or(0);
+        let cols = grid.columns();
+        for line in (0..rows).rev() {
+            let row = &grid[Line(line)];
+            let mut s = String::with_capacity(cols);
+            for c in 0..cols {
+                let cell = &row[Column(c)];
+                if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    s.push(cell.c);
+                }
+            }
+            let text = s.trim();
+            if text.chars().any(char::is_alphanumeric) {
+                return Some(text.chars().filter(|c| !c.is_control()).take(max_chars).collect());
+            }
+        }
+        None
+    }
+
     /// The current mode, readable without locking the terminal (input encoding on the UI
     /// thread must never wait for the reader thread).
     pub fn shared_mode(&self) -> Arc<AtomicU32> {

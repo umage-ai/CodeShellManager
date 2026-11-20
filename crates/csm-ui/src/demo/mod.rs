@@ -214,6 +214,12 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         x.detail = "API error 529, the turn ended".into();
     });
     set(&mut s, "gw", &|x| x.progress = Some(70));
+    // The Board: each session's project is its folder's repository (the demo has no git).
+    for x in &mut s {
+        let leaf = x.folder.rsplit(['\\', '/']).next().unwrap_or_default().to_string();
+        x.project = format!("repo:{}", x.folder);
+        x.project_name = leaf;
+    }
 
     let groups = vec![
         GroupView { id: "odulodo".into(), name: "Odulodo".into(), torn_off: false, collapsed: false },
@@ -290,7 +296,34 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         open_with: demo_open_with(),
         windows: BTreeMap::new(),
         recently_closed: Vec::new(),
+        tasks: demo_tasks(now),
     }
+}
+
+/// The Board's demo tasks (Odulodo.Web's project): one in each task column.
+fn demo_tasks(now: u64) -> Vec<csm_core::tasks::Task> {
+    use csm_core::tasks::{Task, TaskState};
+    let at = i64::try_from(now).unwrap_or(0);
+    let task = |id: &str, title: &str, state: TaskState, assignee: Option<&str>, order: i64| Task {
+        id: id.into(),
+        project: "repo:C:\\GitHub\\Odulodo.Web".into(),
+        title: title.into(),
+        body: String::new(),
+        state,
+        assignee: assignee.map(str::to_owned),
+        created_by: csm_core::tasks::CREATED_BY_PERSON.into(),
+        source: "ui".into(),
+        progress: None,
+        order,
+        created_ms: at - 3_600_000,
+        updated_ms: at - 600_000,
+    };
+    vec![
+        task("t1", "Snapshot tests for FacetPanel", TaskState::Backlog, None, 0),
+        task("t2", "Category facet size 20 to 30", TaskState::Backlog, None, 1),
+        task("t3", "Brand facet uses brand.keyword", TaskState::Review, Some("web"), 0),
+        task("t4", "Bump the Elasticsearch client", TaskState::Done, Some("web"), 0),
+    ]
 }
 
 /// The Recent menu's order in the demo: minutes since each session was last focused (the

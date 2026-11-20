@@ -34,6 +34,7 @@ pub mod shell_integration;
 pub mod sidebar_drop;
 pub mod sidebar_selection;
 pub mod state;
+pub mod tasks;
 pub mod time;
 pub mod window_placement;
 

@@ -62,6 +62,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ),
     ("grid", r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18M9 4v16M15 4v16"/>"#),
     ("free", r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M10 13h11"/>"#),
+    ("board", r#"<rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="9.5" y="4" width="5" height="10" rx="1.5"/><rect x="16" y="4" width="5" height="13" rx="1.5"/>"#),
     (
         "tag",
         r#"<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1"/>"#,

@@ -173,6 +173,12 @@ impl Index {
         self.call(move |db| db.usage_record_seconds(&command, &crate::utc_day(now_ms()), seconds), log_err);
     }
 
+    /// Records that a session entered a status (the Board's status log). Queued, never waited for.
+    pub fn record_status(&self, session_id: &str, status: &str, ts: i64) {
+        let (sid, status) = (session_id.to_owned(), status.to_owned());
+        self.call(move |db| db.status_log_record(&sid, &status, ts), log_err);
+    }
+
     /// Writes what is pending and stops the thread. Later calls fail with "not running".
     pub fn shutdown(&self) {
         let _ = self.tx.send(Msg::Shutdown);
@@ -224,6 +230,12 @@ fn run(rx: Receiver<Msg>, opts: IndexOptions, shared: Arc<Shared>) {
     let mut db = open(&opts.location, &shared);
     if let Err(e) = &db {
         log::error!("index: {e}");
+    }
+    // Retention: status log rows older than 30 days go, once per start.
+    if let Ok(d) = db.as_mut()
+        && let Err(e) = d.status_log_prune(now_ms().saturating_sub(crate::status_log::RETENTION_MS))
+    {
+        log::warn!("index: could not prune the status log: {e}");
     }
     let mut cleaners: HashMap<String, (LineCleaner, Instant)> = HashMap::new();
     let mut batches: HashMap<String, Batch> = HashMap::new();
