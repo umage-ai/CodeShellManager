@@ -65,6 +65,12 @@ pub enum LaunchError {
     MissingSshHost,
     /// `WslDistro must be set for WSL sessions.`
     MissingWslDistro,
+    /// An SSH host or user that ssh would read as an option (starts with `-`) or that holds a
+    /// control character.
+    OptionLikeSshName,
+    /// A WSL distro or user that wsl.exe would read as an option (starts with `-`; quoting does
+    /// not help) or that holds a control character. Issue #123.
+    OptionLikeWslName,
 }
 
 impl fmt::Display for LaunchError {
@@ -72,6 +78,8 @@ impl fmt::Display for LaunchError {
         match self {
             Self::MissingSshHost => f.write_str("SshHost must be set for remote sessions."),
             Self::MissingWslDistro => f.write_str("WslDistro must be set for WSL sessions."),
+            Self::OptionLikeSshName => f.write_str("The SSH host or user starts with '-' or contains a control character; ssh would read it as an option."),
+            Self::OptionLikeWslName => f.write_str("The WSL distro or user name starts with '-' or contains a control character; wsl.exe would read it as an option."),
         }
     }
 }
@@ -82,6 +90,32 @@ fn blank(s: &str) -> bool {
     s.trim().is_empty()
 }
 
+/// A value that may follow an option on a command line: not option-like once trimmed, no
+/// control characters (blank passes; blankness is checked separately).
+fn argument_safe(s: &str) -> bool {
+    !s.trim_start().starts_with('-') && !s.chars().any(char::is_control)
+}
+
+fn check_ssh(spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if blank(&spec.ssh_host) {
+        return Err(LaunchError::MissingSshHost);
+    }
+    if !argument_safe(&spec.ssh_host) || !argument_safe(&spec.ssh_user) {
+        return Err(LaunchError::OptionLikeSshName);
+    }
+    Ok(())
+}
+
+fn check_wsl(spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if blank(&spec.wsl_distro) {
+        return Err(LaunchError::MissingWslDistro);
+    }
+    if !argument_safe(&spec.wsl_distro) || !argument_safe(&spec.wsl_user) {
+        return Err(LaunchError::OptionLikeWslName);
+    }
+    Ok(())
+}
+
 /// `None` when the session has everything it needs to launch, else a sentence for the user.
 /// Checked before any terminal exists, because the builders refuse these and state.json and
 /// imports are untrusted.
@@ -89,7 +123,13 @@ fn blank(s: &str) -> bool {
 pub fn launch_validation_error(spec: &LaunchSpec) -> Option<&'static str> {
     match spec.kind {
         SessionKind::Ssh if blank(&spec.ssh_host) => Some("This SSH session has no host. Edit the session and set one."),
+        SessionKind::Ssh if check_ssh(spec).is_err() => {
+            Some("This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.")
+        }
         SessionKind::Wsl if blank(&spec.wsl_distro) => Some("This WSL session has no distro. Edit the session and pick one."),
+        SessionKind::Wsl if check_wsl(spec).is_err() => {
+            Some("This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.")
+        }
         _ => None,
     }
 }
@@ -127,9 +167,7 @@ fn ssh_args_with_remote(spec: &LaunchSpec, remote: &str) -> String {
 /// # Errors
 /// [`LaunchError::MissingSshHost`] when the host is blank.
 pub fn build_ssh_args(spec: &LaunchSpec) -> Result<String, LaunchError> {
-    if blank(&spec.ssh_host) {
-        return Err(LaunchError::MissingSshHost);
-    }
+    check_ssh(spec)?;
     let mut remote = String::new();
     if !blank(&spec.ssh_remote_folder) {
         remote.push_str(&format!("cd {} && ", posix_single_quote(&spec.ssh_remote_folder)));
@@ -150,9 +188,7 @@ pub fn build_ssh_args(spec: &LaunchSpec) -> Result<String, LaunchError> {
 /// [`LaunchError::MissingSshHost`] when the host is blank. (The C# original would produce
 /// a malformed line instead; callers validate first, so this only makes that explicit.)
 pub fn build_run_ssh_args(spec: &LaunchSpec, command_line: &str) -> Result<String, LaunchError> {
-    if blank(&spec.ssh_host) {
-        return Err(LaunchError::MissingSshHost);
-    }
+    check_ssh(spec)?;
     let mut remote = String::new();
     if !blank(&spec.ssh_remote_folder) {
         remote.push_str(&format!("cd {} && ", posix_single_quote(&spec.ssh_remote_folder)));
@@ -180,9 +216,7 @@ pub fn build_run_ssh_args(spec: &LaunchSpec, command_line: &str) -> Result<Strin
 /// # Errors
 /// [`LaunchError::MissingWslDistro`] when the distro is blank.
 pub fn build_wsl_args(spec: &LaunchSpec, inner: Option<&str>) -> Result<String, LaunchError> {
-    if blank(&spec.wsl_distro) {
-        return Err(LaunchError::MissingWslDistro);
-    }
+    check_wsl(spec)?;
     let login_shell = spec.resolved_wsl_shell.as_deref().unwrap_or("bash");
     let mut out = String::new();
     out.push_str("-d ");
@@ -524,6 +558,32 @@ mod tests {
     }
 
     // ── LaunchValidationError ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn option_like_wsl_names_are_refused_by_validation_and_builders() {
+        // Issue #123: quoting does not help, `wsl.exe -d "--help"` still reads an option.
+        for (d, u) in [("--help", ""), ("-x", ""), (" -d", ""), ("Ubuntu", "--exec"), ("Ubuntu", "-u"), ("Ubu\ntu", "")] {
+            let s = LaunchSpec { wsl_user: u.into(), ..wsl(d) };
+            assert!(launch_validation_error(&s).is_some_and(|m| m.contains("option")), "{d:?}/{u:?}");
+            assert_eq!(build_wsl_args(&s, None), Err(LaunchError::OptionLikeWslName), "{d:?}/{u:?}");
+            assert_eq!(build_run_wsl_args(&s, "ls"), Err(LaunchError::OptionLikeWslName));
+            assert_eq!(full_command_line(&s), "wsl.exe");
+        }
+        let ok = LaunchSpec { wsl_user: "a-lice".into(), ..wsl("Ubuntu-22.04") };
+        assert!(launch_validation_error(&ok).is_none());
+        assert!(build_wsl_args(&ok, None).is_ok());
+    }
+
+    #[test]
+    fn option_like_ssh_names_are_refused_by_validation_and_builders() {
+        for (u, h) in [("", "-oProxyCommand=calc"), ("-oProxyCommand=calc", "dev"), ("", " -v"), ("", "de\u{1b}v")] {
+            let s = ssh(u, h, 22, "", "");
+            assert!(launch_validation_error(&s).is_some_and(|m| m.contains("option")), "{u:?}/{h:?}");
+            assert_eq!(build_ssh_args(&s), Err(LaunchError::OptionLikeSshName));
+            assert_eq!(build_run_ssh_args(&s, "ls"), Err(LaunchError::OptionLikeSshName));
+        }
+        assert!(build_ssh_args(&ssh("alice", "dev-box", 22, "", "")).is_ok());
+    }
 
     #[test]
     fn launch_validation_local_is_none() {
