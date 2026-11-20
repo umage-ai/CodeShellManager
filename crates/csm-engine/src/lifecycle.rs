@@ -147,6 +147,7 @@ fn finish_restore_item(state: &mut State, id: &str) {
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let now = Instant::now();
     let now_ms = now_ms();
+    crate::usage_tail::tick(ctx.state);
 
     // A session nobody is looking at starts at the fallback size.
     let due: Vec<(String, u64)> = ctx
@@ -244,6 +245,9 @@ pub(crate) fn on_exit(state: &mut State) {
     let index = state.rt.index.clone();
     for rt in state.rt.sessions.values_mut() {
         rt.end_usage(index.as_ref());
+    }
+    if let Some(mut u) = state.rt.usage.take() {
+        u.shutdown();
     }
     if let Some(ix) = state.rt.index.take() {
         ix.shutdown();

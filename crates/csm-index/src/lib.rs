@@ -24,7 +24,7 @@ mod db;
 mod handle;
 mod usage;
 
-pub use claude::{ClaudeFile, ClaudeGroupBy, ClaudeIngest, ClaudeLive, ClaudeQuality, ClaudeSummaryRow};
+pub use claude::{ClaudeFile, ClaudeGroupBy, ClaudeIngest, ClaudeLive, ClaudeQuality, ClaudeSummaryRow, Pricer};
 pub use clean::{LineCleaner, normalize_folder};
 pub use db::{Db, IndexError, NoteHit, NoteRow, OutputHit, SCHEMA_VERSION, SchemaStats, fts_phrase};
 pub use handle::{Index, IndexLocation, IndexOptions};

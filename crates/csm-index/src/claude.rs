@@ -61,6 +61,9 @@ CREATE INDEX IF NOT EXISTS claude_compactions_session ON claude_compactions(csm_
 CREATE TABLE IF NOT EXISTS claude_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ";
 
+/// Prices a request: `(price key, cost)`, both `None` when its model is unpriced.
+pub type Pricer<'a> = dyn Fn(&UsageRequest) -> (Option<String>, Option<f64>) + 'a;
+
 /// Where reading a transcript got to, and what it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ClaudeFile {
@@ -196,7 +199,7 @@ impl Db {
     /// Stores one pass. A request already stored (the same `message.id`, from an earlier pass or
     /// another file) keeps the maximum of each token field and is priced again with `price`;
     /// it keeps the session, file and project it was first stored with.
-    pub fn claude_ingest(&mut self, ing: &ClaudeIngest, price: &dyn Fn(&UsageRequest) -> (Option<String>, Option<f64>)) -> Result<(), IndexError> {
+    pub fn claude_ingest(&mut self, ing: &ClaudeIngest, price: &Pricer<'_>) -> Result<(), IndexError> {
         let tx = self.conn.transaction()?;
         let f = &ing.file;
         if ing.reset {
@@ -405,7 +408,7 @@ impl Db {
     }
 
     /// Prices every stored request again (the price table changed). Returns how many.
-    pub fn claude_reprice(&mut self, price: &dyn Fn(&UsageRequest) -> (Option<String>, Option<f64>)) -> Result<usize, IndexError> {
+    pub fn claude_reprice(&mut self, price: &Pricer<'_>) -> Result<usize, IndexError> {
         let tx = self.conn.transaction()?;
         let rows: Vec<UsageRequest> = {
             let mut st = tx.prepare(&format!("SELECT {REQ_COLS} FROM claude_requests"))?;
