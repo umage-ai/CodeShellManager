@@ -21,7 +21,6 @@ log = "0.4"
 shlex = "1.3"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-# Local midnight for the usage tools ("today", "this week").
 # Local dates for the usage periods (chrono, used before, is RUSTSEC-2026-0543 unmaintained).
 jiff = "0.2"
 serde = { version = "1", features = ["derive", "rc"] }
