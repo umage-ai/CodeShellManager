@@ -296,7 +296,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         open_with: demo_open_with(),
         windows: BTreeMap::new(),
         recently_closed: Vec::new(),
-        tasks: demo_tasks(now),
+        tasks: std::sync::Arc::new(demo_tasks(now)),
     }
 }
 

@@ -260,6 +260,49 @@ refuses `OpenWith`). `open_with_detect` finds VS Code / Insiders / Cursor / Wind
 `open -a`, on Linux `.desktop` files and PATH. The list from state.json is sanitised on load and
 seeded once by detection (`OpenWithSeeded` set only when something was found).
 
+### tasks ✅ (the Board)
+Built in `csm-engine` (`tools/tasks.rs`); the model, state machine and permission rules are pure,
+in `csm_core::tasks`. Its own toolset (`tasks`), not `core`.
+
+| id | params | effects | what |
+|---|---|---|---|
+| `task_list` ✅ | project?, state?, assignee?, include_closed? | read | open tasks (done/cancelled with include_closed); an agent gets its own project's |
+| `task_get` ✅ | task_id | read | one task, with its body |
+| `task_new` ✅ | title (≤ 200 chars), body? (≤ 16 KiB), project? \| session_id? | state | a Backlog task; an agent's goes to its own project |
+| `task_update` ✅ | task_id, title?, body?, progress? (≤ 500), order?, cancel? | state | cancel is the person's |
+| `task_claim` ✅ | task_id, session_id? | state | an unassigned backlog task → Assigned (an agent: to itself); nothing is sent |
+| `task_done` ✅ | task_id, note? | state | Assigned → Review |
+| `task_handoff` ✅ | task_id, note? | state | Assigned → Backlog, unassigned |
+| `task_assign` ✅ | task_id, session_id, send? (true), force? | state, input | → Assigned; with send, pastes `Task <id> from <creator>: <title>` + body and Enter through `session_send_text`'s path (bracketed paste and its refusals: asleep, starting, exited, mid-turn without force, the caller's own session); a refused paste changes nothing; force also takes it from another assignee |
+| `task_accept` ✅ | task_id | state | Review → Done; refused for MCP callers (in precheck, before any card) |
+| `task_reopen` ✅ | task_id, note? | state | Review/Done/Cancelled → Assigned (to whoever had it) or Backlog; refused for MCP callers |
+| `task_delete` ✅ | task_id | state, discard | asks MCP callers |
+
+- **Project** = the session's git repository (`repo:<main checkout root>`, shared by its
+  worktrees), else its group (`group:<id>`; `group:` when ungrouped). Every session view has
+  `project` / `project_name`. A session whose git probe hasn't answered yet counts as its group.
+- **Agents** (`Caller::External { session_id }`), decided 2026-11-20: task bookkeeping (new,
+  claim, update, done, handoff) runs without a consent card, but only in the agent's own project,
+  only on tasks assigned to itself (or unassigned ones, to claim), and with at most 50 open tasks
+  created per session. No cancel, accept or reopen. Assign and delete stay in its project and
+  ask (their effects). An MCP client outside our sessions may read, and assign or delete (asking),
+  but does no bookkeeping. The rules also run in `precheck`, so a call they refuse never asks.
+- **Untrusted text**: titles, bodies and notes lose control characters (ESC included, so no
+  sequence such as a fake end-of-paste survives) and bidi overrides; text over the caps is refused.
+- **Storage**: `tasks.json` beside `state.json` (atomic write, one `.bak`, an unreadable file kept
+  aside as `tasks.json.bad-<ms>`), written by its own saver thread on a debounce and on exit.
+  Nothing is read or written under `--clean` or an isolated run. A closed session's Assigned
+  tasks go back to the backlog (also at start-up, for sessions gone while the app was closed).
+- **Status log** (for a later timeline): `index.db` schema 4, `status_log (session_id, status,
+  start_ms)`; a status shorter than 2 s is merged into the next; rows older than 30 days are
+  deleted when the index opens. Every session view has `status_since_ms`.
+- **UI**: the Board layout (`layout_set { mode: "board" }`, beside Overview), scoped by the rail
+  tab; a group's Board goes along with the group tear-off ("Own window" → `group_tear_off`).
+  Columns Backlog | Working | Needs you | Review | Idle | Done; drag a backlog card onto an agent
+  card → a confirm with the exact prompt → `task_assign`; Review task cards have Accept / Reopen;
+  an idle agent card has "+ task" (`task_new`, then `task_assign`); a task card's context menu
+  cancels or deletes (with a confirm).
+
 ## Exposing CSM to Claude sessions
 
 Opt-in (Settings → MCP → "Offer CodeShellManager's tools to Claude sessions", default off): a

@@ -808,7 +808,7 @@ pub struct UiModel {
     pub windows: BTreeMap<String, csm_core::models::WindowSlot>,
     pub recently_closed: Vec<ClosedSessionView>,
     /// The Board's tasks, every project.
-    pub tasks: Vec<csm_core::tasks::Task>,
+    pub tasks: std::sync::Arc<Vec<csm_core::tasks::Task>>,
 }
 
 /// A recently closed session, as the Recent menu lists it.
@@ -865,10 +865,6 @@ impl UiModel {
         self.layouts.get(&scope.key()).cloned().unwrap_or_default()
     }
 
-    fn age_ms(&self, s: &SessionView) -> u64 {
-        s.status_since_ms.map_or(0, |t| self.now_ms.saturating_sub(t))
-    }
-
     /// How long it has waited in the inbox (the inbox order), else in its status.
     fn inbox_age_ms(&self, s: &SessionView) -> u64 {
         s.inbox_since_ms.or(s.status_since_ms).map_or(0, |t| self.now_ms.saturating_sub(t))
@@ -890,7 +886,7 @@ impl UiModel {
 
     /// "4m", "2h".
     pub fn age_text(&self, s: &SessionView) -> String {
-        let min = self.age_ms(s) / 60_000;
+        let min = self.inbox_age_ms(s) / 60_000;
         if min < 60 { format!("{min}m") } else { format!("{}h", min / 60) }
     }
 

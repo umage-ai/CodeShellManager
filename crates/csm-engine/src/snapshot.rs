@@ -157,7 +157,7 @@ pub struct Snapshot {
     /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
     pub recently_closed: Vec<ClosedView>,
     /// The Board's tasks, every project (`tasks.json`).
-    pub tasks: Vec<csm_core::tasks::Task>,
+    pub tasks: std::sync::Arc<Vec<csm_core::tasks::Task>>,
     #[serde(skip)]
     pub(crate) terminals: HashMap<String, TerminalHandle>,
     /// Output of each run command's last run, by `(session id, run id)`.
@@ -337,6 +337,16 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
 
     let terminals = state.rt.sessions.iter().map(|(id, rt)| (id.clone(), TerminalHandle(rt.io.clone()))).collect();
 
+    // The tasks are shared, not copied, until they change (bodies are up to 16 KiB each).
+    let tasks = match &state.rt.tasks_view {
+        Some((g, a)) if *g == state.rt.tasks_gen => a.clone(),
+        _ => {
+            let a = std::sync::Arc::new(state.rt.tasks.tasks.clone());
+            state.rt.tasks_view = Some((state.rt.tasks_gen, a.clone()));
+            a
+        }
+    };
+
     let ui = &state.app.ui;
     let layouts = ui.layouts.clone();
     let mut windows = ui.windows.clone();
@@ -367,7 +377,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
             .iter()
             .map(|e| ClosedView { name: e.name.clone(), subtitle: e.subtitle(), command: e.command.clone() })
             .collect(),
-        tasks: state.rt.tasks.tasks.clone(),
+        tasks,
         terminals,
         run_outputs: crate::runs::handles(state),
     }

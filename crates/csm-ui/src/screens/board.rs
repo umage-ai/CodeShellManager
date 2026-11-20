@@ -200,10 +200,7 @@ pub fn assign_confirm(model: &UiModel, t: &Task, s: &SessionView) -> Action {
         body,
         yes_label: "Assign and send".into(),
         no_label: "Cancel".into(),
-        yes: Box::new(Action::Tool(
-            "task_assign",
-            json!({"task_id": t.id, "session_id": s.id, "send": true, "force": s.status == Status::Working}),
-        )),
+        yes: Box::new(Action::Tool("task_assign", json!({"task_id": t.id, "session_id": s.id, "send": true, "force": s.status == Status::Working}))),
     })
 }
 
@@ -415,7 +412,15 @@ fn agent_card(
     if let Some(task) = task {
         let txt = format!("{} · {}", task.id, task.title);
         icons::paint(ui, Rect::from_center_size(pos2(x0 + icon::XS / 2.0, line(3.0)), Vec2::splat(icon::XS)), "check", icon::XS, t.blue);
-        widgets::paint_text(ui, pos2(x0 + icon::XS + space::XS, line(3.0)), Align2::LEFT_CENTER, &txt, theme::medium(text::CAPTION), t.blue, x1 - x0 - icon::XS);
+        widgets::paint_text(
+            ui,
+            pos2(x0 + icon::XS + space::XS, line(3.0)),
+            Align2::LEFT_CENTER,
+            &txt,
+            theme::medium(text::CAPTION),
+            t.blue,
+            x1 - x0 - icon::XS,
+        );
     }
     if let Some(drop) = resp.dnd_release_payload::<TaskDrag>()
         && let Some(task) = model.tasks.iter().find(|x| x.id == drop.0)
@@ -514,8 +519,20 @@ fn asleep_row(ui: &mut Ui, w: f32, asleep: &[&SessionView], scope: &Scope, actio
     if resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_hover);
     }
-    icons::paint(ui, Rect::from_center_size(pos2(rect.min.x + space::SM, rect.center().y), Vec2::splat(icon::XS)), if open { "chevD" } else { "chevR" }, icon::XS, t.muted);
-    ui.painter().text(pos2(rect.min.x + space::SM + icon::XS, rect.center().y), Align2::LEFT_CENTER, format!("{} asleep", asleep.len()), theme::regular(text::CAPTION), t.muted);
+    icons::paint(
+        ui,
+        Rect::from_center_size(pos2(rect.min.x + space::SM, rect.center().y), Vec2::splat(icon::XS)),
+        if open { "chevD" } else { "chevR" },
+        icon::XS,
+        t.muted,
+    );
+    ui.painter().text(
+        pos2(rect.min.x + space::SM + icon::XS, rect.center().y),
+        Align2::LEFT_CENTER,
+        format!("{} asleep", asleep.len()),
+        theme::regular(text::CAPTION),
+        t.muted,
+    );
     if resp.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(key, !open));
     }
@@ -526,8 +543,21 @@ fn asleep_row(ui: &mut Ui, w: f32, asleep: &[&SessionView], scope: &Scope, actio
             if row.hovered() {
                 ui.painter().rect_filled(r, CornerRadius::same(radius::SM), t.row_hover);
             }
-            icons::paint_status(ui, Rect::from_center_size(pos2(r.min.x + space::SM + icon::XS / 2.0, r.center().y), Vec2::splat(icon::XS)), s.status, icon::XS);
-            widgets::paint_text(ui, pos2(r.min.x + space::LG + space::XS, r.center().y), Align2::LEFT_CENTER, &s.name, theme::regular(text::CAPTION), t.fg2, w - space::XL);
+            icons::paint_status(
+                ui,
+                Rect::from_center_size(pos2(r.min.x + space::SM + icon::XS / 2.0, r.center().y), Vec2::splat(icon::XS)),
+                s.status,
+                icon::XS,
+            );
+            widgets::paint_text(
+                ui,
+                pos2(r.min.x + space::LG + space::XS, r.center().y),
+                Align2::LEFT_CENTER,
+                &s.name,
+                theme::regular(text::CAPTION),
+                t.fg2,
+                w - space::XL,
+            );
             if row.clicked() {
                 actions.push(Action::Tool("session_focus", json!({"session_id": s.id})));
             }
@@ -592,7 +622,7 @@ mod tests {
         // Needs you: oldest in the inbox first (p waited longer than q).
         m.sessions[2].inbox_since_ms = Some(now - 1_000);
         m.sessions[3].inbox_since_ms = Some(now - 5_000);
-        m.tasks = vec![
+        m.tasks = std::sync::Arc::new(vec![
             task("t2", "repo:/a", TaskState::Backlog, None, 2, 0),
             task("t1", "repo:/a", TaskState::Backlog, None, 1, 0),
             task("t3", "repo:/a", TaskState::Review, Some("w"), 0, 5),
@@ -602,7 +632,7 @@ mod tests {
             task("t7", "repo:/b", TaskState::Backlog, None, 0, 0),
             task("t8", "group:g", TaskState::Backlog, None, 9, 0),
             task("t9", "repo:/a", TaskState::Cancelled, None, 0, 0),
-        ];
+        ]);
         let g = Scope::Group("g".into());
         let p = plan(&m, &g);
         assert_eq!(ids(&p, Column::Backlog), ["t1", "t2", "t8"], "by order; another repo's task is not here");

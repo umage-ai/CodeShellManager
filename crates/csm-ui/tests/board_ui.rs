@@ -205,7 +205,10 @@ fn the_board_shows_its_columns_and_agent_cards_by_status() {
 #[test]
 fn dragging_a_backlog_task_onto_an_agent_asks_with_the_prompt_then_assigns_and_sends() {
     let mut r = rig();
-    let id = r.ui("task_new", json!({"session_id": r.alpha, "title": "Write the docs", "body": "Start with the README"}))["id"].as_str().unwrap().to_owned();
+    let id = r.ui("task_new", json!({"session_id": r.alpha, "title": "Write the docs", "body": "Start with the README"}))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     r.until("the backlog card", |r| r.has("Task: Write the docs"));
     let (from, to) = (r.center("Task: Write the docs"), r.center("Agent: Beta"));
     r.drag(from, to);
@@ -240,6 +243,8 @@ fn plus_task_on_an_idle_card_creates_the_task_and_sends_it() {
     r.h.step();
     r.h.get_by_label("Add and send").click();
     let alpha = r.alpha.clone();
-    r.until("the task, assigned to Alpha", |r| r.engine.view().tasks.iter().any(|t| t.title == "Run the linter" && t.assignee.as_deref() == Some(alpha.as_str())));
+    r.until("the task, assigned to Alpha", |r| {
+        r.engine.view().tasks.iter().any(|t| t.title == "Run the linter" && t.assignee.as_deref() == Some(alpha.as_str()))
+    });
     r.until("the prompt in Alpha's PTY", |r| r.written_anywhere("from the user: Run the linter") == 1);
 }

@@ -177,7 +177,10 @@ fn agents_keep_to_their_own_project_and_their_own_tasks_without_asking() {
     let mine = h.engine.call(agent(&a), "task_new", json!({"title": "Add tests\u{1b}[2J", "body": "x\u{1b}[201~y"})).unwrap();
     let mine = mine.data["id"].as_str().unwrap().to_owned();
     let t = task_state(&h, &mine);
-    assert_eq!((t["project"].as_str().unwrap(), t["title"].as_str().unwrap(), t["body"].as_str().unwrap()), (&*format!("group:{g1}"), "Add tests[2J", "x[201~y"));
+    assert_eq!(
+        (t["project"].as_str().unwrap(), t["title"].as_str().unwrap(), t["body"].as_str().unwrap()),
+        (&*format!("group:{g1}"), "Add tests[2J", "x[201~y")
+    );
     assert_eq!(t["created_by"], format!("session:{a}"));
     h.engine.call(agent(&a), "task_claim", json!({"task_id": mine})).unwrap();
     h.engine.call(agent(&a), "task_update", json!({"task_id": mine, "progress": "two of five"})).unwrap();

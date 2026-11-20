@@ -49,11 +49,9 @@ impl Db {
         let (sid, status) = (field(session_id), field(status));
         let tx = self.conn.transaction()?;
         let last: Option<(i64, String, i64)> = tx
-            .query_row(
-                "SELECT id, status, start_ms FROM status_log WHERE session_id = ?1 ORDER BY start_ms DESC, id DESC LIMIT 1",
-                [&sid],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+            .query_row("SELECT id, status, start_ms FROM status_log WHERE session_id = ?1 ORDER BY start_ms DESC, id DESC LIMIT 1", [&sid], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?;
         match last {
             Some((_, s, _)) if s == status => {}
@@ -90,9 +88,9 @@ impl Db {
         let map = |r: &rusqlite::Row<'_>| Ok(StatusSpan { session_id: r.get(0)?, status: r.get(1)?, start_ms: r.get(2)? });
         let rows = match session_id {
             Some(sid) => {
-                let mut st = self.conn.prepare(
-                    "SELECT session_id, status, start_ms FROM status_log WHERE session_id = ?1 AND start_ms >= ?2 ORDER BY start_ms, id",
-                )?;
+                let mut st = self
+                    .conn
+                    .prepare("SELECT session_id, status, start_ms FROM status_log WHERE session_id = ?1 AND start_ms >= ?2 ORDER BY start_ms, id")?;
                 st.query_map(params![sid, since_ms], map)?.collect::<Result<Vec<_>, _>>()?
             }
             None => {

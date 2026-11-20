@@ -203,6 +203,9 @@ pub(crate) struct Runtime {
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,
     pub tasks_save_due: Option<Instant>,
+    /// Bumped on every change to `tasks`; the snapshot shares `tasks_view` until it moves.
+    pub tasks_gen: u64,
+    pub tasks_view: Option<(u64, Arc<Vec<csm_core::tasks::Task>>)>,
     /// Each session's status and when it entered it (epoch ms): `status_since_ms`, the status log.
     pub status_since: HashMap<String, (crate::status::Status, i64)>,
 }
@@ -300,6 +303,7 @@ impl State {
     /// Mark the snapshot stale and schedule a debounced save of `tasks.json`.
     pub(crate) fn persist_tasks(&mut self) {
         self.rt.dirty = true;
+        self.rt.tasks_gen = self.rt.tasks_gen.wrapping_add(1);
         if self.rt.tasks_save_due.is_none() {
             self.rt.tasks_save_due = Some(Instant::now() + self.options.save_debounce);
         }

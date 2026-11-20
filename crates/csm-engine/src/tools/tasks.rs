@@ -362,7 +362,7 @@ fn task_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let body = tasks::clean_body(&p.body).map_err(ToolError::InvalidParams)?;
     let named = match (&p.project, &p.session_id) {
         (Some(pr), _) => {
-            let pr = tasks::clean_title(pr).map_err(|_| ToolError::InvalidParams("the project is empty".into()))?;
+            let pr: String = pr.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_owned();
             if pr.len() > MAX_PROJECT || !(pr.starts_with("repo:") || pr.starts_with("group:")) {
                 return Err(ToolError::InvalidParams("a project is `repo:<root>` or `group:<id>`, as sessions and tasks show it".into()));
             }
@@ -421,7 +421,9 @@ fn task_claim(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let who = match (&a, p.session_id) {
         (Actor::Agent { session_id, .. }, None) => session_id.clone(),
         (Actor::Agent { session_id, .. }, Some(s)) if &s == session_id => s,
-        (Actor::Agent { .. }, Some(_)) => return Err(ToolError::Refused("an agent claims tasks for itself; use task_assign for another session".into())),
+        (Actor::Agent { .. }, Some(_)) => {
+            return Err(ToolError::Refused("an agent claims tasks for itself; use task_assign for another session".into()));
+        }
         (_, Some(s)) => s,
         (_, None) => return Err(ToolError::InvalidParams("say which session takes it: session_id".into())),
     };
