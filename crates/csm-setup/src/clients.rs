@@ -2,7 +2,7 @@
 //! the registration entry each expects.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -207,7 +207,10 @@ pub fn clients(host: &Host) -> Vec<Client> {
 /// An entry the person made by hand under the same name is left alone by `uninstall`.
 pub fn is_owned_entry(entry: &Value) -> bool {
     let command = entry.get("command").and_then(Value::as_str).unwrap_or("");
-    let stem = Path::new(command).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    // Either path style, on every OS: a config can hold a Windows path read on Unix (synced
+    // dotfiles, WSL) and `Path` only splits on the host's separator.
+    let name = command.rsplit(['/', '\\']).next().unwrap_or("");
+    let stem = name.strip_suffix(".exe").or_else(|| name.strip_suffix(".EXE")).unwrap_or(name);
     let first_arg = entry.get("args").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str);
     stem.eq_ignore_ascii_case("csm") && first_arg == Some("mcp")
 }

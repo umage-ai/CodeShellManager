@@ -292,7 +292,16 @@ fn a_pane_tears_off_into_its_own_window_and_docks_back() {
     h.get_by_label("Dock back into the main window").click();
     settle(&mut h);
     assert_eq!(last_call(&h).0, "pane_dock");
-    assert!(layout(&h).torn.is_empty());
+    // The dock is applied when its reply lands; the torn-off window is a deferred viewport, so on a
+    // slow machine give it a few more frames (bounded) before judging.
+    for _ in 0..200 {
+        if layout(&h).torn.is_empty() {
+            break;
+        }
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(layout(&h).torn.is_empty(), "still torn off: {:?}; last calls: {:?}", layout(&h).torn, h.state().submitted().iter().rev().take(3).map(|c| &c.id).collect::<Vec<_>>());
 }
 
 fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize, id: &str) -> Vec<serde_json::Value> {
