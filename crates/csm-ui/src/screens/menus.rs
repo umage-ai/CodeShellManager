@@ -144,13 +144,7 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         v.push(hinted("play", format!("Run {}", run.label), "F5", tool("run_start", sid.clone())));
     }
     v.push(Entry::Sep);
-    v.push(Entry::Item {
-        icon: "x",
-        label: "Close".into(),
-        hint: Some("Ctrl W".into()),
-        danger: true,
-        action: Action::CloseSession(id.to_string()),
-    });
+    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some("Ctrl W".into()), danger: true, action: Action::CloseSession(id.to_string()) });
     v
 }
 
@@ -198,13 +192,7 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     } else {
         v.push(item("power", "Wake", tool("session_wake", sid.clone())));
     }
-    v.push(Entry::Item {
-        icon: "x",
-        label: "Close".into(),
-        hint: None,
-        danger: true,
-        action: Action::CloseSession(id.to_string()),
-    });
+    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: None, danger: true, action: Action::CloseSession(id.to_string()) });
     v
 }
 
