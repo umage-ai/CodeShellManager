@@ -6,7 +6,7 @@
 use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use serde_json::json;
 
-use crate::app::{Action, CsmApp, Menu, Overlay, PromptKind, RemoteKind};
+use crate::app::{Action, CsmApp, Menu, Overlay, ProfilePick, PromptKind, QuickOpenState, RemoteKind};
 use crate::icons;
 use crate::model::{SessionView, Status, fuzzy};
 use crate::theme::{self, Tokens, icon, radius, size, space, text};
@@ -496,10 +496,25 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
             }
         }
         out.push(Action::Tool("session_edit", p));
+        // The look is its own tool: it never needs a restart.
+        match &q.profile {
+            ProfilePick::Keep => {}
+            ProfilePick::None => {
+                if app.model.session(id).is_some_and(|s| s.look.is_some()) {
+                    out.push(Action::Tool("session_look_set", json!({"session_id": id, "clear": true})));
+                }
+            }
+            ProfilePick::Profile(_) => {
+                if let Some(look) = picked_look(q) {
+                    out.push(Action::Tool("session_look_set", json!({"session_id": id, "look": look})));
+                }
+            }
+        }
         return out;
     }
+    let look = picked_look(q);
     if q.remote {
-        let params = match q.rkind {
+        let mut params = match q.rkind {
             RemoteKind::Ssh => {
                 let (program, args) = split_command(&cmd);
                 let program = if program == "claude" { "bash".to_string() } else { program };
@@ -509,6 +524,9 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
                 json!({"command": split_command(&cmd).0, "args": split_command(&cmd).1, "kind": "wsl", "group": q.group, "wsl": wsl_params(q)})
             }
         };
+        if let Some(l) = look {
+            params["look"] = l;
+        }
         out.push(Action::Tool("session_new", params));
         return out;
     }
@@ -522,8 +540,96 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
         None => return out,
     };
     let (program, args) = split_command(&cmd);
-    out.push(Action::Tool("session_new", json!({"folder": folder, "command": program, "args": args, "group": q.group})));
+    let mut params = json!({"folder": folder, "command": program, "args": args, "group": q.group});
+    if let Some(l) = look {
+        params["look"] = l;
+    }
+    out.push(Action::Tool("session_new", params));
     out
+}
+
+/// The picked profile's look, as `profile_list` gave it.
+fn picked_look(q: &QuickOpenState) -> Option<serde_json::Value> {
+    let ProfilePick::Profile(name) = &q.profile else { return None };
+    q.profiles.as_ref()?.iter().find(|p| p["name"].as_str() == Some(name.as_str())).map(|p| p["look"].clone()).filter(serde_json::Value::is_object)
+}
+
+/// Picking a profile in a new session fills what the person left empty (the WPF dialog's rule):
+/// the folder from its starting directory, and its command line as the command.
+fn take_profile(q: &mut QuickOpenState, profile: &serde_json::Value, launch: &[String]) {
+    let name = profile["name"].as_str().unwrap_or_default().to_string();
+    q.profile = ProfilePick::Profile(name);
+    if q.edit.is_some() {
+        return;
+    }
+    let dir = profile["starting_directory"].as_str().unwrap_or_default();
+    if !q.remote && q.query.trim().is_empty() && !dir.trim().is_empty() {
+        q.query = dir.to_string();
+        q.navigated = false;
+    }
+    let cmd = profile["commandline"].as_str().unwrap_or_default().trim();
+    if !cmd.is_empty() && !cmd.chars().any(char::is_control) {
+        match launch.iter().position(|c| c.trim() == cmd) {
+            Some(i) => {
+                q.cmd = i;
+                q.custom_cmd = None;
+            }
+            None => {
+                q.custom_cmd = Some(cmd.to_string());
+                q.cmd = launch.len();
+            }
+        }
+    }
+}
+
+/// The Profile row: none / keep / each Windows Terminal profile, one click each.
+fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: bool, launch: &[String]) {
+    let t = Tokens::get(ui.ctx());
+    let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
+    ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric((space::MD + space::XXS) as i8, space::SM as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Profile").font(theme::regular(text::CAPTION)).color(t.muted))
+                .on_hover_text("A Windows Terminal profile's colours, font size, cursor and padding for this session");
+            let chip = |ui: &mut Ui, label: &str, on: bool, tip: &str| -> bool {
+                let kind = if on { ButtonKind::Primary } else { ButtonKind::Ghost };
+                let shown: String = label.chars().take(40).collect();
+                let r = widgets::button(ui, kind, None, &shown, None).on_hover_text(tip);
+                let l = format!("Profile: {label}");
+                r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
+                r.clicked()
+            };
+            if q.edit.is_some() && has_look && chip(ui, "Keep current", q.profile == ProfilePick::Keep, "Leave this session's look as it is") {
+                q.profile = ProfilePick::Keep;
+            }
+            let none_on = q.profile == ProfilePick::None || (q.profile == ProfilePick::Keep && !has_look);
+            if chip(ui, "None", none_on, "The app's terminal look") {
+                q.profile = ProfilePick::None;
+            }
+            let list = q.profiles.clone().unwrap_or_default();
+            for p in &list {
+                let name = p["name"].as_str().unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                let on = q.profile == ProfilePick::Profile(name.to_string());
+                let tip = format!("{} · {}", p["commandline"].as_str().unwrap_or_default(), p["source"].as_str().unwrap_or_default());
+                if chip(ui, name, on, &tip) {
+                    take_profile(q, p, launch);
+                }
+            }
+            if import_on && q.profiles.as_ref().is_some_and(Vec::is_empty) {
+                ui.label(egui::RichText::new("No Windows Terminal profiles found.").font(theme::regular(text::CAPTION)).color(t.faint));
+            } else if !import_on {
+                ui.label(
+                    egui::RichText::new("Turn on Windows Terminal profiles in Settings › Appearance to pick one.")
+                        .font(theme::regular(text::CAPTION))
+                        .color(t.faint),
+                );
+            }
+        });
+    });
 }
 
 /// A launch command as `session_new` takes it: the program, then the rest as typed arguments
@@ -592,6 +698,15 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     let mut save_clicked = false;
     let mut ask_distros = false;
     let mut browse = false;
+    // The Profile picker: when profile import is on, or to clear the look an edited session has.
+    let import_on = app.ui.settings.bool("ImportWindowsTerminalProfiles") == Some(true);
+    let has_look = q.edit.as_deref().and_then(|id| model.session(id)).is_some_and(|s| s.look.is_some());
+    let ask_profiles = import_on && q.profiles.is_none();
+    if ask_profiles {
+        // Asked once per opening, answered off the engine thread (it reads WT's settings file).
+        q.profiles = Some(Vec::new());
+    }
+    let launch = model.launch_commands.clone();
     card(ctx, "quick-open", size::PALETTE_W, |ui| {
         let t = Tokens::get(ui.ctx());
         if let Some(id) = &q.edit {
@@ -633,7 +748,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             let bw = widgets::button_width(ui, Some("folder"), BROWSE, None);
             let (resp, slot) = input_row_with(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input", bw);
             let br = Rect::from_center_size(pos2(slot.max.x - bw / 2.0, slot.center().y), vec2(bw, size::CONTROL));
-            let b = ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("folder"), BROWSE, None)).inner;
+            let b = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("folder"), BROWSE, None))
+                .inner;
             if b.on_hover_text("Choose a folder with the system's folder dialog").clicked() {
                 browse = true;
             }
@@ -783,6 +900,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 });
             });
         });
+        if import_on || has_look {
+            profile_row(ui, &mut q, has_look, import_on, &launch);
+        }
         if q.remote {
             let picker = q.rkind == RemoteKind::Wsl && q.distros.as_ref().is_some_and(|d| !d.is_empty());
             let extra = if picker { size::CONTROL + space::SM } else { 0.0 };
@@ -899,6 +1019,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     }
     if ask_distros {
         actions.push(Action::Tool("wsl_distros", json!({})));
+    }
+    if ask_profiles {
+        actions.push(Action::Tool("profile_list", json!({})));
     }
     if save_clicked {
         app.ui.quick = q;

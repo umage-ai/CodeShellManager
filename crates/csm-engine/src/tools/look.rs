@@ -42,9 +42,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 /// Off unless the person opted in (the WPF app's rule: another program's settings are read only
 /// when asked to).
 fn import_refusal(state: &State) -> Option<ToolError> {
-    (!state.app.settings.import_windows_terminal_profiles).then(|| {
-        ToolError::Refused("Windows Terminal profile import is off; turn on ImportWindowsTerminalProfiles in Settings › Appearance".into())
-    })
+    (!state.app.settings.import_windows_terminal_profiles)
+        .then(|| ToolError::Refused("Windows Terminal profile import is off; turn on ImportWindowsTerminalProfiles in Settings › Appearance".into()))
 }
 
 /// A worker-thread loader for the profiles (the configured files in tests, the install
@@ -85,7 +84,11 @@ fn profile_json(p: &WtProfile) -> Value {
 }
 
 fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> Result<(), ToolError> {
-    std::thread::Builder::new().name(name.into()).spawn(work).map(|_| ()).map_err(|e| ToolError::Failed(format!("could not start reading the profiles: {e}")))
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(work)
+        .map(|_| ())
+        .map_err(|e| ToolError::Failed(format!("could not start reading the profiles: {e}")))
 }
 
 fn profile_list(ctx: &mut Ctx<'_>, _params: Value) -> Reply {

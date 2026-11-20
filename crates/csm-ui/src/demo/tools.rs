@@ -111,6 +111,18 @@ pub struct SessionNewParams {
     /// Focus the new session (default true).
     pub focus: Option<bool>,
     pub after: Option<String>,
+    /// Its own terminal look (a Windows Terminal profile's).
+    pub look: Option<csm_core::look::Look>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LookSetParams {
+    pub session_id: String,
+    pub profile: Option<String>,
+    pub look: Option<csm_core::look::Look>,
+    #[serde(default)]
+    pub clear: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

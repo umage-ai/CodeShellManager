@@ -172,7 +172,8 @@ impl LookColors {
 
     /// Every colour with its wire name.
     fn named(&self) -> Vec<(&'static str, &Option<String>)> {
-        let mut v = vec![("background", &self.background), ("foreground", &self.foreground), ("cursor", &self.cursor), ("selection", &self.selection)];
+        let mut v =
+            vec![("background", &self.background), ("foreground", &self.foreground), ("cursor", &self.cursor), ("selection", &self.selection)];
         v.extend(ANSI_NAMES.iter().map(|(n, _)| *n).zip(self.ansi()));
         v
     }
@@ -192,7 +193,13 @@ impl LookColors {
         for (slot, c) in ansi.iter_mut().zip(self.ansi()) {
             *slot = p(c);
         }
-        ResolvedColors { background: p(&self.background), foreground: p(&self.foreground), cursor: p(&self.cursor), selection: p(&self.selection), ansi }
+        ResolvedColors {
+            background: p(&self.background),
+            foreground: p(&self.foreground),
+            cursor: p(&self.cursor),
+            selection: p(&self.selection),
+            ansi,
+        }
     }
 
     /// From an xterm.js theme object (the persisted form). Unknown keys and colours that do not
@@ -201,7 +208,13 @@ impl LookColors {
         let v: serde_json::Value = serde_json::from_str(text).ok()?;
         let o = v.as_object()?;
         let get = |k: &str| o.get(k).and_then(serde_json::Value::as_str).and_then(parse_css_color).map(hex);
-        let mut c = LookColors { background: get("background"), foreground: get("foreground"), cursor: get("cursor"), selection: get("selectionBackground"), ..Default::default() };
+        let mut c = LookColors {
+            background: get("background"),
+            foreground: get("foreground"),
+            cursor: get("cursor"),
+            selection: get("selectionBackground"),
+            ..Default::default()
+        };
         for (slot, (_, xterm)) in c.ansi_mut().into_iter().zip(ANSI_NAMES) {
             *slot = get(xterm);
         }

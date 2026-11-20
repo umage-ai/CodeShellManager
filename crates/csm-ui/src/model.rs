@@ -210,6 +210,9 @@ pub struct SessionView {
     /// the status vocabulary keeps its seven states; the pane stays until closed or restarted.
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// The session's own terminal look (`session_look_set`); `None` follows the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<csm_core::look::Look>,
 }
 
 impl SessionView {

@@ -286,6 +286,19 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     caption(ui, "The built-in JetBrains Mono, or the font passed with --font at start-up.");
     number_setting(ui, app, "TerminalFontPoints", "Font size (0 = default)", 0..=32, "pt", actions);
     number_setting(ui, app, "TerminalPadding", "Padding inside a pane", 0..=32, "pt", actions);
+    section(ui, "Windows Terminal profiles");
+    bool_setting(
+        ui,
+        app,
+        "ImportWindowsTerminalProfiles",
+        "Offer Windows Terminal profiles",
+        "The New and Edit session panel gets a Profile row: a profile's colours, font size, cursor and padding are stamped onto the session.",
+        actions,
+    );
+    caption(
+        ui,
+        "Read from Windows Terminal's settings (Stable, Preview or unpackaged). A session keeps its look if the profile changes later. Font face, weight, ligatures, blink, transparency and the retro effect are kept with the session but not drawn.",
+    );
 }
 
 /// The primary terminal face's name.

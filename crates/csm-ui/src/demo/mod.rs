@@ -566,6 +566,7 @@ impl DemoBackend {
             status: Status::Idle,
             accent: Accent::Palette(accent),
             started: "just now".into(),
+            look: p.look.clone().filter(|l| !l.is_empty()),
             ..SessionView::default()
         };
         self.model.sessions.push(s);
@@ -652,6 +653,19 @@ impl DemoBackend {
                 let i = self.model.active.as_ref().and_then(|a| list.iter().position(|x| x == a));
                 let next = i.map_or(0, |i| (i + 1) % list.len());
                 list.get(next).cloned().map(|id| self.focus(&id)).unwrap_or_default()
+            }
+            "session_look_set" => {
+                if let Some(p) = parse::<LookSetParams>(call)
+                    && let Some(s) = self.session_mut(&p.session_id)
+                {
+                    // The demo has no Windows Terminal: a profile by name changes nothing.
+                    if p.clear {
+                        s.look = None;
+                    } else if let Some(l) = p.look {
+                        s.look = Some(l).filter(|l| !l.is_empty());
+                    }
+                }
+                vec![]
             }
             "session_accent_reset" => {
                 if let Some(id) = &sid
