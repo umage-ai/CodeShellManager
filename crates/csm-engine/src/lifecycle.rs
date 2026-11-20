@@ -672,6 +672,16 @@ pub(crate) fn apply_term_events(ctx: &mut Ctx<'_>, id: &str, instance: u64, even
                 rt.cwd = Some(uri.chars().filter(|c| !c.is_control()).take(1024).collect());
             }
             TermEvent::Title(t) => rt.title = si::sanitize_title(&t),
+            // OSC 52 copy (#156). The UI sets the clipboard on its own thread; the text never
+            // rides an event. Queries (reads) are never answered (`csm_term`).
+            TermEvent::ClipboardStore(text) => {
+                if !state.app.settings.allow_osc52_clipboard {
+                    log::debug!("session {id}: OSC 52 copy ignored (turned off in settings)");
+                } else if text.len() <= csm_term::MAX_CLIPBOARD_STORE_BYTES {
+                    ctx.engine.offer_clipboard(text);
+                    ctx.events.emit(Event::ClipboardOffered { session_id: id.to_owned() });
+                }
+            }
             _ => {}
         }
     }

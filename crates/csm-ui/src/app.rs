@@ -580,6 +580,8 @@ impl CsmApp {
                 Notice::Toast(t) if !t.is_empty() => self.toast(ctx, t),
                 Notice::Toast(_) => {}
                 Notice::Focus(id) => self.ui.focus_terminal = Some(id),
+                // OSC 52 (#156): egui's output sets the clipboard after the frame, no blocking.
+                Notice::Clipboard(text) => ctx.copy_text(text),
                 Notice::QuitReady => {
                     self.quit_ready = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);

@@ -56,6 +56,12 @@ pub enum Event {
     /// Send a sample OS notification now, whatever the notification settings say
     /// (`notification_test`).
     NotificationTestRequested,
+    /// A session set the clipboard (OSC 52) and the setting allows it: the UI takes the text
+    /// with [`crate::Engine::take_clipboard`]. The text is not in the event (events reach IPC
+    /// clients).
+    ClipboardOffered {
+        session_id: String,
+    },
 }
 
 /// Fan-out to any number of subscribers; a dropped receiver is pruned on the next emit.

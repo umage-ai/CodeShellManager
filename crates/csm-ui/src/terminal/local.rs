@@ -31,6 +31,8 @@ pub struct TermStatus {
     pub last_prompt_mark: Option<String>,
     pub cwd: Option<String>,
     pub exit: Option<Option<i32>>,
+    /// The program's last OSC 52 copy (#156), waiting for the host to take it.
+    pub clipboard: Option<String>,
 }
 
 struct PtyReplies(Arc<OnceLock<Arc<dyn Pty>>>);
@@ -255,6 +257,10 @@ impl TerminalSource for LocalTerminal {
         }
         if self.pty.get().is_some() { SourceState::Running } else { SourceState::Starting }
     }
+
+    fn take_clipboard(&self) -> Option<String> {
+        lock(&self.status).clipboard.take()
+    }
 }
 
 impl Drop for LocalTerminal {
@@ -277,7 +283,8 @@ fn apply_events(status: &Mutex<TermStatus>, events: Vec<TermEvent>) {
             TermEvent::Tap(TapEvent::Prompt(mark)) => s.last_prompt_mark = Some(format!("{mark:?}")),
             TermEvent::Tap(TapEvent::Cwd(uri)) => s.cwd = Some(uri),
             TermEvent::Title(t) => s.title = t,
-            TermEvent::Bell | TermEvent::ClipboardStore(_) => {}
+            TermEvent::ClipboardStore(text) => s.clipboard = Some(text),
+            TermEvent::Bell => {}
         }
     }
 }

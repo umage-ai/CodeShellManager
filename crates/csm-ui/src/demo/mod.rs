@@ -1285,6 +1285,8 @@ impl Backend for DemoBackend {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
         }
+        // OSC 52 copies from live demo shells (#156); the demo has no settings, so it is on.
+        out.extend(self.terms.values().filter_map(|t| t.take_clipboard()).map(Notice::Clipboard));
         out
     }
 }

@@ -258,7 +258,9 @@ impl SessionIo {
             if io.detector_active.load(Ordering::Acquire) {
                 io.detector().feed(&String::from_utf8_lossy(bytes), now);
             }
-            let events: Vec<TermEvent> = events.into_iter().filter(|e| matches!(e, TermEvent::Tap(_) | TermEvent::Title(_))).collect();
+            // OSC 52 copies (#156) come already size-capped by `csm_term`.
+            let events: Vec<TermEvent> =
+                events.into_iter().filter(|e| matches!(e, TermEvent::Tap(_) | TermEvent::Title(_) | TermEvent::ClipboardStore(_))).collect();
             if !events.is_empty() {
                 let (id, instance) = (io.id.clone(), io.instance);
                 io.engine.post(Box::new(move |ctx| crate::lifecycle::apply_term_events(ctx, &id, instance, events)));

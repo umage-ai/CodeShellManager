@@ -172,10 +172,18 @@ pub struct AppSettings {
     /// changed from the defaults.
     #[serde(deserialize_with = "nd", skip_serializing_if = "SlashCommand::is_default_list")]
     pub claude_commands: Vec<SlashCommand>,
+    /// Programs in a session may set the clipboard with OSC 52 (tmux, Claude Code's fullscreen
+    /// mode, remote shells), as Windows Terminal allows by default. Reading the clipboard
+    /// (an OSC 52 query) is never answered. Issue #156. Written only when turned off.
+    #[serde(skip_serializing_if = "is_true")]
+    pub allow_osc52_clipboard: bool,
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+fn is_true(b: &bool) -> bool {
+    *b
 }
 fn is_zero(n: &i32) -> bool {
     *n == 0
@@ -229,6 +237,7 @@ impl Default for AppSettings {
             terminal_padding: default_padding(),
             terminal_font_points: 0,
             claude_commands: SlashCommand::defaults(),
+            allow_osc52_clipboard: t(),
         }
     }
 }
@@ -355,6 +364,18 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osc52_copy_is_on_by_default_and_written_only_when_off() {
+        let s = AppSettings::default();
+        assert!(s.allow_osc52_clipboard);
+        assert!(!serde_json::to_string(&s).unwrap().contains("AllowOsc52Clipboard"));
+        let off = AppSettings { allow_osc52_clipboard: false, ..AppSettings::default() };
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(json.contains("\"AllowOsc52Clipboard\":false"), "{json}");
+        assert!(!serde_json::from_str::<AppSettings>(&json).unwrap().allow_osc52_clipboard);
+        assert!(serde_json::from_str::<AppSettings>("{}").unwrap().allow_osc52_clipboard);
+    }
 
     #[test]
     fn a_stale_dev_build_key_is_ignored_and_the_mode_defaults_to_auto() {

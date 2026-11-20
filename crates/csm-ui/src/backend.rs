@@ -42,6 +42,8 @@ pub enum Notice {
     Focus(SessionId),
     /// `app_quit` finished (every process is gone, the state is saved): close the window.
     QuitReady,
+    /// A session set the clipboard (OSC 52; the setting allows it): put the text on it.
+    Clipboard(String),
 }
 
 /// What owns the state the screens draw. See the module docs for the real-engine mapping.

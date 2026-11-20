@@ -251,6 +251,7 @@ impl Backend for EngineBackend {
         match event {
             Event::Toast { message } => vec![Notice::Toast(message.clone())],
             Event::FocusRequested { session_id } => vec![Notice::Focus(session_id.clone())],
+            Event::ClipboardOffered { .. } => self.engine.take_clipboard().map(Notice::Clipboard).into_iter().collect(),
             Event::QuitProgress { session_id, phase, elapsed_ms } => {
                 if self.quit.is_none() {
                     self.quit = Some(Quit { started: Instant::now(), rows: Vec::new() });

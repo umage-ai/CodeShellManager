@@ -313,6 +313,14 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     caption(ui, "The built-in JetBrains Mono, or the font passed with --font at start-up.");
     number_setting(ui, app, "TerminalFontPoints", "Font size (0 = default)", 0..=32, "pt", actions);
     number_setting(ui, app, "TerminalPadding", "Padding inside a pane", 0..=32, "pt", actions);
+    bool_setting(
+        ui,
+        app,
+        "AllowOsc52Clipboard",
+        "Let programs copy to the clipboard",
+        "OSC 52, as tmux, Claude Code's fullscreen mode and remote shells use it (up to 1 MB). Programs can never read the clipboard.",
+        actions,
+    );
     section(ui, "Windows Terminal profiles");
     bool_setting(
         ui,

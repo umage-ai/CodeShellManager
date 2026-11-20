@@ -241,3 +241,50 @@ fn a_default_cursor_and_palette_can_be_set_and_programs_still_override_the_curso
     let reply = String::from_utf8_lossy(&r.0.lock().unwrap()).into_owned();
     assert!(reply.contains("rgb:0101/2424/5656"), "{reply:?}");
 }
+
+fn clipboard(events: &[TermEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            TermEvent::ClipboardStore(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn osc52_copy_is_passed_on_and_a_query_is_never_answered() {
+    // Issue #156: `printf '\e]52;c;%s\a' "$(printf hello | base64)"`.
+    let (events, replies) = run_all_splits(b"\x1b]52;c;aGVsbG8=\x07", ProbeReply::Off);
+    assert_eq!(clipboard(&events), ["hello"]);
+    assert!(replies.is_empty());
+    // A read request: no event and, above all, no reply carrying the clipboard.
+    let (events, replies) = run_all_splits(b"\x1b]52;c;?\x07", ProbeReply::Off);
+    assert!(clipboard(&events).is_empty(), "{events:?}");
+    assert!(replies.is_empty(), "{replies:?}");
+}
+
+#[test]
+fn an_oversized_osc52_copy_is_dropped() {
+    let text = "x".repeat(csm_term::MAX_CLIPBOARD_STORE_BYTES + 3);
+    let b64 = base64_of(text.as_bytes());
+    let (mut t, _) = term(ProbeReply::Off);
+    t.advance(format!("\x1b]52;c;{b64}\x07").as_bytes());
+    assert!(clipboard(&t.take_events()).is_empty());
+    let ok = base64_of(b"fits");
+    t.advance(format!("\x1b]52;c;{ok}\x07").as_bytes());
+    assert_eq!(clipboard(&t.take_events()), ["fits"]);
+}
+
+fn base64_of(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
