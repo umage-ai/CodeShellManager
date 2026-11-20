@@ -183,8 +183,13 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         x.accent = Accent::Rgb([0xe0, 0x8f, 0x62]);
         x.accent_overridden = true;
     });
+    // Odulodo.Web's checkouts share one repo root; search-sort is a linked worktree of it.
+    for id in ["web", "webps", "wt"] {
+        set(&mut s, id, &|x| x.repo_root = Some(crate::git_model::DEMO_REPO.into()));
+    }
     set(&mut s, "wt", &|x| {
         x.parent = Some("web".into());
+        x.worktree_of = Some("Odulodo.Web".into());
         x.status_since_ms = Some(now - mins(1));
         x.detail = "Which sort options should results offer?".into();
     });
@@ -275,6 +280,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         now_ms: now,
         wpf_import: None,
         git: crate::git_model::demo_details(),
+        folder_worktrees: BTreeMap::new(),
         open_with: demo_open_with(),
         windows: BTreeMap::new(),
     }
@@ -578,6 +584,17 @@ impl DemoBackend {
             started: "just now".into(),
             ..SessionView::default()
         };
+        let mut s = s;
+        // A folder in the fixture repository: its repo root, and (in a linked worktree) the
+        // main checkout's session it nests under, as the engine backend's mapping does.
+        if kind == Kind::Local && crate::git_model::demo_worktrees(&folder).is_some() {
+            let root = crate::git_model::DEMO_REPO;
+            s.repo_root = Some(root.into());
+            if crate::git_model::folder_key(&folder) != crate::git_model::folder_key(root) {
+                s.worktree_of = Some("Odulodo.Web".into());
+                s.parent = self.model.sessions.iter().find(|x| x.repo_root.as_deref() == Some(root) && x.worktree_of.is_none()).map(|x| x.id.clone());
+            }
+        }
         self.model.sessions.push(s);
         if self.opts.live && first != "claude" && kind == Kind::Local {
             let repaint = self.opts.repaint.clone().unwrap_or_else(|| Arc::new(|| {}));
@@ -976,6 +993,25 @@ impl DemoBackend {
             "git_switch_branch" => toast("Switched branch.".into()),
             "worktree_new" => toast("Created the worktree and opened a session in it.".into()),
             "worktree_remove" => toast("Refused: this worktree has uncommitted changes.".into()),
+            "worktree_list" => {
+                // The fixture's Odulodo.Web worktrees, asked by session (the row menu) or by
+                // folder (the quick-open). Anything else is not a repository.
+                let folder = call.params.get("folder").and_then(Value::as_str).map(str::to_string);
+                match (folder, sid) {
+                    (Some(f), _) => {
+                        let rows = crate::git_model::demo_worktrees(&f).unwrap_or_default();
+                        self.model.folder_worktrees.insert(crate::git_model::folder_key(&f), rows);
+                    }
+                    (None, Some(id)) => {
+                        let rows = self.model.session(&id).and_then(|s| crate::git_model::demo_worktrees(&s.folder));
+                        if let Some(rows) = rows {
+                            self.model.git.entry(id).or_default().worktrees = Some(rows);
+                        }
+                    }
+                    (None, None) => {}
+                }
+                vec![]
+            }
             "open_folder" => toast(format!(
                 "Opened {} in the file manager.",
                 sid.as_deref().and_then(|i| self.model.session(i)).map_or("the folder", |s| s.folder.as_str())
@@ -1032,7 +1068,9 @@ impl Backend for DemoBackend {
     fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice> {
         use csm_engine::ToolError;
         let out = match reply {
-            Err(e @ (ToolError::InvalidParams(_) | ToolError::UnknownTool(_))) => vec![Notice::Toast(e.to_string())],
+            // The fixture's folders are Windows paths, which the engine refuses as relative on
+            // other systems: the demo answers `worktree_list` from its fixture regardless.
+            Err(e @ (ToolError::InvalidParams(_) | ToolError::UnknownTool(_))) if call.id != "worktree_list" => vec![Notice::Toast(e.to_string())],
             // The demo's sessions aren't the engine's: its "not found" (and the like) is about
             // the engine's empty state, not the demo's.
             _ => self.apply(call),

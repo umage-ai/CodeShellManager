@@ -37,6 +37,9 @@ pub enum Action {
     CopyAs(String, String),
     /// Open the Runs tab with its editor on this session's run commands.
     EditRuns(SessionId),
+    /// "New worktree from this branch…": the Git tab on this session with its New worktree
+    /// input open (`worktree_new`).
+    NewWorktree(SessionId),
     /// The Open with editor (`open_with_set`, `open_with_detect`).
     OpenWithEditor,
     /// Run a registered tool from the palette, filling params from context.
@@ -304,6 +307,11 @@ pub struct QuickOpenState {
     pub loaded: bool,
     /// WSL: the installed distributions (`wsl_distros`, asked once the WSL fields show).
     pub distros: Option<Vec<String>>,
+    /// New, local: the sibling worktrees to start in too (their paths), for [`Self::siblings_for`].
+    pub siblings: Vec<String>,
+    /// The folder the sibling checkboxes are for, and when it became the chosen one (`ctx`
+    /// time), and whether `worktree_list {folder}` was asked (once it stayed chosen a moment).
+    pub siblings_for: Option<(String, f64, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -822,6 +830,13 @@ impl CsmApp {
                     self.run(ctx, Action::Tool("session_focus", json!({"session_id": id})));
                 }
                 self.run(ctx, Action::Tool("inspector_show", json!({"tab": "runs"})));
+            }
+            Action::NewWorktree(id) => {
+                screens::git::open_new_worktree(ctx);
+                if self.model.active.as_deref() != Some(id.as_str()) {
+                    self.run(ctx, Action::Tool("session_focus", json!({"session_id": id})));
+                }
+                self.run(ctx, Action::Tool("inspector_show", json!({"tab": "git"})));
             }
             Action::OpenWithEditor => {
                 self.ui.menu = None;

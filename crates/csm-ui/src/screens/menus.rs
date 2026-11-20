@@ -72,6 +72,46 @@ pub fn open_with(s: &crate::model::SessionView) -> Entry {
     Entry::Sub { icon: "braces", label: "Open with".into(), items }
 }
 
+/// Label of the sibling-worktree submenu (row and pane menus).
+pub const SIBLING_WORKTREE: &str = "New session in sibling worktree";
+/// Label of the item that opens the Git tab's New worktree input.
+pub const NEW_WORKTREE: &str = "New worktree from this branch…";
+
+/// A session whose folder git can read (local or WSL, on a branch): the worktree items apply.
+fn in_repo(s: &crate::model::SessionView) -> bool {
+    s.branch.is_some() && s.kind != crate::model::Kind::Ssh
+}
+
+/// The worktree items of a session's menu (WPF's "New session in sibling worktree ▸" and "New
+/// worktree from this branch…"). The submenu lists the repository's other worktrees that have
+/// no session, from the last `worktree_list` reply (asked when the menu opens, see [`show`]);
+/// picking one is `session_new` with the params the engine gave for it: same kind, command,
+/// args and group as this session, placed after it.
+fn worktree_entries(model: &UiModel, s: &crate::model::SessionView) -> Vec<Entry> {
+    if !in_repo(s) {
+        return Vec::new();
+    }
+    let list = model.git.get(&s.id).and_then(|d| d.worktrees.as_ref());
+    let items = match list {
+        None => vec![Entry::Head("Reading worktrees…".into())],
+        Some(list) => {
+            let free: Vec<Entry> = list
+                .iter()
+                .filter(|w| !w.current && !w.prunable && w.sessions.is_empty() && w.open.is_object())
+                .map(|w| Entry::Item {
+                    icon: if w.main { "branch" } else { "fork" },
+                    label: w.name.clone(),
+                    hint: w.branch.clone(),
+                    danger: false,
+                    action: tool("session_new", w.open.clone()),
+                })
+                .collect();
+            if free.is_empty() { vec![Entry::Head("No other worktree without a session".into())] } else { free }
+        }
+    };
+    vec![Entry::Sub { icon: "fork", label: SIBLING_WORKTREE.into(), items }, item("plus", NEW_WORKTREE, Action::NewWorktree(s.id.clone()))]
+}
+
 const DEMO_STATUS: &str = "Demo: set status";
 
 fn demo_status(session: &str) -> Entry {
@@ -100,6 +140,9 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         open_with(s),
         hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
         item("copy", "Copy path", Action::CopyText(s.folder.clone())),
+    ];
+    v.extend(worktree_entries(model, s));
+    v.extend([
         Entry::Sep,
         Entry::Head("Session".into()),
         hinted("pencil", "Edit session…", "folder, command", Action::EditSession(id.to_string())),
@@ -107,7 +150,7 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         hinted("restart", "Restart", "Ctrl Shift R", tool("session_restart", sid.clone())),
         hinted("moon", "Sleep", "keeps it in the sidebar", tool("session_sleep", sid.clone())),
         demo_status(id),
-    ];
+    ]);
     if s.accent_overridden {
         v.push(item("palette", "Reset accent colour", tool("session_accent_reset", sid.clone())));
     }
@@ -176,8 +219,9 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
         item("folder", "Open folder", tool("open_folder", sid.clone())),
         open_with(s),
-        Entry::Sep,
     ];
+    v.extend(worktree_entries(model, s));
+    v.push(Entry::Sep);
     if s.is_claude() && s.status.is_live() {
         v.push(hinted("eraser", "Clear status", "stuck after a crash?", tool("session_status_clear", sid.clone())));
     }
@@ -374,6 +418,23 @@ fn menu_area(
     rects
 }
 
+/// Once per opening of a session's menu, when the sibling submenu opens (not on every right
+/// click, as WPF): read its worktrees again (`worktree_list`, git on an engine worker; the reply
+/// lands in `model.git` and fills the submenu). Submitted directly rather than as an
+/// [`Action::Tool`], which would close the menu.
+fn ask_worktrees(ctx: &egui::Context, app: &mut CsmApp, menu: &Menu, session: &str) {
+    if app.ui.submenu.as_deref() != Some(SIBLING_WORKTREE) || !app.model.session(session).is_some_and(in_repo) {
+        return;
+    }
+    let key = Id::new("menu-worktrees-asked");
+    let tag = format!("{menu:?}");
+    if ctx.data(|d| d.get_temp::<String>(key)).as_deref() == Some(tag.as_str()) {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, tag));
+    app.dispatch.submit("worktree_list", json!({"session_id": session}));
+}
+
 /// The review's status switcher only where `demo_set_status` exists (the demo engine).
 fn with_demo(mut v: Vec<Entry>, demo: bool) -> Vec<Entry> {
     if !demo {
@@ -383,9 +444,16 @@ fn with_demo(mut v: Vec<Entry>, demo: bool) -> Vec<Entry> {
 }
 
 pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
-    let Some(menu) = app.ui.menu.clone() else { return };
+    let Some(menu) = app.ui.menu.clone() else {
+        // Closed: the next opening reads the worktrees again.
+        ctx.data_mut(|d| d.remove_temp::<String>(Id::new("menu-worktrees-asked")));
+        return;
+    };
     let model = app.model.clone();
     let demo = app.dispatch.registry().get("demo_set_status").is_some();
+    if let Menu::Pane { session, .. } | Menu::Row { session, .. } = &menu {
+        ask_worktrees(ctx, app, &menu, session);
+    }
     let rects = match &menu {
         Menu::Pane { session, at } => {
             let e = with_demo(pane_menu(&model, session), demo);

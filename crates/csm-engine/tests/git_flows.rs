@@ -326,6 +326,41 @@ fn worktree_remove_refusals_then_close_wait_remove_and_keep_an_unmerged_branch()
 }
 
 #[test]
+fn worktree_list_by_folder_needs_no_session() {
+    let r = repos();
+    let h = H::new();
+    git(&r.a, &["worktree", "add", "-b", "side", &s(&r.root.join("a-side"))]);
+    // No session anywhere: the quick-open asks by folder.
+    let l = h.ok("worktree_list", json!({"folder": s(&r.a)}));
+    assert_eq!(l.data["folder"], s(&r.a).as_str());
+    assert!(l.data.get("session_id").is_none());
+    let rows = l.data["worktrees"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["main"], true);
+    assert_eq!(rows[0]["current"], true, "the folder's own worktree");
+    let side = rows.iter().find(|w| w["branch"] == "side").unwrap();
+    assert_eq!(side["current"], false);
+    assert!(side["sessions"].as_array().unwrap().is_empty());
+    // Without a source session the open params are just the folder.
+    assert!(side["open"]["folder"].as_str().unwrap().to_lowercase().ends_with("a-side"), "{}", side["open"]);
+    assert!(side["open"].get("command").is_none());
+
+    // A session in the side worktree is listed against it, asked from the main folder.
+    let sid = session_in(&h, &r.root.join("a-side"), "pwsh");
+    let l = h.ok("worktree_list", json!({"folder": s(&r.a)}));
+    let side = l.data["worktrees"].as_array().unwrap().iter().find(|w| w["branch"] == "side").unwrap().clone();
+    assert_eq!(side["sessions"][0]["id"], sid.as_str());
+
+    // Exactly one of the two; a relative folder or a non-repo is refused.
+    assert!(matches!(h.ui("worktree_list", json!({})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(h.ui("worktree_list", json!({"folder": s(&r.a), "session_id": sid})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(h.ui("worktree_list", json!({"folder": "relative\\dir"})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(h.ui("worktree_list", json!({"folder": "C:\\x\u{7}"})), Err(ToolError::InvalidParams(_))));
+    let plain = tempfile::tempdir().unwrap();
+    assert!(matches!(h.ui("worktree_list", json!({"folder": s(plain.path())})), Err(ToolError::Refused(_))));
+}
+
+#[test]
 fn not_a_repo_and_effects_are_honest() {
     let h = H::new();
     let plain = tempfile::tempdir().unwrap();

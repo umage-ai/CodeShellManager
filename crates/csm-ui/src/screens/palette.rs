@@ -7,8 +7,9 @@ use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Rect, Sense, Stroke,
 use serde_json::json;
 
 use crate::app::{Action, CsmApp, Menu, Overlay, PromptKind, RemoteKind};
+use crate::git_model::{WorktreeRow, folder_key};
 use crate::icons;
-use crate::model::{SessionView, Status, fuzzy};
+use crate::model::{SessionView, Status, UiModel, fuzzy};
 use crate::theme::{self, Tokens, icon, radius, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
@@ -515,18 +516,132 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
         out.push(Action::Tool("session_new", params));
         return out;
     }
-    let rows = folder_rows(app, &q.query);
-    let folder = match rows.get(q.sel.min(rows.len().saturating_sub(1))).and_then(|(i, _)| app.model.folders.get(*i)) {
-        // A typed (or browsed-to) path wins over a suggestion it merely resembles:
-        // `C:\src\app` must not start in the suggested `C:\src\app-old`.
-        _ if typed_path_wins(q) => q.query.trim().to_string(),
-        Some(f) => f.path.clone(),
-        None if !q.query.trim().is_empty() => q.query.trim().to_string(),
-        None => return out,
-    };
+    let Some(folder) = chosen_folder(app) else { return out };
     let (program, args) = split_command(&cmd);
     out.push(Action::Tool("session_new", json!({"folder": folder, "command": program, "args": args, "group": q.group})));
+    // The ticked sibling worktrees: the same command and group, not focused (WPF's "Also start
+    // sessions in sibling worktrees"). The engine staggers Claude launches.
+    for path in checked_siblings(app, &folder) {
+        out.push(Action::Tool("session_new", json!({"folder": path, "command": program, "args": args, "group": q.group, "focus": false})));
+    }
     out
+}
+
+/// The local folder Enter starts in (new mode): a typed path, else the selected suggestion, else
+/// the typed text.
+pub fn chosen_folder(app: &CsmApp) -> Option<String> {
+    let q = &app.ui.quick;
+    let rows = folder_rows(app, &q.query);
+    match rows.get(q.sel.min(rows.len().saturating_sub(1))).and_then(|(i, _)| app.model.folders.get(*i)) {
+        // A typed (or browsed-to) path wins over a suggestion it merely resembles:
+        // `C:\src\app` must not start in the suggested `C:\src\app-old`.
+        _ if typed_path_wins(q) => Some(q.query.trim().to_string()),
+        Some(f) => Some(f.path.clone()),
+        None if !q.query.trim().is_empty() => Some(q.query.trim().to_string()),
+        None => None,
+    }
+}
+
+/// The other worktrees of `folder`'s repository the quick-open offers (from the last
+/// `worktree_list {folder}` reply; `None` before it arrives): not the folder's own, not missing.
+pub fn sibling_worktrees(model: &UiModel, folder: &str) -> Option<Vec<WorktreeRow>> {
+    let key = folder_key(folder);
+    model.folder_worktrees.get(&key).map(|rows| rows.iter().filter(|w| !w.current && !w.prunable && folder_key(&w.path) != key).cloned().collect())
+}
+
+/// The ticked sibling paths that still apply to `folder` (ticks for another folder don't).
+fn checked_siblings(app: &CsmApp, folder: &str) -> Vec<String> {
+    let q = &app.ui.quick;
+    if q.edit.is_some() || q.remote || q.siblings_for.as_ref().is_none_or(|(f, _, _)| folder_key(f) != folder_key(folder)) {
+        return Vec::new();
+    }
+    let offered = sibling_worktrees(&app.model, folder).unwrap_or_default();
+    // The engine's `open` folder is the path in the system's form (git lists `C:/src/x`).
+    offered
+        .into_iter()
+        .filter(|w| q.siblings.contains(&w.path))
+        .map(|w| w.open.get("folder").and_then(serde_json::Value::as_str).filter(|f| !f.trim().is_empty()).map_or(w.path.clone(), str::to_string))
+        .collect()
+}
+
+/// "Also start in sibling worktrees": one checkbox per other worktree of the chosen folder's
+/// repository (`name  ⎇ branch`, and how many sessions are already there).
+fn siblings_list(ui: &mut Ui, sibs: &[WorktreeRow], checked: &mut Vec<String>) {
+    let t = Tokens::get(ui.ctx());
+    let inset = space::MD + space::XS;
+    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().min.y, Stroke::new(size::HAIRLINE, t.surface0));
+    ui.add_space(space::SM);
+    ui.horizontal(|ui| {
+        ui.add_space(inset);
+        widgets::caps(ui, "Also start in sibling worktrees");
+    });
+    ui.add_space(space::XS);
+    for w in sibs {
+        ui.horizontal(|ui| {
+            ui.add_space(inset);
+            let mut on = checked.contains(&w.path);
+            let shown = match &w.branch {
+                Some(b) => format!("{}  ⎇ {b}", w.name),
+                None => w.name.clone(),
+            };
+            let r = ui.checkbox(&mut on, egui::RichText::new(shown).font(theme::regular(text::BODY)).color(t.fg));
+            let label = format!("Sibling worktree: {}", w.name);
+            r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, &label));
+            let r = r.on_hover_text(&w.path);
+            if r.changed() {
+                if on {
+                    checked.push(w.path.clone());
+                } else {
+                    checked.retain(|p| p != &w.path);
+                }
+            }
+            let n = w.sessions.len();
+            if n > 0 {
+                let open = if n == 1 { "1 session there".to_string() } else { format!("{n} sessions there") };
+                ui.label(egui::RichText::new(open).font(theme::regular(text::CAPTION)).color(t.muted));
+            }
+        });
+    }
+    ui.add_space(space::SM);
+}
+
+/// How long a folder stays chosen before its worktrees are read (typing a path doesn't run git
+/// on every keystroke).
+const SIBLING_READ_DELAY_S: f64 = 0.35;
+
+/// New, local: keeps the sibling checkboxes on the chosen folder and asks for its worktrees once
+/// it has stayed chosen [`SIBLING_READ_DELAY_S`] (once per opening of the quick-open, so a
+/// worktree made since shows). The read is `worktree_list {folder}` on an engine worker.
+fn track_siblings(ctx: &egui::Context, app: &mut CsmApp) {
+    let q = &app.ui.quick;
+    if q.edit.is_some() || q.remote {
+        app.ui.quick.siblings_for = None;
+        app.ui.quick.siblings.clear();
+        return;
+    }
+    let now = ctx.input(|i| i.time);
+    let chosen = chosen_folder(app).filter(|f| typed_path(f).is_some());
+    let same = match (&chosen, &app.ui.quick.siblings_for) {
+        (Some(f), Some((g, _, _))) => folder_key(f) == folder_key(g),
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        app.ui.quick.siblings_for = chosen.map(|f| (f, now, false));
+        app.ui.quick.siblings.clear();
+    }
+    if let Some((f, since, asked)) = &mut app.ui.quick.siblings_for
+        && !*asked
+    {
+        let wait = SIBLING_READ_DELAY_S - (now - *since);
+        if wait <= 0.0 {
+            *asked = true;
+            let folder = f.clone();
+            app.dispatch.submit("worktree_list", json!({"folder": folder}));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        }
+    }
 }
 
 /// A launch command as `session_new` takes it: the program, then the rest as typed arguments
@@ -579,11 +694,14 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             app.ui.quick.query = f.path.clone();
         }
     }
+    track_siblings(ctx, app);
     if enter || ctrl_enter {
         actions.extend(start_quick(app, ctrl_enter));
         if !ctrl_enter || editing.is_some() {
             return;
         }
+        // Kept open: the ticked siblings started; another Enter must not start them again.
+        app.ui.quick.siblings.clear();
     }
     let rows = folder_rows(app, &app.ui.quick.query);
     let model = app.model.clone();
@@ -636,7 +754,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             let bw = widgets::button_width(ui, Some("folder"), BROWSE, None);
             let (resp, slot) = input_row_with(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input", bw);
             let br = Rect::from_center_size(pos2(slot.max.x - bw / 2.0, slot.center().y), vec2(bw, size::CONTROL));
-            let b = ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("folder"), BROWSE, None)).inner;
+            let b = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("folder"), BROWSE, None))
+                .inner;
             if b.on_hover_text("Choose a folder with the system's folder dialog").clicked() {
                 browse = true;
             }
@@ -740,6 +860,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             }
             ui.add_space(space::XS);
         });
+        if let Some(sibs) = q.siblings_for.as_ref().and_then(|(f, _, _)| sibling_worktrees(&model, f)).filter(|s| !s.is_empty()) {
+            siblings_list(ui, &sibs, &mut q.siblings);
+        }
         // The command row: Tab cycles.
         let t = Tokens::get(ui.ctx());
         let (crect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL + space::LG + space::XS), Sense::hover());
@@ -858,7 +981,17 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         let keys: Vec<(&str, String)> = if q.edit.is_some() {
             vec![("Enter", "save".to_string()), ("Esc", "cancel".to_string())]
         } else {
-            vec![("Enter", format!("start {cmd}")), ("Ctrl Enter", "start and keep this open".to_string())]
+            vec![
+                (
+                    "Enter",
+                    if q.siblings.is_empty() {
+                        format!("start {cmd}")
+                    } else {
+                        format!("start {cmd} here and in {} sibling{}", q.siblings.len(), if q.siblings.len() == 1 { "" } else { "s" })
+                    },
+                ),
+                ("Ctrl Enter", "start and keep this open".to_string()),
+            ]
         };
         for (k, what) in keys {
             let kw = widgets::kbd_width(ui, k);

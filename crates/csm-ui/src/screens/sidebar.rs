@@ -289,10 +289,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         scope_header(ui, app, &scope, actions);
                     }
                     let ss = model.scope_sessions(&scope);
-                    for s in ordered(&ss) {
-                        let r = row(ui, app, s, actions);
-                        rows.push(SidebarRow::new(row_kind(s), Some(&s.id), f64::from(r.rect.top()), f64::from(r.rect.height())));
-                    }
+                    section_rows(ui, app, &ss, &mut rows, actions);
                     if ss.is_empty() {
                         empty_scope(ui, &model, &scope);
                     }
@@ -391,6 +388,125 @@ fn drag_ghost(ctx: &egui::Context, app: &CsmApp) {
 /// Live sessions first, then asleep, each in model order.
 fn ordered<'a>(ss: &[&'a SessionView]) -> Vec<&'a SessionView> {
     ss.iter().filter(|s| s.status.is_live()).chain(ss.iter().filter(|s| !s.status.is_live())).copied().collect()
+}
+
+/// One line of a sidebar section once worktrees are nested.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SideItem<'a> {
+    /// A session row; `nested` ones are indented under their main checkout's row or a repo header.
+    Session { s: &'a SessionView, nested: bool },
+    /// A light `repo (N)` header over linked-worktree sessions whose main checkout has no
+    /// session in this section (none at all, or one in another group).
+    Repo { name: String, count: usize },
+}
+
+/// A section's rows with worktrees nested (WPF's worktree clusters, as plan §4 has them: shown
+/// under their repo automatically). Live sessions first, then asleep, as [`ordered`]; a session
+/// in a linked worktree follows the row of its main checkout's session (`parent`, or another
+/// session of the main checkout when the parent's row is in another section) when that is in the
+/// section, else it sits under a [`SideItem::Repo`] header with the other worktrees of that
+/// repository, placed where the first of them would be. Every session appears exactly once.
+pub fn nest<'a>(ss: &[&'a SessionView]) -> Vec<SideItem<'a>> {
+    use crate::git_model::folder_key;
+    let list = ordered(ss);
+    let here = |id: &str| list.iter().find(|x| x.id == id).copied();
+    // A row others may nest under: not nested itself (no parent in this section).
+    let top = |p: &SessionView| p.parent.as_deref().is_none_or(|pp| pp == p.id || here(pp).is_none());
+    let repo_key = |s: &SessionView| -> Option<String> {
+        s.worktree_of.as_ref()?;
+        s.repo_root.as_deref().map(folder_key).or_else(|| s.worktree_of.as_deref().map(str::to_lowercase))
+    };
+    // The row a session nests under: its parent when that is here and a top row; for a session
+    // in a linked worktree, else the first top row of a session in the repository's main checkout.
+    let parent_of = |s: &SessionView| -> Option<String> {
+        let parent = s.parent.as_deref().filter(|p| *p != s.id).and_then(&here).filter(|p| top(p));
+        let main = || {
+            s.worktree_of.as_ref()?;
+            let root = folder_key(s.repo_root.as_deref()?);
+            list.iter()
+                .find(|m| m.id != s.id && m.worktree_of.is_none() && m.repo_root.as_deref().map(folder_key) == Some(root.clone()) && top(m))
+                .copied()
+        };
+        parent.or_else(main).map(|p| p.id.clone())
+    };
+    let orphan = |s: &SessionView| parent_of(s).is_none() && repo_key(s).is_some();
+    let mut out = Vec::new();
+    let mut done: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    // A row and, depth first, every row nested under it.
+    let emit = |out: &mut Vec<SideItem<'a>>, done: &mut std::collections::HashSet<&'a str>, s: &'a SessionView, nested: bool| {
+        let mut stack = vec![(s, nested)];
+        while let Some((x, n)) = stack.pop() {
+            if !done.insert(x.id.as_str()) {
+                continue;
+            }
+            out.push(SideItem::Session { s: x, nested: n });
+            let kids: Vec<&'a SessionView> =
+                list.iter().copied().filter(|c| !done.contains(c.id.as_str()) && parent_of(c).as_deref() == Some(x.id.as_str())).collect();
+            stack.extend(kids.into_iter().rev().map(|c| (c, true)));
+        }
+    };
+    for &s in &list {
+        if done.contains(s.id.as_str()) || parent_of(s).is_some() {
+            continue;
+        }
+        if orphan(s) {
+            let key = repo_key(s);
+            let members: Vec<&'a SessionView> = list.iter().copied().filter(|m| orphan(m) && repo_key(m) == key).collect();
+            let name = s.worktree_of.clone().unwrap_or_default();
+            out.push(SideItem::Repo { name, count: members.len() });
+            for m in members {
+                emit(&mut out, &mut done, m, true);
+            }
+            continue;
+        }
+        emit(&mut out, &mut done, s, false);
+    }
+    // Whatever a parent chain left out (never expected): a plain row rather than a lost one.
+    for &s in &list {
+        if !done.contains(s.id.as_str()) {
+            emit(&mut out, &mut done, s, false);
+        }
+    }
+    out
+}
+
+/// A section's rows: sessions (worktrees nested) and the light repo headers, each recorded for
+/// the drop resolver.
+fn section_rows(ui: &mut Ui, app: &mut CsmApp, ss: &[&SessionView], rows: &mut Vec<SidebarRow>, actions: &mut Vec<Action>) {
+    for item in nest(ss) {
+        match item {
+            SideItem::Session { s, nested } => {
+                let r = row_at(ui, app, s, nested, actions);
+                rows.push(SidebarRow::new(row_kind(s), Some(&s.id), f64::from(r.rect.top()), f64::from(r.rect.height())));
+            }
+            SideItem::Repo { name, count } => {
+                let r = repo_header(ui, &name, count);
+                rows.push(SidebarRow::new(SidebarRowKind::ClusterHeader, None, f64::from(r.top()), f64::from(r.height())));
+            }
+        }
+    }
+}
+
+/// The light `repo (N)` line over worktree sessions whose main checkout has no row here.
+fn repo_header(ui: &mut Ui, name: &str, count: usize) -> Rect {
+    let t = Tokens::get(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_SM), Sense::hover());
+    let cy = rect.center().y;
+    let ir = Rect::from_min_size(pos2(rect.min.x + space::SM, cy - icon::XS / 2.0), Vec2::splat(icon::XS));
+    icons::paint(ui, ir, "folder", icon::XS, t.faint);
+    let label = format!("{name} ({count})");
+    widgets::paint_text(
+        ui,
+        pos2(ir.max.x + space::XS, cy),
+        Align2::LEFT_CENTER,
+        &label,
+        theme::medium(text::CAPTION),
+        t.muted,
+        rect.width() - space::XXL,
+    );
+    named(&resp, WidgetType::Label, format!("Repo: {label}"));
+    resp.on_hover_text(format!("Worktrees of {name}; its main checkout has no session here"));
+    rect
 }
 
 fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
@@ -741,10 +857,7 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
             actions.push(Action::StartGroupRename(g.clone()));
         }
         if !collapsed {
-            for s in ordered(&ss) {
-                let r = row(ui, app, s, actions);
-                rows.push(SidebarRow::new(row_kind(s), Some(&s.id), f64::from(r.rect.top()), f64::from(r.rect.height())));
-            }
+            section_rows(ui, app, &ss, rows, actions);
             if ss.is_empty() {
                 ui.horizontal(|ui| {
                     ui.add_space(space::LG + space::XS);
@@ -758,6 +871,11 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
 /// A compact session row (`.row`): accent stripe, name (with kind badge), branch, status glyph;
 /// the selected row gets a second line with the status word and folder.
 pub fn row(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) -> egui::Response {
+    row_at(ui, app, s, s.parent.is_some(), actions)
+}
+
+/// [`row`], indented (with the worktree mark) when `nested` under its repo.
+fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions: &mut Vec<Action>) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let model = app.model.clone();
     let model = model.as_ref();
@@ -791,7 +909,7 @@ pub fn row(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
     if resp.has_focus() {
         p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
     }
-    let indent = if s.parent.is_some() { space::LG - space::XXS } else { 0.0 };
+    let indent = if nested { space::LG - space::XXS } else { 0.0 };
     let cy = rect.min.y + size::ROW / 2.0;
     let stripe = Rect::from_center_size(pos2(rect.min.x + space::SM + indent + size::STRIPE / 2.0, cy), vec2(size::STRIPE, icon::MD));
     p.rect_filled(stripe, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
@@ -806,7 +924,7 @@ pub fn row(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
         right = br.min.x - space::SM;
     }
     let mut x = stripe.max.x + space::SM;
-    if s.parent.is_some() {
+    if nested || s.worktree_of.is_some() {
         icons::paint(&child, Rect::from_min_size(pos2(x, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "fork", icon::XS, t.faint);
         x += icon::XS + space::XS;
     }
@@ -867,4 +985,80 @@ pub fn kind_badge(ui: &Ui, left_center: egui::Pos2, label: &str) -> Rect {
     ui.painter().rect_stroke(r, CornerRadius::same(radius::SM - 1), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, label, theme::mono(text::CAPS), t.muted);
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(id: &str, parent: Option<&str>, worktree_of: Option<&str>, root: Option<&str>, status: Status) -> SessionView {
+        SessionView {
+            id: id.into(),
+            name: id.into(),
+            parent: parent.map(Into::into),
+            worktree_of: worktree_of.map(Into::into),
+            repo_root: root.map(Into::into),
+            status,
+            ..SessionView::default()
+        }
+    }
+
+    fn shape(items: &[SideItem<'_>]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                SideItem::Session { s, nested: true } => format!("  {}", s.id),
+                SideItem::Session { s, nested: false } => s.id.clone(),
+                SideItem::Repo { name, count } => format!("[{name} ({count})]"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn worktrees_follow_their_main_checkout_or_sit_under_a_repo_header() {
+        use Status::*;
+        let all = [
+            s("wt1", Some("main"), Some("Repo"), Some("C:\\r"), Working),
+            s("other", None, None, None, Idle),
+            s("main", None, None, Some("C:\\r"), Idle),
+            s("wt2", Some("main"), Some("Repo"), Some("C:\\r"), Asleep),
+            // A worktree of another repo whose main checkout has no session (the root spelled
+            // two ways: case and a trailing separator).
+            s("x1", None, Some("Lib"), Some("C:\\lib"), Idle),
+            s("x2", None, Some("Lib"), Some("C:\\LIB\\"), Working),
+        ];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["other", "main", "  wt1", "  wt2", "[Lib (2)]", "  x1", "  x2"]);
+
+        // Without the main checkout in the section (another group): a header instead.
+        let refs: Vec<&SessionView> = all.iter().filter(|x| x.id != "main").collect();
+        assert_eq!(shape(&nest(&refs)), ["[Repo (2)]", "  wt1", "  wt2", "other", "[Lib (2)]", "  x1", "  x2"]);
+    }
+
+    #[test]
+    fn a_worktree_nests_under_a_main_checkout_session_in_its_own_section() {
+        use Status::*;
+        // The engine picked `main` (another group) as the parent; `main2` is the same checkout here.
+        let all = [s("wt", Some("main"), Some("Repo"), Some("C:\\r"), Idle), s("main2", None, None, Some("c:\\R\\"), Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["main2", "  wt"]);
+    }
+
+    #[test]
+    fn rows_under_a_nested_row_are_never_lost() {
+        use Status::*;
+        // `child` has the worktree session as its parent: under a repo header, and under a
+        // worktree that nests by repo root, it still shows (once).
+        let all = [s("wt", None, Some("Repo"), Some("C:\\r"), Idle), s("child", Some("wt"), None, None, Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["[Repo (1)]", "  wt", "  child"]);
+        let all =
+            [s("wt", None, Some("Repo"), Some("C:\\r"), Idle), s("child", Some("wt"), None, None, Idle), s("main", None, None, Some("C:\\r"), Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["main", "  wt", "  child"]);
+        // A parent cycle: both still appear.
+        let all = [s("a", Some("b"), None, None, Idle), s("b", Some("a"), None, None, Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(nest(&refs).len(), 2);
+    }
 }

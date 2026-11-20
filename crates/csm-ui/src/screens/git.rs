@@ -79,6 +79,8 @@ struct TabMem {
     switch_open: bool,
     /// The New worktree input, while open.
     new_worktree: Option<String>,
+    /// Put the keyboard in the New worktree input on its next frame.
+    focus_new: bool,
     /// The worktree path whose removal is being confirmed.
     confirm_remove: Option<String>,
     delete_branch: bool,
@@ -96,6 +98,17 @@ fn load(ui: &Ui) -> TabMem {
 
 fn store(ui: &Ui, m: TabMem) {
     ui.ctx().data_mut(|d| d.insert_temp(mem_id(), m));
+}
+
+/// "New worktree from this branch…" (the session menus): the tab opens with its New worktree
+/// input showing and focused. The caller focuses the session and shows the tab.
+pub fn open_new_worktree(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        let mut m = d.get_temp::<TabMem>(mem_id()).unwrap_or_default();
+        m.new_worktree.get_or_insert_with(String::new);
+        m.focus_new = true;
+        d.insert_temp(mem_id(), m);
+    });
 }
 
 fn caption(ui: &mut Ui, t: &Tokens, s: &str) {
@@ -387,6 +400,9 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
                 let r = ui
                     .add(egui::TextEdit::singleline(&mut name).hint_text("new-branch").desired_width(ui.available_width() - size::CONTROL_LG * 3.0));
                 r.widget_info(|| egui::WidgetInfo::labeled(WidgetType::TextEdit, true, "New worktree branch"));
+                if std::mem::take(&mut mem.focus_new) {
+                    r.request_focus();
+                }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let create = widgets::button(ui, ButtonKind::Primary, Some("plus"), "Create", None).clicked();
                 if (create || enter) && !name.trim().is_empty() {
@@ -397,10 +413,13 @@ fn worktrees(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail, mem: &mut 
                     keep = false;
                 }
             });
+            let from = s.branch.as_deref().map_or_else(|| "HEAD".to_string(), |b| format!("this branch, {b},"));
             caption(
                 ui,
                 t,
-                "Checks out the branch (created from HEAD when new) beside the main checkout and opens a session there with this one's command.",
+                &format!(
+                    "Checks out the branch (created from {from} when new) beside the main checkout and opens a session there with this one's command."
+                ),
             );
             if keep {
                 mem.new_worktree = Some(name);

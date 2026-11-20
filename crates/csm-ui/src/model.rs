@@ -187,6 +187,9 @@ pub struct SessionView {
     pub git_summary: Option<String>,
     /// In a linked worktree: the main repo's name.
     pub worktree_of: Option<String>,
+    /// The main checkout of the repository the folder is in (shared by its worktrees): the
+    /// sidebar's repo header groups worktree sessions by it.
+    pub repo_root: Option<String>,
     /// A git operation is running on this session's repository.
     pub git_busy: bool,
     pub status: Status,
@@ -771,6 +774,9 @@ pub struct UiModel {
     pub wpf_import: Option<String>,
     /// The Git tab's details per session, from git tool replies (`crate::git_model`).
     pub git: BTreeMap<SessionId, crate::git_model::GitDetail>,
+    /// Worktrees of a folder no session is asked for (`worktree_list {folder}`, the quick-open's
+    /// sibling checkboxes), keyed by [`crate::git_model::folder_key`]. Empty: not a repository.
+    pub folder_worktrees: BTreeMap<String, Vec<crate::git_model::WorktreeRow>>,
     /// The Open with list (the editor).
     pub open_with: Vec<OpenWithEntryView>,
     /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).

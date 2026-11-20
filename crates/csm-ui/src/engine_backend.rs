@@ -140,6 +140,7 @@ impl EngineBackend {
     fn publish(&mut self, view: &Snapshot) {
         let mut m = map_snapshot(view, &self.opts, self.theme);
         m.git = self.git.map.clone();
+        m.folder_worktrees = self.git.folders.clone();
         if let Some(q) = &self.quit {
             let used = q.started.elapsed().as_secs_f32().min(self.opts.shutdown_budget_s.max(1.0));
             m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: self.opts.shutdown_budget_s.max(1.0) });
@@ -403,6 +404,7 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         changes: u32::try_from(s.git_changes).unwrap_or(u32::MAX),
         git_summary: s.git_summary.clone(),
         worktree_of: s.worktree_of.clone(),
+        repo_root: s.repo_root.clone(),
         git_busy: s.git_busy,
         status: status_from_engine(s.status),
         progress: s.progress,
@@ -564,6 +566,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         wpf_import: if sessions.is_empty() { opts.wpf_import.clone() } else { None },
         windows: view.windows.clone(),
         git: Default::default(),
+        folder_worktrees: Default::default(),
         open_with: view
             .open_with
             .iter()
