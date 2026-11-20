@@ -374,6 +374,10 @@ fn minimize_maximize_restore_are_real_and_focus_restores() {
     let out = r.engine.call(Caller::Ui, "pane_restore", json!({"session_id": b})).unwrap();
     assert_eq!(out.data["maximized"], serde_json::Value::Null);
     assert_eq!(r.engine.view().current_layout().maximized, None);
+    // A group's layout only takes its own sessions.
+    let g = r.engine.call(Caller::Ui, "group_new", json!({"name": "Elsewhere"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    assert!(r.engine.call(Caller::Ui, "pane_minimize", json!({"session_id": b, "group": g})).is_err());
+    assert!(r.engine.view().layouts.get(&g).is_none_or(|l| l.minimized.is_empty()));
     // Closing a minimized session forgets it.
     r.engine.call(Caller::Ui, "pane_minimize", json!({"session_id": b})).unwrap();
     r.engine.call(Caller::Ui, "session_close", json!({"session_id": b, "force": true})).unwrap();

@@ -53,10 +53,14 @@ fn key_of(state: &State, group: Option<&str>) -> Result<String, ToolError> {
 
 fn edit(ctx: &mut Ctx<'_>, params: Value, op: fn(&mut Layout, &str, &[SessionId]) -> &'static str) -> Reply {
     let p: PaneParams = parse_params(params)?;
-    if !ctx.state.app.sessions.iter().any(|s| s.id == p.session_id) {
+    let Some(group_id) = ctx.state.app.sessions.iter().find(|s| s.id == p.session_id).map(|s| s.group_id.clone()) else {
         return Err(ToolError::NotFound(format!("no session `{}`", p.session_id)));
-    }
+    };
     let key = key_of(ctx.state, p.group.as_deref())?;
+    // A layout only arranges its own sessions (a stray id would sit in it, unseen, for ever).
+    if key != ALL_LAYOUT_KEY && group_id != key {
+        return Err(ToolError::InvalidParams(format!("session `{}` is not in group `{key}`", p.session_id)));
+    }
     let live: Vec<SessionId> =
         ctx.state.app.sessions.iter().filter(|s| !s.is_dormant && (key == ALL_LAYOUT_KEY || s.group_id == key)).map(|s| s.id.clone()).collect();
     let core = ctx.state.app.ui.layouts.entry(key.clone()).or_default();

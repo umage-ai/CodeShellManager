@@ -324,6 +324,26 @@ fn close_goes_through_the_busy_check() {
     let p = control(&h2, "Odulodo.Web (PS)", "Close session");
     click_at(&mut h2, p);
     assert_eq!(calls_since(&h2, before, "session_close"), vec![json!({"session_id": "webps", "force": false})]);
+
+    // Every other UI close goes the same way: Ctrl+W on a busy active session asks first.
+    let mut h3 = self::h();
+    let ctx = h3.ctx.clone();
+    h3.state_mut().run(&ctx, Action::Tool("session_focus", json!({"session_id": "odulodo"})));
+    settle(&mut h3);
+    let before = h3.state().submitted().len();
+    h3.state_mut().run(&ctx, Action::CloseSession("odulodo".into()));
+    settle(&mut h3);
+    assert!(calls_since(&h3, before, "session_close").is_empty(), "the ⋯ menu / Ctrl+W close asks first too");
+    assert_eq!(h3.state().ui.overlay, csm_ui::app::Overlay::Confirm);
+
+    // With the warning off (Settings), a busy session closes at once, forced.
+    let mut h4 = self::h();
+    h4.state_mut().prefs.warn_on_close_when_busy = false;
+    let before = h4.state().submitted().len();
+    let p = control(&h4, "Odulodo", "Close session");
+    click_at(&mut h4, p);
+    assert_eq!(calls_since(&h4, before, "session_close"), vec![json!({"session_id": "odulodo", "force": true})]);
+    assert_ne!(h4.state().ui.overlay, csm_ui::app::Overlay::Confirm);
 }
 
 #[test]

@@ -115,21 +115,26 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     let lay = model.layout(&model.pane_scope());
     let pane = json!({"session_id": id, "group": scope});
     let maxed = lay.maximized.as_deref() == Some(id);
-    v.extend([
-        Entry::Sep,
-        item("min", "Minimize", tool("pane_minimize", pane.clone())),
+    // A torn-off pane has its OS window's own minimize and maximize; in Focus the one pane
+    // already fills the canvas.
+    let torn = lay.torn.iter().any(|t| t == id);
+    v.push(Entry::Sep);
+    if !torn {
+        v.push(item("min", "Minimize", tool("pane_minimize", pane.clone())));
         if maxed {
-            item("unmax", "Restore", tool("pane_restore", pane.clone()))
-        } else {
-            item("max", "Maximize", tool("pane_maximize", pane.clone()))
-        },
-    ]);
-    if lay.floats.iter().any(|f| f.session == id) || lay.torn.iter().any(|t| t == id) {
+            v.push(item("unmax", "Restore", tool("pane_restore", pane.clone())));
+        } else if lay.mode != crate::model::LayoutMode::Focus {
+            v.push(item("max", "Maximize", tool("pane_maximize", pane.clone())));
+        }
+    }
+    if torn || lay.floats.iter().any(|f| f.session == id) {
         v.push(item("dock", "Dock", tool("pane_dock", pane.clone())));
     } else {
         v.push(item("float", "Float in this window", tool("pane_float", pane.clone())));
     }
-    v.push(item("tear", "Move to a new window", tool("pane_tear_off", pane.clone())));
+    if !torn {
+        v.push(item("tear", "Move to a new window", tool("pane_tear_off", pane.clone())));
+    }
     if lay.mode == crate::model::LayoutMode::Side {
         let pinned = lay.pinned.iter().any(|p| p == id);
         let (label, tid) = if pinned { ("Unpin from Side by side", "layout_unpin") } else { ("Pin to Side by side", "layout_pin") };
@@ -144,7 +149,7 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         label: "Close".into(),
         hint: Some("Ctrl W".into()),
         danger: true,
-        action: tool("session_close", json!({"session_id": id, "force": false})),
+        action: Action::CloseSession(id.to_string()),
     });
     v
 }
@@ -198,7 +203,7 @@ pub fn row_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         label: "Close".into(),
         hint: None,
         danger: true,
-        action: tool("session_close", json!({"session_id": id, "force": false})),
+        action: Action::CloseSession(id.to_string()),
     });
     v
 }

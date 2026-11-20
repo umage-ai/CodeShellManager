@@ -45,6 +45,9 @@ pub enum Action {
     FocusTerminal(SessionId),
     /// The busy-close dialog (closing the app).
     AskQuit,
+    /// Close one session from the UI (a pane's ✕, its ⋯ menu, the sidebar menu, Ctrl+W):
+    /// `session_close`, asking first when it is busy unless that warning is off.
+    CloseSession(SessionId),
     /// A consent card was answered.
     Consent {
         request_id: u64,
@@ -813,6 +816,12 @@ impl CsmApp {
             Action::RunSearch => self.submit_search(ctx),
             Action::PaletteTool(id) => self.palette_tool(ctx, id),
             Action::FocusTerminal(id) => self.ui.focus_terminal = Some(id),
+            Action::CloseSession(id) => {
+                self.ui.menu = None;
+                let Some(s) = self.model.session(&id) else { return };
+                let next = screens::panes::close_action(s, !self.prefs.warn_on_close_when_busy);
+                self.run(ctx, next);
+            }
             Action::AskQuit => {
                 self.ui.menu = None;
                 if self.model.shutdown.is_some() {
@@ -1054,7 +1063,7 @@ impl CsmApp {
                 self.run(ctx, Action::Tool("run_start", json!({"session_id": a})));
             }
             if pressed(ctx, cmd, Key::W) {
-                self.run(ctx, Action::Tool("session_close", json!({"session_id": a, "force": false})));
+                self.run(ctx, Action::CloseSession(a));
             }
         }
         // F2 renames the active session in place.

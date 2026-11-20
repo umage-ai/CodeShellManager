@@ -41,8 +41,6 @@ pub struct PaneOpts {
     pub pinned: bool,
     /// Filling the whole canvas (`pane_maximize`); the window bar offers Restore.
     pub maximized: bool,
-    /// The busy-close warning is off (Settings): Close on a busy session closes it at once.
-    pub quiet_close: bool,
 }
 
 /// The tiling of the Side by side mode (the mock's `tileCss`): columns, rows, and whether the
@@ -282,7 +280,6 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     };
     let planned = plan(&model, &scope, &layout, inner);
     let maxed = planned.iter().any(|(_, _, o)| o.maximized);
-    let quiet_close = !app.prefs.warn_on_close_when_busy;
     if planned.is_empty() {
         let msg = if model.scope_sessions(&scope).is_empty() {
             "No sessions here yet. Ctrl+T starts one."
@@ -298,7 +295,6 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     {
         let mut host = lock(&host);
         for (id, r, mut o) in planned.iter().cloned() {
-            o.quiet_close = quiet_close;
             o.focus = focus.as_deref() == Some(id.as_str()) && !o.mini;
             if o.focus {
                 app.ui.focus_terminal = None;
@@ -353,7 +349,6 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     mode: Some(LayoutMode::Free),
                     floating: true,
                     active: model.active.as_deref() == Some(s.id.as_str()),
-                    quiet_close,
                     ..PaneOpts::default()
                 };
                 let area_id = Id::new(("float", f.session.clone()));
@@ -791,8 +786,9 @@ fn take_room(room: &mut f32, w: f32) -> bool {
     }
 }
 
-/// The window bar's Close: `session_close`, asking first when the session is busy (working, or
-/// waiting on an approval or a question) unless that warning is off.
+/// What closing `s` from the UI does ([`Action::CloseSession`]): `session_close`, asking first when
+/// it is busy (working, or waiting on an approval or a question) unless that warning is off
+/// (`quiet`), in which case it closes at once.
 pub fn close_action(s: &SessionView, quiet: bool) -> Action {
     let busy = matches!(s.status, Status::Working | Status::Approval | Status::Question);
     if busy && !quiet {
@@ -808,8 +804,9 @@ pub fn close_action(s: &SessionView, quiet: bool) -> Action {
             yes: Box::new(Action::Tool("session_close", json!({"session_id": s.id, "force": true}))),
         })
     } else {
-        // Not busy: the engine's own guard still refuses if it became busy meanwhile.
-        Action::Tool("session_close", json!({"session_id": s.id, "force": busy}))
+        // Warning off: close outright. Not busy: the engine's own guard still refuses if it
+        // became busy meanwhile (its busy rules also look at recent output).
+        Action::Tool("session_close", json!({"session_id": s.id, "force": quiet}))
     }
 }
 
@@ -935,7 +932,7 @@ pub fn pane(
 
     // The window bar.
     if ctl(ui, "x", false, "Close session", &mut x) {
-        actions.push(close_action(s, o.quiet_close));
+        actions.push(Action::CloseSession(s.id.clone()));
     }
     let toggle_max = || {
         let id = if o.maximized { "pane_restore" } else { "pane_maximize" };
@@ -1254,7 +1251,6 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
         return;
     }
     let state = torn_state(ctx);
-    let quiet_close = !app.prefs.warn_on_close_when_busy;
     {
         let mut st = lock(&state);
         st.model = model.clone();
@@ -1275,7 +1271,7 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, 0.0, t.crust);
             if let Some(s) = model.session(&id) {
-                let o = PaneOpts { torn: true, active: true, quiet_close, ..PaneOpts::default() };
+                let o = PaneOpts { torn: true, active: true, ..PaneOpts::default() };
                 pane(ui, &mut lock(&host), &model, s, src.as_deref(), rect.shrink(space::PANE_GAP), o, &Scope::from_key(&key), &mut out);
             }
             if ui.ctx().input(|i| i.viewport().close_requested()) {
