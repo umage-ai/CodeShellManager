@@ -130,6 +130,8 @@ pub struct LoadReport {
     pub path: Option<PathBuf>,
     /// `None` when nothing was read (no path).
     pub source: Option<LoadSource>,
+    /// Unreadable state files kept aside as `<file>.bad-<ms>` (issue #166); empty normally.
+    pub set_aside: Vec<PathBuf>,
 }
 
 /// Progress of a long loop (restore, bulk restart, quit), for the rail and the shutdown board.
@@ -245,7 +247,16 @@ impl State {
             }
             _ => {}
         }
-        (State::new(app, options), LoadReport { path, source })
+        // Issue #166: an unreadable file is kept where no save can overwrite it (only when this
+        // run saves at all: `--clean` and isolated runs never touch the disk).
+        let set_aside = match (&path, source) {
+            (Some(p), Some(src)) if options.saves() => persist::keep_unreadable(p, src, crate::session::now_ms()),
+            _ => Vec::new(),
+        };
+        for f in &set_aside {
+            log::warn!("state: the unreadable file was kept as {}", f.display());
+        }
+        (State::new(app, options), LoadReport { path, source, set_aside })
     }
 
     pub fn options(&self) -> &StateOptions {

@@ -14,6 +14,7 @@ mod runs;
 mod search;
 mod sessions;
 mod slash;
+mod snapshots;
 mod usage;
 
 use serde_json::Value;
@@ -38,6 +39,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(slash::specs());
     v.extend(backup::specs());
     v.extend(usage::specs());
+    v.extend(snapshots::specs());
     v
 }
 
