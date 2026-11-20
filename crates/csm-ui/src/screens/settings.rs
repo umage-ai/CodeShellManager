@@ -257,6 +257,22 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     bool_setting(
         ui,
         app,
+        "PassSessionNameToClaude",
+        "Name Claude conversations after the session",
+        "Claude starts with --name and the session's name, so its /resume list and terminal title show it. Needs a Claude Code that knows --name; applies from the next start.",
+        actions,
+    );
+    bool_setting(
+        ui,
+        app,
+        "CloseToTray",
+        "Keep running in the tray when the window closes",
+        "Closing the window hides it and sessions keep working; the tray icon shows it again, and its menu has Quit. Windows and macOS.",
+        actions,
+    );
+    bool_setting(
+        ui,
+        app,
         "WarnOnCloseWhenBusy",
         "Warn when closing busy sessions",
         "Ask before quitting while a session is working or waiting on you.",
@@ -302,6 +318,10 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         actions.push(set("Theme", json!(id)));
     }
     caption(ui, "System follows the light or dark setting of your desktop.");
+    section(ui, "Interface");
+    let zoom = csm_core::models::UI_ZOOM_RANGE;
+    number_setting(ui, app, "UiZoomPercent", "Interface size", i64::from(*zoom.start())..=i64::from(*zoom.end()), "%", actions);
+    caption(ui, "Text, icons and spacing of the whole window; terminals keep their own font size. Ctrl+= and Ctrl+- step it, Ctrl+0 resets it.");
     section(ui, "Terminal");
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Font").font(theme::regular(text::BODY)).color(t.fg));

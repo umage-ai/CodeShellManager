@@ -177,7 +177,25 @@ pub struct AppSettings {
     /// (an OSC 52 query) is never answered. Issue #156. Written only when turned off.
     #[serde(skip_serializing_if = "is_true")]
     pub allow_osc52_clipboard: bool,
+    /// The whole UI's zoom in percent ([`UI_ZOOM_RANGE`]; 100 = the system scale). The terminal's
+    /// font size is its own setting and does not follow it.
+    #[serde(skip_serializing_if = "is_default_zoom")]
+    pub ui_zoom_percent: i32,
+    /// Closing the main window hides it to the tray instead of quitting; sessions keep running.
+    /// Off by default. Quit (the tray's, the menu's, `app_quit`) still quits.
+    #[serde(skip_serializing_if = "is_false")]
+    pub close_to_tray: bool,
+    /// Launch local Claude sessions with `--name <session name>`, so the conversation carries the
+    /// session's name in Claude's own `/resume` list. Opt-in: it changes the `claude` command
+    /// line, and a Claude CLI too old to know `--name` would refuse to start.
+    #[serde(skip_serializing_if = "is_false")]
+    pub pass_session_name_to_claude: bool,
 }
+
+/// The values `UiZoomPercent` may take.
+pub const UI_ZOOM_RANGE: std::ops::RangeInclusive<i32> = 80..=200;
+/// `UiZoomPercent`'s default.
+pub const UI_ZOOM_DEFAULT: i32 = 100;
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -190,6 +208,9 @@ fn is_zero(n: &i32) -> bool {
 }
 fn is_default_padding(n: &i32) -> bool {
     *n == default_padding()
+}
+fn is_default_zoom(n: &i32) -> bool {
+    *n == UI_ZOOM_DEFAULT
 }
 
 impl Default for AppSettings {
@@ -238,6 +259,9 @@ impl Default for AppSettings {
             terminal_font_points: 0,
             claude_commands: SlashCommand::defaults(),
             allow_osc52_clipboard: t(),
+            ui_zoom_percent: UI_ZOOM_DEFAULT,
+            close_to_tray: false,
+            pass_session_name_to_claude: false,
         }
     }
 }

@@ -15,6 +15,7 @@
 
 pub mod app;
 pub mod backend;
+pub mod background;
 pub mod demo;
 pub mod engine_backend;
 pub mod git_model;
@@ -28,6 +29,7 @@ pub mod screens;
 pub mod terminal;
 pub mod theme;
 pub mod widgets;
+pub mod zoom;
 
 pub use app::{Action, CsmApp};
 pub use backend::{Backend, Call, Dispatcher, Notice};

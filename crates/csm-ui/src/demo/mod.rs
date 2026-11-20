@@ -771,6 +771,33 @@ impl DemoBackend {
                 }
                 toast("Sent.".into())
             }
+            "session_send_text_many" => {
+                // As the engine: every live member of the group that isn't mid-turn.
+                let Some(text) = call.params["text"].as_str() else { return vec![] };
+                let submit = call.params["submit"].as_bool().unwrap_or(false);
+                let group = call.params["group_id"].as_str();
+                let ids: Vec<SessionId> = match (group, call.params["session_ids"].as_array()) {
+                    (Some(g), _) => self.model.sessions.iter().filter(|s| s.group.as_deref() == Some(g)).map(|s| s.id.clone()).collect(),
+                    (None, Some(list)) => list.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+                    _ => vec![],
+                };
+                let (mut sent, mut skipped) = (0, 0);
+                for id in ids {
+                    let ready =
+                        self.model.session(&id).is_some_and(|s| s.status.is_live() && !matches!(s.status, Status::Working | Status::Starting));
+                    match self.terms.get(&id).filter(|_| ready) {
+                        Some(t) => {
+                            t.write(&csm_term::input::paste(csm_term::input::Untrusted(text), t.mode()));
+                            if submit {
+                                t.write(b"\r");
+                            }
+                            sent += 1;
+                        }
+                        None => skipped += 1,
+                    }
+                }
+                toast(format!("Sent to {sent} sessions; skipped {skipped}."))
+            }
             "session_send_command" => {
                 // The demo's sessions aren't the engine's: type the command into the demo terminal.
                 let sid = call.params["session_id"].as_str().unwrap_or_default();

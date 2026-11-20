@@ -290,6 +290,10 @@ impl TerminalView {
         let inner = inset(rect, opts);
         // The session's font size as a scale on the renderer's: metrics and glyphs at that size.
         let scale = opts.font_pt.filter(|p| p.is_finite() && *p > 0.0).map_or(1.0, |p| (p / renderer.fonts.size_pt.max(1.0)).clamp(0.25, 4.0));
+        // The UI zoom (`UiZoomPercent`) scales points; the terminal keeps its own font size, so
+        // its cells are measured at the native scale.
+        let ui_zoom = ctx.zoom_factor();
+        let scale = if ui_zoom.is_finite() && ui_zoom > 0.0 { scale / ui_zoom } else { scale };
         let sense = if opts.interactive { Sense::click_and_drag() } else { Sense::click() };
         let resp = ui.interact(rect, self.id, sense);
         let clicked = resp.is_pointer_button_down_on() || resp.clicked();

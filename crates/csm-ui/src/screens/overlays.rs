@@ -74,7 +74,7 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
 }
 
 /// Every keyboard shortcut, in one place (`?`, F1, Ctrl+/).
-pub const SHORTCUTS: [(&str, &str); 27] = [
+pub const SHORTCUTS: [(&str, &str); 29] = [
     ("Ctrl K", "Search sessions and commands"),
     ("Ctrl F", "Search all output and notes"),
     ("Ctrl T", "New session"),
@@ -97,6 +97,8 @@ pub const SHORTCUTS: [(&str, &str); 27] = [
     ("F5", "Run the default run command"),
     ("Shift F5", "Stop it"),
     ("Ctrl ,", "Settings"),
+    ("Ctrl =  Ctrl -", "Larger or smaller interface"),
+    ("Ctrl 0", "Interface at 100%"),
     ("F1  ?  Ctrl /", "This list"),
     ("Esc", "Close a menu, panel or dialog"),
     ("Enter", "Open or run the selected row"),

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use csm_core::models::{AppSettings, SessionStatus};
+use csm_core::models::{AppSettings, SessionStatus, UI_ZOOM_RANGE};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -135,8 +135,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 }
 
 /// Settings an MCP client may not change: they decide what runs, or are secrets.
-/// (`ClaudeCommands` is text the app types into sessions.)
-const APP_ONLY_KEYS: [&str; 8] = [
+/// (`ClaudeCommands` is text the app types into sessions; `PassSessionNameToClaude` changes every
+/// Claude command line, and a Claude CLI without `--name` would then refuse to start.)
+const APP_ONLY_KEYS: [&str; 9] = [
     "AnthropicApiKey",
     "DefaultCommand",
     "DefaultWorkingFolder",
@@ -145,6 +146,7 @@ const APP_ONLY_KEYS: [&str; 8] = [
     "OpenWithSeeded",
     "UseBundledConPty",
     "ClaudeCommands",
+    "PassSessionNameToClaude",
 ];
 const SECRET_KEYS: [&str; 1] = ["AnthropicApiKey"];
 
@@ -175,6 +177,9 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("TerminalFontPoints").or_insert(json!(s.terminal_font_points));
         m.entry("ClaudeCommands").or_insert(json!(s.claude_commands));
         m.entry("AllowOsc52Clipboard").or_insert(json!(s.allow_osc52_clipboard));
+        m.entry("UiZoomPercent").or_insert(json!(s.ui_zoom_percent));
+        m.entry("CloseToTray").or_insert(json!(s.close_to_tray));
+        m.entry("PassSessionNameToClaude").or_insert(json!(s.pass_session_name_to_claude));
     }
     Ok(v)
 }
@@ -253,8 +258,19 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     m.insert(key.clone(), p.value.clone());
     let updated: AppSettings =
         serde_json::from_value(Value::Object(m)).map_err(|e| ToolError::InvalidParams(format!("`{key}` cannot be {}: {e}", p.value)))?;
+    if key == "UiZoomPercent" && !UI_ZOOM_RANGE.contains(&updated.ui_zoom_percent) {
+        return Err(ToolError::InvalidParams(format!("UiZoomPercent is a percentage from {} to {}", UI_ZOOM_RANGE.start(), UI_ZOOM_RANGE.end())));
+    }
     ctx.state.app.settings = updated;
     ctx.state.persist();
+    // Events reach every IPC client: a secret's value never goes out.
+    // Masked as `settings_get` masks it: "(set)", or "" once cleared.
+    let shown = if SECRET_KEYS.contains(&key.as_str()) {
+        json!(if p.value.as_str().is_some_and(|x| !x.is_empty()) { "(set)" } else { "" })
+    } else {
+        p.value.clone()
+    };
+    ctx.events.emit(crate::Event::SettingChanged { key: key.clone(), value: shown });
     let restart = matches!(key.as_str(), "UseBundledConPty");
     let msg = if restart { format!("{key} saved; it takes effect when the app restarts.") } else { format!("{key} saved.") };
     Ok(ToolOutput::new(msg, json!({"key": key, "value": p.value})))

@@ -54,15 +54,18 @@ fn looking_at<'a>(front: Option<egui::ViewportId>, sessions: &'a [crate::model::
 }
 
 impl CsmApp {
-    /// Feeds this frame's statuses to the notifier; what it decides waits for the host.
-    pub(crate) fn watch_attention(&mut self, ctx: &egui::Context) {
+    /// Feeds this pass's statuses to the notifier; what it decides waits for the host. `time` is
+    /// seconds on egui's clock (carried on by the wall clock while the window is hidden, when
+    /// egui's stands still: see [`crate::background`]).
+    pub(crate) fn watch_attention(&mut self, ctx: &egui::Context, time: f64) {
         let model = self.model.clone();
         let obs: Vec<Observation<'_>> = model
             .sessions
             .iter()
             .map(|s| Observation { session_id: &s.id, name: &s.name, attention: attention(s.status), detail: &s.detail })
             .collect();
-        let (front, time) = ctx.input(|i| (window_in_front(&i.raw.viewports), i.time));
+        // Hidden to the tray: nobody is looking at any session.
+        let front = if self.background.hidden { None } else { ctx.input(|i| window_in_front(&i.raw.viewports)) };
         let cx = NotifyContext {
             // Quitting: sessions being stopped are not news.
             enabled: self.prefs.notifications && model.shutdown.is_none(),
@@ -85,6 +88,11 @@ impl CsmApp {
             body: "Notifications reach you. Sessions that need you will show up like this.".into(),
             sound: self.prefs.notification_sound,
         };
+        self.queue(vec![n]);
+    }
+
+    /// One notification the app itself decided to send ("still running in the tray").
+    pub(crate) fn queue_notification(&mut self, n: Notification) {
         self.queue(vec![n]);
     }
 
