@@ -276,6 +276,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         wpf_import: None,
         git: crate::git_model::demo_details(),
         open_with: demo_open_with(),
+        windows: BTreeMap::new(),
     }
 }
 
@@ -773,6 +774,23 @@ impl DemoBackend {
             "group_restart_all" => {
                 let g = parse::<GroupForceParams>(call).and_then(|p| self.model.group(&p.group_id).map(|g| g.name.clone())).unwrap_or_default();
                 toast(format!("Restarting every session in {g}, one at a time."))
+            }
+            "window_placement_set" => {
+                // The demo engine knows none of the demo's groups or sessions: keep it here.
+                let p = &call.params;
+                let n = |k: &str| p.get(k).and_then(serde_json::Value::as_i64).and_then(|v| i32::try_from(v).ok()).unwrap_or(0);
+                if let Some(w) = p.get("window").and_then(serde_json::Value::as_str) {
+                    let placement = csm_core::models::WindowPlacementState {
+                        left: n("left"),
+                        top: n("top"),
+                        width: n("width"),
+                        height: n("height"),
+                        dpi: n("dpi"),
+                    };
+                    let maximized = p.get("maximized").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    self.model.windows.insert(w.to_string(), csm_core::models::WindowSlot { placement, maximized });
+                }
+                vec![]
             }
             "group_tear_off" | "group_dock" => {
                 let Some(p) = parse::<GroupIdParams>(call) else { return vec![] };

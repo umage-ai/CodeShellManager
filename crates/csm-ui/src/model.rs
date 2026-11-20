@@ -714,6 +714,8 @@ pub struct UiModel {
     pub git: BTreeMap<SessionId, crate::git_model::GitDetail>,
     /// The Open with list (the editor).
     pub open_with: Vec<OpenWithEntryView>,
+    /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).
+    pub windows: BTreeMap<String, csm_core::models::WindowSlot>,
 }
 
 impl UiModel {

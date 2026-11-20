@@ -21,4 +21,8 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 # at the one craft-libs pin (docs/plan.md section 7).
 craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "692a7fe5c95947e11850eeefc4e071623d4bbf47" }
 egui = "0.36"
+# eframe's own winit (same version; no features of its own): the event loop is run here so the
+# monitor list can be read from it, which only an active winit event loop can do.
+winit = { version = "0.30", default-features = false }
+csm-core = { path = "../../crates/csm-core" }
 log = "0.4"

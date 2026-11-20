@@ -394,6 +394,10 @@ pub struct CsmApp {
     pub quit_ready: bool,
     /// Settings the screens follow live.
     pub prefs: Prefs,
+    /// The monitors, as the host reads them (see [`crate::placement`]); empty when unknown.
+    pub monitors: crate::placement::Monitors,
+    /// The main window's bounds: restored on the first frame, saved as it moves.
+    pub main_window: crate::placement::WindowTracker,
 }
 
 impl CsmApp {
@@ -415,6 +419,8 @@ impl CsmApp {
             fonts_installed: false,
             quit_ready: false,
             prefs: Prefs::default(),
+            monitors: crate::placement::Monitors::default(),
+            main_window: crate::placement::WindowTracker::new("main"),
         };
         // The settings the screens follow (theme, terminal font size and padding, the busy warning).
         app.dispatch.submit("settings_get", json!({}));
@@ -1124,9 +1130,18 @@ impl CsmApp {
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
+        if let Some(p) = self.main_window.step(&ctx, self.model.windows.get("main").copied(), &self.monitors, min) {
+            self.dispatch.submit("window_placement_set", p);
+        }
         // Closing the window is quitting: sessions get their time to exit (the shutdown board),
         // and the window closes on `QuitReady`.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
+            // Window bounds still settling are saved now, ahead of the quit's own save.
+            let pending = self.main_window.flush().into_iter().chain(screens::panes::flush_torn_placements(&ctx));
+            for p in pending.collect::<Vec<_>>() {
+                self.dispatch.submit("window_placement_set", p);
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.run(&ctx, Action::AskQuit);
         }

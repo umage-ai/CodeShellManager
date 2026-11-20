@@ -558,6 +558,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         theme,
         now_ms,
         wpf_import: if sessions.is_empty() { opts.wpf_import.clone() } else { None },
+        windows: view.windows.clone(),
         git: Default::default(),
         open_with: view
             .open_with

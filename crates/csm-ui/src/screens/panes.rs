@@ -6,10 +6,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use csm_core::models::{WindowSlot, group_window_key, pane_window_key};
 use egui::{
-    Align2, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportId, WidgetInfo, WidgetType,
-    pos2, vec2,
+    Align2, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportId,
+    WidgetInfo, WidgetType, pos2, vec2,
 };
+
+use crate::placement::{Monitors, WindowTracker};
 use serde_json::json;
 
 use crate::app::{Action, CsmApp, Menu, PaneHost};
@@ -945,6 +948,38 @@ fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(Sessio
 pub struct TornState {
     pub model: Arc<UiModel>,
     pub sources: HashMap<SessionId, Arc<dyn TerminalSource>>,
+    /// Where each torn-off window is (restore once, save as it moves), by window key.
+    pub trackers: HashMap<String, WindowTracker>,
+    pub monitors: Monitors,
+}
+
+/// Restores a torn-off window's bounds on its first frame and saves them as it moves; a window
+/// about to close or dock saves at once. Only for a real OS window: embedded in the main window
+/// (the test harness) it has no bounds of its own.
+fn track_torn(ui: &Ui, class: ViewportClass, state: &Mutex<TornState>, wkey: &str, saved: Option<WindowSlot>, out: &mut Vec<Action>) {
+    if class != ViewportClass::Deferred {
+        return;
+    }
+    let leaving = ui.ctx().input(|i| i.viewport().close_requested()) || out.iter().any(|a| matches!(a, Action::Tool("pane_dock" | "group_dock", _)));
+    let mut st = lock(state);
+    let monitors = st.monitors.clone();
+    let tr = st.trackers.entry(wkey.to_string()).or_insert_with(|| WindowTracker::new(wkey));
+    let mut p = tr.step(ui.ctx(), saved, &monitors, Vec2::ZERO);
+    if leaving {
+        p = p.or_else(|| tr.flush());
+    }
+    drop(st);
+    if let Some(p) = p {
+        // Before the dock, so the bounds are kept for the next tear-off.
+        out.insert(0, Action::Tool("window_placement_set", p));
+    }
+}
+
+/// Bounds of torn-off windows still settling, to save now (the app is quitting).
+pub fn flush_torn_placements(ctx: &egui::Context) -> Vec<serde_json::Value> {
+    let state = torn_state(ctx);
+    let mut st = lock(&state);
+    st.trackers.values_mut().filter_map(WindowTracker::flush).collect()
 }
 
 /// Torn-off panes and groups as deferred viewports: each renders and presents in its own pass,
@@ -961,21 +996,25 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
         }
     }
     let groups: Vec<String> = model.groups.iter().filter(|g| g.torn_off).map(|g| g.id.clone()).collect();
-    if panes.is_empty() && groups.is_empty() {
-        return;
-    }
     let state = torn_state(ctx);
     {
+        // A window that closed forgets its tracker, so tearing it off again restores its bounds.
+        let shown: Vec<String> = panes.iter().map(|(id, _)| pane_window_key(id)).chain(groups.iter().map(|g| group_window_key(g))).collect();
         let mut st = lock(&state);
+        st.trackers.retain(|k, _| shown.contains(k));
+        if panes.is_empty() && groups.is_empty() {
+            return;
+        }
         st.model = model.clone();
         st.sources = model.sessions.iter().filter_map(|s| app.backend.terminal(&s.id).map(|t| (s.id.clone(), t))).collect();
+        st.monitors = app.monitors.clone();
     }
     for (id, key) in panes {
         let name = model.session(&id).map_or_else(String::new, |s| s.name.clone());
         let vid = ViewportId::from_hash_of(("torn-pane", id.clone()));
         let builder = ViewportBuilder::default().with_title(format!("{name} · CodeShellManager")).with_inner_size(size::TEAR_OFF);
         let (host, actions, state) = (app.host.clone(), app.remote_actions.clone(), state.clone());
-        ctx.show_viewport_deferred(vid, builder, move |ui, _class| {
+        ctx.show_viewport_deferred(vid, builder, move |ui, class| {
             let st = lock(&state);
             let model = st.model.clone();
             let src = st.sources.get(&id).cloned();
@@ -991,6 +1030,8 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 out.push(Action::Tool("pane_dock", json!({"session_id": id, "group": key})));
             }
+            let wkey = pane_window_key(&id);
+            track_torn(ui, class, &state, &wkey, model.windows.get(&wkey).copied(), &mut out);
             if !out.is_empty() {
                 lock(&actions).extend(out);
                 ui.ctx().request_repaint_of(ViewportId::ROOT);
@@ -1002,7 +1043,7 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
         let vid = ViewportId::from_hash_of(("torn-group", gid.clone()));
         let builder = ViewportBuilder::default().with_title(format!("{name} · CodeShellManager")).with_inner_size(size::TEAR_OFF);
         let (host, actions, state) = (app.host.clone(), app.remote_actions.clone(), state.clone());
-        ctx.show_viewport_deferred(vid, builder, move |ui, _class| {
+        ctx.show_viewport_deferred(vid, builder, move |ui, class| {
             let st = lock(&state);
             let model = st.model.clone();
             let sources = st.sources.clone();
@@ -1012,6 +1053,8 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 out.push(Action::Tool("group_dock", json!({"group_id": gid})));
             }
+            let wkey = group_window_key(&gid);
+            track_torn(ui, class, &state, &wkey, model.windows.get(&wkey).copied(), &mut out);
             if !out.is_empty() {
                 lock(&actions).extend(out);
                 ui.ctx().request_repaint_of(ViewportId::ROOT);

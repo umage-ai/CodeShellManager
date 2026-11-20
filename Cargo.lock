@@ -689,6 +689,7 @@ name = "codeshell"
 version = "0.0.1"
 dependencies = [
  "craft-dialogs",
+ "csm-core",
  "csm-engine",
  "csm-mcp",
  "csm-pty",
@@ -696,6 +697,7 @@ dependencies = [
  "eframe",
  "egui",
  "log",
+ "winit",
 ]
 
 [[package]]

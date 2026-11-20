@@ -621,6 +621,7 @@ fn every_tool_has_an_object_schema_and_the_catalogue_is_complete() {
         "layout_unpin",
         "inspector_show",
         "inbox_panel_set",
+        "window_placement_set",
         "recently_closed_list",
         "app_info",
         "settings_get",
@@ -751,8 +752,7 @@ fn window_placements_persist_per_window_and_never_under_clean() {
         let e = csm_engine::Engine::start(state, vec![]).unwrap();
         let folder = dir.path().to_string_lossy().into_owned();
         let gid = e.call(Caller::Ui, "group_new", json!({"name": "G"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
-        let sid =
-            e.call(Caller::Ui, "session_new", json!({"folder": folder, "command": "pwsh"})).unwrap().data["id"].as_str().unwrap().to_owned();
+        let sid = e.call(Caller::Ui, "session_new", json!({"folder": folder, "command": "pwsh"})).unwrap().data["id"].as_str().unwrap().to_owned();
         set(&e, json!({"window": "main", "left": 2200, "top": 300, "width": 2400, "height": 1500, "dpi": 144, "maximized": true})).unwrap();
         set(&e, json!({"window": format!("group:{gid}"), "left": -1700, "top": 10, "width": 900, "height": 600, "dpi": 96})).unwrap();
         set(&e, json!({"window": format!("pane:{sid}"), "left": 5, "top": 6, "width": 700, "height": 500, "dpi": 120})).unwrap();

@@ -377,7 +377,119 @@ fn a_pane_tears_off_into_its_own_window_and_docks_back() {
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(layout(&h).torn.is_empty(), "still torn off: {:?}; last calls: {:?}", layout(&h).torn, h.state().submitted().iter().rev().take(3).map(|c| &c.id).collect::<Vec<_>>());
+    assert!(
+        layout(&h).torn.is_empty(),
+        "still torn off: {:?}; last calls: {:?}",
+        layout(&h).torn,
+        h.state().submitted().iter().rev().take(3).map(|c| &c.id).collect::<Vec<_>>()
+    );
+}
+
+/// One pass of a torn-off window as eframe runs a deferred viewport: its own input (the window's
+/// bounds in points at 100%, an optional close), its callback. Returns its viewport commands.
+fn torn_pass(h: &Harness<'static, csm_ui::CsmApp>, vid: egui::ViewportId, x: f32, time: f64, close: bool) -> Vec<egui::ViewportCommand> {
+    let cb = h.output().viewport_output.get(&vid).and_then(|v| v.viewport_ui_cb.clone()).expect("the torn-off window is a deferred viewport");
+    let outer = egui::Rect::from_min_size(egui::pos2(x, 100.0), vec2(976.0, 599.0));
+    let info = egui::ViewportInfo {
+        native_pixels_per_point: Some(1.0),
+        outer_rect: Some(outer),
+        inner_rect: Some(egui::Rect::from_min_max(outer.min + vec2(8.0, 31.0), outer.max - vec2(8.0, 8.0))),
+        maximized: Some(false),
+        minimized: Some(false),
+        events: if close { vec![egui::ViewportEvent::Close] } else { vec![] },
+        ..Default::default()
+    };
+    let mut input = egui::RawInput { viewport_id: vid, time: Some(time), ..Default::default() };
+    input.viewports.insert(vid, info);
+    let out = h.ctx.run_ui(input, |ui| cb(ui));
+    // Only the bounds commands (egui adds its own, e.g. the title, on a first pass).
+    let cmds = out.viewport_output.get(&vid).map(|v| v.commands.clone()).unwrap_or_default();
+    cmds.into_iter()
+        .filter(|c| matches!(c, egui::ViewportCommand::OuterPosition(_) | egui::ViewportCommand::InnerSize(_) | egui::ViewportCommand::Maximized(_)))
+        .collect()
+}
+
+#[test]
+fn a_torn_off_windows_bounds_are_saved_as_it_moves_and_restored_when_torn_off_again() {
+    let mut h = h();
+    h.get_by_label("Layout: Free").click();
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::Tool("pane_tear_off", serde_json::json!({"session_id": "webps"})));
+    settle(&mut h);
+    assert_eq!(layout(&h).torn, vec!["webps".to_string()]);
+    // As in the app: the window is a real OS window (a deferred viewport), not embedded.
+    h.ctx.set_embed_viewports(false);
+    h.step();
+    let vid = egui::ViewportId::from_hash_of(("torn-pane", "webps".to_string()));
+    let before = h.state().submitted().len();
+
+    // Nothing saved yet: no restore. Dragged from x=100 to 400: nothing is sent mid-drag.
+    assert!(torn_pass(&h, vid, 100.0, 10.0, false).is_empty());
+    torn_pass(&h, vid, 250.0, 10.1, false);
+    torn_pass(&h, vid, 400.0, 10.2, false);
+    h.step();
+    assert!(calls_since(&h, before, "window_placement_set").is_empty(), "nothing while it moves");
+    // Settled: saved, in physical pixels (100% here), once.
+    torn_pass(&h, vid, 400.0, 10.8, false);
+    torn_pass(&h, vid, 400.0, 11.5, false);
+    settle(&mut h);
+    let saved = calls_since(&h, before, "window_placement_set");
+    assert_eq!(
+        saved,
+        vec![serde_json::json!({"window": "pane:webps", "left": 400, "top": 100, "width": 976, "height": 599, "dpi": 96, "maximized": false})]
+    );
+    assert_eq!(h.state().model.windows["pane:webps"].placement.left, 400);
+
+    // Moved again and closed before it settled: the bounds are saved first, then it docks.
+    let before = h.state().submitted().len();
+    torn_pass(&h, vid, 520.0, 20.0, false);
+    torn_pass(&h, vid, 520.0, 20.05, true);
+    settle(&mut h);
+    let ids: Vec<&str> =
+        h.state().submitted()[before..].iter().map(|c| c.id.as_str()).filter(|id| id.starts_with("window") || id.starts_with("pane")).collect();
+    assert_eq!(ids, vec!["window_placement_set", "pane_dock"]);
+    assert_eq!(calls_since(&h, before, "window_placement_set")[0]["left"], 520);
+    for _ in 0..200 {
+        if layout(&h).torn.is_empty() {
+            break;
+        }
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(layout(&h).torn.is_empty());
+
+    // Torn off again: its first frame puts it back where it was.
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::Tool("pane_tear_off", serde_json::json!({"session_id": "webps"})));
+    settle(&mut h);
+    h.step();
+    let cmds = torn_pass(&h, vid, 0.0, 30.0, false);
+    assert_eq!(cmds.first(), Some(&egui::ViewportCommand::OuterPosition(egui::pos2(520.0, 100.0))));
+    assert!(cmds.contains(&egui::ViewportCommand::InnerSize(vec2(960.0, 560.0))), "{cmds:?}");
+    assert!(torn_pass(&h, vid, 520.0, 30.1, false).is_empty(), "restored once");
+}
+
+#[test]
+fn the_main_windows_bounds_are_saved_once_it_settles() {
+    let mut h = h();
+    let before = h.state().submitted().len();
+    {
+        let root = h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default();
+        root.outer_rect = Some(egui::Rect::from_min_size(egui::pos2(40.0, 30.0), vec2(1296.0, 839.0)));
+        root.inner_rect = Some(egui::Rect::from_min_size(egui::pos2(48.0, 61.0), vec2(1280.0, 800.0)));
+        root.maximized = Some(false);
+        root.minimized = Some(false);
+    }
+    h.step();
+    assert!(calls_since(&h, before, "window_placement_set").is_empty(), "not on the first frame");
+    for _ in 0..60 {
+        h.step();
+    }
+    let saved = calls_since(&h, before, "window_placement_set");
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0]["window"], "main");
+    assert_eq!((saved[0]["left"].as_i64(), saved[0]["width"].as_i64()), (Some(40), Some(1296)));
 }
 
 fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize, id: &str) -> Vec<serde_json::Value> {
