@@ -20,7 +20,9 @@
 mod clean;
 mod db;
 mod handle;
+mod usage;
 
 pub use clean::{LineCleaner, normalize_folder};
 pub use db::{Db, IndexError, NoteHit, NoteRow, OutputHit, SCHEMA_VERSION, SchemaStats, fts_phrase};
 pub use handle::{Index, IndexLocation, IndexOptions};
+pub use usage::{UsageStat, usage_command_key, utc_day};

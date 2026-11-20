@@ -161,6 +161,18 @@ impl Index {
         self.call(move |db| db.save_history(&id, &name, &folder, &snap, now_ms()), log_err);
     }
 
+    /// Counts a session of `command` started today (usage stats). Queued, never waited for.
+    pub fn record_usage_start(&self, command: &str) {
+        let command = command.to_owned();
+        self.call(move |db| db.usage_record_start(&command, &crate::utc_day(now_ms())), log_err);
+    }
+
+    /// Adds a session's running time to `command`'s total (usage stats). Queued.
+    pub fn record_usage_seconds(&self, command: &str, seconds: i64) {
+        let command = command.to_owned();
+        self.call(move |db| db.usage_record_seconds(&command, &crate::utc_day(now_ms()), seconds), log_err);
+    }
+
     /// Writes what is pending and stops the thread. Later calls fail with "not running".
     pub fn shutdown(&self) {
         let _ = self.tx.send(Msg::Shutdown);

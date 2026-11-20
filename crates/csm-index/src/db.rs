@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::clean::normalize_folder;
 
 /// The schema version this build writes. Migrations run in order from the file's version.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const MARK_START: char = '\u{1}';
 const MARK_END: char = '\u{2}';
@@ -85,7 +85,7 @@ pub struct SchemaStats {
 }
 
 pub struct Db {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 /// The FTS5 expression for user text taken literally: one quoted phrase.
@@ -125,6 +125,12 @@ impl Db {
             let tx = self.conn.transaction()?;
             tx.execute_batch(V1)?;
             tx.pragma_update(None, "user_version", 1)?;
+            tx.commit()?;
+        }
+        if v < 2 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(crate::usage::V2)?;
+            tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
         Ok(())
