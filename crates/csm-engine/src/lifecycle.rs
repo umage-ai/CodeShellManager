@@ -789,7 +789,7 @@ pub(crate) fn close_session(ctx: &mut Ctx<'_>, id: &str, force: bool) -> Result<
 /// Drops every reference to a removed session (pins, focus, restart bookkeeping).
 pub(crate) fn forget_session(state: &mut State, id: &str) {
     for l in state.app.ui.layouts.values_mut() {
-        l.pinned.retain(|p| p != id);
+        l.forget(id);
     }
     if state.rt.focused.as_deref() == Some(id) {
         state.rt.focused = None;
@@ -878,6 +878,10 @@ pub(crate) fn focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError
         && !restoring
     {
         s.last_activity_at = Timestamp::from_epoch_ms(now_ms());
+    }
+    // A minimized pane comes back, and a different pane filling its layout's canvas gives way.
+    for (key, l) in ctx.state.app.ui.layouts.iter_mut() {
+        l.reveal(id, key == csm_core::models::ALL_LAYOUT_KEY || *key == group);
     }
     if snapshot::group_view_of(ctx.state) == snapshot::GroupView::Rail
         && let Some(tab) = &ctx.state.app.ui.rail_tab

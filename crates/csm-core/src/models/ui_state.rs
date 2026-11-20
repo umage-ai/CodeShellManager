@@ -60,11 +60,50 @@ pub struct GroupLayout {
     /// Free layout: an opaque tree the UI owns (split ratios, floating panes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub free_tree: Option<serde_json::Value>,
+    /// Panes minimized out of this layout (their sessions keep running), in the order they left.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub minimized: Vec<String>,
+    /// The pane filling the whole canvas for now; the layout underneath is kept as it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximized: Option<String>,
 }
 
 impl Default for GroupLayout {
     fn default() -> Self {
-        Self { mode: LayoutMode::Side, grid_cols: default_cols(), grid_rows: default_rows(), pinned: Vec::new(), free_tree: None }
+        Self {
+            mode: LayoutMode::Side,
+            grid_cols: default_cols(),
+            grid_rows: default_rows(),
+            pinned: Vec::new(),
+            free_tree: None,
+            minimized: Vec::new(),
+            maximized: None,
+        }
+    }
+}
+
+impl GroupLayout {
+    /// A session was focused: it comes back from the minimized strip, and a different pane that
+    /// filled the canvas gives way (when `in_scope`, i.e. this layout lays the session out), so
+    /// the focused one can be seen. Returns whether anything changed.
+    pub fn reveal(&mut self, id: &str, in_scope: bool) -> bool {
+        let before = self.minimized.len();
+        self.minimized.retain(|m| m != id);
+        let mut changed = self.minimized.len() != before;
+        if in_scope && self.maximized.as_deref().is_some_and(|m| m != id) {
+            self.maximized = None;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Drops every reference to a session that no longer exists.
+    pub fn forget(&mut self, id: &str) {
+        self.pinned.retain(|p| p != id);
+        self.minimized.retain(|m| m != id);
+        if self.maximized.as_deref() == Some(id) {
+            self.maximized = None;
+        }
     }
 }
 
@@ -137,5 +176,28 @@ mod tests {
         assert_eq!(back, ui);
         let empty: UiState = serde_json::from_str("{}").unwrap();
         assert!(empty.inbox_open);
+    }
+
+    #[test]
+    fn minimized_and_maximized_persist_and_focus_reveals() {
+        let mut l = GroupLayout { minimized: vec!["a".into(), "b".into()], maximized: Some("c".into()), ..Default::default() };
+        let json = serde_json::to_string(&l).unwrap();
+        assert!(json.contains(r#""Minimized":["a","b"]"#) && json.contains(r#""Maximized":"c""#), "{json}");
+        assert_eq!(serde_json::from_str::<GroupLayout>(&json).unwrap(), l);
+        // Absent in older files, and not written while empty.
+        let old: GroupLayout = serde_json::from_str(r#"{"Mode":"free"}"#).unwrap();
+        assert!(old.minimized.is_empty() && old.maximized.is_none());
+        assert!(!serde_json::to_string(&old).unwrap().contains("Minimized"));
+        // Focusing c keeps it maximized; focusing a brings a back and un-maximizes c.
+        assert!(!l.reveal("c", true));
+        assert!(l.reveal("a", true));
+        assert_eq!((l.minimized.clone(), l.maximized.clone()), (vec!["b".to_string()], None));
+        // Another scope's layout keeps its maximized pane.
+        let mut other = GroupLayout { maximized: Some("x".into()), ..Default::default() };
+        assert!(!other.reveal("a", false));
+        assert_eq!(other.maximized.as_deref(), Some("x"));
+        l.maximized = Some("b".into());
+        l.forget("b");
+        assert!(l.minimized.is_empty() && l.maximized.is_none());
     }
 }
