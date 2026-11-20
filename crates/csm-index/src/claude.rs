@@ -366,7 +366,8 @@ impl Db {
         Ok(out)
     }
 
-    /// Requests with `from_ms <= ts < to_ms`, grouped, most expensive first.
+    /// Requests with `from_ms <= ts < to_ms`, grouped, most expensive first. Requests without a
+    /// time are counted only when `from_ms` is `i64::MIN` (all of it).
     pub fn claude_summary(&self, from_ms: i64, to_ms: i64, by: ClaudeGroupBy) -> Result<Vec<ClaudeSummaryRow>, IndexError> {
         let key = match by {
             ClaudeGroupBy::Project => "COALESCE(project, '')",
@@ -376,9 +377,9 @@ impl Db {
         let mut st = self.conn.prepare(&format!(
             "SELECT {key} AS k, COUNT(*), SUM(input), SUM(output), SUM(cache_read), SUM(cache_w5), SUM(cache_w1h), COALESCE(SUM(cost), 0),
                     SUM(cost IS NULL), GROUP_CONCAT(DISTINCT CASE WHEN cost IS NULL THEN model END)
-             FROM claude_requests WHERE ts >= ?1 AND ts < ?2 GROUP BY k ORDER BY COALESCE(SUM(cost), 0) DESC, k"
+             FROM claude_requests WHERE COALESCE(ts, ?3) >= ?1 AND COALESCE(ts, ?3) < ?2 GROUP BY k ORDER BY COALESCE(SUM(cost), 0) DESC, k"
         ))?;
-        let rows = st.query_map(params![from_ms, to_ms], |r| {
+        let rows = st.query_map(params![from_ms, to_ms, i64::MIN], |r| {
             let models: Option<String> = r.get(9)?;
             Ok(ClaudeSummaryRow {
                 key: r.get(0)?,
@@ -548,10 +549,17 @@ mod tests {
         assert_eq!((window[0].key.as_str(), window[0].requests), ("s1", 2));
         let models = db.claude_summary(0, 10_000, ClaudeGroupBy::Model).unwrap();
         assert!(models.iter().any(|r| r.key == "qwen" && r.unpriced_requests == 1));
+        // A request without a time counts in "all", never in a dated period.
+        let undated = UsageRequest { ts_ms: None, ..req("u1", 0, None, 1, "claude-x") };
+        db.claude_ingest(&ClaudeIngest { file: file("/t/c.jsonl", "s3", 1), requests: vec![undated], ..ClaudeIngest::default() }, &price).unwrap();
+        let all: u64 = db.claude_summary(i64::MIN, i64::MAX, ClaudeGroupBy::Session).unwrap().iter().map(|r| r.requests).sum();
+        assert_eq!(all, 5);
+        let dated: u64 = db.claude_summary(0, i64::MAX, ClaudeGroupBy::Session).unwrap().iter().map(|r| r.requests).sum();
+        assert_eq!(dated, 4);
 
         // A new table prices qwen too.
         let n = db.claude_reprice(&|r| (Some(r.model.clone()), Some(1.0))).unwrap();
-        assert_eq!(n, 4);
+        assert_eq!(n, 5);
         assert_eq!(db.claude_live(&["s1".into()]).unwrap()[0].unpriced_requests, 0);
         db.claude_set_meta("price_sig", "abc").unwrap();
         assert_eq!(db.claude_meta("price_sig").unwrap().as_deref(), Some("abc"));

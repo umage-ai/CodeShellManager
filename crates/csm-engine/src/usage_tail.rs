@@ -72,8 +72,13 @@ pub(crate) struct UsageTail {
 const BUDGET: u64 = 16 * 1024 * 1024;
 /// How often the engine re-checks which sessions to follow.
 const LINK_CHECK: Duration = Duration::from_millis(1000);
-/// How long a folder-based guess (or a missing transcript) is reused before looking again.
+/// How long a folder-based guess is reused before looking again.
 const GUESS_TTL: Duration = Duration::from_secs(20);
+/// How soon a transcript that was not found is looked for again (in its own folder's).
+const MISSING_RETRY: Duration = Duration::from_secs(2);
+/// Every project folder is searched for a known conversation not in its own folder's at most
+/// once per this many polls (10 s in production).
+const FULL_SCAN_POLLS: u32 = 5;
 
 impl UsageTail {
     /// Starts the thread when the run has an index and transcript roots.
@@ -174,8 +179,20 @@ struct Tailer {
     roots: Vec<PathBuf>,
     /// Read positions, by path (loaded from the index the first time a file is seen).
     files: HashMap<String, ClaudeFile>,
-    /// The main transcript of each followed session, and when it was found.
-    mains: HashMap<String, (Option<PathBuf>, Instant, Option<String>)>,
+    /// The main transcript of each followed session, as last looked up.
+    mains: HashMap<String, MainLook>,
+    /// How often every project folder may be searched for a transcript ([`FULL_SCAN_POLLS`]).
+    full_every: Duration,
+}
+
+/// Where a followed session's main transcript was found (or not), and when.
+struct MainLook {
+    path: Option<PathBuf>,
+    at: Instant,
+    /// The conversation id it was looked up for.
+    sid: Option<String>,
+    /// When every project folder was last searched for it.
+    full_at: Option<Instant>,
 }
 
 fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cell: Arc<OnceLock<PriceSource>>) {
@@ -201,7 +218,8 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
             }
         },
     );
-    let mut t = Tailer { index, table, roots: resolve_roots(&roots), files: HashMap::new(), mains: HashMap::new() };
+    let full_every = poll.saturating_mul(FULL_SCAN_POLLS);
+    let mut t = Tailer { index, table, roots: resolve_roots(&roots), files: HashMap::new(), mains: HashMap::new(), full_every };
     let mut roots_at = Instant::now();
     let mut links: Vec<Link> = Vec::new();
     let mut more = false;
@@ -234,26 +252,35 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
 impl Tailer {
     /// The main transcript of a link: by its id, else by the folder guess (cached a while).
     fn main_of(&mut self, link: &Link) -> Option<(String, PathBuf)> {
-        if let Some((path, at, sid)) = self.mains.get(&link.csm_session)
-            && sid == &link.claude_sid
-            && path.as_ref().is_some_and(|p| p.is_file())
-            && (link.claude_sid.is_some() || at.elapsed() < GUESS_TTL)
+        let prev = self.mains.get(&link.csm_session).filter(|m| m.sid == link.claude_sid);
+        if let Some(m) = prev
+            && m.path.as_ref().is_some_and(|p| p.is_file())
+            && (link.claude_sid.is_some() || m.at.elapsed() < GUESS_TTL)
         {
-            let p = path.clone()?;
+            let p = m.path.clone()?;
             let id = p.file_stem()?.to_string_lossy().into_owned();
             return Some((id, p));
         }
-        if let Some((_, at, sid)) = self.mains.get(&link.csm_session)
-            && sid == &link.claude_sid
-            && at.elapsed() < Duration::from_secs(2)
-        {
+        if prev.is_some_and(|m| m.at.elapsed() < MISSING_RETRY) {
             return None; // looked a moment ago and found nothing
         }
+        let mut full_at = prev.and_then(|m| m.full_at);
         let found = match &link.claude_sid {
-            Some(sid) => discover::find_transcript(&self.roots, sid).map(|p| (sid.clone(), p)),
+            // Its own folder's project directories every couple of seconds (a conversation nothing
+            // was said in yet has no transcript); every project folder only now and then.
+            Some(sid) => discover::find_in_folder(&self.roots, sid, &link.folder)
+                .or_else(|| {
+                    if full_at.is_some_and(|t| t.elapsed() < self.full_every) {
+                        return None;
+                    }
+                    full_at = Some(Instant::now());
+                    discover::find_transcript(&self.roots, sid)
+                })
+                .map(|p| (sid.clone(), p)),
             None => discover::newest_transcript_for_folder(&self.roots, &link.folder),
         };
-        self.mains.insert(link.csm_session.clone(), (found.as_ref().map(|(_, p)| p.clone()), Instant::now(), link.claude_sid.clone()));
+        let look = MainLook { path: found.as_ref().map(|(_, p)| p.clone()), at: Instant::now(), sid: link.claude_sid.clone(), full_at };
+        self.mains.insert(link.csm_session.clone(), look);
         found
     }
 

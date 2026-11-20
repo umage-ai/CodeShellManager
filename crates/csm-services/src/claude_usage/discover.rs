@@ -79,6 +79,22 @@ pub fn find_transcript(roots: &[PathBuf], sid: &str) -> Option<PathBuf> {
     })
 }
 
+/// [`find_transcript`], looking first in the project folders Claude names after `folder` (a
+/// couple of stats), and only then through every project folder.
+pub fn find_transcript_near(roots: &[PathBuf], sid: &str, folder: &str) -> Option<PathBuf> {
+    find_in_folder(roots, sid, folder).or_else(|| find_transcript(roots, sid))
+}
+
+/// The transcript of `sid` in the project folders Claude names after `folder` only.
+pub fn find_in_folder(roots: &[PathBuf], sid: &str, folder: &str) -> Option<PathBuf> {
+    if !is_safe_session_id(sid) {
+        return None;
+    }
+    let file = format!("{sid}.jsonl");
+    let names = project_dir_names(folder);
+    roots.iter().find_map(|root| names.iter().map(|n| root.join("projects").join(n).join(&file)).find(|p| p.is_file()))
+}
+
 /// The subagent transcripts of a main transcript: `(agent id, path)`, sorted by path.
 pub fn subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
     let Some(stem) = main.file_stem() else { return Vec::new() };
@@ -218,6 +234,11 @@ mod tests {
         assert_eq!(main, dir.join("abc-1.jsonl"));
         assert_eq!(find_transcript(&roots, "nope"), None);
         assert_eq!(find_transcript(&roots, "../abc-1"), None, "only safe ids");
+        // Its own folder's project directory first; another folder only through the full search.
+        assert_eq!(find_in_folder(&roots, "abc-1", r"C:\src\x"), Some(dir.join("abc-1.jsonl")));
+        assert_eq!(find_in_folder(&roots, "abc-1", r"C:\src\other"), None);
+        assert_eq!(find_transcript_near(&roots, "abc-1", r"C:\src\other"), Some(dir.join("abc-1.jsonl")));
+        assert_eq!(find_in_folder(&roots, "../abc-1", r"C:\src\x"), None);
         let subs: Vec<String> = subagent_files(&main).into_iter().map(|(a, _)| a).collect();
         assert_eq!(subs, ["a1", "a2"]);
         assert_eq!(transcript_cwd(&main).as_deref(), Some(r"C:\src\x"));

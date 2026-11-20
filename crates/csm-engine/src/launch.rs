@@ -13,7 +13,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use csm_core::models::{SessionKind, ShellSession};
 use csm_services::argv::split_command_line;
@@ -151,10 +151,17 @@ pub fn plan_with(s: &ShellSession, claude_id: Option<ClaudeId<'_>>, wrapper: &st
     Ok(Plan { argv, cwd, is_claude, path: None, claude_session_id: None })
 }
 
-/// [`plan`] plus its I/O: the Claude resume lookup (only when `resume` is set), the PowerShell
-/// to wrap with, and a folder that no longer exists falling back to home (the WPF rule).
-/// Blocking; worker threads only.
+/// [`resolve_with`] for a session alone in its folder (tests).
+#[cfg(test)]
 pub fn resolve(s: &ShellSession, resume: bool, mcp: Option<&McpOffer>) -> Result<Plan, String> {
+    resolve_with(s, resume, true, mcp)
+}
+
+/// [`plan_with`] plus its I/O: the Claude conversation lookup, the PowerShell to wrap with, and a
+/// folder that no longer exists falling back to home (the WPF rule). `sole_in_folder`: no other
+/// CSM Claude session works in this folder (false: a resume never adopts a newer transcript of
+/// the folder). Blocking; worker threads only.
+pub fn resolve_with(s: &ShellSession, resume: bool, sole_in_folder: bool, mcp: Option<&McpOffer>) -> Result<Plan, String> {
     // "Offer CodeShellManager's tools to Claude sessions" (Settings → MCP, off by default): a local
     // Claude session gets `--mcp-config <file>` pointing at `csm mcp --session <id>`, so its calls
     // carry the session id and the consent card can say "Claude in <name> wants to…".
@@ -174,17 +181,19 @@ pub fn resolve(s: &ShellSession, resume: bool, mcp: Option<&McpOffer>) -> Result
         },
         None => s,
     };
+    let modified = |p: &std::path::Path| p.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
     let choice = choose_claude_id(
         s,
         resume,
+        sole_in_folder,
         |id| {
-            let mut roots = claude_usage::discover::claude_roots();
-            roots.extend(claude_usage::discover::claude_home());
-            claude_usage::discover::find_transcript(&roots, id).is_some()
+            // Claude resumes from its own config folder: look there (not other profiles).
+            let home: Vec<PathBuf> = claude_usage::discover::claude_home().into_iter().collect();
+            claude_usage::discover::find_transcript_near(&home, id, s.working_folder.trim()).map(|p| modified(&p))
         },
         || {
             let home: Vec<PathBuf> = claude_usage::discover::claude_home().into_iter().collect();
-            claude_usage::discover::newest_transcript_for_folder(&home, s.working_folder.trim()).map(|(id, _)| id)
+            claude_usage::discover::newest_transcript_for_folder(&home, s.working_folder.trim()).map(|(id, p)| (id, modified(&p)))
         },
         || uuid::Uuid::new_v4().to_string(),
     );
@@ -305,11 +314,17 @@ fn conversation_in_args(args: &str) -> Option<Option<String>> {
 ///   session from before CSM stored ids falls back to `guess`: the newest transcript whose `cwd`
 ///   is the folder;
 /// - arguments that already pick a conversation are left alone (an id they name is recorded).
+///
+/// `exists` and `guess` return the transcript's modification time. `sole_in_folder` says no other
+/// CSM Claude session works in this folder: then a transcript of the folder written after the
+/// stored one is taken to be this session's (a `/clear` in Claude starts a new conversation id
+/// that CSM is not told about), the rule the app used before ids were stored.
 pub fn choose_claude_id(
     s: &ShellSession,
     resume: bool,
-    exists: impl Fn(&str) -> bool,
-    guess: impl FnOnce() -> Option<String>,
+    sole_in_folder: bool,
+    exists: impl Fn(&str) -> Option<SystemTime>,
+    guess: impl FnOnce() -> Option<(String, SystemTime)>,
     fresh: impl FnOnce() -> String,
 ) -> ClaudeChoice {
     if s.kind != SessionKind::Local || !is_claude_command(&s.command) {
@@ -323,9 +338,15 @@ pub fn choose_claude_id(
     let stored = s.claude_session_id.as_deref().filter(|id| is_safe_resume_id(id));
     if resume {
         if let Some(id) = stored {
-            return if exists(id) { ClaudeChoice::Resume(id.to_owned()) } else { ClaudeChoice::New(id.to_owned()) };
+            let Some(at) = exists(id) else { return ClaudeChoice::New(id.to_owned()) };
+            if sole_in_folder
+                && let Some((newer, _)) = guess().filter(|(g, t)| g != id && *t > at && is_safe_resume_id(g))
+            {
+                return ClaudeChoice::Resume(newer);
+            }
+            return ClaudeChoice::Resume(id.to_owned());
         }
-        if let Some(id) = guess().filter(|id| is_safe_resume_id(id)) {
+        if let Some((id, _)) = guess().filter(|(id, _)| is_safe_resume_id(id)) {
             return ClaudeChoice::Resume(id);
         }
     }
@@ -470,8 +491,36 @@ mod tests {
         ShellSession { claude_session_id: stored.map(Into::into), ..local("claude", args) }
     }
 
+    fn at(s: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(s)
+    }
+
+    /// With another Claude session in the folder: the stored id is never traded for a guess.
     fn choose(s: &ShellSession, resume: bool, exists: bool, guess: Option<&str>) -> ClaudeChoice {
-        choose_claude_id(s, resume, |_| exists, || guess.map(Into::into), || "fresh-1".into())
+        choose_claude_id(s, resume, false, |_| exists.then(|| at(10)), || guess.map(|g| (g.into(), at(20))), || "fresh-1".into())
+    }
+
+    #[test]
+    fn a_resume_follows_a_clear_when_the_session_is_alone_in_its_folder() {
+        let s = claude("", Some("abc-1"));
+        let pick = |stored: Option<u64>, newest: Option<(&str, u64)>| {
+            choose_claude_id(&s, true, true, |_| stored.map(at), || newest.map(|(g, t)| (g.into(), at(t))), || "fresh-1".into())
+        };
+        // A newer conversation in the folder (a `/clear`): that one.
+        assert_eq!(pick(Some(10), Some(("after-clear-2", 20))), ClaudeChoice::Resume("after-clear-2".into()));
+        // The stored one is the newest, or the other is older: the stored one.
+        assert_eq!(pick(Some(10), Some(("abc-1", 10))), ClaudeChoice::Resume("abc-1".into()));
+        assert_eq!(pick(Some(30), Some(("older-3", 20))), ClaudeChoice::Resume("abc-1".into()));
+        assert_eq!(pick(Some(10), None), ClaudeChoice::Resume("abc-1".into()));
+        // No transcript for the stored id (nothing said yet): never an older conversation.
+        assert_eq!(pick(None, Some(("old-4", 5))), ClaudeChoice::New("abc-1".into()));
+        // A hostile newest id is never used.
+        assert_eq!(pick(Some(10), Some(("x; calc", 20))), ClaudeChoice::Resume("abc-1".into()));
+        // Not resuming: a fresh conversation either way.
+        assert_eq!(
+            choose_claude_id(&s, false, true, |_| Some(at(10)), || Some(("after-clear-2".into(), at(20))), || "fresh-1".into()),
+            ClaudeChoice::New("fresh-1".into())
+        );
     }
 
     #[test]

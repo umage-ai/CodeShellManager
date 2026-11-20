@@ -216,8 +216,13 @@ bills); a model without a price is listed as unpriced, never counted as $0.
 - **Which transcript.** A new Claude session starts with `--session-id <uuid>` chosen by CSM and
   stored on the session (`ClaudeSessionId` in `state.json`); a resume passes `--resume <that id>`
   (or, when it has no transcript yet, `--session-id` again). Sessions from before fall back to the
-  newest transcript whose `cwd` is their folder. Duplicates get their own id; editing the folder,
-  command or kind forgets it. Not followed: `/clear` (Claude starts a new id), WSL and SSH sessions.
+  newest transcript whose `cwd` is their folder. A resume of a session that is the only CSM Claude
+  session in its folder takes a newer transcript of that folder over the stored id (a `/clear`
+  starts a new conversation id CSM is not told about); with two in one folder the stored id
+  always wins. Duplicates get their own id; editing the folder, command or kind forgets it. Not
+  followed live: `/clear` (until the next resume), WSL and SSH sessions (`usage_session` refuses
+  them). A conversation id with no transcript yet is looked for in its folder's project
+  directory every 2 s and in every project folder every 10 s.
 - **Reading.** A background thread (`csm-usage`) follows `<root>/projects/*/<id>.jsonl` and
   `<id>/subagents/**/agent-*.jsonl` under `$CLAUDE_CONFIG_DIR`, `~/.claude` and the other
   `~/.claude-*` profiles, reading only bytes past the stored offset (a shorter file or a different

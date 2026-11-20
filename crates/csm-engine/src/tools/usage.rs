@@ -184,6 +184,13 @@ fn usage_session(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if !crate::launch::is_claude_command(&s.command) {
         return Err(ToolError::Refused(format!("{} is not a Claude session; usage is read from Claude's transcripts.", display_name(&s))));
     }
+    if s.kind != csm_core::models::SessionKind::Local {
+        return Err(ToolError::Refused(format!(
+            "{} runs Claude over {}: only local Claude sessions' transcripts are read on this machine.",
+            display_name(&s),
+            if s.kind == csm_core::models::SessionKind::Wsl { "WSL" } else { "SSH" }
+        )));
+    }
     let ix = index_of(ctx)?;
     let prices = price_source(ctx);
     let following = ctx.state.rt.usage.is_some();

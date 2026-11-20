@@ -423,6 +423,13 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
             GridSize::new(c, r)
         })
     };
+    // Another Claude session in this folder: a resume never adopts the folder's newest transcript.
+    let sole_in_folder = !state.app.sessions.iter().any(|o| {
+        o.id != session.id
+            && o.kind == csm_core::models::SessionKind::Local
+            && crate::launch::is_claude_command(&o.command)
+            && csm_services::claude_usage::discover::same_folder(&o.working_folder, &session.working_folder)
+    });
     let job = SpawnJob {
         io: rt.io.clone(),
         session,
@@ -431,6 +438,7 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
         gate: state.rt.claude_gate.clone(),
         stagger: Duration::from_millis(u64::try_from(state.app.settings.claude_launch_stagger_ms).unwrap_or(0)),
         resume: rt.restoring && state.app.settings.auto_resume_claude,
+        sole_in_folder,
         probe: state.app.settings.program_status_probe,
         mcp: state.app.settings.offer_mcp_to_claude.then(|| mcp_offer_dir(state)).flatten().and_then(crate::launch::McpOffer::beside_app),
         engine: ctx.engine.clone(),
@@ -453,6 +461,9 @@ struct SpawnJob {
     gate: Arc<Mutex<Option<Instant>>>,
     stagger: Duration,
     resume: bool,
+    /// No other CSM Claude session works in this folder (a resume may adopt a newer transcript
+    /// of the folder: a `/clear` in Claude).
+    sole_in_folder: bool,
     probe: ProgramStatusProbeMode,
     /// Set when Settings → MCP offers our tools to Claude sessions.
     mcp: Option<crate::launch::McpOffer>,
@@ -462,7 +473,7 @@ struct SpawnJob {
 impl SpawnJob {
     /// On a worker: resolve argv, wait for the Claude slot, spawn, wire the reader and exit.
     fn run(self) -> Result<Spawned, String> {
-        let plan = crate::launch::resolve(&self.session, self.resume, self.mcp.as_ref())?;
+        let plan = crate::launch::resolve_with(&self.session, self.resume, self.sole_in_folder, self.mcp.as_ref())?;
         let claude_session_id = plan.claude_session_id.clone();
         if plan.is_claude && !self.stagger.is_zero() {
             wait_for_claude_slot(&self.gate, self.stagger);

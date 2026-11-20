@@ -139,6 +139,13 @@ fn usage_tools_refuse_what_they_cannot_answer() {
     let h = usage_harness(root.path());
     let shell = h.session("pwsh");
     assert!(matches!(h.ui("usage_session", json!({"session_id": shell})), Err(ToolError::Refused(_))));
+    // Claude over SSH: its transcripts are on the other machine.
+    let ssh = h.ok("session_new", json!({"command": "claude", "kind": "ssh", "ssh": {"host": "box"}, "focus": false}));
+    let ssh = ssh.data["id"].as_str().unwrap().to_owned();
+    match h.ui("usage_session", json!({"session_id": ssh})) {
+        Err(ToolError::Refused(m)) => assert!(m.contains("SSH"), "{m}"),
+        other => panic!("{other:?}"),
+    }
     assert!(matches!(h.ui("usage_session", json!({"session_id": "nope"})), Err(ToolError::NotFound(_))));
     assert!(matches!(h.ui("usage_summary", json!({"from": "soon"})), Err(ToolError::InvalidParams(_))));
     assert!(matches!(h.ui("usage_summary", json!({"group_by": "colour"})), Err(ToolError::InvalidParams(_))));
