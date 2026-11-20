@@ -413,7 +413,12 @@ mod tests {
 
     #[test]
     fn a_wpf_backup_leaves_the_rust_only_settings_alone() {
-        let ours = AppSettings { claude_commands: vec![SlashCommand::new("/mine", "")], terminal_padding: 9, terminal_font_points: 14, ..AppSettings::default() };
+        let ours = AppSettings {
+            claude_commands: vec![SlashCommand::new("/mine", "")],
+            terminal_padding: 9,
+            terminal_font_points: 14,
+            ..AppSettings::default()
+        };
         let theirs = AppSettings { default_command: "codex".into(), ..AppSettings::default() };
         let mut a = ours.clone();
         adopt_settings(&mut a, &theirs, None, false);
