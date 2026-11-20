@@ -42,10 +42,11 @@ const MINUTE_MS: i64 = 60_000;
 const HOUR_MS: i64 = 60 * MINUTE_MS;
 const DAY_MS: i64 = 24 * HOUR_MS;
 
-/// Compact "how long ago": now, 5m, 3h, 2d, 6w. Blank for "never" (`then_ms` is `None`).
+/// Compact "how long ago": now, 5m, 3h, 2d, 6w. Blank for "never" (`then_ms` is `None`, or the
+/// `0001-01-01` sentinel of a session never focused, which a view model passes on as is).
 /// Times are epoch milliseconds.
 pub fn ago(then_ms: Option<i64>, now_ms: i64) -> String {
-    let Some(then) = then_ms else {
+    let Some(then) = then_ms.filter(|t| *t > crate::time::NEVER_EPOCH_MS) else {
         return String::new();
     };
     let d = now_ms.saturating_sub(then);
@@ -132,6 +133,10 @@ mod tests {
     #[test]
     fn ago_never_is_blank() {
         assert_eq!(ago(None, NOW), "");
+        // C#'s `default(DateTime)`, as an imported session that was never focused carries it.
+        let default = Timestamp::from_text(crate::time::DEFAULT_TEXT).epoch_ms();
+        assert!(default.is_some());
+        assert_eq!(ago(default, NOW), "");
         // The sentinel stamp maps to "never" for the caller via Timestamp::is_never.
         assert!(Timestamp::never().is_never());
     }

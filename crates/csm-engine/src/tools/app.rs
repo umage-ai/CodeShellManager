@@ -246,7 +246,7 @@ fn session_recent(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
                 "folder": v.folder_short,
                 "status": v.status,
                 "asleep": v.asleep,
-                "last_used_ms": s.last_activity_at.epoch_ms(),
+                "last_used_ms": if s.last_activity_at.is_never() { None } else { s.last_activity_at.epoch_ms() },
                 "ago": csm_core::recent_sessions::ago_for(&s.last_activity_at, now),
             })
         })

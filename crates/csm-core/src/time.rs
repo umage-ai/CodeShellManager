@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_TEXT: &str = "0001-01-01T00:00:00";
 
 /// Epoch milliseconds of `0001-01-01T00:00:00Z`.
-const NEVER_EPOCH_MS: i64 = -62_135_596_800_000;
+pub(crate) const NEVER_EPOCH_MS: i64 = -62_135_596_800_000;
 
 /// An ISO 8601 timestamp, kept as text. See the module docs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

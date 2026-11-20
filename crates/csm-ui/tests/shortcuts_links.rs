@@ -179,6 +179,21 @@ fn shift_and_alt_chords_do_not_also_fire_the_plain_one() {
 }
 
 #[test]
+fn punctuation_shortcuts_work_where_the_character_needs_shift() {
+    // `/` is Shift+7 on Danish and German keyboards: egui reports Slash with Shift held.
+    let mut h = h();
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Slash);
+    settle(&mut h);
+    assert_eq!(h.state().ui.overlay, Overlay::Help);
+    // `.` is Shift+; on AZERTY.
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Period);
+    h.step();
+    assert!(matches!(&h.state().ui.menu, Some(Menu::Pane { .. })));
+}
+
+#[test]
 fn ctrl_shift_n_shows_notes_ctrl_shift_r_restarts_ctrl_dot_opens_the_pane_menu() {
     let mut h = h();
     let before = h.state().submitted().len();

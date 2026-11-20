@@ -228,6 +228,8 @@ pub fn human_text(tool_id: &str, message: &str, data: &Value) -> String {
         _ => return message.to_owned(),
     };
     match data.get(field).and_then(Value::as_str) {
+        // A run with no output yet: its message says why ("Build has not run yet.").
+        Some("") if tool_id == "run_output" => message.to_owned(),
         // `println!` adds the final newline.
         Some(text) => text.strip_suffix('\n').unwrap_or(text).to_owned(),
         None => message.to_owned(),
@@ -354,6 +356,7 @@ mod tests {
         assert_eq!(human_text("session_read_output", "2 lines", &data), "PS C:\\> dir\nhello");
         assert_eq!(human_text("run_output", "Build — 3 characters.", &json!({"output": "ok\n"})), "ok");
         assert_eq!(human_text("note_get", "Note", &json!({"text": "todo"})), "todo");
+        assert_eq!(human_text("run_output", "Build has not run yet.", &json!({"output": ""})), "Build has not run yet.");
         // An empty screen prints an empty line, not "0 lines".
         assert_eq!(human_text("session_read_screen", "0 lines", &json!({"text": ""})), "");
     }

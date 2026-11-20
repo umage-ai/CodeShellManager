@@ -1328,10 +1328,42 @@ pub const RECENT_ANCHOR: &str = "recent-anchor";
 /// Consumes a key press with exactly these modifiers (Ctrl and Cmd as egui's `COMMAND`).
 /// egui's `consume_shortcut` ignores extra Shift and Alt, so Ctrl+Shift+T would also be Ctrl+T;
 /// here each binding gets only its own chord.
+///
+/// A punctuation key (`/`, `.`, `,` …) is the character, not the key cap: on many layouts it
+/// needs Shift (`/` is Shift+7 on Danish and German keyboards), so for those an extra Shift is
+/// ignored and Ctrl+/ still opens the shortcut list there.
 pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
+    let symbol = matches!(
+        key,
+        Key::Slash
+            | Key::Period
+            | Key::Comma
+            | Key::Colon
+            | Key::Semicolon
+            | Key::Minus
+            | Key::Plus
+            | Key::Equals
+            | Key::Questionmark
+            | Key::Exclamationmark
+            | Key::Backslash
+            | Key::Pipe
+            | Key::OpenBracket
+            | Key::CloseBracket
+            | Key::OpenCurlyBracket
+            | Key::CloseCurlyBracket
+            | Key::Backtick
+            | Key::Quote
+    );
+    let matches = |pressed: &Modifiers| {
+        if symbol && !m.shift && pressed.shift {
+            pressed.matches_exact(Modifiers { shift: true, ..m })
+        } else {
+            pressed.matches_exact(m)
+        }
+    };
     let mut hit = false;
     i.events.retain(|e| {
-        let is = matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && modifiers.matches_exact(m));
+        let is = matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && matches(modifiers));
         hit |= is;
         !is
     });
