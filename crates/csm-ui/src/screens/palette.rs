@@ -1254,10 +1254,12 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let Some(mut p) = app.ui.prompt.clone() else { return };
     scrim(ctx, "prompt-scrim", actions);
     let (title, hint) = match &p.kind {
-        PromptKind::RenameSession(_) => ("Rename session", "Name"),
-        PromptKind::RenameGroup(_) => ("Rename group", "Name"),
-        PromptKind::NewGroup => ("New group", "Group name, e.g. Client X"),
+        PromptKind::RenameSession(_) => ("Rename session".to_string(), "Name"),
+        PromptKind::RenameGroup(_) => ("Rename group".to_string(), "Name"),
+        PromptKind::NewGroup => ("New group".to_string(), "Group name, e.g. Client X"),
+        PromptKind::Broadcast(g) => (crate::screens::broadcast::title(&app.model, g), "Text for each session, e.g. git pull"),
     };
+    let ok = if matches!(p.kind, PromptKind::Broadcast(_)) { "Send…" } else { "Save" };
     let enter = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let mut submit = enter;
     card(ctx, "prompt", size::DIALOG_W, |ui| {
@@ -1265,7 +1267,7 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.add_space(space::MD);
         ui.horizontal(|ui| {
             ui.add_space(space::LG);
-            ui.label(egui::RichText::new(title).font(theme::semibold(text::TITLE)).color(t.fg));
+            ui.label(egui::RichText::new(title.as_str()).font(theme::semibold(text::TITLE)).color(t.fg));
         });
         input_row(ui, "pencil", &mut p.text, hint, &mut p.focus, "prompt-input");
         ui.add_space(space::SM);
@@ -1273,7 +1275,7 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             ui.add_space(space::LG);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(space::LG);
-                if widgets::button(ui, ButtonKind::Primary, None, "Save", Some("Enter")).clicked() {
+                if widgets::button(ui, ButtonKind::Primary, None, ok, Some("Enter")).clicked() {
                     submit = true;
                 }
                 if widgets::button(ui, ButtonKind::Ghost, None, "Cancel", None).clicked() {
@@ -1290,6 +1292,7 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             PromptKind::RenameSession(id) => Action::Tool("session_rename", json!({"session_id": id, "name": text_})),
             PromptKind::RenameGroup(id) => Action::Tool("group_rename", json!({"group_id": id, "name": text_})),
             PromptKind::NewGroup => Action::Tool("group_new", json!({"name": text_})),
+            PromptKind::Broadcast(g) => crate::screens::broadcast::confirm(&app.model, g, &text_),
         });
     }
     app.ui.prompt = Some(p);

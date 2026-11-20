@@ -241,7 +241,9 @@ impl Backend for EngineBackend {
                 }
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
                 let effects = self.engine.registry().get(&call.id).map(|s| s.effects);
-                let say = call.id == "state_import_wpf" || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));
+                // A broadcast says how many sessions got the text and how many were skipped.
+                let said = ["state_import_wpf", "session_send_text_many"].contains(&call.id.as_str());
+                let say = said || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));
                 if say && !out.message.is_empty() { vec![Notice::Toast(out.message.clone())] } else { vec![] }
             }
         }

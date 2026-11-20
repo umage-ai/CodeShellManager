@@ -430,6 +430,7 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
     }
     v.extend([
         Entry::Sep,
+        item("send", "Send to all sessions…", Action::BroadcastPrompt(gid.to_string())),
         item("restart", format!("Restart all ({live})…"), tool("group_restart_all", json!({"group_id": gid, "force": false}))),
         item("moon", "Sleep all", tool("group_sleep_all", gp.clone())),
         item("trash", "Delete group…", tool("group_delete", gp.clone())),

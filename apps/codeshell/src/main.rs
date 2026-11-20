@@ -3,7 +3,8 @@
 //! By default it is the real app: the state is loaded (honouring `--config-dir`, then
 //! `CSM_CONFIG_DIR`, and `--clean`), the engine starts with it, `csm` / `csm mcp` reach it over
 //! the IPC bridge, and the window draws the engine's snapshot. Closing the window quits through
-//! `app_quit` (the shutdown board) and the window closes on `QuitReady`.
+//! `app_quit` (the shutdown board) and the window closes on `QuitReady`; with `CloseToTray` on it
+//! hides to the tray instead (`csm_ui::background`), and the tray's Quit quits.
 //!
 //! `--demo` runs the mock-up's data instead (screenshots, design review): see `csm_ui::demo`.
 //!
@@ -132,7 +133,10 @@ impl App {
         }
         let clicked: Vec<String> = self.clicked.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
         for id in clicked {
-            self.app.run(ctx, Action::Tool("session_focus", json!({"session_id": id})));
+            // The test notification and "still running in the tray" have no session.
+            if !id.is_empty() {
+                self.app.run(ctx, Action::Tool("session_focus", json!({"session_id": id})));
+            }
             self.app.run(ctx, Action::Tool("window_show", json!({})));
         }
         let Some(t) = &mut self.tray else { return };
@@ -186,11 +190,18 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Before every UI pass, and also while the window is hidden to the tray (where eframe runs
+    /// no UI pass): engine replies and events, notifications, the tray, and the close on
+    /// `QuitReady`. See `csm_ui::background`.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.app.logic(ctx);
+        self.tray_and_notifications(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.frame(ui);
         let ctx = ui.ctx().clone();
         self.file_dialogs(&ctx, frame);
-        self.tray_and_notifications(&ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -351,7 +362,8 @@ fn main() {
             let raise = window.clone();
             let on_activate: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 if let Some(ctx) = raise.get() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    // Shown too: the window may be hidden to the tray.
+                    csm_ui::notify::show_window(ctx);
                 }
             });
             match csm_mcp::serve_ipc_with(engine.clone(), csm_mcp::IpcOptions { on_activate: Some(on_activate), ..csm_mcp::IpcOptions::default() }) {
@@ -420,6 +432,8 @@ fn main() {
             } else {
                 (None, None, None)
             };
+            // Close to tray needs a tray icon to come back from.
+            app.background.tray_available = tray.is_some();
             Ok(Box::new(App { app, dialogs, tray, notifier, clicked }))
         }),
         &event_loop,

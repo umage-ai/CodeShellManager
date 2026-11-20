@@ -34,6 +34,9 @@ pub enum Action {
     StartRename(SessionId),
     StartGroupRename(GroupId),
     NewGroupPrompt,
+    /// "Send to all sessions…" on a group: the text prompt, then a confirm with the count
+    /// (`session_send_text_many`).
+    BroadcastPrompt(GroupId),
     CopyText(String),
     /// Copy text and say so (`(text, toast)`).
     CopyAs(String, String),
@@ -242,6 +245,10 @@ pub struct Prefs {
     /// `ShowToastNotifications` / `ShowNotificationSound` (both off by default, as in WPF).
     pub notifications: bool,
     pub notification_sound: bool,
+    /// `UiZoomPercent` (see [`crate::zoom`]).
+    pub ui_zoom_percent: i32,
+    /// `CloseToTray` (see [`crate::background`]).
+    pub close_to_tray: bool,
 }
 
 impl Default for Prefs {
@@ -253,6 +260,8 @@ impl Default for Prefs {
             terminal_padding: theme::space::SM,
             notifications: false,
             notification_sound: false,
+            ui_zoom_percent: csm_core::models::UI_ZOOM_DEFAULT,
+            close_to_tray: false,
         }
     }
 }
@@ -361,6 +370,8 @@ pub enum PromptKind {
     RenameSession(SessionId),
     RenameGroup(GroupId),
     NewGroup,
+    /// Text to paste into every live session of the group.
+    Broadcast(GroupId),
 }
 
 #[derive(Debug, Clone)]
@@ -486,6 +497,8 @@ pub struct CsmApp {
     pub monitors: crate::placement::Monitors,
     /// The main window's bounds: restored on the first frame, saved as it moves.
     pub main_window: crate::placement::WindowTracker,
+    /// Hidden to the tray, and what keeps running then (see [`crate::background`]).
+    pub background: crate::background::Background,
 }
 
 impl CsmApp {
@@ -509,6 +522,7 @@ impl CsmApp {
             prefs: Prefs::default(),
             monitors: crate::placement::Monitors::default(),
             main_window: crate::placement::WindowTracker::new("main"),
+            background: crate::background::Background::default(),
         };
         // The settings the screens follow (theme, terminal font size and padding, the busy warning).
         app.dispatch.submit("settings_get", json!({}));
@@ -583,6 +597,8 @@ impl CsmApp {
                 Notice::QuitReady => {
                     self.quit_ready = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // Hidden to the tray, the close is seen on the next logic pass.
+                    ctx.request_repaint();
                 }
             }
         }
@@ -758,11 +774,17 @@ impl CsmApp {
         if let Some(n) = s.num("TerminalPadding") {
             p.terminal_padding = if n.is_finite() { (n as f32).clamp(0.0, theme::space::XXL) } else { theme::space::SM };
         }
+        if let Some(n) = s.num("UiZoomPercent") {
+            p.ui_zoom_percent = crate::zoom::sanitize(n);
+        }
+        if let Some(b) = s.bool("CloseToTray") {
+            p.close_to_tray = b;
+        }
         self.prefs = p;
     }
 
     /// Poll replies and events; refresh the snapshot.
-    fn poll(&mut self, ctx: &egui::Context) {
+    pub(crate) fn poll(&mut self, ctx: &egui::Context) {
         let (done, events) = self.dispatch.poll();
         for (call, reply) in done {
             self.on_app_reply(ctx, &call, &reply);
@@ -778,8 +800,16 @@ impl CsmApp {
                     self.ui.consents.retain(|r| r["request_id"].as_u64() != Some(*request_id));
                 }
                 csm_engine::Event::Error { message } => self.toast(ctx, message.clone()),
-                csm_engine::Event::WindowShowRequested => crate::notify::show_window(ctx),
+                csm_engine::Event::WindowShowRequested => {
+                    crate::notify::show_window(ctx);
+                    self.shown();
+                }
                 csm_engine::Event::NotificationTestRequested => self.test_notification(),
+                // A setting changed by the CLI or an MCP client: follow it as if set here.
+                csm_engine::Event::SettingChanged { key, value } => {
+                    self.ui.settings.values.insert(key.clone(), value.clone());
+                    self.prefs_from_settings();
+                }
                 _ => {}
             }
             let n = self.backend.on_event(&e);
@@ -926,6 +956,12 @@ impl CsmApp {
                 self.start_inline(InlineTarget::Group(id), text);
             }
             Action::NewGroupPrompt => self.start_inline(InlineTarget::NewGroup, String::new()),
+            Action::BroadcastPrompt(g) => {
+                self.ui.menu = None;
+                self.ui.submenu = None;
+                self.ui.prompt = Some(PromptState { kind: PromptKind::Broadcast(g), text: String::new(), focus: true });
+                self.ui.overlay = Overlay::Prompt;
+            }
             Action::CopyText(t) => {
                 self.ui.menu = None;
                 ctx.copy_text(t);
@@ -981,10 +1017,7 @@ impl CsmApp {
                 self.ui.menu = None;
                 // Window bounds still settling are saved now, ahead of the quit's own save, by
                 // every way of quitting (the window's close, the title bar, the menu, `app_quit`).
-                let pending = self.main_window.flush().into_iter().chain(screens::panes::flush_torn_placements(ctx));
-                for p in pending.collect::<Vec<_>>() {
-                    self.dispatch.submit("window_placement_set", p);
-                }
+                self.flush_placements(ctx);
                 if self.model.shutdown.is_some() {
                     // Already closing: the board is up.
                     return;
@@ -1060,6 +1093,14 @@ impl CsmApp {
                 }
             }
             Action::CancelInline => self.ui.inline = None,
+        }
+    }
+
+    /// Saves window bounds that are still settling (before a quit or a hide to the tray).
+    pub(crate) fn flush_placements(&mut self, ctx: &egui::Context) {
+        let pending = self.main_window.flush().into_iter().chain(screens::panes::flush_torn_placements(ctx));
+        for p in pending.collect::<Vec<_>>() {
+            self.dispatch.submit("window_placement_set", p);
         }
     }
 
@@ -1317,6 +1358,7 @@ impl CsmApp {
             let a = if self.ui.settings.open { Action::CloseSettings } else { Action::OpenSettings };
             self.run(ctx, a);
         }
+        crate::zoom::shortcuts(self, ctx);
         // The shortcut list: F1 and Ctrl+/ anywhere; `?` only when nothing takes typing.
         let typing = ctx.memory(|m| m.focused().is_some());
         let question = !typing
@@ -1412,21 +1454,17 @@ impl CsmApp {
     /// One frame, in `ui` (the root of the main window).
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        self.poll(&ctx);
-        self.watch_attention(&ctx);
+        // Polling the engine, notifications and the window's close request (quit, or hide to
+        // the tray): `logic`, which runs while hidden too.
+        self.logic_in_frame(&ctx);
         let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
         if let Some(p) = self.main_window.step(&ctx, self.model.windows.get("main").copied(), &self.monitors, min) {
             self.dispatch.submit("window_placement_set", p);
         }
-        // Closing the window is quitting: sessions get their time to exit (the shutdown board),
-        // and the window closes on `QuitReady`.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.run(&ctx, Action::AskQuit);
-        }
         if !self.apply_theme(&ctx) {
             return;
         }
+        crate::zoom::apply(&ctx, self.prefs.ui_zoom_percent);
         let remote: Vec<Action> = std::mem::take(&mut *lock(&self.remote_actions));
         for a in remote {
             self.run(&ctx, a);
@@ -1637,6 +1675,8 @@ pub fn setup(ctx: &egui::Context, kind: ThemeKind) {
     theme::install_fonts(ctx);
     egui_extras::install_image_loaders(ctx);
     theme::apply(ctx, kind);
+    // The zoom shortcuts are ours (`crate::zoom`): persisted, and Ctrl+_ stays the terminal's.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
 }
 
 /// The window icon: the title bar's logo (a blue rounded square with a prompt), drawn at
