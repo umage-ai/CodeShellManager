@@ -17,6 +17,7 @@ pub mod bulk_restart;
 pub mod busy_rules;
 pub mod color;
 pub mod models;
+pub mod notify_rules;
 pub mod probe_gate;
 pub mod program_status_payload;
 pub mod program_status_records;
