@@ -701,6 +701,7 @@ dependencies = [
  "serde_json",
  "tauri-winrt-notification",
  "tray-icon",
+ "winit",
 ]
 
 [[package]]

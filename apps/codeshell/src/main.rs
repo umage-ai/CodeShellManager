@@ -19,17 +19,24 @@ mod tray;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use csm_ui::Action;
 use serde_json::json;
 
+use csm_core::window_placement::{MonitorArea, PixelRect};
 use csm_engine::{Engine, State, StateOptions, persist};
 use csm_ui::demo::{DemoBackend, DemoOptions};
+use csm_ui::placement::Monitors;
 use csm_ui::terminal::TerminalRenderer;
 use csm_ui::terminal::fonts::{FontSet, default_paths, embedded_mono, load_face};
 use csm_ui::theme::{self, ThemeKind};
 use csm_ui::{EngineBackend, EngineOptions};
+use winit::application::ApplicationHandler;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
 
 const USAGE: &str = "codeshell [--clean] [--config-dir DIR] [--latte] [--font PATH] [--font-size PT] [--inbox]
 codeshell --demo [--static] [--restore] [...]
@@ -182,6 +189,89 @@ impl eframe::App for App {
     }
 }
 
+/// The monitors as winit reports them, in physical pixels. winit has no work area, so the full
+/// bounds stand in for it (a caption under a taskbar counts as reachable).
+fn monitors_of(event_loop: &ActiveEventLoop) -> Vec<MonitorArea> {
+    let primary = event_loop.primary_monitor();
+    event_loop
+        .available_monitors()
+        .map(|m| {
+            let (p, s) = (m.position(), m.size());
+            let bounds = PixelRect::new(i64::from(p.x), i64::from(p.y), i64::from(s.width), i64::from(s.height));
+            let dpi = (m.scale_factor() * 96.0).round();
+            let dpi = if dpi.is_finite() && dpi >= 1.0 { dpi as i64 } else { 96 };
+            MonitorArea { bounds, work: bounds, dpi, is_primary: primary.as_ref() == Some(&m) }
+        })
+        .filter(|m| m.bounds.width > 0 && m.bounds.height > 0)
+        .collect()
+}
+
+/// How often a window move may re-read the monitor list.
+const MONITOR_REREAD: Duration = Duration::from_millis(250);
+
+/// eframe's application with the monitor list kept current: read when the app resumes (before
+/// eframe creates the window, so the first frame has it) and again, at most every
+/// [`MONITOR_REREAD`], when a window moves or changes scale. This is event-loop code, not frame
+/// code; the frames only copy the list.
+struct WithMonitors<'a> {
+    inner: eframe::EframeWinitApplication<'a>,
+    monitors: Monitors,
+    read_at: Option<Instant>,
+}
+
+impl WithMonitors<'_> {
+    fn read(&mut self, event_loop: &ActiveEventLoop, force: bool) {
+        if !force && self.read_at.is_some_and(|t| t.elapsed() < MONITOR_REREAD) {
+            return;
+        }
+        self.read_at = Some(Instant::now());
+        let list = monitors_of(event_loop);
+        *self.monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = list;
+    }
+}
+
+impl ApplicationHandler<eframe::UserEvent> for WithMonitors<'_> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.read(event_loop, true);
+        self.inner.resumed(event_loop);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: winit::event::WindowEvent) {
+        if matches!(event, winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::ScaleFactorChanged { .. }) {
+            self.read(event_loop, false);
+        }
+        self.inner.window_event(event_loop, window_id, event);
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+        self.inner.new_events(event_loop, cause);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: eframe::UserEvent) {
+        self.inner.user_event(event_loop, event);
+    }
+
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, device_id: winit::event::DeviceId, event: winit::event::DeviceEvent) {
+        self.inner.device_event(event_loop, device_id, event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.inner.about_to_wait(event_loop);
+    }
+
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.inner.suspended(event_loop);
+    }
+
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+        self.inner.exiting(event_loop);
+    }
+
+    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
+        self.inner.memory_warning(event_loop);
+    }
+}
+
 /// What a run needs that differs between the real app and the demo.
 enum Mode {
     Real { opts: EngineOptions },
@@ -268,10 +358,23 @@ fn main() {
         ..Default::default()
     };
     let shutdown = engine.clone();
-    let result = eframe::run_native(
+    // The window opens where it was: the app's first frame restores the saved bounds against
+    // these monitors (`csm_ui::placement`), which the event loop below keeps current.
+    let monitors = Monitors::default();
+    let created = Arc::new(AtomicBool::new(false));
+    let (app_monitors, app_created) = (monitors.clone(), created.clone());
+    let event_loop = match EventLoop::<eframe::UserEvent>::with_user_event().build() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("event loop: {e}");
+            std::process::exit(1);
+        }
+    };
+    let app = eframe::create_native(
         "codeshell",
         options,
         Box::new(move |cc| {
+            app_created.store(true, Ordering::Relaxed);
             csm_ui::app::setup(&cc.egui_ctx, theme_kind);
             let ctx = cc.egui_ctx.clone();
             let _ = window.set(ctx.clone());
@@ -288,7 +391,8 @@ fn main() {
                     Box::new(b)
                 }
             };
-            let app = csm_ui::CsmApp::new(engine, backend, TerminalRenderer::new(fonts));
+            let mut app = csm_ui::CsmApp::new(engine, backend, TerminalRenderer::new(fonts));
+            app.monitors = app_monitors;
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
             // On the main thread, with the event loop running: where the tray must be made.
@@ -302,7 +406,11 @@ fn main() {
             };
             Ok(Box::new(App { app, dialogs, tray, notifier, clicked }))
         }),
+        &event_loop,
     );
+    let mut handler = WithMonitors { inner: app, monitors, read_at: None };
+    let mut event_loop = event_loop;
+    let result = event_loop.run_app_on_demand(&mut handler);
     if let Some(h) = ipc
         && let Err(e) = h.shutdown()
     {
@@ -310,7 +418,12 @@ fn main() {
     }
     shutdown.shutdown();
     if let Err(e) = result {
-        eprintln!("eframe: {e}");
+        eprintln!("event loop: {e}");
+        std::process::exit(1);
+    }
+    if !created.load(Ordering::Relaxed) {
+        // eframe logged why (no graphics adapter, no window).
+        eprintln!("eframe: the window could not be created");
         std::process::exit(1);
     }
 }

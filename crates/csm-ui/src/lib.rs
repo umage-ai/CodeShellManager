@@ -23,6 +23,7 @@ pub mod icons;
 pub mod model;
 pub mod notify;
 pub mod pane_tools;
+pub mod placement;
 pub mod screens;
 pub mod terminal;
 pub mod theme;
