@@ -190,7 +190,7 @@ fn valid_rfc3339(text: &str) -> bool {
     let (Some(century), Some(year_in_century)) = (two_digits(bytes, 0), two_digits(bytes, 2)) else {
         return false;
     };
-    if chrono::NaiveDate::from_ymd_opt(i32::from(century * 100 + year_in_century), u32::from(month), u32::from(day)).is_none() {
+    if u32::from(day) > days_in_month(i32::from(century * 100 + year_in_century), u32::from(month)) {
         return false;
     }
     let mut index = 19;
@@ -234,4 +234,33 @@ fn two_digits(bytes: &[u8], index: usize) -> Option<u16> {
 
 fn byte_at(bytes: &[u8], index: usize) -> Option<u8> {
     bytes.get(index).copied()
+}
+
+/// Days in a month of the proleptic Gregorian calendar (0 for a month outside 1..=12). Replaces
+/// the one chrono call this crate made (chrono: RUSTSEC-2026-0543, unmaintained).
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::days_in_month;
+
+    #[test]
+    fn days_in_month_follows_the_gregorian_leap_rules() {
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(1900, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2026, 4), 30);
+        assert_eq!(days_in_month(2026, 12), 31);
+        assert_eq!(days_in_month(2026, 13), 0);
+    }
 }

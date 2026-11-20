@@ -10,7 +10,9 @@
 
 use std::collections::HashMap;
 
-use chrono::{Duration as CDuration, Local, NaiveDate, TimeZone};
+use jiff::Span;
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -130,38 +132,44 @@ fn display_name(s: &csm_core::models::ShellSession) -> String {
     if s.name.trim().is_empty() { s.default_display_name() } else { s.name.clone() }
 }
 
-/// Local midnight of `day`, as epoch ms.
-fn local_midnight(day: NaiveDate) -> i64 {
-    let naive = day.and_hms_opt(0, 0, 0).unwrap_or_default();
-    Local.from_local_datetime(&naive).earliest().map_or_else(|| naive.and_utc().timestamp_millis(), |d| d.timestamp_millis())
+/// Local midnight of `day` (the day's first instant, so a DST gap at midnight is handled), as
+/// epoch ms. Falls back to UTC midnight if the system time zone can't place it.
+fn local_midnight(day: Date) -> i64 {
+    day.to_zoned(TimeZone::system()).or_else(|_| day.to_zoned(TimeZone::UTC)).map_or(0, |z| z.timestamp().as_millisecond())
 }
 
-fn today() -> NaiveDate {
-    Local::now().date_naive()
+fn today() -> Date {
+    jiff::Zoned::now().date()
+}
+
+/// A YYYY-MM-DD date, strictly.
+fn parse_day(s: &str) -> Option<Date> {
+    (s.len() == 10).then(|| s.parse::<Date>().ok()).flatten()
+}
+
+fn days_before(day: Date, n: i64) -> Date {
+    day.checked_sub(Span::new().days(n)).unwrap_or(day)
 }
 
 /// The start of a period word or date (pure apart from the local time zone).
-fn period_start(word: &str, today: NaiveDate) -> Result<i64, ToolError> {
+fn period_start(word: &str, today: Date) -> Result<i64, ToolError> {
     let day = match word.trim().to_ascii_lowercase().as_str() {
         "today" => today,
-        "week" => today - CDuration::days(6),
-        "month" => today - CDuration::days(29),
+        "week" => days_before(today, 6),
+        "month" => days_before(today, 29),
         "all" => return Ok(i64::MIN),
-        other => NaiveDate::parse_from_str(other, "%Y-%m-%d")
-            .map_err(|_| ToolError::InvalidParams(format!("`{word}` is not today, week, month, all or a YYYY-MM-DD date")))?,
+        other => parse_day(other).ok_or_else(|| ToolError::InvalidParams(format!("`{word}` is not today, week, month, all or a YYYY-MM-DD date")))?,
     };
     Ok(local_midnight(day))
 }
 
 /// The (exclusive) end of a period: the end of that local day.
-fn period_end(word: &str, today: NaiveDate) -> Result<i64, ToolError> {
+fn period_end(word: &str, today: Date) -> Result<i64, ToolError> {
     let day = match word.trim().to_ascii_lowercase().as_str() {
         "today" | "now" => today,
-        other => {
-            NaiveDate::parse_from_str(other, "%Y-%m-%d").map_err(|_| ToolError::InvalidParams(format!("`{word}` is not today or a YYYY-MM-DD date")))?
-        }
+        other => parse_day(other).ok_or_else(|| ToolError::InvalidParams(format!("`{word}` is not today or a YYYY-MM-DD date")))?,
     };
-    Ok(local_midnight(day.succ_opt().unwrap_or(day)))
+    Ok(local_midnight(day.tomorrow().unwrap_or(day)))
 }
 
 fn fill_json(c: &ContextFill) -> Value {
@@ -361,16 +369,18 @@ mod tests {
 
     #[test]
     fn periods() {
-        let d = NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        let d = jiff::civil::date(2026, 11, 20);
         let start = |w: &str| period_start(w, d).unwrap();
         assert_eq!(start("today"), local_midnight(d));
-        assert_eq!(start("WEEK"), local_midnight(NaiveDate::from_ymd_opt(2026, 11, 14).unwrap()));
-        assert_eq!(start("month"), local_midnight(NaiveDate::from_ymd_opt(2026, 10, 22).unwrap()));
+        assert_eq!(start("WEEK"), local_midnight(jiff::civil::date(2026, 11, 14)));
+        assert_eq!(start("month"), local_midnight(jiff::civil::date(2026, 10, 22)));
         assert_eq!(start("all"), i64::MIN);
-        assert_eq!(start("2026-01-02"), local_midnight(NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()));
+        assert_eq!(start("2026-01-02"), local_midnight(jiff::civil::date(2026, 1, 2)));
         assert!(period_start("yesterday-ish", d).is_err());
-        assert_eq!(period_end("today", d).unwrap(), local_midnight(NaiveDate::from_ymd_opt(2026, 11, 21).unwrap()));
+        assert!(period_start("2026-1-2", d).is_err());
+        assert!(period_start("2026-02-30", d).is_err());
+        assert_eq!(period_end("today", d).unwrap(), local_midnight(jiff::civil::date(2026, 11, 21)));
         assert!(period_end("week", d).is_err());
-        assert!(local_midnight(d) < local_midnight(d.succ_opt().unwrap()));
+        assert!(local_midnight(d) < local_midnight(d.tomorrow().unwrap()));
     }
 }

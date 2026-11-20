@@ -462,6 +462,7 @@ impl sl::RunnableProbe for FsProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::path::Path;
 
     fn local(command: &str, args: &str) -> ShellSession {
