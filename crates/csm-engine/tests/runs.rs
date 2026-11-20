@@ -43,6 +43,9 @@ fn rig() -> (H, Seen) {
         });
     });
     h.wait_until("the session is live", |v| v.session("s").is_some_and(|s| s.live));
+    // A restart is refused while the start-up restore runs (by design: two loops starting Claude
+    // at once race on its config), so the rig is ready only once the restore has finished.
+    h.wait_until("the restore has finished", |v| v.restore.is_none());
     (h, seen)
 }
 
