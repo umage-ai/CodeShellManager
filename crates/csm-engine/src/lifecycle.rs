@@ -1181,9 +1181,13 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
         for (id, pty, claude) in targets {
             let t0 = Instant::now();
             let ms = |t: Instant| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
-            if !claude || pty.has_exited() || forced_now() {
+            let exited = pty.has_exited();
+            if !claude || exited || forced_now() {
+                // Decide before the kill: after it, every PTY has exited. A non-Claude session is
+                // simply ended (that's its clean close); a live Claude that "Force close now" (or
+                // a forced quit) reached before its turn was forced, not clean.
                 pty.kill();
-                let phase = if pty.has_exited() { "clean" } else { "forced" };
+                let phase = if !claude || exited { "clean" } else { "forced" };
                 events.emit(Event::QuitProgress { session_id: id, phase: phase.into(), elapsed_ms: ms(t0) });
             } else {
                 events.emit(Event::QuitProgress { session_id: id.clone(), phase: "closing".into(), elapsed_ms: 0 });

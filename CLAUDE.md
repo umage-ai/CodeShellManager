@@ -31,7 +31,7 @@ cargo xtask ci --skip-cargo                      # layers, source policy, tool c
   are updated to 2.0, and the final MSI takes the 1.x UpgradeCode so it replaces 1.x in place.
 - A dry run (unsigned MSI and zip as a workflow artifact, no release):
   `gh workflow run release-v2.yml --ref v2`. A copy of the workflow sits on `main` only so that
-  GitHub allows the dispatch; keep the two copies identical.
+  GitHub allows the dispatch; a run with `--ref v2` uses v2's version of the file.
 - An MSI version must be numeric: `2.0.0-beta.N` is built as MSI version `2.0.0.N`.
 
 ## Rules (mandatory)

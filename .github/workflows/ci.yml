@@ -30,8 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The same toolchain as the local gate (cargo +1.97, rust-version in Cargo.toml): a newer
+      # stable brings new clippy lints that would fail CI but not the gate. Bump both together.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97"
           components: clippy
 
       - uses: Swatinem/rust-cache@v2

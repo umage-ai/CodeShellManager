@@ -674,6 +674,30 @@ fn force_quit_stops_waiting_for_a_wedged_claude() {
 }
 
 #[test]
+fn a_forced_quit_reports_live_claudes_as_forced_not_clean() {
+    // Forced from the start, so the worker reaches each Claude with force already set: it kills
+    // it straight away, and must still say "forced" (a kill always leaves the PTY exited).
+    let h = H::start(test_app(), |o| o.shutdown_budget = Duration::from_secs(30));
+    let _a = h.session("claude");
+    let _b = h.session("claude");
+    for i in 0..2 {
+        h.pty(i).exit_on_close.store(false, Ordering::SeqCst);
+    }
+    let events = h.engine.subscribe();
+    let done = h.engine.submit(Caller::Ui, "app_quit", json!({"force": true}));
+    let mut phases = Vec::new();
+    while let Ok(e) = events.recv_timeout(Duration::from_secs(5)) {
+        match e {
+            Event::QuitProgress { phase, .. } if phase != "closing" => phases.push(phase),
+            Event::QuitReady => break,
+            _ => {}
+        }
+    }
+    assert_eq!(phases, vec!["forced", "forced"]);
+    done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+}
+
+#[test]
 fn grants_persist_and_can_be_revoked() {
     let h = H::new();
     let id = h.session("pwsh");

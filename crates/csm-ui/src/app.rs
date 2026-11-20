@@ -1765,7 +1765,7 @@ fn ico_bmp(icon: &egui::IconData) -> Vec<u8> {
     out.extend_from_slice(&32u16.to_le_bytes());
     out.extend_from_slice(&[0u8; 24]); // compression (BI_RGB), sizes, resolution, palette: all zero
     for y in (0..h).rev() {
-        for px in icon.rgba.chunks_exact(4).skip(y * w).take(w) {
+        for px in icon.rgba.as_chunks::<4>().0.iter().skip(y * w).take(w) {
             out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
         }
     }
