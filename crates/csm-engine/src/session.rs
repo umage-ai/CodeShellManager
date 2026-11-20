@@ -69,6 +69,9 @@ pub(crate) struct SessionRt {
     /// When the PTY starts at the fallback size if no pane reported one.
     pub start_deadline: Instant,
     pub on_started: Vec<StartedCb>,
+    /// Usage stats: the command this run counts under and when its process started; taken
+    /// (and its running time recorded) once, when the process ends or the runtime goes.
+    pub usage: Option<(String, Instant)>,
 }
 
 impl SessionRt {
@@ -89,6 +92,14 @@ impl SessionRt {
             restoring,
             start_deadline,
             on_started: Vec::new(),
+            usage: None,
+        }
+    }
+
+    /// Records this run's running time in the usage stats, once.
+    pub(crate) fn end_usage(&mut self, index: Option<&csm_index::Index>) {
+        if let (Some((command, since)), Some(ix)) = (self.usage.take(), index) {
+            ix.record_usage_seconds(&command, i64::try_from(since.elapsed().as_secs()).unwrap_or(i64::MAX));
         }
     }
 

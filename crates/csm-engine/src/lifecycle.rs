@@ -240,6 +240,11 @@ pub(crate) fn save_now(state: &mut State) {
 /// The engine thread is ending: kill what is left and write the state one last time.
 pub(crate) fn on_exit(state: &mut State) {
     crate::runs::kill_everything(state);
+    // Usage stats: what still runs ends now (queued before the index's shutdown, so written).
+    let index = state.rt.index.clone();
+    for rt in state.rt.sessions.values_mut() {
+        rt.end_usage(index.as_ref());
+    }
     if let Some(ix) = state.rt.index.take() {
         ix.shutdown();
     }
@@ -373,7 +378,8 @@ pub(crate) fn launch(ctx: &mut Ctx<'_>, id: &str, restoring: bool) -> Result<(),
         return Err(msg.to_owned());
     }
     let name = if s.name.trim().is_empty() { s.default_display_name() } else { s.name.clone() };
-    if let Some(old) = ctx.state.rt.sessions.remove(id) {
+    if let Some(mut old) = ctx.state.rt.sessions.remove(id) {
+        old.end_usage(ctx.state.rt.index.as_ref());
         old.io.closed.store(true, Ordering::Release);
         if let Some(p) = old.io.pty.get() {
             p.kill();
@@ -523,7 +529,13 @@ pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Res
     }
     let callbacks = match result {
         Ok(pty) => {
+            // Usage stats (WPF RecordSessionStart): counted per command, on the index thread.
+            let command = ctx.state.app.sessions.iter().find(|s| s.id == id).map(|s| s.command.clone()).unwrap_or_default();
+            if let Some(ix) = &ctx.state.rt.index {
+                ix.record_usage_start(&command);
+            }
             let Some(rt) = ctx.state.rt.sessions.get_mut(id) else { return };
+            rt.usage = Some((command, Instant::now()));
             rt.backend = Some(pty.backend());
             if pty.has_exited() {
                 rt.phase = Phase::Exited { code: pty.exit_code() };
@@ -565,10 +577,12 @@ pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Res
 }
 
 pub(crate) fn on_exited(ctx: &mut Ctx<'_>, id: &str, instance: u64, code: Option<i32>) {
+    let index = ctx.state.rt.index.clone();
     let Some(rt) = ctx.state.rt.sessions.get_mut(id) else { return };
     if rt.io.instance != instance {
         return;
     }
+    rt.end_usage(index.as_ref());
     rt.phase = Phase::Exited { code };
     rt.io.detector().dispose();
     // Working, blocked and idle records end with the process; done/error stay until seen.
@@ -682,6 +696,7 @@ pub(crate) fn teardown(ctx: &mut Ctx<'_>, id: &str) -> Option<Arc<dyn Pty>> {
     // A session's run commands go with it (close, sleep, restart, quit), whole trees.
     crate::runs::stop_all(ctx.state, id);
     let mut rt = ctx.state.rt.sessions.remove(id)?;
+    rt.end_usage(ctx.state.rt.index.as_ref());
     rt.io.closed.store(true, Ordering::Release);
     finish_restore_item(ctx.state, id);
     ctx.state.touch();

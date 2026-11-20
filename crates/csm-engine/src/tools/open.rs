@@ -632,6 +632,35 @@ fn on_disk_error(exe: &str) -> Option<String> {
     is_script.then(|| format!("{} is a script, not a program — point at the editor's binary.", program_name(exe)))
 }
 
+// ── Imports (`state_import`) ─────────────────────────────────────────────────────────────
+
+/// An Open with list from a backup file (C# `OpenWithService.SanitizeImported`): stricter than
+/// state.json, no batch files, and every program checked at its real path on disk. Touches the
+/// disk: workers only. Only a filter: the caller still shows the list and asks before adopting.
+pub(crate) fn sanitize_imported(list: &[CoreEntry]) -> Vec<CoreEntry> {
+    let wrapped: Vec<Option<SvcEntry>> = list.iter().map(|e| Some(to_svc(e))).collect();
+    let mut log = |m: &str| log::warn!("import, open with: {m}");
+    let clean = if Rules::native() == Rules::Windows {
+        ow::sanitize_imported(&wrapped, &RealHost, &mut log)
+    } else {
+        // As on Windows, a program that isn't there (yet) passes: it fails at launch.
+        ow::sanitize_for(&wrapped, false, Rules::Posix, &mut log).into_iter().filter(|e| on_disk_error(&e.executable).is_none()).collect()
+    };
+    clean.into_iter().map(to_core).collect()
+}
+
+/// True when two lists would launch the same things.
+pub(crate) fn same_commands(a: &[CoreEntry], b: &[CoreEntry]) -> bool {
+    let (a, b): (Vec<SvcEntry>, Vec<SvcEntry>) = (a.iter().map(to_svc).collect(), b.iter().map(to_svc).collect());
+    ow::same_commands(&a, &b)
+}
+
+/// Every entry spelled out (program and argument templates), for the import confirmation.
+pub(crate) fn describe_for_review(list: &[CoreEntry]) -> String {
+    let v: Vec<SvcEntry> = list.iter().map(to_svc).collect();
+    ow::describe_for_review(&v)
+}
+
 /// The PE version resource's `OriginalFilename` and `InternalName`, read from the `.rsrc`
 /// section only (bounded reads; any malformed header gives an empty list).
 fn pe_version_names(path: &str) -> Vec<String> {
