@@ -169,11 +169,14 @@ pub struct WindowTracker {
     normal: Option<WindowPlacementState>,
     /// A change waiting to settle: (bounds, when first seen).
     pending: Option<(WindowSlot, f64)>,
+    /// Restore commands were sent: until then, what the window reports is where it was before
+    /// they landed (the default rect, not yet maximized) and is not taken as its bounds.
+    quiet_until: f64,
 }
 
 impl WindowTracker {
     pub fn new(key: impl Into<String>) -> Self {
-        WindowTracker { key: key.into(), restored: false, saved: None, normal: None, pending: None }
+        WindowTracker { key: key.into(), restored: false, saved: None, normal: None, pending: None, quiet_until: f64::NEG_INFINITY }
     }
 
     /// Whether the saved bounds were applied (or there were none).
@@ -181,20 +184,27 @@ impl WindowTracker {
         self.restored
     }
 
-    /// First frame: the commands that restore `saved`. Later frames: nothing.
-    pub fn restore(&mut self, saved: Option<WindowSlot>, now: &Observed, monitors: &[MonitorArea], min_dip: Vec2) -> Vec<ViewportCommand> {
+    /// First frame (at `time`): the commands that restore `saved`. Later frames: nothing. When
+    /// commands are sent, observations are ignored for [`SAVE_AFTER_S`] while they land, so the
+    /// default rect the window opened at never replaces the saved normal rect (a window restored
+    /// maximized would otherwise remember the default rect as its normal bounds).
+    pub fn restore(&mut self, saved: Option<WindowSlot>, now: &Observed, monitors: &[MonitorArea], min_dip: Vec2, time: f64) -> Vec<ViewportCommand> {
         if self.restored {
             return Vec::new();
         }
         self.restored = true;
         self.saved = saved;
         self.normal = saved.map(|s| s.placement);
-        saved.map_or_else(Vec::new, |s| restore_commands(&s, now, monitors, min_dip))
+        let cmds = saved.map_or_else(Vec::new, |s| restore_commands(&s, now, monitors, min_dip));
+        if !cmds.is_empty() {
+            self.quiet_until = time + SAVE_AFTER_S;
+        }
+        cmds
     }
 
     /// This frame's bounds; the `window_placement_set` params once they have settled.
     pub fn observe(&mut self, now: &Observed, monitors: &[MonitorArea], time: f64) -> Option<Value> {
-        if now.minimized {
+        if now.minimized || time < self.quiet_until {
             return None;
         }
         if !now.maximized
@@ -238,11 +248,11 @@ impl WindowTracker {
         let (info, time) = ctx.input(|i| (i.viewport().clone(), i.time));
         let now = Observed::from_info(&info, ctx.zoom_factor())?;
         let monitors = lock(monitors).clone();
-        for c in self.restore(saved, &now, &monitors, min_dip) {
+        for c in self.restore(saved, &now, &monitors, min_dip, time) {
             ctx.send_viewport_cmd(c);
         }
         let out = self.observe(&now, &monitors, time);
-        if self.pending() {
+        if self.pending() || time < self.quiet_until {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(SAVE_AFTER_S));
         }
         out
@@ -330,7 +340,7 @@ mod tests {
         assert_eq!(cmds, vec![ViewportCommand::InnerSize(vec2(1000.0, 700.0))]);
         // And what is saved is the inner size at (0, 0).
         let mut t = WindowTracker::new("main");
-        t.restore(None, &now, &[], Vec2::ZERO);
+        t.restore(None, &now, &[], Vec2::ZERO, 0.0);
         assert!(t.observe(&now, &[], 0.0).is_none());
         let p = t.observe(&now, &[], 1.0).unwrap();
         assert_eq!((p["left"].as_i64(), p["width"].as_i64(), p["height"].as_i64()), (Some(0), Some(784), Some(561)));
@@ -341,9 +351,9 @@ mod tests {
         let monitors = [primary(), secondary()];
         let mut t = WindowTracker::new("group:g");
         let at = |x: f32| Observed::from_info(&info([x, 100.0, 960.0, 560.0], 1.0), 1.0).unwrap();
-        assert!(t.restore(Some(slot(100, 100, 960, 560, 96, false)), &at(100.0), &monitors, Vec2::ZERO).len() >= 2);
+        assert!(t.restore(Some(slot(100, 100, 960, 560, 96, false)), &at(100.0), &monitors, Vec2::ZERO, 0.0).len() >= 2);
         // Where it was saved: nothing to do.
-        assert!(t.observe(&at(100.0), &monitors, 0.0).is_none());
+        assert!(t.observe(&at(100.0), &monitors, 0.6).is_none());
         assert!(!t.pending());
         // Dragged: every frame differs, nothing is sent.
         for (i, x) in [150.0, 220.0, 300.0].into_iter().enumerate() {
@@ -364,7 +374,7 @@ mod tests {
         let monitors = [primary()];
         let mut t = WindowTracker::new("main");
         let normal = Observed::from_info(&info([100.0, 100.0, 1000.0, 700.0], 1.0), 1.0).unwrap();
-        t.restore(None, &normal, &monitors, Vec2::ZERO);
+        t.restore(None, &normal, &monitors, Vec2::ZERO, 0.0);
         t.observe(&normal, &monitors, 0.0);
         assert!(t.observe(&normal, &monitors, 1.0).is_some());
         let mut maxed = Observed::from_info(&info([-8.0, -8.0, 1936.0, 1048.0], 1.0), 1.0).unwrap();
@@ -385,9 +395,31 @@ mod tests {
         let mut t = WindowTracker::new("main");
         let mut maxed = Observed::from_info(&info([-8.0, -8.0, 1936.0, 1048.0], 1.0), 1.0).unwrap();
         maxed.maximized = true;
-        t.restore(Some(slot(200, 150, 1200, 800, 96, true)), &maxed, &[primary()], Vec2::ZERO);
+        t.restore(Some(slot(200, 150, 1200, 800, 96, true)), &maxed, &[primary()], Vec2::ZERO, 0.0);
         assert!(t.observe(&maxed, &[primary()], 0.0).is_none());
         assert!(t.observe(&maxed, &[primary()], 5.0).is_none(), "unchanged: nothing to save");
+    }
+
+    #[test]
+    fn the_default_rect_seen_before_the_restore_lands_is_not_saved() {
+        // As a real window opens: normal at its default rect on the first frame (the restore
+        // commands are sent then), maximized from the next frame on.
+        let monitors = [primary()];
+        let mut t = WindowTracker::new("main");
+        let default = Observed::from_info(&info([100.0, 100.0, 1296.0, 839.0], 1.0), 1.0).unwrap();
+        let cmds = t.restore(Some(slot(200, 150, 1200, 800, 96, true)), &default, &monitors, Vec2::ZERO, 10.0);
+        assert_eq!(cmds.last(), Some(&ViewportCommand::Maximized(true)));
+        assert!(t.observe(&default, &monitors, 10.0).is_none());
+        let mut maxed = Observed::from_info(&info([-8.0, -8.0, 1936.0, 1048.0], 1.0), 1.0).unwrap();
+        maxed.maximized = true;
+        for time in [10.02, 10.3, 11.0, 12.0] {
+            assert!(t.observe(&maxed, &monitors, time).is_none(), "nothing changed at {time}");
+        }
+        assert!(t.flush().is_none(), "the saved normal rect is kept, not the default one");
+        // Un-maximized by the user: back at the saved normal rect, which is what is kept.
+        let back = Observed::from_info(&info([200.0, 150.0, 1200.0, 800.0], 1.0), 1.0).unwrap();
+        t.observe(&back, &monitors, 13.0);
+        assert_eq!(t.observe(&back, &monitors, 14.0).unwrap()["left"], 200);
     }
 
     #[test]

@@ -492,6 +492,27 @@ fn the_main_windows_bounds_are_saved_once_it_settles() {
     assert_eq!((saved[0]["left"].as_i64(), saved[0]["width"].as_i64()), (Some(40), Some(1296)));
 }
 
+#[test]
+fn quitting_saves_bounds_that_have_not_settled_yet() {
+    let mut h = h();
+    let before = h.state().submitted().len();
+    {
+        let root = h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default();
+        root.outer_rect = Some(egui::Rect::from_min_size(egui::pos2(70.0, 60.0), vec2(1296.0, 839.0)));
+        root.inner_rect = Some(egui::Rect::from_min_size(egui::pos2(78.0, 91.0), vec2(1280.0, 800.0)));
+        root.maximized = Some(false);
+        root.minimized = Some(false);
+    }
+    h.step();
+    assert!(calls_since(&h, before, "window_placement_set").is_empty(), "still settling");
+    // Quit by the title bar / menu / `app_quit` (not the window's close): saved at once.
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::AskQuit);
+    let saved = calls_since(&h, before, "window_placement_set");
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!((saved[0]["window"].as_str(), saved[0]["left"].as_i64()), (Some("main"), Some(70)));
+}
+
 fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize, id: &str) -> Vec<serde_json::Value> {
     h.state().submitted()[before..].iter().filter(|c| c.id == id).map(|c| c.params.clone()).collect()
 }

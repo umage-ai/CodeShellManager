@@ -821,6 +821,12 @@ impl CsmApp {
             Action::FocusTerminal(id) => self.ui.focus_terminal = Some(id),
             Action::AskQuit => {
                 self.ui.menu = None;
+                // Window bounds still settling are saved now, ahead of the quit's own save, by
+                // every way of quitting (the window's close, the title bar, the menu, `app_quit`).
+                let pending = self.main_window.flush().into_iter().chain(screens::panes::flush_torn_placements(ctx));
+                for p in pending.collect::<Vec<_>>() {
+                    self.dispatch.submit("window_placement_set", p);
+                }
                 if self.model.shutdown.is_some() {
                     // Already closing: the board is up.
                     return;
@@ -1137,11 +1143,6 @@ impl CsmApp {
         // Closing the window is quitting: sessions get their time to exit (the shutdown board),
         // and the window closes on `QuitReady`.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
-            // Window bounds still settling are saved now, ahead of the quit's own save.
-            let pending = self.main_window.flush().into_iter().chain(screens::panes::flush_torn_placements(&ctx));
-            for p in pending.collect::<Vec<_>>() {
-                self.dispatch.submit("window_placement_set", p);
-            }
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.run(&ctx, Action::AskQuit);
         }
