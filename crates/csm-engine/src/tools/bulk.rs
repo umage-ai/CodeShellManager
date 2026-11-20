@@ -376,6 +376,8 @@ fn session_duplicate(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     s.status = SessionStatus::Running;
     s.created_at = now.clone();
     s.last_activity_at = now;
+    // A copy starts its own conversation.
+    s.claude_session_id = None;
     s.is_dormant = false;
     s.run_commands = parent.run_commands.iter().map(|r| RunCommandItem { id: new_id(), ..r.clone() }).collect();
     let id = s.id.clone();

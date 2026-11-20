@@ -982,6 +982,7 @@ dependencies = [
 name = "csm-services"
 version = "0.0.1"
 dependencies = [
+ "csm-core",
  "log",
  "notify",
  "serde",

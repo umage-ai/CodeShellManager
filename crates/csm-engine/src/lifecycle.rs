@@ -457,8 +457,9 @@ struct SpawnJob {
 
 impl SpawnJob {
     /// On a worker: resolve argv, wait for the Claude slot, spawn, wire the reader and exit.
-    fn run(self) -> Result<Arc<dyn Pty>, String> {
+    fn run(self) -> Result<Spawned, String> {
         let plan = crate::launch::resolve(&self.session, self.resume, self.mcp.as_ref())?;
+        let claude_session_id = plan.claude_session_id.clone();
         if plan.is_claude && !self.stagger.is_zero() {
             wait_for_claude_slot(&self.gate, self.stagger);
         }
@@ -501,8 +502,14 @@ impl SpawnJob {
         pty.on_exit(Box::new(move |code| {
             engine.post(Box::new(move |ctx| on_exited(ctx, &id, instance, code)));
         }));
-        Ok(pty)
+        Ok(Spawned { pty, claude_session_id })
     }
+}
+
+/// A started process and the Claude conversation it runs, when known.
+pub(crate) struct Spawned {
+    pub pty: Arc<dyn Pty>,
+    pub claude_session_id: Option<String>,
 }
 
 /// Flat stagger between Claude launches: reserve the next slot, sleep until it. Never adaptive.
@@ -523,16 +530,25 @@ fn wait_for_claude_slot(gate: &Mutex<Option<Instant>>, stagger: Duration) {
     }
 }
 
-pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Result<Arc<dyn Pty>, String>) {
+pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Result<Spawned, String>) {
     let current = ctx.state.rt.sessions.get(id).is_some_and(|rt| rt.io.instance == instance);
     if !current {
         if let Ok(p) = result {
-            p.kill();
+            p.pty.kill();
         }
         return;
     }
     let callbacks = match result {
-        Ok(pty) => {
+        Ok(Spawned { pty, claude_session_id }) => {
+            // The Claude conversation it runs: the usage tools follow its transcript exactly.
+            if let Some(cid) = claude_session_id
+                && let Some(i) = session_index(ctx.state, id)
+                && let Some(s) = ctx.state.app.sessions.get_mut(i)
+                && s.claude_session_id.as_deref() != Some(cid.as_str())
+            {
+                s.claude_session_id = Some(cid);
+                ctx.state.persist();
+            }
             // Usage stats (WPF RecordSessionStart): counted per command, on the index thread.
             let command = ctx.state.app.sessions.iter().find(|s| s.id == id).map(|s| s.command.clone()).unwrap_or_default();
             if let Some(ix) = &ctx.state.rt.index {

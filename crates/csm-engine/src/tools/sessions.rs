@@ -585,6 +585,13 @@ fn session_edit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         }
     }
     let relaunch = launch_fields(&old) != launch_fields(&s);
+    // Another folder, kind or program: the stored Claude conversation is not this session's any
+    // more (`claude --resume` looks conversations up by folder).
+    if (s.kind, s.command.to_lowercase(), s.working_folder.trim_end_matches(['/', '\\']).to_lowercase())
+        != (old.kind, old.command.to_lowercase(), old.working_folder.trim_end_matches(['/', '\\']).to_lowercase())
+    {
+        s.claude_session_id = None;
+    }
     let any = s != old;
     let name = s.name.clone();
     if let Some(slot) = ctx.state.app.sessions.get_mut(i) {

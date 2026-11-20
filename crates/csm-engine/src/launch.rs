@@ -11,12 +11,13 @@
 //! check) and must run on a worker thread.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use csm_core::models::{SessionKind, ShellSession};
 use csm_services::argv::split_command_line;
+use csm_services::claude_usage;
 use csm_services::launch::{self as sl, LaunchSpec};
 
 use crate::{proc, which, wsl_probe};
@@ -37,6 +38,9 @@ pub struct Plan {
     /// `PATH` for the child: the app's own plus the folders installers use, so `claude` resolves
     /// when the app was started from Explorer or the Dock with a short `PATH`. `None` leaves it.
     pub path: Option<OsString>,
+    /// The Claude conversation this launch runs, when known: the `--session-id` CSM chose, the
+    /// id given to `--resume`, or one the user's own arguments name. Stored on the session.
+    pub claude_session_id: Option<String>,
 }
 
 fn spec_of(s: &ShellSession, wsl_shell: Option<&str>) -> LaunchSpec {
@@ -74,16 +78,26 @@ fn is_passthrough_shell(command: &str) -> bool {
     PASSTHROUGH_SHELLS.contains(&stem.as_str())
 }
 
+/// Which Claude conversation a launch names (validated before it reaches the command line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeId<'a> {
+    /// `--resume <id>`: continue that conversation.
+    Resume(&'a str),
+    /// `--session-id <id>`: a new conversation with an id CSM chose, so its transcript is known.
+    New(&'a str),
+}
+
 /// The argv for a session. `resume_id` is appended as `--resume <id>` (validated);
 /// `wrapper` is the PowerShell that hosts non-shell commands on Windows; `unix_shell` is the
 /// login shell elsewhere.
+#[cfg(test)]
 pub fn plan(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell: &str) -> Result<Plan, String> {
-    plan_with(s, resume_id, wrapper, unix_shell, None)
+    plan_with(s, resume_id.map(ClaudeId::Resume), wrapper, unix_shell, None)
 }
 
 /// [`plan`] with the WSL login shell the distro probe found (`ResolvedWslShell`; `bash` when
 /// `None`).
-pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell: &str, wsl_shell: Option<&str>) -> Result<Plan, String> {
+pub fn plan_with(s: &ShellSession, claude_id: Option<ClaudeId<'_>>, wrapper: &str, unix_shell: &str, wsl_shell: Option<&str>) -> Result<Plan, String> {
     let is_claude = is_claude_command(&s.command);
     if let Some(msg) = s.launch_validation_error() {
         return Err(msg.to_owned());
@@ -95,8 +109,13 @@ pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_
                 return Err("This session has no command. Edit the session and set one.".into());
             }
             let mut args = s.args.trim().to_owned();
-            if let Some(id) = resume_id.filter(|id| is_safe_resume_id(id)) {
-                args = if args.is_empty() { format!("--resume {id}") } else { format!("--resume {id} {args}") };
+            let flag = match claude_id {
+                Some(ClaudeId::Resume(id)) if is_safe_resume_id(id) => Some(format!("--resume {id}")),
+                Some(ClaudeId::New(id)) if is_safe_resume_id(id) => Some(format!("--session-id {id}")),
+                _ => None,
+            };
+            if let Some(flag) = flag {
+                args = if args.is_empty() { flag } else { format!("{flag} {args}") };
             }
             let full = if args.is_empty() { command.to_owned() } else { format!("{command} {args}") };
             if cfg!(windows) {
@@ -129,7 +148,7 @@ pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_
         SessionKind::Local if !s.working_folder.trim().is_empty() => Some(PathBuf::from(s.working_folder.trim())),
         _ => None,
     };
-    Ok(Plan { argv, cwd, is_claude, path: None })
+    Ok(Plan { argv, cwd, is_claude, path: None, claude_session_id: None })
 }
 
 /// [`plan`] plus its I/O: the Claude resume lookup (only when `resume` is set), the PowerShell
@@ -155,31 +174,42 @@ pub fn resolve(s: &ShellSession, resume: bool, mcp: Option<&McpOffer>) -> Result
         },
         None => s,
     };
-    let resume_id = if resume
-        && s.kind == SessionKind::Local
-        && is_claude_command(&s.command)
-        && !s.args.contains("--resume")
-        && !s.args.contains("--continue")
-    {
-        let id = last_claude_session_id(s.working_folder.trim(), &claude_home());
-        match &id {
-            Some(id) => log::info!("auto-resume: --resume {id} for claude in '{}'", s.working_folder),
-            None => log::info!("auto-resume: no prior conversation in '{}', starting fresh", s.working_folder),
-        }
-        id
-    } else {
-        None
+    let choice = choose_claude_id(
+        s,
+        resume,
+        |id| {
+            let mut roots = claude_usage::discover::claude_roots();
+            roots.extend(claude_usage::discover::claude_home());
+            claude_usage::discover::find_transcript(&roots, id).is_some()
+        },
+        || {
+            let home: Vec<PathBuf> = claude_usage::discover::claude_home().into_iter().collect();
+            claude_usage::discover::newest_transcript_for_folder(&home, s.working_folder.trim()).map(|(id, _)| id)
+        },
+        || uuid::Uuid::new_v4().to_string(),
+    );
+    match &choice {
+        ClaudeChoice::Resume(id) => log::info!("claude: --resume {id} in '{}'", s.working_folder),
+        ClaudeChoice::New(id) => log::info!("claude: new conversation --session-id {id} in '{}'", s.working_folder),
+        ClaudeChoice::FromArgs(id) => log::info!("claude: the session's arguments name conversation {id}"),
+        ClaudeChoice::None => {}
+    }
+    let claude_id = match &choice {
+        ClaudeChoice::Resume(id) => Some(ClaudeId::Resume(id.as_str())),
+        ClaudeChoice::New(id) => Some(ClaudeId::New(id.as_str())),
+        ClaudeChoice::FromArgs(_) | ClaudeChoice::None => None,
     };
     let wrapper = if cfg!(windows) { pwsh() } else { "pwsh.exe" };
     let unix_shell = std::env::var("SHELL").ok().filter(|v| v.starts_with('/')).unwrap_or_else(|| "/bin/sh".into());
     let mut p = if s.kind == SessionKind::Wsl {
         let wsl = wsl_session(s)?;
         let shell = wsl_probe::login_shell(&wsl.wsl_distro, &wsl.wsl_user);
-        plan_with(&wsl, resume_id.as_deref(), wrapper, &unix_shell, Some(&shell))?
+        plan_with(&wsl, claude_id, wrapper, &unix_shell, Some(&shell))?
     } else {
-        plan(s, resume_id.as_deref(), wrapper, &unix_shell)?
+        plan_with(s, claude_id, wrapper, &unix_shell, None)?
     };
     p.path = which::search_path();
+    p.claude_session_id = choice.id().map(str::to_owned);
     if s.kind == SessionKind::Local && !is_passthrough_shell(&s.command) && which::which(first_word(&s.command)).is_none() {
         log::warn!("`{}` was not found on PATH or in the usual install folders; the shell may not find it either", first_word(&s.command));
     }
@@ -220,32 +250,87 @@ fn wsl_session(s: &ShellSession) -> Result<ShellSession, String> {
     Ok(out)
 }
 
-/// `CLAUDE_CONFIG_DIR`, else `~/.claude` (a stale `~/.claude` must not win over the env var).
-fn claude_home() -> PathBuf {
-    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
-        Some(d) => PathBuf::from(d),
-        None => dirs::home_dir().unwrap_or_default().join(".claude"),
+/// What a Claude launch says about its conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeChoice {
+    /// Not a local Claude session, or its arguments pick the conversation in a way we can't
+    /// follow (`--continue`, a bare `--resume`).
+    None,
+    /// `--resume <id>`.
+    Resume(String),
+    /// `--session-id <id>`: a new conversation whose transcript we know in advance.
+    New(String),
+    /// The session's own arguments name it (`--resume <id>`, `--session-id <id>`); nothing added.
+    FromArgs(String),
+}
+
+impl ClaudeChoice {
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            ClaudeChoice::None => None,
+            ClaudeChoice::Resume(id) | ClaudeChoice::New(id) | ClaudeChoice::FromArgs(id) => Some(id),
+        }
     }
 }
 
-/// The newest conversation for `folder` under `<claude home>/projects/<folder as dashes>/`.
-pub fn last_claude_session_id(folder: &str, claude_home: &Path) -> Option<String> {
-    if folder.is_empty() {
-        return None;
+/// How the user's own arguments pick a conversation: `Some(Some(id))` names one,
+/// `Some(None)` picks one we can't know (`--continue`, `-c`, a bare `--resume`, `--fork-session`),
+/// `None` says nothing.
+fn conversation_in_args(args: &str) -> Option<Option<String>> {
+    let words: Vec<&str> = args.split_whitespace().collect();
+    let mut i = 0;
+    while let Some(w) = words.get(i) {
+        let (flag, inline) = match w.split_once('=') {
+            Some((f, v)) => (f, Some(v)),
+            None => (*w, None),
+        };
+        match flag {
+            "--resume" | "-r" | "--session-id" => {
+                let value = inline.or_else(|| words.get(i + 1).copied().filter(|v| !v.starts_with('-')));
+                let value = value.map(|v| v.trim_matches(['"', '\''])).filter(|v| is_safe_resume_id(v));
+                return Some(value.map(str::to_owned));
+            }
+            "--continue" | "-c" | "--fork-session" => return Some(None),
+            _ => {}
+        }
+        i += 1;
     }
-    let dir_name: String = folder.chars().map(|c| if matches!(c, ':' | '\\' | '/') { '-' } else { c }).collect();
-    let dir = claude_home.join("projects").join(dir_name);
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .filter_map(|e| {
-            let modified = e.metadata().ok()?.modified().ok()?;
-            let stem = e.path().file_stem()?.to_str()?.to_owned();
-            is_safe_resume_id(&stem).then_some((modified, stem))
-        })
-        .max_by_key(|(m, _)| *m)
-        .map(|(_, s)| s)
+    None
+}
+
+/// Which conversation a launch of `s` runs (pure apart from the callbacks, which do the I/O):
+/// - a new start gets a fresh `--session-id`, so its transcript is known exactly;
+/// - a resume (restore, wake, restart) continues the stored id when its transcript exists, starts
+///   a conversation with that id when it doesn't (nothing was ever said in it), and only for a
+///   session from before CSM stored ids falls back to `guess`: the newest transcript whose `cwd`
+///   is the folder;
+/// - arguments that already pick a conversation are left alone (an id they name is recorded).
+pub fn choose_claude_id(
+    s: &ShellSession,
+    resume: bool,
+    exists: impl Fn(&str) -> bool,
+    guess: impl FnOnce() -> Option<String>,
+    fresh: impl FnOnce() -> String,
+) -> ClaudeChoice {
+    if s.kind != SessionKind::Local || !is_claude_command(&s.command) {
+        return ClaudeChoice::None;
+    }
+    match conversation_in_args(&s.args) {
+        Some(Some(id)) => return ClaudeChoice::FromArgs(id),
+        Some(None) => return ClaudeChoice::None,
+        None => {}
+    }
+    let stored = s.claude_session_id.as_deref().filter(|id| is_safe_resume_id(id));
+    if resume {
+        if let Some(id) = stored {
+            return if exists(id) { ClaudeChoice::Resume(id.to_owned()) } else { ClaudeChoice::New(id.to_owned()) };
+        }
+        if let Some(id) = guess().filter(|id| is_safe_resume_id(id)) {
+            return ClaudeChoice::Resume(id);
+        }
+    }
+    let id = fresh();
+    if is_safe_resume_id(&id) { ClaudeChoice::New(id) } else { ClaudeChoice::None }
 }
 
 /// `pwsh.exe` when it is on PATH and actually runs, else `powershell.exe` (`PwshLocator`).
@@ -286,6 +371,7 @@ impl sl::RunnableProbe for FsProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn local(command: &str, args: &str) -> ShellSession {
         ShellSession { id: "s".into(), command: command.into(), args: args.into(), working_folder: r"C:\src\a b".into(), ..Default::default() }
@@ -380,18 +466,69 @@ mod tests {
         assert!(plan(&bad, None, "pwsh.exe", "/bin/sh").is_err());
     }
 
+    fn claude(args: &str, stored: Option<&str>) -> ShellSession {
+        ShellSession { claude_session_id: stored.map(Into::into), ..local("claude", args) }
+    }
+
+    fn choose(s: &ShellSession, resume: bool, exists: bool, guess: Option<&str>) -> ClaudeChoice {
+        choose_claude_id(s, resume, |_| exists, || guess.map(Into::into), || "fresh-1".into())
+    }
+
     #[test]
-    fn resume_lookup_takes_the_newest_safe_jsonl() {
-        let home = tempfile::tempdir().unwrap();
-        let dir = home.path().join("projects").join("C--src-x");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("older-1.jsonl"), "").unwrap();
-        std::thread::sleep(Duration::from_millis(30));
-        std::fs::write(dir.join("newer-2.jsonl"), "").unwrap();
-        std::fs::write(dir.join("not a uuid.jsonl"), "").unwrap();
-        let id = last_claude_session_id(r"C:\src\x", home.path());
-        assert!(matches!(id.as_deref(), Some("newer-2") | Some("older-1")), "{id:?}");
-        assert_eq!(last_claude_session_id(r"C:\nowhere", home.path()), None);
+    fn a_new_claude_session_gets_its_own_session_id() {
+        assert_eq!(choose(&claude("", None), false, false, Some("old-9")), ClaudeChoice::New("fresh-1".into()));
+        // Even with an id stored: not resuming means a new conversation.
+        assert_eq!(choose(&claude("", Some("old-1")), false, true, None), ClaudeChoice::New("fresh-1".into()));
+    }
+
+    #[test]
+    fn a_resume_continues_the_stored_id_exactly() {
+        assert_eq!(choose(&claude("", Some("abc-1")), true, true, Some("other-2")), ClaudeChoice::Resume("abc-1".into()));
+        // Nothing was said in it yet (no transcript): start it under the same id.
+        assert_eq!(choose(&claude("", Some("abc-1")), true, false, Some("other-2")), ClaudeChoice::New("abc-1".into()));
+        // An old session without an id falls back to the newest transcript of its folder.
+        assert_eq!(choose(&claude("", None), true, false, Some("guess-3")), ClaudeChoice::Resume("guess-3".into()));
+        assert_eq!(choose(&claude("", None), true, false, None), ClaudeChoice::New("fresh-1".into()));
+        // A hostile stored id is ignored, never put on a command line.
+        assert_eq!(choose(&claude("", Some("x; calc")), true, true, None), ClaudeChoice::New("fresh-1".into()));
+    }
+
+    #[test]
+    fn arguments_that_pick_a_conversation_are_left_alone() {
+        assert_eq!(choose(&claude("--resume abc-1 --model x", None), true, true, None), ClaudeChoice::FromArgs("abc-1".into()));
+        assert_eq!(choose(&claude("--session-id=abc-2", None), false, true, None), ClaudeChoice::FromArgs("abc-2".into()));
+        assert_eq!(choose(&claude("-r abc-3", None), false, true, None), ClaudeChoice::FromArgs("abc-3".into()));
+        assert_eq!(choose(&claude("--continue", Some("abc-1")), true, true, None), ClaudeChoice::None);
+        assert_eq!(choose(&claude("--resume", None), true, true, None), ClaudeChoice::None);
+        assert_eq!(choose(&claude("--resume --model x", None), true, true, None), ClaudeChoice::None);
+    }
+
+    #[test]
+    fn only_local_claude_sessions_get_an_id() {
+        assert_eq!(choose(&local("pwsh", ""), false, false, None), ClaudeChoice::None);
+        let mut w = wsl("/x");
+        w.claude_session_id = Some("abc-1".into());
+        assert_eq!(choose(&w, true, true, None), ClaudeChoice::None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn the_session_id_goes_before_the_users_arguments() {
+        let p = plan_with(&local("claude", "--model x"), Some(ClaudeId::New("abc-1")), "pwsh.exe", "/bin/sh", None).unwrap();
+        assert_eq!(p.argv, ["pwsh.exe", "-NoExit", "-Command", "claude", "--session-id", "abc-1", "--model", "x"]);
+        let p = plan_with(&local("claude", ""), Some(ClaudeId::New("x; calc")), "pwsh.exe", "/bin/sh", None).unwrap();
+        assert!(!p.argv.iter().any(|a| a.contains("calc")), "{:?}", p.argv);
+    }
+
+    #[test]
+    fn resolve_records_the_conversation_it_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ShellSession { working_folder: dir.path().to_string_lossy().into_owned(), ..claude("", None) };
+        let p = resolve(&s, false, None).unwrap();
+        let id = p.claude_session_id.clone().unwrap();
+        assert!(is_safe_resume_id(&id) && id.len() == 36, "{id}");
+        assert!(p.argv.iter().any(|a| a.contains(&id)), "{:?}", p.argv);
+        assert!(p.argv.iter().any(|a| a.contains("--session-id")), "{:?}", p.argv);
     }
 }
 
