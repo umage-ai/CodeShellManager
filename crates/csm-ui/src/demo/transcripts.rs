@@ -264,7 +264,9 @@ pub fn for_session(id: &str, status: crate::model::Status, rows: usize, dark: bo
             .line(&format!("{DIM}> odulodo-web@2.14.0 lint{RESET}"))
             .line(&format!("{DIM}> eslint src --max-warnings 0{RESET}"))
             .br()
-            .line("PS C:\\GitHub\\Odulodo.Web> "),
+            .line(&format!("PS C:\\GitHub\\Odulodo.Web> {BOLD}npm run dev{RESET}"))
+            .line(&format!("  {GREEN}VITE v6.0.7{RESET}  ready in 412 ms"))
+            .line(&format!("  {GREEN}➜{RESET}  Local:   {BLUE}http://localhost:5173/{RESET}")),
         _ => return None,
     };
     let mut bytes = t.done(rows);
