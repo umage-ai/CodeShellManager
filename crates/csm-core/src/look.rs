@@ -435,14 +435,14 @@ pub fn unquote_font_family(s: &str) -> Option<String> {
 }
 
 /// `Cascadia Code` → `'Cascadia Code', monospace` (the WPF app's CSS form, so the field still
-/// works there). Already-quoted text is kept.
+/// works there). Already-quoted text gives its first family. A quote or CSS punctuation inside
+/// the name is dropped: it would end the quoted family early in the WPF app's CSS.
 pub fn quote_font_family(face: &str) -> Option<String> {
+    let face = unquote_font_family(face)?;
+    let face: String = face.chars().filter(|c| !matches!(c, '\'' | '"' | '\\' | ';' | '{' | '}' | ',') && !c.is_control()).collect();
     let face = face.trim();
     if face.is_empty() {
         return None;
-    }
-    if face.starts_with(['\'', '"']) {
-        return Some(face.to_string());
     }
     Some(format!("'{face}', monospace"))
 }
@@ -483,6 +483,8 @@ mod tests {
         assert_eq!(unquote_font_family("'Cascadia Code', monospace").as_deref(), Some("Cascadia Code"));
         assert_eq!(unquote_font_family("Consolas").as_deref(), Some("Consolas"));
         assert_eq!(quote_font_family("  "), None);
+        assert_eq!(quote_font_family("'Fira Code', monospace").as_deref(), Some("'Fira Code', monospace"));
+        assert_eq!(quote_font_family("Evil'; } x").as_deref(), Some("'Evil  x', monospace"));
     }
 
     #[test]

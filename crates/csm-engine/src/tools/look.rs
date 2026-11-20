@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::find;
 use crate::engine::{Ctx, Reply};
-use crate::state::State;
+use crate::state::{State, TerminalProfiles};
 use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 
 pub(super) fn specs() -> Vec<ToolSpec> {
@@ -46,13 +46,16 @@ fn import_refusal(state: &State) -> Option<ToolError> {
         .then(|| ToolError::Refused("Windows Terminal profile import is off; turn on ImportWindowsTerminalProfiles in Settings › Appearance".into()))
 }
 
-/// A worker-thread loader for the profiles (the configured files in tests, the install
-/// locations otherwise).
+/// A worker-thread loader for the profiles ([`TerminalProfiles`]: the install locations in
+/// production, fixtures in tests, the demo's texts).
 fn loader(state: &State) -> impl FnOnce() -> Vec<WtProfile> + Send + 'static {
-    let files = state.options.terminal_profile_files.clone();
-    move || match files {
-        Some(f) => csm_services::wt_profiles::load_from(&f),
-        None => csm_services::wt_profiles::load_profiles(),
+    use csm_services::wt_profiles as wt;
+    let source = state.options.terminal_profiles.clone();
+    move || match source {
+        TerminalProfiles::None => Vec::new(),
+        TerminalProfiles::Installed => wt::load_profiles(),
+        TerminalProfiles::Files(f) => wt::load_from(&f),
+        TerminalProfiles::Texts(t) => wt::disambiguate(t.iter().flat_map(|(source, text)| wt::parse_settings(text, source, &|_| None)).collect()),
     }
 }
 

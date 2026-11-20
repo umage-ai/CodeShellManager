@@ -81,12 +81,32 @@ fn demo_index() -> csm_engine::IndexSetting {
     csm_engine::IndexSetting::Handle(ix)
 }
 
+/// The demo's Windows Terminal settings (what `profile_list` answers in `--demo` and UI tests,
+/// instead of this machine's real files).
+const DEMO_WT_SETTINGS: &str = r##"{
+  "profiles": {
+    "defaults": { "font": { "face": "Cascadia Mono", "size": 11 } },
+    "list": [
+      { "name": "PowerShell", "commandline": "pwsh.exe -NoLogo", "startingDirectory": "C:\\GitHub\\Odulodo",
+        "colorScheme": "Campbell Powershell", "cursorShape": "bar" },
+      { "name": "Ubuntu", "commandline": "wsl.exe -d Ubuntu", "colorScheme": "One Half Dark",
+        "cursorShape": "underscore", "padding": "12", "font": { "size": 13 } }
+    ]
+  }
+}"##;
+
 /// Starts an engine for the demo backend: echoing stand-ins and `demo_set_status`, and a PTY
 /// factory that refuses, so nothing the demo submits ever starts a process. The demo's sessions
 /// live in [`demo::DemoBackend`], not in this engine.
 pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
     let pty: csm_engine::PtyFactory = std::sync::Arc::new(|_| Err(std::io::Error::other("the demo starts no processes")));
-    let options = csm_engine::StateOptions { pty, restore_on_start: false, index: demo_index(), ..csm_engine::StateOptions::default() };
+    let options = csm_engine::StateOptions {
+        pty,
+        restore_on_start: false,
+        index: demo_index(),
+        terminal_profiles: csm_engine::TerminalProfiles::Texts(vec![("Stable".into(), DEMO_WT_SETTINGS.into())]),
+        ..csm_engine::StateOptions::default()
+    };
     let state = csm_engine::State::new(csm_core::models::AppState::default(), options);
     let mut tools = demo::tools::stand_ins(demo::tools::StandIn::Echo);
     tools.extend(demo::tools::demo_only());

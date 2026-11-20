@@ -977,7 +977,8 @@ impl CsmApp {
         };
         match id {
             "session_new" => return self.run(ctx, Action::OpenQuickOpen { group: None }),
-            "session_edit" => {
+            // The look's picker is the Profile row of Edit session.
+            "session_edit" | "session_look_set" => {
                 if let Some(a) = active {
                     self.run(ctx, Action::EditSession(a));
                 }

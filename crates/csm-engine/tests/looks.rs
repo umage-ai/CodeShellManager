@@ -4,7 +4,7 @@
 mod common;
 
 use common::{H, test_app};
-use csm_engine::{Caller, ToolError};
+use csm_engine::{Caller, TerminalProfiles, ToolError};
 use csm_term::alacritty_terminal::vte::ansi::CursorShape;
 use serde_json::json;
 
@@ -28,7 +28,7 @@ fn with_profiles(import: bool) -> H {
     std::fs::write(&path, SETTINGS).unwrap();
     let mut app = test_app();
     app.settings.import_windows_terminal_profiles = import;
-    let h = H::start(app, |o| o.terminal_profile_files = Some(vec![("Stable".into(), path)]));
+    let h = H::start(app, |o| o.terminal_profiles = TerminalProfiles::Files(vec![("Stable".into(), path)]));
     // Keep the file alive for the test: leak the temp dir into the harness's lifetime.
     std::mem::forget(dir);
     h

@@ -512,7 +512,6 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
         }
         return out;
     }
-    let look = picked_look(q);
     if q.remote {
         let mut params = match q.rkind {
             RemoteKind::Ssh => {
@@ -524,9 +523,7 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
                 json!({"command": split_command(&cmd).0, "args": split_command(&cmd).1, "kind": "wsl", "group": q.group, "wsl": wsl_params(q)})
             }
         };
-        if let Some(l) = look {
-            params["look"] = l;
-        }
+        stamp_profile(&mut params, q);
         out.push(Action::Tool("session_new", params));
         return out;
     }
@@ -541,11 +538,21 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
     };
     let (program, args) = split_command(&cmd);
     let mut params = json!({"folder": folder, "command": program, "args": args, "group": q.group});
-    if let Some(l) = look {
-        params["look"] = l;
-    }
+    stamp_profile(&mut params, q);
     out.push(Action::Tool("session_new", params));
     out
+}
+
+/// A new session's params with the picked profile: its look, and its name when the panel has
+/// none typed.
+fn stamp_profile(params: &mut serde_json::Value, q: &QuickOpenState) {
+    let Some(look) = picked_look(q) else { return };
+    params["look"] = look;
+    if let ProfilePick::Profile(name) = &q.profile
+        && q.name.trim().is_empty()
+    {
+        params["name"] = json!(name);
+    }
 }
 
 /// The picked profile's look, as `profile_list` gave it.
@@ -636,6 +643,15 @@ fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: b
 /// (`claude --continue` → `claude`, `--continue`).
 pub fn split_command(cmd: &str) -> (String, Option<String>) {
     let cmd = cmd.trim();
+    // A quoted program (`"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo`, as Windows Terminal
+    // profiles write it): the path without its quotes, then the rest.
+    if let Some(rest) = cmd.strip_prefix('"')
+        && let Some((program, args)) = rest.split_once('"')
+        && !program.trim().is_empty()
+    {
+        let args = args.trim();
+        return (program.to_string(), (!args.is_empty()).then(|| args.to_string()));
+    }
     match cmd.split_once(char::is_whitespace) {
         Some((p, a)) if !a.trim().is_empty() => (p.to_string(), Some(a.trim().to_string())),
         _ => (cmd.to_string(), None),
