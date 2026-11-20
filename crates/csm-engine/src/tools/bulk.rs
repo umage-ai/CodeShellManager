@@ -230,7 +230,8 @@ fn session_restart_many(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if live.len() > 1 && !p.force {
         let claude = ctx.state.app.sessions.iter().filter(|s| live.contains(&s.id) && crate::launch::is_claude_command(&s.command)).count();
         let total = i64::try_from(live.len()).unwrap_or(i64::MAX);
-        let text = csm_core::bulk_restart::build_confirm_text(&format!("Restart {} sessions?", live.len()), total, i64::try_from(claude).unwrap_or(0));
+        let text =
+            csm_core::bulk_restart::build_confirm_text(&format!("Restart {} sessions?", live.len()), total, i64::try_from(claude).unwrap_or(0));
         return Err(ToolError::Refused(format!("{text}\nPass force: true to go ahead.")));
     }
     let reply = ctx.park();
@@ -281,9 +282,8 @@ fn session_move_many(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             return Err(ToolError::InvalidParams(format!("`{a}` is not in the target group")));
         }
     }
-    let first_anchor = anchor.or_else(|| {
-        ctx.state.app.sessions.iter().rev().find(|s| s.group_id == group && !ids.contains(&s.id)).map(|s| (s.id.clone(), true))
-    });
+    let first_anchor =
+        anchor.or_else(|| ctx.state.app.sessions.iter().rev().find(|s| s.group_id == group && !ids.contains(&s.id)).map(|s| (s.id.clone(), true)));
     for s in ctx.state.app.sessions.iter_mut().filter(|s| ids.contains(&s.id)) {
         s.group_id = group.clone();
     }

@@ -74,10 +74,13 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
 }
 
 /// Every keyboard shortcut, in one place (`?`, F1, Ctrl+/).
-pub const SHORTCUTS: [(&str, &str); 18] = [
+pub const SHORTCUTS: [(&str, &str); 21] = [
     ("Ctrl K", "Search sessions and commands"),
     ("Ctrl T", "New session"),
     ("Ctrl Shift T", "Reopen the last closed session"),
+    ("Ctrl Alt T", "Duplicate the active session"),
+    ("Ctrl click", "Select sessions in the sidebar"),
+    ("Shift click", "Select a range of sessions"),
     ("Ctrl J", "Next session that needs you"),
     ("Ctrl Tab", "Next session in this group"),
     ("Ctrl Shift Tab", "Previous session"),

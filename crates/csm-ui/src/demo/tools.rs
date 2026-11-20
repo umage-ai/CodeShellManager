@@ -222,6 +222,41 @@ pub struct MoveToGroupParams {
     pub after: Option<String>,
 }
 
+/// `session_sleep_many`, `session_wake_many`, `session_restart_many`, `session_close_many`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionIdsParams {
+    pub session_ids: Vec<String>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveManyParams {
+    pub session_ids: Vec<String>,
+    pub group_id: Option<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SortParams {
+    /// `name`, `folder`, `last_active`, `branch`, `dirty` or `repo`.
+    pub by: String,
+    pub descending: Option<bool>,
+    /// A group id, `""` (ungrouped) or `all`.
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateParams {
+    pub session_id: String,
+    pub focus: Option<bool>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ViewSetParams {

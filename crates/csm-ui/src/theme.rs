@@ -411,6 +411,8 @@ pub mod alpha {
     pub const PILL: f32 = 0.15;
     /// A drop target or a selected grid preset.
     pub const DROP: f32 = 0.12;
+    /// A sidebar row in the multi-selection (Ctrl/Shift-click).
+    pub const PICKED: f32 = 0.2;
 }
 
 /// How long a toast stays, and the status glyph animation rate.

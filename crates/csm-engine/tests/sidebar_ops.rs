@@ -86,10 +86,7 @@ fn duplicate_copies_the_configuration_and_lands_right_after_the_original() {
     let b = h.session("pwsh");
     h.ok("session_rename", json!({"session_id": a, "name": "api"}));
     h.ok("session_edit", json!({"session_id": a, "args": "-NoLogo"}));
-    h.ok(
-        "run_edit",
-        json!({"session_id": a, "runs": [{"label": "build", "command_line": "cargo build", "is_default": true}]}),
-    );
+    h.ok("run_edit", json!({"session_id": a, "runs": [{"label": "build", "command_line": "cargo build", "is_default": true}]}));
     let g = h.ok("group_new", json!({"name": "G"})).data["group_id"].as_str().unwrap().to_owned();
     h.ok("session_move_to_group", json!({"session_id": a, "group_id": g}));
     h.ok("session_move_to_group", json!({"session_id": b, "group_id": g}));

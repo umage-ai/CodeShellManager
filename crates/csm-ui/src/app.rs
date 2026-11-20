@@ -70,6 +70,11 @@ pub enum Action {
     RunSearch,
     /// Pane divider drag finished in Free mode, or a float moved: persist the layout.
     Toast(String),
+    /// Sidebar multi-select (widget state, not a tool): Ctrl-click toggles a row,
+    /// Shift-click selects the visible range from the anchor, Esc clears.
+    SelectToggle(SessionId),
+    SelectRange(SessionId),
+    ClearSelection,
 }
 
 /// Which popup menu is open.
@@ -87,6 +92,8 @@ pub enum Menu {
     Runs { session: SessionId, at: egui::Pos2 },
     /// The quick-open's group picker.
     QuickGroup { at: egui::Pos2 },
+    /// The sort control next to the Sessions header.
+    Sort { at: egui::Pos2 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -361,6 +368,15 @@ pub struct UiState {
     /// the system's choice). The host owns the window handle, so it shows the dialog
     /// ([`CsmApp::take_folder_request`]) and answers with [`CsmApp::folder_picked`].
     pub folder_request: Option<String>,
+    /// The sidebar's multi-selection (Ctrl/Shift-click).
+    pub selection: csm_core::sidebar_selection::Selection,
+    /// The session rows the sidebar drew last frame, top to bottom (Shift-click's range).
+    pub sidebar_visible: Vec<SessionId>,
+    /// The last sort applied (`session_sort`): its field shows its direction and flips when
+    /// picked again.
+    pub sort: Option<(csm_core::session_sort::SortField, bool)>,
+    /// Where the sort control drew last (the palette's "Sort sessions…" opens its menu there).
+    pub sort_at: Option<egui::Pos2>,
 }
 
 /// Terminal views and the renderer, shared with torn-off windows (deferred viewports draw from
@@ -726,6 +742,12 @@ impl CsmApp {
                 // Opening a menu item closes the menu.
                 self.ui.menu = None;
                 self.ui.submenu = None;
+                if id == "session_sort" {
+                    // The sort menu shows the field sorted last, which flips when picked again.
+                    let field = params["by"].as_str().and_then(csm_core::session_sort::SortField::from_id);
+                    let desc = params["descending"].as_bool().or_else(|| field.map(|f| f.default_descending()));
+                    self.ui.sort = field.zip(desc);
+                }
                 self.dispatch.submit(id, params);
                 ctx.request_repaint();
             }
@@ -832,6 +854,19 @@ impl CsmApp {
                 self.run(ctx, Action::Tool("consent_answer", json!({"request_id": request_id, "answer": answer})));
             }
             Action::Toast(t) => self.toast(ctx, t),
+            Action::SelectToggle(id) => {
+                self.ui.menu = None;
+                self.ui.selection.toggle(&id);
+            }
+            Action::SelectRange(id) => {
+                self.ui.menu = None;
+                let visible = self.ui.sidebar_visible.clone();
+                self.ui.selection.range(&visible, &id, self.model.active.as_deref());
+            }
+            Action::ClearSelection => {
+                self.ui.menu = None;
+                self.ui.selection.clear();
+            }
             Action::EditSession(id) => self.open_edit(&id),
             Action::OpenSettings => {
                 self.ui.menu = None;
@@ -976,6 +1011,10 @@ impl CsmApp {
                 return;
             }
             "search_output" | "search_notes" => return self.run(ctx, Action::OpenSearch(String::new())),
+            "session_sort" => {
+                let at = self.ui.sort_at.unwrap_or_else(|| ctx.content_rect().center());
+                return self.run(ctx, Action::OpenMenu(Menu::Sort { at }));
+            }
             "app_quit" => return self.run(ctx, Action::AskQuit),
             "inspector_show" => {
                 let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
@@ -995,6 +1034,12 @@ impl CsmApp {
         for r in &required {
             let v = match r.as_str() {
                 "session_id" => active.clone().map(Value::from),
+                // The bulk tools act on the sidebar's selection.
+                "session_ids" => (!self.ui.selection.is_empty()).then(|| {
+                    let order: Vec<&str> = self.model.sessions.iter().map(|s| s.id.as_str()).collect();
+                    let first = self.ui.selection.ids().first().cloned().unwrap_or_default();
+                    Value::from(self.ui.selection.targets(&first, &order))
+                }),
                 "group_id" => group.clone().map(Value::from),
                 "group" => Some(Value::from(self.scope().key())),
                 "tab" => Some(Value::from("notes")),
@@ -1034,11 +1079,16 @@ impl CsmApp {
                 self.run(ctx, Action::OpenSearch(String::new()));
             }
         }
-        if pressed(ctx, cmd, Key::T) {
-            self.run(ctx, Action::OpenQuickOpen { group: None });
-        }
-        if pressed(ctx, cmd | Modifiers::SHIFT, Key::T) {
+        // Most specific first: `consume_shortcut` ignores extra Shift and Alt, so Ctrl+T checked
+        // first would also take Ctrl+Shift+T and Ctrl+Alt+T.
+        if pressed(ctx, cmd | Modifiers::ALT, Key::T) {
+            if let Some(a) = self.model.active.clone() {
+                self.run(ctx, Action::Tool("session_duplicate", json!({"session_id": a})));
+            }
+        } else if pressed(ctx, cmd | Modifiers::SHIFT, Key::T) {
             self.run(ctx, Action::Tool("session_reopen_closed", json!({})));
+        } else if pressed(ctx, cmd, Key::T) {
+            self.run(ctx, Action::OpenQuickOpen { group: None });
         }
         if pressed(ctx, cmd, Key::J) {
             self.run(ctx, Action::Tool("inbox_next", json!({})));
@@ -1099,6 +1149,8 @@ impl CsmApp {
         let open = self.ui.overlay != Overlay::None || self.ui.menu.is_some();
         if open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseOverlays);
+        } else if !self.ui.selection.is_empty() && self.ui.inline.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.run(ctx, Action::ClearSelection);
         } else if self.ui.settings.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseSettings);
         }
@@ -1137,6 +1189,8 @@ impl CsmApp {
         for a in remote {
             self.run(&ctx, a);
         }
+        let model = self.model.clone();
+        self.ui.selection.retain(|id| model.session(id).is_some());
         self.shortcuts(&ctx);
         // The active session changed (inbox, palette, click): keyboard follows.
         if self.model.active != self.ui.last_active {
