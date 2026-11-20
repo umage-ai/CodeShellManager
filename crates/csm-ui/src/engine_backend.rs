@@ -84,6 +84,8 @@ pub struct EngineBackend {
     waker: Option<Arc<AtomicBool>>,
     /// The Git tab's details, from git tool replies.
     git: crate::git_model::GitDetails,
+    /// The usage numbers, from the usage tools' replies.
+    usage: crate::usage_model::UsageDetails,
 }
 
 impl EngineBackend {
@@ -101,6 +103,7 @@ impl EngineBackend {
             quit_ready: false,
             waker: None,
             git: crate::git_model::GitDetails::default(),
+            usage: crate::usage_model::UsageDetails { live: true, ..Default::default() },
         };
         b.refresh(true);
         b
@@ -141,6 +144,7 @@ impl EngineBackend {
         let mut m = map_snapshot(view, &self.opts, self.theme);
         m.git = self.git.map.clone();
         m.folder_worktrees = self.git.folders.clone();
+        m.usage = self.usage.clone();
         if let Some(q) = &self.quit {
             let used = q.started.elapsed().as_secs_f32().min(self.opts.shutdown_budget_s.max(1.0));
             m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: self.opts.shutdown_budget_s.max(1.0) });
@@ -213,6 +217,11 @@ impl Backend for EngineBackend {
         if let Some(notices) = self.git.on_reply(call, reply) {
             self.refresh(true);
             return notices;
+        }
+        // Usage replies (often a periodic poll) never toast: the screens show their errors.
+        if self.usage.on_reply(call, reply).is_some() {
+            self.refresh(true);
+            return Vec::new();
         }
         match reply {
             Err(e) => vec![Notice::Toast(e.to_string())],
@@ -559,6 +568,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
             CoreTab::Runs => InspectorTab::Runs,
             CoreTab::Git => InspectorTab::Git,
             CoreTab::Session => InspectorTab::Session,
+            CoreTab::Usage => InspectorTab::Usage,
         }),
         inbox_panel: InboxPanel {
             open: view.inbox_open,
@@ -579,6 +589,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         windows: view.windows.clone(),
         git: Default::default(),
         folder_worktrees: Default::default(),
+        usage: Default::default(),
         open_with: view
             .open_with
             .iter()

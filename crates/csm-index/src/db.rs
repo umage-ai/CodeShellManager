@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::clean::normalize_folder;
 
 /// The schema version this build writes. Migrations run in order from the file's version.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const MARK_START: char = '\u{1}';
 const MARK_END: char = '\u{2}';
@@ -131,6 +131,12 @@ impl Db {
             let tx = self.conn.transaction()?;
             tx.execute_batch(crate::usage::V2)?;
             tx.pragma_update(None, "user_version", 2)?;
+            tx.commit()?;
+        }
+        if v < 3 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(crate::claude::V3)?;
+            tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
         Ok(())

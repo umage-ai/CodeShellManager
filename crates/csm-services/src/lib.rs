@@ -11,6 +11,8 @@
 //! * [`git`]: git command lines, `status --porcelain=v2` parsing, wording, worktree rules.
 //! * [`open_with`]: "Open with..." templates, validation and sanitising.
 //! * [`wt_profiles`]: Windows Terminal `settings.json` profiles (parsing is pure; [`wt_profiles::load_profiles`] reads files).
+//! * [`claude_usage`]: Claude Code token and cost analytics (parsing and pricing are pure;
+//!   `discover` and `tail` read transcripts and run on workers).
 //!
 //! The input types defined locally ([`launch::LaunchSpec`], [`open_with::OpenWithEntry`],
 //! [`git::WorktreeInfo`], ...) are the minimum these modules need; unify them with `csm-core`
@@ -20,6 +22,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod argv;
+pub mod claude_usage;
 pub mod git;
 pub mod launch;
 pub mod open_with;

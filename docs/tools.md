@@ -119,7 +119,7 @@ whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group v
 effects `ui`: minimized and maximized are stored on the engine's layout, `GroupLayout::minimized` /
 `maximized`, and `session_focus` brings a minimized pane back and lets a different maximized one
 give way),
-`inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
+`inspector_show` (tab notes/runs/git/session/usage | hidden), `inbox_panel_set` (open, height).
 
 ### Stand-ins
 
@@ -208,6 +208,40 @@ other text is refused (use `session_send_text`, which pastes). File drops onto a
 `session_send_text` with `csm_core::dropped_paths` quoting (control and format characters
 rejected, Windows double quotes / POSIX single quotes, ≤ 64 paths).
 
+**Claude usage** (`tools/usage.rs`, reader in `usage_tail.rs`, parsing and pricing in
+`csm-services::claude_usage`, summaries in `csm_core::claude_usage`; a port of ContextCost). All
+read-only, app toolset. Costs are **API-equivalent** (API list prices, not what a subscription
+bills); a model without a price is listed as unpriced, never counted as $0.
+
+| id | params | effects | what |
+|---|---|---|---|
+| `usage_session` | session_id | read | context fill of the last main-thread request vs the window (200k; 1M for a `[1m]` model or a prompt over 200k), with `ok`/`warn`/`critical` near auto-compact; cost and tokens total, today (local) and of subagents; cache hit ratio; the last cache miss and the idle gap before it; compactions (count, last pre → post); data quality (unreadable lines) |
+| `usage_context` | | read | fill and cost of every live Claude session (the sidebar chips) |
+| `usage_summary` | from? (today/week/month/all/YYYY-MM-DD, default week), to? (today/YYYY-MM-DD), group_by? (project/session/model) | read | cost and tokens per group, most expensive first, with a total |
+
+- **Which transcript.** A new Claude session starts with `--session-id <uuid>` chosen by CSM and
+  stored on the session (`ClaudeSessionId` in `state.json`); a resume passes `--resume <that id>`
+  (or, when it has no transcript yet, `--session-id` again). Sessions from before fall back to the
+  newest transcript whose `cwd` is their folder. A resume of a session that is the only CSM Claude
+  session in its folder takes a newer transcript of that folder over the stored id (a `/clear`
+  starts a new conversation id CSM is not told about); with two in one folder the stored id
+  always wins. Duplicates get their own id; editing the folder, command or kind forgets it. Not
+  followed live: `/clear` (until the next resume), WSL and SSH sessions (`usage_session` refuses
+  them). A conversation id with no transcript yet is looked for in its folder's project
+  directory every 2 s and in every project folder every 10 s.
+- **Reading.** A background thread (`csm-usage`) follows `<root>/projects/*/<id>.jsonl` and
+  `<id>/subagents/**/agent-*.jsonl` under `$CLAUDE_CONFIG_DIR`, `~/.claude` and the other
+  `~/.claude-*` profiles, reading only bytes past the stored offset (a shorter file or a different
+  head is read again from 0). Requests are de-duplicated by `message.id` keeping the maximum per
+  token field; `<synthetic>` is skipped; a missing 5m/1h split counts as 5m writes.
+- **Storage.** `index.db` schema 3: `claude_requests` (numbers only, never content), `claude_files`
+  (offsets, counters), `claude_compactions`, `claude_meta`; in memory under `--clean`.
+- **Prices.** Embedded (`csm-services/src/claude_usage/prices.json`), overridden or extended by
+  `usage-prices.json` beside `state.json` (same shape); a changed table reprices every stored row.
+- **UI.** Inspector → Usage (the focused session, refreshed every 5 s while shown), a fill chip on
+  Claude rows in the sidebar (`usage_context` every 10 s; cost too on wide rows; it gives way on
+  narrow ones), Settings → Usage: cost per project today and this week.
+
 **Open folder / Open with** (`tools/open.rs`, rules in `csm-services::open_with`). `open_folder`
 (session_id) opens only an existing *directory* (a file would be run); Windows normalises to
 backslashes and hands Explorer the path as one always-quoted argument — measured on Windows 11, a
@@ -251,7 +285,7 @@ launches the Claude session itself).
 
 What `csm mcp` costs a client in context, from `cargo xtask mcp-size` (the real `McpService` over
 an in-process engine; tokens are bytes / 4, an estimate good enough to compare toolsets).
-Measured on 2026-11-20 after the parity merges (96 engine tools; the app's own `pane_*` tools
+Measured on 2026-11-20 after the Claude usage tools (99 engine tools; the app's own `pane_*` tools
 are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
 `core` small: it is what every client pays on every conversation.
 
@@ -259,16 +293,16 @@ are not in the engine registry, so they are not counted). Re-run it after adding
 |---|---|---|---|
 | base (core + toolset tools) | 26 | 20518 | ~5129 |
 | + groups | 18 | 10032 | ~2508 |
-| + layout | 9 | 6125 | ~1531 |
+| + layout | 9 | 6133 | ~1533 |
 | + runs | 5 | 3069 | ~767 |
 | + git | 9 | 6312 | ~1578 |
 | + notes | 3 | 2142 | ~535 |
 | + search | 3 | 2395 | ~598 |
-| + app | 23 | 16114 | ~4028 |
-| everything enabled | 96 | 66707 | ~16676 |
+| + app | 26 | 18212 | ~4553 |
+| everything enabled | 99 | 68813 | ~17203 |
 
 Progressive disclosure is worth about 3x here: a client that only needs sessions pays ~5.1k
-tokens instead of ~16.7k.
+tokens instead of ~17.2k.
 
 ## Repository checks (`cargo xtask`)
 
@@ -284,7 +318,7 @@ below must match the registry: run `cargo xtask tools` after adding a tool), `se
 
 <!-- xtask:tools:begin (generated by `cargo xtask tools`; do not edit by hand) -->
 
-### Engine registry (98 tools)
+### Engine registry (101 tools)
 
 Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the person's consent.
 
@@ -387,6 +421,9 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `state_export` | app | files | asks | Write a backup of the whole setup (sessions, groups, layouts, settings) to a .csm file at `path` (absolute). The same JSON as state.json; the WPF app's Import reads it. An MCP client's export leaves out the API key and MCP grants. |
 | `state_import` | app | state, discard | asks | Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true. App and CLI only. |
 | `usage_stats` | app | read | no | Per command (claude, pwsh, …): how many sessions started, their total running time in seconds, and the last day (UTC) it was used. Counted on this machine only. |
+| `usage_session` | app | read | no | A Claude session's context fill (last main-thread request vs the model's window), API-equivalent cost and tokens (total and today), cache hit ratio, the last cache miss with the idle gap before it, compactions, and subagent cost. Read from Claude's transcripts; numbers only. |
+| `usage_context` | app | read | no | For every live Claude session: how full its context is (tokens, window, ratio, ok/warn/critical near auto-compact) and its API-equivalent cost so far. |
+| `usage_summary` | app | read | no | API-equivalent cost and tokens of Claude sessions between from and to (today, week, month, all, or a YYYY-MM-DD local date; default the last 7 days), grouped by project, session or model. Unpriced models are listed, never counted as $0. |
 | `state_snapshots` | app | read | no | The rolling snapshots of state.json (one an hour for a day, one a day for a week), newest first, with their files and the folder. To go back to one, quit the app and copy it over state.json. |
 
 <!-- xtask:tools:end -->

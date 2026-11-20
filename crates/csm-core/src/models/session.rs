@@ -113,6 +113,12 @@ pub struct ShellSession {
 
     #[serde(deserialize_with = "nd")]
     pub run_commands: Vec<RunCommandItem>,
+
+    /// The Claude Code conversation this session runs (`--session-id` when CSM started it,
+    /// the id passed to `--resume` otherwise). Untrusted (it came from a state file): checked
+    /// against a strict alphabet before it goes on a command line. Not in the WPF format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
 }
 
 impl Default for ShellSession {
@@ -152,6 +158,7 @@ impl Default for ShellSession {
             profile_retro_effect: None,
             profile_color_scheme_json: None,
             run_commands: Vec::new(),
+            claude_session_id: None,
         }
     }
 }
@@ -457,6 +464,19 @@ mod tests {
         assert_eq!(ShellSession::default().default_display_name(), "");
         let local = ShellSession { working_folder: "C:\\repos\\csm".into(), ..Default::default() };
         assert_eq!(local.default_display_name(), "csm");
+    }
+
+    #[test]
+    fn the_claude_session_id_round_trips_and_is_absent_by_default() {
+        let s = ShellSession { id: "a".into(), claude_session_id: Some("0b1c-22".into()), ..Default::default() };
+        let json = s.to_json().unwrap();
+        assert!(json.contains("\"ClaudeSessionId\":\"0b1c-22\""), "{json}");
+        let back: ShellSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.claude_session_id.as_deref(), Some("0b1c-22"));
+        let plain = ShellSession { id: "a".into(), ..Default::default() }.to_json().unwrap();
+        assert!(!plain.contains("ClaudeSessionId"), "the WPF format is unchanged for sessions without one");
+        let legacy: ShellSession = serde_json::from_str(r#"{"Id":"x","Command":"claude"}"#).unwrap();
+        assert_eq!(legacy.claude_session_id, None);
     }
 
     #[test]

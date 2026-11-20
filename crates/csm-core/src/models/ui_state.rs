@@ -36,6 +36,8 @@ pub enum InspectorTab {
     Runs,
     Git,
     Session,
+    /// Claude token and cost analytics (`usage_session`).
+    Usage,
 }
 
 fn default_cols() -> u8 {

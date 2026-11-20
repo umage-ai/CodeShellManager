@@ -70,6 +70,11 @@ pub struct StateOptions {
     /// Where `profile_list` and `session_look_set` find Windows Terminal profiles. Production
     /// reads the install locations; the default (tests) has none.
     pub terminal_profiles: TerminalProfiles,
+    /// Where Claude's transcripts are read from for the usage tools. Default (tests): nowhere;
+    /// production: Claude's config folders ([`crate::ClaudeRoots::Auto`]). Needs an index.
+    pub claude_roots: crate::usage_tail::ClaudeRoots,
+    /// How often followed transcripts are checked for new lines.
+    pub usage_poll: Duration,
 }
 
 /// The Windows Terminal settings the profile tools read.
@@ -101,6 +106,8 @@ impl Default for StateOptions {
             seed_editors: false,
             index: crate::index::IndexSetting::Off,
             terminal_profiles: TerminalProfiles::None,
+            claude_roots: crate::usage_tail::ClaudeRoots::None,
+            usage_poll: Duration::from_secs(2),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
         }
     }
@@ -114,6 +121,7 @@ impl StateOptions {
             seed_editors: true,
             index: crate::index::IndexSetting::Auto,
             terminal_profiles: TerminalProfiles::Installed,
+            claude_roots: crate::usage_tail::ClaudeRoots::Auto,
             url_opener: real_url_opener(),
             ..Self::default()
         }
@@ -189,6 +197,8 @@ pub(crate) struct Runtime {
     pub index: Option<csm_index::Index>,
     /// Git status per live session, the `.git` watchers and the per-repo busy slots.
     pub git: crate::tools::git::GitRt,
+    /// The Claude transcript reader (usage tools), when the run has an index and roots.
+    pub usage: Option<crate::usage_tail::UsageTail>,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].
@@ -224,6 +234,7 @@ impl State {
         app.ui.group_focus.retain(|g, s| groups.iter().any(|x| &x.id == g) && sessions.iter().any(|x| &x.id == s && &x.group_id == g));
         let focused = app.ui.focused_session.clone().filter(|f| app.sessions.iter().any(|s| &s.id == f));
         let mut rt = Runtime { focused, dirty: true, index: crate::index::open(&options), ..Runtime::default() };
+        rt.usage = crate::usage_tail::UsageTail::start(rt.index.as_ref(), &options.claude_roots, options.save_path.as_deref(), options.usage_poll);
         if options.saves()
             && let Some(path) = &options.save_path
         {

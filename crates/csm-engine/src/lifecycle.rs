@@ -147,6 +147,7 @@ fn finish_restore_item(state: &mut State, id: &str) {
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let now = Instant::now();
     let now_ms = now_ms();
+    crate::usage_tail::tick(ctx.state);
 
     // A session nobody is looking at starts at the fallback size.
     let due: Vec<(String, u64)> = ctx
@@ -244,6 +245,9 @@ pub(crate) fn on_exit(state: &mut State) {
     let index = state.rt.index.clone();
     for rt in state.rt.sessions.values_mut() {
         rt.end_usage(index.as_ref());
+    }
+    if let Some(mut u) = state.rt.usage.take() {
+        u.shutdown();
     }
     if let Some(ix) = state.rt.index.take() {
         ix.shutdown();
@@ -421,6 +425,13 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
             GridSize::new(c, r)
         })
     };
+    // Another Claude session in this folder: a resume never adopts the folder's newest transcript.
+    let sole_in_folder = !state.app.sessions.iter().any(|o| {
+        o.id != session.id
+            && o.kind == csm_core::models::SessionKind::Local
+            && crate::launch::is_claude_command(&o.command)
+            && csm_services::claude_usage::discover::same_folder(&o.working_folder, &session.working_folder)
+    });
     let job = SpawnJob {
         io: rt.io.clone(),
         session,
@@ -429,6 +440,7 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
         gate: state.rt.claude_gate.clone(),
         stagger: Duration::from_millis(u64::try_from(state.app.settings.claude_launch_stagger_ms).unwrap_or(0)),
         resume: rt.restoring && state.app.settings.auto_resume_claude,
+        sole_in_folder,
         probe: state.app.settings.program_status_probe,
         mcp: state.app.settings.offer_mcp_to_claude.then(|| mcp_offer_dir(state)).flatten().and_then(crate::launch::McpOffer::beside_app),
         engine: ctx.engine.clone(),
@@ -451,6 +463,9 @@ struct SpawnJob {
     gate: Arc<Mutex<Option<Instant>>>,
     stagger: Duration,
     resume: bool,
+    /// No other CSM Claude session works in this folder (a resume may adopt a newer transcript
+    /// of the folder: a `/clear` in Claude).
+    sole_in_folder: bool,
     probe: ProgramStatusProbeMode,
     /// Set when Settings → MCP offers our tools to Claude sessions.
     mcp: Option<crate::launch::McpOffer>,
@@ -459,8 +474,9 @@ struct SpawnJob {
 
 impl SpawnJob {
     /// On a worker: resolve argv, wait for the Claude slot, spawn, wire the reader and exit.
-    fn run(self) -> Result<Arc<dyn Pty>, String> {
-        let plan = crate::launch::resolve(&self.session, self.resume, self.mcp.as_ref())?;
+    fn run(self) -> Result<Spawned, String> {
+        let plan = crate::launch::resolve_with(&self.session, self.resume, self.sole_in_folder, self.mcp.as_ref())?;
+        let claude_session_id = plan.claude_session_id.clone();
         if plan.is_claude && !self.stagger.is_zero() {
             wait_for_claude_slot(&self.gate, self.stagger);
         }
@@ -505,8 +521,14 @@ impl SpawnJob {
         pty.on_exit(Box::new(move |code| {
             engine.post(Box::new(move |ctx| on_exited(ctx, &id, instance, code)));
         }));
-        Ok(pty)
+        Ok(Spawned { pty, claude_session_id })
     }
+}
+
+/// A started process and the Claude conversation it runs, when known.
+pub(crate) struct Spawned {
+    pub pty: Arc<dyn Pty>,
+    pub claude_session_id: Option<String>,
 }
 
 /// Flat stagger between Claude launches: reserve the next slot, sleep until it. Never adaptive.
@@ -527,16 +549,25 @@ fn wait_for_claude_slot(gate: &Mutex<Option<Instant>>, stagger: Duration) {
     }
 }
 
-pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Result<Arc<dyn Pty>, String>) {
+pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Result<Spawned, String>) {
     let current = ctx.state.rt.sessions.get(id).is_some_and(|rt| rt.io.instance == instance);
     if !current {
         if let Ok(p) = result {
-            p.kill();
+            p.pty.kill();
         }
         return;
     }
     let callbacks = match result {
-        Ok(pty) => {
+        Ok(Spawned { pty, claude_session_id }) => {
+            // The Claude conversation it runs: the usage tools follow its transcript exactly.
+            if let Some(cid) = claude_session_id
+                && let Some(i) = session_index(ctx.state, id)
+                && let Some(s) = ctx.state.app.sessions.get_mut(i)
+                && s.claude_session_id.as_deref() != Some(cid.as_str())
+            {
+                s.claude_session_id = Some(cid);
+                ctx.state.persist();
+            }
             // Usage stats (WPF RecordSessionStart): counted per command, on the index thread.
             let command = ctx.state.app.sessions.iter().find(|s| s.id == id).map(|s| s.command.clone()).unwrap_or_default();
             if let Some(ix) = &ctx.state.rt.index {

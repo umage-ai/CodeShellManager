@@ -285,6 +285,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         now_ms: now,
         wpf_import: None,
         git: crate::git_model::demo_details(),
+        usage: crate::usage_model::demo_details(),
         folder_worktrees: BTreeMap::new(),
         open_with: demo_open_with(),
         windows: BTreeMap::new(),
@@ -1142,6 +1143,7 @@ impl DemoBackend {
                         InspectorParam::Runs => Some(InspectorTab::Runs),
                         InspectorParam::Git => Some(InspectorTab::Git),
                         InspectorParam::Session => Some(InspectorTab::Session),
+                        InspectorParam::Usage => Some(InspectorTab::Usage),
                         InspectorParam::Hidden => None,
                     };
                 }

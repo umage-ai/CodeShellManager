@@ -25,6 +25,7 @@ pub mod snapshot;
 pub mod state;
 pub mod status;
 pub mod tool;
+pub(crate) mod usage_tail;
 pub(crate) mod tools;
 pub mod which;
 pub mod wsl_probe;
@@ -43,3 +44,4 @@ pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, TerminalP
 pub use status::{Status, WaitUntil};
 pub use tool::{Caller, Effects, ToolError, ToolFn, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 pub use tools::open::{OpenWithTarget, OpenWithView};
+pub use usage_tail::ClaudeRoots;

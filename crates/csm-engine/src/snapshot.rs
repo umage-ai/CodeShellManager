@@ -75,6 +75,8 @@ pub struct SessionView {
     /// The terminal title (OSC 0/2), when the program set one.
     pub title: Option<String>,
     pub is_claude: bool,
+    /// The Claude conversation it runs (see `ShellSession::claude_session_id`).
+    pub claude_session_id: Option<String>,
     /// Speaks OSC 7501 (its status is reported, not guessed).
     pub reports_status: bool,
     /// Epoch ms of the last focus (the Recent menu).
@@ -246,6 +248,7 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         git_busy: git.busy,
         title: rt.and_then(|r| r.title.clone()).filter(|t| !t.is_empty()),
         is_claude: crate::launch::is_claude_command(&s.command),
+        claude_session_id: s.claude_session_id.clone(),
         reports_status: rt.is_some_and(|r| r.has_program_status),
         last_activity_ms: s.last_activity_at.epoch_ms(),
         inbox_since_ms: state.rt.inbox_since.get(&s.id).copied(),

@@ -1,4 +1,5 @@
-//! `csm-index`: the search index, per-folder notes and session history, in one SQLite file.
+//! `csm-index`: the search index, per-folder notes, session history and Claude usage numbers,
+//! in one SQLite file.
 //!
 //! **One thread owns the connection.** The WPF app serialised every use of a shared
 //! `SqliteConnection` with `DbGate` (issue #102: the connection is not thread-safe, concurrent
@@ -17,11 +18,13 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod claude;
 mod clean;
 mod db;
 mod handle;
 mod usage;
 
+pub use claude::{ClaudeFile, ClaudeGroupBy, ClaudeIngest, ClaudeLive, ClaudeQuality, ClaudeSummaryRow, Pricer};
 pub use clean::{LineCleaner, normalize_folder};
 pub use db::{Db, IndexError, NoteHit, NoteRow, OutputHit, SCHEMA_VERSION, SchemaStats, fts_phrase};
 pub use handle::{Index, IndexLocation, IndexOptions};

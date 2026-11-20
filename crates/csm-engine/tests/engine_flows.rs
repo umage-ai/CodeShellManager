@@ -20,7 +20,7 @@ fn a_new_session_starts_and_its_status_follows_osc_7501() {
     let h = H::new();
     let id = h.session("claude");
     let pty = h.pty(0);
-    assert!(pty.argv.iter().any(|a| a == "claude"), "{:?}", pty.argv);
+    assert!(pty.argv.iter().any(|a| a == "claude" || a.starts_with("claude ")), "{:?}", pty.argv);
     assert_eq!((pty.first_size.cols, pty.first_size.rows), (220, 50), "headless: the fallback size");
 
     // The probe is answered, before the DA1 that follows it (Claude's "no more replies" sentinel).
@@ -797,4 +797,36 @@ fn window_placements_persist_per_window_and_never_under_clean() {
     set(&e, json!({"window": "main", "left": 1, "top": 2, "width": 300, "height": 200, "dpi": 96})).unwrap();
     e.shutdown();
     assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn a_new_claude_session_runs_and_stores_its_own_conversation_id() {
+    let h = H::new();
+    let id = h.session("claude");
+    let pty = h.pty(0);
+    let v = h.wait_until("the conversation id stored", |v| v.session(&id).is_some_and(|s| s.claude_session_id.is_some()));
+    let cid = v.session(&id).unwrap().claude_session_id.clone().unwrap();
+    assert_eq!(cid.len(), 36, "a UUID: {cid}");
+    let line = pty.argv.join(" ");
+    assert!(line.contains(&format!("--session-id {cid}")), "{line}");
+
+    // A copy starts its own conversation.
+    let copy = h.ok("session_duplicate", json!({"session_id": id})).data["session_id"].as_str().unwrap().to_owned();
+    let v = h.wait_until("the copy's id", |v| v.session(&copy).is_some_and(|s| s.claude_session_id.is_some()));
+    assert_ne!(v.session(&copy).unwrap().claude_session_id, Some(cid.clone()));
+
+    // A restart with auto-resume continues the stored id: no transcript exists in this test, so
+    // it starts that conversation again under the same id rather than guessing another.
+    h.ok("settings_set", json!({"key": "AutoResumeClaude", "value": true}));
+    let before = h.pty_count();
+    h.ok("session_restart", json!({"session_id": id}));
+    let p2 = h.pty(before);
+    let line = p2.argv.join(" ");
+    assert!(line.contains(&cid), "the restart names the stored conversation: {line}");
+    assert_eq!(h.engine.view().session(&id).unwrap().claude_session_id.as_deref(), Some(cid.as_str()));
+
+    // Editing the folder forgets it.
+    let other = tempfile::tempdir().unwrap();
+    h.ok("session_edit", json!({"session_id": id, "folder": other.path().to_string_lossy()}));
+    assert_eq!(h.engine.view().session(&id).unwrap().claude_session_id, None);
 }

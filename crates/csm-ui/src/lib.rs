@@ -28,6 +28,7 @@ pub mod placement;
 pub mod screens;
 pub mod terminal;
 pub mod theme;
+pub mod usage_model;
 pub mod widgets;
 pub mod zoom;
 

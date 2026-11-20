@@ -1,0 +1,3 @@
+{"type":"attachment","sessionId":"s2","timestamp":"2026-10-02T08:00:00.000Z","attachment":{"type":"skill_listing","content":"yyyy"}}
+{"type":"assistant","sessionId":"s2","isSidechain":false,"timestamp":"2026-10-02T08:00:01.000Z","cwd":"C:\\Projects\\Other","gitBranch":"main","requestId":"req_msg_w1","message":{"id":"msg_w1","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1000,"output_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+{broken json
