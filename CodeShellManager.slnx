@@ -1,8 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/CodeShellManager/CodeShellManager.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/CodeShellManager.UITests/CodeShellManager.UITests.csproj" />
-  </Folder>
-</Solution>

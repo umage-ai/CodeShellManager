@@ -1,8 +1,0 @@
-{
-  "profiles": {
-    "list": [
-      { "guid": "{visible}", "name": "Visible", "commandline": "cmd.exe" },
-      { "guid": "{hidden}", "name": "Hidden", "commandline": "cmd.exe", "hidden": true }
-    ]
-  }
-}
