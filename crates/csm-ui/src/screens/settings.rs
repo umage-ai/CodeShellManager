@@ -319,7 +319,8 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     caption(ui, "System follows the light or dark setting of your desktop.");
     section(ui, "Interface");
-    number_setting(ui, app, "UiZoomPercent", "Interface size", 80..=200, "%", actions);
+    let zoom = csm_core::models::UI_ZOOM_RANGE;
+    number_setting(ui, app, "UiZoomPercent", "Interface size", i64::from(*zoom.start())..=i64::from(*zoom.end()), "%", actions);
     caption(ui, "Text, icons and spacing of the whole window; terminals keep their own font size. Ctrl+= and Ctrl+- step it, Ctrl+0 resets it.");
     section(ui, "Terminal");
     ui.horizontal(|ui| {

@@ -224,6 +224,10 @@ fn the_broadcast_count_leaves_out_sleeping_starting_and_working_sessions() {
     let Action::Confirm(c) = csm_ui::screens::broadcast::confirm(&model, "g", "npm test") else { panic!("a confirm") };
     assert_eq!(c.title, "Send to 2 sessions?");
     assert!(c.body.contains("1 working mid-turn will be skipped"), "{}", c.body);
+    // Nothing could take it: say so instead of asking "Send to 0 sessions?".
+    let none_ready = UiModel { sessions: vec![s("c", Status::Working), s("d", Status::Asleep)], ..model };
+    let Action::Toast(t) = csm_ui::screens::broadcast::confirm(&none_ready, "g", "npm test") else { panic!("a toast") };
+    assert!(t.contains("working mid-turn"), "{t}");
 }
 
 // ── #76 the --name setting ──────────────────────────────────────────────────────────────────

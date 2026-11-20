@@ -109,8 +109,11 @@ fn claude_sessions_are_named_after_their_session_when_the_setting_is_on() {
     let off = start("Api work");
     assert!(!off.contains("--name"), "off by default: {off}");
     h.ok("settings_set", json!({"key": "PassSessionNameToClaude", "value": true}));
-    let on = start("Api work; rm");
-    assert!(on.contains("--name 'Api work rm'"), "{on}");
+    let on = start("Api work; rm & calc");
+    assert!(on.contains("--name 'Api work rm calc'"), "{on}");
+    // It changes every Claude command line: only the app turns it on or off.
+    let r = h.engine.call(ext(None), "settings_set", json!({"key": "PassSessionNameToClaude", "value": false}));
+    assert!(matches!(r, Err(ToolError::Refused(_))), "{r:?}");
 }
 
 #[test]
@@ -125,6 +128,7 @@ fn settings_set_announces_changes_and_bounds_the_ui_zoom() {
     assert_eq!(h.ok("settings_get", json!({"key": "UiZoomPercent"})).data["value"], 125, "a refused value changes nothing");
     h.ok("settings_set", json!({"key": "CloseToTray", "value": true}));
     h.ok("settings_set", json!({"key": "AnthropicApiKey", "value": "sk-secret"}));
+    h.ok("settings_set", json!({"key": "AnthropicApiKey", "value": ""}));
     let seen: Vec<(String, serde_json::Value)> = events
         .try_iter()
         .filter_map(|e| match e {
@@ -135,4 +139,5 @@ fn settings_set_announces_changes_and_bounds_the_ui_zoom() {
     assert_eq!(seen[0], ("UiZoomPercent".to_string(), json!(125)));
     assert_eq!(seen[1], ("CloseToTray".to_string(), json!(true)));
     assert_eq!(seen[2], ("AnthropicApiKey".to_string(), json!("(set)")), "a secret never goes out in an event");
+    assert_eq!(seen[3], ("AnthropicApiKey".to_string(), json!("")), "masked as settings_get masks it");
 }

@@ -28,6 +28,11 @@ pub fn title(model: &UiModel, group: &str) -> String {
 pub fn confirm(model: &UiModel, group: &str, text: &str) -> Action {
     let (ready, busy) = counts(model, group);
     let name = model.group(group).map_or_else(|| "the group".to_string(), |g| g.name.clone());
+    if ready == 0 {
+        // "Send to 0 sessions?" would be a question with one honest answer.
+        let why = if busy > 0 { format!("the {busy} running are working mid-turn") } else { "none is running".to_string() };
+        return Action::Toast(format!("No session in {name} can take the text now: {why}."));
+    }
     let shown: String = text.chars().take(80).collect();
     let more = if text.chars().count() > 80 { "…" } else { "" };
     let mut body = format!("“{shown}{more}” is pasted into each live session in {name}, and Enter is pressed.");

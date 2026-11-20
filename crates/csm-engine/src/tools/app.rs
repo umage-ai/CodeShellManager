@@ -135,8 +135,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 }
 
 /// Settings an MCP client may not change: they decide what runs, or are secrets.
-/// (`ClaudeCommands` is text the app types into sessions.)
-const APP_ONLY_KEYS: [&str; 8] = [
+/// (`ClaudeCommands` is text the app types into sessions; `PassSessionNameToClaude` changes every
+/// Claude command line, and a Claude CLI without `--name` would then refuse to start.)
+const APP_ONLY_KEYS: [&str; 9] = [
     "AnthropicApiKey",
     "DefaultCommand",
     "DefaultWorkingFolder",
@@ -145,6 +146,7 @@ const APP_ONLY_KEYS: [&str; 8] = [
     "OpenWithSeeded",
     "UseBundledConPty",
     "ClaudeCommands",
+    "PassSessionNameToClaude",
 ];
 const SECRET_KEYS: [&str; 1] = ["AnthropicApiKey"];
 
@@ -261,7 +263,12 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     ctx.state.app.settings = updated;
     ctx.state.persist();
     // Events reach every IPC client: a secret's value never goes out.
-    let shown = if SECRET_KEYS.contains(&key.as_str()) { json!("(set)") } else { p.value.clone() };
+    // Masked as `settings_get` masks it: "(set)", or "" once cleared.
+    let shown = if SECRET_KEYS.contains(&key.as_str()) {
+        json!(if p.value.as_str().is_some_and(|x| !x.is_empty()) { "(set)" } else { "" })
+    } else {
+        p.value.clone()
+    };
     ctx.events.emit(crate::Event::SettingChanged { key: key.clone(), value: shown });
     let restart = matches!(key.as_str(), "UseBundledConPty");
     let msg = if restart { format!("{key} saved; it takes effect when the app restarts.") } else { format!("{key} saved.") };

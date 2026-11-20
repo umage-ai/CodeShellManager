@@ -70,12 +70,14 @@ pub fn is_safe_resume_id(id: &str) -> bool {
 const MAX_CLAUDE_NAME: usize = 80;
 
 /// A session name made safe to put on the shell payload as `'<name>'`: letters and digits of any
-/// script, spaces, and `-_.,:()[]#+@&=~`. Everything else (quotes of every kind, which PowerShell
-/// also reads as string ends, backslashes, `$`, `` ` ``, control characters) becomes a space;
-/// runs of spaces collapse, leading dashes go (so it can't read as an option), and it is capped
-/// at [`MAX_CLAUDE_NAME`] characters. `None` when nothing is left.
+/// script, spaces, and `-_.,:[]#+@=~`. Everything else becomes a space: quotes of every kind
+/// (PowerShell also reads them as string ends), backslashes, `$`, `` ` ``, control characters, and
+/// `&`, `(`, `)`, `|`, `^`, `<`, `>`, `%`, `!`, which `cmd.exe` acts on when PowerShell hands an
+/// argument without spaces to an npm `claude.cmd` shim unquoted. Runs of spaces collapse,
+/// leading dashes go (so it can't read as an option), and it is capped at [`MAX_CLAUDE_NAME`]
+/// characters. `None` when nothing is left.
 pub fn safe_claude_name(name: &str) -> Option<String> {
-    const EXTRA: &str = " -_.,:()[]#+@&=~";
+    const EXTRA: &str = " -_.,:[]#+@=~";
     let kept: String = name.chars().map(|c| if c.is_alphanumeric() || EXTRA.contains(c) { c } else { ' ' }).collect();
     let words: Vec<&str> = kept.split(' ').filter(|w| !w.is_empty()).collect();
     let joined = words.join(" ");
@@ -549,10 +551,12 @@ mod claude_name_tests {
 
     #[test]
     fn names_keep_letters_and_lose_shell_syntax() {
-        assert_eq!(safe_claude_name("api (prod) #2").as_deref(), Some("api (prod) #2"));
+        assert_eq!(safe_claude_name("api [prod] #2").as_deref(), Some("api [prod] #2"));
+        // cmd.exe's metacharacters: an npm `claude.cmd` shim would get `x&calc` unquoted.
+        assert_eq!(safe_claude_name("x&calc (a|b) ^c <d> %e% !f!").as_deref(), Some("x calc a b c d e f"));
         assert_eq!(safe_claude_name("Æblegrød – ünïcode").as_deref(), Some("Æblegrød ünïcode"));
         // Quotes of every kind (PowerShell ends a '…' string at ‘ ’ ‚ ‛ too), `$`, backtick, `;`.
-        assert_eq!(safe_claude_name("it's ‘x’ $(calc) `y`; z").as_deref(), Some("it s x (calc) y z"));
+        assert_eq!(safe_claude_name("it's ‘x’ $(calc) `y`; z").as_deref(), Some("it s x calc y z"));
         assert_eq!(safe_claude_name("a\"b\\c\nd").as_deref(), Some("a b c d"));
         // Never an option, never empty, capped.
         assert_eq!(safe_claude_name("--resume x").as_deref(), Some("resume x"));
