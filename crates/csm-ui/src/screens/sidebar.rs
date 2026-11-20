@@ -402,48 +402,69 @@ pub enum SideItem<'a> {
 
 /// A section's rows with worktrees nested (WPF's worktree clusters, as plan §4 has them: shown
 /// under their repo automatically). Live sessions first, then asleep, as [`ordered`]; a session
-/// in a linked worktree follows the row of its main checkout's session (`parent`) when that is in
-/// the section, else it sits under a [`SideItem::Repo`] header with the other worktrees of that
+/// in a linked worktree follows the row of its main checkout's session (`parent`, or another
+/// session of the main checkout when the parent's row is in another section) when that is in the
+/// section, else it sits under a [`SideItem::Repo`] header with the other worktrees of that
 /// repository, placed where the first of them would be. Every session appears exactly once.
 pub fn nest<'a>(ss: &[&'a SessionView]) -> Vec<SideItem<'a>> {
+    use crate::git_model::folder_key;
     let list = ordered(ss);
-    let here = |id: &str| list.iter().find(|x| x.id == id);
-    // The row a session nests under: a parent in this section that isn't nested itself.
-    let parent_of = |s: &SessionView| -> Option<String> {
-        s.parent
-            .as_deref()
-            .filter(|p| *p != s.id)
-            .and_then(&here)
-            .filter(|p| p.parent.as_deref().is_none_or(|pp| here(pp).is_none()))
-            .map(|p| p.id.clone())
-    };
+    let here = |id: &str| list.iter().find(|x| x.id == id).copied();
+    // A row others may nest under: not nested itself (no parent in this section).
+    let top = |p: &SessionView| p.parent.as_deref().is_none_or(|pp| pp == p.id || here(pp).is_none());
     let repo_key = |s: &SessionView| -> Option<String> {
         s.worktree_of.as_ref()?;
-        s.repo_root.as_deref().map(crate::git_model::folder_key).or_else(|| s.worktree_of.as_deref().map(str::to_lowercase))
+        s.repo_root.as_deref().map(folder_key).or_else(|| s.worktree_of.as_deref().map(str::to_lowercase))
+    };
+    // The row a session nests under: its parent when that is here and a top row; for a session
+    // in a linked worktree, else the first top row of a session in the repository's main checkout.
+    let parent_of = |s: &SessionView| -> Option<String> {
+        let parent = s.parent.as_deref().filter(|p| *p != s.id).and_then(&here).filter(|p| top(p));
+        let main = || {
+            s.worktree_of.as_ref()?;
+            let root = folder_key(s.repo_root.as_deref()?);
+            list.iter()
+                .find(|m| m.id != s.id && m.worktree_of.is_none() && m.repo_root.as_deref().map(folder_key) == Some(root.clone()) && top(m))
+                .copied()
+        };
+        parent.or_else(main).map(|p| p.id.clone())
     };
     let orphan = |s: &SessionView| parent_of(s).is_none() && repo_key(s).is_some();
     let mut out = Vec::new();
-    let mut done: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for s in &list {
+    let mut done: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    // A row and, depth first, every row nested under it.
+    let emit = |out: &mut Vec<SideItem<'a>>, done: &mut std::collections::HashSet<&'a str>, s: &'a SessionView, nested: bool| {
+        let mut stack = vec![(s, nested)];
+        while let Some((x, n)) = stack.pop() {
+            if !done.insert(x.id.as_str()) {
+                continue;
+            }
+            out.push(SideItem::Session { s: x, nested: n });
+            let kids: Vec<&'a SessionView> =
+                list.iter().copied().filter(|c| !done.contains(c.id.as_str()) && parent_of(c).as_deref() == Some(x.id.as_str())).collect();
+            stack.extend(kids.into_iter().rev().map(|c| (c, true)));
+        }
+    };
+    for &s in &list {
         if done.contains(s.id.as_str()) || parent_of(s).is_some() {
             continue;
         }
         if orphan(s) {
             let key = repo_key(s);
-            let members: Vec<&SessionView> = list.iter().filter(|m| orphan(m) && repo_key(m) == key).copied().collect();
+            let members: Vec<&'a SessionView> = list.iter().copied().filter(|m| orphan(m) && repo_key(m) == key).collect();
             let name = s.worktree_of.clone().unwrap_or_default();
             out.push(SideItem::Repo { name, count: members.len() });
             for m in members {
-                done.insert(m.id.as_str());
-                out.push(SideItem::Session { s: m, nested: true });
+                emit(&mut out, &mut done, m, true);
             }
             continue;
         }
-        done.insert(s.id.as_str());
-        out.push(SideItem::Session { s, nested: false });
-        for c in list.iter().filter(|c| parent_of(c).as_deref() == Some(s.id.as_str())) {
-            done.insert(c.id.as_str());
-            out.push(SideItem::Session { s: c, nested: true });
+        emit(&mut out, &mut done, s, false);
+    }
+    // Whatever a parent chain left out (never expected): a plain row rather than a lost one.
+    for &s in &list {
+        if !done.contains(s.id.as_str()) {
+            emit(&mut out, &mut done, s, false);
         }
     }
     out
@@ -1012,5 +1033,32 @@ mod tests {
         // Without the main checkout in the section (another group): a header instead.
         let refs: Vec<&SessionView> = all.iter().filter(|x| x.id != "main").collect();
         assert_eq!(shape(&nest(&refs)), ["[Repo (2)]", "  wt1", "  wt2", "other", "[Lib (2)]", "  x1", "  x2"]);
+    }
+
+    #[test]
+    fn a_worktree_nests_under_a_main_checkout_session_in_its_own_section() {
+        use Status::*;
+        // The engine picked `main` (another group) as the parent; `main2` is the same checkout here.
+        let all = [s("wt", Some("main"), Some("Repo"), Some("C:\\r"), Idle), s("main2", None, None, Some("c:\\R\\"), Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["main2", "  wt"]);
+    }
+
+    #[test]
+    fn rows_under_a_nested_row_are_never_lost() {
+        use Status::*;
+        // `child` has the worktree session as its parent: under a repo header, and under a
+        // worktree that nests by repo root, it still shows (once).
+        let all = [s("wt", None, Some("Repo"), Some("C:\\r"), Idle), s("child", Some("wt"), None, None, Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["[Repo (1)]", "  wt", "  child"]);
+        let all =
+            [s("wt", None, Some("Repo"), Some("C:\\r"), Idle), s("child", Some("wt"), None, None, Idle), s("main", None, None, Some("C:\\r"), Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(shape(&nest(&refs)), ["main", "  wt", "  child"]);
+        // A parent cycle: both still appear.
+        let all = [s("a", Some("b"), None, None, Idle), s("b", Some("a"), None, None, Idle)];
+        let refs: Vec<&SessionView> = all.iter().collect();
+        assert_eq!(nest(&refs).len(), 2);
     }
 }

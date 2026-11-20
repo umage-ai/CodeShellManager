@@ -124,10 +124,11 @@ fn opt_s(v: &Value) -> Option<String> {
 }
 
 /// How a folder is looked up in [`GitDetails::folders`]: trimmed, no trailing separator,
-/// case-folded (Windows paths compare case-insensitively).
+/// separators as `\` (git writes `C:/src/x` for `C:\src\x`), case-folded (Windows paths compare
+/// case-insensitively).
 #[must_use]
 pub fn folder_key(folder: &str) -> String {
-    folder.trim().trim_end_matches(['\\', '/']).to_lowercase()
+    folder.trim().trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase()
 }
 
 /// `key` (a [`folder_key`]) is `root` or a folder inside it.
@@ -372,6 +373,7 @@ mod tests {
             ]}),
         );
         assert_eq!(g.on_reply(&c, &Ok(out)), Some(vec![]));
+        assert_eq!(folder_key("C:/Src/App/"), folder_key("c:\\src\\app"), "git's forward slashes are the same folder");
         let rows = &g.folders[&folder_key("c:\\src\\app")];
         assert_eq!(rows.len(), 3, "a mistyped row reads as empty, never a panic");
         assert_eq!(rows[1].branch.as_deref(), Some("x"));

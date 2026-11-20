@@ -553,7 +553,12 @@ fn checked_siblings(app: &CsmApp, folder: &str) -> Vec<String> {
         return Vec::new();
     }
     let offered = sibling_worktrees(&app.model, folder).unwrap_or_default();
-    offered.into_iter().filter(|w| q.siblings.contains(&w.path)).map(|w| w.path).collect()
+    // The engine's `open` folder is the path in the system's form (git lists `C:/src/x`).
+    offered
+        .into_iter()
+        .filter(|w| q.siblings.contains(&w.path))
+        .map(|w| w.open.get("folder").and_then(serde_json::Value::as_str).filter(|f| !f.trim().is_empty()).map_or(w.path.clone(), str::to_string))
+        .collect()
 }
 
 /// "Also start in sibling worktrees": one checkbox per other worktree of the chosen folder's
@@ -692,6 +697,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         if !ctrl_enter || editing.is_some() {
             return;
         }
+        // Kept open: the ticked siblings started; another Enter must not start them again.
+        app.ui.quick.siblings.clear();
     }
     let rows = folder_rows(app, &app.ui.quick.query);
     let model = app.model.clone();

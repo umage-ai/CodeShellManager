@@ -89,10 +89,11 @@ fn the_row_menu_starts_a_session_in_a_sibling_worktree() {
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::OpenMenu(Menu::Row { session: "wt".into(), at: pos2(300.0, 330.0) }));
     settle(&mut h);
-    // Opening the menu read the worktrees again (once).
-    assert_eq!(calls(&h, "worktree_list"), vec![json!({"session_id": "wt"})]);
+    // A right click alone runs no git; opening the submenu reads the worktrees again (once).
+    assert!(calls(&h, "worktree_list").is_empty());
     h.get_by_label(SIBLING_WORKTREE).click();
     settle(&mut h);
+    assert_eq!(calls(&h, "worktree_list"), vec![json!({"session_id": "wt"})]);
     // Only the worktree without a session is offered: not search-sort (this one), not the main
     // checkout (Odulodo.Web has sessions).
     assert!(h.query_by_label("perf-budget").is_some());
@@ -180,6 +181,21 @@ fn open_quick_and_check(h: &mut Harness<'static, csm_ui::CsmApp>) {
     h.get_by_label("Sibling worktree: perf-budget").click();
     h.step();
     assert_eq!(h.state().ui.quick.siblings, vec!["C:\\GitHub\\Odulodo.Web\\.worktrees\\perf-budget".to_string()]);
+}
+
+#[test]
+fn ctrl_enter_starts_the_ticked_siblings_once() {
+    let mut h = h();
+    open_quick_and_check(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    settle(&mut h);
+    assert_eq!(calls(&h, "session_new").len(), 2, "here and in the ticked sibling");
+    assert!(h.state().ui.quick.siblings.is_empty(), "the ticks are spent");
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    let news = calls(&h, "session_new");
+    assert_eq!(news.len(), 3, "the second start is the folder only: {news:?}");
+    assert_eq!(news[2]["folder"], "C:\\GitHub\\Odulodo.Web");
 }
 
 #[test]

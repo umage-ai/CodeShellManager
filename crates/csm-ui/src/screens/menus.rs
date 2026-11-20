@@ -403,11 +403,12 @@ fn menu_area(
     rects
 }
 
-/// Once per opening of a session's menu: read its worktrees again (`worktree_list`, git on an
-/// engine worker; the reply lands in `model.git` and fills the sibling submenu). Submitted
-/// directly rather than as an [`Action::Tool`], which would close the menu.
+/// Once per opening of a session's menu, when the sibling submenu opens (not on every right
+/// click, as WPF): read its worktrees again (`worktree_list`, git on an engine worker; the reply
+/// lands in `model.git` and fills the submenu). Submitted directly rather than as an
+/// [`Action::Tool`], which would close the menu.
 fn ask_worktrees(ctx: &egui::Context, app: &mut CsmApp, menu: &Menu, session: &str) {
-    if !app.model.session(session).is_some_and(in_repo) {
+    if app.ui.submenu.as_deref() != Some(SIBLING_WORKTREE) || !app.model.session(session).is_some_and(in_repo) {
         return;
     }
     let key = Id::new("menu-worktrees-asked");
