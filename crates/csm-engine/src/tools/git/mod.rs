@@ -83,10 +83,10 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "worktree_list",
             title: "Worktrees",
-            summary: "Every worktree of the session's repository: branch, changes, ahead/behind, the sessions in it, and the `session_new` params to open one there.",
+            summary: "Every worktree of the session's repository (or, with `folder`, of the repository a folder without a session is in): branch, changes, ahead/behind, the sessions in it, and the `session_new` params to open one there.",
             toolset: Toolset::Git,
             effects: read,
-            input_schema: schema_of::<SidParams>,
+            input_schema: schema_of::<WorktreeListParams>,
             run: worktree_list,
         },
         ToolSpec {
@@ -123,6 +123,18 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 #[serde(deny_unknown_fields)]
 struct SidParams {
     session_id: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorktreeListParams {
+    /// The session whose repository to list. Give this or `folder`.
+    #[serde(default)]
+    session_id: Option<String>,
+    /// A local folder (an absolute path) whose repository to list, for a folder no session is
+    /// in yet (the quick-open's "Also start in sibling worktrees"). Give this or `session_id`.
+    #[serde(default)]
+    folder: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -501,11 +513,27 @@ fn git_branches(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     Ok(ToolOutput::message("listing branches"))
 }
 
+/// `worktree_list`'s target: a session, or a bare folder (no session id, no known root).
+fn list_target(ctx: &Ctx<'_>, p: WorktreeListParams) -> Result<Target, ToolError> {
+    match (p.session_id, p.folder) {
+        (Some(id), None) => target(ctx, &id),
+        (None, Some(folder)) => {
+            no_controls("folder", &folder)?;
+            let folder = folder.trim().to_owned();
+            if !Path::new(&folder).is_absolute() {
+                return Err(ToolError::InvalidParams(format!("`folder` must be an absolute path, not `{folder}`")));
+            }
+            Ok(Target { id: String::new(), folder, root: None })
+        }
+        _ => Err(ToolError::InvalidParams("give either `session_id` or `folder`".into())),
+    }
+}
+
 fn worktree_list(ctx: &mut Ctx<'_>, params: Value) -> Reply {
-    let p: SidParams = parse_params(params)?;
-    let t = target(ctx, &p.session_id)?;
+    let p: WorktreeListParams = parse_params(params)?;
+    let t = list_target(ctx, p)?;
     let refs = session_refs(ctx);
-    let source = ctx.state.app.sessions.iter().find(|s| s.id == t.id).cloned();
+    let source = if t.id.is_empty() { None } else { ctx.state.app.sessions.iter().find(|s| s.id == t.id).cloned() };
     let Some(reply) = ctx.park() else {
         return Err(ToolError::Failed("nothing to answer".into()));
     };
@@ -552,7 +580,13 @@ fn worktree_list(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             .collect();
         let prunable = list.iter().filter(|w| w.is_prunable).count();
         let msg = format!("{} worktrees", rows.len());
-        reply.send(Ok(ToolOutput::new(msg, json!({"session_id": t.id, "current": current, "prunable": prunable, "worktrees": rows}))));
+        let mut data = json!({"current": current, "prunable": prunable, "worktrees": rows});
+        if t.id.is_empty() {
+            data["folder"] = json!(t.folder);
+        } else {
+            data["session_id"] = json!(t.id);
+        }
+        reply.send(Ok(ToolOutput::new(msg, data)));
     })?;
     Ok(ToolOutput::message("listing worktrees"))
 }

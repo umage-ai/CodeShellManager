@@ -134,7 +134,7 @@ Read-mostly on purpose: no commit, push or merge (Claude is editing that tree).
 | `git_pull` ✅ | session_id | launch, network, writes files | `pull --ff-only --no-rebase`; a diverged branch is refused with git's reason |
 | `git_switch_branch` ✅ | session_id, name | launch, writes files | `switch --no-guess -- <name>`; a branch checked out in another worktree is refused, naming it |
 | `git_branches` ✅ | session_id | read, launch | local branches; for each one held elsewhere, that worktree, its session and `session_new` params to open it |
-| `worktree_list` ✅ | session_id | read, launch | every worktree: label, branch, dirty, ↑/↓, prunable, the sessions in it, `open` (`session_new` params) |
+| `worktree_list` ✅ | session_id \| folder | read, launch | every worktree: label, branch, dirty, ↑/↓, prunable, the sessions in it, `open` (`session_new` params) |
 | `worktree_new` ✅ | session_id, branch, base?, path?, open_session? (true) | launch, writes files, state | `worktree add` (`-b` when new) beside the main checkout; opens a session there like this one, placed after it |
 | `worktree_remove` ✅ | session_id, path?, delete_branch?, force? | launch, writes files, discard, state | no `--force`; refuses the main checkout, changes, a worktree listed inside it, any repository on disk inside it (fails closed); closes the folder's sessions (only with `force`) and waits for their exit; sleeping ones are deleted after git removed the folder; `delete_branch` uses `-d` |
 | `worktree_prune` ✅ | session_id | launch, writes files | `worktree prune`: forgets worktrees whose folder is gone |
@@ -298,7 +298,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `git_pull` | git | launch, files, network | asks | git pull --ff-only --no-rebase: moves the branch only when that loses nothing; a diverged branch or a conflicting local edit is refused with git's reason. |
 | `git_switch_branch` | git | launch, files | asks | git switch --no-guess to a local branch. A branch checked out in another worktree is refused (open that worktree instead; `git_branches` says which). |
 | `git_branches` | git | launch | asks | Local branches; for each one checked out in another worktree, that worktree and its session. |
-| `worktree_list` | git | launch | asks | Every worktree of the session's repository: branch, changes, ahead/behind, the sessions in it, and the `session_new` params to open one there. |
+| `worktree_list` | git | launch | asks | Every worktree of the session's repository (or, with `folder`, of the repository a folder without a session is in): branch, changes, ahead/behind, the sessions in it, and the `session_new` params to open one there. |
 | `worktree_new` | git | state, launch, files | asks | git worktree add for a branch (created from `base` or HEAD when it doesn't exist), next to the main checkout by default; opens a session there with the same command, placed after this one, unless open_session is false. |
 | `worktree_remove` | git | state, launch, discard, files | asks | Remove a linked worktree with git worktree remove (no --force). Refuses the main checkout, a worktree with changes, and one with another repository inside it. Closes the sessions in that folder first (needs force: true when there are any) and waits for them to exit; delete_branch uses branch -d, which keeps an unmerged branch. |
 | `worktree_prune` | git | launch, files | asks | git worktree prune: forgets worktrees whose folder is already gone. Only git's bookkeeping; never a working tree. |
