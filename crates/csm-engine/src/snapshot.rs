@@ -87,6 +87,9 @@ pub struct SessionView {
     pub runs: Vec<crate::runs::RunView>,
     /// The Open with entries that apply to it, with the exact command each would run.
     pub open_with: Vec<crate::tools::open::OpenWithTarget>,
+    /// The session's own terminal look (colours, font size, cursor, padding); `None` follows
+    /// the app's settings. `session_look_set` changes it.
+    pub look: Option<csm_core::look::Look>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -238,6 +241,7 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         backend: rt.and_then(|r| r.backend).map(|b| b.label()),
         runs: crate::runs::views(state, s),
         open_with: crate::tools::open::targets(&state.app.settings.open_with, s),
+        look: Some(csm_core::look::Look::from_session(s)).filter(|l| !l.is_empty()),
     }
 }
 

@@ -312,6 +312,23 @@ pub struct QuickOpenState {
     /// The folder the sibling checkboxes are for, and when it became the chosen one (`ctx`
     /// time), and whether `worktree_list {folder}` was asked (once it stayed chosen a moment).
     pub siblings_for: Option<(String, f64, bool)>,
+    /// Windows Terminal profiles (`profile_list`, asked once when profile import is on): each
+    /// `{name, commandline, starting_directory, look, …}` as the tool returns it.
+    pub profiles: Option<Vec<Value>>,
+    /// The Profile picker's choice.
+    pub profile: ProfilePick,
+}
+
+/// What the quick-open's Profile picker says about the session's look.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ProfilePick {
+    /// Edit mode: leave the session's look as it is.
+    #[default]
+    Keep,
+    /// No look of its own (new: none; edit: clear it).
+    None,
+    /// This profile's look (by name, from [`QuickOpenState::profiles`]).
+    Profile(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -513,6 +530,10 @@ impl CsmApp {
                 if call.id == "session_get" {
                     self.ui.quick.loaded = true;
                 }
+                if call.id == "profile_list" {
+                    // Import off, or unreadable: the picker shows no profiles.
+                    self.ui.quick.profiles = Some(Vec::new());
+                }
                 return;
             }
         };
@@ -541,6 +562,7 @@ impl CsmApp {
                 }
                 self.ui.quick.distros = Some(names);
             }
+            "profile_list" => self.ui.quick.profiles = Some(out.data.as_array().cloned().unwrap_or_default()),
             "grant_list" => self.ui.settings.grants = out.data.as_array().cloned().unwrap_or_default(),
             "grant_revoke" => self.dispatch.submit("grant_list", json!({})),
             "session_get" => {
@@ -778,7 +800,7 @@ impl CsmApp {
                     Scope::Group(g) => Some(g),
                     Scope::All => None,
                 });
-                self.ui.quick = QuickOpenState { group, focus_input: true, ..QuickOpenState::default() };
+                self.ui.quick = QuickOpenState { group, focus_input: true, profile: ProfilePick::None, ..QuickOpenState::default() };
             }
             Action::CloseOverlays => {
                 self.ui.overlay = Overlay::None;
@@ -1011,7 +1033,8 @@ impl CsmApp {
         };
         match id {
             "session_new" => return self.run(ctx, Action::OpenQuickOpen { group: None }),
-            "session_edit" => {
+            // The look's picker is the Profile row of Edit session.
+            "session_edit" | "session_look_set" => {
                 if let Some(a) = active {
                     self.run(ctx, Action::EditSession(a));
                 }

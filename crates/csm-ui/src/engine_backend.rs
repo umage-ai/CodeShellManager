@@ -428,6 +428,7 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         started,
         exited,
         exit_code: s.exit_code,
+        look: s.look.clone(),
     }
 }
 

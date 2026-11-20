@@ -10,6 +10,7 @@
 //! * [`wsl`]: `wsl -l -v` parsing and the `\wsl$` UNC mirror.
 //! * [`git`]: git command lines, `status --porcelain=v2` parsing, wording, worktree rules.
 //! * [`open_with`]: "Open with..." templates, validation and sanitising.
+//! * [`wt_profiles`]: Windows Terminal `settings.json` profiles (parsing is pure; [`wt_profiles::load_profiles`] reads files).
 //!
 //! The input types defined locally ([`launch::LaunchSpec`], [`open_with::OpenWithEntry`],
 //! [`git::WorktreeInfo`], ...) are the minimum these modules need; unify them with `csm-core`
@@ -24,3 +25,4 @@ pub mod launch;
 pub mod open_with;
 pub mod winpath;
 pub mod wsl;
+pub mod wt_profiles;

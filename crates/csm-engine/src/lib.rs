@@ -39,7 +39,7 @@ pub use registry::Registry;
 pub use runs::{RunOutputHandle, RunPhase, RunView};
 pub use session::TerminalHandle;
 pub use snapshot::{GroupInfo, GroupView, SessionView, Snapshot};
-pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, real_pty_factory};
+pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, real_pty_factory};
 pub use status::{Status, WaitUntil};
 pub use tool::{Caller, Effects, ToolError, ToolFn, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 pub use tools::open::{OpenWithTarget, OpenWithView};

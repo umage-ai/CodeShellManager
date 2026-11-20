@@ -55,6 +55,23 @@ pub struct StateOptions {
     /// The search index and notes store (`docs/tools.md`, notes and search). Off by default;
     /// production uses [`IndexSetting::Auto`].
     pub index: crate::index::IndexSetting,
+    /// Where `profile_list` and `session_look_set` find Windows Terminal profiles. Production
+    /// reads the install locations; the default (tests) has none.
+    pub terminal_profiles: TerminalProfiles,
+}
+
+/// The Windows Terminal settings the profile tools read.
+#[derive(Debug, Clone, Default)]
+pub enum TerminalProfiles {
+    /// No profiles (tests, unless they say otherwise).
+    #[default]
+    None,
+    /// WT's install locations (`csm_services::wt_profiles::known_paths`): production.
+    Installed,
+    /// These `settings.json` files, as `(install name, path)`.
+    Files(Vec<(String, PathBuf)>),
+    /// These `settings.json` texts, as `(install name, text)`: the demo's profiles, no file I/O.
+    Texts(Vec<(String, String)>),
 }
 
 impl Default for StateOptions {
@@ -71,6 +88,7 @@ impl Default for StateOptions {
             restore_on_start: true,
             seed_editors: false,
             index: crate::index::IndexSetting::Off,
+            terminal_profiles: TerminalProfiles::None,
         }
     }
 }
@@ -78,7 +96,13 @@ impl Default for StateOptions {
 impl StateOptions {
     /// The production options: the state file at [`persist::default_state_path`].
     pub fn production() -> Self {
-        Self { save_path: persist::default_state_path(), seed_editors: true, index: crate::index::IndexSetting::Auto, ..Self::default() }
+        Self {
+            save_path: persist::default_state_path(),
+            seed_editors: true,
+            index: crate::index::IndexSetting::Auto,
+            terminal_profiles: TerminalProfiles::Installed,
+            ..Self::default()
+        }
     }
 
     pub(crate) fn saves(&self) -> bool {

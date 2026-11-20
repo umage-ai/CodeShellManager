@@ -272,6 +272,26 @@ impl Terminal {
         &self.config.palette
     }
 
+    /// The default colours: what OSC 4/10/11/12 queries answer (a session's own look, or the
+    /// app's). Colours a program set with OSC still win.
+    pub fn set_palette(&mut self, palette: Palette) {
+        if self.config.palette == palette {
+            return;
+        }
+        self.config.palette = palette;
+        self.refresh_colors();
+        self.touch();
+    }
+
+    /// The cursor a program gets until it asks for its own (DECSCUSR), and goes back to when it
+    /// resets it (`CSI 0 SP q`).
+    pub fn set_default_cursor(&mut self, shape: ansi::CursorShape, blinking: bool) {
+        let style = ansi::CursorStyle { shape, blinking };
+        let config = Config { scrolling_history: self.config.scrollback, default_cursor_style: style, ..Config::default() };
+        self.term.set_options(config);
+        self.touch();
+    }
+
     pub fn term(&self) -> &Term<Listener> {
         &self.term
     }

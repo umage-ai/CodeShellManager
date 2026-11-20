@@ -853,8 +853,16 @@ pub fn pane(
     );
     let mut clicked = false;
     if let Some(src) = source {
-        let style = t.terminal_style();
-        let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, ..ViewOptions::default() };
+        // The session's own look (a Windows Terminal profile's) over the theme's.
+        let look = s.look.as_ref();
+        let style = match look.and_then(|l| l.colors.as_ref()) {
+            Some(c) => t.terminal_style().with_colors(&c.resolve()),
+            None => t.terminal_style(),
+        };
+        let body_bg = egui::Color32::from_rgb(style.palette.background.r, style.palette.background.g, style.palette.background.b);
+        let edges = look.and_then(csm_core::look::Look::padding_edges).map(|e| e.map(f32::from));
+        let font_pt = look.and_then(|l| l.font_size).map(|n| n as f32);
+        let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, ..ViewOptions::default() };
         let mut child = ui.new_child(UiBuilder::new().max_rect(body));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         let PaneHost { renderer, views, padding, .. } = host;
@@ -864,7 +872,7 @@ pub fn pane(
         clicked = vr.clicked;
         let placeholder = if queued { Some(format!("Starting {} in {}…", s.command, s.name)) } else { TerminalView::placeholder(src) };
         if let Some(text_) = placeholder {
-            p.rect_filled(body, 0.0, t.term_bg);
+            p.rect_filled(body, 0.0, body_bg);
             let starting = queued || src.state() == SourceState::Starting;
             if starting {
                 icons::paint_status(

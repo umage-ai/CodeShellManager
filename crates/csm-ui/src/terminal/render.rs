@@ -31,6 +31,36 @@ impl Default for TermStyle {
     }
 }
 
+impl TermStyle {
+    /// This style with a session's own colours (its look) over it; a colour the look leaves out
+    /// stays the theme's.
+    pub fn with_colors(mut self, c: &csm_core::look::ResolvedColors) -> Self {
+        let rgb = |[r, g, b]: [u8; 3]| Rgb { r, g, b };
+        for (slot, c) in self.palette.ansi.iter_mut().zip(c.ansi) {
+            if let Some(c) = c {
+                *slot = rgb(c);
+            }
+        }
+        if let Some(v) = c.foreground {
+            self.palette.foreground = rgb(v);
+        }
+        if let Some(v) = c.background {
+            self.palette.background = rgb(v);
+        }
+        if let Some(v) = c.cursor {
+            self.palette.cursor = rgb(v);
+        }
+        if let Some([r, g, b]) = c.selection {
+            // WT draws its selection colour translucent over the text (the built-in schemes say
+            // #FFFFFF); drawn opaque the selected text would vanish. 35% over the background.
+            let bg = self.palette.background;
+            let mix = |s: u8, b: u8| ((u16::from(s) * 35 + u16::from(b) * 65) / 100) as u8;
+            self.selection = Color32::from_rgb(mix(r, bg.r), mix(g, bg.g), mix(b, bg.b));
+        }
+        self
+    }
+}
+
 pub struct Built {
     pub mesh: Mesh,
     /// The cursor cell in points (for IME placement).

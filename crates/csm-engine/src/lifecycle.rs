@@ -385,7 +385,11 @@ pub(crate) fn launch(ctx: &mut Ctx<'_>, id: &str, restoring: bool) -> Result<(),
     if let Some(ix) = &index {
         record_in_index(ix, &name, s);
     }
+    let look = csm_core::look::Look::from_session(s);
     let io = SessionIo::new(id, &name, ctx.state.rt.instance_seq, GridSize::new(cols, rows), ctx.engine.clone(), index);
+    if !look.is_empty() {
+        crate::tools::look::apply_to_terminal(&mut io.lock_terminal(), &look);
+    }
     let deadline = Instant::now() + ctx.state.options.first_size_timeout;
     ctx.state.rt.sessions.insert(id.to_owned(), SessionRt::new(io, restoring, deadline));
     ctx.state.touch();

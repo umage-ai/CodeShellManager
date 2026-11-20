@@ -16,6 +16,7 @@ pub mod alert_detector;
 pub mod bulk_restart;
 pub mod busy_rules;
 pub mod color;
+pub mod look;
 pub mod models;
 pub mod notify_rules;
 pub mod probe_gate;

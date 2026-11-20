@@ -55,12 +55,28 @@ pub struct ViewOptions {
     pub style: TermStyle,
     /// Inner padding between the rect and the cells, in points.
     pub padding: Vec2,
+    /// A session's own padding (its look), in points: top, right, bottom, left. Wins over
+    /// [`ViewOptions::padding`].
+    pub edges: Option<[f32; 4]>,
+    /// A session's own font size (its look), in points; `None` is the renderer's size. Drawn from
+    /// the shared atlas at that pixel size (glyphs are keyed by size): no second font is loaded.
+    pub font_pt: Option<f32>,
 }
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        Self { interactive: true, request_focus: false, style: TermStyle::default(), padding: vec2(8.0, 6.0) }
+        Self { interactive: true, request_focus: false, style: TermStyle::default(), padding: vec2(8.0, 6.0), edges: None, font_pt: None }
     }
+}
+
+/// The cell area inside `rect`: the session's edges when it has them, else the symmetric padding.
+/// Never inverted: a padding larger than the rect leaves an empty area at its centre.
+fn inset(rect: Rect, opts: &ViewOptions) -> Rect {
+    let Some([t, r, b, l]) = opts.edges else { return rect.shrink2(opts.padding) };
+    let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let min = pos2(rect.min.x + clean(l), rect.min.y + clean(t));
+    let max = pos2((rect.max.x - clean(r)).max(min.x), (rect.max.y - clean(b)).max(min.y));
+    if min.x > rect.max.x || min.y > rect.max.y { Rect::from_center_size(rect.center(), Vec2::ZERO) } else { Rect::from_min_max(min, max) }
 }
 
 /// The smallest scale a preview is drawn at (Overview mini-terminals).
@@ -237,7 +253,9 @@ impl TerminalView {
     ) -> ViewResponse {
         let ctx = ui.ctx().clone();
         let ppp = ctx.pixels_per_point();
-        let inner = rect.shrink2(opts.padding);
+        let inner = inset(rect, opts);
+        // The session's font size as a scale on the renderer's: metrics and glyphs at that size.
+        let scale = opts.font_pt.filter(|p| p.is_finite() && *p > 0.0).map_or(1.0, |p| (p / renderer.fonts.size_pt.max(1.0)).clamp(0.25, 4.0));
         let sense = if opts.interactive { Sense::click_and_drag() } else { Sense::click() };
         let resp = ui.interact(rect, self.id, sense);
         let clicked = resp.is_pointer_button_down_on() || resp.clicked();
@@ -245,7 +263,7 @@ impl TerminalView {
         let term = source.terminal();
         // Interactive: the grid follows the rect. Preview: the grid stays; the font shrinks.
         let (grid, zoom) = if opts.interactive {
-            let m = renderer.fonts.metrics(ppp);
+            let m = renderer.fonts.metrics(ppp * scale);
             let cols = ((inner.width() * ppp) / m.cell_w).floor().clamp(2.0, 1000.0) as u16;
             let rows = ((inner.height() * ppp) / m.cell_h).floor().clamp(1.0, 500.0) as u16;
             let grid = GridSize { cols, rows, cell_width: m.cell_w as u16, cell_height: m.cell_h as u16 };
@@ -256,7 +274,7 @@ impl TerminalView {
             (Some(grid), 1.0)
         } else {
             let size = term.as_ref().and_then(|t| t.try_lock().ok().map(|t| t.size()));
-            let m = renderer.fonts.metrics(ppp);
+            let m = renderer.fonts.metrics(ppp * scale);
             // Previews are small but readable (the mock's 8.5 px), showing the bottom of the
             // screen where the prompt is; what does not fit is clipped at the top.
             let zoom = size.map_or(1.0, |g| (inner.width() / (f32::from(g.cols) * m.cell_w / ppp)).min(1.0));
@@ -264,7 +282,7 @@ impl TerminalView {
         };
         self.grid = grid.or(self.grid);
         // Metrics at the zoomed scale: cells in physical pixels of a smaller font.
-        let m = renderer.fonts.metrics(ppp * zoom);
+        let m = renderer.fonts.metrics(ppp * zoom * scale);
         let mut origin = pos2((inner.min.x * ppp).round() / ppp, (inner.min.y * ppp).round() / ppp);
         if !opts.interactive
             && let Some(g) = grid
@@ -357,7 +375,7 @@ impl TerminalView {
             if !self.preedit.is_empty() {
                 let fg = opts.style.palette.foreground;
                 let fg = Color32::from_rgb(fg.r, fg.g, fg.b);
-                let font = egui::FontId::monospace(renderer.fonts.size_pt);
+                let font = egui::FontId::monospace(renderer.fonts.size_pt * scale);
                 let galley = painter.layout_no_wrap(self.preedit.clone(), font, fg);
                 let r = Rect::from_min_size(cursor_rect.min, galley.size());
                 painter.rect_filled(r.expand(1.0), 0.0, Color32::from_rgb(bg.r, bg.g, bg.b));
