@@ -1233,6 +1233,11 @@ pub struct TornState {
     pub sources: HashMap<SessionId, Arc<dyn TerminalSource>>,
 }
 
+/// The window a torn-off pane lives in.
+pub fn torn_pane_viewport(id: &str) -> ViewportId {
+    ViewportId::from_hash_of(("torn-pane", id))
+}
+
 /// Torn-off panes and groups as deferred viewports: each renders and presents in its own pass,
 /// not inside the main frame (the spike's immediate viewports did, costing a vsync wait each).
 pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
@@ -1258,7 +1263,7 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
     }
     for (id, key) in panes {
         let name = model.session(&id).map_or_else(String::new, |s| s.name.clone());
-        let vid = ViewportId::from_hash_of(("torn-pane", id.clone()));
+        let vid = torn_pane_viewport(&id);
         let builder = ViewportBuilder::default().with_title(format!("{name} · CodeShellManager")).with_inner_size(size::TEAR_OFF);
         let (host, actions, state) = (app.host.clone(), app.remote_actions.clone(), state.clone());
         ctx.show_viewport_deferred(vid, builder, move |ui, _class| {

@@ -51,6 +51,11 @@ pub enum Event {
     /// `app_quit` finished: every process is gone and the state is saved. Call
     /// [`crate::Engine::shutdown`] and exit.
     QuitReady,
+    /// The window should come to the front, restored if minimized (`window_show`).
+    WindowShowRequested,
+    /// Send a sample OS notification now, whatever the notification settings say
+    /// (`notification_test`).
+    NotificationTestRequested,
 }
 
 /// Fan-out to any number of subscribers; a dropped receiver is pruned on the next emit.

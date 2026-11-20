@@ -708,3 +708,106 @@ fn the_window_icon_is_the_logo() {
     assert_eq!(icon.rgba[3], 0, "rounded corner: transparent");
     assert_eq!(icon.rgba[(32 * 64 + 4) * 4 + 3], 255, "the square is opaque");
 }
+
+/// Clicks a control that may sit below the fold of a scrolling page.
+fn click_far(h: &mut Harness<'static, csm_ui::CsmApp>, label: &str) {
+    h.get_by_label(label).scroll_to_me();
+    for _ in 0..3 {
+        h.step();
+    }
+    h.get_by_label(label).click();
+    settle(h);
+}
+
+#[test]
+fn notification_toggles_decide_what_reaches_the_os() {
+    use csm_ui::model::Status;
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    let engine = h.state().dispatch.engine().clone();
+    let get = |k: &str| engine.call(csm_engine::Caller::Ui, "settings_get", serde_json::json!({"key": k})).unwrap().data["value"].clone();
+    // Quiet sessions that are not the one in front.
+    let quiet: Vec<String> = {
+        let m = &h.state().model;
+        m.sessions
+            .iter()
+            .filter(|s| matches!(s.status, Status::Idle | Status::Working) && Some(&s.id) != m.active.as_ref())
+            .map(|s| s.id.clone())
+            .take(3)
+            .collect()
+    };
+    assert!(quiet.len() >= 3, "the demo has quiet sessions");
+    let set_status = |h: &mut Harness<'static, csm_ui::CsmApp>, id: &str, st: &str| {
+        h.state_mut().run(&ctx, Action::Tool("demo_set_status", serde_json::json!({"session_id": id, "status": st})));
+        settle(h);
+    };
+    // Off by default (as in WPF): a session that starts needing you sends nothing.
+    assert_eq!(get("ShowToastNotifications"), false);
+    set_status(&mut h, &quiet[0], "approval");
+    assert!(h.state_mut().take_notifications().is_empty(), "notifications are off by default");
+
+    // Turned on in Settings → General; the engine has it and the app follows.
+    h.get_by_label_contains("Settings  Ctrl+,").click();
+    settle(&mut h);
+    click_far(&mut h, "Show system notifications");
+    settle(&mut h);
+    assert_eq!(get("ShowToastNotifications"), true);
+    assert!(h.state().prefs.notifications);
+    set_status(&mut h, &quiet[1], "question");
+    let sent = h.state_mut().take_notifications();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].session_id, quiet[1]);
+    assert!(!sent[0].sound, "no sound unless asked for");
+    assert!(sent[0].title.starts_with("CodeShellManager — "));
+    // Staying there is not news.
+    for _ in 0..5 {
+        h.step();
+    }
+    assert!(h.state_mut().take_notifications().is_empty());
+
+    // The sound follows its own toggle.
+    click_far(&mut h, "Play a sound with notifications");
+    settle(&mut h);
+    assert_eq!(get("ShowNotificationSound"), true);
+    set_status(&mut h, &quiet[2], "error");
+    let sent = h.state_mut().take_notifications();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].sound);
+
+    // The test button sends one whatever the state.
+    click_far(&mut h, "Send a test notification");
+    settle(&mut h);
+    assert_eq!(last_call(&h).0, "notification_test");
+    let sent = h.state_mut().take_notifications();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].session_id.is_empty());
+
+    // Off again: nothing.
+    click_far(&mut h, "Show system notifications");
+    settle(&mut h);
+    assert!(!h.state().prefs.notifications);
+    set_status(&mut h, &quiet[0], "idle");
+    set_status(&mut h, &quiet[0], "error");
+    assert!(h.state_mut().take_notifications().is_empty());
+    let needs_you = h.state().model.sessions.iter().filter(|s| s.status.needs_you()).count();
+    assert!(needs_you >= 1);
+    assert_eq!(h.state().needs_you_count(), needs_you);
+}
+
+#[test]
+fn window_show_restores_and_focuses_the_main_window() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::Tool("window_show", serde_json::json!({})));
+    assert_eq!(last_call(&h).0, "window_show");
+    let mut cmds = Vec::new();
+    for _ in 0..10 {
+        h.step();
+        if let Some(v) = h.output().viewport_output.get(&egui::ViewportId::ROOT) {
+            cmds.extend(v.commands.iter().cloned());
+        }
+    }
+    for want in [egui::ViewportCommand::Visible(true), egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus] {
+        assert!(cmds.contains(&want), "{want:?} in {cmds:?}");
+    }
+}

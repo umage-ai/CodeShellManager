@@ -13,9 +13,16 @@
 //! ```
 #![forbid(unsafe_code)]
 
+mod os_notify;
+mod tray;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, OnceLock};
+
+use csm_ui::Action;
+use serde_json::json;
 
 use csm_engine::{Engine, State, StateOptions, persist};
 use csm_ui::demo::{DemoBackend, DemoOptions};
@@ -98,9 +105,46 @@ struct App {
     /// Native dialogs, shown after the frame with this window as their parent; answers arrive on a
     /// later frame, so the event loop never blocks.
     dialogs: craft_dialogs::Dialogs<()>,
+    /// The real app's tray icon, OS notifications, and the sessions whose notification was
+    /// clicked. `None` in the demo (its sessions aren't real) and where there is no tray.
+    tray: Option<tray::TrayHost>,
+    notifier: Option<os_notify::OsNotifier>,
+    clicked: Option<Receiver<String>>,
 }
 
 impl App {
+    /// Sends what the UI decided to notify, follows the "needs you" count on the tray, and turns
+    /// tray picks and notification clicks into tools.
+    fn tray_and_notifications(&mut self, ctx: &egui::Context) {
+        let out = self.app.take_notifications();
+        if let Some(n) = &self.notifier {
+            for x in out {
+                n.send(x);
+            }
+        }
+        let clicked: Vec<String> = self.clicked.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        for id in clicked {
+            self.app.run(ctx, Action::Tool("session_focus", json!({"session_id": id})));
+            self.app.run(ctx, Action::Tool("window_show", json!({})));
+        }
+        let Some(t) = &mut self.tray else { return };
+        t.set_needs_you(self.app.needs_you_count());
+        for c in t.commands() {
+            match c {
+                tray::TrayCommand::Show => self.app.run(ctx, Action::Tool("window_show", json!({}))),
+                tray::TrayCommand::NextNeedsYou => {
+                    self.app.run(ctx, Action::Tool("inbox_next", json!({})));
+                    self.app.run(ctx, Action::Tool("window_show", json!({})));
+                }
+                // As closing the window: the busy warning, then `app_quit` and the shutdown board.
+                tray::TrayCommand::Quit => {
+                    self.app.run(ctx, Action::Tool("window_show", json!({})));
+                    self.app.run(ctx, Action::AskQuit);
+                }
+            }
+        }
+    }
+
     /// The quick-open's Browse…: ask for a folder, and hand back what came in.
     fn folder_dialog(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         if let Some(start) = self.app.take_folder_request() {
@@ -130,6 +174,7 @@ impl eframe::App for App {
         self.app.frame(ui);
         let ctx = ui.ctx().clone();
         self.folder_dialog(&ctx, frame);
+        self.tray_and_notifications(&ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -230,6 +275,7 @@ fn main() {
             csm_ui::app::setup(&cc.egui_ctx, theme_kind);
             let ctx = cc.egui_ctx.clone();
             let _ = window.set(ctx.clone());
+            let real = matches!(mode, Mode::Real { .. });
             let backend: Box<dyn csm_ui::Backend> = match mode {
                 Mode::Real { opts } => Box::new(EngineBackend::new(engine.clone(), opts)),
                 Mode::Demo { live, restore, shell } => {
@@ -245,7 +291,16 @@ fn main() {
             let app = csm_ui::CsmApp::new(engine, backend, TerminalRenderer::new(fonts));
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
-            Ok(Box::new(App { app, dialogs }))
+            // On the main thread, with the event loop running: where the tray must be made.
+            let (tray, notifier, clicked) = if real {
+                let (click_tx, click_rx) = mpsc::channel();
+                let wake_ctx = cc.egui_ctx.clone();
+                let notifier = os_notify::OsNotifier::start(click_tx, Arc::new(move || wake_ctx.request_repaint()));
+                (tray::TrayHost::start(&cc.egui_ctx), Some(notifier), Some(click_rx))
+            } else {
+                (None, None, None)
+            };
+            Ok(Box::new(App { app, dialogs, tray, notifier, clicked }))
         }),
     );
     if let Some(h) = ipc

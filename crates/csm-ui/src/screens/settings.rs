@@ -260,6 +260,27 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     );
     number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
     caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
+    notifications(ui, app, actions);
+}
+
+fn notifications(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
+    section(ui, "Notifications");
+    bool_setting(
+        ui,
+        app,
+        "ShowToastNotifications",
+        "Show system notifications",
+        "When a session needs your approval or has a question, errors, or finishes while the window is in the background.",
+        actions,
+    );
+    bool_setting(ui, app, "ShowNotificationSound", "Play a sound with notifications", "The system's notification sound.", actions);
+    caption(
+        ui,
+        "Never for the session you are looking at, and at most one per session every 5 seconds. The tray icon shows how many sessions need you either way.",
+    );
+    if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send a test notification", None).clicked() {
+        actions.push(Action::Tool("notification_test", json!({})));
+    }
 }
 
 fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {

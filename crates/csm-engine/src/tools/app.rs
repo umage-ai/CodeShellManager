@@ -69,6 +69,24 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             app_quit,
         ),
         t(
+            "window_show",
+            "Show the window",
+            "Bring the app's window to the front, restoring it if it is minimized (the tray icon's Show window).",
+            Toolset::App,
+            Effects::UI.union(Effects::IDEMPOTENT),
+            empty_schema,
+            window_show,
+        ),
+        t(
+            "notification_test",
+            "Send a test notification",
+            "Show a sample OS notification now, to check that notifications reach you (sent even with notifications off; the sound follows ShowNotificationSound).",
+            Toolset::App,
+            Effects::UI,
+            empty_schema,
+            notification_test,
+        ),
+        t(
             "grant_list",
             "MCP grants",
             "Clients allowed to call a tool without asking (\"Always for this client\" on a consent card).",
@@ -323,6 +341,16 @@ fn app_quit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let reply = ctx.park();
     lifecycle::quit(ctx, p.force, reply);
     Ok(ToolOutput::message("Quitting."))
+}
+
+fn window_show(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    ctx.events.emit(crate::Event::WindowShowRequested);
+    Ok(ToolOutput::message("Showing the window."))
+}
+
+fn notification_test(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    ctx.events.emit(crate::Event::NotificationTestRequested);
+    Ok(ToolOutput::message("Sent a test notification. If none appeared, check the system's notification settings for this app."))
 }
 
 fn grant_list(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
