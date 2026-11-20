@@ -200,6 +200,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         ctx.state.rt.save_due = None;
         save_now(ctx.state);
     }
+    if ctx.state.rt.tasks_save_due.is_some_and(|d| now >= d) {
+        ctx.state.rt.tasks_save_due = None;
+        save_tasks_now(ctx.state);
+    }
 }
 
 fn until_id(u: crate::status::WaitUntil) -> &'static str {
@@ -223,6 +227,15 @@ fn state_json(state: &State) -> Option<String> {
             log::error!("state: could not serialise: {e}");
             None
         }
+    }
+}
+
+/// Hands the tasks to their saver thread (no file I/O here).
+pub(crate) fn save_tasks_now(state: &mut State) {
+    let Some(saver) = &state.rt.tasks_saver else { return };
+    match state.rt.tasks.to_json() {
+        Ok(t) => saver.save(t),
+        Err(e) => log::error!("tasks: could not serialise: {e}"),
     }
 }
 
@@ -267,6 +280,10 @@ pub(crate) fn on_exit(state: &mut State) {
     let text = if state.rt.saver.is_some() { state_json(state) } else { None };
     if let Some(saver) = state.rt.saver.take() {
         saver.finish(text);
+    }
+    let tasks = if state.rt.tasks_saver.is_some() { state.rt.tasks.to_json().ok() } else { None };
+    if let Some(saver) = state.rt.tasks_saver.take() {
+        saver.finish(tasks);
     }
 }
 
@@ -861,6 +878,11 @@ pub(crate) fn forget_session(state: &mut State, id: &str) {
     state.rt.restarting.remove(id);
     state.rt.inbox_since.remove(id);
     state.rt.last_toast.remove(id);
+    state.rt.status_since.remove(id);
+    // Its assigned tasks go back to the backlog (review and done keep who did them).
+    if !state.rt.tasks.release_session(id, now_ms()).is_empty() {
+        state.persist_tasks();
+    }
 }
 
 pub(crate) fn sleep_session(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError> {

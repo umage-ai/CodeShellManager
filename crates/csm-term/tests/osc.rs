@@ -288,3 +288,12 @@ fn base64_of(bytes: &[u8]) -> String {
     }
     out
 }
+
+#[test]
+fn the_last_text_line_skips_borders_and_blank_rows() {
+    let (mut t, _) = term(ProbeReply::default());
+    assert_eq!(t.last_text_line(200), None, "an empty screen has none");
+    t.advance(b"Compiling crate-a\r\n  Running tests: 12 passed\r\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\r\n> \r\n");
+    assert_eq!(t.last_text_line(200).as_deref(), Some("Running tests: 12 passed"));
+    assert_eq!(t.last_text_line(7).as_deref(), Some("Running"), "capped");
+}

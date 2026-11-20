@@ -83,6 +83,13 @@ pub struct SessionView {
     pub last_activity_ms: Option<i64>,
     /// Epoch ms when it entered the inbox.
     pub inbox_since_ms: Option<i64>,
+    /// Epoch ms when it entered its current status (every session; the Board's "time in column").
+    pub status_since_ms: Option<i64>,
+    /// Its project (the Board's tasks): `repo:<root>` in a git repository, else `group:<id>`
+    /// (`csm_core::tasks::project_key`).
+    pub project: String,
+    /// The project's name: the repository's folder, or the group's name.
+    pub project_name: String,
     /// "bundled ConPTY" / "inbox ConPTY" / "openpty", once started.
     pub backend: Option<&'static str>,
     /// Its run commands and each one's last run (the Run button, the chips, the Runs tab).
@@ -149,6 +156,8 @@ pub struct Snapshot {
     pub windows: BTreeMap<String, WindowSlot>,
     /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
     pub recently_closed: Vec<ClosedView>,
+    /// The Board's tasks, every project (`tasks.json`).
+    pub tasks: std::sync::Arc<Vec<csm_core::tasks::Task>>,
     #[serde(skip)]
     pub(crate) terminals: HashMap<String, TerminalHandle>,
     /// Output of each run command's last run, by `(session id, run id)`.
@@ -212,6 +221,7 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
     let accent = s.color_override.clone().unwrap_or_else(|| csm_core::color::hex_color(&s.accent_key()).to_owned());
     let name = if s.name.trim().is_empty() { s.default_display_name() } else { s.name.clone() };
     let git = crate::tools::git::view_fields(state, s);
+    let project = csm_core::tasks::project_key(git.repo_root.as_deref(), &s.group_id);
     SessionView {
         id: s.id.clone(),
         name,
@@ -252,6 +262,9 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         reports_status: rt.is_some_and(|r| r.has_program_status),
         last_activity_ms: s.last_activity_at.epoch_ms(),
         inbox_since_ms: state.rt.inbox_since.get(&s.id).copied(),
+        status_since_ms: state.rt.status_since.get(&s.id).map(|(_, t)| *t),
+        project: project.clone(),
+        project_name: csm_core::tasks::project_label(&project, |g| group_name(state, g)),
         backend: rt.and_then(|r| r.backend).map(|b| b.label()),
         runs: crate::runs::views(state, s),
         open_with: crate::tools::open::targets(&state.app.settings.open_with, s),
@@ -274,6 +287,22 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         }
     }
     state.rt.inbox_since.retain(|id, _| sessions.iter().any(|s| &s.id == id));
+    // When each session entered its status; a change goes to the status log (the index merges
+    // flicker and keeps 30 days).
+    for v in &mut sessions {
+        let since = match state.rt.status_since.get(&v.id) {
+            Some((st, t)) if *st == v.status => *t,
+            _ => {
+                state.rt.status_since.insert(v.id.clone(), (v.status, now));
+                if let Some(ix) = &state.rt.index {
+                    ix.record_status(&v.id, v.status.id(), now);
+                }
+                now
+            }
+        };
+        v.status_since_ms = Some(since);
+    }
+    state.rt.status_since.retain(|id, _| sessions.iter().any(|s| &s.id == id));
 
     let mut inbox: Vec<&SessionView> = sessions.iter().filter(|s| s.status.in_inbox()).collect();
     inbox.sort_by_key(|s| (!s.status.needs_you(), s.inbox_since_ms.unwrap_or(i64::MAX)));
@@ -308,6 +337,16 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
 
     let terminals = state.rt.sessions.iter().map(|(id, rt)| (id.clone(), TerminalHandle(rt.io.clone()))).collect();
 
+    // The tasks are shared, not copied, until they change (bodies are up to 16 KiB each).
+    let tasks = match &state.rt.tasks_view {
+        Some((g, a)) if *g == state.rt.tasks_gen => a.clone(),
+        _ => {
+            let a = std::sync::Arc::new(state.rt.tasks.tasks.clone());
+            state.rt.tasks_view = Some((state.rt.tasks_gen, a.clone()));
+            a
+        }
+    };
+
     let ui = &state.app.ui;
     let layouts = ui.layouts.clone();
     let mut windows = ui.windows.clone();
@@ -338,7 +377,19 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
             .iter()
             .map(|e| ClosedView { name: e.name.clone(), subtitle: e.subtitle(), command: e.command.clone() })
             .collect(),
+        tasks,
         terminals,
         run_outputs: crate::runs::handles(state),
     }
+}
+
+/// A group's name, for project labels.
+fn group_name(state: &State, id: &str) -> Option<String> {
+    state.app.groups.iter().find(|g| g.id == id).map(|g| g.name.clone())
+}
+
+/// A session's project (`csm_core::tasks::project_key`), from the same git facts its view shows.
+pub(crate) fn project_of(state: &State, s: &csm_core::models::ShellSession) -> String {
+    let git = crate::tools::git::view_fields(state, s);
+    csm_core::tasks::project_key(git.repo_root.as_deref(), &s.group_id)
 }

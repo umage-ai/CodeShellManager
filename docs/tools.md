@@ -113,7 +113,7 @@ sessions…": a one-line prompt, then a confirm with the count.
 All ✅. `pane_float` / `pane_dock` / `pane_tear_off` and `pane_minimize` / `pane_maximize` / `pane_restore` are registered by the app (`csm-ui`'s
 `pane_tools`), because the Free layout they edit is stored by the engine as an opaque object
 whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group view: rail/headers/flat; rail tab), `layout_get` (group),
-`layout_set` (group, mode focus/side/overview/grid/free, grid preset or cols×rows, `free`: the Free layout as an opaque object ≤ 64 KiB),
+`layout_set` (group, mode focus/side/overview/grid/free/board, grid preset or cols×rows, `free`: the Free layout as an opaque object ≤ 64 KiB),
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
 `pane_minimize` / `pane_maximize` / `pane_restore` (session, group; the pane header's window bar,
 effects `ui`: minimized and maximized are stored on the engine's layout, `GroupLayout::minimized` /
@@ -260,6 +260,49 @@ refuses `OpenWith`). `open_with_detect` finds VS Code / Insiders / Cursor / Wind
 `open -a`, on Linux `.desktop` files and PATH. The list from state.json is sanitised on load and
 seeded once by detection (`OpenWithSeeded` set only when something was found).
 
+### tasks ✅ (the Board)
+Built in `csm-engine` (`tools/tasks.rs`); the model, state machine and permission rules are pure,
+in `csm_core::tasks`. Its own toolset (`tasks`), not `core`.
+
+| id | params | effects | what |
+|---|---|---|---|
+| `task_list` ✅ | project?, state?, assignee?, include_closed? | read | open tasks (done/cancelled with include_closed); an agent gets its own project's |
+| `task_get` ✅ | task_id | read | one task, with its body |
+| `task_new` ✅ | title (≤ 200 chars), body? (≤ 16 KiB), project? \| session_id? | state | a Backlog task; an agent's goes to its own project |
+| `task_update` ✅ | task_id, title?, body?, progress? (≤ 500), order?, cancel? | state | cancel is the person's |
+| `task_claim` ✅ | task_id, session_id? | state | an unassigned backlog task → Assigned (an agent: to itself); nothing is sent |
+| `task_done` ✅ | task_id, note? | state | Assigned → Review |
+| `task_handoff` ✅ | task_id, note? | state | Assigned → Backlog, unassigned |
+| `task_assign` ✅ | task_id, session_id, send? (true), force? | state, input | → Assigned; with send, pastes `Task <id> from <creator>: <title>` + body and Enter through `session_send_text`'s path (bracketed paste and its refusals: asleep, starting, exited, mid-turn without force, the caller's own session); a refused paste changes nothing; force also takes it from another assignee |
+| `task_accept` ✅ | task_id | state | Review → Done; refused for MCP callers (in precheck, before any card) |
+| `task_reopen` ✅ | task_id, note? | state | Review/Done/Cancelled → Assigned (to whoever had it) or Backlog; refused for MCP callers |
+| `task_delete` ✅ | task_id | state, discard | asks MCP callers |
+
+- **Project** = the session's git repository (`repo:<main checkout root>`, shared by its
+  worktrees), else its group (`group:<id>`; `group:` when ungrouped). Every session view has
+  `project` / `project_name`. A session whose git probe hasn't answered yet counts as its group.
+- **Agents** (`Caller::External { session_id }`), decided 2026-11-20: task bookkeeping (new,
+  claim, update, done, handoff) runs without a consent card, but only in the agent's own project,
+  only on tasks assigned to itself (or unassigned ones, to claim), and with at most 50 open tasks
+  created per session. No cancel, accept or reopen. Assign and delete stay in its project and
+  ask (their effects). An MCP client outside our sessions may read, and assign or delete (asking),
+  but does no bookkeeping. The rules also run in `precheck`, so a call they refuse never asks.
+- **Untrusted text**: titles, bodies and notes lose control characters (ESC included, so no
+  sequence such as a fake end-of-paste survives) and bidi overrides; text over the caps is refused.
+- **Storage**: `tasks.json` beside `state.json` (atomic write, one `.bak`, an unreadable file kept
+  aside as `tasks.json.bad-<ms>`), written by its own saver thread on a debounce and on exit.
+  Nothing is read or written under `--clean` or an isolated run. A closed session's Assigned
+  tasks go back to the backlog (also at start-up, for sessions gone while the app was closed).
+- **Status log** (for a later timeline): `index.db` schema 4, `status_log (session_id, status,
+  start_ms)`; a status shorter than 2 s is merged into the next; rows older than 30 days are
+  deleted when the index opens. Every session view has `status_since_ms`.
+- **UI**: the Board layout (`layout_set { mode: "board" }`, beside Overview), scoped by the rail
+  tab; a group's Board goes along with the group tear-off ("Own window" → `group_tear_off`).
+  Columns Backlog | Working | Needs you | Review | Idle | Done; drag a backlog card onto an agent
+  card → a confirm with the exact prompt → `task_assign`; Review task cards have Accept / Reopen;
+  an idle agent card has "+ task" (`task_new`, then `task_assign`); a task card's context menu
+  cancels or deletes (with a confirm).
+
 ## Exposing CSM to Claude sessions
 
 Opt-in (Settings → MCP → "Offer CodeShellManager's tools to Claude sessions", default off): a
@@ -285,24 +328,24 @@ launches the Claude session itself).
 
 What `csm mcp` costs a client in context, from `cargo xtask mcp-size` (the real `McpService` over
 an in-process engine; tokens are bytes / 4, an estimate good enough to compare toolsets).
-Measured on 2026-11-20 after the Beta.1 merges (usage, broadcast and snapshot tools; 101 engine
-tools; the app's own `pane_*` tools are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
+Measured on 2026-11-20 after the Board merge (the `tasks` toolset; 112 engine tools; the app's own `pane_*` tools are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
 `core` small: it is what every client pays on every conversation.
 
 | toolset | tools | bytes | est. tokens |
 |---|---|---|---|
-| base (core + toolset tools) | 26 | 20518 | ~5129 |
+| base (core + toolset tools) | 26 | 20543 | ~5135 |
 | + groups | 19 | 11434 | ~2858 |
-| + layout | 9 | 6133 | ~1533 |
+| + layout | 9 | 6197 | ~1549 |
 | + runs | 5 | 3069 | ~767 |
 | + git | 9 | 6312 | ~1578 |
 | + notes | 3 | 2142 | ~535 |
 | + search | 3 | 2395 | ~598 |
 | + app | 27 | 18679 | ~4669 |
-| everything enabled | 101 | 70682 | ~17670 |
+| + tasks | 11 | 7639 | ~1909 |
+| everything enabled | 112 | 78410 | ~19602 |
 
 Progressive disclosure is worth about 3x here: a client that only needs sessions pays ~5.1k
-tokens instead of ~17.7k.
+tokens instead of ~19.6k.
 
 ## Repository checks (`cargo xtask`)
 
@@ -318,7 +361,7 @@ below must match the registry: run `cargo xtask tools` after adding a tool), `se
 
 <!-- xtask:tools:begin (generated by `cargo xtask tools`; do not edit by hand) -->
 
-### Engine registry (101 tools)
+### Engine registry (112 tools)
 
 Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the person's consent.
 
@@ -369,7 +412,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `view_get` | layout | read | no | The group view (rail, headers, flat), the rail tab, the focused session, the inspector and the inbox panel. |
 | `view_set` | layout | ui | no | Switch the group view (rail, headers, flat) and/or the rail tab (a group id, or "all"). |
 | `layout_get` | layout | read | no | A group's layout (default: the one shown now): mode, grid size, pinned sessions. |
-| `layout_set` | layout | ui | no | Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 2x2, 3x2, 3x3, or cols x rows) or free. |
+| `layout_set` | layout | ui | no | Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 2x2, 3x2, 3x3, or cols x rows), free, or board (sessions as cards by status, beside the tasks). |
 | `layout_pin` | layout | ui | no | Pin a session into the side-by-side layout. |
 | `layout_unpin` | layout | ui | no | Remove a session from the side-by-side layout. |
 | `inspector_show` | layout | ui | no | Show the inspector on a tab (notes, runs, git, session) or hide it. |
@@ -425,5 +468,16 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `usage_context` | app | read | no | For every live Claude session: how full its context is (tokens, window, ratio, ok/warn/critical near auto-compact) and its API-equivalent cost so far. |
 | `usage_summary` | app | read | no | API-equivalent cost and tokens of Claude sessions between from and to (today, week, month, all, or a YYYY-MM-DD local date; default the last 7 days), grouped by project, session or model. Unpriced models are listed, never counted as $0. |
 | `state_snapshots` | app | read | no | The rolling snapshots of state.json (one an hour for a day, one a day for a week), newest first, with their files and the folder. To go back to one, quit the app and copy it over state.json. |
+| `task_list` | tasks | read | no | The Board's tasks: id, project, title, state (backlog, assigned, review, done, cancelled), assignee, progress. An agent sees its own project's; filter by project, state or assignee. Done and cancelled ones only with include_closed. |
+| `task_get` | tasks | read | no | One task in full, with its body. |
+| `task_new` | tasks | state | no | Add a task to a project's backlog: a title (at most 200 characters) and an optional body (at most 16 KiB). An agent's task goes to its own project; the person names a project or a session_id whose project it is. |
+| `task_update` | tasks | state | no | Change a task's title, body, progress note or order, or cancel it (the person only). An agent may update only the tasks assigned to itself. |
+| `task_claim` | tasks | state | no | Take an unassigned backlog task: an agent claims it for itself; the person names the session_id. Nothing is sent to the session. |
+| `task_done` | tasks | state | no | The assignee says the task is done: it moves to Review, where the person accepts or reopens it. An optional note says what was done. |
+| `task_handoff` | tasks | state | no | Give an assigned task back to the backlog, unassigned, with an optional note (why, and how far it got). |
+| `task_assign` | tasks | state, input | asks | Assign a task to a session in its project and (send, default true) paste "Task <id> from <creator>: <title>" and the body into it with Enter, as session_send_text does: refused when the session is asleep, starting, exited or working mid-turn (unless force), and for the caller's own session. force also takes a task from another assignee. |
+| `task_accept` | tasks | state | no | Accept a task in Review: it is Done. The person only (the app or the CLI), never over MCP. |
+| `task_reopen` | tasks | state | no | Send a task in Review (or Done, or Cancelled) back: to its assignee when it has one, else to the backlog, with an optional note. The person only, never over MCP. |
+| `task_delete` | tasks | state, discard | asks | Delete a task for good. |
 
 <!-- xtask:tools:end -->

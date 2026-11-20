@@ -170,6 +170,8 @@ pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<
                 }
             }
         }
+        // The Board draws cards, not panes (`screens::board`).
+        LayoutMode::Board => {}
     }
     for (id, _, o) in &mut out {
         o.active = model.active.as_deref() == Some(id.as_str());
@@ -265,6 +267,13 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     if model.sessions.is_empty() {
         first_run(ui, &model, inner, actions);
+        return;
+    }
+    // The Board draws cards instead of panes.
+    if layout.mode == LayoutMode::Board {
+        let backend = &app.backend;
+        let last = |id: &str| backend.terminal(id).and_then(|src| super::board::screen_line(src.as_ref()));
+        super::board::show(ui, inner, &model, &scope, &last, actions);
         return;
     }
     // Minimized panes get a strip under the canvas, a chip each.
@@ -719,6 +728,10 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             if n == 0 { "split tree".into() } else { format!("split tree · {n} floating") }
         }
         LayoutMode::Focus => "one pane".into(),
+        LayoutMode::Board => {
+            let open = super::board::plan(&model, &scope).columns.iter().flatten().filter(|c| matches!(c, super::board::Card::Task(t) if t.state.is_open())).count();
+            format!("{live} live · {open} open tasks")
+        }
     };
     let cy = rect.center().y;
     let nr = ui.painter().text(pos2(rect.min.x + space::MD, cy), Align2::LEFT_CENTER, model.scope_name(&scope), semibold(text::EMPH), t.fg);
@@ -775,6 +788,20 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             ui.scope_builder(UiBuilder::new().max_rect(r), |ui| widgets::button(ui, ButtonKind::Ghost, Some("panelR"), "Inspector", None)).inner;
         if resp.clicked() {
             actions.push(Action::Tool("inspector_show", json!({"tab": "notes"})));
+        }
+    }
+    // A group's Board can live in its own window (the group tear-off).
+    if layout.mode == LayoutMode::Board
+        && let Scope::Group(g) = &scope
+    {
+        let label = "Own window";
+        let w = widgets::text_width(ui, label, theme::medium(text::BODY)) + icon::LG + space::ROW_X * 2.0 + space::XS + space::XXS;
+        let r = Rect::from_min_size(pos2(end - w, cy - size::CONTROL / 2.0), vec2(w, size::CONTROL));
+        if r.min.x > seg.max.x + space::MD {
+            let resp = ui.scope_builder(UiBuilder::new().max_rect(r), |ui| widgets::button(ui, ButtonKind::Ghost, Some("tear"), label, None)).inner;
+            if resp.on_hover_text("Move this group, and its Board, into its own window").clicked() {
+                actions.push(Action::Tool("group_tear_off", json!({"group_id": g})));
+            }
         }
     }
     if layout.mode == LayoutMode::Free {
@@ -1428,6 +1455,12 @@ fn group_window(
     let area = Rect::from_min_max(pos2(rect.min.x, bar.max.y), rect.max);
     ui.painter().rect_filled(area, 0.0, t.crust);
     let inner = area.shrink(space::PANE_GAP);
+    // A group whose layout is the Board takes its Board along.
+    if model.layout(&scope).mode == LayoutMode::Board {
+        let last = |id: &str| sources.get(id).and_then(|src| super::board::screen_line(src.as_ref()));
+        super::board::show(ui, inner, model, &scope, &last, out);
+        return;
+    }
     let (cols, rows, _) = side_tiling(live.len());
     for (s, r) in live.iter().zip(grid_cells(inner, cols, rows, space::PANE_GAP)) {
         let o = PaneOpts { torn: true, active: model.active.as_deref() == Some(s.id.as_str()), ..PaneOpts::default() };

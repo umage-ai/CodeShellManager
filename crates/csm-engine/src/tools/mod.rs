@@ -15,6 +15,7 @@ mod search;
 mod sessions;
 mod slash;
 mod snapshots;
+mod tasks;
 mod usage;
 
 use serde_json::Value;
@@ -40,12 +41,13 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(backup::specs());
     v.extend(usage::specs());
     v.extend(snapshots::specs());
+    v.extend(tasks::specs());
     v
 }
 
 /// Rules that hold whatever the person would answer, checked before a consent card is shown
 /// (and again after it is answered).
-pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, _state: &State) -> Option<ToolError> {
+pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, state: &State) -> Option<ToolError> {
     if matches!(id, "session_send_text" | "session_send_command")
         && let Caller::External { session_id: Some(own), .. } = caller
         && params.get("session_id").and_then(Value::as_str) == Some(own.as_str())
@@ -53,6 +55,11 @@ pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, _state: &State
         return Some(ToolError::Refused("a session cannot send input to itself; that would be an agent typing into its own prompt".into()));
     }
     if let Some(e) = backup::precheck(id, caller) {
+        return Some(e);
+    }
+    if id.starts_with("task_")
+        && let Some(e) = tasks::precheck(id, caller, params, state)
+    {
         return Some(e);
     }
     None

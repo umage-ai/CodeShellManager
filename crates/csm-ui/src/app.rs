@@ -86,6 +86,11 @@ pub enum Action {
     SelectToggle(SessionId),
     SelectRange(SessionId),
     ClearSelection,
+    /// The Board's "New task" prompt for a project; `assign_to`: then assign it to that session
+    /// and send it (an idle card's "+ task").
+    NewTaskPrompt { project: String, assign_to: Option<SessionId> },
+    /// The prompt was answered: `task_new`, then (`assign_to`) `task_assign` once it is made.
+    NewTask { project: String, title: String, assign_to: Option<SessionId> },
 }
 
 /// Which popup menu is open.
@@ -372,6 +377,8 @@ pub enum PromptKind {
     NewGroup,
     /// Text to paste into every live session of the group.
     Broadcast(GroupId),
+    /// A new Board task in this project (and, `assign_to`, sent to that session).
+    NewTask { project: String, assign_to: Option<SessionId> },
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +457,9 @@ pub struct UiState {
     pub dialog_request: Option<DialogRequest>,
     /// The Recent menu's selected row (Enter picks it).
     pub recent_sel: usize,
+    /// `task_new` calls whose task is to be assigned (and sent) to a session once it exists:
+    /// (the call's params, the session).
+    pub pending_assign: Vec<(Value, SessionId)>,
 }
 
 /// A native dialog the UI asks the host for. The answer comes back on a later frame; the frame
@@ -611,6 +621,17 @@ impl CsmApp {
     /// Replies the app itself follows (before the backend sees them): the settings page's values,
     /// the live prefs, the edit panel's fields, and "Restart now?" after an edit.
     fn on_app_reply(&mut self, ctx: &egui::Context, call: &Call, reply: &csm_engine::Reply) {
+        // "+ task" on an idle card: once the task exists, assign it and send it.
+        if call.id == "task_new"
+            && let Some(i) = self.ui.pending_assign.iter().position(|(p, _)| *p == call.params)
+        {
+            let (_, sid) = self.ui.pending_assign.remove(i);
+            if let Ok(out) = reply
+                && let Some(id) = out.data["id"].as_str()
+            {
+                self.dispatch.submit("task_assign", json!({"task_id": id, "session_id": sid, "send": true}));
+            }
+        }
         let out = match reply {
             Ok(out) => out,
             Err(_) => {
@@ -965,6 +986,19 @@ impl CsmApp {
                 self.ui.submenu = None;
                 self.ui.prompt = Some(PromptState { kind: PromptKind::Broadcast(g), text: String::new(), focus: true });
                 self.ui.overlay = Overlay::Prompt;
+            }
+            Action::NewTaskPrompt { project, assign_to } => {
+                self.ui.menu = None;
+                self.ui.submenu = None;
+                self.ui.prompt = Some(PromptState { kind: PromptKind::NewTask { project, assign_to }, text: String::new(), focus: true });
+                self.ui.overlay = Overlay::Prompt;
+            }
+            Action::NewTask { project, title, assign_to } => {
+                let params = json!({"project": project, "title": title});
+                if let Some(sid) = assign_to {
+                    self.ui.pending_assign.push((params.clone(), sid));
+                }
+                self.dispatch.submit("task_new", params);
             }
             Action::CopyText(t) => {
                 self.ui.menu = None;

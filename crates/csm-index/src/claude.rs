@@ -581,7 +581,7 @@ mod tests {
             c.pragma_update(None, "user_version", 2).unwrap();
         }
         let mut db = Db::open(Some(&p)).unwrap();
-        assert_eq!(db.schema_version(), 3);
+        assert_eq!(db.schema_version(), crate::SCHEMA_VERSION);
         db.claude_ingest(&ClaudeIngest { file: file("/t/a.jsonl", "s1", 1), ..ClaudeIngest::default() }, &price).unwrap();
         let notes: i64 = db.conn.query_row("SELECT COUNT(*) FROM project_notes", [], |r| r.get(0)).unwrap();
         assert_eq!(notes, 1);

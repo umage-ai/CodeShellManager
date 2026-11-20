@@ -346,6 +346,7 @@ pub fn layout_mode_from_core(m: CoreMode) -> LayoutMode {
         CoreMode::Overview => LayoutMode::Overview,
         CoreMode::Grid => LayoutMode::Grid,
         CoreMode::Free => LayoutMode::Free,
+        CoreMode::Board => LayoutMode::Board,
     }
 }
 
@@ -356,6 +357,7 @@ pub fn layout_mode_to_core(m: LayoutMode) -> CoreMode {
         LayoutMode::Overview => CoreMode::Overview,
         LayoutMode::Grid => CoreMode::Grid,
         LayoutMode::Free => CoreMode::Free,
+        LayoutMode::Board => CoreMode::Board,
     }
 }
 
@@ -428,7 +430,10 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         status: status_from_engine(s.status),
         progress: s.progress,
         detail: s.status_message.clone().unwrap_or_default(),
-        status_since_ms: s.inbox_since_ms.and_then(|t| u64::try_from(t).ok()),
+        status_since_ms: s.status_since_ms.and_then(|t| u64::try_from(t).ok()),
+        inbox_since_ms: s.inbox_since_ms.and_then(|t| u64::try_from(t).ok()),
+        project: s.project.clone(),
+        project_name: s.project_name.clone(),
         accent: accent_from_hex(&s.accent),
         accent_overridden: s.accent_override,
         parent: None,
@@ -609,6 +614,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
             .iter()
             .map(|c| ClosedSessionView { name: c.name.clone(), subtitle: c.subtitle.clone(), command: c.command.clone() })
             .collect(),
+        tasks: view.tasks.clone(),
         sessions,
         groups,
     }

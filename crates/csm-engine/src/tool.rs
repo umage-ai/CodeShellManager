@@ -85,11 +85,22 @@ pub enum Toolset {
     Notes,
     Search,
     App,
+    /// The Board's tasks: list, create, claim, update, finish, hand off, assign.
+    Tasks,
 }
 
 impl Toolset {
-    pub const ALL: [Toolset; 8] =
-        [Toolset::Core, Toolset::Groups, Toolset::Layout, Toolset::Runs, Toolset::Git, Toolset::Notes, Toolset::Search, Toolset::App];
+    pub const ALL: [Toolset; 9] = [
+        Toolset::Core,
+        Toolset::Groups,
+        Toolset::Layout,
+        Toolset::Runs,
+        Toolset::Git,
+        Toolset::Notes,
+        Toolset::Search,
+        Toolset::App,
+        Toolset::Tasks,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -101,6 +112,7 @@ impl Toolset {
             Toolset::Notes => "notes",
             Toolset::Search => "search",
             Toolset::App => "app",
+            Toolset::Tasks => "tasks",
         }
     }
 
@@ -118,6 +130,7 @@ impl Toolset {
             Toolset::Notes => "Notes",
             Toolset::Search => "Search",
             Toolset::App => "App and settings",
+            Toolset::Tasks => "Tasks (the Board)",
         }
     }
 }

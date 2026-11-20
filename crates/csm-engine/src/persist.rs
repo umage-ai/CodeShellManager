@@ -300,6 +300,40 @@ pub fn keep_unreadable(path: &Path, source: state::LoadSource, now_ms: i64) -> V
     out
 }
 
+// ── tasks.json (the Board) ──────────────────────────────────────────────────────────────
+
+/// The Board's task file, beside `state.json`.
+pub const TASKS_FILE: &str = "tasks.json";
+
+/// `<folder of state.json>/tasks.json`.
+pub fn tasks_path(state_path: &Path) -> PathBuf {
+    state_path.parent().unwrap_or_else(|| Path::new("")).join(TASKS_FILE)
+}
+
+/// Reads `tasks.json` (primary, then `.bak`; never fails) and keeps an unreadable file aside
+/// as `state.json` does, so the next save can't overwrite it. Start-up only (file I/O).
+pub fn load_tasks(path: &Path, now_ms: i64) -> csm_core::tasks::TaskFile {
+    use csm_core::tasks::TaskFile;
+    let primary = read_text(path);
+    let backup = read_text(&backup_path(path));
+    let parse = |t: &Option<String>| t.as_deref().map(TaskFile::parse);
+    let (file, source) = match (parse(&primary), parse(&backup)) {
+        (None, None) => (TaskFile::default(), state::LoadSource::FirstRun),
+        (Some(Ok(f)), _) => (f, state::LoadSource::Primary),
+        (_, Some(Ok(f))) => (f, state::LoadSource::Backup),
+        _ => (TaskFile::default(), state::LoadSource::Unreadable),
+    };
+    match source {
+        state::LoadSource::Backup => log::warn!("tasks: {} unreadable, recovered from the backup", path.display()),
+        state::LoadSource::Unreadable => log::error!("tasks: neither {} nor its backup could be read; starting empty", path.display()),
+        _ => {}
+    }
+    for f in keep_unreadable(path, source, now_ms) {
+        log::warn!("tasks: the unreadable file was kept as {}", f.display());
+    }
+    file
+}
+
 /// One background thread that writes the newest state it was given. Saves are serialised (the
 /// WPF app's `SemaphoreSlim`): overlapping saves would race on the shared `.tmp`.
 pub(crate) struct Saver {
@@ -309,19 +343,31 @@ pub(crate) struct Saver {
 
 impl Saver {
     pub(crate) fn start(path: PathBuf) -> Option<Saver> {
+        Self::start_with(path, true, "csm-state-saver")
+    }
+
+    /// A saver for another file beside the state (`tasks.json`): the same atomic write and `.bak`,
+    /// without the rolling snapshots (`snapshots` is the state file's own).
+    pub(crate) fn start_plain(path: PathBuf, thread_name: &str) -> Option<Saver> {
+        Self::start_with(path, false, thread_name)
+    }
+
+    fn start_with(path: PathBuf, snapshots: bool, thread_name: &str) -> Option<Saver> {
         let (tx, rx) = mpsc::channel::<String>();
         let p = path;
-        let spawned = thread::Builder::new().name("csm-state-saver".into()).spawn(move || {
+        let spawned = thread::Builder::new().name(thread_name.into()).spawn(move || {
             while let Ok(mut text) = rx.recv() {
                 // Coalesce: only the newest pending state matters.
                 while let Ok(newer) = rx.try_recv() {
                     text = newer;
                 }
                 // The Saver only exists when state is saved at all (never `--clean` or isolated).
-                match snapshot_outgoing(&p, crate::session::now_ms()) {
-                    Ok(Some(s)) => log::info!("state: snapshot {}", s.display()),
-                    Ok(None) => {}
-                    Err(e) => log::warn!("state: snapshot of {} failed: {e}", p.display()),
+                if snapshots {
+                    match snapshot_outgoing(&p, crate::session::now_ms()) {
+                        Ok(Some(s)) => log::info!("state: snapshot {}", s.display()),
+                        Ok(None) => {}
+                        Err(e) => log::warn!("state: snapshot of {} failed: {e}", p.display()),
+                    }
                 }
                 if let Err(e) = write_atomic(&p, &text) {
                     log::error!("state: save to {} failed: {e}", p.display());

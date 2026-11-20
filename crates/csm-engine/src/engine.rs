@@ -463,7 +463,7 @@ fn builtin_specs() -> Vec<ToolSpec> {
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 #[serde(default, deny_unknown_fields)]
 struct ToolListParams {
-    /// Only this toolset (`core`, `groups`, `layout`, `runs`, `git`, `notes`, `search`, `app`).
+    /// Only this toolset (`core`, `groups`, `layout`, `runs`, `git`, `notes`, `search`, `app`, `tasks`).
     toolset: Option<String>,
 }
 

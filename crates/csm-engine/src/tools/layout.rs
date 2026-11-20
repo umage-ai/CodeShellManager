@@ -40,7 +40,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "layout_set",
             "Change layout…",
-            "Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 2x2, 3x2, 3x3, or cols x rows) or free.",
+            "Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 2x2, 3x2, 3x3, or cols x rows), free, or board (sessions as cards by status, beside the tasks).",
             Effects::UI,
             schema_of::<LayoutSetParams>,
             layout_set,
@@ -117,6 +117,7 @@ enum ModeParam {
     Overview,
     Grid,
     Free,
+    Board,
 }
 
 impl From<ModeParam> for LayoutMode {
@@ -127,6 +128,7 @@ impl From<ModeParam> for LayoutMode {
             ModeParam::Overview => LayoutMode::Overview,
             ModeParam::Grid => LayoutMode::Grid,
             ModeParam::Free => LayoutMode::Free,
+            ModeParam::Board => LayoutMode::Board,
         }
     }
 }

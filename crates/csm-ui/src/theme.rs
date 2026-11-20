@@ -366,6 +366,9 @@ pub mod size {
     pub const RECENT_W: f32 = 400.0;
     pub const DIALOG_W: f32 = 500.0;
     pub const BOARD_W: f32 = 560.0;
+    /// The Board layout: narrowest column, and one line of a card.
+    pub const BOARD_COLUMN_MIN: f32 = 168.0;
+    pub const BOARD_LINE: f32 = 18.0;
     pub const CONSENT_W: f32 = 380.0;
     pub const TOAST_MAX_W: f32 = 620.0;
     pub const INBOX_DEFAULT_H: f32 = 206.0;

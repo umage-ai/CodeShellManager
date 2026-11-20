@@ -199,6 +199,15 @@ pub(crate) struct Runtime {
     pub git: crate::tools::git::GitRt,
     /// The Claude transcript reader (usage tools), when the run has an index and roots.
     pub usage: Option<crate::usage_tail::UsageTail>,
+    /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
+    pub tasks: csm_core::tasks::TaskFile,
+    pub tasks_saver: Option<persist::Saver>,
+    pub tasks_save_due: Option<Instant>,
+    /// Bumped on every change to `tasks`; the snapshot shares `tasks_view` until it moves.
+    pub tasks_gen: u64,
+    pub tasks_view: Option<(u64, Arc<Vec<csm_core::tasks::Task>>)>,
+    /// Each session's status and when it entered it (epoch ms): `status_since_ms`, the status log.
+    pub status_since: HashMap<String, (crate::status::Status, i64)>,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].
@@ -239,6 +248,15 @@ impl State {
             && let Some(path) = &options.save_path
         {
             rt.saver = persist::Saver::start(path.clone());
+            let tasks = persist::tasks_path(path);
+            rt.tasks = persist::load_tasks(&tasks, crate::session::now_ms());
+            rt.tasks_saver = persist::Saver::start_plain(tasks, "csm-tasks-saver");
+            // Tasks of sessions that are gone (closed while the app was not running) go back.
+            let gone: HashSet<String> =
+                rt.tasks.tasks.iter().filter_map(|t| t.assignee.clone()).filter(|a| !app.sessions.iter().any(|s| &s.id == a)).collect();
+            for g in gone {
+                rt.tasks.release_session(&g, crate::session::now_ms());
+            }
         }
         State { app, rt, options }
     }
@@ -280,6 +298,15 @@ impl State {
     /// Mark the snapshot stale (it is rebuilt and republished after the current step).
     pub fn touch(&mut self) {
         self.rt.dirty = true;
+    }
+
+    /// Mark the snapshot stale and schedule a debounced save of `tasks.json`.
+    pub(crate) fn persist_tasks(&mut self) {
+        self.rt.dirty = true;
+        self.rt.tasks_gen = self.rt.tasks_gen.wrapping_add(1);
+        if self.rt.tasks_save_due.is_none() {
+            self.rt.tasks_save_due = Some(Instant::now() + self.options.save_debounce);
+        }
     }
 
     /// Mark the snapshot stale and schedule a debounced save.
