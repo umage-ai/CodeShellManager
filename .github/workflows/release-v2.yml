@@ -1,0 +1,182 @@
+name: Release (v2 beta)
+
+# CodeShellManager 2: build, sign and package the Rust app.
+#
+#   - A `v2.*` tag (e.g. v2.0.0-beta.1) on the v2 branch: signed exes, a signed MSI and a
+#     portable zip, published as a GitHub PRE-release. Tags are created by hand, and only when
+#     Allan says so (see CLAUDE.md, "Releases").
+#   - workflow_dispatch: a dry run. Same build and packaging, unsigned, uploaded as a workflow
+#     artifact; no release is created. Use it to check the packaging before tagging.
+#
+# The WPF app's CI / Release (build.yml on main) also matches `v*.*.*` tags, but a tag runs the
+# workflow files of the commit it points at, and the v2 branch has no build.yml.
+#
+# Betas go to GitHub only: nothing here submits to winget or Chocolatey.
+#
+# A copy of this file sits on main (the WPF line) only because GitHub dispatches a workflow
+# only if it exists on the default branch. Run it with `--ref v2`; the job refuses any other ref.
+#
+# Signing uses the repo's Azure Trusted Signing secrets (same as the WPF release):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+#   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
+
+on:
+  push:
+    tags: ['v2.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the GitHub Release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    # Only the v2 branch or a v2.* tag holds the Rust app (main is the WPF app).
+    if: github.ref == 'refs/heads/v2' || startsWith(github.ref, 'refs/tags/v2.')
+    runs-on: windows-latest
+    env:
+      HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' }}
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ── Versions ────────────────────────────────────────────────────────────
+      # semver (Cargo, file names): 2.0.0-beta.3
+      # MSI ProductVersion must be numeric: 2.0.0.3 (beta.N -> N, rc.N -> 100+N, final -> 1000).
+      # MSI compares only the first three fields, so MajorUpgrade allows same-version upgrades.
+      - name: Versions
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:IS_TAG -eq 'true') { $semver = '${{ github.ref_name }}'.TrimStart('v') }
+          else { $semver = "2.0.0-dev.${{ github.run_number }}" }
+          if ($semver -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-(beta|rc|dev)\.(\d+))?$') {
+            throw "Tag version '$semver' is not MAJOR.MINOR.PATCH[-beta.N|-rc.N]"
+          }
+          $base = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          $n = switch ($Matches[4]) { 'beta' { [int]$Matches[5] } 'rc' { 100 + [int]$Matches[5] } 'dev' { 0 } default { 1000 } }
+          "semver=$semver"      | Out-File $env:GITHUB_OUTPUT -Append
+          "msi=$base.$n"        | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "semver $semver, MSI $base.$n"
+
+      # The exe reports the release's version (About, `csm app-info`).
+      - name: Stamp the workspace version
+        shell: pwsh
+        run: |
+          $toml = Get-Content Cargo.toml -Raw
+          $new = [regex]::Replace($toml, '(?m)^version = "[^"]*"', 'version = "${{ steps.ver.outputs.semver }}"', 1)
+          if ($new -eq $toml) { throw 'workspace version line not found in Cargo.toml' }
+          Set-Content Cargo.toml $new -NoNewline
+
+      - name: Bundled ConPTY
+        shell: pwsh
+        run: ./scripts/get-conpty.ps1
+
+      - name: Build
+        run: cargo build --release -p codeshell -p csm-cli
+
+      # ── Stage the files the MSI and the zip ship ─────────────────────────────
+      - name: Stage
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force publish, dist | Out-Null
+          foreach ($f in 'codeshell.exe', 'csm.exe', 'conpty.dll', 'OpenConsole.exe') {
+            $p = "target/release/$f"
+            if (-not (Test-Path $p)) { throw "missing from the build: $f" }
+            Copy-Item $p publish/
+          }
+          # The bundled ConPTY must be Microsoft's, unmodified (it is never re-signed by us).
+          foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+            $sig = Get-AuthenticodeSignature "publish/$f"
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') {
+              throw "Bundled ConPTY file $f is not validly Microsoft-signed ($($sig.Status))."
+            }
+          }
+          # Every staged file must be in the installer (a file left out ships only in the zip).
+          $wxs = Get-Content installer/CodeShellManager2.wxs -Raw
+          foreach ($f in 'codeshell.exe', 'csm.exe', 'conpty.dll', 'OpenConsole.exe', 'codeshell.aumid') {
+            if ($wxs -notmatch [regex]::Escape("`$(var.PublishDir)\$f")) { throw "installer/CodeShellManager2.wxs does not install $f" }
+          }
+
+      # OUR exes only, by name: publish/ also holds Microsoft's OpenConsole.exe and conpty.dll.
+      - name: Sign executables (Azure Trusted Signing)
+        if: env.IS_TAG == 'true' && env.HAS_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\publish\codeshell.exe,${{ github.workspace }}\publish\csm.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # ── Portable zip (no codeshell.aumid: a portable copy has no Start-menu shortcut) ──
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish\* -DestinationPath "dist/CodeShellManager-${{ steps.ver.outputs.semver }}-win-x64.zip"
+
+      # ── MSI ─────────────────────────────────────────────────────────────────
+      - name: Install WiX toolset v4 (last open-source release)
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version "4.0.5"
+          wix extension add --global WixToolset.UI.wixext/4.0.5
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          # Must match AppUserModelId in the .wxs.
+          Set-Content publish/codeshell.aumid 'UmageAI.CodeShellManager.Beta' -NoNewline
+          wix build installer/CodeShellManager2.wxs `
+            -d Version=${{ steps.ver.outputs.msi }} `
+            -d PublishDir=publish `
+            -ext WixToolset.UI.wixext `
+            -arch x64 `
+            -o "dist/CodeShellManager-${{ steps.ver.outputs.semver }}-Setup.msi"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: env.IS_TAG == 'true' && env.HAS_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # ── Publish ─────────────────────────────────────────────────────────────
+      - name: Upload packages (dry run)
+        if: env.IS_TAG != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeshellmanager-${{ steps.ver.outputs.semver }}
+          path: dist/*
+
+      - name: Create GitHub pre-release
+        if: env.IS_TAG == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          name: CodeShellManager ${{ steps.ver.outputs.semver }}
+          generate_release_notes: true
+          files: |
+            dist/*.msi
+            dist/*.zip
