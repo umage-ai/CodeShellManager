@@ -19,7 +19,7 @@ use crate::status::{Status, WaitUntil};
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 
 /// Longest text `session_send_text` accepts (1 MiB).
-const MAX_SEND_BYTES: usize = 1 << 20;
+pub(super) const MAX_SEND_BYTES: usize = 1 << 20;
 const MAX_NAME: usize = 200;
 /// `session_wait` upper bound.
 const MAX_WAIT_S: u64 = 600;
@@ -755,9 +755,20 @@ fn session_send_text(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if p.text.len() > MAX_SEND_BYTES {
         return Err(ToolError::InvalidParams("the text is longer than 1 MiB".into()));
     }
-    let i = find(ctx.state, &p.session_id)?;
+    let name = paste_into(ctx, &p.session_id, &p.text, p.submit, p.force)?;
+    Ok(ToolOutput::new(
+        format!("Sent {} characters to {name}{}.", p.text.chars().count(), if p.submit { " and pressed Enter" } else { "" }),
+        json!({"session_id": p.session_id}),
+    ))
+}
+
+/// Pastes `text` into one live session (bracketed paste; `submit` presses Enter after it, as its
+/// own write) and returns the session's name. Refuses an asleep, starting or exited session, and
+/// one that is mid-turn unless `force`. The caller checks the size and the self rule.
+pub(super) fn paste_into(ctx: &mut Ctx<'_>, session_id: &str, text: &str, submit: bool, force: bool) -> Result<String, ToolError> {
+    let i = find(ctx.state, session_id)?;
     let asleep = ctx.state.app.sessions.get(i).is_some_and(|s| s.is_dormant);
-    let Some(rt) = ctx.state.rt.sessions.get(&p.session_id).filter(|_| !asleep) else {
+    let Some(rt) = ctx.state.rt.sessions.get(session_id).filter(|_| !asleep) else {
         return Err(ToolError::Refused("the session is asleep; wake it first".into()));
     };
     match rt.phase {
@@ -769,18 +780,18 @@ fn session_send_text(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     let s = ctx.state.app.sessions.get(i).ok_or_else(|| ToolError::NotFound("gone".into()))?;
     let view = snapshot::session_view(ctx.state, s);
-    if view.status.is_mid_turn() && !p.force {
+    if view.status.is_mid_turn() && !force {
         return Err(ToolError::Refused(format!(
             "{} is working mid-turn; input now would land in the middle of it. Wait (session_wait until idle) or pass force: true.",
             view.name
         )));
     }
     let io = rt.io.clone();
-    let bytes = input::paste(Untrusted(&p.text), io.mode());
+    let bytes = input::paste(Untrusted(text), io.mode());
     if !io.write(&bytes) {
         return Err(ToolError::Failed("the session is not accepting input".into()));
     }
-    if p.submit {
+    if submit {
         // Enter is its own write, after the paste, so it submits rather than becoming pasted text.
         let spawned = std::thread::Builder::new().name("csm-submit".into()).spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
@@ -790,10 +801,7 @@ fn session_send_text(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             return Err(ToolError::Failed("could not send Enter".into()));
         }
     }
-    Ok(ToolOutput::new(
-        format!("Sent {} characters to {}{}.", p.text.chars().count(), view.name, if p.submit { " and pressed Enter" } else { "" }),
-        json!({"session_id": p.session_id}),
-    ))
+    Ok(view.name)
 }
 
 fn terminal_of(ctx: &Ctx<'_>, id: &str) -> Result<std::sync::Arc<crate::session::SessionIo>, ToolError> {

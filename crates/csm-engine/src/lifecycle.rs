@@ -411,7 +411,9 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
         return;
     }
     rt.io.spawn_requested.store(true, Ordering::Release);
-    let Some(session) = state.app.sessions.iter().find(|s| s.id == id).cloned() else { return };
+    let Some(session) = state.app.sessions.iter().find(|s| s.id == id) else { return };
+    // `--name '<session name>'` for Claude (#76, opt-in): on the copy that is launched only.
+    let session = if state.app.settings.pass_session_name_to_claude { crate::launch::with_claude_name(session) } else { session.clone() };
     let size = {
         let mut first = rt.io.first_size.lock().unwrap_or_else(PoisonError::into_inner);
         *first.get_or_insert_with(|| {

@@ -81,6 +81,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             schema_of::<MoveManyParams>,
             session_move_many,
         ),
+        g(
+            "session_send_text_many",
+            "Send text to several sessions…",
+            "Paste the same text into every live session of a group (group_id) or into the given sessions (session_ids), as session_send_text does for one: bracketed paste, submit: true presses Enter after it. Asleep, starting and exited sessions, sessions working mid-turn (unless force) and the caller's own session are skipped and listed.",
+            Effects::SENDS_INPUT,
+            schema_of::<SendManyParams>,
+            session_send_text_many,
+        ),
     ]
 }
 
@@ -396,4 +404,85 @@ fn session_duplicate(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     ctx.state.persist();
     Ok(ToolOutput::new(format!("Duplicated {} as {name}.", parent.name), json!({"session_id": id, "name": name, "after": p.session_id})))
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SendManyParams {
+    /// Every session of this group (as `group_list` gives its id). Give this or `session_ids`.
+    #[serde(default)]
+    group_id: Option<String>,
+    /// These sessions. Give this or `group_id`.
+    #[serde(default)]
+    session_ids: Option<Vec<String>>,
+    /// Pasted as-is into each (bracketed paste); control characters other than tab and newline
+    /// are removed.
+    text: String,
+    /// Press Enter after the text in each (sent separately).
+    #[serde(default)]
+    submit: bool,
+    /// Send even to sessions that are working mid-turn (otherwise they are skipped).
+    #[serde(default)]
+    force: bool,
+}
+
+/// #59, "Send to all sessions…" on a group: the same text pasted into each live session, one
+/// [`super::sessions::paste_into`] each (so every rule of `session_send_text` holds per session).
+/// Sessions that are asleep, starting, exited or mid-turn, and the caller's own session, are
+/// skipped and listed with the reason; the rest still get the text.
+fn session_send_text_many(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: SendManyParams = parse_params(params)?;
+    if p.text.len() > super::sessions::MAX_SEND_BYTES {
+        return Err(ToolError::InvalidParams("the text is longer than 1 MiB".into()));
+    }
+    if p.text.is_empty() && !p.submit {
+        return Err(ToolError::InvalidParams("`text` is empty and `submit` is false: nothing to send".into()));
+    }
+    let (ids, scope) = match (&p.group_id, &p.session_ids) {
+        (Some(g), None) => {
+            let gi = find_group(ctx.state, g)?;
+            let name = ctx.state.app.groups.get(gi).map(|x| x.name.clone()).unwrap_or_default();
+            let ids: Vec<String> = ctx.state.app.sessions.iter().filter(|s| s.group_id == *g).map(|s| s.id.clone()).collect();
+            (ids, name)
+        }
+        (None, Some(list)) => (resolve(ctx, list)?, String::new()),
+        _ => return Err(ToolError::InvalidParams("give either `group_id` or `session_ids`".into())),
+    };
+    let own = match ctx.caller {
+        crate::tool::Caller::External { session_id: Some(own), .. } => Some(own.clone()),
+        _ => None,
+    };
+    let mut sent = Vec::new();
+    let mut skipped = Vec::new();
+    for id in &ids {
+        if own.as_deref() == Some(id.as_str()) {
+            skipped.push(json!({"session_id": id, "reason": "the caller's own session"}));
+            continue;
+        }
+        match super::sessions::paste_into(ctx, id, &p.text, p.submit, p.force) {
+            Ok(_) => sent.push(id.clone()),
+            Err(e) => skipped.push(json!({"session_id": id, "reason": e.to_string()})),
+        }
+    }
+    let target = if scope.is_empty() { String::new() } else { format!(" in {scope}") };
+    let message = match (sent.len(), skipped.len()) {
+        (0, 0) => format!("No sessions{target} to send to."),
+        (0, k) => format!("Sent to none of the {k} sessions{target}: none could take input now."),
+        (n, 0) => format!("Sent to {n} sessions{target}{}.", if p.submit { " and pressed Enter" } else { "" }),
+        (n, k) => format!("Sent to {n} sessions{target}; skipped {k} (asleep, starting or busy)."),
+    };
+    Ok(ToolOutput::new(message, json!({"sent": sent, "skipped": skipped})))
+}
+
+#[cfg(test)]
+mod send_many_tests {
+    use super::*;
+
+    #[test]
+    fn the_params_take_a_group_or_ids_and_nothing_else() {
+        let schema = schema_of::<SendManyParams>();
+        let required: Vec<&str> = schema["required"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert_eq!(required, ["text"]);
+        assert!(parse_params::<SendManyParams>(json!({"group_id": "g", "text": "x", "extra": 1})).is_err());
+    }
 }

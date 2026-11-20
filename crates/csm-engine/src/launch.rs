@@ -66,6 +66,47 @@ pub fn is_safe_resume_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
+/// Longest session name passed to `claude --name`.
+const MAX_CLAUDE_NAME: usize = 80;
+
+/// A session name made safe to put on the shell payload as `'<name>'`: letters and digits of any
+/// script, spaces, and `-_.,:()[]#+@&=~`. Everything else (quotes of every kind, which PowerShell
+/// also reads as string ends, backslashes, `$`, `` ` ``, control characters) becomes a space;
+/// runs of spaces collapse, leading dashes go (so it can't read as an option), and it is capped
+/// at [`MAX_CLAUDE_NAME`] characters. `None` when nothing is left.
+pub fn safe_claude_name(name: &str) -> Option<String> {
+    const EXTRA: &str = " -_.,:()[]#+@&=~";
+    let kept: String = name.chars().map(|c| if c.is_alphanumeric() || EXTRA.contains(c) { c } else { ' ' }).collect();
+    let words: Vec<&str> = kept.split(' ').filter(|w| !w.is_empty()).collect();
+    let joined = words.join(" ");
+    let trimmed = joined.trim_start_matches(['-', ' ']);
+    let capped: String = trimmed.chars().take(MAX_CLAUDE_NAME).collect();
+    let capped = capped.trim_end().to_owned();
+    (!capped.is_empty()).then_some(capped)
+}
+
+/// The user already passes a name (`--name x`, `--name=x`, `-n x`).
+fn has_name_flag(args: &str) -> bool {
+    args.split_whitespace().any(|w| w == "-n" || w == "--name" || w.starts_with("--name="))
+}
+
+/// Settings › General "Name Claude conversations after the session" (#76): a local Claude
+/// session gets `--name '<session name>'` in front of its arguments, so Claude's `/resume` list
+/// and terminal title carry the name. Not when the user's arguments already name it, and not for
+/// SSH or WSL sessions (their payload goes through another shell's quoting). The name is reduced
+/// to [`safe_claude_name`]'s alphabet and single-quoted, which both `pwsh -Command` and
+/// `sh -c` read literally.
+pub fn with_claude_name(s: &ShellSession) -> ShellSession {
+    let mut c = s.clone();
+    if s.kind != SessionKind::Local || !is_claude_command(&s.command) || has_name_flag(&s.args) || has_name_flag(&s.command) {
+        return c;
+    }
+    let Some(name) = safe_claude_name(&s.name) else { return c };
+    let arg = format!("--name '{name}'");
+    c.args = if c.args.trim().is_empty() { arg } else { format!("{arg} {}", c.args.trim()) };
+    c
+}
+
 const PASSTHROUGH_SHELLS: [&str; 10] = ["cmd", "powershell", "pwsh", "wsl", "bash", "zsh", "sh", "ssh", "nu", "fish"];
 
 fn is_passthrough_shell(command: &str) -> bool {
@@ -495,5 +536,62 @@ mod mcp_offer_tests {
         let p = resolve(&s, false, Some(&offer)).unwrap();
         assert!(!p.argv.join(" ").contains("--mcp-config"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod claude_name_tests {
+    use super::*;
+
+    fn claude(name: &str, args: &str) -> ShellSession {
+        ShellSession { id: "s1".into(), name: name.into(), command: "claude".into(), args: args.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn names_keep_letters_and_lose_shell_syntax() {
+        assert_eq!(safe_claude_name("api (prod) #2").as_deref(), Some("api (prod) #2"));
+        assert_eq!(safe_claude_name("Æblegrød – ünïcode").as_deref(), Some("Æblegrød ünïcode"));
+        // Quotes of every kind (PowerShell ends a '…' string at ‘ ’ ‚ ‛ too), `$`, backtick, `;`.
+        assert_eq!(safe_claude_name("it's ‘x’ $(calc) `y`; z").as_deref(), Some("it s x (calc) y z"));
+        assert_eq!(safe_claude_name("a\"b\\c\nd").as_deref(), Some("a b c d"));
+        // Never an option, never empty, capped.
+        assert_eq!(safe_claude_name("--resume x").as_deref(), Some("resume x"));
+        assert_eq!(safe_claude_name("'\"$"), None);
+        assert_eq!(safe_claude_name(&"x".repeat(200)).map(|s| s.len()), Some(MAX_CLAUDE_NAME));
+    }
+
+    #[test]
+    fn a_local_claude_session_gets_its_name_in_front_of_its_args() {
+        assert_eq!(with_claude_name(&claude("My repo", "")).args, "--name 'My repo'");
+        assert_eq!(with_claude_name(&claude("My repo", "--model opus")).args, "--name 'My repo' --model opus");
+    }
+
+    #[test]
+    fn a_name_the_user_passes_wins_and_other_sessions_are_left_alone() {
+        for args in ["-n mine", "--name mine", "--name=mine"] {
+            assert_eq!(with_claude_name(&claude("My repo", args)).args, args);
+        }
+        let shell = ShellSession { command: "pwsh".into(), ..claude("My repo", "") };
+        assert_eq!(with_claude_name(&shell).args, "");
+        let ssh = ShellSession { kind: SessionKind::Ssh, ..claude("My repo", "") };
+        assert_eq!(with_claude_name(&ssh).args, "");
+        assert_eq!(with_claude_name(&claude("'''", "")).args, "", "nothing safe left: no flag");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn the_argv_on_windows_carries_the_quoted_name_to_powershell() {
+        let s = with_claude_name(&ShellSession { working_folder: r"C:\src".into(), ..claude("My repo", "--model opus") });
+        let p = plan(&s, Some("0b1c-22"), "pwsh.exe", "/bin/sh").unwrap();
+        // pwsh joins the words after -Command with spaces: `claude --resume … --name 'My repo' …`.
+        assert_eq!(p.argv, ["pwsh.exe", "-NoExit", "-Command", "claude", "--resume", "0b1c-22", "--name", "'My", "repo'", "--model", "opus"]);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn the_argv_on_unix_is_one_shell_payload_with_the_quoted_name() {
+        let s = with_claude_name(&ShellSession { working_folder: "/src".into(), ..claude("My repo", "--model opus") });
+        let p = plan(&s, Some("0b1c-22"), "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(p.argv, ["/bin/sh", "-l", "-i", "-c", "claude --resume 0b1c-22 --name 'My repo' --model opus"]);
     }
 }

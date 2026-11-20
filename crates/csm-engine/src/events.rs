@@ -56,6 +56,12 @@ pub enum Event {
     /// Send a sample OS notification now, whatever the notification settings say
     /// (`notification_test`).
     NotificationTestRequested,
+    /// `settings_set` saved a setting (from any caller), so a window can follow settings it
+    /// applies live (the UI zoom, close to tray) when the CLI or an MCP client changes them.
+    SettingChanged {
+        key: String,
+        value: Value,
+    },
 }
 
 /// Fan-out to any number of subscribers; a dropped receiver is pruned on the next emit.
