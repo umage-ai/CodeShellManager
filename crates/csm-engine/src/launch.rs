@@ -1,0 +1,499 @@
+//! Turning a session into argv. Never a command line built by interpolation: every value goes
+//! through the `csm-services` builders (MSVCRT quoting, the WSL `-e` / SSH single-argument
+//! rules) and is split back into argv elements, which `csm-pty` quotes again for CreateProcess.
+//!
+//! The only shell payload is the user's own command (`pwsh -NoExit -Command <command> <args>`
+//! on Windows, `$SHELL -l -i -c` elsewhere), exactly as the WPF app runs it, so profile functions
+//! (`claudelocal`) resolve as bare commands. Anything the app adds to that payload (a
+//! `--resume <id>`) is validated to a strict alphabet first.
+//!
+//! [`plan`] is pure. [`resolve`] does the I/O (Claude resume lookup, pwsh location, folder
+//! check) and must run on a worker thread.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use csm_core::models::{SessionKind, ShellSession};
+use csm_services::argv::split_command_line;
+use csm_services::launch::{self as sl, LaunchSpec};
+
+use crate::{proc, which, wsl_probe};
+
+/// `ClaudeSessionService.IsClaudeCommand`.
+pub fn is_claude_command(command: &str) -> bool {
+    let c = command.trim();
+    c.eq_ignore_ascii_case("claude") || c.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("claude "))
+}
+
+/// What to start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub argv: Vec<String>,
+    /// `None`: the user's home folder.
+    pub cwd: Option<PathBuf>,
+    pub is_claude: bool,
+    /// `PATH` for the child: the app's own plus the folders installers use, so `claude` resolves
+    /// when the app was started from Explorer or the Dock with a short `PATH`. `None` leaves it.
+    pub path: Option<OsString>,
+}
+
+fn spec_of(s: &ShellSession, wsl_shell: Option<&str>) -> LaunchSpec {
+    LaunchSpec {
+        kind: match s.kind {
+            SessionKind::Local => sl::SessionKind::Local,
+            SessionKind::Ssh => sl::SessionKind::Ssh,
+            SessionKind::Wsl => sl::SessionKind::Wsl,
+        },
+        command: s.command.clone(),
+        args: s.args.clone(),
+        working_folder: s.working_folder.clone(),
+        ssh_user: s.ssh_user.clone(),
+        ssh_host: s.ssh_host.clone(),
+        ssh_port: s.ssh_port,
+        ssh_remote_folder: s.ssh_remote_folder.clone(),
+        wsl_distro: s.wsl_distro.clone(),
+        wsl_user: s.wsl_user.clone(),
+        wsl_working_folder: s.wsl_working_folder.clone(),
+        resolved_wsl_shell: wsl_shell.map(str::to_owned),
+    }
+}
+
+/// A Claude conversation id we are willing to put on a command line: what Claude names its
+/// `.jsonl` files (a UUID), nothing a shell could read as syntax.
+pub fn is_safe_resume_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+const PASSTHROUGH_SHELLS: [&str; 10] = ["cmd", "powershell", "pwsh", "wsl", "bash", "zsh", "sh", "ssh", "nu", "fish"];
+
+fn is_passthrough_shell(command: &str) -> bool {
+    let leaf = csm_core::models::get_file_name(command.trim());
+    let stem = leaf.rsplit_once('.').map_or(leaf, |(s, _)| s).to_ascii_lowercase();
+    PASSTHROUGH_SHELLS.contains(&stem.as_str())
+}
+
+/// The argv for a session. `resume_id` is appended as `--resume <id>` (validated);
+/// `wrapper` is the PowerShell that hosts non-shell commands on Windows; `unix_shell` is the
+/// login shell elsewhere.
+pub fn plan(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell: &str) -> Result<Plan, String> {
+    plan_with(s, resume_id, wrapper, unix_shell, None)
+}
+
+/// [`plan`] with the WSL login shell the distro probe found (`ResolvedWslShell`; `bash` when
+/// `None`).
+pub fn plan_with(s: &ShellSession, resume_id: Option<&str>, wrapper: &str, unix_shell: &str, wsl_shell: Option<&str>) -> Result<Plan, String> {
+    let is_claude = is_claude_command(&s.command);
+    if let Some(msg) = s.launch_validation_error() {
+        return Err(msg.to_owned());
+    }
+    let argv = match s.kind {
+        SessionKind::Local => {
+            let command = s.command.trim();
+            if command.is_empty() {
+                return Err("This session has no command. Edit the session and set one.".into());
+            }
+            let mut args = s.args.trim().to_owned();
+            if let Some(id) = resume_id.filter(|id| is_safe_resume_id(id)) {
+                args = if args.is_empty() { format!("--resume {id}") } else { format!("--resume {id} {args}") };
+            }
+            let full = if args.is_empty() { command.to_owned() } else { format!("{command} {args}") };
+            if cfg!(windows) {
+                split_command_line(&sl::build_cmd_line(command, &full, wrapper))
+            } else if is_passthrough_shell(command) {
+                // POSIX words, not the Windows MSVCRT rules: `sh -c 'echo hi'` must reach sh as
+                // three arguments. Windows splitting ignores single quotes, so on Unix a quoted
+                // argument used to arrive in pieces ("Unterminated quoted string").
+                shlex::split(&full).ok_or_else(|| format!("The command line has an unbalanced quote: {full}"))?
+            } else {
+                vec![unix_shell.to_owned(), "-l".into(), "-i".into(), "-c".into(), full]
+            }
+        }
+        SessionKind::Ssh => {
+            let args = sl::build_ssh_args(&spec_of(s, None)).map_err(|e| e.to_string())?;
+            std::iter::once("ssh".to_owned()).chain(split_command_line(&args)).collect()
+        }
+        SessionKind::Wsl => {
+            if !cfg!(windows) {
+                return Err("WSL sessions run on Windows only.".into());
+            }
+            let args = sl::build_wsl_args(&spec_of(s, wsl_shell), None).map_err(|e| e.to_string())?;
+            std::iter::once("wsl.exe".to_owned()).chain(split_command_line(&args)).collect()
+        }
+    };
+    if argv.first().is_none_or(|a| a.trim().is_empty()) {
+        return Err("Nothing to run: the command is empty.".into());
+    }
+    let cwd = match s.kind {
+        SessionKind::Local if !s.working_folder.trim().is_empty() => Some(PathBuf::from(s.working_folder.trim())),
+        _ => None,
+    };
+    Ok(Plan { argv, cwd, is_claude, path: None })
+}
+
+/// [`plan`] plus its I/O: the Claude resume lookup (only when `resume` is set), the PowerShell
+/// to wrap with, and a folder that no longer exists falling back to home (the WPF rule).
+/// Blocking; worker threads only.
+pub fn resolve(s: &ShellSession, resume: bool, mcp: Option<&McpOffer>) -> Result<Plan, String> {
+    // "Offer CodeShellManager's tools to Claude sessions" (Settings → MCP, off by default): a local
+    // Claude session gets `--mcp-config <file>` pointing at `csm mcp --session <id>`, so its calls
+    // carry the session id and the consent card can say "Claude in <name> wants to…".
+    let with_mcp;
+    let s = match mcp.filter(|_| s.kind == SessionKind::Local && is_claude_command(&s.command) && !s.args.contains("--mcp-config")) {
+        Some(offer) => match offer.write_config(&s.id) {
+            Ok(arg) => {
+                let mut c = s.clone();
+                c.args = if c.args.trim().is_empty() { arg } else { format!("{arg} {}", c.args.trim()) };
+                with_mcp = c;
+                &with_mcp
+            }
+            Err(e) => {
+                log::warn!("not offering CodeShellManager's MCP tools to '{}': {e}", s.working_folder);
+                s
+            }
+        },
+        None => s,
+    };
+    let resume_id = if resume
+        && s.kind == SessionKind::Local
+        && is_claude_command(&s.command)
+        && !s.args.contains("--resume")
+        && !s.args.contains("--continue")
+    {
+        let id = last_claude_session_id(s.working_folder.trim(), &claude_home());
+        match &id {
+            Some(id) => log::info!("auto-resume: --resume {id} for claude in '{}'", s.working_folder),
+            None => log::info!("auto-resume: no prior conversation in '{}', starting fresh", s.working_folder),
+        }
+        id
+    } else {
+        None
+    };
+    let wrapper = if cfg!(windows) { pwsh() } else { "pwsh.exe" };
+    let unix_shell = std::env::var("SHELL").ok().filter(|v| v.starts_with('/')).unwrap_or_else(|| "/bin/sh".into());
+    let mut p = if s.kind == SessionKind::Wsl {
+        let wsl = wsl_session(s)?;
+        let shell = wsl_probe::login_shell(&wsl.wsl_distro, &wsl.wsl_user);
+        plan_with(&wsl, resume_id.as_deref(), wrapper, &unix_shell, Some(&shell))?
+    } else {
+        plan(s, resume_id.as_deref(), wrapper, &unix_shell)?
+    };
+    p.path = which::search_path();
+    if s.kind == SessionKind::Local && !is_passthrough_shell(&s.command) && which::which(first_word(&s.command)).is_none() {
+        log::warn!("`{}` was not found on PATH or in the usual install folders; the shell may not find it either", first_word(&s.command));
+    }
+    if p.cwd.as_deref().is_some_and(|c| !c.is_dir()) {
+        log::warn!("session folder '{}' does not exist; starting in home", s.working_folder);
+        p.cwd = None;
+    }
+    if p.cwd.is_none() {
+        p.cwd = dirs::home_dir();
+    }
+    Ok(p)
+}
+
+fn first_word(command: &str) -> &str {
+    command.split_whitespace().next().unwrap_or("")
+}
+
+/// The WSL session with its Linux folder made concrete (`WslDiscoveryService` rules): blank or
+/// `~` stays blank, which `build_wsl_args` turns into an unquoted `--cd ~` (quoting it would make
+/// a folder literally called `~`); `~/x` becomes `$HOME/x`, because wsl.exe expands only the bare
+/// `~` token and would treat `~/x` as a Windows path. Blocking: probes `$HOME` when it needs it.
+fn wsl_session(s: &ShellSession) -> Result<ShellSession, String> {
+    let mut out = s.clone();
+    let folder = s.wsl_working_folder.trim();
+    out.wsl_working_folder = if folder == "~" {
+        String::new()
+    } else if let Some(rest) = folder.strip_prefix("~/") {
+        let home = wsl_probe::home(&s.wsl_distro, &s.wsl_user).ok_or_else(|| {
+            format!(
+                "Could not find the home folder in WSL distro `{}` (is it starting?). Try again, or edit the session and type the full Linux path.",
+                s.wsl_distro.trim()
+            )
+        })?;
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    } else {
+        folder.to_owned()
+    };
+    Ok(out)
+}
+
+/// `CLAUDE_CONFIG_DIR`, else `~/.claude` (a stale `~/.claude` must not win over the env var).
+fn claude_home() -> PathBuf {
+    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => dirs::home_dir().unwrap_or_default().join(".claude"),
+    }
+}
+
+/// The newest conversation for `folder` under `<claude home>/projects/<folder as dashes>/`.
+pub fn last_claude_session_id(folder: &str, claude_home: &Path) -> Option<String> {
+    if folder.is_empty() {
+        return None;
+    }
+    let dir_name: String = folder.chars().map(|c| if matches!(c, ':' | '\\' | '/') { '-' } else { c }).collect();
+    let dir = claude_home.join("projects").join(dir_name);
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            let stem = e.path().file_stem()?.to_str()?.to_owned();
+            is_safe_resume_id(&stem).then_some((modified, stem))
+        })
+        .max_by_key(|(m, _)| *m)
+        .map(|(_, s)| s)
+}
+
+/// `pwsh.exe` when it is on PATH and actually runs, else `powershell.exe` (`PwshLocator`).
+/// Resolved once per run.
+pub(crate) fn pwsh() -> &'static str {
+    static PWSH: OnceLock<&'static str> = OnceLock::new();
+    PWSH.get_or_init(|| {
+        let where_exe = std::env::var_os("SystemRoot")
+            .map(|r| PathBuf::from(r).join("System32").join("where.exe"))
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\where.exe"));
+        let out = proc::capture_ok(where_exe, ["pwsh.exe"], Duration::from_secs(3));
+        let choice = sl::choose_pwsh(out.as_deref(), &FsProbe);
+        log::info!("session wrapper shell: {choice}");
+        choice
+    })
+}
+
+struct FsProbe;
+
+impl sl::RunnableProbe for FsProbe {
+    fn metadata(&self, path: &str) -> Option<sl::FileMeta> {
+        let m = std::fs::symlink_metadata(path).ok()?;
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            m.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = m.file_type().is_symlink();
+        Some(sl::FileMeta { len: m.len(), is_reparse_point: reparse })
+    }
+
+    fn can_execute(&self, path: &str) -> bool {
+        proc::capture_ok(path, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], Duration::from_secs(5)).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local(command: &str, args: &str) -> ShellSession {
+        ShellSession { id: "s".into(), command: command.into(), args: args.into(), working_folder: r"C:\src\a b".into(), ..Default::default() }
+    }
+
+    fn wsl(folder: &str) -> ShellSession {
+        ShellSession {
+            id: "w".into(),
+            kind: SessionKind::Wsl,
+            wsl_distro: "Ubuntu".into(),
+            wsl_working_folder: folder.into(),
+            command: "claude".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn wsl_blank_and_tilde_folders_mean_home_unquoted() {
+        for folder in ["", "  ", "~"] {
+            let p = plan_with(&wsl_session_no_probe(folder), None, "pwsh.exe", "/bin/sh", Some("sh")).unwrap();
+            let at = p.argv.iter().position(|a| a == "--cd").unwrap();
+            assert_eq!(p.argv[at + 1], "~", "{folder:?} -> {:?}", p.argv);
+        }
+        let p = plan_with(&wsl("/home/a b"), None, "pwsh.exe", "/bin/sh", Some("sh")).unwrap();
+        assert_eq!(p.argv[0], "wsl.exe");
+        assert!(p.argv.windows(2).any(|w| w == ["-e", "sh"]), "the probed shell is the login shell: {:?}", p.argv);
+        assert!(p.argv.contains(&"/home/a b".to_owned()));
+        let p = plan_with(&wsl("/x"), None, "pwsh.exe", "/bin/sh", None).unwrap();
+        assert!(p.argv.windows(2).any(|w| w == ["-e", "bash"]), "{:?}", p.argv);
+    }
+
+    /// What `wsl_session` does to a folder that needs no probe.
+    #[cfg(windows)]
+    fn wsl_session_no_probe(folder: &str) -> ShellSession {
+        wsl_session(&wsl(folder)).unwrap()
+    }
+
+    #[test]
+    fn wsl_tilde_folders_are_normalised_without_a_probe_when_bare() {
+        assert_eq!(wsl_session(&wsl("~")).unwrap().wsl_working_folder, "");
+        assert_eq!(wsl_session(&wsl("/srv/x")).unwrap().wsl_working_folder, "/srv/x");
+        // `~/x` needs `$HOME`: without a probe result it is an error, never a literal `~/x`.
+        if !cfg!(windows) {
+            assert!(wsl_session(&wsl("~/proj")).is_err());
+        }
+    }
+
+    #[test]
+    fn claude_detection() {
+        assert!(is_claude_command("claude"));
+        assert!(is_claude_command("Claude --x"));
+        assert!(!is_claude_command("claudex"));
+        assert!(!is_claude_command("pwsh"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn local_commands_are_wrapped_and_shells_pass_through() {
+        let p = plan(&local("claude", "--model \"a b\""), Some("0b1c-22"), "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(p.argv, ["pwsh.exe", "-NoExit", "-Command", "claude", "--resume", "0b1c-22", "--model", "a b"]);
+        assert!(p.is_claude);
+        assert_eq!(p.cwd.as_deref(), Some(Path::new(r"C:\src\a b")));
+        let p = plan(&local("cmd", "/c echo hi"), None, "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(p.argv, ["cmd", "/c", "echo", "hi"]);
+    }
+
+    #[test]
+    fn a_hostile_resume_id_is_never_added() {
+        let p = plan(&local("claude", ""), Some("x; calc"), "pwsh.exe", "/bin/sh").unwrap();
+        assert!(!p.argv.iter().any(|a| a.contains("calc")), "{:?}", p.argv);
+    }
+
+    #[test]
+    fn ssh_values_stay_single_arguments() {
+        let s = ShellSession {
+            id: "s".into(),
+            kind: SessionKind::Ssh,
+            ssh_host: "dev.example.com".into(),
+            ssh_user: "alice".into(),
+            ssh_remote_folder: "/srv/a\" -oProxyCommand=calc".into(),
+            command: "bash".into(),
+            ..Default::default()
+        };
+        let p = plan(&s, None, "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(p.argv.first().map(String::as_str), Some("ssh"));
+        assert!(p.argv.contains(&"alice@dev.example.com".to_owned()), "{:?}", p.argv);
+        // The hostile folder stays inside the one remote-command argument.
+        assert!(!p.argv.iter().any(|a| a.starts_with("-oProxyCommand")), "{:?}", p.argv);
+        assert_eq!(p.cwd, None);
+        let bad = ShellSession { kind: SessionKind::Ssh, ..Default::default() };
+        assert!(plan(&bad, None, "pwsh.exe", "/bin/sh").is_err());
+    }
+
+    #[test]
+    fn resume_lookup_takes_the_newest_safe_jsonl() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("projects").join("C--src-x");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("older-1.jsonl"), "").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(dir.join("newer-2.jsonl"), "").unwrap();
+        std::fs::write(dir.join("not a uuid.jsonl"), "").unwrap();
+        let id = last_claude_session_id(r"C:\src\x", home.path());
+        assert!(matches!(id.as_deref(), Some("newer-2") | Some("older-1")), "{id:?}");
+        assert_eq!(last_claude_session_id(r"C:\nowhere", home.path()), None);
+    }
+}
+
+/// Where a Claude session's MCP config is written, and the `csm` binary it points at.
+#[derive(Debug, Clone)]
+pub struct McpOffer {
+    pub dir: PathBuf,
+    pub csm: PathBuf,
+}
+
+impl McpOffer {
+    /// The `csm` beside the running app, if it is there (a dev build or test binary has none).
+    pub fn beside_app(dir: PathBuf) -> Option<McpOffer> {
+        let exe = std::env::current_exe().ok()?;
+        let csm = exe.parent()?.join(if cfg!(windows) { "csm.exe" } else { "csm" });
+        csm.is_file().then_some(McpOffer { dir, csm })
+    }
+
+    /// Writes `<dir>/mcp-<id>.json` and returns the `--mcp-config '<path>'` argument. Worker only.
+    fn write_config(&self, session_id: &str) -> Result<String, String> {
+        let (json, file) = mcp_config(&self.csm, session_id, &self.dir)?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("could not create {}: {e}", self.dir.display()))?;
+        std::fs::write(&file, json).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+        mcp_config_arg(&file)
+    }
+}
+
+/// The config JSON and its file name for one session. The session id becomes part of a file name
+/// and an argv element, so only `[A-Za-z0-9_-]` is accepted.
+fn mcp_config(csm: &std::path::Path, session_id: &str, dir: &std::path::Path) -> Result<(String, PathBuf), String> {
+    if session_id.is_empty() || !session_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(format!("unexpected session id `{session_id}`"));
+    }
+    let json = serde_json::json!({
+        "mcpServers": { "codeshell": { "command": csm.to_string_lossy(), "args": ["mcp", "--session", session_id] } }
+    });
+    Ok((json.to_string(), dir.join(format!("mcp-{session_id}.json"))))
+}
+
+/// `--mcp-config '<path>'`. The arguments reach claude through `pwsh -Command` (Windows) or
+/// `sh -c` (Unix); single quotes are literal in both, so a path containing one is refused rather
+/// than escaped.
+fn mcp_config_arg(file: &std::path::Path) -> Result<String, String> {
+    let p = file.to_string_lossy();
+    if p.contains('\'') || p.chars().any(char::is_control) {
+        return Err(format!("the config path can't be passed safely: {p}"));
+    }
+    Ok(format!("--mcp-config '{p}'"))
+}
+
+#[cfg(test)]
+mod posix_split_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_session_on_unix_keeps_quoted_arguments_whole() {
+        if cfg!(windows) {
+            return;
+        }
+        let s = ShellSession { id: "a".into(), command: "sh".into(), args: "-c 'echo hi from csm'".into(), ..Default::default() };
+        let p = plan(&s, None, "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(p.argv, vec!["sh", "-c", "echo hi from csm"]);
+        let bad = ShellSession { args: "-c 'echo hi".into(), ..s };
+        assert!(plan(&bad, None, "pwsh.exe", "/bin/sh").unwrap_err().contains("unbalanced quote"));
+    }
+}
+
+#[cfg(test)]
+mod mcp_offer_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn config_points_at_csm_mcp_with_the_session() {
+        let (json, file) = mcp_config(Path::new("C:/apps/csm.exe"), "abc-123", Path::new("C:/state")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["mcpServers"]["codeshell"]["args"], serde_json::json!(["mcp", "--session", "abc-123"]));
+        assert_eq!(v["mcpServers"]["codeshell"]["command"], "C:/apps/csm.exe");
+        assert!(file.ends_with("mcp-abc-123.json"));
+    }
+
+    #[test]
+    fn hostile_ids_and_paths_are_refused() {
+        for id in ["", "a b", "a;b", "../x", "a'b", "$(id)"] {
+            assert!(mcp_config(Path::new("csm"), id, Path::new("d")).is_err(), "{id}");
+        }
+        assert!(mcp_config_arg(Path::new("C:/it's/mcp.json")).is_err());
+        assert_eq!(mcp_config_arg(Path::new("C:/a b/mcp.json")).unwrap(), "--mcp-config 'C:/a b/mcp.json'");
+    }
+
+    #[test]
+    fn only_local_claude_sessions_get_the_offer() {
+        let dir = std::env::temp_dir().join(format!("csm-mcp-offer-{}", std::process::id()));
+        let offer = McpOffer { dir: dir.clone(), csm: PathBuf::from("csm") };
+        let mut s =
+            ShellSession { id: "s1".into(), command: "claude".into(), working_folder: dir.to_string_lossy().into_owned(), ..Default::default() };
+        let p = resolve(&s, false, Some(&offer)).unwrap();
+        assert!(p.argv.join(" ").contains("--mcp-config"), "{:?}", p.argv);
+        assert!(dir.join("mcp-s1.json").is_file());
+        s.command = "pwsh".into();
+        let p = resolve(&s, false, Some(&offer)).unwrap();
+        assert!(!p.argv.join(" ").contains("--mcp-config"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

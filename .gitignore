@@ -1,6 +1,9 @@
+/target
+**/*.rs.bk
+*.log
+/scratch
+/.conpty
+/dist
+/publish
 .vs/
-bin/
-obj/
-*.user
-*.suo
 .claude/

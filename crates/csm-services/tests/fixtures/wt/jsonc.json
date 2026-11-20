@@ -1,0 +1,30 @@
+// Windows Terminal writes JSON with comments; users add trailing commas.
+{
+    "$schema": "https://aka.ms/terminal-profiles-schema",
+    /* block comment with "quotes" and a // inside */
+    "profiles": {
+        "defaults": {
+            "font": { "face": "Cascadia Mono", "weight": 600, "features": { "calt": 0, }, },
+            "cursorShape": "emptyBox",
+            "opacity": 85,
+        },
+        "list": [
+            {
+                "name": "Dev // shell", // a comment after a value
+                "commandline": "%SystemRoot%\\System32\\cmd.exe /k \"echo hi\"",
+                "startingDirectory": "~\\src",
+                "colorScheme": "campbell",
+                "padding": "4, 8",
+                "useAcrylic": true,
+                "opacity": 0.75,
+            },
+            {
+                "name": "Legacy font keys",
+                "fontFace": "Consolas",
+                "fontSize": 14,
+                "colorScheme": "No Such Scheme",
+                "padding": "8, 8, 8",
+            },
+        ],
+    },
+}

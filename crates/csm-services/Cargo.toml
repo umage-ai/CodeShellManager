@@ -1,0 +1,32 @@
+[package]
+name = "csm-services"
+description = "CodeShellManager services: argv quoting, git parsing, Open-with rules (pure parts first)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Test helper only: prints its argv so tests can compare a real process's view of a command
+# line with our quoting. Not shipped; see tests/real_process_argv.rs.
+[[bin]]
+name = "csm-argv-echo"
+path = "src/bin/csm-argv-echo.rs"
+test = false
+doc = false
+
+[dependencies]
+# vswhere's JSON (Open with detection).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+notify = "8"
+
+[dev-dependencies]
+tempfile = "3"

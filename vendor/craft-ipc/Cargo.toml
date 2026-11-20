@@ -1,0 +1,27 @@
+# Vendored from https://github.com/storytold/craft-libs (crates/ipc) at rev
+# 692a7fe5c95947e11850eeefc4e071623d4bbf47, MIT OR Apache-2.0, with one fix applied.
+# See CSM_PATCH.md. Workspace-inherited fields are written out; dev-dependencies and tests
+# are left out (the upstream crate carries them).
+[package]
+name = "craft-ipc"
+description = "Local-socket control server, client and discovery for Craft apps on one machine: token auth, launch on demand, focus hand-off. Native only."
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/storytold/craft-libs"
+publish = false
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+getrandom = "0.2.15"
+interprocess = "=2.4.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1"

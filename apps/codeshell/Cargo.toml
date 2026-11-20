@@ -1,0 +1,40 @@
+[package]
+name = "codeshell"
+description = "CodeShellManager desktop app"
+build = "build.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csm-core = { path = "../../crates/csm-core" }
+csm-ui = { path = "../../crates/csm-ui" }
+csm-engine = { path = "../../crates/csm-engine" }
+csm-mcp = { path = "../../crates/csm-mcp" }
+csm-pty = { path = "../../crates/csm-pty" }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
+# Native folder dialogs that never block the event loop (the quick-open's Browse…). egui-free,
+# at the one craft-libs pin (docs/plan.md section 7).
+craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "692a7fe5c95947e11850eeefc4e071623d4bbf47" }
+egui = "0.36"
+# eframe's own winit (same version; no features of its own): the event loop is run here so the
+# monitor list can be read from it, which only an active winit event loop can do.
+winit = { version = "0.30", default-features = false }
+log = "0.4"
+serde_json = "1"
+
+# The tray icon (Windows, macOS; a Linux tray needs a GTK main loop that eframe doesn't run) and
+# OS notifications. All MIT OR Apache-2.0.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = { version = "0.26", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8"
+
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4.19"

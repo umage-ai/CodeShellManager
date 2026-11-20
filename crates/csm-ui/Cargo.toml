@@ -1,0 +1,29 @@
+[package]
+name = "csm-ui"
+description = "The CodeShellManager desktop UI: theme, widgets, the terminal view and the screens (egui)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csm-core = { path = "../csm-core" }
+csm-pty = { path = "../csm-pty" }
+csm-term = { path = "../csm-term" }
+csm-engine = { path = "../csm-engine" }
+egui = "0.36"
+# SVG icons (the mock-up's Lucide-style set) rasterised at the on-screen size with resvg.
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+swash = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+log = "0.4"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+tempfile = "3"
