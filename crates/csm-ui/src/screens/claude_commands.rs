@@ -77,7 +77,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 .desired_width(size::FIELD_W / 2.0),
         );
         d.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "New Claude command description"));
-        add = enter || widgets::button(ui, ButtonKind::Secondary, Some("plus"), "Add", None).clicked();
+        add = enter || widgets::button(ui, ButtonKind::Secondary, Some("plus"), "Add command", None).clicked();
     });
     if add && let Some(c) = SlashCommand::clean_command(&cmd) {
         if !list.iter().any(|x| x.command == c) {
