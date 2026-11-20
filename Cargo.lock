@@ -900,6 +900,7 @@ version = "0.0.1"
 dependencies = [
  "base64",
  "regex",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -967,6 +968,7 @@ version = "0.0.1"
 dependencies = [
  "log",
  "notify",
+ "serde",
  "serde_json",
  "tempfile",
 ]
