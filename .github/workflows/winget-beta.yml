@@ -1,0 +1,56 @@
+name: Publish beta to WinGet
+
+# Submits the signed MSI from a v2 GitHub pre-release to microsoft/winget-pkgs as
+# UmageAI.CodeShellManager.Beta (beside UmageAI.CodeShellManager, the WPF 1.x package).
+#
+# DISPATCH ONLY, and only when Allan says so (CLAUDE.md, "Releases"):
+#
+#     gh workflow run winget-beta.yml --ref v2 -f tag=v2.0.0-beta.N
+#
+# FIRST SUBMISSION: winget-releaser only updates a package that already exists in
+# winget-pkgs. The very first UmageAI.CodeShellManager.Beta manifest has to be created once by
+# hand (`komac new` or `wingetcreate new` against the release's MSI URL); after that this
+# workflow updates it.
+#
+# Needs repo secret WINGET_TOKEN: a classic PAT with BOTH `public_repo` and `workflow` scopes.
+# Without `workflow` the fork sync fails with HTTP 422 and the submit then fails with a
+# misleading "CreateRef" permission error; see main's winget.yml for the whole story.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'v2 pre-release tag to publish (e.g. v2.0.0-beta.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the tag
+        run: |
+          case "${{ inputs.tag }}" in
+            v2.*) ;;
+            *) echo "::error::Only v2.* tags are published as the beta package"; exit 1 ;;
+          esac
+
+      # Not continue-on-error: a stale fork makes the submit fail with a misleading message.
+      - name: Sync umage-ai/winget-pkgs with upstream
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          gh api -X POST "repos/${{ github.repository_owner }}/winget-pkgs/merge-upstream" \
+            -f branch=master \
+            --jq '"sync: \(.merge_type) - \(.message)"'
+
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: UmageAI.CodeShellManager.Beta
+          installers-regex: '\.msi$'
+          release-tag: ${{ inputs.tag }}
+          token: ${{ secrets.WINGET_TOKEN }}

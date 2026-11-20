@@ -1,13 +1,13 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
+  - package-ecosystem: "nuget"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
     groups:
-      cargo:
+      nuget:
         patterns:
           - "*"
 

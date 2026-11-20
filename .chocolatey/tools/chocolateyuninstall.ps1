@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
 
-$packageName = 'codeshellmanager'
-$softwareName = 'CodeShellManager*'
+$packageName = 'codeshellmanager-beta'
+$softwareName = 'CodeShellManager 2 Beta*'
 
 # Discover the install record (MSI product code) registered for the
-# installed CodeShellManager.
+# installed CodeShellManager 2 Beta (never the 1.x app).
 $key = Get-UninstallRegistryKey -SoftwareName $softwareName
 
 if ($key.Count -eq 1) {

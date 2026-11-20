@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CodeShellManager 2 Beta. Installs BESIDE the WPF app (1.x): its own UpgradeCode, folder,
+     Start-menu entry and app id, so a beta never upgrades or removes the 1.x install.
+     Built by .github/workflows/release-v2.yml with -d Version=<numeric> -d PublishDir=<dir>. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <?define ProductName = "CodeShellManager 2 Beta" ?>
+  <!-- Must match the codeshell.aumid file the workflow writes into PublishDir. -->
+  <?define AppUserModelId = "UmageAI.CodeShellManager.Beta" ?>
+
+  <Package Name="$(var.ProductName)"
+           Manufacturer="umage.ai"
+           Version="$(var.Version)"
+           UpgradeCode="8B16A8B3-05F0-4048-B8DD-40B3AC84FF55"
+           Scope="perMachine">
+
+    <!-- Betas share the first three version fields (2.0.0.N) and MSI ignores the fourth, so a
+         same-version upgrade must replace the old beta rather than install a second copy. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Please uninstall it first." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="installer\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+    <ui:WixUI Id="WixUI_InstallDir" />
+    <WixVariable Id="WixUILicenseRtf"  Value="installer\License.rtf" />
+    <WixVariable Id="WixUIBannerBmp"   Value="installer\banner.bmp" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <Feature Id="ProductFeature" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+  </Package>
+
+  <!-- ── Directory layout ──────────────────────────────────────────────────── -->
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="ManufacturerFolder" Name="umage">
+        <Directory Id="INSTALLFOLDER" Name="CodeShellManager 2 Beta" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="CodeShellManager 2 Beta" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+  </Fragment>
+
+  <!-- ── Files, PATH and shortcuts ─────────────────────────────────────────── -->
+  <Fragment>
+    <ComponentGroup Id="ProductComponents">
+
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\codeshell.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- The CLI and MCP server (`csm`, `csm mcp`). Its folder goes on the system PATH so
+           `csm setup` / an agent's MCP config can name it without a full path. -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\csm.exe" KeyPath="yes" />
+        <Environment Id="PathCsm" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />
+      </Component>
+
+      <!-- Bundled ConPTY (Microsoft-signed). Both MUST sit beside codeshell.exe: csm-pty loads
+           conpty.dll by full path from the exe's folder, and conpty.dll starts OpenConsole.exe
+           from its own folder. Missing either silently falls back to the inbox ConPTY. The
+           release workflow checks these entries. -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\conpty.dll" KeyPath="yes" />
+      </Component>
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\OpenConsole.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- Tells the app which AppUserModelID its toasts go out under (apps/codeshell/src/os_notify.rs). -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\codeshell.aumid" KeyPath="yes" />
+      </Component>
+
+      <!-- Start Menu shortcut. It carries the AppUserModelID: Windows shows a toast only for an
+           id some Start-menu shortcut carries. -->
+      <Component Directory="AppMenuFolder" Guid="*">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="$(var.ProductName)"
+                  Description="Multi-terminal host for Claude Code"
+                  Target="[INSTALLFOLDER]codeshell.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="$(var.AppUserModelId)" />
+        </Shortcut>
+        <Shortcut Id="UninstallShortcut"
+                  Name="Uninstall $(var.ProductName)"
+                  Target="[SystemFolder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
+        <RemoveFolder Id="AppMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\umage\CodeShellManager2Beta"
+                       Name="StartMenu"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <Component Directory="DesktopFolder" Guid="*">
+        <Shortcut Id="DesktopShortcutLink"
+                  Name="$(var.ProductName)"
+                  Description="Multi-terminal host for Claude Code"
+                  Target="[INSTALLFOLDER]codeshell.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\umage\CodeShellManager2Beta"
+                       Name="Desktop"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>

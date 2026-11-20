@@ -1,11 +1,12 @@
 name: CI
 
-# Pushes to main and pull requests. Feature branches are merged locally first; this is the check
-# that the merge is green on all three platforms.
+# Pushes to v2 and pull requests into it (the WPF app's CI is build.yml on main). Feature
+# branches are merged locally first; this is the check that the merge is green on all three platforms.
 on:
   push:
-    branches: [main]
+    branches: [v2]
   pull_request:
+    branches: [v2]
 
 permissions:
   contents: read
