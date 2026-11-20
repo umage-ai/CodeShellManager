@@ -271,7 +271,7 @@ the stack holds.
 
 1. **Phase 0 gate with the Tauri fallback: accepted.** The gate now also covers floating panes
    and torn-off OS windows (see Phase 0).
-2. **New repository**, local commits only for now: `umage-ai/CodeShellManager-rs`. The WPF app
+2. **New repository**, local commits only for now: `umage-ai/CodeShellManager-rs`. (Superseded 2026-11-20: the rewrite now lives on the `v2` branch of `umage-ai/CodeShellManager`.) The WPF app
    stays where it is and keeps receiving fixes until cutover.
 3. **Session kinds are pluggable transports.** A `Transport` trait owns: build the launch argv,
    map paths (host ↔ session), run git there, open a folder there, and run a run-command there.

@@ -18,8 +18,8 @@ mod tray;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -319,6 +319,13 @@ fn main() {
         let theme_kind = if args.latte { ThemeKind::Latte } else { ThemeKind::Mocha };
         (engine, Mode::Demo { live: args.live, restore: args.restore, shell }, theme_kind)
     } else {
+        // The data folder was renamed for v2 (CodeShellManager-rs -> CodeShellManager2): move it
+        // once, before anything reads it. Start-up, before the UI exists, so the disk is fine here.
+        if !args.clean {
+            for line in persist::migrate_legacy_data_dirs(args.config_dir.as_deref()) {
+                log::info!("data folder: {line}");
+            }
+        }
         let options = StateOptions { save_path: persist::state_path(args.config_dir.as_deref()), clean: args.clean, ..StateOptions::production() };
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
@@ -434,5 +441,22 @@ fn main() {
         // eframe logged why (no graphics adapter, no window).
         eprintln!("eframe: the window could not be created");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod icon_file {
+    /// The exe's icon (embedded by build.rs) and the installer's shortcut icon are
+    /// `assets/codeshell.ico`, generated from the window icon's drawing. Run with
+    /// `CSM_WRITE_ICON=1` to regenerate it after changing `csm_ui::app::app_icon`.
+    #[test]
+    fn the_committed_ico_matches_the_window_icon() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("codeshell.ico");
+        let fresh = csm_ui::app::app_icon_ico();
+        if std::env::var_os("CSM_WRITE_ICON").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+        }
+        let committed = std::fs::read(&path).unwrap_or_default();
+        assert!(committed == fresh, "{} is stale: run `CSM_WRITE_ICON=1 cargo test -p codeshell icon_file`", path.display());
     }
 }

@@ -39,9 +39,12 @@ pub fn harness_wgpu_sized(app: CsmApp, ppp: f32, size: egui::Vec2) -> Harness<'s
         .build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app)
 }
 
-/// Steps until the engine has answered every submitted call (bounded).
+/// Steps until the engine has answered every submitted call, for up to 15 s. The bound is time,
+/// not a step count: a loaded CI runner (or a tool that reads the disk, like `profile_list`) can
+/// take far longer than a developer machine, and a passing run returns as soon as it's idle.
 pub fn settle(h: &mut Harness<'static, CsmApp>) {
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
         h.step();
         if !h.state().dispatch.busy() {
             h.step();
@@ -50,5 +53,5 @@ pub fn settle(h: &mut Harness<'static, CsmApp>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    panic!("the engine did not answer");
+    panic!("the engine did not answer within 15 s");
 }

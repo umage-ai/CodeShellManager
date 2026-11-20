@@ -103,9 +103,7 @@ mod imp {
             if let Err(e) = self.icon.set_tooltip(Some(csm_core::notify_rules::tray_tooltip(n))) {
                 log::warn!("tray: tooltip: {e}");
             }
-            if badge_changed
-                && let Err(e) = self.icon.set_icon(icon(n > 0))
-            {
+            if badge_changed && let Err(e) = self.icon.set_icon(icon(n > 0)) {
                 log::warn!("tray: icon: {e}");
             }
         }

@@ -22,7 +22,10 @@ pub const PORTABLE_MARKER: &str = "portable";
 /// The persisted-file version written into `state.json` (`CsmRsVersion`).
 pub const STATE_FILE_VERSION: u32 = 1;
 
-const APP_DIR: &str = "CodeShellManager-rs";
+/// The app's folder name under the platform data dirs (roaming: state; local: the index).
+pub const APP_DIR: &str = "CodeShellManager2";
+/// The folder name before the v2 move (2026-11-20); moved to [`APP_DIR`] once, on start.
+pub const LEGACY_APP_DIR: &str = "CodeShellManager-rs";
 
 /// Where the config folder is, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +37,7 @@ pub enum ConfigDir {
 
 /// The config folder, by the Craft settings-storage precedence: `--config-dir` (the caller passes
 /// it), then `CSM_CONFIG_DIR` (set but empty = isolated), then a `portable` marker beside the
-/// executable, then `<platform data dir>/CodeShellManager-rs` (never the WPF app's folder).
+/// executable, then `<platform data dir>/CodeShellManager2` (never the WPF app's folder).
 pub fn config_dir(cli_config_dir: Option<&Path>) -> ConfigDir {
     if let Some(d) = cli_config_dir {
         return ConfigDir::Dir(d.to_path_buf());
@@ -72,6 +75,41 @@ pub fn default_state_path() -> Option<PathBuf> {
 /// Where the WPF app keeps its state: `%AppData%\CodeShellManager\state.json`.
 pub fn wpf_state_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("CodeShellManager").join("state.json"))
+}
+
+/// Moves the pre-v2 data folders (`CodeShellManager-rs`, roaming and local) to `CodeShellManager2`,
+/// once: only where the old folder exists and the new one does not. Call it at start-up, before
+/// the state is loaded (not for `--clean`). It does nothing unless the state lives in the default
+/// location (no `--config-dir`, `CSM_CONFIG_DIR`, `CSM_STATE_PATH` or portable install). Returns
+/// what happened, one line per folder, for the log. Never fails: a folder that can't be moved is
+/// reported and left alone.
+pub fn migrate_legacy_data_dirs(cli_config_dir: Option<&Path>) -> Vec<String> {
+    if std::env::var_os(STATE_PATH_ENV).is_some_and(|p| !p.is_empty()) {
+        return Vec::new();
+    }
+    let Some(default) = dirs::data_dir().map(|d| d.join(APP_DIR)) else { return Vec::new() };
+    if config_dir(cli_config_dir) != ConfigDir::Dir(default) {
+        return Vec::new();
+    }
+    let mut bases: Vec<PathBuf> = [dirs::data_dir(), dirs::data_local_dir()].into_iter().flatten().collect();
+    bases.dedup();
+    migrate_legacy_in(&bases)
+}
+
+/// [`migrate_legacy_data_dirs`] over the given parent folders (tests).
+pub fn migrate_legacy_in(bases: &[PathBuf]) -> Vec<String> {
+    let mut report = Vec::new();
+    for base in bases {
+        let (old, new) = (base.join(LEGACY_APP_DIR), base.join(APP_DIR));
+        if !old.is_dir() || new.exists() {
+            continue;
+        }
+        match fs::rename(&old, &new) {
+            Ok(()) => report.push(format!("moved {} to {}", old.display(), new.display())),
+            Err(e) => report.push(format!("could not move {} to {}: {e}; it was left where it is", old.display(), new.display())),
+        }
+    }
+    report
 }
 
 pub fn backup_path(path: &Path) -> PathBuf {
@@ -177,6 +215,24 @@ mod tests {
     use super::*;
     use csm_core::models::{AppState, ShellSession};
     use csm_core::state::LoadSource;
+
+    #[test]
+    fn the_pre_v2_data_folder_moves_once_and_never_over_a_new_one() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // a: only the old folder, with a state file -> moved.
+        fs::create_dir_all(a.path().join(LEGACY_APP_DIR)).unwrap();
+        fs::write(a.path().join(LEGACY_APP_DIR).join("state.json"), "{}").unwrap();
+        // b: both exist -> the new one wins and the old one is left alone.
+        fs::create_dir_all(b.path().join(LEGACY_APP_DIR)).unwrap();
+        fs::create_dir_all(b.path().join(APP_DIR)).unwrap();
+        let report = migrate_legacy_in(&[a.path().to_path_buf(), b.path().to_path_buf()]);
+        assert_eq!(report.len(), 1, "{report:?}");
+        assert!(a.path().join(APP_DIR).join("state.json").is_file());
+        assert!(!a.path().join(LEGACY_APP_DIR).exists());
+        assert!(b.path().join(LEGACY_APP_DIR).is_dir());
+        // A second run has nothing to do.
+        assert!(migrate_legacy_in(&[a.path().to_path_buf(), b.path().to_path_buf()]).is_empty());
+    }
 
     #[test]
     fn atomic_write_keeps_a_backup_and_load_falls_back_to_it() {

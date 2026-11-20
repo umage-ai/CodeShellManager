@@ -26,9 +26,12 @@ cargo xtask ci --skip-cargo                      # layers, source policy, tool c
   a signed MSI and a portable zip. Never create a tag without Allan's say-so.
 - The MSI installs as **CodeShellManager 2 Beta** beside the WPF app (its own UpgradeCode,
   folder and Start-menu entry).
-- winget (`UmageAI.CodeShellManager.Beta`) and Chocolatey (`codeshellmanager-beta`) are
-  published only by dispatching `winget-beta.yml` / `chocolatey-beta.yml` by hand, and only when
-  Allan says so. They have no automatic trigger.
+- Betas are GitHub pre-releases only: no winget or Chocolatey beta packages (Allan's decision,
+  2026-11-20). At 2.0 final the existing packages (`codeshellmanager`, `UmageAI.CodeShellManager`)
+  are updated to 2.0, and the final MSI takes the 1.x UpgradeCode so it replaces 1.x in place.
+- A dry run (unsigned MSI and zip as a workflow artifact, no release):
+  `gh workflow run release-v2.yml --ref v2`. A copy of the workflow sits on `main` only so that
+  GitHub allows the dispatch; keep the two copies identical.
 - An MSI version must be numeric: `2.0.0-beta.N` is built as MSI version `2.0.0.N`.
 
 ## Rules (mandatory)

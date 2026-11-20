@@ -22,7 +22,7 @@
 
     <MediaTemplate EmbedCab="yes" />
 
-    <Icon Id="AppIcon" SourceFile="installer\app.ico" />
+    <Icon Id="AppIcon" SourceFile="apps\codeshell\assets\codeshell.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
 
     <ui:WixUI Id="WixUI_InstallDir" />

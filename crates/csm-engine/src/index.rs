@@ -14,7 +14,7 @@ use crate::state::StateOptions;
 
 /// The file name of the index.
 pub const INDEX_FILE: &str = "index.db";
-const APP_DIR: &str = "CodeShellManager-rs";
+use crate::persist::APP_DIR;
 
 /// How the engine gets its search index.
 #[derive(Clone, Default)]

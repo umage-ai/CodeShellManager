@@ -1674,3 +1674,56 @@ pub fn app_icon(side: u32) -> egui::IconData {
     }
     egui::IconData { rgba, width: side, height: side }
 }
+
+/// The sizes [`app_icon_ico`] holds: Explorer, the taskbar, Start and Alt+Tab pick from these.
+pub const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+
+/// [`app_icon`] as a Windows `.ico` file (one 32-bit BMP image per size in [`ICO_SIZES`]), for the
+/// exe's resource and the installer's shortcuts. `apps/codeshell/assets/codeshell.ico` is this,
+/// generated; a test there keeps the committed file in step with the drawing.
+pub fn app_icon_ico() -> Vec<u8> {
+    let images: Vec<Vec<u8>> = ICO_SIZES.iter().map(|&s| ico_bmp(&app_icon(s))).collect();
+    let mut out = Vec::new();
+    let count = u16::try_from(images.len()).unwrap_or(u16::MAX);
+    // ICONDIR: reserved, type 1 (icon), count.
+    for v in [0u16, 1, count] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut offset = 6 + 16 * images.len();
+    for (&side, img) in ICO_SIZES.iter().zip(&images) {
+        // ICONDIRENTRY: width and height (0 means 256), colours, reserved, planes, bit count,
+        // bytes in the image, offset of the image.
+        let dim = if side >= 256 { 0 } else { side as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(img.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += img.len();
+    }
+    for img in images {
+        out.extend_from_slice(&img);
+    }
+    out
+}
+
+/// One `.ico` image: a BITMAPINFOHEADER (height doubled for the mask), BGRA rows bottom-up, then
+/// an all-clear 1-bit AND mask (the alpha channel does the masking), rows padded to 4 bytes.
+fn ico_bmp(icon: &egui::IconData) -> Vec<u8> {
+    let (w, h) = (icon.width as usize, icon.height as usize);
+    let mask_row = w.div_ceil(32) * 4;
+    let mut out = Vec::with_capacity(40 + w * h * 4 + mask_row * h);
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(2 * h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&[0u8; 24]); // compression (BI_RGB), sizes, resolution, palette: all zero
+    for y in (0..h).rev() {
+        for px in icon.rgba.chunks_exact(4).skip(y * w).take(w) {
+            out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+        }
+    }
+    out.resize(out.len() + mask_row * h, 0);
+    out
+}

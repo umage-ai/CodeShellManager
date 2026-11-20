@@ -11,8 +11,10 @@ name: Release (v2 beta)
 # The WPF app's CI / Release (build.yml on main) also matches `v*.*.*` tags, but a tag runs the
 # workflow files of the commit it points at, and the v2 branch has no build.yml.
 #
-# winget and Chocolatey are separate, dispatch-only workflows (winget-beta.yml,
-# chocolatey-beta.yml): nothing here submits to a package manager.
+# Betas go to GitHub only: nothing here submits to winget or Chocolatey.
+#
+# A copy of this file sits on main (the WPF line) only because GitHub dispatches a workflow
+# only if it exists on the default branch. Run it with `--ref v2`; the job refuses any other ref.
 #
 # Signing uses the repo's Azure Trusted Signing secrets (same as the WPF release):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
@@ -31,6 +33,8 @@ env:
 
 jobs:
   release:
+    # Only the v2 branch or a v2.* tag holds the Rust app (main is the WPF app).
+    if: github.ref == 'refs/heads/v2' || startsWith(github.ref, 'refs/tags/v2.')
     runs-on: windows-latest
     env:
       HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' }}
@@ -43,7 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # ── Versions ────────────────────────────────────────────────────────────
-      # semver (Cargo, file names, Chocolatey): 2.0.0-beta.3
+      # semver (Cargo, file names): 2.0.0-beta.3
       # MSI ProductVersion must be numeric: 2.0.0.3 (beta.N -> N, rc.N -> 100+N, final -> 1000).
       # MSI compares only the first three fields, so MajorUpgrade allows same-version upgrades.
       - name: Versions

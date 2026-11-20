@@ -1,6 +1,9 @@
 //! Copies the bundled ConPTY (conpty.dll + OpenConsole.exe) beside the built executables, from
 //! `CSM_CONPTY_DIR` or `<workspace>/.conpty/<arch>/` (filled by scripts/get-conpty.ps1). Without
 //! them the app runs on the inbox ConPTY and says so in its log.
+//!
+//! On Windows it also embeds `assets/codeshell.ico` as the exe's icon. That needs the Windows
+//! SDK's rc.exe; without it the build goes on with a warning and the exe has no icon.
 
 use std::path::PathBuf;
 
@@ -9,6 +12,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    embed_icon();
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("aarch64") => "arm64",
         Ok("x86") => "x86",
@@ -34,5 +38,15 @@ fn main() {
         if !same && let Err(e) = std::fs::copy(&from, &to) {
             println!("cargo:warning=could not copy {name} to {}: {e}", to.display());
         }
+    }
+}
+
+fn embed_icon() {
+    let ico = "assets/codeshell.ico";
+    println!("cargo:rerun-if-changed={ico}");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(ico);
+    if let Err(e) = res.compile() {
+        println!("cargo:warning=the exe icon was not embedded ({e}); install the Windows SDK for rc.exe");
     }
 }

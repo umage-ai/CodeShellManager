@@ -145,6 +145,9 @@ fn ssh_and_non_repo_sessions_have_no_worktree_items() {
     assert!(calls(&h, "worktree_list").is_empty(), "no git read for an SSH session");
 }
 
+// The demo's folders are drive-letter Windows paths, which only count as absolute on
+// Windows; elsewhere the quick-open never reads their worktrees.
+#[cfg(windows)]
 fn open_quick_on_web(h: &mut Harness<'static, csm_ui::CsmApp>) {
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
@@ -157,6 +160,9 @@ fn open_quick_on_web(h: &mut Harness<'static, csm_ui::CsmApp>) {
     settle(h);
 }
 
+// The demo's folders are drive-letter Windows paths, which only count as absolute on
+// Windows; elsewhere the quick-open never reads their worktrees.
+#[cfg(windows)]
 #[test]
 fn quick_open_offers_sibling_worktrees_and_starts_the_ticked_ones_too() {
     let mut h = h();
@@ -172,6 +178,9 @@ fn quick_open_offers_sibling_worktrees_and_starts_the_ticked_ones_too() {
     assert_eq!(news[1]["focus"], false, "the primary keeps the focus");
 }
 
+// The demo's folders are drive-letter Windows paths, which only count as absolute on
+// Windows; elsewhere the quick-open never reads their worktrees.
+#[cfg(windows)]
 fn open_quick_and_check(h: &mut Harness<'static, csm_ui::CsmApp>) {
     open_quick_on_web(h);
     // The read went out by folder, once.
@@ -183,6 +192,9 @@ fn open_quick_and_check(h: &mut Harness<'static, csm_ui::CsmApp>) {
     assert_eq!(h.state().ui.quick.siblings, vec!["C:\\GitHub\\Odulodo.Web\\.worktrees\\perf-budget".to_string()]);
 }
 
+// The demo's folders are drive-letter Windows paths, which only count as absolute on
+// Windows; elsewhere the quick-open never reads their worktrees.
+#[cfg(windows)]
 #[test]
 fn ctrl_enter_starts_the_ticked_siblings_once() {
     let mut h = h();
@@ -198,6 +210,9 @@ fn ctrl_enter_starts_the_ticked_siblings_once() {
     assert_eq!(news[2]["folder"], "C:\\GitHub\\Odulodo.Web");
 }
 
+// The demo's folders are drive-letter Windows paths, which only count as absolute on
+// Windows; elsewhere the quick-open never reads their worktrees.
+#[cfg(windows)]
 #[test]
 fn quick_open_ticks_do_not_follow_to_another_folder() {
     let mut h = h();

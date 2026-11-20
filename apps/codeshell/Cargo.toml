@@ -38,3 +38,7 @@ tauri-winrt-notification = "0.8"
 
 [target.'cfg(not(windows))'.dependencies]
 notify-rust = "4.19"
+
+[build-dependencies]
+# Embeds assets/codeshell.ico as the exe's icon (Windows only; needs rc.exe from the Windows SDK).
+winresource = "0.1"

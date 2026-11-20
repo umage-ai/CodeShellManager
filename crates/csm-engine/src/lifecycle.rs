@@ -1180,6 +1180,6 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
 fn mcp_offer_dir(state: &State) -> Option<std::path::PathBuf> {
     match state.options.save_path.as_deref().and_then(std::path::Path::parent) {
         Some(d) if state.options.saves() => Some(d.join("mcp")),
-        _ => Some(std::env::temp_dir().join("CodeShellManager-rs-mcp")),
+        _ => Some(std::env::temp_dir().join("CodeShellManager2-mcp")),
     }
 }
