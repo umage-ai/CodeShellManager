@@ -219,6 +219,9 @@ impl State {
         let mut seen = HashSet::new();
         app.groups.retain(|g| !g.id.trim().is_empty() && seen.insert(g.id.clone()));
         app.recently_closed.truncate(crate::lifecycle::MAX_RECENTLY_CLOSED);
+        // The file is untrusted: remember a focus only for a group and session that exist.
+        let (groups, sessions) = (&app.groups, &app.sessions);
+        app.ui.group_focus.retain(|g, s| groups.iter().any(|x| &x.id == g) && sessions.iter().any(|x| &x.id == s && &x.group_id == g));
         let focused = app.ui.focused_session.clone().filter(|f| app.sessions.iter().any(|s| &s.id == f));
         let mut rt = Runtime { focused, dirty: true, index: crate::index::open(&options), ..Runtime::default() };
         if options.saves()

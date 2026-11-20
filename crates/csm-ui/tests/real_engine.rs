@@ -476,3 +476,34 @@ fn settings_change_through_the_page_and_the_engine_keeps_them() {
     r.h.get_by_label("Settings: About").click();
     r.until("app_info", |r| r.has_contains("CodeShellManager 0."));
 }
+
+#[test]
+fn a_group_tab_brings_back_the_session_last_focused_in_that_group() {
+    // Issue #137. Rail view (the default): two groups, the second session of Alpha focused.
+    let mut r = rig(true);
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    let group =
+        |r: &Rig, name: &str| r.engine.call(Caller::Ui, "group_new", json!({"name": name})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    let (alpha, beta) = (group(&r, "Alpha"), group(&r, "Beta"));
+    let new = |r: &Rig, name: &str, g: &str| {
+        let out = r.engine.call(Caller::Ui, "session_new", json!({"folder": r.folder, "command": "pwsh", "name": name, "group": g})).unwrap();
+        out.data["id"].as_str().unwrap().to_owned()
+    };
+    let (_a1, a2, b1) = (new(&r, "a-one", &alpha), new(&r, "a-two", &alpha), new(&r, "b-one", &beta));
+    r.engine.call(Caller::Ui, "session_focus", json!({"session_id": a2})).unwrap();
+    r.until("Alpha's tab with a-two", |r| r.h.state().model.active.as_deref() == Some(a2.as_str()));
+
+    r.h.get_by_label("Group tab: Beta").click();
+    r.until("Beta's session focused", |r| r.engine.view().focused.as_deref() == Some(b1.as_str()));
+    r.until("the UI follows", |r| r.h.state().model.active.as_deref() == Some(b1.as_str()));
+
+    r.h.get_by_label("Group tab: Alpha").click();
+    r.until("a-two again, not the group's first session", |r| r.engine.view().focused.as_deref() == Some(a2.as_str()));
+    r.until("the UI follows", |r| r.h.state().model.active.as_deref() == Some(a2.as_str()));
+    let calls: Vec<String> = r.h.state().submitted().iter().map(|c| c.id.clone()).collect();
+    assert!(calls.iter().filter(|c| *c == "view_set").count() >= 2, "through the view_set tool: {calls:?}");
+    // The All tab only widens the filter: the focus stays.
+    r.h.get_by_label("Group tab: All sessions").click();
+    r.until("All", |r| r.engine.view().rail_tab.is_none());
+    assert_eq!(r.engine.view().focused.as_deref(), Some(a2.as_str()));
+}

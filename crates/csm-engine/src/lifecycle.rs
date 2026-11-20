@@ -895,6 +895,10 @@ pub(crate) fn focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError
     ctx.state.rt.focused = Some(id.to_owned());
     let restoring = ctx.state.rt.restore.is_some();
     let group = ctx.state.app.sessions.get(i).map(|s| s.group_id.clone()).unwrap_or_default();
+    // Issue #137: the group's rail tab brings this session back.
+    if !group.is_empty() {
+        ctx.state.app.ui.group_focus.insert(group.clone(), id.to_owned());
+    }
     if let Some(s) = ctx.state.app.sessions.get_mut(i)
         && !restoring
     {

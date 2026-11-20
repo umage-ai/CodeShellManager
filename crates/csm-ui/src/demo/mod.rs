@@ -74,6 +74,8 @@ pub struct DemoBackend {
     quitting: Option<Instant>,
     /// Restore rail animation (`--demo-restore`).
     restoring: Option<Instant>,
+    /// The session last focused per group, as the engine's `UiState::group_focus` (#137).
+    group_focus: HashMap<String, SessionId>,
 }
 
 fn now_ms() -> u64 {
@@ -358,6 +360,7 @@ impl DemoBackend {
             started: Instant::now(),
             quitting: None,
             restoring: None,
+            group_focus: HashMap::new(),
         };
         let ids: Vec<SessionId> = b.model.sessions.iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         for id in ids {
@@ -506,6 +509,9 @@ impl DemoBackend {
             self.model.rail = Scope::Group(g.clone());
         }
         self.model.active = Some(id.to_string());
+        if let Some(g) = &s.group {
+            self.group_focus.insert(g.clone(), id.to_string());
+        }
         // As the engine does: a minimized pane comes back, a different maximized one gives way.
         for (key, l) in self.model.layouts.iter_mut() {
             let in_scope = *key == Scope::All.key() || s.group.as_deref() == Some(key.as_str());
@@ -1005,7 +1011,18 @@ impl DemoBackend {
                         Scope::Group(g) => s.group.as_deref() == Some(g.as_str()),
                     });
                     if !inside {
-                        let first = self.model.scope_sessions(&scope).iter().find(|s| s.status.is_live()).map(|s| s.id.clone());
+                        // The session last focused in the group, else its first live one (#137).
+                        let remembered = match &scope {
+                            Scope::Group(g) => self
+                                .group_focus
+                                .get(g)
+                                .and_then(|id| self.model.session(id))
+                                .filter(|s| s.group.as_deref() == Some(g.as_str()) && s.status.is_live())
+                                .map(|s| s.id.clone()),
+                            Scope::All => None,
+                        };
+                        let first =
+                            remembered.or_else(|| self.model.scope_sessions(&scope).iter().find(|s| s.status.is_live()).map(|s| s.id.clone()));
                         if first.is_none() {
                             return toast(format!("Every session in {} is asleep. Click one to wake it.", self.model.scope_name(&scope)));
                         }
