@@ -38,14 +38,19 @@ pub fn show_window(ctx: &egui::Context) {
     ctx.request_repaint_of(root);
 }
 
-/// The person is looking at the app: one of its windows has the keyboard focus and the main one
-/// is not minimized.
-fn window_in_front(ctx: &egui::Context) -> bool {
-    ctx.input(|i| {
-        let minimized = i.raw.viewports.get(&egui::ViewportId::ROOT).and_then(|v| v.minimized).unwrap_or(false);
-        let focused = i.raw.viewports.values().any(|v| v.focused == Some(true)) || i.viewport().focused == Some(true);
-        focused && !minimized
-    })
+/// The app window that has the keyboard focus and is not minimized, if any: the person is looking
+/// at the app.
+fn window_in_front(viewports: &egui::ViewportIdMap<egui::ViewportInfo>) -> Option<egui::ViewportId> {
+    viewports.iter().find(|(_, v)| v.focused == Some(true) && v.minimized != Some(true)).map(|(id, _)| *id)
+}
+
+/// The session the person is looking at: the pane of a focused torn-off window, otherwise the
+/// main window's active session.
+fn looking_at<'a>(front: Option<egui::ViewportId>, sessions: &'a [crate::model::SessionView], active: Option<&'a str>) -> Option<&'a str> {
+    let torn = front.filter(|v| *v != egui::ViewportId::ROOT).and_then(|v| {
+        sessions.iter().find(|s| crate::screens::panes::torn_pane_viewport(&s.id) == v).map(|s| s.id.as_str())
+    });
+    torn.or(active)
 }
 
 impl CsmApp {
@@ -57,12 +62,15 @@ impl CsmApp {
             .iter()
             .map(|s| Observation { session_id: &s.id, name: &s.name, attention: attention(s.status), detail: &s.detail })
             .collect();
+        let (front, time) = ctx.input(|i| (window_in_front(&i.raw.viewports), i.time));
         let cx = NotifyContext {
-            enabled: self.prefs.notifications,
+            // Quitting: sessions being stopped are not news.
+            enabled: self.prefs.notifications && model.shutdown.is_none(),
             sound: self.prefs.notification_sound,
-            window_focused: window_in_front(ctx),
-            focused_session: model.active.as_deref(),
-            now_ms: (ctx.input(|i| i.time) * 1000.0) as i64,
+            window_focused: front.is_some(),
+            focused_session: looking_at(front, &model.sessions, model.active.as_deref()),
+            // egui's clock: seconds since the app started, monotonic enough for a 5 s limit.
+            now_ms: (time * 1000.0) as i64,
         };
         let out = self.ui.notify.notifier.observe(&obs, &cx);
         self.queue(out);
@@ -152,6 +160,36 @@ mod tests {
         let t = crate::theme::Tokens::for_kind(crate::theme::ThemeKind::Mocha);
         let c = t.st_approval;
         assert_eq!(px(&badged, 32 - 9, 8), vec![c.r(), c.g(), c.b(), 255]);
+    }
+
+    #[test]
+    fn the_window_in_front_is_focused_and_not_minimized() {
+        use egui::{ViewportId, ViewportIdMap, ViewportInfo};
+        let info = |focused, minimized| ViewportInfo { focused: Some(focused), minimized: Some(minimized), ..ViewportInfo::default() };
+        let torn = crate::screens::panes::torn_pane_viewport("b");
+        let mut v = ViewportIdMap::default();
+        v.insert(ViewportId::ROOT, info(false, true));
+        v.insert(torn, info(false, false));
+        assert_eq!(window_in_front(&v), None, "nothing focused");
+        // A torn-off window in front counts even with the main window minimized.
+        v.insert(torn, info(true, false));
+        assert_eq!(window_in_front(&v), Some(torn));
+        v.insert(torn, info(false, false));
+        v.insert(ViewportId::ROOT, info(true, true));
+        assert_eq!(window_in_front(&v), None, "a minimized window is not in front");
+    }
+
+    #[test]
+    fn the_session_looked_at_is_the_torn_off_pane_in_front() {
+        use crate::model::SessionView;
+        let mk = |id: &str| SessionView { id: id.into(), ..SessionView::default() };
+        let sessions = vec![mk("a"), mk("b")];
+        let torn = crate::screens::panes::torn_pane_viewport("b");
+        assert_eq!(looking_at(Some(torn), &sessions, Some("a")), Some("b"));
+        assert_eq!(looking_at(Some(egui::ViewportId::ROOT), &sessions, Some("a")), Some("a"));
+        assert_eq!(looking_at(None, &sessions, Some("a")), Some("a"));
+        let other = egui::ViewportId::from_hash_of("torn-group");
+        assert_eq!(looking_at(Some(other), &sessions, None), None);
     }
 
     #[test]

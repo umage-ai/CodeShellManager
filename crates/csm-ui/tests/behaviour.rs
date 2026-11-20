@@ -793,3 +793,21 @@ fn notification_toggles_decide_what_reaches_the_os() {
     assert!(needs_you >= 1);
     assert_eq!(h.state().needs_you_count(), needs_you);
 }
+
+#[test]
+fn window_show_restores_and_focuses_the_main_window() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::Tool("window_show", serde_json::json!({})));
+    assert_eq!(last_call(&h).0, "window_show");
+    let mut cmds = Vec::new();
+    for _ in 0..10 {
+        h.step();
+        if let Some(v) = h.output().viewport_output.get(&egui::ViewportId::ROOT) {
+            cmds.extend(v.commands.iter().cloned());
+        }
+    }
+    for want in [egui::ViewportCommand::Visible(true), egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus] {
+        assert!(cmds.contains(&want), "{want:?} in {cmds:?}");
+    }
+}

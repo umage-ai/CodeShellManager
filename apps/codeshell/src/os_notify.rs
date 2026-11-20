@@ -75,7 +75,9 @@ fn show(n: &Notification, clicked: &Sender<String>, wake: &Wake) {
 #[cfg(not(windows))]
 fn show(n: &Notification, _clicked: &Sender<String>, _wake: &Wake) {
     let mut note = notify_rust::Notification::new();
-    note.appname(csm_core::notify_rules::APP_NAME).summary(&n.title).body(&n.body);
+    // A freedesktop server may render the body's markup; the macOS centre shows text as is.
+    let body = if cfg!(target_os = "macos") { n.body.clone() } else { csm_core::notify_rules::escape_markup(&n.body) };
+    note.appname(csm_core::notify_rules::APP_NAME).summary(&n.title).body(&body);
     if n.sound {
         // The platform's own default: the notification centre's, the desktop theme's message sound.
         note.sound_name(if cfg!(target_os = "macos") { "Default" } else { "message-new-instant" });

@@ -82,7 +82,7 @@ pub struct NotifyContext<'a> {
     pub window_focused: bool,
     /// The session the person is looking at.
     pub focused_session: Option<&'a str>,
-    /// Milliseconds since the Unix epoch.
+    /// Milliseconds on any steady clock (the owner's; only differences matter).
     pub now_ms: i64,
 }
 
@@ -194,6 +194,22 @@ pub fn clean(s: &str) -> String {
         }
         out.push(c);
         n += 1;
+    }
+    out
+}
+
+/// A body for a notification server that reads markup (the freedesktop spec allows a subset of
+/// HTML in the body, which some servers render): `&`, `<` and `>` as entities, so a session name
+/// or detail from a terminal shows as text and can't add links or images.
+pub fn escape_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
     }
     out
 }
@@ -356,6 +372,12 @@ mod tests {
         let mut n = primed("a", Attention::Quiet);
         let o = Observation { session_id: "a", name: "A", attention: Attention::Approval, detail: "Run `dotnet ef database update`?" };
         assert_eq!(n.observe(&[o], &cx(10_000))[0].body, "Run `dotnet ef database update`?");
+    }
+
+    #[test]
+    fn markup_is_escaped_for_servers_that_read_it() {
+        assert_eq!(escape_markup(r#"<a href="x">go</a> & <img src=y>"#), r#"&lt;a href="x"&gt;go&lt;/a&gt; &amp; &lt;img src=y&gt;"#);
+        assert_eq!(escape_markup("plain"), "plain");
     }
 
     #[test]
