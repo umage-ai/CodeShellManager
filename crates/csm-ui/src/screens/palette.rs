@@ -384,6 +384,9 @@ fn tool_icon(id: &str) -> &'static str {
         "open_folder" => "folder",
         "session_status_clear" => "eraser",
         "group_tear_off" | "pane_tear_off" => "tear",
+        "pane_minimize" => "min",
+        "pane_maximize" => "max",
+        "pane_restore" => "unmax",
         "session_close" | "group_close_all" => "x",
         "app_quit" => "power",
         _ => match area {

@@ -89,11 +89,15 @@ All ✅, plus `group_move` (index) and `group_collapse` (collapsed). `group_list
 (confirm via `force`), `group_sleep_all`, `group_close_all` (force), `group_tear_off` / `group_dock`.
 
 ### layout
-All ✅. `pane_float` / `pane_dock` / `pane_tear_off` are registered by the app (`csm-ui`'s
+All ✅. `pane_float` / `pane_dock` / `pane_tear_off` and `pane_minimize` / `pane_maximize` / `pane_restore` are registered by the app (`csm-ui`'s
 `pane_tools`), because the Free layout they edit is stored by the engine as an opaque object
 whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group view: rail/headers/flat; rail tab), `layout_get` (group),
 `layout_set` (group, mode focus/side/overview/grid/free, grid preset or cols×rows, `free`: the Free layout as an opaque object ≤ 64 KiB),
 `layout_pin` / `layout_unpin` (session), `pane_float` / `pane_dock` / `pane_tear_off`,
+`pane_minimize` / `pane_maximize` / `pane_restore` (session, group; the pane header's window bar,
+effects `ui`: minimized and maximized are stored on the engine's layout, `GroupLayout::minimized` /
+`maximized`, and `session_focus` brings a minimized pane back and lets a different maximized one
+give way),
 `inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
 
 ### Stand-ins

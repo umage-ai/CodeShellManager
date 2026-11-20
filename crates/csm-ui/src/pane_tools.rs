@@ -1,4 +1,5 @@
-//! `pane_float`, `pane_dock`, `pane_tear_off`: real tools, registered by the app alongside the
+//! `pane_float`, `pane_dock`, `pane_tear_off`, and the window bar's `pane_minimize`,
+//! `pane_maximize`, `pane_restore`: real tools, registered by the app alongside the
 //! engine's. They edit the Free-mode part of a group's layout, which the engine stores as an
 //! opaque object (`GroupLayout::free_tree`) whose shape is the UI's ([`FreeLayout`]), so they
 //! live here rather than in `csm-engine`. Like every tool they run on the engine thread, change
@@ -10,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::demo::tools::PaneParams;
 use crate::engine_backend::{layout_from_core, layout_into_core};
-use crate::model::{Layout, SessionId};
+use crate::model::{Layout, Restored, SessionId};
 
 pub fn tools() -> Vec<ToolSpec> {
     let t = |id, title, summary, run| ToolSpec {
@@ -31,6 +32,9 @@ pub fn tools() -> Vec<ToolSpec> {
         ),
         t("pane_dock", "Dock into the split tree", "Dock a floating or torn-off pane back into the layout.", pane_dock),
         t("pane_tear_off", "Move to a new window", "Show a pane in its own OS window.", pane_tear_off),
+        t("pane_minimize", "Minimize pane", "Take a pane off the canvas to the minimized strip; its session keeps running.", pane_minimize),
+        t("pane_maximize", "Maximize pane", "Let a pane fill the whole canvas; the others keep running behind it.", pane_maximize),
+        t("pane_restore", "Restore pane", "Bring a minimized or maximized pane back to its place in the layout.", pane_restore),
     ]
 }
 
@@ -60,18 +64,40 @@ fn edit(ctx: &mut Ctx<'_>, params: Value, op: fn(&mut Layout, &str, &[SessionId]
     let message = op(&mut l, &p.session_id, &live);
     layout_into_core(&l, core);
     ctx.state.persist();
-    Ok(ToolOutput::new(message, json!({"key": key, "free": l.free().to_value()})))
+    Ok(ToolOutput::new(message, json!({"key": key, "free": l.free().to_value(), "minimized": l.minimized, "maximized": l.maximized})))
 }
 
 fn pane_float(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     edit(ctx, params, |l, id, live| {
         l.float_pane(id, live);
-        "Floating. Drag its header to move it."
+        "Floating. Drag its header to move it, an edge or corner to resize it."
     })
 }
 
 fn pane_dock(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     edit(ctx, params, |l, id, _| if l.dock_pane(id) { "Docked back into the main window." } else { "Docked to the right of the split tree." })
+}
+
+fn pane_minimize(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    edit(ctx, params, |l, id, _| {
+        l.minimize_pane(id);
+        "Minimized. It keeps running; its chip under the panes brings it back."
+    })
+}
+
+fn pane_maximize(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    edit(ctx, params, |l, id, _| {
+        l.maximize_pane(id);
+        "Maximized. Restore (or double-click its header) brings the layout back."
+    })
+}
+
+fn pane_restore(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    edit(ctx, params, |l, id, _| match l.restore_pane(id) {
+        Restored::FromMaximized => "Restored the layout.",
+        Restored::FromMinimized => "Restored.",
+        Restored::Nothing => "Already in its place.",
+    })
 }
 
 fn pane_tear_off(ctx: &mut Ctx<'_>, params: Value) -> Reply {

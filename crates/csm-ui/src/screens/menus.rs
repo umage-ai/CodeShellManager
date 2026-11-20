@@ -111,12 +111,34 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     if s.accent_overridden {
         v.push(item("palette", "Reset accent colour", tool("session_accent_reset", sid.clone())));
     }
+    // The window bar's actions, and the header controls a narrow pane leaves out.
+    let lay = model.layout(&model.pane_scope());
+    let pane = json!({"session_id": id, "group": scope});
+    let maxed = lay.maximized.as_deref() == Some(id);
     v.extend([
         Entry::Sep,
-        item("float", "Float in this window", tool("pane_float", json!({"session_id": id, "group": scope}))),
-        item("tear", "Move to a new window", tool("pane_tear_off", json!({"session_id": id, "group": scope}))),
-        Entry::Sep,
+        item("min", "Minimize", tool("pane_minimize", pane.clone())),
+        if maxed {
+            item("unmax", "Restore", tool("pane_restore", pane.clone()))
+        } else {
+            item("max", "Maximize", tool("pane_maximize", pane.clone()))
+        },
     ]);
+    if lay.floats.iter().any(|f| f.session == id) || lay.torn.iter().any(|t| t == id) {
+        v.push(item("dock", "Dock", tool("pane_dock", pane.clone())));
+    } else {
+        v.push(item("float", "Float in this window", tool("pane_float", pane.clone())));
+    }
+    v.push(item("tear", "Move to a new window", tool("pane_tear_off", pane.clone())));
+    if lay.mode == crate::model::LayoutMode::Side {
+        let pinned = lay.pinned.iter().any(|p| p == id);
+        let (label, tid) = if pinned { ("Unpin from Side by side", "layout_unpin") } else { ("Pin to Side by side", "layout_pin") };
+        v.push(item("pin", label, tool(tid, pane.clone())));
+    }
+    if let Some(run) = s.default_run() {
+        v.push(hinted("play", format!("Run {}", run.label), "F5", tool("run_start", sid.clone())));
+    }
+    v.push(Entry::Sep);
     v.push(Entry::Item {
         icon: "x",
         label: "Close".into(),

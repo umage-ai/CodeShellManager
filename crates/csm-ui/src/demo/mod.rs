@@ -475,6 +475,11 @@ impl DemoBackend {
             self.model.rail = Scope::Group(g.clone());
         }
         self.model.active = Some(id.to_string());
+        // As the engine does: a minimized pane comes back, a different maximized one gives way.
+        for (key, l) in self.model.layouts.iter_mut() {
+            let in_scope = *key == Scope::All.key() || s.group.as_deref() == Some(key.as_str());
+            l.reveal(id, in_scope);
+        }
         if s.status.unseen() {
             // Seen now: done/error become idle (the mock acknowledges after a moment).
             self.set_status(id, Status::Idle);
@@ -516,6 +521,10 @@ impl DemoBackend {
             l.pinned.retain(|p| p != id);
             l.floats.retain(|f| f.session != id);
             l.torn.retain(|t| t != id);
+            l.minimized.retain(|m| m != id);
+            if l.maximized.as_deref() == Some(id) {
+                l.maximized = None;
+            }
             l.tree = l.tree.as_ref().and_then(|t| t.without(id));
         }
         if self.model.active.as_deref() == Some(id) {
@@ -861,7 +870,7 @@ impl DemoBackend {
                 let live: Vec<SessionId> =
                     self.model.scope_sessions(&Scope::from_key(&key)).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
                 self.layout_mut(&key).float_pane(&p.session_id, &live);
-                toast("Floating. Drag its header to move it.".into())
+                toast("Floating. Drag its header to move it, an edge or corner to resize it.".into())
             }
             "pane_dock" => {
                 let Some(p) = parse::<PaneParams>(call) else { return vec![] };
@@ -874,6 +883,19 @@ impl DemoBackend {
                 let key = p.group.clone().unwrap_or_else(|| self.scope_key());
                 self.layout_mut(&key).tear_off_pane(&p.session_id);
                 toast("In its own window now. Closing that window docks it back.".into())
+            }
+            "pane_minimize" | "pane_maximize" | "pane_restore" => {
+                let Some(p) = parse::<PaneParams>(call) else { return vec![] };
+                let key = p.group.clone().unwrap_or_else(|| self.scope_key());
+                let l = self.layout_mut(&key);
+                match call.id.as_str() {
+                    "pane_minimize" => l.minimize_pane(&p.session_id),
+                    "pane_maximize" => l.maximize_pane(&p.session_id),
+                    _ => {
+                        l.restore_pane(&p.session_id);
+                    }
+                }
+                vec![]
             }
             "group_collapse" => {
                 if let Some(p) = parse::<CollapseParams>(call)

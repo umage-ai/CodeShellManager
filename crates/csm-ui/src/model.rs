@@ -517,6 +517,14 @@ impl FreeLayout {
     }
 }
 
+/// What [`Layout::restore_pane`] undid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restored {
+    FromMaximized,
+    FromMinimized,
+    Nothing,
+}
+
 /// One group's (or All's) layout. Each group remembers its own.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Layout {
@@ -528,9 +536,60 @@ pub struct Layout {
     pub floats: Vec<FloatPane>,
     /// Panes in their own OS window.
     pub torn: Vec<SessionId>,
+    /// Panes minimized to the strip under the canvas (their sessions keep running).
+    #[serde(default)]
+    pub minimized: Vec<SessionId>,
+    /// The pane filling the whole canvas for now (the layout underneath is untouched).
+    #[serde(default)]
+    pub maximized: Option<SessionId>,
 }
 
 impl Layout {
+    pub fn is_minimized(&self, id: &str) -> bool {
+        self.minimized.iter().any(|m| m == id)
+    }
+
+    /// `pane_minimize`: the pane leaves the canvas (a chip in the strip brings it back). A
+    /// maximized pane that is minimized stops filling the canvas.
+    pub fn minimize_pane(&mut self, id: &str) {
+        if !self.is_minimized(id) {
+            self.minimized.push(id.to_string());
+        }
+        if self.maximized.as_deref() == Some(id) {
+            self.maximized = None;
+        }
+    }
+
+    /// `pane_maximize`: the pane fills the canvas until restored.
+    pub fn maximize_pane(&mut self, id: &str) {
+        self.minimized.retain(|m| m != id);
+        self.maximized = Some(id.to_string());
+    }
+
+    /// `pane_restore`: back from minimized or maximized, to the layout as it was. Returns what
+    /// it undid.
+    pub fn restore_pane(&mut self, id: &str) -> Restored {
+        let was_min = self.is_minimized(id);
+        self.minimized.retain(|m| m != id);
+        if self.maximized.as_deref() == Some(id) {
+            self.maximized = None;
+            Restored::FromMaximized
+        } else if was_min {
+            Restored::FromMinimized
+        } else {
+            Restored::Nothing
+        }
+    }
+
+    /// Focus moved to `id` (sidebar, palette, inbox): the same rule as the engine's
+    /// `GroupLayout::reveal`, for the demo backend.
+    pub fn reveal(&mut self, id: &str, in_scope: bool) {
+        self.minimized.retain(|m| m != id);
+        if in_scope && self.maximized.as_deref().is_some_and(|m| m != id) {
+            self.maximized = None;
+        }
+    }
+
     /// The Free-mode part, as `layout_set { free }` takes it.
     pub fn free(&self) -> FreeLayout {
         FreeLayout { tree: self.tree.clone(), floats: self.floats.clone(), torn: self.torn.clone() }
@@ -887,9 +946,30 @@ mod tests {
             tree: SplitNode::row(&["a".into(), "b".into()]),
             floats: vec![FloatPane { session: "c".into(), rect: [1.0, 2.0, 3.0, 4.0] }],
             torn: vec![],
+            minimized: vec!["b".into()],
+            maximized: Some("a".into()),
         };
         let v = serde_json::to_value(&l).unwrap();
         assert_eq!(v["mode"], "free");
         assert_eq!(serde_json::from_value::<Layout>(v).unwrap(), l);
+    }
+
+    #[test]
+    fn minimize_maximize_restore() {
+        let mut l = Layout::default();
+        l.maximize_pane("a");
+        assert_eq!(l.maximized.as_deref(), Some("a"));
+        // Minimizing the maximized pane un-maximizes it.
+        l.minimize_pane("a");
+        l.minimize_pane("a");
+        assert_eq!((l.minimized.clone(), l.maximized.clone()), (vec!["a".to_string()], None));
+        // Maximizing a minimized pane brings it back first.
+        l.maximize_pane("a");
+        assert!(l.minimized.is_empty());
+        assert_eq!(l.restore_pane("a"), Restored::FromMaximized);
+        l.minimize_pane("b");
+        assert_eq!(l.restore_pane("b"), Restored::FromMinimized);
+        assert_eq!(l.restore_pane("b"), Restored::Nothing);
+        assert_eq!(l, Layout::default(), "the round trip leaves the layout as it was");
     }
 }

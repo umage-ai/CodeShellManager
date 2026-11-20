@@ -39,6 +39,10 @@ pub struct PaneOpts {
     pub active: bool,
     pub focus: bool,
     pub pinned: bool,
+    /// Filling the whole canvas (`pane_maximize`); the window bar offers Restore.
+    pub maximized: bool,
+    /// The busy-close warning is off (Settings): Close on a busy session closes it at once.
+    pub quiet_close: bool,
 }
 
 /// The tiling of the Side by side mode (the mock's `tileCss`): columns, rows, and whether the
@@ -74,10 +78,21 @@ pub fn grid_cells(area: Rect, cols: usize, rows: usize, gap: f32) -> Vec<Rect> {
 /// Which sessions a layout shows, and where.
 pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<(SessionId, Rect, PaneOpts)> {
     let gap = space::PANE_GAP;
-    let live: Vec<&SessionView> = model.scope_sessions(scope).into_iter().filter(|s| s.status.is_live() && !layout.torn.contains(&s.id)).collect();
+    // Minimized panes are in the strip under the canvas, not on it.
+    let live: Vec<&SessionView> = model
+        .scope_sessions(scope)
+        .into_iter()
+        .filter(|s| s.status.is_live() && !layout.torn.contains(&s.id) && !layout.is_minimized(&s.id))
+        .collect();
     let is_live = |id: &str| live.iter().any(|s| s.id == id);
     let active = model.active.clone().filter(|a| is_live(a));
     let mut out = Vec::new();
+    // A maximized pane fills the canvas; the layout underneath stays as it was.
+    if let Some(m) = layout.maximized.as_deref().filter(|m| is_live(m)) {
+        let o = PaneOpts { mode: Some(layout.mode), maximized: true, active: model.active.as_deref() == Some(m), ..PaneOpts::default() };
+        out.push((m.to_string(), area, o));
+        return out;
+    }
     match layout.mode {
         LayoutMode::Focus => {
             if let Some(a) = active.or_else(|| live.first().map(|s| s.id.clone())) {
@@ -251,10 +266,28 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         first_run(ui, &model, inner, actions);
         return;
     }
+    // Minimized panes get a strip under the canvas, a chip each.
+    let minimized: Vec<&SessionView> = layout
+        .minimized
+        .iter()
+        .filter_map(|id| model.session(id))
+        .filter(|s| s.status.is_live() && !layout.torn.contains(&s.id) && model.scope_sessions(&scope).iter().any(|x| x.id == s.id))
+        .collect();
+    let inner = if minimized.is_empty() {
+        inner
+    } else {
+        let strip = Rect::from_min_max(pos2(inner.min.x, inner.max.y - size::MINIMIZED_STRIP), inner.max);
+        minimized_strip(ui, strip, &minimized, &scope, actions);
+        Rect::from_min_max(inner.min, pos2(inner.max.x, strip.min.y - space::PANE_GAP))
+    };
     let planned = plan(&model, &scope, &layout, inner);
+    let maxed = planned.iter().any(|(_, _, o)| o.maximized);
+    let quiet_close = !app.prefs.warn_on_close_when_busy;
     if planned.is_empty() {
         let msg = if model.scope_sessions(&scope).is_empty() {
             "No sessions here yet. Ctrl+T starts one."
+        } else if !minimized.is_empty() {
+            "Every pane here is minimized. Click a chip below to bring one back."
         } else {
             "Every session here is asleep. Click one in the sidebar to wake it."
         };
@@ -265,6 +298,7 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     {
         let mut host = lock(&host);
         for (id, r, mut o) in planned.iter().cloned() {
+            o.quiet_close = quiet_close;
             o.focus = focus.as_deref() == Some(id.as_str()) && !o.mini;
             if o.focus {
                 app.ui.focus_terminal = None;
@@ -305,12 +339,12 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
         }
         // Free: the dividers, a header being dragged onto an edge, then the floating panes on top.
-        if layout.mode == LayoutMode::Free {
+        if layout.mode == LayoutMode::Free && !maxed {
             dividers(ui, app, &layout, inner, &scope, actions);
             split_drag(ui, app, &layout, &planned, &scope, actions);
             for f in &layout.floats {
                 let Some(s) = model.session(&f.session) else { continue };
-                if !s.status.is_live() {
+                if !s.status.is_live() || layout.is_minimized(&s.id) {
                     continue;
                 }
                 let r = Rect::from_min_size(inner.min + vec2(f.rect[0], f.rect[1]), vec2(f.rect[2], f.rect[3]));
@@ -319,10 +353,12 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     mode: Some(LayoutMode::Free),
                     floating: true,
                     active: model.active.as_deref() == Some(s.id.as_str()),
+                    quiet_close,
                     ..PaneOpts::default()
                 };
                 let area_id = Id::new(("float", f.session.clone()));
                 let mut drag = None;
+                let mut resized = None;
                 egui::Area::new(area_id).order(egui::Order::Middle).fixed_pos(r.min).show(ui.ctx(), |ui| {
                     let rr = Rect::from_min_size(r.min, r.size());
                     ui.painter().rect_filled(rr.expand(size::HAIRLINE), CornerRadius::same(radius::MD), t.surface2);
@@ -339,8 +375,21 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     }
                     pane(ui, &mut host, &model, s, src.as_deref(), rr, o, &scope, actions);
                     let _ = resp.on_hover_cursor(CursorIcon::Grab);
+                    // Edges and corners resize it (registered last: on top of the terminal).
+                    resized = float_resize_handles(ui, rr, f, inner.size());
                 });
-                if let Some(d) = drag {
+                if let Some((nr, done)) = resized {
+                    if done {
+                        app.ui.drags.float = None;
+                        let mut free = layout.free();
+                        if let Some(x) = free.floats.iter_mut().find(|x| x.session == f.session) {
+                            x.rect = nr;
+                        }
+                        actions.push(Action::Tool("layout_set", json!({"group": scope.key(), "free": free.to_value()})));
+                    } else {
+                        app.ui.drags.float = Some((f.session.clone(), nr));
+                    }
+                } else if let Some(d) = drag {
                     let mut nr = f.rect;
                     nr[0] = (nr[0] + d.x).clamp(0.0, (inner.width() - size::MIN_PANE).max(0.0));
                     nr[1] = (nr[1] + d.y).clamp(0.0, (inner.height() - size::PANE_HEADER).max(0.0));
@@ -391,6 +440,171 @@ fn first_run(ui: &mut Ui, model: &UiModel, area: Rect, actions: &mut Vec<Action>
             }
         });
     });
+}
+
+/// Which edges of a floating pane a resize handle moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Grip {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+impl Grip {
+    const fn new(left: bool, right: bool, top: bool, bottom: bool) -> Grip {
+        Grip { left, right, top, bottom }
+    }
+
+    /// The four edges and four corners, with their AccessKit names.
+    pub const ALL: [(Grip, &'static str); 8] = [
+        (Grip::new(true, false, false, false), "Resize left edge"),
+        (Grip::new(false, true, false, false), "Resize right edge"),
+        (Grip::new(false, false, true, false), "Resize top edge"),
+        (Grip::new(false, false, false, true), "Resize bottom edge"),
+        (Grip::new(true, false, true, false), "Resize top-left corner"),
+        (Grip::new(false, true, true, false), "Resize top-right corner"),
+        (Grip::new(true, false, false, true), "Resize bottom-left corner"),
+        (Grip::new(false, true, false, true), "Drag to resize"),
+    ];
+
+    fn cursor(self) -> CursorIcon {
+        match (self.left, self.right, self.top, self.bottom) {
+            (true, _, true, _) => CursorIcon::ResizeNorthWest,
+            (_, true, true, _) => CursorIcon::ResizeNorthEast,
+            (true, _, _, true) => CursorIcon::ResizeSouthWest,
+            (_, true, _, true) => CursorIcon::ResizeSouthEast,
+            (true, ..) | (_, true, ..) => CursorIcon::ResizeHorizontal,
+            _ => CursorIcon::ResizeVertical,
+        }
+    }
+
+    /// The handle's hit band around pane rect `r`: a strip straddling each edge, a square on each
+    /// corner, and the larger grip inside the bottom-right one.
+    fn band(self, r: Rect) -> Rect {
+        let e = size::RESIZE_EDGE;
+        let h = e / 2.0;
+        let x = match (self.left, self.right) {
+            (true, _) => (r.min.x - h, r.min.x + h),
+            (_, true) => (r.max.x - h, r.max.x + h),
+            _ => (r.min.x + e, r.max.x - e),
+        };
+        let y = match (self.top, self.bottom) {
+            (true, _) => (r.min.y - h, r.min.y + h),
+            (_, true) => (r.max.y - h, r.max.y + h),
+            _ => (r.min.y + e, r.max.y - e),
+        };
+        let band = Rect::from_min_max(pos2(x.0, y.0), pos2(x.1, y.1));
+        if self.right && self.bottom { band.union(Rect::from_min_max(r.max - Vec2::splat(size::RESIZE_GRIP), r.max)) } else { band }
+    }
+}
+
+/// A floating pane's rect (`[x, y, w, h]` in the canvas) after dragging `grip` by `delta` from
+/// `start`: the moved edges follow the pointer, never past the canvas and never below `min`.
+pub fn resize_float(start: [f32; 4], grip: Grip, delta: Vec2, canvas: Vec2, min: Vec2) -> [f32; 4] {
+    let [x, y, w, h] = start;
+    let (mut l, mut t, mut r, mut b) = (x, y, x + w, y + h);
+    let min_w = min.x.min(canvas.x).max(0.0);
+    let min_h = min.y.min(canvas.y).max(0.0);
+    if grip.left {
+        l = (l + delta.x).min(r - min_w).max(0.0);
+    }
+    if grip.right {
+        r = (r + delta.x).min(canvas.x).max(l + min_w);
+    }
+    if grip.top {
+        t = (t + delta.y).min(b - min_h).max(0.0);
+    }
+    if grip.bottom {
+        b = (b + delta.y).min(canvas.y).max(t + min_h);
+    }
+    [l, t, (r - l).max(0.0), (b - t).max(0.0)]
+}
+
+/// The resize handles of a floating pane (`rr` on screen, `f` its stored rect): returns the rect
+/// being shown while a handle is dragged, and whether the drag just ended (then it is saved).
+fn float_resize_handles(ui: &mut Ui, rr: Rect, f: &crate::model::FloatPane, canvas: Vec2) -> Option<([f32; 4], bool)> {
+    let t = Tokens::get(ui.ctx());
+    let mut out = None;
+    let mut grip_lit = false;
+    for (g, label) in Grip::ALL {
+        let id = Id::new(("float-resize", f.session.clone(), label));
+        let resp = ui.interact(g.band(rr), id, Sense::drag());
+        named(&resp, WidgetType::Other, label);
+        let resp = resp.on_hover_cursor(g.cursor());
+        if g.right && g.bottom {
+            grip_lit = resp.hovered() || resp.dragged();
+            if !resp.dragged() {
+                let _ = resp.clone().on_hover_text(label);
+            }
+        }
+        if resp.drag_started() {
+            let origin = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
+            ui.data_mut(|d| d.insert_temp(id, (f.rect, origin)));
+        }
+        if resp.drag_stopped() {
+            ui.data_mut(|d| d.remove::<([f32; 4], Option<egui::Pos2>)>(id));
+            // `f.rect` is the rect shown during the drag (the workspace applies it).
+            out = Some((f.rect, true));
+        } else if resp.dragged() {
+            let (start, origin) = ui.data(|d| d.get_temp::<([f32; 4], Option<egui::Pos2>)>(id)).unwrap_or((f.rect, None));
+            let now = ui.ctx().pointer_latest_pos();
+            let delta = match (origin, now) {
+                (Some(a), Some(b)) => b - a,
+                _ => Vec2::ZERO,
+            };
+            ui.ctx().set_cursor_icon(g.cursor());
+            out = Some((resize_float(start, g, delta, canvas, vec2(size::FLOAT_MIN[0], size::FLOAT_MIN[1])), false));
+        }
+    }
+    // The grip: three short diagonals in the bottom-right corner.
+    let c = rr.max - Vec2::splat(space::XS);
+    let ink = if grip_lit { t.fg2 } else { t.faint };
+    let step = size::RESIZE_GRIP / 4.0;
+    for k in 1..=3 {
+        let d = step * k as f32;
+        ui.painter().line_segment([pos2(c.x - d, c.y), pos2(c.x, c.y - d)], Stroke::new(size::HAIRLINE, ink));
+    }
+    out
+}
+
+/// The strip under the canvas with a chip per minimized pane; a click restores it.
+fn minimized_strip(ui: &mut Ui, strip: Rect, sessions: &[&SessionView], scope: &Scope, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect(strip, CornerRadius::same(radius::MD), t.mantle, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    let cy = strip.center().y;
+    let font = theme::medium(text::CAPTION);
+    let head = ui.painter().text(pos2(strip.min.x + space::MD, cy), Align2::LEFT_CENTER, "Minimized", font.clone(), t.muted);
+    let mut x = head.max.x + space::MD;
+    for (i, s) in sessions.iter().enumerate() {
+        let name_w = widgets::text_width(ui, &s.name, font.clone()).min(size::MINIMIZED_CHIP_MAX_W);
+        let w = space::SM + size::STRIPE + space::SM + icon::SM + space::XS + name_w + space::SM;
+        if x + w > strip.max.x - space::SM {
+            let rest: Vec<&str> = sessions.iter().skip(i).map(|s| s.name.as_str()).collect();
+            let more = ui.painter().text(pos2(x, cy), Align2::LEFT_CENTER, format!("+{} more", rest.len()), font.clone(), t.muted);
+            let resp = ui.interact(more, Id::new("minimized-more"), Sense::hover());
+            let _ = resp.on_hover_text(format!("Also minimized: {}. Focus one from the sidebar to bring it back.", rest.join(", ")));
+            break;
+        }
+        let chip = Rect::from_min_size(pos2(x, cy - size::CONTROL_SM / 2.0), vec2(w, size::CONTROL_SM));
+        x = chip.max.x + space::XS;
+        let resp = ui.interact(chip, Id::new(("minimized-chip", s.id.clone())), Sense::click());
+        let bg = if resp.hovered() { t.row_sel } else { t.field };
+        ui.painter().rect(chip, CornerRadius::same(radius::SM), bg, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+        let stripe = Rect::from_min_size(pos2(chip.min.x + space::SM, cy - icon::SM / 2.0), vec2(size::STRIPE, icon::SM));
+        ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+        let glyph = Rect::from_min_size(pos2(stripe.max.x + space::SM, cy - icon::SM / 2.0), Vec2::splat(icon::SM));
+        icons::paint_status(ui, glyph, s.status, icon::SM);
+        if s.status == Status::Working {
+            icons::request_spinner_repaint(ui);
+        }
+        widgets::paint_text(ui, pos2(glyph.max.x + space::XS, cy), Align2::LEFT_CENTER, &s.name, font.clone(), t.fg, name_w);
+        named(&resp, WidgetType::Button, format!("Minimized: {}", s.name));
+        let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(format!("Restore {} · {}", s.name, s.status_text()));
+        if resp.clicked() {
+            actions.push(Action::Tool("pane_restore", json!({"session_id": s.id, "group": scope.key()})));
+        }
+    }
 }
 
 fn dashed_rect(ui: &Ui, r: Rect, color: egui::Color32) {
@@ -565,6 +779,40 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
 }
 
+/// Takes `w` from the header's spare `room` when it fits; once something doesn't, nothing after
+/// it (lower priority) does either.
+fn take_room(room: &mut f32, w: f32) -> bool {
+    if *room >= w {
+        *room -= w;
+        true
+    } else {
+        *room = f32::NEG_INFINITY;
+        false
+    }
+}
+
+/// The window bar's Close: `session_close`, asking first when the session is busy (working, or
+/// waiting on an approval or a question) unless that warning is off.
+pub fn close_action(s: &SessionView, quiet: bool) -> Action {
+    let busy = matches!(s.status, Status::Working | Status::Approval | Status::Question);
+    if busy && !quiet {
+        Action::Confirm(crate::app::ConfirmState {
+            title: format!("Close {}?", s.name),
+            body: format!(
+                "{} is busy ({}). Closing it ends the process and cuts that off; the session moves to recently closed.",
+                s.name,
+                s.status_text().to_lowercase()
+            ),
+            yes_label: "Close anyway".into(),
+            no_label: "Keep it".into(),
+            yes: Box::new(Action::Tool("session_close", json!({"session_id": s.id, "force": true}))),
+        })
+    } else {
+        // Not busy: the engine's own guard still refuses if it became busy meanwhile.
+        Action::Tool("session_close", json!({"session_id": s.id, "force": busy}))
+    }
+}
+
 /// One pane: slim header and the terminal (or a preview of it).
 #[allow(clippy::too_many_arguments)]
 pub fn pane(
@@ -648,12 +896,15 @@ pub fn pane(
     // The header itself takes clicks (activate, right-click menu); registered before its
     // controls so they sit on top of it in hit testing.
     // In Free mode a docked pane's header drags onto another pane's edge to split it.
-    let splittable = o.mode == Some(LayoutMode::Free) && !o.floating && !o.torn && !o.mini;
+    let splittable = o.mode == Some(LayoutMode::Free) && !o.floating && !o.torn && !o.mini && !o.maximized;
     let head_sense = if splittable { Sense::click_and_drag() } else { Sense::click() };
     let head_resp = ui.interact(head.shrink2(vec2(space::SM, 0.0)), Id::new(("pane-head", s.id.clone(), o.torn, o.mini)), head_sense);
     named(&head_resp, WidgetType::Other, format!("Pane: {}", s.name));
     let head_resp = if splittable { head_resp.on_hover_cursor(CursorIcon::Grab) } else { head_resp };
-    // Right-hand controls first (they keep their size; the name elides).
+    // Right-hand controls, right to left: the window bar (close, maximize/restore, minimize),
+    // ⋯, then tear-off, dock / float, pin, `{ }` and Run. The window bar and ⋯ always show; the
+    // rest by priority (dock/float, tear-off, pin, Run, `{ }`) while the name keeps its room, and
+    // the ⋯ menu has them all.
     let mut x = head.max.x - space::XS;
     let ctl = |ui: &mut Ui, name: &str, on: bool, tip: &str, x: &mut f32| -> bool {
         *x -= size::CONTROL_SM;
@@ -661,14 +912,53 @@ pub fn pane(
         *x -= space::XXS;
         widgets::icon_button_at(ui, b, Id::new(("pane-ctl", s.id.clone(), name.to_string(), o.torn)), name, on, tip).clicked()
     };
+    let icon_w = size::CONTROL_SM + space::XXS;
+    // Maximize means nothing in Focus (one pane already fills the canvas) or in its own window.
+    let can_max = !o.torn && (o.maximized || o.mode != Some(LayoutMode::Focus));
+    let run = if o.mini { None } else { s.default_run() };
+    let run_label = run.map(|r| r.label.clone()).unwrap_or_default();
+    let run_main_w = icon::XS + space::XS + widgets::text_width(ui, &run_label, theme::medium(text::CAPTION)) + space::SM + space::XS + space::XXS;
+    let run_caret_w = icon::XS + space::SM;
+    let editor = if o.mini { None } else { s.open_with.iter().find(|e| e.is_default).or(s.open_with.first()) };
+    let free_ctls = !o.mini && !o.maximized && (o.mode == Some(LayoutMode::Free) || o.torn);
+    let bar_n = 1 + usize::from(can_max) + usize::from(!o.torn) + usize::from(!o.mini);
+    // The name keeps its minimum, and the branch chip its room, before optional controls.
+    let chip_reserve = if s.branch.is_some() && !o.mini { size::BRANCH_MAX_W + space::SM } else { 0.0 };
+    let name_reserve = widgets::text_width(ui, &s.name, semibold(text::BODY)).min(size::PANE_NAME_MIN_W + space::XXL) + space::SM;
+    let mut room =
+        x - icon_w * bar_n as f32 - space::XS - (head.min.x + size::STRIPE + space::SM) - name_reserve - chip_reserve - size::CHIP - space::SM * 2.0;
+    let dock_on = free_ctls && take_room(&mut room, icon_w);
+    let tear_on = free_ctls && !o.torn && take_room(&mut room, icon_w);
+    let pin_on = !o.mini && !o.maximized && o.mode == Some(LayoutMode::Side) && take_room(&mut room, icon_w);
+    let run_on = run.is_some() && take_room(&mut room, run_main_w + run_caret_w + space::XS * 2.0);
+    let editor_on = editor.is_some() && take_room(&mut room, icon_w);
+
+    // The window bar.
+    if ctl(ui, "x", false, "Close session", &mut x) {
+        actions.push(close_action(s, o.quiet_close));
+    }
+    let toggle_max = || {
+        let id = if o.maximized { "pane_restore" } else { "pane_maximize" };
+        Action::Tool(id, json!({"session_id": s.id, "group": scope.key()}))
+    };
+    if can_max && ctl(ui, if o.maximized { "unmax" } else { "max" }, false, if o.maximized { "Restore" } else { "Maximize" }, &mut x) {
+        actions.push(toggle_max());
+    }
+    if !o.torn && ctl(ui, "min", false, "Minimize", &mut x) {
+        actions.push(Action::Tool("pane_minimize", json!({"session_id": s.id, "group": scope.key()})));
+    }
+    x -= space::XS;
+    if head_resp.double_clicked() && can_max && !o.mini {
+        actions.push(toggle_max());
+    }
     if !o.mini {
         if ctl(ui, "more", false, "More  (Ctrl+.)", &mut x) {
             actions.push(Action::OpenMenu(Menu::Pane { session: s.id.clone(), at: pos2(x + size::CONTROL_SM, head.max.y + space::XS) }));
         }
-        if o.mode == Some(LayoutMode::Free) || o.torn {
-            if !o.torn && ctl(ui, "tear", false, "Tear off into its own window", &mut x) {
-                actions.push(Action::Tool("pane_tear_off", json!({"session_id": s.id, "group": scope.key()})));
-            }
+        if tear_on && ctl(ui, "tear", false, "Tear off into its own window", &mut x) {
+            actions.push(Action::Tool("pane_tear_off", json!({"session_id": s.id, "group": scope.key()})));
+        }
+        if dock_on {
             if o.floating || o.torn {
                 if ctl(ui, "dock", false, if o.torn { "Dock back into the main window" } else { "Dock into the split tree" }, &mut x) {
                     actions.push(Action::Tool("pane_dock", json!({"session_id": s.id, "group": scope.key()})));
@@ -677,7 +967,7 @@ pub fn pane(
                 actions.push(Action::Tool("pane_float", json!({"session_id": s.id, "group": scope.key()})));
             }
         }
-        if o.mode == Some(LayoutMode::Side) {
+        if pin_on {
             let tip = if o.pinned { "Pinned to Side by side. Click to unpin." } else { "Pin to keep it in Side by side" };
             if ctl(ui, "pin", o.pinned, tip, &mut x) {
                 let id = if o.pinned { "layout_unpin" } else { "layout_pin" };
@@ -685,18 +975,16 @@ pub fn pane(
             }
         }
         // `{ }`: open the folder in the default editor; the full list is in the ⋯ menu.
-        if let Some(o) = s.open_with.iter().find(|o| o.is_default).or(s.open_with.first()) {
-            let tip = format!("Open in {} ({})\n{}", o.label, o.program, o.command);
+        if let Some(e) = editor.filter(|_| editor_on) {
+            let tip = format!("Open in {} ({})\n{}", e.label, e.program, e.command);
             if ctl(ui, "braces", false, &tip, &mut x) {
-                actions.push(Action::Tool("open_with", json!({"session_id": s.id, "entry": o.entry_id})));
+                actions.push(Action::Tool("open_with", json!({"session_id": s.id, "entry": e.entry_id})));
             }
         }
-        if let Some(run) = s.default_run() {
+        if run_on {
             // The Run split button: ▶ label | ▾.
-            let label = run.label.clone();
-            let lw = widgets::text_width(ui, &label, theme::medium(text::CAPTION));
-            let main_w = icon::XS + space::XS + lw + space::SM + space::XS + space::XXS;
-            let caret_w = icon::XS + space::SM;
+            let label = run_label;
+            let (main_w, caret_w) = (run_main_w, run_caret_w);
             x -= space::XS;
             let whole = Rect::from_min_max(pos2(x - main_w - caret_w, cy - size::CONTROL_SM / 2.0), pos2(x, cy + size::CONTROL_SM / 2.0));
             x = whole.min.x - space::XS;
@@ -739,7 +1027,8 @@ pub fn pane(
     };
     // In a narrow pane the pill keeps only its glyph (the word is in its tooltip), so the name
     // keeps room to read.
-    let compact = x - space::XS - pill_w - (head.min.x + size::STRIPE + space::SM) < size::PANE_NAME_MIN_W + space::XXL;
+    let compact =
+        x - space::XS - pill_w - (head.min.x + size::STRIPE + space::SM) < (size::PANE_NAME_MIN_W + space::XXL).max(name_reserve + chip_reserve);
     let pill_w = if compact { size::CHIP } else { pill_w };
     let pill = Rect::from_min_size(pos2(x - space::XS - pill_w, cy - size::CHIP / 2.0), vec2(pill_w, size::CHIP));
     if compact {
@@ -965,6 +1254,7 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
         return;
     }
     let state = torn_state(ctx);
+    let quiet_close = !app.prefs.warn_on_close_when_busy;
     {
         let mut st = lock(&state);
         st.model = model.clone();
@@ -985,7 +1275,7 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, 0.0, t.crust);
             if let Some(s) = model.session(&id) {
-                let o = PaneOpts { torn: true, active: true, ..PaneOpts::default() };
+                let o = PaneOpts { torn: true, active: true, quiet_close, ..PaneOpts::default() };
                 pane(ui, &mut lock(&host), &model, s, src.as_deref(), rect.shrink(space::PANE_GAP), o, &Scope::from_key(&key), &mut out);
             }
             if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -1116,6 +1406,38 @@ mod tests {
         assert_eq!(next.sessions(), vec!["a", "b", "c"]);
         assert!(split_drop(&tree, "a", "a", Edge::Left).is_none(), "onto itself changes nothing");
         assert_eq!(split_drop(&tree, "a", "c", Edge::Right).unwrap().sessions(), vec!["b", "c", "a"]);
+    }
+
+    #[test]
+    fn resize_float_follows_the_pointer_within_the_canvas_and_the_minimum() {
+        let canvas = vec2(1000.0, 600.0);
+        let min = vec2(240.0, 120.0);
+        let start = [100.0, 100.0, 400.0, 300.0];
+        let g = |l, r, t, b| Grip { left: l, right: r, top: t, bottom: b };
+        // Right edge out, bottom edge in.
+        assert_eq!(resize_float(start, g(false, true, false, false), vec2(50.0, 9.0), canvas, min), [100.0, 100.0, 450.0, 300.0]);
+        assert_eq!(resize_float(start, g(false, false, false, true), vec2(9.0, -40.0), canvas, min), [100.0, 100.0, 400.0, 260.0]);
+        // Left edge: the right edge stays; the minimum holds; the canvas edge holds.
+        assert_eq!(resize_float(start, g(true, false, false, false), vec2(-30.0, 0.0), canvas, min), [70.0, 100.0, 430.0, 300.0]);
+        assert_eq!(resize_float(start, g(true, false, false, false), vec2(500.0, 0.0), canvas, min), [260.0, 100.0, 240.0, 300.0]);
+        assert_eq!(resize_float(start, g(true, false, false, false), vec2(-500.0, 0.0), canvas, min), [0.0, 100.0, 500.0, 300.0]);
+        // A corner past both canvas edges.
+        assert_eq!(resize_float(start, g(false, true, false, true), vec2(900.0, 900.0), canvas, min), [100.0, 100.0, 900.0, 500.0]);
+        assert_eq!(resize_float(start, g(true, false, true, false), vec2(900.0, 900.0), canvas, min), [260.0, 280.0, 240.0, 120.0]);
+        // A canvas smaller than the minimum: the pane fits the canvas, never negative.
+        let r = resize_float([0.0, 0.0, 100.0, 50.0], g(false, true, false, true), vec2(-500.0, -500.0), vec2(100.0, 50.0), min);
+        assert_eq!(r, [0.0, 0.0, 100.0, 50.0]);
+    }
+
+    #[test]
+    fn resize_bands_straddle_edges_and_the_grip_sits_inside_the_corner() {
+        let r = Rect::from_min_size(pos2(100.0, 100.0), vec2(400.0, 300.0));
+        let band = |label: &str| Grip::ALL.iter().find(|(_, l)| *l == label).map(|(g, _)| g.band(r)).unwrap();
+        assert!(band("Resize left edge").contains(pos2(100.0, 250.0)) && band("Resize left edge").contains(pos2(98.0, 250.0)));
+        assert!(!band("Resize top edge").contains(pos2(300.0, 100.0 + size::PANE_HEADER / 2.0)), "the header's controls stay clickable");
+        let grip = band("Drag to resize");
+        assert!(grip.contains(r.max - Vec2::splat(size::RESIZE_GRIP / 2.0)));
+        assert_eq!(Grip::ALL.iter().filter(|(g, _)| g.band(r).contains(r.center())).count(), 0, "the middle is the terminal's");
     }
 
     #[test]
