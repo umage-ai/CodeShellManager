@@ -71,6 +71,25 @@ pub(crate) fn dialog_answered(app: &mut CsmApp, request: &DialogRequest, path: O
     }
 }
 
+/// Export / Import / Usage picked in the palette: what Settings' buttons do. Import and Usage
+/// open Settings (the review card and the table live there); Export only asks for a path.
+pub(crate) fn from_palette(app: &mut CsmApp, ctx: &egui::Context, id: &str) {
+    match id {
+        "state_export" => app.ui.dialog_request = Some(DialogRequest::SaveBackup { file_name: backup_file_name(now_ms()) }),
+        "state_import" => {
+            app.run(ctx, Action::OpenSettings);
+            app.ui.settings.section = crate::app::SettingsSection::General;
+            app.ui.dialog_request = Some(DialogRequest::OpenBackup);
+        }
+        "usage_stats" => {
+            app.run(ctx, Action::OpenSettings);
+            app.ui.settings.section = crate::app::SettingsSection::Usage;
+            app.ui.settings.usage = UsageState::default();
+        }
+        _ => {}
+    }
+}
+
 /// Replies this module follows (called for every finished call).
 pub(crate) fn on_reply(app: &mut CsmApp, ctx: &egui::Context, call: &Call, reply: &csm_engine::Reply) {
     match call.id.as_str() {
@@ -156,6 +175,15 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     n(&s["replaces"]["groups"]),
                 );
                 ui.add(egui::Label::new(egui::RichText::new(body).font(theme::regular(text::BODY)).color(t.fg2)).wrap());
+                let commands: Vec<&str> = s["commands"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                if !commands.is_empty() {
+                    caption(ui, "The imported sessions run these commands when you wake them:");
+                    widgets::card_frame(&t).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let listing = commands.join("\n");
+                        ui.add(egui::Label::new(egui::RichText::new(listing).font(theme::mono(text::MONO_SM)).color(t.fg)).wrap());
+                    });
+                }
                 let ow = &s["open_with"];
                 if ow["differs"].as_bool() == Some(true) {
                     caption(ui, "The backup has its own Open with list. These programs would run when you use { } or Open with:");

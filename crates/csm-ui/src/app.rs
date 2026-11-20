@@ -1025,6 +1025,8 @@ impl CsmApp {
             }
             "search_output" | "search_notes" => return self.run(ctx, Action::OpenSearch(String::new())),
             "app_quit" => return self.run(ctx, Action::AskQuit),
+            // Backup and Usage: the same path as Settings' buttons (file dialog, then the review).
+            "state_export" | "state_import" | "usage_stats" => return screens::backup::from_palette(self, ctx, id),
             "inspector_show" => {
                 let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
                 return self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));

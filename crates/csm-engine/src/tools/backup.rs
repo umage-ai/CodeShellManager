@@ -205,6 +205,8 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
         "sessions": in_s,
         "groups": in_g,
         "replaces": {"sessions": have_s, "groups": have_g},
+        // What the imported sessions run when woken: a backup is any file someone was handed.
+        "commands": session_commands(&read.state.sessions),
         "open_with": {
             "differs": differs,
             "entries": read.open_with.len(),
@@ -225,6 +227,9 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
         )));
     }
     let adopt = differs && p.adopt_open_with;
+    // Settings only this app has are taken only from a backup this app wrote: a WPF backup
+    // has none of them, and its defaults must not erase ours.
+    let from_rust = read.state.csm_rs_version.is_some();
     let Read { state: mut theirs, open_with, .. } = read;
     // Ours go first, the way closing does it (Recently closed keeps the last ten).
     let ids: Vec<String> = ctx.state.app.sessions.iter().map(|s| s.id.clone()).collect();
@@ -241,7 +246,7 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
     app.last_layout = theirs.last_layout;
     app.ui = theirs.ui;
     app.ui.focused_session = None;
-    adopt_settings(&mut app.settings, &theirs.settings, adopt.then_some(open_with));
+    adopt_settings(&mut app.settings, &theirs.settings, adopt.then_some(open_with), from_rust);
     let (n_s, n_g) = (app.sessions.len(), app.groups.len());
     ctx.state.persist();
     let msg = format!(
@@ -294,8 +299,9 @@ fn adopt_sessions(groups: Vec<SessionGroup>, sessions: Vec<ShellSession>) -> (Ve
 /// The settings an import takes from a backup (the WPF `Import_Click` list, plus the Rust app's
 /// own terminal and slash-command settings). Kept from ours: window and machine settings, the
 /// MCP offer, the API key when the backup has none, and the Open with list unless `open_with`
-/// carries the one the person agreed to.
-fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Option<Vec<OpenWithEntry>>) {
+/// carries the one the person agreed to. The Rust-only settings come along only `from_rust`
+/// (a backup this app wrote; a WPF one doesn't have them).
+fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Option<Vec<OpenWithEntry>>, from_rust: bool) {
     ours.auto_restore_sessions = theirs.auto_restore_sessions;
     ours.auto_resume_claude = theirs.auto_resume_claude;
     ours.show_toast_notifications = theirs.show_toast_notifications;
@@ -333,9 +339,30 @@ fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Optio
     ours.terminal_font_weight = theirs.terminal_font_weight.clone();
     ours.terminal_letter_spacing = theirs.terminal_letter_spacing;
     ours.terminal_line_height = theirs.terminal_line_height;
-    ours.terminal_font_points = theirs.terminal_font_points;
-    ours.terminal_padding = theirs.terminal_padding;
-    ours.claude_commands = SlashCommand::clean_list(&theirs.claude_commands);
+    if from_rust {
+        ours.terminal_font_points = theirs.terminal_font_points;
+        ours.terminal_padding = theirs.terminal_padding;
+        ours.claude_commands = SlashCommand::clean_list(&theirs.claude_commands);
+    }
+}
+
+/// The distinct command lines the backup's sessions start (`command args`), shown before an
+/// import: the imported sessions run them when woken. Control characters shown escaped; at
+/// most 20 lines of at most 300 characters.
+fn session_commands(sessions: &[ShellSession]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in sessions {
+        let line = format!("{} {}", s.command.trim(), s.args.trim());
+        let line: String =
+            line.trim().chars().flat_map(|c| if c.is_control() { c.escape_unicode().collect::<Vec<_>>() } else { vec![c] }).take(300).collect();
+        if !line.is_empty() && !out.contains(&line) {
+            out.push(line);
+        }
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -369,7 +396,7 @@ mod tests {
             ..AppSettings::default()
         };
         let mut a = ours.clone();
-        adopt_settings(&mut a, &theirs, None);
+        adopt_settings(&mut a, &theirs, None, true);
         assert!(!a.auto_restore_sessions);
         assert_eq!(a.default_command, "codex");
         assert_eq!(a.launch_commands, ["codex", "pwsh"], "control characters and duplicates dropped");
@@ -379,9 +406,27 @@ mod tests {
         assert!(a.offer_mcp_to_claude, "the MCP offer changes the claude command line: not imported");
         assert_eq!(a.open_with, ours.open_with, "the Open with list is kept unless the person agreed");
         let mut b = ours.clone();
-        adopt_settings(&mut b, &theirs, Some(vec![entry("Agreed", r"C:\Agreed.exe")]));
+        adopt_settings(&mut b, &theirs, Some(vec![entry("Agreed", r"C:\Agreed.exe")]), true);
         assert_eq!(b.open_with[0].label, "Agreed");
         assert!(b.open_with_seeded);
+    }
+
+    #[test]
+    fn a_wpf_backup_leaves_the_rust_only_settings_alone() {
+        let ours = AppSettings { claude_commands: vec![SlashCommand::new("/mine", "")], terminal_padding: 9, terminal_font_points: 14, ..AppSettings::default() };
+        let theirs = AppSettings { default_command: "codex".into(), ..AppSettings::default() };
+        let mut a = ours.clone();
+        adopt_settings(&mut a, &theirs, None, false);
+        assert_eq!(a.default_command, "codex", "the WPF list is still taken");
+        assert_eq!(a.claude_commands, ours.claude_commands);
+        assert_eq!((a.terminal_padding, a.terminal_font_points), (9, 14));
+    }
+
+    #[test]
+    fn the_review_lists_what_the_imported_sessions_run() {
+        let mk = |c: &str, a: &str| ShellSession { command: c.into(), args: a.into(), ..ShellSession::default() };
+        let got = session_commands(&[mk("claude", ""), mk(" claude ", " "), mk("pwsh", "-c evil\nrm"), mk("", "")]);
+        assert_eq!(got, ["claude", "pwsh -c evil\\u{a}rm"]);
     }
 
     #[test]

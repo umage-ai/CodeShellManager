@@ -264,6 +264,8 @@ fn import_reviews_the_backup_and_asks_before_replacing() {
     settle(&mut h);
     assert!(h.query_by_label_contains("This backup has 1 sessions").is_some());
     assert!(h.query_by_label_contains("Backup editor").is_some(), "the backup's Open with commands are shown");
+    assert!(h.query_by_label_contains("run these commands when you wake them").is_some(), "and what its sessions run");
+    assert!(has(&h, "pwsh"));
     assert!(has(&h, "Replace my Open with list with this one"));
 
     click_below(&mut h, "Import and replace");
@@ -319,4 +321,24 @@ fn claude_commands_are_edited_in_settings() {
     let cmds = commands_in(&params);
     assert_eq!(cmds.last().map(String::as_str), Some("/review"));
     assert!(!cmds.iter().any(|c| c == "/help"), "built on the saved list");
+}
+
+#[test]
+fn export_import_and_usage_from_the_palette_take_the_settings_route() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::PaletteTool("state_export"));
+    settle(&mut h);
+    assert!(matches!(h.state_mut().take_dialog_request(), Some(DialogRequest::SaveBackup { .. })), "a path is asked for, not a toast");
+
+    h.state_mut().run(&ctx, Action::PaletteTool("state_import"));
+    settle(&mut h);
+    assert!(h.state().ui.settings.open, "the review card lives in Settings");
+    assert_eq!(h.state_mut().take_dialog_request(), Some(DialogRequest::OpenBackup));
+
+    h.state_mut().run(&ctx, Action::PaletteTool("usage_stats"));
+    settle(&mut h);
+    settle(&mut h);
+    assert_eq!(h.state().ui.settings.section, SettingsSection::Usage);
+    assert!(has(&h, "claude"), "the table shows");
 }
