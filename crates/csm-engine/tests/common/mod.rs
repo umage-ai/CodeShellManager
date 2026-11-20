@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 
 pub struct FakePty {
     pub argv: Vec<String>,
+    /// The environment changes the spawn asked for (`None` removes).
+    pub env: Vec<(String, Option<String>)>,
     pub size: Mutex<PtySize>,
     pub first_size: PtySize,
     sink: Mutex<Option<OutputSink>>,
@@ -33,6 +35,7 @@ impl FakePty {
     fn new(opts: &SpawnOptions) -> Self {
         Self {
             argv: opts.argv.iter().map(|a| a.to_string_lossy().into_owned()).collect(),
+            env: opts.env.iter().map(|(k, v)| (k.to_string_lossy().into_owned(), v.as_ref().map(|v| v.to_string_lossy().into_owned()))).collect(),
             size: Mutex::new(opts.size),
             first_size: opts.size,
             sink: Mutex::new(None),

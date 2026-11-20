@@ -24,6 +24,7 @@ pub mod probe_gate;
 pub mod program_status_payload;
 pub mod program_status_records;
 pub mod recent_sessions;
+pub mod session_env;
 pub mod session_manager;
 pub mod session_names;
 pub mod session_order;

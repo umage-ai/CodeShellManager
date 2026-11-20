@@ -471,6 +471,8 @@ impl SpawnJob {
         if let Some(path) = plan.path {
             opts.env.push(("PATH".into(), Some(path)));
         }
+        // Issue #162: never hand a session the launching terminal's session markers.
+        opts.env.extend(crate::launch::inherited_env_changes());
         opts.env.push(("TERM".into(), Some("xterm-256color".into())));
         opts.env.push(("COLORTERM".into(), Some("truecolor".into())));
         opts.env.push(("CSM_SESSION_ID".into(), Some(self.session.id.clone().into())));
