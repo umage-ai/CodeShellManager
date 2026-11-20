@@ -471,7 +471,8 @@ mod tests {
             fs::write(&path, "torn again").unwrap();
             keep_unreadable(&path, LoadSource::Unreadable, T0 + i);
         }
-        let bad = fs::read_dir(dir.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("state.json.bad-")).count();
+        let bad =
+            fs::read_dir(dir.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("state.json.bad-")).count();
         assert_eq!(bad, BAD_COPIES_KEPT);
         // Nothing to do for a good load.
         assert!(keep_unreadable(&path, LoadSource::Primary, T0).is_empty());

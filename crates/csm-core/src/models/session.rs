@@ -220,13 +220,13 @@ impl ShellSession {
     pub fn launch_validation_error(&self) -> Option<&'static str> {
         match self.kind {
             SessionKind::Ssh if self.ssh_host.trim().is_empty() => Some("This SSH session has no host. Edit the session and set one."),
-            SessionKind::Ssh if !is_argument_safe_name(&self.ssh_host) || !is_argument_safe_name(&self.ssh_user) => {
-                Some("This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.")
-            }
+            SessionKind::Ssh if !is_argument_safe_name(&self.ssh_host) || !is_argument_safe_name(&self.ssh_user) => Some(
+                "This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.",
+            ),
             SessionKind::Wsl if self.wsl_distro.trim().is_empty() => Some("This WSL session has no distro. Edit the session and pick one."),
-            SessionKind::Wsl if !is_argument_safe_name(&self.wsl_distro) || !is_argument_safe_name(&self.wsl_user) => {
-                Some("This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.")
-            }
+            SessionKind::Wsl if !is_argument_safe_name(&self.wsl_distro) || !is_argument_safe_name(&self.wsl_user) => Some(
+                "This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.",
+            ),
             _ => None,
         }
     }
@@ -413,7 +413,8 @@ mod tests {
     fn option_like_wsl_and_ssh_names_are_refused() {
         // Issue #123: `wsl.exe -d "--help"` still parses `--help` as an option, quoted or not.
         let wsl = |d: &str, u: &str| ShellSession { kind: SessionKind::Wsl, wsl_distro: d.into(), wsl_user: u.into(), ..Default::default() };
-        for (d, u) in [("--help", ""), ("-x", ""), ("  -d", ""), ("Ubuntu", "-u"), ("Ubuntu", " --exec"), ("Ubu\u{7}ntu", ""), ("Ubuntu", "al\nice")] {
+        for (d, u) in [("--help", ""), ("-x", ""), ("  -d", ""), ("Ubuntu", "-u"), ("Ubuntu", " --exec"), ("Ubu\u{7}ntu", ""), ("Ubuntu", "al\nice")]
+        {
             let msg = wsl(d, u).launch_validation_error();
             assert!(msg.is_some_and(|m| m.contains("option")), "{d:?}/{u:?}: {msg:?}");
         }

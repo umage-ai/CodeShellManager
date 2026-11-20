@@ -78,8 +78,12 @@ impl fmt::Display for LaunchError {
         match self {
             Self::MissingSshHost => f.write_str("SshHost must be set for remote sessions."),
             Self::MissingWslDistro => f.write_str("WslDistro must be set for WSL sessions."),
-            Self::OptionLikeSshName => f.write_str("The SSH host or user starts with '-' or contains a control character; ssh would read it as an option."),
-            Self::OptionLikeWslName => f.write_str("The WSL distro or user name starts with '-' or contains a control character; wsl.exe would read it as an option."),
+            Self::OptionLikeSshName => {
+                f.write_str("The SSH host or user starts with '-' or contains a control character; ssh would read it as an option.")
+            }
+            Self::OptionLikeWslName => {
+                f.write_str("The WSL distro or user name starts with '-' or contains a control character; wsl.exe would read it as an option.")
+            }
         }
     }
 }
@@ -123,13 +127,13 @@ fn check_wsl(spec: &LaunchSpec) -> Result<(), LaunchError> {
 pub fn launch_validation_error(spec: &LaunchSpec) -> Option<&'static str> {
     match spec.kind {
         SessionKind::Ssh if blank(&spec.ssh_host) => Some("This SSH session has no host. Edit the session and set one."),
-        SessionKind::Ssh if check_ssh(spec).is_err() => {
-            Some("This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.")
-        }
+        SessionKind::Ssh if check_ssh(spec).is_err() => Some(
+            "This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.",
+        ),
         SessionKind::Wsl if blank(&spec.wsl_distro) => Some("This WSL session has no distro. Edit the session and pick one."),
-        SessionKind::Wsl if check_wsl(spec).is_err() => {
-            Some("This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.")
-        }
+        SessionKind::Wsl if check_wsl(spec).is_err() => Some(
+            "This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.",
+        ),
         _ => None,
     }
 }
