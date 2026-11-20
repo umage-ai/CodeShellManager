@@ -199,6 +199,7 @@ fn group_delete(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let ui = &mut ctx.state.app.ui;
     ui.layouts.remove(&g.id);
     ui.torn_off_groups.retain(|t| *t != g.id);
+    ui.group_focus.remove(&g.id);
     if ui.rail_tab.as_deref() == Some(g.id.as_str()) {
         ui.rail_tab = None;
     }

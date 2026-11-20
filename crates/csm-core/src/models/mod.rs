@@ -20,6 +20,6 @@ pub use group::SessionGroup;
 pub use open_with::OpenWithEntry;
 pub use recently_closed::RecentlyClosedEntry;
 pub use run_command::{RunCommandItem, RunMode};
-pub use session::{SessionKind, SessionStatus, ShellSession, get_file_name};
+pub use session::{SessionKind, SessionStatus, ShellSession, get_file_name, is_argument_safe_name};
 pub use slash_command::SlashCommand;
 pub use ui_state::{ALL_LAYOUT_KEY, GroupLayout, InspectorTab, LayoutMode, UiState, WindowSlot, group_window_key, pane_window_key};

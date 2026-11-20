@@ -130,6 +130,8 @@ pub struct LoadReport {
     pub path: Option<PathBuf>,
     /// `None` when nothing was read (no path).
     pub source: Option<LoadSource>,
+    /// Unreadable state files kept aside as `<file>.bad-<ms>` (issue #166); empty normally.
+    pub set_aside: Vec<PathBuf>,
 }
 
 /// Progress of a long loop (restore, bulk restart, quit), for the rail and the shutdown board.
@@ -217,6 +219,9 @@ impl State {
         let mut seen = HashSet::new();
         app.groups.retain(|g| !g.id.trim().is_empty() && seen.insert(g.id.clone()));
         app.recently_closed.truncate(crate::lifecycle::MAX_RECENTLY_CLOSED);
+        // The file is untrusted: remember a focus only for a group and session that exist.
+        let (groups, sessions) = (&app.groups, &app.sessions);
+        app.ui.group_focus.retain(|g, s| groups.iter().any(|x| &x.id == g) && sessions.iter().any(|x| &x.id == s && &x.group_id == g));
         let focused = app.ui.focused_session.clone().filter(|f| app.sessions.iter().any(|s| &s.id == f));
         let mut rt = Runtime { focused, dirty: true, index: crate::index::open(&options), ..Runtime::default() };
         if options.saves()
@@ -245,7 +250,16 @@ impl State {
             }
             _ => {}
         }
-        (State::new(app, options), LoadReport { path, source })
+        // Issue #166: an unreadable file is kept where no save can overwrite it (only when this
+        // run saves at all: `--clean` and isolated runs never touch the disk).
+        let set_aside = match (&path, source) {
+            (Some(p), Some(src)) if options.saves() => persist::keep_unreadable(p, src, crate::session::now_ms()),
+            _ => Vec::new(),
+        };
+        for f in &set_aside {
+            log::warn!("state: the unreadable file was kept as {}", f.display());
+        }
+        (State::new(app, options), LoadReport { path, source, set_aside })
     }
 
     pub fn options(&self) -> &StateOptions {

@@ -471,6 +471,8 @@ impl SpawnJob {
         if let Some(path) = plan.path {
             opts.env.push(("PATH".into(), Some(path)));
         }
+        // Issue #162: never hand a session the launching terminal's session markers.
+        opts.env.extend(crate::launch::inherited_env_changes());
         opts.env.push(("TERM".into(), Some("xterm-256color".into())));
         opts.env.push(("COLORTERM".into(), Some("truecolor".into())));
         opts.env.push(("CSM_SESSION_ID".into(), Some(self.session.id.clone().into())));
@@ -670,6 +672,16 @@ pub(crate) fn apply_term_events(ctx: &mut Ctx<'_>, id: &str, instance: u64, even
                 rt.cwd = Some(uri.chars().filter(|c| !c.is_control()).take(1024).collect());
             }
             TermEvent::Title(t) => rt.title = si::sanitize_title(&t),
+            // OSC 52 copy (#156). The UI sets the clipboard on its own thread; the text never
+            // rides an event. Queries (reads) are never answered (`csm_term`).
+            TermEvent::ClipboardStore(text) => {
+                if !state.app.settings.allow_osc52_clipboard {
+                    log::debug!("session {id}: OSC 52 copy ignored (turned off in settings)");
+                } else if text.len() <= csm_term::MAX_CLIPBOARD_STORE_BYTES {
+                    ctx.engine.offer_clipboard(text);
+                    ctx.events.emit(Event::ClipboardOffered { session_id: id.to_owned() });
+                }
+            }
             _ => {}
         }
     }
@@ -893,6 +905,10 @@ pub(crate) fn focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError
     ctx.state.rt.focused = Some(id.to_owned());
     let restoring = ctx.state.rt.restore.is_some();
     let group = ctx.state.app.sessions.get(i).map(|s| s.group_id.clone()).unwrap_or_default();
+    // Issue #137: the group's rail tab brings this session back.
+    if !group.is_empty() {
+        ctx.state.app.ui.group_focus.insert(group.clone(), id.to_owned());
+    }
     if let Some(s) = ctx.state.app.sessions.get_mut(i)
         && !restoring
     {

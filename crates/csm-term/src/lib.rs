@@ -83,6 +83,10 @@ impl Default for TermConfig {
     }
 }
 
+/// The largest OSC 52 copy passed on as [`TermEvent::ClipboardStore`] (decoded text, bytes).
+/// A larger one is dropped here, so no host ever carries it.
+pub const MAX_CLIPBOARD_STORE_BYTES: usize = 1024 * 1024;
+
 /// Things the host should know about, in stream order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
@@ -134,7 +138,8 @@ impl EventListener for Listener {
             Event::Title(t) => shared.push(TermEvent::Title(t)),
             Event::ResetTitle => shared.push(TermEvent::Title(String::new())),
             Event::Bell => shared.push(TermEvent::Bell),
-            Event::ClipboardStore(_, text) => shared.push(TermEvent::ClipboardStore(text)),
+            Event::ClipboardStore(_, text) if text.len() <= MAX_CLIPBOARD_STORE_BYTES => shared.push(TermEvent::ClipboardStore(text)),
+            Event::ClipboardStore(_, text) => log::warn!("an OSC 52 copy of {} bytes was dropped (over the cap)", text.len()),
             // Never answer an OSC 52 read: it would hand the clipboard to whatever is printing.
             Event::ClipboardLoad(..) => {}
             Event::MouseCursorDirty | Event::CursorBlinkingChange | Event::Wakeup | Event::Exit | Event::ChildExit(_) => {}

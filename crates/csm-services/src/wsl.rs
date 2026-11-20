@@ -68,7 +68,8 @@ pub fn parse_distros(raw: &str) -> Vec<WslDistro> {
         };
         results.push(WslDistro { name, version, is_default, state });
     }
-    results.retain(|d| !is_docker_internal_distro(&d.name));
+    // A name wsl.exe would read as an option (`-d --help`) can never be launched safely (#123).
+    results.retain(|d| !is_docker_internal_distro(&d.name) && !d.name.starts_with('-') && !d.name.chars().any(char::is_control));
     results.sort_by(|a, b| b.is_default.cmp(&a.is_default).then_with(|| a.name.to_uppercase().cmp(&b.name.to_uppercase())));
     results
 }
@@ -199,6 +200,13 @@ mod tests {
         assert_eq!(r[0].state, "Running");
         assert_eq!(r[0].version, 2);
         assert!(r[0].is_default);
+    }
+
+    #[test]
+    fn parse_drops_option_like_distro_names() {
+        let raw = "  NAME   STATE   VERSION\n* Ubuntu Running 2\n  --help Stopped 2\n  -x Stopped 1\n";
+        let r = parse_distros(raw);
+        assert_eq!(r.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Ubuntu"]);
     }
 
     #[test]

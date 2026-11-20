@@ -157,6 +157,10 @@ pub struct UiState {
     /// dropped, never the rest of the UI state.
     #[serde(deserialize_with = "lenient_windows", skip_serializing_if = "BTreeMap::is_empty")]
     pub windows: BTreeMap<String, WindowSlot>,
+    /// The session last focused in each group, by group id (issue #137): selecting the group's
+    /// rail tab focuses it again. Read entry by entry, like `windows`.
+    #[serde(deserialize_with = "lenient_group_focus", skip_serializing_if = "BTreeMap::is_empty")]
+    pub group_focus: BTreeMap<String, String>,
 }
 
 impl Default for UiState {
@@ -170,6 +174,7 @@ impl Default for UiState {
             torn_off_groups: Vec::new(),
             focused_session: None,
             windows: BTreeMap::new(),
+            group_focus: BTreeMap::new(),
         }
     }
 }
@@ -188,6 +193,16 @@ pub(crate) fn lenient<'de, D: Deserializer<'de>>(d: D) -> Result<UiState, D::Err
     Ok(serde_json::from_value(v).unwrap_or_default())
 }
 
+fn lenient_group_focus<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    let serde_json::Value::Object(m) = serde_json::Value::deserialize(d)? else { return Ok(BTreeMap::new()) };
+    Ok(m.into_iter()
+        .filter_map(|(k, v)| match v {
+            serde_json::Value::String(s) => Some((k, s)),
+            _ => None,
+        })
+        .collect())
+}
+
 fn lenient_windows<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, WindowSlot>, D::Error> {
     let serde_json::Value::Object(m) = serde_json::Value::deserialize(d)? else { return Ok(BTreeMap::new()) };
     Ok(m.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|w| (k, w))).collect())
@@ -196,6 +211,22 @@ fn lenient_windows<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, W
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_focus_round_trips_and_a_bad_entry_costs_only_itself() {
+        let mut ui = UiState::default();
+        assert!(!serde_json::to_string(&ui).unwrap().contains("GroupFocus"), "not written when empty");
+        ui.group_focus.insert("g1".into(), "s2".into());
+        let json = serde_json::to_string(&ui).unwrap();
+        assert!(json.contains(r#""GroupFocus":{"g1":"s2"}"#), "{json}");
+        assert_eq!(serde_json::from_str::<UiState>(&json).unwrap(), ui);
+        let mixed = r#"{"Inspector":"git","GroupFocus":{"a":"x","b":7,"c":null}}"#;
+        let back: UiState = serde_json::from_str(mixed).unwrap();
+        assert_eq!(back.inspector, Some(InspectorTab::Git));
+        assert_eq!(back.group_focus.len(), 1);
+        let back: UiState = serde_json::from_str(r#"{"GroupFocus":"nonsense","Inspector":"git"}"#).unwrap();
+        assert!(back.group_focus.is_empty() && back.inspector == Some(InspectorTab::Git));
+    }
 
     #[test]
     fn window_slots_round_trip_and_a_bad_one_costs_only_itself() {

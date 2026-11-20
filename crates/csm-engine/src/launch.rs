@@ -21,6 +21,15 @@ use csm_services::launch::{self as sl, LaunchSpec};
 
 use crate::{proc, which, wsl_probe};
 
+/// The environment changes every session and run command starts with (issue #162): the
+/// launching terminal's session markers (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `WT_SESSION`,
+/// `VSCODE_*`, …) removed, `TERM_PROGRAM`/`TERM_PROGRAM_VERSION`/`CSM_ENV` set. Reads the
+/// current environment's names, fresh each time; call it on the spawning worker.
+pub fn inherited_env_changes() -> Vec<(OsString, Option<OsString>)> {
+    let names: Vec<OsString> = std::env::vars_os().map(|(k, _)| k).collect();
+    csm_core::session_env::session_env_changes(names.iter().map(OsString::as_os_str), env!("CARGO_PKG_VERSION"))
+}
+
 /// `ClaudeSessionService.IsClaudeCommand`.
 pub fn is_claude_command(command: &str) -> bool {
     let c = command.trim();

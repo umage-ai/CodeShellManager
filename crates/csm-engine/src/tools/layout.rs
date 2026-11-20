@@ -197,11 +197,29 @@ fn view_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         };
     }
     if let Some(tab) = p.rail_tab {
-        ctx.state.app.ui.rail_tab = (tab != "all").then_some(tab);
+        ctx.state.app.ui.rail_tab = (tab != "all").then_some(tab.clone());
+        if tab != "all"
+            && let Some(id) = group_tab_focus(ctx.state, &tab)
+        {
+            crate::lifecycle::focus(ctx, &id)?;
+        }
     }
     ctx.state.persist();
     let v = view_json(ctx);
     Ok(ToolOutput::new("View changed.", v))
+}
+
+/// The session to focus when the rail switches to `group` (issue #137): `None` when the focused
+/// session is already in it. Otherwise the session last focused in that group, when it is still
+/// there and awake; else the group's first awake session; `None` when every one is asleep (the
+/// tab only filters; waking is the person's call).
+fn group_tab_focus(state: &crate::State, group: &str) -> Option<String> {
+    let in_group = |id: &str| state.app.sessions.iter().find(|s| s.id == id && s.group_id == group);
+    if state.rt.focused.as_deref().is_some_and(|f| in_group(f).is_some()) {
+        return None;
+    }
+    let remembered = state.app.ui.group_focus.get(group).and_then(|id| in_group(id)).filter(|s| !s.is_dormant);
+    remembered.or_else(|| state.app.sessions.iter().find(|s| s.group_id == group && !s.is_dormant)).map(|s| s.id.clone())
 }
 
 /// Resolves a `group` param to a layout key.

@@ -476,3 +476,79 @@ fn settings_change_through_the_page_and_the_engine_keeps_them() {
     r.h.get_by_label("Settings: About").click();
     r.until("app_info", |r| r.has_contains("CodeShellManager 0."));
 }
+
+#[test]
+fn a_group_tab_brings_back_the_session_last_focused_in_that_group() {
+    // Issue #137. Rail view (the default): two groups, the second session of Alpha focused.
+    let mut r = rig(true);
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    let group =
+        |r: &Rig, name: &str| r.engine.call(Caller::Ui, "group_new", json!({"name": name})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    let (alpha, beta) = (group(&r, "Alpha"), group(&r, "Beta"));
+    let new = |r: &Rig, name: &str, g: &str| {
+        let out = r.engine.call(Caller::Ui, "session_new", json!({"folder": r.folder, "command": "pwsh", "name": name, "group": g})).unwrap();
+        out.data["id"].as_str().unwrap().to_owned()
+    };
+    let (_a1, a2, b1) = (new(&r, "a-one", &alpha), new(&r, "a-two", &alpha), new(&r, "b-one", &beta));
+    r.engine.call(Caller::Ui, "session_focus", json!({"session_id": a2})).unwrap();
+    r.until("Alpha's tab with a-two", |r| r.h.state().model.active.as_deref() == Some(a2.as_str()));
+
+    r.h.get_by_label("Group tab: Beta").click();
+    r.until("Beta's session focused", |r| r.engine.view().focused.as_deref() == Some(b1.as_str()));
+    r.until("the UI follows", |r| r.h.state().model.active.as_deref() == Some(b1.as_str()));
+
+    r.h.get_by_label("Group tab: Alpha").click();
+    r.until("a-two again, not the group's first session", |r| r.engine.view().focused.as_deref() == Some(a2.as_str()));
+    r.until("the UI follows", |r| r.h.state().model.active.as_deref() == Some(a2.as_str()));
+    let calls: Vec<String> = r.h.state().submitted().iter().map(|c| c.id.clone()).collect();
+    assert!(calls.iter().filter(|c| *c == "view_set").count() >= 2, "through the view_set tool: {calls:?}");
+    // The All tab only widens the filter: the focus stays.
+    r.h.get_by_label("Group tab: All sessions").click();
+    r.until("All", |r| r.engine.view().rail_tab.is_none());
+    assert_eq!(r.engine.view().focused.as_deref(), Some(a2.as_str()));
+}
+
+/// Steps until a frame's output asks egui to copy `text` (bounded by time).
+fn copied(r: &mut Rig, text: &str, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        r.h.step();
+        let hit = r.h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == text));
+        if hit {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+#[test]
+fn an_osc52_copy_from_a_session_sets_the_clipboard_unless_turned_off() {
+    // Issue #156: tmux and Claude Code's fullscreen mode copy through OSC 52.
+    let mut r = rig(true);
+    r.until("the empty screen", |r| r.has("No sessions yet"));
+    r.new_session(1);
+    r.until("the PTY", |r| r.pty(0).is_some());
+    let pty = r.pty(0).unwrap();
+    pty.emit(b"\x1b]52;c;aGVsbG8=\x07"); // "hello"
+    assert!(copied(&mut r, "hello", Duration::from_secs(10)), "the UI put the text on the clipboard");
+    // A query is never answered: nothing is written back to the program.
+    let before = pty.written.lock().unwrap().len();
+    pty.emit(b"\x1b]52;c;?\x07");
+    assert!(!copied(&mut r, "hello", Duration::from_millis(300)));
+    assert_eq!(pty.written.lock().unwrap().len(), before, "no reply to a clipboard read");
+
+    // Turned off in Settings (through settings_set): ignored.
+    let ctx = r.h.ctx.clone();
+    r.h.state_mut().run(&ctx, csm_ui::Action::OpenSettings);
+    r.until("the page", |r| r.has("Settings: Appearance"));
+    r.h.get_by_label("Settings: Appearance").click();
+    r.until("the toggle", |r| r.has("Let programs copy to the clipboard"));
+    r.h.get_by_label("Let programs copy to the clipboard").click();
+    r.until("the engine's setting", |r| {
+        r.engine.call(Caller::Ui, "settings_get", json!({"key": "AllowOsc52Clipboard"})).unwrap().data["value"] == false
+    });
+    pty.emit(b"\x1b]52;c;c2VjcmV0\x07"); // "secret"
+    assert!(!copied(&mut r, "secret", Duration::from_millis(500)));
+    assert_eq!(r.engine.take_clipboard(), None);
+}

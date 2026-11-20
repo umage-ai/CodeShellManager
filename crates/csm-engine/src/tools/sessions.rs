@@ -371,6 +371,9 @@ fn apply_connection(
                     if v.chars().any(char::is_whitespace) {
                         return Err(ToolError::InvalidParams(format!("`{k}` may not contain spaces")));
                     }
+                    if v.starts_with('-') {
+                        return Err(ToolError::InvalidParams(format!("`{k}` may not start with '-' (ssh would read it as an option)")));
+                    }
                 }
                 s.ssh_host = x.host.trim().to_owned();
                 s.ssh_user = x.user.unwrap_or_default().trim().to_owned();

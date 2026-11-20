@@ -122,6 +122,9 @@ pub struct Engine {
     registry: Arc<Registry>,
     joined: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     view: Arc<Mutex<Arc<Snapshot>>>,
+    /// Text a session asked to put on the clipboard (OSC 52), waiting for the UI (issue #156).
+    /// Kept here, not in an event: events reach IPC clients, the clipboard must not.
+    clipboard: Arc<Mutex<Option<String>>>,
 }
 
 impl Engine {
@@ -138,6 +141,7 @@ impl Engine {
             registry: registry.clone(),
             joined: Arc::new(Mutex::new(None)),
             view: Arc::new(Mutex::new(Arc::new(Snapshot::default()))),
+            clipboard: Arc::new(Mutex::new(None)),
         };
         let worker = engine.clone();
         let (ready_tx, ready_rx) = mpsc::channel::<()>();
@@ -173,6 +177,17 @@ impl Engine {
     /// The terminal of a live session, for rendering and widget-level input.
     pub fn terminal(&self, session_id: &str) -> Option<TerminalHandle> {
         self.view().terminal(session_id).cloned()
+    }
+
+    /// The text a session last asked to put on the clipboard (OSC 52), once: the UI calls this
+    /// when it sees [`Event::ClipboardOffered`] and sets the clipboard itself. One short lock,
+    /// like [`Engine::view`].
+    pub fn take_clipboard(&self) -> Option<String> {
+        self.clipboard.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    pub(crate) fn offer_clipboard(&self, text: String) {
+        *self.clipboard.lock().unwrap_or_else(PoisonError::into_inner) = Some(text);
     }
 
     pub(crate) fn publish(&self, snapshot: Arc<Snapshot>) {

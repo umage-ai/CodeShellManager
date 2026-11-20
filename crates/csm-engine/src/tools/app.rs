@@ -174,6 +174,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("TerminalPadding").or_insert(json!(s.terminal_padding));
         m.entry("TerminalFontPoints").or_insert(json!(s.terminal_font_points));
         m.entry("ClaudeCommands").or_insert(json!(s.claude_commands));
+        m.entry("AllowOsc52Clipboard").or_insert(json!(s.allow_osc52_clipboard));
     }
     Ok(v)
 }

@@ -98,6 +98,130 @@ pub fn read_window_state(primary: Option<&str>, backup: Option<&str>) -> Option<
     [primary, backup].into_iter().flatten().find_map(|text| serde_json::from_str::<SavedWindowState>(strip_bom(text)).ok())
 }
 
+// ── Rolling snapshots (issue #166) ──────────────────────────────────────────────────────
+//
+// `state.json` is rewritten on almost every action and keeps one `.bak`, so a bad change (a bulk
+// close, a bad import) is rotated out within seconds. The saver also keeps older generations in
+// `snapshots/`: at most one per hour, every one from the last day, the newest of each day for
+// the week before, never more than [`SNAPSHOT_MAX`]. The decisions are here, pure; the I/O is
+// the engine's. Times are the snapshots' file-name stamps (ms since the epoch), so the schedule
+// survives restarts.
+
+const HOUR_MS: i64 = 3_600_000;
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+/// The least time between two snapshots.
+pub const SNAPSHOT_EVERY_MS: i64 = HOUR_MS;
+/// Every snapshot this young is kept.
+pub const SNAPSHOT_HOURLY_FOR_MS: i64 = DAY_MS;
+/// Older ones are thinned to one a day, up to this age; older still are deleted.
+pub const SNAPSHOT_DAILY_FOR_MS: i64 = 8 * DAY_MS;
+/// The cap on the whole set (24 hourly + 7 daily fit).
+pub const SNAPSHOT_MAX: usize = 32;
+
+/// True when a new snapshot is due: none yet, the newest is at least [`SNAPSHOT_EVERY_MS`] old,
+/// or it is that far in the *future* (the clock was set back; waiting would stall the schedule).
+pub fn snapshot_due(newest_ms: Option<i64>, now_ms: i64) -> bool {
+    match newest_ms {
+        None => true,
+        Some(t) => now_ms.saturating_sub(t) >= SNAPSHOT_EVERY_MS || t.saturating_sub(now_ms) >= SNAPSHOT_EVERY_MS,
+    }
+}
+
+/// Which of the snapshots stamped `times` to keep at `now_ms`, newest first: all from the last
+/// day (future stamps count as new), the newest of each older day up to
+/// [`SNAPSHOT_DAILY_FOR_MS`], at most [`SNAPSHOT_MAX`]. Everything else is deleted by the caller.
+pub fn snapshots_to_keep(times: &[i64], now_ms: i64) -> Vec<i64> {
+    let mut sorted: Vec<i64> = times.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    sorted.dedup();
+    let mut keep = Vec::new();
+    let mut last_day: Option<i64> = None;
+    for t in sorted {
+        let age = now_ms.saturating_sub(t).max(0);
+        if age <= SNAPSHOT_HOURLY_FOR_MS {
+            keep.push(t);
+        } else if age < SNAPSHOT_DAILY_FOR_MS {
+            let day = age / DAY_MS;
+            if last_day != Some(day) {
+                last_day = Some(day);
+                keep.push(t);
+            }
+        }
+        if keep.len() >= SNAPSHOT_MAX {
+            break;
+        }
+    }
+    keep
+}
+
+/// `state-<ms>.json`, the snapshot file name for a stamp.
+pub fn snapshot_file_name(ms: i64) -> String {
+    format!("state-{ms}.json")
+}
+
+/// The stamp of a snapshot file name; `None` for anything else (never a panic: the folder is
+/// the user's).
+pub fn parse_snapshot_file_name(name: &str) -> Option<i64> {
+    let digits = name.strip_prefix("state-")?.strip_suffix(".json")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_snapshot_is_due_hourly_and_after_a_clock_jump() {
+        assert!(snapshot_due(None, NOW));
+        assert!(!snapshot_due(Some(NOW - HOUR_MS + 1), NOW));
+        assert!(snapshot_due(Some(NOW - HOUR_MS), NOW));
+        assert!(!snapshot_due(Some(NOW + 60_000), NOW));
+        assert!(snapshot_due(Some(NOW + 2 * HOUR_MS), NOW));
+    }
+
+    #[test]
+    fn retention_keeps_the_last_day_then_one_a_day_for_a_week_bounded() {
+        // One snapshot every hour for ten days.
+        let times: Vec<i64> = (0..240).map(|h| NOW - h * HOUR_MS).collect();
+        let keep = snapshots_to_keep(&times, NOW);
+        assert!(keep.len() <= SNAPSHOT_MAX);
+        // The whole last day.
+        assert!((0..=24).all(|h| keep.contains(&(NOW - h * HOUR_MS))), "{keep:?}");
+        // Nothing beyond eight days.
+        assert!(keep.iter().all(|t| NOW - t <= SNAPSHOT_DAILY_FOR_MS));
+        // One per day for the older ones.
+        let older: Vec<i64> = keep.iter().filter(|t| NOW - **t > DAY_MS).map(|t| (NOW - t) / DAY_MS).collect();
+        let mut days = older.clone();
+        days.dedup();
+        assert_eq!(older, days);
+        assert_eq!(days, (1..=7).collect::<Vec<_>>());
+        // Newest first.
+        assert!(keep.windows(2).all(|w| w[0] > w[1]));
+    }
+
+    #[test]
+    fn retention_is_bounded_even_for_a_burst_and_keeps_future_stamps() {
+        let burst: Vec<i64> = (0..100).map(|i| NOW - i * 1000).collect();
+        assert_eq!(snapshots_to_keep(&burst, NOW).len(), SNAPSHOT_MAX);
+        assert_eq!(snapshots_to_keep(&[NOW + DAY_MS * 3], NOW), vec![NOW + DAY_MS * 3]);
+        assert!(snapshots_to_keep(&[], NOW).is_empty());
+    }
+
+    #[test]
+    fn snapshot_names_round_trip_and_reject_strangers() {
+        assert_eq!(parse_snapshot_file_name(&snapshot_file_name(NOW)), Some(NOW));
+        for bad in ["state-.json", "state-12a.json", "state-1.json.tmp", "other.json", "state--1.json", "state-99999999999999999999999.json"] {
+            assert_eq!(parse_snapshot_file_name(bad), None, "{bad}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

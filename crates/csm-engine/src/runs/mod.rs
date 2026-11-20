@@ -336,6 +336,7 @@ fn spawn_run(
     opts.cwd = p.cwd;
     opts.allow_bundled = false;
     opts.verbatim_args = p.verbatim.map(OsString::from);
+    opts.env.extend(crate::launch::inherited_env_changes());
     opts.env.push(("CSM_SESSION_ID".into(), Some(s.id.clone().into())));
     log::info!("run '{}' for session {} ({program})", item.label, s.id);
     let pty = factory(opts).map_err(|e| format!("could not start `{program}`: {e}"))?;

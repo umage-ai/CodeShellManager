@@ -63,6 +63,12 @@ pub trait TerminalSource: Send + Sync {
             self.write(&b.0);
         }
     }
+
+    /// The program's last OSC 52 copy not yet taken (#156). Sources whose host routes it
+    /// elsewhere (engine sessions: `Engine::take_clipboard`) have none.
+    fn take_clipboard(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Replies the emulator writes (DA1 answers and the like). A static terminal has no process, so
