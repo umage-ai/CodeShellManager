@@ -53,6 +53,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             open_with,
         ),
         t(
+            "open_url",
+            "Open link",
+            "Open an absolute http or https URL in the default browser (a link clicked in a terminal). Other schemes, relative URLs and URLs with spaces or quotes are refused; no shell is involved.",
+            Effects::LAUNCHES_PROCESS,
+            schema_of::<UrlParams>,
+            open_url,
+        ),
+        t(
             "open_with_list",
             "Open with: editors",
             "The Open with list; with `session_id`, also the exact command each entry would run for that session.",
@@ -250,6 +258,13 @@ struct SessionParams {
 
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct UrlParams {
+    /// An absolute `http://` or `https://` URL.
+    url: String,
+}
+
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct OpenWithParams {
     session_id: String,
     /// An entry id or label (case-insensitive). Default: the default entry for the session's kind.
@@ -328,6 +343,19 @@ fn open_folder(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         open_folder_now(&target).map_err(ToolError::Failed)?;
         Ok(ToolOutput::new(format!("Opened {target}."), json!({"folder": target})))
     })
+}
+
+/// A link from a terminal (or any caller): only what [`crate::runs::launchable_url`] accepts
+/// (absolute http/https, no whitespace, quotes or shell metacharacters) reaches the opener, as
+/// one argument, never through a shell.
+fn open_url(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: UrlParams = parse_params(params)?;
+    let Some(url) = crate::runs::launchable_url(&p.url) else {
+        let shown: String = p.url.chars().filter(|c| !c.is_control()).take(200).collect();
+        return Err(ToolError::Refused(format!("only absolute http and https links are opened, not `{shown}`")));
+    };
+    (ctx.state.options.url_opener)(url.clone());
+    Ok(ToolOutput::new(format!("Opening {url} in the browser."), json!({"url": url})))
 }
 
 fn open_with(ctx: &mut Ctx<'_>, params: Value) -> Reply {
