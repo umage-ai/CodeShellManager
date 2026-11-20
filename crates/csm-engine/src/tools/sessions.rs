@@ -262,6 +262,7 @@ fn session_get(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             "ssh": {"user": s.ssh_user, "host": s.ssh_host, "port": s.ssh_port, "remote_folder": s.ssh_remote_folder},
             "wsl": {"distro": s.wsl_distro, "user": s.wsl_user, "folder": s.wsl_working_folder},
             "color_override": s.color_override,
+            "look": csm_core::look::Look::from_session(s),
             "created_at": s.created_at.as_str(),
         },
         "program_status": program,
@@ -326,6 +327,8 @@ struct NewParams {
     focus: Option<bool>,
     /// Place it right after this session in the sidebar.
     after: Option<String>,
+    /// Its own terminal look (e.g. a Windows Terminal profile's, from `profile_list`).
+    look: Option<csm_core::look::Look>,
 }
 
 fn validate_port(port: Option<i32>) -> Result<i32, ToolError> {
@@ -452,6 +455,12 @@ fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         last_activity_at: now,
         ..Default::default()
     };
+    if let Some(look) = &p.look {
+        if let Some(msg) = look.validate() {
+            return Err(ToolError::InvalidParams(msg));
+        }
+        look.apply_to(&mut s);
+    }
     apply_connection(&mut s, kind, folder, p.ssh, p.wsl)?;
     s.name = match &p.name {
         Some(n) if !clean_name(n, MAX_NAME).is_empty() => clean_name(n, MAX_NAME),

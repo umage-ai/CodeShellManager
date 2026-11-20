@@ -55,6 +55,9 @@ pub struct StateOptions {
     /// The search index and notes store (`docs/tools.md`, notes and search). Off by default;
     /// production uses [`IndexSetting::Auto`].
     pub index: crate::index::IndexSetting,
+    /// Windows Terminal `settings.json` files to read, as `(install name, path)`. `None`: the
+    /// install locations (`csm_services::wt_profiles::known_paths`). Tests point it at fixtures.
+    pub terminal_profile_files: Option<Vec<(String, PathBuf)>>,
 }
 
 impl Default for StateOptions {
@@ -71,6 +74,7 @@ impl Default for StateOptions {
             restore_on_start: true,
             seed_editors: false,
             index: crate::index::IndexSetting::Off,
+            terminal_profile_files: None,
         }
     }
 }

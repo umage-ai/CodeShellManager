@@ -218,3 +218,27 @@ fn xtversion_answered_in_order() {
     // DECRQM 2026 (synchronized output) is reported by alacritty, then DA1.
     assert_eq!(&text[x + 2..], "[?2026;2$y[?6c");
 }
+
+#[test]
+fn a_default_cursor_and_palette_can_be_set_and_programs_still_override_the_cursor() {
+    use csm_term::alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+    let (mut t, r) = term(ProbeReply::Off);
+    assert_eq!(t.term().cursor_style().shape, CursorShape::Block);
+    t.set_default_cursor(CursorShape::Beam, false);
+    assert_eq!(t.term().cursor_style().shape, CursorShape::Beam);
+    // DECSCUSR 4 (steady underline) wins; DECSCUSR 0 goes back to the session's default.
+    t.advance(b"\x1b[4 q");
+    assert_eq!(t.term().cursor_style().shape, CursorShape::Underline);
+    t.advance(b"\x1b[0 q");
+    assert_eq!(t.term().cursor_style().shape, CursorShape::Beam);
+    // OSC 11 answers with the palette that was set.
+    let mut p = csm_term::Palette::default();
+    p.background = Rgb { r: 0x01, g: 0x24, b: 0x56 };
+    let g = t.generation();
+    t.set_palette(p.clone());
+    assert!(t.generation() != g);
+    assert_eq!(t.palette(), &p);
+    t.advance(b"\x1b]11;?\x1b\\");
+    let reply = String::from_utf8_lossy(&r.0.lock().unwrap()).into_owned();
+    assert!(reply.contains("rgb:0101/2424/5656"), "{reply:?}");
+}
