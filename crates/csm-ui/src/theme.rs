@@ -362,6 +362,8 @@ pub mod size {
     pub const PALETTE_LIST_H: f32 = 420.0;
     pub const MENU_W: f32 = 236.0;
     pub const MENU_ROW: f32 = 30.0;
+    /// The Recent menu (name, folder, status, age and key per row).
+    pub const RECENT_W: f32 = 400.0;
     pub const DIALOG_W: f32 = 500.0;
     pub const BOARD_W: f32 = 560.0;
     pub const CONSENT_W: f32 = 380.0;

@@ -614,6 +614,9 @@ pub fn pane(
         let view = views.entry(view_key.clone()).or_insert_with(|| TerminalView::new(Id::new(("csm-pane", view_key.clone()))));
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;
+        if let Some(url) = vr.open_link {
+            actions.push(Action::Tool("open_url", json!({"url": url})));
+        }
         let placeholder = if queued { Some(format!("Starting {} in {}…", s.command, s.name)) } else { TerminalView::placeholder(src) };
         if let Some(text_) = placeholder {
             p.rect_filled(body, 0.0, t.term_bg);
@@ -662,8 +665,14 @@ pub fn pane(
         widgets::icon_button_at(ui, b, Id::new(("pane-ctl", s.id.clone(), name.to_string(), o.torn)), name, on, tip).clicked()
     };
     if !o.mini {
-        if ctl(ui, "more", false, "More  (Ctrl+.)", &mut x) {
-            actions.push(Action::OpenMenu(Menu::Pane { session: s.id.clone(), at: pos2(x + size::CONTROL_SM, head.max.y + space::XS) }));
+        let more = ctl(ui, "more", false, "More  (Ctrl+.)", &mut x);
+        let more_at = pos2(x + size::CONTROL_SM, head.max.y + space::XS);
+        if more {
+            actions.push(Action::OpenMenu(Menu::Pane { session: s.id.clone(), at: more_at }));
+        }
+        if !o.torn {
+            // Ctrl+. opens this menu from the keyboard, at the same place.
+            ui.ctx().data_mut(|d| d.insert_temp(Id::new(("pane-more-at", s.id.clone())), more_at));
         }
         if o.mode == Some(LayoutMode::Free) || o.torn {
             if !o.torn && ctl(ui, "tear", false, "Tear off into its own window", &mut x) {

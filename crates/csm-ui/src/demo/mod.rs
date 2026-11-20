@@ -198,6 +198,9 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         x.runs = runs_dotnet();
     });
     set(&mut s, "rs", &|x| x.ahead = 5);
+    for (id, m) in LAST_USED_MIN {
+        set(&mut s, id, &|x| x.last_used_ms = i64::try_from(now.saturating_sub(mins(m))).ok());
+    }
     set(&mut s, "craft", &|x| {
         x.dirty = true;
         x.status_since_ms = Some(now - mins(12));
@@ -276,8 +279,24 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         wpf_import: None,
         git: crate::git_model::demo_details(),
         open_with: demo_open_with(),
+        recently_closed: Vec::new(),
     }
 }
+
+/// The Recent menu's order in the demo: minutes since each session was last focused (the
+/// active one, `web`, just now; `stg` never).
+const LAST_USED_MIN: [(&str, u64); 10] = [
+    ("web", 0),
+    ("odulodo", 3),
+    ("csm", 12),
+    ("webps", 25),
+    ("wt", 50),
+    ("rs", 95),
+    ("news", 60 * 5),
+    ("gw", 60 * 26),
+    ("build", 60 * 50),
+    ("craft", 60 * 24 * 9),
+];
 
 /// The mock-up's Open with list.
 pub fn demo_open_with() -> Vec<OpenWithEntryView> {
@@ -350,6 +369,11 @@ impl DemoBackend {
         if self.opts.now_ms.is_none() {
             self.model.now_ms = now_ms();
         }
+        self.model.recently_closed = self
+            .closed
+            .iter()
+            .map(|s| crate::model::ClosedSessionView { name: s.name.clone(), subtitle: s.folder.clone(), command: s.command.clone() })
+            .collect();
         self.snap = Arc::new(self.model.clone());
     }
 
@@ -475,6 +499,10 @@ impl DemoBackend {
             self.model.rail = Scope::Group(g.clone());
         }
         self.model.active = Some(id.to_string());
+        let now = i64::try_from(self.model.now_ms).ok();
+        if let Some(x) = self.session_mut(id) {
+            x.last_used_ms = now;
+        }
         if s.status.unseen() {
             // Seen now: done/error become idle (the mock acknowledges after a moment).
             self.set_status(id, Status::Idle);
@@ -632,10 +660,11 @@ impl DemoBackend {
                 toast("Saved. The change applies on the next restart.".into())
             }
             "session_reopen_closed" => {
-                if self.closed.is_empty() {
+                let index = call.params.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok()).unwrap_or(0);
+                if index >= self.closed.len() {
                     return toast("Nothing was closed recently.".into());
                 }
-                let s = self.closed.remove(0);
+                let s = self.closed.remove(index);
                 let id = s.id.clone();
                 let name = s.name.clone();
                 self.model.sessions.push(s);

@@ -210,6 +210,8 @@ pub struct SessionView {
     /// the status vocabulary keeps its seven states; the pane stays until closed or restarted.
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// When it was last the focused session (ms since the epoch): the Recent menu's order.
+    pub last_used_ms: Option<i64>,
 }
 
 impl SessionView {
@@ -714,6 +716,17 @@ pub struct UiModel {
     pub git: BTreeMap<SessionId, crate::git_model::GitDetail>,
     /// The Open with list (the editor).
     pub open_with: Vec<OpenWithEntryView>,
+    /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
+    pub recently_closed: Vec<ClosedSessionView>,
+}
+
+/// A recently closed session, as the Recent menu lists it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClosedSessionView {
+    pub name: String,
+    /// The folder, `user@host` or `distro: folder`.
+    pub subtitle: String,
+    pub command: String,
 }
 
 impl UiModel {

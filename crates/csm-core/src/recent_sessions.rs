@@ -14,20 +14,28 @@ pub const MAX_ITEMS: usize = 10;
 /// Ctrl+Shift+E, Enter flips between the two). Stable on ties: sessions never used (same
 /// backfilled stamp) keep sidebar order.
 pub fn pick<'a>(sessions: &'a [ShellSession], active_id: Option<&str>, max: usize) -> Vec<&'a ShellSession> {
-    let mut candidates: Vec<(usize, &ShellSession)> = sessions.iter().filter(|s| Some(s.id.as_str()) != active_id).enumerate().collect();
+    pick_by(sessions, |s| s.id.as_str(), |s| s.last_activity_at.epoch_ms(), active_id, max)
+}
+
+/// [`pick`] over any list that knows each item's id and last-used stamp (epoch ms; `None` is
+/// "never"), so a view model orders its rows exactly like the engine's `session_recent`.
+pub fn pick_by<'a, T>(
+    items: &'a [T],
+    id: impl Fn(&T) -> &str,
+    last_used_ms: impl Fn(&T) -> Option<i64>,
+    active_id: Option<&str>,
+    max: usize,
+) -> Vec<&'a T> {
+    let mut candidates: Vec<(usize, &T)> = items.iter().filter(|s| Some(id(s)) != active_id).enumerate().collect();
     // Newest first; the original index breaks ties. An unparseable stamp sorts as "never",
     // like C#'s `default(DateTime)`.
-    candidates.sort_by_key(|(i, s)| (std::cmp::Reverse(stamp(s)), *i));
+    candidates.sort_by_key(|(i, s)| (std::cmp::Reverse(last_used_ms(s).unwrap_or(i64::MIN)), *i));
     candidates.into_iter().take(max).map(|(_, s)| s).collect()
 }
 
 /// [`pick`] with the default [`MAX_ITEMS`].
 pub fn pick_default<'a>(sessions: &'a [ShellSession], active_id: Option<&str>) -> Vec<&'a ShellSession> {
     pick(sessions, active_id, MAX_ITEMS)
-}
-
-fn stamp(s: &ShellSession) -> i64 {
-    s.last_activity_at.epoch_ms().unwrap_or(i64::MIN)
 }
 
 const MINUTE_MS: i64 = 60_000;

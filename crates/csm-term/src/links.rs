@@ -124,11 +124,11 @@ impl crate::Terminal {
         let wraps = |l: Line| cell_at(l, cols - 1).is_some_and(|c| c.flags.contains(Flags::WRAPLINE));
         let mut start = line;
         while start > top && line.0 - start.0 < MAX_WRAP_ROWS && wraps(start - 1) {
-            start = start - 1;
+            start -= 1;
         }
         let mut end = line;
         while end < bottom && end.0 - line.0 < MAX_WRAP_ROWS && wraps(end) {
-            end = end + 1;
+            end += 1;
         }
         // The logical line's text, and where each char sits.
         let mut text = Vec::new();
@@ -143,7 +143,7 @@ impl crate::Terminal {
                 text.push(cell.c);
                 at.push((l, c));
             }
-            l = l + 1;
+            l += 1;
         }
         // The char under the pointer (a wide char's spacer belongs to the char before it).
         let here = at.iter().rposition(|&(al, ac)| al == line && ac <= col)?;
