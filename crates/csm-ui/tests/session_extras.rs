@@ -292,3 +292,31 @@ fn the_usage_section_lists_sessions_per_command() {
     settle(&mut h);
     assert_eq!(calls(&h, "usage_stats").len(), 2);
 }
+
+fn commands_in(params: &serde_json::Value) -> Vec<String> {
+    params["value"].as_array().unwrap().iter().map(|c| c["Command"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn claude_commands_are_edited_in_settings() {
+    let mut h = h();
+    open_settings(&mut h);
+    click_below(&mut h, "Remove “/help”");
+    settle(&mut h);
+    let (id, params) = last_call(&h);
+    assert_eq!((id.as_str(), params["key"].as_str()), ("settings_set", Some("ClaudeCommands")));
+    assert_eq!(commands_in(&params), ["/clear", "/compact", "/status", "/memory", "/init", "exit"]);
+
+    // The engine answered with the new list; add one with Enter in the field.
+    h.get_by_label("New Claude command").focus();
+    h.step();
+    h.get_by_label("New Claude command").type_text("/review");
+    h.step();
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    let (id, params) = last_call(&h);
+    assert_eq!(id, "settings_set");
+    let cmds = commands_in(&params);
+    assert_eq!(cmds.last().map(String::as_str), Some("/review"));
+    assert!(!cmds.iter().any(|c| c == "/help"), "built on the saved list");
+}

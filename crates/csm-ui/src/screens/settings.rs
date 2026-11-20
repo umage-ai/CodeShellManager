@@ -264,6 +264,7 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     );
     number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
     caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
+    crate::screens::claude_commands::show(ui, app, actions);
     crate::screens::backup::general(ui, app, actions);
 }
 
