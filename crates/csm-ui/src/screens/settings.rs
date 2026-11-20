@@ -51,6 +51,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             app.ui.settings.section = sec;
             if sec == SettingsSection::Usage {
                 app.ui.settings.usage = crate::screens::backup::UsageState::default();
+                app.ui.usage.summary_asked = false;
             }
         }
     }
@@ -82,7 +83,10 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 SettingsSection::Appearance => appearance(ui, app, actions),
                 SettingsSection::Groups => groups(ui, app, actions),
                 SettingsSection::Mcp => mcp(ui, app, actions),
-                SettingsSection::Usage => crate::screens::backup::usage(ui, app, actions),
+                SettingsSection::Usage => {
+                    crate::screens::backup::usage(ui, app, actions);
+                    crate::screens::usage::settings(ui, app, actions);
+                }
                 SettingsSection::About => about(ui, app, actions),
             }
             ui.add_space(space::XL);

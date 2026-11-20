@@ -393,6 +393,7 @@ pub enum InspectorParam {
     Runs,
     Git,
     Session,
+    Usage,
     Hidden,
 }
 

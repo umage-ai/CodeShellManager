@@ -94,6 +94,8 @@ fn screens() {
     shoot("06-inspector-git", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Git), |_| {});
     shoot("06-inspector-session", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Session), |_| {});
     shoot("06-inspector-notes", ThemeKind::Latte, |b| b.model_mut().inspector = Some(InspectorTab::Notes), |_| {});
+    shoot("06-inspector-usage", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Usage), |_| {});
+    shoot("06-inspector-usage-latte", ThemeKind::Latte, |b| b.model_mut().inspector = Some(InspectorTab::Usage), |_| {});
     shoot(
         "07-palette",
         ThemeKind::Mocha,

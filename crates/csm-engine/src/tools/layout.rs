@@ -147,6 +147,7 @@ enum InspectorParam {
     Runs,
     Git,
     Session,
+    Usage,
     Hidden,
 }
 
@@ -308,6 +309,7 @@ fn inspector_show(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         InspectorParam::Runs => Some(InspectorTab::Runs),
         InspectorParam::Git => Some(InspectorTab::Git),
         InspectorParam::Session => Some(InspectorTab::Session),
+        InspectorParam::Usage => Some(InspectorTab::Usage),
         InspectorParam::Hidden => None,
     };
     ctx.state.persist();

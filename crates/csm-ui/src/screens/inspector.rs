@@ -1,4 +1,4 @@
-//! The inspector (`.insp`): one right-hand panel with Notes · Runs · Git · Session tabs, following
+//! The inspector (`.insp`): one right-hand panel with Notes · Runs · Git · Session · Usage tabs, following
 //! the active session. Notes and Session are live; Runs shows the session's run commands from the
 //! model; Git is [`super::git`].
 
@@ -53,8 +53,13 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let tabs = Rect::from_min_size(pos2(rect.min.x, head.max.y + space::XS), vec2(rect.width(), size::TAB));
     ui.painter().hline(tabs.x_range(), tabs.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
     let mut x = tabs.min.x + space::SM;
+    let full_w = |tb: InspectorTab| icon::MD + space::XS + space::XXS + widgets::text_width(ui, tb.label(), theme::medium(text::BODY)) + space::LG;
+    // Too narrow for every label: the other tabs show their icon only (the name is the tooltip).
+    let all: f32 = InspectorTab::ALL.iter().map(|tb| full_w(*tb) + space::XXS).sum();
+    let compact = all > tabs.width() - space::SM * 2.0;
     for tb in InspectorTab::ALL {
-        let w = icon::MD + space::XS + space::XXS + widgets::text_width(ui, tb.label(), theme::medium(text::BODY)) + space::LG;
+        let labelled = !compact || tb == tab;
+        let w = if labelled { full_w(tb) } else { icon::MD + space::LG };
         let r = Rect::from_min_size(pos2(x, tabs.min.y), vec2(w, tabs.height()));
         x += w + space::XXS;
         let resp = ui.interact(r, Id::new(("insp-tab", tb.id())), Sense::click());
@@ -62,11 +67,14 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let fg = if on || resp.hovered() { t.fg } else { t.muted };
         let ir = Rect::from_min_size(pos2(r.min.x + space::SM, r.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, tb.icon(), icon::MD, if on { t.blue } else { fg });
-        ui.painter().text(pos2(ir.max.x + space::XS + space::XXS, r.center().y), Align2::LEFT_CENTER, tb.label(), theme::medium(text::BODY), fg);
+        if labelled {
+            ui.painter().text(pos2(ir.max.x + space::XS + space::XXS, r.center().y), Align2::LEFT_CENTER, tb.label(), theme::medium(text::BODY), fg);
+        }
         if on {
             ui.painter().hline(r.x_range(), r.max.y - size::HAIRLINE, Stroke::new(size::RING, t.blue));
         }
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Inspector: {}", tb.label())));
+        let resp = if labelled { resp } else { resp.on_hover_text(tb.label()) };
         if resp.clicked() && !on {
             actions.push(Action::Tool("inspector_show", json!({"tab": tb.id()})));
         }
@@ -80,6 +88,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             InspectorTab::Runs => super::runs::show(ui, app, &s, actions),
             InspectorTab::Git => git(ui, app, &s, actions),
             InspectorTab::Session => session(ui, app, &s, actions),
+            InspectorTab::Usage => super::usage::tab(ui, app, &s, actions),
         }
     });
 }

@@ -113,7 +113,7 @@ whose shape is the UI's (`layout_set { free }`). `view_get`, `view_set` (group v
 effects `ui`: minimized and maximized are stored on the engine's layout, `GroupLayout::minimized` /
 `maximized`, and `session_focus` brings a minimized pane back and lets a different maximized one
 give way),
-`inspector_show` (tab notes/runs/git/session | hidden), `inbox_panel_set` (open, height).
+`inspector_show` (tab notes/runs/git/session/usage | hidden), `inbox_panel_set` (open, height).
 
 ### Stand-ins
 
@@ -202,6 +202,35 @@ other text is refused (use `session_send_text`, which pastes). File drops onto a
 `session_send_text` with `csm_core::dropped_paths` quoting (control and format characters
 rejected, Windows double quotes / POSIX single quotes, ≤ 64 paths).
 
+**Claude usage** (`tools/usage.rs`, reader in `usage_tail.rs`, parsing and pricing in
+`csm-services::claude_usage`, summaries in `csm_core::claude_usage`; a port of ContextCost). All
+read-only, app toolset. Costs are **API-equivalent** (API list prices, not what a subscription
+bills); a model without a price is listed as unpriced, never counted as $0.
+
+| id | params | effects | what |
+|---|---|---|---|
+| `usage_session` | session_id | read | context fill of the last main-thread request vs the window (200k; 1M for a `[1m]` model or a prompt over 200k), with `ok`/`warn`/`critical` near auto-compact; cost and tokens total, today (local) and of subagents; cache hit ratio; the last cache miss and the idle gap before it; compactions (count, last pre → post); data quality (unreadable lines) |
+| `usage_context` | | read | fill and cost of every live Claude session (the sidebar chips) |
+| `usage_summary` | from? (today/week/month/all/YYYY-MM-DD, default week), to? (today/YYYY-MM-DD), group_by? (project/session/model) | read | cost and tokens per group, most expensive first, with a total |
+
+- **Which transcript.** A new Claude session starts with `--session-id <uuid>` chosen by CSM and
+  stored on the session (`ClaudeSessionId` in `state.json`); a resume passes `--resume <that id>`
+  (or, when it has no transcript yet, `--session-id` again). Sessions from before fall back to the
+  newest transcript whose `cwd` is their folder. Duplicates get their own id; editing the folder,
+  command or kind forgets it. Not followed: `/clear` (Claude starts a new id), WSL and SSH sessions.
+- **Reading.** A background thread (`csm-usage`) follows `<root>/projects/*/<id>.jsonl` and
+  `<id>/subagents/**/agent-*.jsonl` under `$CLAUDE_CONFIG_DIR`, `~/.claude` and the other
+  `~/.claude-*` profiles, reading only bytes past the stored offset (a shorter file or a different
+  head is read again from 0). Requests are de-duplicated by `message.id` keeping the maximum per
+  token field; `<synthetic>` is skipped; a missing 5m/1h split counts as 5m writes.
+- **Storage.** `index.db` schema 3: `claude_requests` (numbers only, never content), `claude_files`
+  (offsets, counters), `claude_compactions`, `claude_meta`; in memory under `--clean`.
+- **Prices.** Embedded (`csm-services/src/claude_usage/prices.json`), overridden or extended by
+  `usage-prices.json` beside `state.json` (same shape); a changed table reprices every stored row.
+- **UI.** Inspector → Usage (the focused session, refreshed every 5 s while shown), a fill chip on
+  Claude rows in the sidebar (`usage_context` every 10 s; cost too on wide rows; it gives way on
+  narrow ones), Settings → Usage: cost per project today and this week.
+
 **Open folder / Open with** (`tools/open.rs`, rules in `csm-services::open_with`). `open_folder`
 (session_id) opens only an existing *directory* (a file would be run); Windows normalises to
 backslashes and hands Explorer the path as one always-quoted argument — measured on Windows 11, a
@@ -245,7 +274,7 @@ launches the Claude session itself).
 
 What `csm mcp` costs a client in context, from `cargo xtask mcp-size` (the real `McpService` over
 an in-process engine; tokens are bytes / 4, an estimate good enough to compare toolsets).
-Measured on 2026-11-20 after the parity merges (96 engine tools; the app's own `pane_*` tools
+Measured on 2026-11-20 after the Claude usage tools (99 engine tools; the app's own `pane_*` tools
 are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
 `core` small: it is what every client pays on every conversation.
 
@@ -253,16 +282,16 @@ are not in the engine registry, so they are not counted). Re-run it after adding
 |---|---|---|---|
 | base (core + toolset tools) | 26 | 20518 | ~5129 |
 | + groups | 18 | 10032 | ~2508 |
-| + layout | 9 | 6125 | ~1531 |
+| + layout | 9 | 6133 | ~1533 |
 | + runs | 5 | 3069 | ~767 |
 | + git | 9 | 6312 | ~1578 |
 | + notes | 3 | 2142 | ~535 |
 | + search | 3 | 2395 | ~598 |
-| + app | 23 | 16114 | ~4028 |
-| everything enabled | 96 | 66707 | ~16676 |
+| + app | 26 | 18212 | ~4553 |
+| everything enabled | 99 | 68813 | ~17203 |
 
 Progressive disclosure is worth about 3x here: a client that only needs sessions pays ~5.1k
-tokens instead of ~16.7k.
+tokens instead of ~17.2k.
 
 ## Repository checks (`cargo xtask`)
 

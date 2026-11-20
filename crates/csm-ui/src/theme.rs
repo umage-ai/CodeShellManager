@@ -390,6 +390,12 @@ pub mod size {
     /// A minimized pane's chip: the widest it gets before its name elides.
     pub const MINIMIZED_CHIP_MAX_W: f32 = 180.0;
     pub const BRANCH_MAX_W: f32 = 68.0;
+    /// A sidebar row narrower than this shows no usage chip (the name keeps the room).
+    pub const USAGE_CHIP_MIN_ROW_W: f32 = 200.0;
+    /// A sidebar row this wide also shows the session's cost in its chip.
+    pub const USAGE_COST_MIN_ROW_W: f32 = 300.0;
+    /// The Usage tab's context gauge.
+    pub const GAUGE_H: f32 = 10.0;
     pub const PANE_NAME_MIN_W: f32 = 72.0;
     pub const TEAR_OFF: [f32; 2] = [960.0, 560.0];
     pub const WINDOW: [f32; 2] = [1280.0, 800.0];
@@ -425,6 +431,8 @@ pub mod alpha {
     pub const DROP: f32 = 0.12;
     /// A sidebar row in the multi-selection (Ctrl/Shift-click).
     pub const PICKED: f32 = 0.2;
+    /// The warning bands behind the Usage tab's context gauge.
+    pub const GAUGE_BAND: f32 = 0.28;
 }
 
 /// How long a toast stays, and the status glyph animation rate.

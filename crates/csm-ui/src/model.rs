@@ -660,10 +660,11 @@ pub enum InspectorTab {
     Runs,
     Git,
     Session,
+    Usage,
 }
 
 impl InspectorTab {
-    pub const ALL: [InspectorTab; 4] = [InspectorTab::Notes, InspectorTab::Runs, InspectorTab::Git, InspectorTab::Session];
+    pub const ALL: [InspectorTab; 5] = [InspectorTab::Notes, InspectorTab::Runs, InspectorTab::Git, InspectorTab::Session, InspectorTab::Usage];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -671,6 +672,7 @@ impl InspectorTab {
             InspectorTab::Runs => "runs",
             InspectorTab::Git => "git",
             InspectorTab::Session => "session",
+            InspectorTab::Usage => "usage",
         }
     }
 
@@ -680,6 +682,7 @@ impl InspectorTab {
             InspectorTab::Runs => "Runs",
             InspectorTab::Git => "Git",
             InspectorTab::Session => "Session",
+            InspectorTab::Usage => "Usage",
         }
     }
 
@@ -689,6 +692,7 @@ impl InspectorTab {
             InspectorTab::Runs => "play",
             InspectorTab::Git => "branch",
             InspectorTab::Session => "sliders",
+            InspectorTab::Usage => "gauge",
         }
     }
 }
@@ -779,6 +783,8 @@ pub struct UiModel {
     pub wpf_import: Option<String>,
     /// The Git tab's details per session, from git tool replies (`crate::git_model`).
     pub git: BTreeMap<SessionId, crate::git_model::GitDetail>,
+    /// Claude token and cost numbers, from the usage tools' replies (`crate::usage_model`).
+    pub usage: crate::usage_model::UsageDetails,
     /// Worktrees of a folder no session is asked for (`worktree_list {folder}`, the quick-open's
     /// sibling checkboxes), keyed by [`crate::git_model::folder_key`]. Empty: not a repository.
     pub folder_worktrees: BTreeMap<String, Vec<crate::git_model::WorktreeRow>>,

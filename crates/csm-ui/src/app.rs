@@ -413,6 +413,8 @@ pub struct UiState {
     pub last_active: Option<SessionId>,
     pub settings: SettingsState,
     pub inline: Option<InlineEdit>,
+    /// When the usage tools were last asked (the Usage tab, the sidebar chips, Settings → Usage).
+    pub usage: crate::screens::usage::PollState,
     pub confirm: Option<ConfirmState>,
     /// The busy-close dialog's "Don't warn me again".
     pub dont_warn: bool,
@@ -1414,6 +1416,7 @@ impl CsmApp {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
         self.watch_attention(&ctx);
+        screens::usage::poll(self, &ctx);
         let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
         if let Some(p) = self.main_window.step(&ctx, self.model.windows.get("main").copied(), &self.monitors, min) {
             self.dispatch.submit("window_placement_set", p);

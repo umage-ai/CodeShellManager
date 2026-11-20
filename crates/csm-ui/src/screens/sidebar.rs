@@ -974,6 +974,10 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
         icons::paint(&child, Rect::from_min_size(pos2(x, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "fork", icon::XS, t.faint);
         x += icon::XS + space::XS;
     }
+    // Claude sessions: context fill (and cost on wider rows), coloured near auto-compact; it
+    // gives way when the name would get too little room.
+    let chip = model.usage.chips.get(&s.id);
+    right = super::usage::paint_row_chip(&child, s, chip, rect, x, right, cy);
     let name_color = if queued { t.muted } else { t.fg };
     let badge = match s.kind {
         Kind::Ssh => Some("SSH"),
@@ -1016,6 +1020,10 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
             s.status_text(),
             s.folder
         )
+    };
+    let tip = match chip.filter(|_| s.is_claude()) {
+        Some(c) => format!("{tip}\n{}", super::usage::chip_tooltip(c)),
+        None => tip,
     };
     let resp = if app.ui.drags.row.is_some() { resp } else { resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand) };
     if resp.clicked() {

@@ -29,6 +29,7 @@ pub const MISS_WRITE_MIN: u64 = 20_000;
 
 /// One request's tokens, per class.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Tokens {
     pub input: u64,
     pub output: u64,
@@ -105,6 +106,7 @@ pub struct Compaction {
 
 /// Sums over a set of requests.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Totals {
     pub requests: u64,
     pub tokens: Tokens,
@@ -195,6 +197,7 @@ pub struct CacheMiss {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Compactions {
     pub count: u64,
     pub last: Option<Compaction>,
@@ -202,6 +205,7 @@ pub struct Compactions {
 
 /// Everything `usage_session` reports for one session.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionUsage {
     pub context: Option<ContextFill>,
     pub total: Totals,
