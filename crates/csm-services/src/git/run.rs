@@ -145,6 +145,11 @@ fn command(target: &GitTarget, git_args: &[String], read_only: bool) -> Result<C
         #[cfg(windows)]
         GitTarget::Wsl { distro, linux } => {
             use std::os::windows::process::CommandExt;
+            // Issue #123: the distro comes from a folder (state.json, imports); `-d -x` would be
+            // read as an option whatever the quoting.
+            if distro.trim_start().starts_with('-') || distro.chars().any(char::is_control) {
+                return Err(format!("The WSL distro name `{}` starts with '-' or contains a control character; git was not run.", distro.escape_debug()));
+            }
             let mut c = Command::new(system32("wsl.exe"));
             c.raw_arg(args::build_wsl_git_command_line(distro, linux, &refs));
             let names: Vec<&str> = env.iter().map(|(k, _)| *k).collect();
@@ -625,5 +630,17 @@ mod tests {
         assert!(prog.ends_with(r"system32\wsl.exe"), "{prog}");
         let wslenv = c.get_envs().find(|(k, _)| k.to_string_lossy() == "WSLENV").and_then(|(_, v)| v).unwrap().to_string_lossy().into_owned();
         assert!(wslenv.contains("GIT_TERMINAL_PROMPT") && wslenv.contains("GIT_OPTIONAL_LOCKS"), "{wslenv}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_option_like_distro_in_a_folder_never_reaches_wsl_exe() {
+        // Issue #123: a session folder from state.json like `\\wsl$\--help\x`.
+        for folder in [r"\\wsl$\--help\home", r"\\wsl$\-x\home", r"\\wsl.localhost\-e\home"] {
+            let t = GitTarget::of(folder).unwrap();
+            assert!(t.is_wsl(), "{folder}");
+            assert!(command(&t, &args::status_args(), true).is_err(), "{folder}");
+        }
+        assert!(command(&GitTarget::of(r"\\wsl$\Ubuntu-22.04\home").unwrap(), &args::status_args(), true).is_ok());
     }
 }
