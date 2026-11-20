@@ -208,11 +208,21 @@ pub struct Prefs {
     pub warn_on_close_when_busy: bool,
     pub terminal_font_size: Option<f32>,
     pub terminal_padding: f32,
+    /// `ShowToastNotifications` / `ShowNotificationSound` (both off by default, as in WPF).
+    pub notifications: bool,
+    pub notification_sound: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { theme: "dark".into(), warn_on_close_when_busy: true, terminal_font_size: None, terminal_padding: theme::space::SM }
+        Prefs {
+            theme: "dark".into(),
+            warn_on_close_when_busy: true,
+            terminal_font_size: None,
+            terminal_padding: theme::space::SM,
+            notifications: false,
+            notification_sound: false,
+        }
     }
 }
 
@@ -361,6 +371,8 @@ pub struct UiState {
     /// the system's choice). The host owns the window handle, so it shows the dialog
     /// ([`CsmApp::take_folder_request`]) and answers with [`CsmApp::folder_picked`].
     pub folder_request: Option<String>,
+    /// OS notifications decided here and sent by the host ([`CsmApp::take_notifications`]).
+    pub notify: crate::notify::NotifyState,
 }
 
 /// Terminal views and the renderer, shared with torn-off windows (deferred viewports draw from
@@ -625,6 +637,12 @@ impl CsmApp {
         if let Some(w) = s.bool("WarnOnCloseWhenBusy") {
             p.warn_on_close_when_busy = w;
         }
+        if let Some(b) = s.bool("ShowToastNotifications") {
+            p.notifications = b;
+        }
+        if let Some(b) = s.bool("ShowNotificationSound") {
+            p.notification_sound = b;
+        }
         if let Some(n) = s.num("TerminalFontPoints") {
             // 0 (the default) is the size the app started with.
             p.terminal_font_size = (n.is_finite() && (6.0..=40.0).contains(&n)).then_some(n as f32);
@@ -651,6 +669,8 @@ impl CsmApp {
                     self.ui.consents.retain(|r| r["request_id"].as_u64() != Some(*request_id));
                 }
                 csm_engine::Event::Error { message } => self.toast(ctx, message.clone()),
+                csm_engine::Event::WindowShowRequested => crate::notify::show_window(ctx),
+                csm_engine::Event::NotificationTestRequested => self.test_notification(),
                 _ => {}
             }
             let n = self.backend.on_event(&e);
@@ -1124,6 +1144,7 @@ impl CsmApp {
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        self.watch_attention(&ctx);
         // Closing the window is quitting: sessions get their time to exit (the shutdown board),
         // and the window closes on `QuitReady`.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {

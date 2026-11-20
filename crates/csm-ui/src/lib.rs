@@ -21,6 +21,7 @@ pub mod git_model;
 mod icon_data;
 pub mod icons;
 pub mod model;
+pub mod notify;
 pub mod pane_tools;
 pub mod screens;
 pub mod terminal;
