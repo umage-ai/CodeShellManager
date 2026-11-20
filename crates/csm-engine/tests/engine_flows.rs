@@ -734,3 +734,67 @@ fn wsl_distros_answers_off_the_engine_thread_and_needs_no_consent() {
         assert_eq!(out.data.as_array().unwrap().len(), 0);
     }
 }
+
+#[test]
+fn window_placements_persist_per_window_and_never_under_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let ptys = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let opts = || {
+        let mut o = common::fast_options(&ptys);
+        o.save_path = Some(path.clone());
+        o
+    };
+    let set = |e: &csm_engine::Engine, p: serde_json::Value| e.call(Caller::Ui, "window_placement_set", p);
+    let (gid, sid) = {
+        let (state, _) = State::load(opts());
+        let e = csm_engine::Engine::start(state, vec![]).unwrap();
+        let folder = dir.path().to_string_lossy().into_owned();
+        let gid = e.call(Caller::Ui, "group_new", json!({"name": "G"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+        let sid =
+            e.call(Caller::Ui, "session_new", json!({"folder": folder, "command": "pwsh"})).unwrap().data["id"].as_str().unwrap().to_owned();
+        set(&e, json!({"window": "main", "left": 2200, "top": 300, "width": 2400, "height": 1500, "dpi": 144, "maximized": true})).unwrap();
+        set(&e, json!({"window": format!("group:{gid}"), "left": -1700, "top": 10, "width": 900, "height": 600, "dpi": 96})).unwrap();
+        set(&e, json!({"window": format!("pane:{sid}"), "left": 5, "top": 6, "width": 700, "height": 500, "dpi": 120})).unwrap();
+        // The snapshot carries them for the UI.
+        let view = e.view();
+        assert_eq!(view.windows["main"].placement.width, 2400);
+        assert!(view.windows["main"].maximized);
+        assert_eq!(view.windows[&format!("group:{gid}")].placement.left, -1700);
+        // Garbage and unknown windows are refused.
+        let bad = |p: serde_json::Value| set(&e, p).unwrap_err();
+        assert!(matches!(bad(json!({"window": "main", "left": 0, "top": 0, "width": 0, "height": 10, "dpi": 96})), ToolError::InvalidParams(_)));
+        assert!(matches!(bad(json!({"window": "main", "left": 0, "top": 0, "width": 10, "height": 10, "dpi": 0})), ToolError::InvalidParams(_)));
+        assert!(matches!(bad(json!({"window": "side", "left": 0, "top": 0, "width": 10, "height": 10, "dpi": 96})), ToolError::InvalidParams(_)));
+        assert!(matches!(bad(json!({"window": "group:nope", "left": 0, "top": 0, "width": 10, "height": 10, "dpi": 96})), ToolError::NotFound(_)));
+        e.shutdown();
+        (gid, sid)
+    };
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"LastPlacement\""), "the main window uses the state file's own fields: {text}");
+    let (state, _) = State::load(opts());
+    let p = state.app.last_placement.unwrap();
+    assert_eq!((p.left, p.top, p.width, p.height, p.dpi), (2200, 300, 2400, 1500, 144));
+    assert!(state.app.window_maximized);
+    let g = state.app.ui.windows[&csm_core::models::group_window_key(&gid)];
+    assert_eq!((g.placement.left, g.placement.width, g.placement.dpi, g.maximized), (-1700, 900, 96, false));
+    let s = state.app.ui.windows[&csm_core::models::pane_window_key(&sid)];
+    assert_eq!((s.placement.top, s.placement.height, s.placement.dpi), (6, 500, 120));
+
+    // A deleted group's window is forgotten at the next save of any window.
+    let e = csm_engine::Engine::start(state, vec![]).unwrap();
+    e.call(Caller::Ui, "group_delete", json!({"group_id": gid})).unwrap();
+    set(&e, json!({"window": format!("pane:{sid}"), "left": 1, "top": 1, "width": 10, "height": 10, "dpi": 96})).unwrap();
+    assert!(!e.view().windows.contains_key(&format!("group:{gid}")));
+    e.shutdown();
+
+    // --clean: placements are taken but nothing is written.
+    let before = std::fs::read(&path).unwrap();
+    let mut o = opts();
+    o.clean = true;
+    let (state, _) = State::load(o);
+    let e = csm_engine::Engine::start(state, vec![]).unwrap();
+    set(&e, json!({"window": "main", "left": 1, "top": 2, "width": 300, "height": 200, "dpi": 96})).unwrap();
+    e.shutdown();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}

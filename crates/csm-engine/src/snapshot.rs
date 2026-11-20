@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use csm_core::models::{GroupLayout, InspectorTab, SessionKind};
+use csm_core::models::{GroupLayout, InspectorTab, SessionKind, WindowSlot};
 use serde::Serialize;
 
 use crate::session::{Phase, TerminalHandle};
@@ -130,6 +130,9 @@ pub struct Snapshot {
     pub quit: Option<Progress>,
     /// The Open with list (the editor in Settings).
     pub open_with: Vec<crate::tools::open::OpenWithView>,
+    /// Saved window bounds (`window_placement_set`): `main` (the state file's `LastPlacement` and
+    /// `WindowMaximized`), `group:<id>` and `pane:<session id>` for torn-off windows.
+    pub windows: BTreeMap<String, WindowSlot>,
     #[serde(skip)]
     pub(crate) terminals: HashMap<String, TerminalHandle>,
     /// Output of each run command's last run, by `(session id, run id)`.
@@ -289,6 +292,10 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
 
     let ui = &state.app.ui;
     let layouts = ui.layouts.clone();
+    let mut windows = ui.windows.clone();
+    if let Some(p) = state.app.last_placement {
+        windows.insert("main".into(), WindowSlot { placement: p, maximized: state.app.window_maximized });
+    }
     Snapshot {
         version,
         sessions,
@@ -306,6 +313,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         restart: state.rt.restart,
         quit: state.rt.quit,
         open_with: crate::tools::open::list_view(&state.app.settings.open_with),
+        windows,
         terminals,
         run_outputs: crate::runs::handles(state),
     }

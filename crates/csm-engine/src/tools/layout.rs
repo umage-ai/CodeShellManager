@@ -1,7 +1,7 @@
 //! `layout` tools: group view and rail tab, a layout per group, pins, the inspector and the
 //! inbox panel. All UI state (persisted so the app reopens as it was).
 
-use csm_core::models::{ALL_LAYOUT_KEY, GroupDisplayMode, GroupLayout, InspectorTab, LayoutMode};
+use csm_core::models::{ALL_LAYOUT_KEY, GroupDisplayMode, GroupLayout, InspectorTab, LayoutMode, WindowPlacementState, WindowSlot};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -62,6 +62,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             Effects::UI,
             schema_of::<InboxPanelParams>,
             inbox_panel_set,
+        ),
+        t(
+            "window_placement_set",
+            "Save window placement",
+            "Remember where a window is: the main window, a torn-off group or a torn-off pane (physical pixels, the monitor's DPI, maximized). The app sends it as windows move; it applies at the next start or tear-off.",
+            Effects::UI,
+            schema_of::<WindowPlacementParams>,
+            window_placement_set,
         ),
     ]
 }
@@ -319,4 +327,58 @@ fn inbox_panel_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     ctx.state.persist();
     Ok(ToolOutput::new("Inbox panel updated.", json!({"open": ctx.state.app.ui.inbox_open, "height": ctx.state.app.ui.inbox_height})))
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WindowPlacementParams {
+    /// `main`, `group:<group id>` (a torn-off group) or `pane:<session id>` (a torn-off pane).
+    window: String,
+    /// The normal (not maximized) outer rectangle, in physical screen pixels.
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    /// DPI of the monitor holding most of that rectangle (96 = 100%).
+    dpi: i32,
+    #[serde(default)]
+    maximized: bool,
+}
+
+/// Largest window side accepted, in physical pixels (well past any real desktop).
+const MAX_WINDOW_PX: i32 = 1 << 16;
+
+fn window_placement_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: WindowPlacementParams = parse_params(params)?;
+    if !(1..=MAX_WINDOW_PX).contains(&p.width) || !(1..=MAX_WINDOW_PX).contains(&p.height) {
+        return Err(ToolError::InvalidParams(format!("width and height must be 1-{MAX_WINDOW_PX}")));
+    }
+    if !(24..=2400).contains(&p.dpi) {
+        return Err(ToolError::InvalidParams("dpi must be 24-2400".into()));
+    }
+    let placement = WindowPlacementState { left: p.left, top: p.top, width: p.width, height: p.height, dpi: p.dpi };
+    let app = &mut ctx.state.app;
+    if p.window == "main" {
+        app.last_placement = Some(placement);
+        app.window_maximized = p.maximized;
+    } else {
+        let known = match p.window.split_once(':') {
+            Some(("group", id)) => app.groups.iter().any(|g| g.id == id),
+            Some(("pane", id)) => app.sessions.iter().any(|s| s.id == id),
+            _ => return Err(ToolError::InvalidParams("`window` is `main`, `group:<id>` or `pane:<session id>`".into())),
+        };
+        if !known {
+            return Err(ToolError::NotFound(format!("no window `{}`", p.window)));
+        }
+        app.ui.windows.insert(p.window.clone(), WindowSlot { placement, maximized: p.maximized });
+        // Windows of groups and sessions that are gone are forgotten here.
+        let (groups, sessions) = (&app.groups, &app.sessions);
+        app.ui.windows.retain(|k, _| match k.split_once(':') {
+            Some(("group", id)) => groups.iter().any(|g| g.id == id),
+            Some(("pane", id)) => sessions.iter().any(|s| s.id == id),
+            _ => false,
+        });
+    }
+    ctx.state.persist();
+    Ok(ToolOutput::new("Window placement saved.", json!({"window": p.window, "placement": placement, "maximized": p.maximized})))
 }

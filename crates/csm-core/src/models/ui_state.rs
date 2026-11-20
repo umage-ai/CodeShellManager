@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use super::WindowPlacementState;
+
 /// How a group's panes are arranged (docs/plan.md section 4, "Layouts").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +73,25 @@ impl Default for GroupLayout {
 /// The layout key of the rail's "All" tab, and of the single layout in the headers/flat views.
 pub const ALL_LAYOUT_KEY: &str = "__ALL__";
 
+/// A torn-off window's saved bounds: its normal (restored) rectangle in physical pixels with the
+/// DPI of the monitor it was on (see `window_placement`), and whether it was maximized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct WindowSlot {
+    pub placement: WindowPlacementState,
+    pub maximized: bool,
+}
+
+/// The [`UiState::windows`] key of a torn-off group's window.
+pub fn group_window_key(group_id: &str) -> String {
+    format!("group:{group_id}")
+}
+
+/// The [`UiState::windows`] key of a torn-off pane's window.
+pub fn pane_window_key(session_id: &str) -> String {
+    format!("pane:{session_id}")
+}
+
 /// See the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
@@ -92,6 +113,11 @@ pub struct UiState {
     /// The session that had focus, restored on start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focused_session: Option<String>,
+    /// Bounds of torn-off windows, by [`group_window_key`] / [`pane_window_key`]. Kept after a
+    /// dock, so tearing off again reopens where it was. Read entry by entry: a bad one is
+    /// dropped, never the rest of the UI state.
+    #[serde(deserialize_with = "lenient_windows", skip_serializing_if = "BTreeMap::is_empty")]
+    pub windows: BTreeMap<String, WindowSlot>,
 }
 
 impl Default for UiState {
@@ -104,6 +130,7 @@ impl Default for UiState {
             inspector: None,
             torn_off_groups: Vec::new(),
             focused_session: None,
+            windows: BTreeMap::new(),
         }
     }
 }
@@ -122,9 +149,36 @@ pub(crate) fn lenient<'de, D: Deserializer<'de>>(d: D) -> Result<UiState, D::Err
     Ok(serde_json::from_value(v).unwrap_or_default())
 }
 
+fn lenient_windows<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, WindowSlot>, D::Error> {
+    let serde_json::Value::Object(m) = serde_json::Value::deserialize(d)? else { return Ok(BTreeMap::new()) };
+    Ok(m.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|w| (k, w))).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_slots_round_trip_and_a_bad_one_costs_only_itself() {
+        let mut ui = UiState::default();
+        let slot = WindowSlot { placement: WindowPlacementState { left: -10, top: 20, width: 900, height: 700, dpi: 144 }, maximized: true };
+        ui.windows.insert(group_window_key("g1"), slot);
+        let json = serde_json::to_string(&ui).unwrap();
+        assert!(json.contains(r#""group:g1":{"Placement":{"Left":-10"#), "{json}");
+        let back: UiState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ui);
+
+        let mixed = r#"{"Inspector":"git","Windows":{"pane:a":{"Placement":{"Left":1,"Top":2,"Width":3,"Height":4,"Dpi":96}},"pane:b":"nonsense"}}"#;
+        let back: UiState = serde_json::from_str(mixed).unwrap();
+        assert_eq!(back.inspector, Some(InspectorTab::Git), "the rest of the UI state survives");
+        assert_eq!(back.windows.len(), 1);
+        assert_eq!(back.windows[&pane_window_key("a")].placement.width, 3);
+        assert!(!back.windows[&pane_window_key("a")].maximized);
+
+        let not_a_map: UiState = serde_json::from_str(r#"{"Windows":[1,2]}"#).unwrap();
+        assert!(not_a_map.windows.is_empty());
+        assert!(!serde_json::to_string(&UiState::default()).unwrap().contains("Windows"));
+    }
 
     #[test]
     fn round_trips_and_defaults() {
