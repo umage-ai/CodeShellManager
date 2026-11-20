@@ -285,24 +285,24 @@ launches the Claude session itself).
 
 What `csm mcp` costs a client in context, from `cargo xtask mcp-size` (the real `McpService` over
 an in-process engine; tokens are bytes / 4, an estimate good enough to compare toolsets).
-Measured on 2026-11-20 after the Claude usage tools (99 engine tools; the app's own `pane_*` tools
-are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
+Measured on 2026-11-20 after the Beta.1 merges (usage, broadcast and snapshot tools; 101 engine
+tools; the app's own `pane_*` tools are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
 `core` small: it is what every client pays on every conversation.
 
 | toolset | tools | bytes | est. tokens |
 |---|---|---|---|
 | base (core + toolset tools) | 26 | 20518 | ~5129 |
-| + groups | 18 | 10032 | ~2508 |
+| + groups | 19 | 11434 | ~2858 |
 | + layout | 9 | 6133 | ~1533 |
 | + runs | 5 | 3069 | ~767 |
 | + git | 9 | 6312 | ~1578 |
 | + notes | 3 | 2142 | ~535 |
 | + search | 3 | 2395 | ~598 |
-| + app | 26 | 18212 | ~4553 |
-| everything enabled | 99 | 68813 | ~17203 |
+| + app | 27 | 18679 | ~4669 |
+| everything enabled | 101 | 70682 | ~17670 |
 
 Progressive disclosure is worth about 3x here: a client that only needs sessions pays ~5.1k
-tokens instead of ~17.2k.
+tokens instead of ~17.7k.
 
 ## Repository checks (`cargo xtask`)
 
