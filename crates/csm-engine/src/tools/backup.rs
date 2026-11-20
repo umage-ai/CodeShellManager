@@ -45,7 +45,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "state_import",
             title: "Import setup…",
-            summary: "Read a .csm backup and replace the sessions and groups with its own (ours are closed and kept in Recently closed; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true. App and CLI only.",
+            summary: "Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true. App and CLI only.",
             toolset: Toolset::App,
             effects: Effects::MUTATES_STATE.union(Effects::MAY_DISCARD_DATA),
             input_schema: schema_of::<ImportParams>,

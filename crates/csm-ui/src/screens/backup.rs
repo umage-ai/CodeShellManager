@@ -149,7 +149,7 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
             (None, Some(s)) => {
                 let body = format!(
-                    "This backup has {} sessions and {} groups. Importing replaces your {} sessions and {} groups: they are closed, busy or not, and kept in Recently closed. The imported sessions arrive asleep; wake them when you need them. Launch commands, Claude commands and terminal settings come from the backup too.",
+                    "This backup has {} sessions and {} groups. Importing replaces your {} sessions and {} groups: they are closed, busy or not (Recently closed keeps the last ten). The imported sessions arrive asleep; wake them when you need them. Launch commands, Claude commands and terminal settings come from the backup too.",
                     n(&s["sessions"]),
                     n(&s["groups"]),
                     n(&s["replaces"]["sessions"]),
