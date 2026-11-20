@@ -51,6 +51,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             recently_closed_list,
         ),
         t(
+            "session_recent",
+            "Recent sessions",
+            "The sessions used most recently (up to 10, live or asleep, newest first), without the focused one: the first is the session used before it. Each has its status and how long ago it was used (5m, 3h, 2d). `session_focus` goes to one (waking it).",
+            Toolset::Core,
+            Effects::READ_ONLY,
+            empty_schema,
+            session_recent,
+        ),
+        t(
             "state_import_wpf",
             "Import from CodeShellManager (WPF)…",
             "Import sessions and groups from the WPF app's state.json (default: its usual location). Imported sessions arrive asleep; existing ones are kept.",
@@ -248,6 +257,29 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let restart = matches!(key.as_str(), "UseBundledConPty");
     let msg = if restart { format!("{key} saved; it takes effect when the app restarts.") } else { format!("{key} saved.") };
     Ok(ToolOutput::new(msg, json!({"key": key, "value": p.value})))
+}
+
+/// The Recent menu's list (Ctrl+Shift+E), ordered by `csm_core::recent_sessions`.
+fn session_recent(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    let snap = super::current(ctx);
+    let now = crate::session::now_ms();
+    let picked = csm_core::recent_sessions::pick_default(&ctx.state.app.sessions, snap.focused.as_deref());
+    let list: Vec<Value> = picked
+        .iter()
+        .filter_map(|s| snap.session(&s.id).map(|v| (s, v)))
+        .map(|(s, v)| {
+            json!({
+                "session_id": v.id,
+                "name": v.name,
+                "folder": v.folder_short,
+                "status": v.status,
+                "asleep": v.asleep,
+                "last_used_ms": if s.last_activity_at.is_never() { None } else { s.last_activity_at.epoch_ms() },
+                "ago": csm_core::recent_sessions::ago_for(&s.last_activity_at, now),
+            })
+        })
+        .collect();
+    Ok(ToolOutput::new(format!("{} recent", list.len()), json!(list)))
 }
 
 fn recently_closed_list(ctx: &mut Ctx<'_>, _p: Value) -> Reply {

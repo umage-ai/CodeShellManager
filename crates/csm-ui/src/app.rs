@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use csm_engine::Engine;
-use egui::{Key, KeyboardShortcut, Modifiers, Rect, Ui, UiBuilder, ViewportId, pos2};
+use egui::{Key, Modifiers, Rect, Ui, UiBuilder, ViewportId, pos2};
 use serde_json::{Value, json};
 
 use crate::backend::{Backend, Call, Dispatcher, Notice};
@@ -21,6 +21,8 @@ pub enum Action {
     /// `engine.submit(Caller::Ui, id, params)`.
     Tool(&'static str, Value),
     OpenPalette,
+    /// Open (or close) the Recent menu under the title bar's clock button (Ctrl+Shift+E).
+    OpenRecent,
     OpenQuickOpen {
         group: Option<GroupId>,
     },
@@ -100,6 +102,8 @@ pub enum Menu {
     QuickGroup { at: egui::Pos2 },
     /// The sort control next to the Sessions header.
     Sort { at: egui::Pos2 },
+    /// The Recent menu (title bar, Ctrl+Shift+E), its top-right corner at `at`.
+    Recent { at: egui::Pos2 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -431,6 +435,8 @@ pub struct UiState {
     /// host owns the window handle, so it shows the dialog ([`CsmApp::take_dialog_request`])
     /// and answers with [`CsmApp::dialog_answered`].
     pub dialog_request: Option<DialogRequest>,
+    /// The Recent menu's selected row (Enter picks it).
+    pub recent_sel: usize,
 }
 
 /// A native dialog the UI asks the host for. The answer comes back on a later frame; the frame
@@ -863,6 +869,22 @@ impl CsmApp {
                 self.ui.overlay = Overlay::Palette;
                 self.ui.palette = PaletteState { focus_input: true, ..PaletteState::default() };
             }
+            Action::OpenRecent => {
+                self.ui.submenu = None;
+                if matches!(self.ui.menu, Some(Menu::Recent { .. })) {
+                    self.ui.menu = None;
+                    return;
+                }
+                if matches!(self.ui.overlay, Overlay::Palette | Overlay::Help) {
+                    self.ui.overlay = Overlay::None;
+                }
+                let at = ctx.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new(RECENT_ANCHOR))).unwrap_or_else(|| {
+                    let r = ctx.content_rect();
+                    pos2(r.max.x - theme::space::SM, r.min.y + size::TITLE_BAR)
+                });
+                self.ui.recent_sel = 0;
+                self.ui.menu = Some(Menu::Recent { at });
+            }
             Action::OpenQuickOpen { group } => {
                 self.ui.menu = None;
                 self.ui.overlay = Overlay::QuickOpen;
@@ -1116,6 +1138,7 @@ impl CsmApp {
         };
         match id {
             "session_new" => return self.run(ctx, Action::OpenQuickOpen { group: None }),
+            "session_recent" => return self.run(ctx, Action::OpenRecent),
             // The look's picker is the Profile row of Edit session.
             "session_edit" | "session_look_set" => {
                 if let Some(a) = active {
@@ -1202,7 +1225,29 @@ impl CsmApp {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = Modifiers::COMMAND;
-        let pressed = |ctx: &egui::Context, m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
+        let pressed = |ctx: &egui::Context, m: Modifiers, k: Key| ctx.input_mut(|i| consume_exact(i, m, k));
+        // The Recent menu is modal from the keyboard: it takes the keys before anything else.
+        if matches!(self.ui.menu, Some(Menu::Recent { .. })) && self.recent_keys(ctx) {
+            return;
+        }
+        if pressed(ctx, cmd | Modifiers::SHIFT, Key::E) {
+            self.run(ctx, Action::OpenRecent);
+        }
+        if pressed(ctx, cmd | Modifiers::SHIFT, Key::N) {
+            let tab = if self.model.inspector == Some(crate::model::InspectorTab::Notes) { "hidden" } else { "notes" };
+            self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
+        }
+        if let Some(a) = self.model.active.clone() {
+            if pressed(ctx, cmd | Modifiers::SHIFT, Key::R) {
+                self.run(ctx, Action::Tool("session_restart", json!({"session_id": a})));
+            }
+            // Ctrl+.: the active pane's ⋯ menu, where its button was last drawn.
+            if pressed(ctx, cmd, Key::Period) {
+                let at =
+                    ctx.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new(("pane-more-at", a.clone())))).unwrap_or_else(|| ctx.content_rect().center());
+                self.run(ctx, Action::OpenMenu(Menu::Pane { session: a, at }));
+            }
+        }
         if pressed(ctx, cmd, Key::K) {
             if self.ui.overlay == Overlay::Palette {
                 self.run(ctx, Action::CloseOverlays);
@@ -1217,8 +1262,8 @@ impl CsmApp {
                 self.run(ctx, Action::OpenSearch(String::new()));
             }
         }
-        // Most specific first: `consume_shortcut` ignores extra Shift and Alt, so Ctrl+T checked
-        // first would also take Ctrl+Shift+T and Ctrl+Alt+T.
+        // One chord each: `consume_exact` matches the modifiers exactly, so Ctrl+T never takes
+        // Ctrl+Shift+T or Ctrl+Alt+T.
         if pressed(ctx, cmd | Modifiers::ALT, Key::T) {
             if let Some(a) = self.model.active.clone() {
                 self.run(ctx, Action::Tool("session_duplicate", json!({"session_id": a})));
@@ -1302,6 +1347,50 @@ impl CsmApp {
     fn terminal_focused(&self, ctx: &egui::Context) -> bool {
         let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
         lock(&self.host).views.values().any(|v| v.id() == focused)
+    }
+
+    /// Keys while the Recent menu is open: arrows move, Enter picks the selected row, a digit
+    /// picks a session row, Escape or Ctrl+Shift+E closes it. Every other key is swallowed (the
+    /// menu has the keyboard, as a context menu does), so nothing reaches the terminal. Returns
+    /// true: the frame's other shortcuts are skipped.
+    fn recent_keys(&mut self, ctx: &egui::Context) -> bool {
+        let n = screens::recent::items(&self.model).len();
+        let sessions = screens::recent::items(&self.model).iter().filter(|i| matches!(i, screens::recent::Item::Session(_))).count();
+        let digits = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+        let (close, down, up, enter, digit) = ctx.input_mut(|i| {
+            let close = consume_exact(i, Modifiers::NONE, Key::Escape) || consume_exact(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
+            let down = consume_exact(i, Modifiers::NONE, Key::ArrowDown) || consume_exact(i, Modifiers::NONE, Key::Tab);
+            let up = consume_exact(i, Modifiers::NONE, Key::ArrowUp) || consume_exact(i, Modifiers::SHIFT, Key::Tab);
+            let enter = consume_exact(i, Modifiers::NONE, Key::Enter);
+            let digit = digits.iter().position(|k| consume_exact(i, Modifiers::NONE, *k));
+            // The menu has the keyboard: typed text and other keys go nowhere.
+            i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+            (close, down, up, enter, digit)
+        });
+        if close {
+            self.run(ctx, Action::CloseMenu);
+            return true;
+        }
+        if n > 0 {
+            if down {
+                self.ui.recent_sel = (self.ui.recent_sel.min(n - 1) + 1) % n;
+            }
+            if up {
+                self.ui.recent_sel = (self.ui.recent_sel.min(n - 1) + n - 1) % n;
+            }
+        }
+        let pick = match (enter, digit) {
+            (_, Some(d)) => Some(screens::recent::index_for_digit(d)).filter(|i| *i < sessions),
+            (true, None) => (n > 0).then(|| self.ui.recent_sel.min(n - 1)),
+            _ => None,
+        };
+        if let Some(a) = pick.and_then(|i| screens::recent::items(&self.model).get(i).map(screens::recent::Item::action)) {
+            self.run(ctx, a);
+        }
+        if down || up || pick.is_some() {
+            ctx.request_repaint();
+        }
+        true
     }
 
     /// Focuses the live session `step` places after (or before) the active one, in the order the
@@ -1438,6 +1527,54 @@ impl CsmApp {
     pub fn repaint_main(ctx: &egui::Context) {
         ctx.request_repaint_of(ViewportId::ROOT);
     }
+}
+
+/// Where the title bar's Recent button left the menu's anchor (temp data under this id).
+pub const RECENT_ANCHOR: &str = "recent-anchor";
+
+/// Consumes a key press with exactly these modifiers (Ctrl and Cmd as egui's `COMMAND`).
+/// egui's `consume_shortcut` ignores extra Shift and Alt, so Ctrl+Shift+T would also be Ctrl+T;
+/// here each binding gets only its own chord.
+///
+/// A punctuation key (`/`, `.`, `,` …) is the character, not the key cap: on many layouts it
+/// needs Shift (`/` is Shift+7 on Danish and German keyboards), so for those an extra Shift is
+/// ignored and Ctrl+/ still opens the shortcut list there.
+pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
+    let symbol = matches!(
+        key,
+        Key::Slash
+            | Key::Period
+            | Key::Comma
+            | Key::Colon
+            | Key::Semicolon
+            | Key::Minus
+            | Key::Plus
+            | Key::Equals
+            | Key::Questionmark
+            | Key::Exclamationmark
+            | Key::Backslash
+            | Key::Pipe
+            | Key::OpenBracket
+            | Key::CloseBracket
+            | Key::OpenCurlyBracket
+            | Key::CloseCurlyBracket
+            | Key::Backtick
+            | Key::Quote
+    );
+    let matches = |pressed: &Modifiers| {
+        if symbol && !m.shift && pressed.shift {
+            pressed.matches_exact(Modifiers { shift: true, ..m })
+        } else {
+            pressed.matches_exact(m)
+        }
+    };
+    let mut hit = false;
+    i.events.retain(|e| {
+        let is = matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && matches(modifiers));
+        hit |= is;
+        !is
+    });
+    hit
 }
 
 /// Selects `cmd` in the quick-open's command cycle, or keeps it as the session's own command.

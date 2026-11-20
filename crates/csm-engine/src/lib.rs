@@ -38,8 +38,8 @@ pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output
 pub use registry::Registry;
 pub use runs::{RunOutputHandle, RunPhase, RunView};
 pub use session::TerminalHandle;
-pub use snapshot::{GroupInfo, GroupView, SessionView, Snapshot};
-pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, real_pty_factory};
+pub use snapshot::{ClosedView, GroupInfo, GroupView, SessionView, Snapshot};
+pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, UrlOpener, real_pty_factory, real_url_opener};
 pub use status::{Status, WaitUntil};
 pub use tool::{Caller, Effects, ToolError, ToolFn, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 pub use tools::open::{OpenWithTarget, OpenWithView};

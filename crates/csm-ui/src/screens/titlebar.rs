@@ -94,7 +94,15 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if btn(ui, "panelR", open, "Inspector  Ctrl+I") {
         actions.push(Action::Tool("inspector_show", json!({"tab": if open { "hidden" } else { "notes" }})));
     }
-    if btn(ui, "history", false, "Recent sessions  Ctrl+Shift+E") {
-        actions.push(Action::OpenPalette);
+    let recent_open = matches!(app.ui.menu, Some(crate::app::Menu::Recent { .. }));
+    if btn(ui, "history", recent_open, "Recent sessions  Ctrl+Shift+E") {
+        actions.push(Action::OpenRecent);
     }
+    // The Recent menu hangs under this button (also when Ctrl+Shift+E opens it); a press on the
+    // button itself is not "outside the menu", so a second click closes it.
+    let button = Rect::from_min_size(pos2(x + space::XXS, rect.center().y - side / 2.0), Vec2::splat(side));
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR), pos2(button.max.x, rect.max.y + space::XS));
+        d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR).with("button"), button);
+    });
 }

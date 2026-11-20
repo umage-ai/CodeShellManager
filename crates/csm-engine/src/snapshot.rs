@@ -105,6 +105,15 @@ pub struct GroupInfo {
     pub unseen: usize,
 }
 
+/// A recently closed session, as the Recent menu lists it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClosedView {
+    pub name: String,
+    /// The folder, `user@host` or `distro: folder`.
+    pub subtitle: String,
+    pub command: String,
+}
+
 /// The read model. `version` increases with every republish.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
@@ -136,6 +145,8 @@ pub struct Snapshot {
     /// Saved window bounds (`window_placement_set`): `main` (the state file's `LastPlacement` and
     /// `WindowMaximized`), `group:<id>` and `pane:<session id>` for torn-off windows.
     pub windows: BTreeMap<String, WindowSlot>,
+    /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
+    pub recently_closed: Vec<ClosedView>,
     #[serde(skip)]
     pub(crate) terminals: HashMap<String, TerminalHandle>,
     /// Output of each run command's last run, by `(session id, run id)`.
@@ -318,6 +329,12 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         quit: state.rt.quit,
         open_with: crate::tools::open::list_view(&state.app.settings.open_with),
         windows,
+        recently_closed: state
+            .app
+            .recently_closed
+            .iter()
+            .map(|e| ClosedView { name: e.name.clone(), subtitle: e.subtitle(), command: e.command.clone() })
+            .collect(),
         terminals,
         run_outputs: crate::runs::handles(state),
     }

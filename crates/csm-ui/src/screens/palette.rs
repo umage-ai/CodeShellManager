@@ -47,6 +47,9 @@ fn shortcut_for(id: &str) -> Option<&'static str> {
         "session_reopen_closed" => Some("Ctrl Shift T"),
         "session_close" => Some("Ctrl W"),
         "run_start" => Some("F5"),
+        "run_stop" => Some("Shift F5"),
+        "session_recent" => Some("Ctrl Shift E"),
+        "session_restart" => Some("Ctrl Shift R"),
         "search_output" => Some("Ctrl F"),
         _ => None,
     }
@@ -422,7 +425,7 @@ fn tool_icon(id: &str) -> &'static str {
         "inbox_next" | "inbox_list" | "inbox_panel_set" => "inbox",
         "session_new" | "group_new" => "plus",
         "inspector_show" => "panelR",
-        "session_reopen_closed" | "recently_closed_list" => "history",
+        "session_reopen_closed" | "recently_closed_list" | "session_recent" => "history",
         "session_sleep" | "group_sleep_all" => "moon",
         "session_restart" | "group_restart_all" => "restart",
         "open_with" => "braces",

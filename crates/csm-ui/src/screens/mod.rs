@@ -10,6 +10,7 @@ pub mod open_with;
 pub mod overlays;
 pub mod palette;
 pub mod panes;
+pub mod recent;
 pub mod runs;
 pub mod search;
 pub mod settings;

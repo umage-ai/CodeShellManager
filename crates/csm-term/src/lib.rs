@@ -16,6 +16,7 @@
 
 pub mod colors;
 pub mod input;
+pub mod links;
 pub mod probe;
 pub mod tap;
 

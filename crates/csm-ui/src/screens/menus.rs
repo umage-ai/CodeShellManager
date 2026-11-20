@@ -640,6 +640,11 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
         }
         Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
+        Menu::Recent { at } => {
+            let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
+            v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));
+            v
+        }
         Menu::QuickGroup { at } => {
             let mut e = vec![Entry::Head("Group".into())];
             for g in &model.groups {

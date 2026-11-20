@@ -436,6 +436,7 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         exited,
         exit_code: s.exit_code,
         look: s.look.clone(),
+        last_used_ms: s.last_activity_ms,
     }
 }
 
@@ -588,6 +589,11 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
                 ssh_args: e.ssh_args.clone(),
                 is_default: e.is_default,
             })
+            .collect(),
+        recently_closed: view
+            .recently_closed
+            .iter()
+            .map(|c| ClosedSessionView { name: c.name.clone(), subtitle: c.subtitle.clone(), command: c.command.clone() })
             .collect(),
         sessions,
         groups,

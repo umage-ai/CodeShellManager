@@ -28,6 +28,15 @@ pub fn real_pty_factory() -> PtyFactory {
     Arc::new(csm_pty::spawn)
 }
 
+/// Opens an already-checked absolute `http(s)` URL (`open_url`). Called on the engine thread;
+/// it must hand the work off and return at once.
+pub type UrlOpener = Arc<dyn Fn(String) + Send + Sync>;
+
+/// The real URL opener: the default browser, on a worker.
+pub fn real_url_opener() -> UrlOpener {
+    Arc::new(crate::tools::open::open_url_detached)
+}
+
 /// How the engine runs. `Default` is safe for tests and tools: nothing is saved, real PTYs.
 #[derive(Clone)]
 pub struct StateOptions {
@@ -55,6 +64,9 @@ pub struct StateOptions {
     /// The search index and notes store (`docs/tools.md`, notes and search). Off by default;
     /// production uses [`IndexSetting::Auto`].
     pub index: crate::index::IndexSetting,
+    /// What `open_url` calls. Default: nothing opens (logged), so tests and headless engines
+    /// never start a browser; production uses [`real_url_opener`].
+    pub url_opener: UrlOpener,
     /// Where `profile_list` and `session_look_set` find Windows Terminal profiles. Production
     /// reads the install locations; the default (tests) has none.
     pub terminal_profiles: TerminalProfiles,
@@ -89,6 +101,7 @@ impl Default for StateOptions {
             seed_editors: false,
             index: crate::index::IndexSetting::Off,
             terminal_profiles: TerminalProfiles::None,
+            url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
         }
     }
 }
@@ -101,6 +114,7 @@ impl StateOptions {
             seed_editors: true,
             index: crate::index::IndexSetting::Auto,
             terminal_profiles: TerminalProfiles::Installed,
+            url_opener: real_url_opener(),
             ..Self::default()
         }
     }

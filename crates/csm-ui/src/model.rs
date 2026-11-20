@@ -216,6 +216,8 @@ pub struct SessionView {
     /// The session's own terminal look (`session_look_set`); `None` follows the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub look: Option<csm_core::look::Look>,
+    /// When it was last the focused session (ms since the epoch): the Recent menu's order.
+    pub last_used_ms: Option<i64>,
 }
 
 impl SessionView {
@@ -782,8 +784,19 @@ pub struct UiModel {
     pub folder_worktrees: BTreeMap<String, Vec<crate::git_model::WorktreeRow>>,
     /// The Open with list (the editor).
     pub open_with: Vec<OpenWithEntryView>,
+    /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
     /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).
     pub windows: BTreeMap<String, csm_core::models::WindowSlot>,
+    pub recently_closed: Vec<ClosedSessionView>,
+}
+
+/// A recently closed session, as the Recent menu lists it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClosedSessionView {
+    pub name: String,
+    /// The folder, `user@host` or `distro: folder`.
+    pub subtitle: String,
+    pub command: String,
 }
 
 impl UiModel {

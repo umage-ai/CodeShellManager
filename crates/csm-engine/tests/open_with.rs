@@ -185,3 +185,59 @@ fn a_hostile_list_in_state_json_is_cleaned_on_load() {
     assert_eq!(v.open_with[0].label, "VS Code");
     h.engine.shutdown();
 }
+
+#[test]
+fn open_url_opens_only_absolute_http_links() {
+    let opened = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = opened.clone();
+    let h = H::start(test_app(), move |o| o.url_opener = std::sync::Arc::new(move |u| seen.lock().unwrap().push(u)));
+    let out = h.ok("open_url", json!({"url": "https://example.com/a?b=1&c=(2)#x"}));
+    assert_eq!(out.data["url"], "https://example.com/a?b=1&c=(2)#x");
+    for bad in [
+        "javascript:alert(1)",
+        "file:///C:/Windows/System32/calc.exe",
+        "www.example.com",
+        "/relative/path",
+        "https://exa mple.com",
+        "https://example.com/\"&calc",
+        "https://-flag",
+        "http://",
+        "ms-settings:",
+    ] {
+        let r = h.ui("open_url", json!({"url": bad}));
+        assert!(matches!(r, Err(ToolError::Refused(_))), "{bad}: {r:?}");
+    }
+    assert_eq!(*opened.lock().unwrap(), vec!["https://example.com/a?b=1&c=(2)#x".to_string()]);
+    // An external caller (MCP) needs consent: launching a process is declared.
+    let spec = h.engine.registry().get("open_url").copied().unwrap();
+    assert!(spec.effects.contains(csm_engine::Effects::LAUNCHES_PROCESS));
+    h.engine.shutdown();
+}
+
+#[test]
+fn session_recent_lists_the_previous_sessions_newest_first() {
+    use csm_core::time::Timestamp;
+    let mut app = test_app();
+    let at = |min: i64| Timestamp::from_epoch_ms(1_795_513_320_000 - min * 60_000);
+    for (id, min, asleep) in [("a", 30, true), ("b", 5, true), ("c", 120, true)] {
+        app.sessions.push(ShellSession {
+            id: id.into(),
+            name: id.to_uppercase(),
+            command: "pwsh".into(),
+            working_folder: format!(r"C:\src\{id}"),
+            last_activity_at: at(min),
+            is_dormant: asleep,
+            ..Default::default()
+        });
+    }
+    let h = H::start(app, |_| {});
+    let out = h.ok("session_recent", json!({}));
+    let ids: Vec<&str> = out.data.as_array().unwrap().iter().map(|v| v["session_id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["b", "a", "c"]);
+    let first = &out.data[0];
+    assert_eq!((first["name"].as_str(), first["asleep"].as_bool(), first["status"].as_str()), (Some("B"), Some(true), Some("asleep")));
+    assert!(first["ago"].as_str().is_some_and(|a| !a.is_empty()));
+    // The closed ones are in the snapshot too (the Recent menu's second section).
+    assert!(h.engine.view().recently_closed.is_empty());
+    h.engine.shutdown();
+}

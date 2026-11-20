@@ -164,6 +164,19 @@ fn screens() {
         },
     );
     shoot("11-inbox-closed", ThemeKind::Mocha, |b| b.model_mut().inbox_panel.open = false, |_| {});
+    // The Recent menu (Ctrl+Shift+E), with one session closed so "Recently closed" shows.
+    for (name, theme) in [("18-recent", ThemeKind::Mocha), ("18-recent-latte", ThemeKind::Latte)] {
+        shoot(
+            name,
+            theme,
+            |_| {},
+            |h| {
+                h.key_press_modifiers(egui::Modifiers::CTRL | egui::Modifiers::COMMAND, egui::Key::W);
+                settle(h);
+                h.key_press_modifiers(egui::Modifiers::CTRL | egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::E);
+            },
+        );
+    }
     shoot(
         "13-settings-general",
         ThemeKind::Mocha,

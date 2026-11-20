@@ -12,6 +12,7 @@ use csm_term::alacritty_terminal::index::{Column, Line, Point, Side};
 use csm_term::alacritty_terminal::selection::{Selection, SelectionType};
 use csm_term::alacritty_terminal::term::TermMode;
 use csm_term::input::{self, Key, Mods, MouseAction, MouseButton};
+use csm_term::links::Link;
 use csm_term::{GridSize, Terminal};
 use egui::{Color32, Event, Id, ImeEvent, Mesh, Pos2, Rect, Response, Sense, Shape, Ui, Vec2, pos2, vec2};
 
@@ -120,6 +121,31 @@ pub struct ViewResponse {
     pub focused: bool,
     /// The pointer went down on it (activate the pane).
     pub clicked: bool,
+    /// A link was Ctrl+clicked (Cmd+click on macOS): the caller opens it (`open_url`).
+    pub open_link: Option<String>,
+}
+
+/// The link under the pointer, looked up again only when the cell or the screen changes.
+struct Hover {
+    /// (terminal generation, column, row).
+    key: (u64, usize, usize),
+    link: Option<Link>,
+}
+
+impl Hover {
+    fn link_at(&self, col: usize, row: usize) -> Option<&Link> {
+        self.link.as_ref().filter(|l| l.spans.iter().any(|&(r, a, b)| r == row && (a..=b).contains(&col)))
+    }
+}
+
+/// The cell under `pos`: (column, row, in its right half), clamped to the grid.
+#[allow(clippy::too_many_arguments)]
+fn cell_of(pos: Pos2, origin: Pos2, ppp: f32, cell_w: f32, cell_h: f32, cols: u16, rows: u16) -> (usize, usize, bool) {
+    let x = ((pos.x - origin.x) * ppp / cell_w).max(0.0);
+    let y = ((pos.y - origin.y) * ppp / cell_h).max(0.0);
+    let col = (x.floor() as usize).min(usize::from(cols).saturating_sub(1));
+    let row = (y.floor() as usize).min(usize::from(rows).saturating_sub(1));
+    (col, row, x.fract() >= 0.5)
 }
 
 /// Widget state for one place a terminal is shown.
@@ -138,6 +164,8 @@ pub struct TerminalView {
     /// Ctrl+V bookkeeping: egui-winit drops the press when the clipboard holds no text (a
     /// screenshot), but the release still arrives. See [`PasteWatch`].
     paste: PasteWatch,
+    /// The link under the pointer (interactive views only).
+    hover: Option<Hover>,
 }
 
 fn mods(m: egui::Modifiers) -> Mods {
@@ -229,12 +257,18 @@ impl TerminalView {
             preedit: String::new(),
             grid: None,
             paste: PasteWatch::default(),
+            hover: None,
         }
     }
 
     /// The egui id the view takes focus under (for tests and focus requests).
     pub fn id(&self) -> Id {
         self.id
+    }
+
+    /// The address of the link under the pointer, if any.
+    pub fn hovered_link(&self) -> Option<&str> {
+        self.hover.as_ref().and_then(|h| h.link.as_ref()).map(|l| l.uri.as_str())
     }
 
     /// The last grid this view measured or drew.
@@ -307,10 +341,22 @@ impl TerminalView {
             self.was_focused = focused;
             source.focus_changed(focused);
         }
+        let mut open_link = None;
         if opts.interactive
             && let Some(g) = grid
         {
-            self.handle_input(ui, source, &resp, focused, mode, origin, ppp, m.cell_w, m.cell_h, g.cols, g.rows);
+            open_link = self.handle_input(ui, source, &resp, focused, mode, origin, ppp, m.cell_w, m.cell_h, g.cols, g.rows);
+        }
+        // The cell under the pointer, for links (interactive views, pointer on the cells).
+        let pointer_cell = match grid {
+            Some(g) if opts.interactive && resp.contains_pointer() => ui
+                .input(|i| i.pointer.hover_pos())
+                .filter(|p| inner.contains(*p))
+                .map(|p| cell_of(p, origin, ppp, m.cell_w, m.cell_h, g.cols, g.rows)),
+            _ => None,
+        };
+        if pointer_cell.is_none() {
+            self.hover = None;
         }
 
         // Build or reuse the mesh.
@@ -325,6 +371,13 @@ impl TerminalView {
                 Some(mut t) => {
                     self.apply_ops(&mut t, &ctx);
                     t.flush_sync_if_due(now);
+                    // One logical line, and only when the cell or the screen changed.
+                    if let Some((col, row, _)) = pointer_cell {
+                        let key = (t.generation(), col, row);
+                        if self.hover.as_ref().map(|h| h.key) != Some(key) {
+                            self.hover = Some(Hover { key, link: t.link_at(col, row) });
+                        }
+                    }
                     if let Some(deadline) = t.sync_deadline() {
                         ctx.request_repaint_after(deadline.saturating_duration_since(now));
                     }
@@ -367,6 +420,27 @@ impl TerminalView {
         if let Some(cache) = &self.cache {
             painter.add(Shape::Mesh(cache.mesh.clone()));
         }
+        // The link under the pointer: underlined, its address in a tooltip, a hand with Ctrl.
+        if let Some((col, row, _)) = pointer_cell
+            && let Some(link) = self.hover.as_ref().and_then(|h| h.link_at(col, row))
+        {
+            let fg = opts.style.palette.foreground;
+            let stroke = egui::Stroke::new(crate::theme::size::HAIRLINE, Color32::from_rgb(fg.r, fg.g, fg.b));
+            let (cw, ch) = (m.cell_w / ppp, m.cell_h / ppp);
+            for &(r, a, b) in &link.spans {
+                let y = origin.y + (r as f32 + 1.0) * ch - crate::theme::size::HAIRLINE;
+                painter.hline((origin.x + a as f32 * cw)..=(origin.x + (b as f32 + 1.0) * cw), y, stroke);
+            }
+            let tip = if link_opens(&link.uri) {
+                format!("{}\n{} to open", link.uri, if cfg!(target_os = "macos") { "Cmd+click" } else { "Ctrl+click" })
+            } else {
+                format!("{}\nOnly http and https links open from here", link.uri)
+            };
+            let _ = resp.clone().on_hover_text_at_pointer(tip);
+            if ctx.input(|i| i.modifiers.command) {
+                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
         if focused && let Some(cache) = &self.cache {
             let cursor_rect = cache.cursor_rect;
             ctx.output_mut(|o| {
@@ -389,7 +463,7 @@ impl TerminalView {
         if false {
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "terminal"));
         }
-        ViewResponse { response: resp, grid, focused, clicked }
+        ViewResponse { response: resp, grid, focused, clicked, open_link }
     }
 
     /// The state text to draw over an empty view (`None` while running).
@@ -419,17 +493,12 @@ impl TerminalView {
         cell_h: f32,
         cols: u16,
         rows: u16,
-    ) {
+    ) -> Option<String> {
         let events = ui.input(|i| i.events.clone());
         let body = resp.rect;
         let hovered = resp.hovered() || resp.contains_pointer();
-        let to_cell = |pos: Pos2| -> (usize, usize, bool) {
-            let x = ((pos.x - origin.x) * ppp / cell_w).max(0.0);
-            let y = ((pos.y - origin.y) * ppp / cell_h).max(0.0);
-            let col = (x.floor() as usize).min(usize::from(cols).saturating_sub(1));
-            let row = (y.floor() as usize).min(usize::from(rows).saturating_sub(1));
-            (col, row, x.fract() >= 0.5)
-        };
+        let to_cell = |pos: Pos2| cell_of(pos, origin, ppp, cell_w, cell_h, cols, rows);
+        let mut open_link = None;
         let mut typed = false;
         if focused && self.paste.step(&events, ui.input(|i| i.modifiers)) {
             // A paste of something that isn't text (an image): pass the raw ^V through, as a
@@ -486,6 +555,18 @@ impl TerminalView {
                     };
                     let report = input::mouse_reporting(mode) && !modifiers.shift;
                     let (col, row, right_half) = to_cell(pos);
+                    // Ctrl+click (Cmd+click) on a link opens it, even where the program reads
+                    // the mouse; it starts no selection and reaches no program.
+                    if pressed
+                        && b == MouseButton::Left
+                        && modifiers.command
+                        && body.contains(pos)
+                        && hovered
+                        && let Some(link) = self.hover.as_ref().and_then(|h| h.link_at(col, row))
+                    {
+                        open_link = Some(link.uri.clone());
+                        continue;
+                    }
                     if pressed && body.contains(pos) && hovered {
                         if report {
                             if let Some(bytes) = input::encode_mouse(MouseAction::Press(b), col as u32, row as u32, mods(modifiers), mode) {
@@ -586,6 +667,7 @@ impl TerminalView {
                 self.has_selection = false;
             }
         }
+        open_link
     }
 
     fn apply_ops(&mut self, t: &mut Terminal, ctx: &egui::Context) {
@@ -629,6 +711,12 @@ impl TerminalView {
             }
         }
     }
+}
+
+/// Whether `open_url` would open it (the tooltip says so up front; the engine decides).
+fn link_opens(uri: &str) -> bool {
+    let lower = uri.trim().to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
 }
 
 /// Ctrl+V (Cmd+V) with no text on the clipboard: egui-winit turns the shortcut into a text paste
