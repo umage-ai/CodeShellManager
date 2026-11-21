@@ -735,17 +735,42 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     };
     let cy = rect.center().y;
     let nr = ui.painter().text(pos2(rect.min.x + space::MD, cy), Align2::LEFT_CENTER, model.scope_name(&scope), semibold(text::EMPH), t.fg);
-    let mr = ui.painter().text(pos2(nr.max.x + space::MD, cy), Align2::LEFT_CENTER, &meta, theme::regular(text::CAPTION), t.muted);
-    // The segmented layout control.
+    // The segmented layout control. On a narrow window (a laptop, a large UI zoom) it must never
+    // run under the buttons at the right end: first the labels go (icons with tooltips stay),
+    // then the meta text beside the group name.
     let font = theme::medium(text::SMALL);
-    let mut widths = Vec::new();
-    for m in LayoutMode::ALL {
-        let extra = if m == LayoutMode::Grid { icon::XS + space::XS } else { 0.0 };
-        widths.push(
-            space::ROW_X + icon::MD + space::XS + space::XXS + widgets::text_width(ui, m.label(), font.clone()) + extra + space::ROW_X - space::XXS,
-        );
-    }
-    let seg_w: f32 = widths.iter().sum::<f32>() + space::XXS * (widths.len() as f32 + 1.0);
+    let seg_widths = |labels: bool| -> Vec<f32> {
+        LayoutMode::ALL
+            .iter()
+            .map(|&m| {
+                let extra = if m == LayoutMode::Grid { icon::XS + space::XS } else { 0.0 };
+                let label = if labels { space::XS + space::XXS + widgets::text_width(ui, m.label(), font.clone()) } else { 0.0 };
+                space::ROW_X + icon::MD + label + extra + space::ROW_X - space::XXS
+            })
+            .collect()
+    };
+    let total = |ws: &[f32]| ws.iter().sum::<f32>() + space::XXS * (ws.len() as f32 + 1.0);
+    let right_reserve = if model.inspector.is_none() {
+        widgets::text_width(ui, "Inspector", theme::medium(text::BODY)) + icon::LG + space::ROW_X * 2.0 + space::XS + space::XXS + space::SM
+    } else {
+        0.0
+    };
+    let right_limit = rect.max.x - space::SM - right_reserve - space::MD;
+    let meta_w = widgets::text_width(ui, &meta, theme::regular(text::CAPTION));
+    let with_meta = nr.max.x + space::MD + meta_w + space::MD;
+    let labelled = seg_widths(true);
+    let (show_meta, labels, widths) = if with_meta + total(&labelled) <= right_limit {
+        (true, true, labelled)
+    } else {
+        let icons_only = seg_widths(false);
+        (with_meta + total(&icons_only) <= right_limit, false, icons_only)
+    };
+    let mr = if show_meta {
+        ui.painter().text(pos2(nr.max.x + space::MD, cy), Align2::LEFT_CENTER, &meta, theme::regular(text::CAPTION), t.muted)
+    } else {
+        nr
+    };
+    let seg_w = total(&widths);
     let seg = Rect::from_min_size(
         pos2(mr.max.x + space::MD, cy - size::SEG_BUTTON / 2.0 - space::XXS - size::HAIRLINE),
         vec2(seg_w, size::SEG_BUTTON + space::XS + size::RING),
@@ -763,7 +788,11 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let fg = if on || resp.hovered() { t.fg } else { t.muted };
         let ir = Rect::from_min_size(pos2(b.min.x + space::ROW_X - space::XXS, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, m.icon(), icon::MD, fg);
-        let lr = ui.painter().text(pos2(ir.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, m.label(), font.clone(), fg);
+        let lr = if labels {
+            ui.painter().text(pos2(ir.max.x + space::XS + space::XXS, cy), Align2::LEFT_CENTER, m.label(), font.clone(), fg)
+        } else {
+            ir
+        };
         if m == LayoutMode::Grid {
             icons::paint(ui, Rect::from_min_size(pos2(lr.max.x + space::XS, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "chevD", icon::XS, fg);
         }

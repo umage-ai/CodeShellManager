@@ -418,3 +418,46 @@ fn the_window_bar_tools_are_in_the_palette_and_the_pane_menu() {
         assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
     }
 }
+
+#[test]
+fn every_layout_button_stays_visible_on_a_narrow_window() {
+    // A laptop-sized window: the layout row would run under the Inspector button, which hid
+    // Board (reported from a laptop). It must shrink to icons instead, and still click.
+    for width in [1280.0, 1000.0, 860.0] {
+        let mut h = Harness::builder()
+            .with_size(vec2(width, 760.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut csm_ui::CsmApp| app.frame(ui), app_with(backend(ThemeKind::Mocha)));
+        settle(&mut h);
+        let inspector = h.get_by_label("Inspector").rect();
+        for m in LayoutMode::ALL {
+            let b = h.get_by_label(&format!("Layout: {}", m.label())).rect();
+            assert!(b.max.x <= inspector.min.x, "{width}px: Layout: {} ({b:?}) runs under Inspector ({inspector:?})", m.label());
+            assert!(b.max.x <= width && b.width() > 0.0, "{width}px: Layout: {} is off screen ({b:?})", m.label());
+        }
+        let board = h.get_by_label("Layout: Board").rect().center();
+        click_at(&mut h, board);
+        settle(&mut h);
+        assert_eq!(layout(&h).mode, LayoutMode::Board, "{width}px");
+    }
+}
+
+#[test]
+fn the_palette_finds_each_layout_by_name() {
+    // "board" in Ctrl+K must reach the Board (it only offered a cycle-to-next layout command).
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::OpenPalette);
+    settle(&mut h);
+    h.event(Event::Text("board".into()));
+    settle(&mut h);
+    let first = csm_ui::screens::palette::rows(h.state(), "board").into_iter().find_map(|r| match r {
+        csm_ui::screens::palette::PalRow::Tool { id, .. } => Some(id),
+        _ => None,
+    });
+    assert_eq!(first, Some("layout:board"));
+    // Enter would take the first row ("search output for board"), so pick the row itself.
+    h.get_by_label("Palette: Layout: Board").click();
+    settle(&mut h);
+    assert_eq!(layout(&h).mode, LayoutMode::Board);
+}

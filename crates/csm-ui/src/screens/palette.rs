@@ -58,6 +58,18 @@ fn shortcut_for(id: &str) -> Option<&'static str> {
 /// Tools shown before anything is typed (the mock's command list), in this order.
 const SUGGESTED: [&str; 6] = ["inbox_next", "session_new", "group_restart_all", "open_with", "layout_set", "inspector_show"];
 
+/// One palette row per layout mode, so "board" finds the Board directly (the generic layout_set
+/// row only cycles to the next mode). Ids are `layout:<mode id>`, handled in `activate` (not tools
+/// in the registry); the titles are static because rows borrow them.
+const LAYOUT_ROWS: [(&str, &str); 6] = [
+    ("layout:focus", "Layout: Focus"),
+    ("layout:side", "Layout: Side by side"),
+    ("layout:overview", "Layout: Overview"),
+    ("layout:board", "Layout: Board"),
+    ("layout:grid", "Layout: Grid"),
+    ("layout:free", "Layout: Free"),
+];
+
 /// The palette's rows for a query: sessions, then output search, then tools.
 pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
     let model = &app.model;
@@ -113,6 +125,11 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
             .filter(|s| s.id != "consent_answer")
             .filter_map(|s| fuzzy(q, s.title).map(|(sc, idx)| (sc, PalRow::Tool { id: s.id, title: s.title, idx, hint: shortcut_for(s.id) })))
             .collect();
+        for (id, title) in LAYOUT_ROWS {
+            if let Some((sc, idx)) = fuzzy(q, title) {
+                tools.push((sc, PalRow::Tool { id, title, idx, hint: None }));
+            }
+        }
         tools.sort_by(|a, b| b.0.total_cmp(&a.0));
         out.extend(tools.into_iter().take(if commands_only { 40 } else { 8 }).map(|(_, r)| r));
     }
@@ -420,6 +437,9 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
 }
 
 fn tool_icon(id: &str) -> &'static str {
+    if let Some(mode) = id.strip_prefix("layout:") {
+        return crate::model::LayoutMode::ALL.iter().find(|m| m.id() == mode).map_or("grid", |m| m.icon());
+    }
     let area = id.split('_').next().unwrap_or("");
     match id {
         "inbox_next" | "inbox_list" | "inbox_panel_set" => "inbox",
@@ -462,8 +482,11 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
             }
         }
         PalRow::Tool { id, .. } => {
-            // A layout tool from the palette: cycle to the next mode.
-            if *id == "layout_set" {
+            // A layout row: that mode. The generic layout tool: cycle to the next mode.
+            if let Some(mode) = id.strip_prefix("layout:") {
+                let scope = app.model.pane_scope();
+                out.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": mode})));
+            } else if *id == "layout_set" {
                 let scope = app.model.pane_scope();
                 let cur = app.model.layout(&scope).mode;
                 let modes = crate::model::LayoutMode::ALL;
