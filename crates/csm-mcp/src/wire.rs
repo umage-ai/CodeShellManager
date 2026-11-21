@@ -34,6 +34,8 @@ pub const EVENT_NAME: &str = "csm.event";
 pub const MAX_WAIT_MS: u64 = 20_000;
 
 const MAX_CLIENT_NAME: usize = 100;
+/// The client-name prefix the engine gives process add-ons' calls (`csm-engine::plugins`).
+const RESERVED_CLIENT_PREFIX: &str = "add-on ";
 const MAX_SESSION_ID: usize = 128;
 
 /// A finished-reply object craft-ipc passes through to the client as an error.
@@ -60,6 +62,11 @@ pub fn accept_caller(v: Option<&Value>) -> Result<Caller, String> {
         Caller::External { client, session_id } => {
             let client = clean_label(&client, MAX_CLIENT_NAME);
             let client = if client.is_empty() { "unknown client".to_string() } else { client };
+            // `add-on <id>` names the process add-ons' own calls (`csm/call`), which carry their
+            // grants. A remote client may not borrow that name and inherit its grants.
+            if client.starts_with(RESERVED_CLIENT_PREFIX) {
+                return Err(format!("the client name `{RESERVED_CLIENT_PREFIX}…` is reserved for process add-ons"));
+            }
             let session_id = session_id.map(|s| clean_label(&s, MAX_SESSION_ID)).filter(|s| !s.is_empty());
             Ok(Caller::External { client, session_id })
         }
@@ -146,6 +153,13 @@ mod tests {
         assert_eq!(session_id.as_deref(), Some("s1"));
         let blank = accept_caller(Some(&json!({"kind": "external", "client": "\n"}))).unwrap_or(Caller::Ui);
         assert_eq!(blank, Caller::External { client: "unknown client".into(), session_id: None });
+    }
+
+    #[test]
+    fn a_remote_client_cannot_claim_an_add_on_identity() {
+        assert!(accept_caller(Some(&json!({"kind": "external", "client": "add-on nexus"}))).is_err());
+        assert!(accept_caller(Some(&json!({"kind": "external", "client": "  add-on nexus"}))).is_err(), "the name is trimmed before the check");
+        assert!(accept_caller(Some(&json!({"kind": "external", "client": "add-onnexus"}))).is_ok());
     }
 
     #[test]

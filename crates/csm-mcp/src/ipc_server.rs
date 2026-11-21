@@ -208,7 +208,8 @@ impl Sink {
                 let _ = tx.send(json!({"pong": true}));
             }
             wire::METHOD_TOOLS => {
-                let tools: Vec<ToolInfo> = self.engine.registry().all().iter().map(ToolInfo::from_spec).collect();
+                let reg = self.engine.registry();
+                let tools: Vec<ToolInfo> = reg.all().iter().map(|s| ToolInfo::from_spec(s, reg.schema(s))).collect();
                 let _ = tx.send(json!({"tools": serde_json::to_value(&tools).unwrap_or(Value::Null)}));
             }
             wire::METHOD_SUBMIT => {

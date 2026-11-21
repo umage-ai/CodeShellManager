@@ -1290,8 +1290,9 @@ impl CsmApp {
             }
             _ => {}
         }
-        let Some(spec) = self.dispatch.registry().get(id).copied() else { return };
-        let schema = (spec.input_schema)();
+        let reg = self.dispatch.registry();
+        let Some(spec) = reg.get(id).copied() else { return };
+        let schema = reg.schema(&spec);
         let required: Vec<String> =
             schema["required"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
         let mut params = serde_json::Map::new();

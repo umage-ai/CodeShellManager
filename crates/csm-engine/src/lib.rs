@@ -12,6 +12,7 @@
 
 pub mod addons;
 mod engine;
+mod plugins;
 pub mod events;
 mod index;
 mod launch;
@@ -37,7 +38,8 @@ pub use csm_term::{GridSize, input};
 pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};
 pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
-pub use registry::Registry;
+pub use plugins::{PluginRuntime, RunState};
+pub use registry::{DynamicTool, Registry};
 pub use runs::{RunOutputHandle, RunPhase, RunView};
 pub use session::TerminalHandle;
 pub use snapshot::{ClosedView, GroupInfo, GroupView, SessionView, Snapshot};

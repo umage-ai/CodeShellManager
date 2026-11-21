@@ -127,6 +127,17 @@ pub fn spawn_detached(program: &std::path::Path, args: &[String], raw: Option<&s
     Ok(())
 }
 
+/// Starts a process add-on (`plugins.rs`): `argv[0]` with `argv[1..]`, the working folder `dir`,
+/// stdin, stdout and stderr piped, no console window (Windows). No shell is involved. An empty
+/// `argv` is an error, not a panic.
+pub fn spawn_piped(argv: &[String], dir: &std::path::Path) -> std::io::Result<std::process::Child> {
+    let (program, args) = argv.split_first().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "the add-on has no argv"))?;
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    no_window(&mut cmd);
+    cmd.spawn()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

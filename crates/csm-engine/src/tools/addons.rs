@@ -71,7 +71,62 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             input_schema: schema_of::<ApplyRunParams>,
             run: addon_run_apply,
         },
+        ToolSpec {
+            id: "plugin_status",
+            title: "Add-on processes",
+            summary: "Each enabled process add-on: starting, running, crashed (restarting), given up or stopped; its process id, restart count, last error, its tools, and the end of what it wrote to stderr (which can contain anything the add-on printed).",
+            toolset: Toolset::Addons,
+            effects: Effects::IDEMPOTENT | Effects::READS_SESSION_CONTENT,
+            input_schema: crate::tool::empty_schema,
+            run: plugin_status,
+        },
+        ToolSpec {
+            id: "plugin_restart",
+            title: "Restart an add-on process",
+            summary: "Stop an enabled process add-on and start it again (also brings back one that gave up after repeated crashes). Its running tools are unavailable until the handshake is done again.",
+            toolset: Toolset::Addons,
+            effects: Effects::LAUNCHES_PROCESS | Effects::MAY_DISCARD_DATA,
+            input_schema: schema_of::<IdParams>,
+            run: plugin_restart,
+        },
     ]
+}
+
+fn plugin_status(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    let cat = &ctx.state.rt.addons;
+    let mut rows = Vec::new();
+    for e in &cat.entries {
+        let Some(p) = e.parsed.as_deref() else { continue };
+        if e.state != AddonState::Loaded || p.process.is_none() {
+            continue;
+        }
+        let id = p.meta.id.clone();
+        let rt = cat.runtime.get(&id).cloned().unwrap_or_else(crate::PluginRuntime::starting);
+        rows.push(json!({
+            "id": id,
+            "state": rt.state,
+            "pid": rt.pid,
+            "restarts": rt.restarts,
+            "last_error": rt.last_error,
+            "name": rt.name,
+            "tools": rt.tools,
+            "problems": rt.problems,
+            "subscriptions": rt.subscriptions,
+            "stderr_tail": rt.stderr_tail,
+        }));
+    }
+    let running = rows.iter().filter(|r| r["state"] == "running").count();
+    Ok(ToolOutput::new(format!("{} process add-on(s), {running} running.", rows.len()), json!({"processes": rows})))
+}
+
+fn plugin_restart(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: IdParams = parse_params(params)?;
+    let e = addons::entry(&ctx.state.rt.addons, &p.id).ok_or_else(|| ToolError::NotFound(format!("no add-on `{}`; `addon_list` shows them", p.id)))?;
+    if e.state != AddonState::Loaded || e.parsed.as_deref().is_none_or(|x| x.process.is_none()) {
+        return Err(ToolError::Refused(format!("`{}` is not an enabled process add-on", p.id)));
+    }
+    crate::plugins::restart(ctx, &p.id);
+    Ok(ToolOutput::new(format!("Restarting {}.", p.id), json!({"id": p.id})))
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

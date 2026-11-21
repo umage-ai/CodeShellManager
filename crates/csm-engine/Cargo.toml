@@ -33,3 +33,10 @@ thiserror = "2"
 [dev-dependencies]
 tempfile = "3"
 rusqlite = { version = "0.43", features = ["bundled"] }
+
+# Test helper: a process add-on for the plugin host's tests (tests/plugins.rs). Not shipped.
+[[bin]]
+name = "csm-echo-plugin"
+path = "tests/support/echo_plugin.rs"
+test = false
+doc = false

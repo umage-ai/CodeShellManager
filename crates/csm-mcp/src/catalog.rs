@@ -22,14 +22,14 @@ pub struct ToolInfo {
 }
 
 impl ToolInfo {
-    pub fn from_spec(spec: &ToolSpec) -> ToolInfo {
+    pub fn from_spec(spec: &ToolSpec, schema: Value) -> ToolInfo {
         ToolInfo {
             id: spec.id.to_string(),
             title: spec.title.to_string(),
             summary: spec.summary.to_string(),
             toolset: spec.toolset,
             effects: spec.effects,
-            input_schema: (spec.input_schema)(),
+            input_schema: schema,
         }
     }
 
@@ -101,7 +101,8 @@ impl LocalBackend {
 
 impl Backend for LocalBackend {
     fn tools(&mut self) -> Result<Vec<ToolInfo>, BridgeError> {
-        Ok(self.engine.registry().all().iter().map(ToolInfo::from_spec).collect())
+        let reg = self.engine.registry();
+        Ok(reg.all().iter().map(|s| ToolInfo::from_spec(s, reg.schema(s))).collect())
     }
 
     fn call(&mut self, caller: &Caller, tool: &str, params: Value) -> Result<ToolOutput, BridgeError> {

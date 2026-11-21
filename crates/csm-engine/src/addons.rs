@@ -22,6 +22,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::engine::{Ctx, ParkedReply};
+use crate::plugins::{self, PluginRuntime};
 use crate::registry::Registry;
 use crate::tool::{Effects, Toolset, ToolError, ToolOutput};
 
@@ -62,6 +63,8 @@ pub(crate) struct Catalogue {
     pub waiters: Vec<ParkedReply>,
     /// Why the folder could not be read at all.
     pub scan_error: Option<String>,
+    /// The runtime state of each enabled process add-on, by id (`plugins.rs`).
+    pub runtime: BTreeMap<String, PluginRuntime>,
 }
 
 /// What the UI and `addon_list` show for one add-on.
@@ -88,6 +91,10 @@ pub struct AddonSummary {
     pub commands: Vec<CommandSummary>,
     /// For a process add-on: the effects it declares (shown in the consent dialog).
     pub process_effects: Vec<String>,
+    /// For a process add-on: the program and its arguments, joined with spaces (every token plain).
+    pub process_command_line: Option<String>,
+    /// For a process add-on that is enabled: whether it is running, its last error, its tools.
+    pub process: Option<PluginRuntime>,
     /// Entries that were skipped, one line each.
     pub problems: Vec<String>,
 }
@@ -179,8 +186,8 @@ fn parse_found(f: disk::Found) -> Scanned {
 /// answers the waiting `addon_reload` calls.
 fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>) {
     let approvals = ctx.state.app.settings.addon_approvals.clone();
-    let registry = ctx.registry;
-    let entries: Vec<Entry> = scanned.into_iter().map(|s| build_entry(s, registry)).collect();
+    let registry = ctx.registry.clone();
+    let entries: Vec<Entry> = scanned.into_iter().map(|s| build_entry(s, &registry)).collect();
     let cat = &mut ctx.state.rt.addons;
     cat.entries = entries;
     cat.scanning = false;
@@ -193,6 +200,7 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
         w.send(Ok(ToolOutput::new(format!("Reloaded {count} add-on folder(s)."), json!({"count": count}))));
     }
     ctx.state.rt.dirty = true;
+    plugins::sync(ctx);
     // Sessions from add-on profiles that were waiting for this scan can restore now.
     crate::lifecycle::restore_waiting_addons(ctx);
 }
@@ -204,7 +212,7 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
             let mut problems = Vec::new();
             if p.meta.kind == AddonKind::Process {
                 if !(p.profiles.is_empty() && p.run_templates.is_empty() && p.slash.is_empty() && p.commands.is_empty()) {
-                    problems.push(Problem { scope: "process add-on".into(), message: "its profiles, run commands, slash presets and palette commands are ignored; process add-ons run nothing yet".into() });
+                    problems.push(Problem { scope: "process add-on".into(), message: "its profiles, run commands, slash presets and palette commands are ignored; a process add-on contributes its tools only".into() });
                 }
                 p.profiles.clear();
                 p.run_templates.clear();
@@ -265,6 +273,7 @@ pub(crate) fn refresh_all(ctx: &mut Ctx<'_>) {
         refresh_state(e, &approvals);
     }
     ctx.state.rt.dirty = true;
+    plugins::sync(ctx);
 }
 
 /// The parsed contents of an enabled add-on (a cheap clone).
@@ -339,10 +348,10 @@ pub(crate) fn screen_status(rules: &[StatusRule], screen: &str) -> Option<Profil
 
 /// Everything the UI and `addon_list` show, in folder order.
 pub(crate) fn summaries(cat: &Catalogue) -> Vec<AddonSummary> {
-    cat.entries.iter().map(summary).collect()
+    cat.entries.iter().map(|e| summary(e, cat.runtime.get(&e.folder))).collect()
 }
 
-fn summary(e: &Entry) -> AddonSummary {
+fn summary(e: &Entry, runtime: Option<&PluginRuntime>) -> AddonSummary {
     let p = e.parsed.as_deref();
     let meta = p.map(|p| &p.meta);
     let id = meta.map_or_else(|| e.folder.clone(), |m| m.id.clone());
@@ -389,6 +398,9 @@ fn summary(e: &Entry) -> AddonSummary {
             p.commands.iter().map(|c| CommandSummary { id: format!("{id}.{}", c.id), title: c.title.clone(), tool: c.tool.clone(), params: c.params.clone() }).collect()
         }),
         process_effects: p.and_then(|p| p.process.as_ref()).map_or_else(Vec::new, |s| s.effects.clone()),
+        // The stderr tail is not in the list (`addon_list` is read-only; `plugin_status` returns it).
+        process_command_line: p.and_then(|p| p.process.as_ref()).map(|s| s.argv.join(" ")),
+        process: runtime.map(|r| PluginRuntime { stderr_tail: String::new(), ..r.clone() }),
         problems,
     }
 }
