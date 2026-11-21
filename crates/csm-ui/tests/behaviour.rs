@@ -944,3 +944,21 @@ fn window_show_restores_and_focuses_the_main_window() {
         assert!(cmds.contains(&want), "{want:?} in {cmds:?}");
     }
 }
+
+#[test]
+fn about_promotes_umage_ai_and_its_links_open_through_the_open_tool() {
+    let mut h = h();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Action::OpenSettings);
+    h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::About;
+    settle(&mut h);
+    assert!(h.query_by_label("Made by ").is_some(), "the umage.ai byline");
+    assert!(h.query_by_label("Agentic development").is_some());
+    assert!(h.query_by_label("Diagnostics").is_some(), "the diagnostics stay");
+    for (label, _, url) in csm_ui::screens::settings::ABOUT_LINKS {
+        h.get_by_label(label).click();
+        h.step();
+        let c = h.state().submitted().last().cloned().expect("a call was submitted");
+        assert_eq!((c.id.as_str(), c.params["url"].as_str()), ("open_url", Some(url)), "{label}");
+    }
+}

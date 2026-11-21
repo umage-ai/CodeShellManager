@@ -459,10 +459,109 @@ fn mcp(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
 }
 
+/// umage.ai's links on the About page: (label, icon, url). Opened through the `open_url` tool.
+pub const ABOUT_LINKS: [(&str, &str, &str); 4] = [
+    ("umage.ai", "send", "https://umage.ai"),
+    ("Product page", "terminal", "https://umage.ai/products/code-shell-manager/"),
+    ("Source on GitHub", "branch", "https://github.com/umage-ai/CodeShellManager"),
+    ("Report an issue", "help", "https://github.com/umage-ai/CodeShellManager/issues"),
+];
+
+/// What umage.ai does, in its own three focus areas (the About page's pitch).
+const UMAGE_FOCUS: [(&str, &str); 3] = [
+    (
+        "Agentic development",
+        "We build AI agents and agent-based systems, and make development teams productive with coding agents like the ones you run here.",
+    ),
+    ("AI in business", "Advice, implementation and transformation: AI readiness, prioritising use cases and rolling AI out across an organisation."),
+    ("AI sovereignty", "Technological and data sovereignty for EU and Nordic organisations: hosting, model choice and data residency."),
+];
+
 fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let info = app.ui.settings.info.clone();
     let s = |k: &str| info.get(k).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).unwrap_or_else(|| "…".into());
+
+    // Hero: the logo, the name, what it is, the version.
+    ui.horizontal(|ui| {
+        let (logo, _) = ui.allocate_exact_size(Vec2::splat(size::ABOUT_LOGO), Sense::hover());
+        ui.painter().rect_filled(logo, CornerRadius::same(radius::LG), t.blue);
+        icons::paint(ui, logo, "terminal", icon::HERO, t.on_accent);
+        ui.add_space(space::LG);
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new("CodeShellManager 2").font(semibold(text::DISPLAY)).color(t.fg));
+            ui.label(egui::RichText::new("A multi-terminal host for Claude Code & friends").font(theme::regular(text::BODY)).color(t.fg2));
+            ui.label(
+                egui::RichText::new(format!("Version {} · beta · {}", s("version"), s("platform")))
+                    .font(theme::regular(text::CAPTION))
+                    .color(t.muted),
+            );
+        });
+    });
+    ui.add_space(space::XL);
+
+    // Made by umage.ai: the wordmark ("umage." light, "ai" in the brand gold), the pitch, the links.
+    egui::Frame::new()
+        .fill(t.mantle)
+        .stroke(Stroke::new(size::HAIRLINE, t.surface0))
+        .corner_radius(CornerRadius::same(radius::LG))
+        .inner_margin(space::LG)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label(egui::RichText::new("Made by ").font(theme::regular(text::TITLE)).color(t.muted));
+                ui.label(egui::RichText::new("umage.").font(semibold(text::TITLE)).color(t.fg2));
+                ui.label(egui::RichText::new("ai").font(semibold(text::TITLE)).color(t.brand));
+            });
+            ui.add_space(space::XS);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(
+                        "umage.ai is a Danish AI consultancy. We work as forward-deployed engineers with teams that want real value \
+                         from AI. CodeShellManager is the tool we use every day to run many coding agents side by side, and it's free \
+                         and open source.",
+                    )
+                    .font(theme::regular(text::BODY))
+                    .color(t.fg),
+                )
+                .wrap(),
+            );
+            ui.add_space(space::MD);
+            for (title, body) in UMAGE_FOCUS {
+                ui.horizontal_top(|ui| {
+                    let (dot, _) = ui.allocate_exact_size(vec2(space::MD, text::BODY), Sense::hover());
+                    ui.painter().circle_filled(dot.center(), space::XXS + 1.0, t.brand);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(title).font(semibold(text::BODY)).color(t.fg));
+                        ui.add(egui::Label::new(egui::RichText::new(body).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
+                    });
+                });
+                ui.add_space(space::SM);
+            }
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Want your team to get more out of coding agents? We'd love to hear from you.")
+                        .font(theme::regular(text::BODY))
+                        .color(t.fg2),
+                )
+                .wrap(),
+            );
+            ui.add_space(space::MD);
+            ui.horizontal_wrapped(|ui| {
+                for (i, (label, icon_name, url)) in ABOUT_LINKS.into_iter().enumerate() {
+                    let kind = if i == 0 { ButtonKind::Primary } else { ButtonKind::Secondary };
+                    if widgets::button(ui, kind, Some(icon_name), label, None).on_hover_text(url).clicked() {
+                        actions.push(Action::Tool("open_url", json!({"url": url})));
+                    }
+                }
+            });
+        });
+    ui.add_space(space::XL);
+
+    // Diagnostics (what a bug report needs).
+    ui.label(egui::RichText::new("Diagnostics").font(semibold(text::EMPH)).color(t.fg));
+    ui.add_space(space::SM);
     egui::Grid::new("about-kv").num_columns(2).spacing(vec2(space::LG, space::SM)).show(ui, |ui| {
         let k = |ui: &mut Ui, s: &str| {
             ui.label(egui::RichText::new(s).font(theme::regular(text::BODY)).color(t.muted));
