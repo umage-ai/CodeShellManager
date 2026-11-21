@@ -26,6 +26,9 @@ pub enum Href {
     Http(String),
     /// A `csm:` link that stays inside the screen (a `link` event).
     Csm(String),
+    /// A relative path (`CLAUDE.md`, `docs/plan.md#x`, without the `#` part). Only with
+    /// [`ParseOptions::relative_links`]: the Docs tab follows these to another listed doc.
+    Relative(String),
     /// Any other scheme (or a malformed one): drawn as plain text, never clickable.
     Inert,
 }
@@ -53,6 +56,37 @@ pub enum Block {
     Rule,
 }
 
+/// How much a parse accepts, and which links are live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseOptions {
+    /// Longest source, in bytes.
+    pub max_source: usize,
+    /// Most blocks kept.
+    pub max_blocks: usize,
+    /// Relative link targets become [`Href::Relative`] (they are [`Href::Inert`] otherwise).
+    pub relative_links: bool,
+}
+
+impl ParseOptions {
+    /// An add-on screen's Markdown.
+    pub const SCREEN: ParseOptions = ParseOptions { max_source: MAX_SOURCE, max_blocks: MAX_BLOCKS, relative_links: false };
+    /// A project doc (the inspector's Docs tab): up to 1 MiB, relative links kept.
+    pub const DOCS: ParseOptions = ParseOptions { max_source: 1024 * 1024, max_blocks: 50_000, relative_links: true };
+}
+
+/// A relative link target with its `#fragment` and `?query` removed, or `None` when it is not
+/// a plain relative path (it has a scheme or a drive, starts at a root, or is only a fragment).
+pub fn relative_target(dest: &str) -> Option<String> {
+    if dest.len() > MAX_HREF || dest.chars().any(|c| c.is_control() || super::is_invisible(c)) {
+        return None;
+    }
+    let path = dest.split(['#', '?']).next().unwrap_or("").trim();
+    if path.is_empty() || path.contains(':') || path.starts_with(['/', '\\']) {
+        return None;
+    }
+    Some(path.to_owned())
+}
+
 /// Classifies a link target. Only absolute `http(s)` URLs and `csm:` links are live.
 pub fn classify_href(dest: &str) -> Href {
     if dest.len() > MAX_HREF || dest.chars().any(|c| c.is_control() || c.is_whitespace() || super::is_invisible(c)) {
@@ -70,6 +104,14 @@ pub fn classify_href(dest: &str) -> Href {
         return Href::Csm(dest.to_owned());
     }
     Href::Inert
+}
+
+/// [`classify_href`], or a relative path when `relative` is on.
+fn classify(dest: &str, relative: bool) -> Href {
+    match classify_href(dest) {
+        Href::Inert if relative => relative_target(dest).map_or(Href::Inert, Href::Relative),
+        h => h,
+    }
 }
 
 /// Whether a link's visible text looks like a URL that differs from where it goes (a phishing
@@ -123,11 +165,12 @@ fn push_merged(v: &mut Vec<Inline>, i: Inline) {
     v.push(i);
 }
 
+/// `count` is how many blocks may still be kept.
 fn push_block(stack: &mut [Frame], out: &mut Vec<Block>, count: &mut usize, b: Block) {
-    if *count >= MAX_BLOCKS {
+    if *count == 0 {
         return;
     }
-    *count += 1;
+    *count -= 1;
     match stack.last_mut() {
         Some(Frame::Item { blocks, pending }) => {
             if !pending.is_empty() {
@@ -141,16 +184,23 @@ fn push_block(stack: &mut [Frame], out: &mut Vec<Block>, count: &mut usize, b: B
     }
 }
 
-/// Parses `source` into blocks. Errors only when the source is over [`MAX_SOURCE`].
+/// Parses `source` into blocks (an add-on screen's limits). Errors only when the source is over
+/// [`MAX_SOURCE`].
 pub fn parse(source: &str) -> Result<Vec<Block>, ScreenError> {
-    if source.len() > MAX_SOURCE {
-        return Err(ScreenError::new(format!("a Markdown text is over {MAX_SOURCE} bytes")));
+    parse_with(source, ParseOptions::SCREEN)
+}
+
+/// Parses `source` into blocks with `opts`. Errors only when the source is over `max_source`.
+pub fn parse_with(source: &str, opts: ParseOptions) -> Result<Vec<Block>, ScreenError> {
+    let max = opts.max_source;
+    if source.len() > max {
+        return Err(ScreenError::new(format!("a Markdown text is over {max} bytes")));
     }
     let mut out: Vec<Block> = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
-    let mut count = 0usize;
+    let mut count = opts.max_blocks;
     for ev in Parser::new_ext(source, Options::empty()) {
-        if count >= MAX_BLOCKS {
+        if count == 0 {
             break;
         }
         match ev {
@@ -171,7 +221,7 @@ pub fn parse(source: &str) -> Result<Vec<Block>, ScreenError> {
                     Tag::BlockQuote(_) if !nested => Frame::Quote(Vec::new()),
                     Tag::Emphasis => Frame::Emph(Vec::new()),
                     Tag::Strong => Frame::Strong(Vec::new()),
-                    Tag::Link { dest_url, .. } => Frame::Link { href: classify_href(&dest_url), kids: Vec::new() },
+                    Tag::Link { dest_url, .. } => Frame::Link { href: classify(&dest_url, opts.relative_links), kids: Vec::new() },
                     _ => Frame::Flow(Vec::new()),
                 });
             }
@@ -279,6 +329,34 @@ mod tests {
         assert!(!text_misleads("https://evil.example", &h));
         assert!(!text_misleads("click here", &h));
         assert!(!text_misleads("https://x", &Href::Inert));
+    }
+
+    #[test]
+    fn docs_keep_relative_links_and_screens_do_not() {
+        let src = "[c](CLAUDE.md) [p](docs/plan.md#phases) [f](#top) [m](mailto:a@b) [r](/etc/passwd) [d](C:/x.md) [w](https://x.y)";
+        let rel = |b: &[Block]| -> Vec<Href> {
+            let Some(Block::Paragraph(p)) = b.first() else { panic!("{b:?}") };
+            p.iter().filter_map(|i| if let Inline::Link { href, .. } = i { Some(href.clone()) } else { None }).collect()
+        };
+        let docs = rel(&parse_with(src, ParseOptions::DOCS).unwrap());
+        assert_eq!(
+            docs,
+            [
+                Href::Relative("CLAUDE.md".into()),
+                Href::Relative("docs/plan.md".into()),
+                Href::Inert,
+                Href::Inert,
+                Href::Inert,
+                Href::Inert,
+                Href::Http("https://x.y".into())
+            ]
+        );
+        assert!(rel(&parse(src).unwrap()).iter().all(|h| !matches!(h, Href::Relative(_))), "an add-on screen never gets relative links");
+        // A doc may be far bigger than a screen's text.
+        let big = "word ".repeat(MAX_SOURCE);
+        assert!(parse(&big).is_err());
+        assert!(parse_with(&big, ParseOptions::DOCS).is_ok());
+        assert!(parse_with(&"x".repeat(ParseOptions::DOCS.max_source + 1), ParseOptions::DOCS).is_err());
     }
 
     #[test]

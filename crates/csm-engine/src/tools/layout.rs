@@ -50,7 +50,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "inspector_show",
             "Show inspector…",
-            "Show the inspector on a tab (notes, runs, git, session) or hide it.",
+            "Show the inspector on a tab (notes, docs, runs, git, session, usage) or hide it.",
             Effects::UI,
             schema_of::<InspectorParams>,
             inspector_show,
@@ -150,6 +150,7 @@ enum InspectorParam {
     Git,
     Session,
     Usage,
+    Docs,
     Hidden,
 }
 
@@ -330,6 +331,7 @@ fn inspector_show(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         InspectorParam::Git => Some(InspectorTab::Git),
         InspectorParam::Session => Some(InspectorTab::Session),
         InspectorParam::Usage => Some(InspectorTab::Usage),
+        InspectorParam::Docs => Some(InspectorTab::Docs),
         InspectorParam::Hidden => None,
     };
     ctx.state.persist();

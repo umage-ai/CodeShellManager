@@ -5,6 +5,7 @@ mod addons;
 mod app;
 mod backup;
 mod bulk;
+mod docs;
 pub(crate) mod git;
 mod groups;
 mod layout;
@@ -40,6 +41,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(platform::specs());
     v.extend(look::specs());
     v.extend(search::specs());
+    v.extend(docs::specs());
     v.extend(slash::specs());
     v.extend(backup::specs());
     v.extend(usage::specs());

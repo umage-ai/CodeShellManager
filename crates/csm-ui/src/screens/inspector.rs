@@ -1,6 +1,6 @@
-//! The inspector (`.insp`): one right-hand panel with Notes · Runs · Git · Session · Usage tabs, following
-//! the active session. Notes and Session are live; Runs shows the session's run commands from the
-//! model; Git is [`super::git`].
+//! The inspector (`.insp`): one right-hand panel with Notes · Docs · Runs · Git · Session · Usage tabs,
+//! following the active session. Notes and Session are live; Docs is [`super::docs`]; Runs shows the
+//! session's run commands from the model; Git is [`super::git`].
 
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
 use serde_json::json;
@@ -89,6 +89,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             InspectorTab::Git => git(ui, app, &s, actions),
             InspectorTab::Session => session(ui, app, &s, actions),
             InspectorTab::Usage => super::usage::tab(ui, app, &s, actions),
+            InspectorTab::Docs => super::docs::tab(ui, app, &s, actions),
         }
     });
 }
