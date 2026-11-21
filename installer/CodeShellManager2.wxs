@@ -47,6 +47,7 @@
             <Directory Id="SamplesAddonsFolder" Name="addons">
               <Directory Id="SampleCodexCli" Name="codex-cli" />
               <Directory Id="SampleGeminiCli" Name="gemini-cli" />
+              <Directory Id="SampleReview" Name="review" />
               <Directory Id="SampleSessionSummary" Name="session-summary" />
             </Directory>
           </Directory>
@@ -94,11 +95,20 @@
         <File Source="$(var.PublishDir)\csm-session-summary.exe" KeyPath="yes" />
       </Component>
 
+      <!-- The "Review" add-on's program (first-party, shipped disabled). Its addon.toml names it
+           as `csm-review`; the plugin host finds it beside codeshell.exe. -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\csm-review.exe" KeyPath="yes" />
+      </Component>
+
       <Component Directory="SampleCodexCli" Guid="*">
         <File Source="$(var.PublishDir)\samples\addons\codex-cli\addon.toml" KeyPath="yes" />
       </Component>
       <Component Directory="SampleGeminiCli" Guid="*">
         <File Source="$(var.PublishDir)\samples\addons\gemini-cli\addon.toml" KeyPath="yes" />
+      </Component>
+      <Component Directory="SampleReview" Guid="*">
+        <File Source="$(var.PublishDir)\samples\addons\review\addon.toml" KeyPath="yes" />
       </Component>
       <Component Directory="SampleSessionSummary" Guid="*">
         <File Source="$(var.PublishDir)\samples\addons\session-summary\addon.toml" KeyPath="yes" />

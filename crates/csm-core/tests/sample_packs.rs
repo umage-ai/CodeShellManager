@@ -55,3 +55,18 @@ fn the_session_summary_manifest_is_an_honest_process_add_on() {
     assert_eq!(proc.argv, vec!["csm-session-summary"]);
     assert!(proc.effects.is_empty(), "the plugin only reads session_list");
 }
+
+#[test]
+fn the_review_manifest_declares_what_it_does_and_the_calls_it_needs() {
+    let text = include_str!("../../../samples/addons/review/addon.toml");
+    let p = parse(text, "review").unwrap();
+    assert!(p.problems.is_empty(), "{:?}", p.problems);
+    assert_eq!(p.meta.kind, AddonKind::Process);
+    let proc = p.process.as_ref().unwrap();
+    assert_eq!(proc.argv, vec!["csm-review"]);
+    assert_eq!(proc.effects, vec!["stores_data"], "it launches nothing itself: git runs through CSM's read-only tools");
+    for tool in ["git_diff", "git_show_file", "git_ls_files"] {
+        assert!(proc.calls.iter().any(|c| c == tool), "{tool} must be in the standing calls");
+    }
+    assert!(proc.calls.iter().all(|c| !c.starts_with("session_send") && !c.starts_with("addon_")), "{:?}", proc.calls);
+}

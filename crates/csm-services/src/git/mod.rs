@@ -10,6 +10,7 @@
 //! * `status --porcelain=v2 --branch` is the one call that feeds the chip, the poll and the menu.
 
 pub mod args;
+pub mod read;
 pub mod run;
 pub mod status;
 pub mod text;

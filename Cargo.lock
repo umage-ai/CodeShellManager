@@ -1108,6 +1108,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "csm-review"
+version = "0.0.1"
+dependencies = [
+ "csm-core",
+ "csm-engine",
+ "csm-pty",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "csm-services"
 version = "0.0.1"
 dependencies = [

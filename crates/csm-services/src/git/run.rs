@@ -325,7 +325,7 @@ pub fn repo_root(folder: &str) -> Option<String> {
 }
 
 /// Linux paths in WSL output back to `\\wsl$\<distro>\...`; local output unchanged.
-fn translate_out(folder: &str, out: &str) -> String {
+pub(crate) fn translate_out(folder: &str, out: &str) -> String {
     match GitTarget::of(folder) {
         Some(GitTarget::Wsl { distro, .. }) => args::translate_linux_paths_to_unc(out, &distro),
         _ => out.to_string(),
@@ -462,7 +462,7 @@ pub fn canonical(path: &str) -> String {
     }
 }
 
-fn strip_verbatim(s: &str) -> String {
+pub(crate) fn strip_verbatim(s: &str) -> String {
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = s.strip_prefix(r"\\?\") {

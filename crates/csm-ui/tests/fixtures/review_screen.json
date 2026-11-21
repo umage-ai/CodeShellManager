@@ -1,0 +1,424 @@
+{
+  "children": [
+    {
+      "children": [
+        {
+          "key": "source",
+          "options": [
+            {
+              "label": "Working tree",
+              "value": "working"
+            },
+            {
+              "label": "Staged",
+              "value": "staged"
+            },
+            {
+              "label": "Files",
+              "value": "files"
+            }
+          ],
+          "selected": "working",
+          "type": "segmented"
+        },
+        {
+          "files": [
+            {
+              "badges": [
+                {
+                  "text": "2",
+                  "tone": "warning"
+                }
+              ],
+              "path": "src/lib.rs",
+              "status": "M"
+            },
+            {
+              "path": "notes.txt",
+              "status": "?"
+            }
+          ],
+          "key": "files",
+          "selected": "src/lib.rs",
+          "type": "file_list",
+          "view": "flat"
+        }
+      ],
+      "gap": "xs",
+      "type": "column"
+    },
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "style": "title",
+                  "text": "Review: shop",
+                  "type": "text"
+                },
+                {
+                  "style": "caption",
+                  "text": "view only; comments are kept in the add-on's data",
+                  "tone": "muted",
+                  "type": "text"
+                }
+              ],
+              "gap": "sm",
+              "type": "row"
+            },
+            {
+              "children": [
+                {
+                  "key": "mode",
+                  "options": [
+                    {
+                      "label": "Unified",
+                      "value": "unified"
+                    },
+                    {
+                      "label": "Split",
+                      "value": "split"
+                    }
+                  ],
+                  "selected": "unified",
+                  "type": "segmented"
+                },
+                {
+                  "key": "session",
+                  "options": [
+                    {
+                      "label": "api",
+                      "value": "s1"
+                    },
+                    {
+                      "label": "web",
+                      "value": "s2"
+                    }
+                  ],
+                  "selected": "s1",
+                  "type": "select"
+                },
+                {
+                  "event": true,
+                  "key": "refresh",
+                  "kind": "ghost",
+                  "label": "Refresh",
+                  "type": "button"
+                },
+                {
+                  "action": {
+                    "params": {
+                      "session_id": "s1",
+                      "submit": false,
+                      "text": "Review comments are waiting in CodeShellManager for shop: 1 open.\n1. src/lib.rs:3 [t_0000000001000002] Do not print this.\nRead each with review.get, fix it, then answer with review.reply (status \"addressed\")."
+                    },
+                    "tool": "session_send_text"
+                  },
+                  "kind": "primary",
+                  "label": "Send to agent",
+                  "type": "button"
+                }
+              ],
+              "gap": "sm",
+              "type": "row"
+            },
+            {
+              "children": [
+                {
+                  "style": "mono",
+                  "text": "src/lib.rs",
+                  "type": "text"
+                },
+                {
+                  "style": "caption",
+                  "text": "modified",
+                  "tone": "muted",
+                  "type": "text"
+                },
+                {
+                  "event": true,
+                  "key": "file-comment",
+                  "kind": "ghost",
+                  "label": "Comment on file",
+                  "type": "button"
+                }
+              ],
+              "gap": "sm",
+              "type": "row"
+            },
+            {
+              "key": "diff",
+              "patch": "diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn main() {\n-    let x = 1;\n+    let x = read()?;\n+    println!(\"{x}\");\n }\n",
+              "path": "src/lib.rs",
+              "range_actions": [
+                {
+                  "id": "comment",
+                  "label": "+ Comment"
+                }
+              ],
+              "threads": [
+                {
+                  "anchor": {
+                    "end": 2,
+                    "side": "new",
+                    "start": 2
+                  },
+                  "child": {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "text": "addressed",
+                            "tone": "info",
+                            "type": "badge"
+                          },
+                          {
+                            "text": "moved",
+                            "tone": "muted",
+                            "type": "badge"
+                          },
+                          {
+                            "style": "caption",
+                            "text": "src/lib.rs:2",
+                            "tone": "muted",
+                            "type": "text"
+                          }
+                        ],
+                        "gap": "sm",
+                        "type": "row"
+                      },
+                      {
+                        "author": {
+                          "kind": "person",
+                          "name": "Allan"
+                        },
+                        "body": "This swallows the error; return it.",
+                        "time_ms": 1795513000000,
+                        "type": "comment"
+                      },
+                      {
+                        "author": {
+                          "kind": "agent",
+                          "name": "Claude in shop"
+                        },
+                        "body": "Returned it in 1a2b3c.",
+                        "time_ms": 1795513060000,
+                        "type": "comment"
+                      },
+                      {
+                        "key": "reply-t_0000000001000001-2",
+                        "max_len": 16384,
+                        "multiline": true,
+                        "placeholder": "Reply...",
+                        "submit_label": "Reply",
+                        "type": "text_input",
+                        "value": ""
+                      },
+                      {
+                        "children": [
+                          {
+                            "action": {
+                              "params": {
+                                "project": "repo:C:/code/shop",
+                                "status": "resolved",
+                                "thread_id": "t_0000000001000001"
+                              },
+                              "tool": "review.set_status"
+                            },
+                            "kind": "primary",
+                            "label": "Resolve",
+                            "type": "button"
+                          },
+                          {
+                            "action": {
+                              "params": {
+                                "project": "repo:C:/code/shop",
+                                "status": "open",
+                                "thread_id": "t_0000000001000001"
+                              },
+                              "tool": "review.set_status"
+                            },
+                            "kind": "secondary",
+                            "label": "Reopen",
+                            "type": "button"
+                          },
+                          {
+                            "action": {
+                              "params": {
+                                "session_id": "s1",
+                                "submit": false,
+                                "text": "Review comments are waiting in CodeShellManager for shop: 1 addressed.\n1. src/lib.rs:2 [t_0000000001000001] This swallows the error; return it."
+                              },
+                              "tool": "session_send_text"
+                            },
+                            "kind": "ghost",
+                            "label": "Send to agent",
+                            "type": "button"
+                          },
+                          {
+                            "action": {
+                              "params": {
+                                "project": "repo:C:/code/shop",
+                                "thread_id": "t_0000000001000001"
+                              },
+                              "tool": "review.delete"
+                            },
+                            "kind": "danger",
+                            "label": "Delete",
+                            "type": "button"
+                          }
+                        ],
+                        "gap": "sm",
+                        "type": "row"
+                      }
+                    ],
+                    "gap": "xs",
+                    "key": "tb-t_0000000001000001",
+                    "type": "column"
+                  },
+                  "count": 2,
+                  "key": "t_0000000001000001",
+                  "open": true
+                },
+                {
+                  "anchor": {
+                    "end": 3,
+                    "side": "new",
+                    "start": 3
+                  },
+                  "child": {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "text": "open",
+                            "tone": "warning",
+                            "type": "badge"
+                          },
+                          {
+                            "style": "caption",
+                            "text": "src/lib.rs:3",
+                            "tone": "muted",
+                            "type": "text"
+                          }
+                        ],
+                        "gap": "sm",
+                        "type": "row"
+                      },
+                      {
+                        "author": {
+                          "kind": "person",
+                          "name": "Allan"
+                        },
+                        "body": "Do not print this.",
+                        "time_ms": 1795513000000,
+                        "type": "comment"
+                      },
+                      {
+                        "key": "reply-t_0000000001000002-1",
+                        "max_len": 16384,
+                        "multiline": true,
+                        "placeholder": "Reply...",
+                        "submit_label": "Reply",
+                        "type": "text_input",
+                        "value": ""
+                      },
+                      {
+                        "children": [
+                          {
+                            "action": {
+                              "params": {
+                                "project": "repo:C:/code/shop",
+                                "status": "resolved",
+                                "thread_id": "t_0000000001000002"
+                              },
+                              "tool": "review.set_status"
+                            },
+                            "kind": "secondary",
+                            "label": "Resolve",
+                            "type": "button"
+                          },
+                          {
+                            "action": {
+                              "params": {
+                                "project": "repo:C:/code/shop",
+                                "thread_id": "t_0000000001000002"
+                              },
+                              "tool": "review.delete"
+                            },
+                            "kind": "danger",
+                            "label": "Delete",
+                            "type": "button"
+                          }
+                        ],
+                        "gap": "sm",
+                        "type": "row"
+                      }
+                    ],
+                    "gap": "xs",
+                    "key": "tb-t_0000000001000002",
+                    "type": "column"
+                  },
+                  "count": 1,
+                  "key": "t_0000000001000002",
+                  "open": true
+                }
+              ],
+              "type": "diff",
+              "view": "unified"
+            }
+          ],
+          "gap": "xs",
+          "type": "column"
+        },
+        {
+          "badge": "1",
+          "children": [
+            {
+              "items": [
+                {
+                  "badges": [
+                    {
+                      "text": "open",
+                      "tone": "warning"
+                    }
+                  ],
+                  "key": "t_0000000001000002",
+                  "subtitle": "Do not print this.",
+                  "title": "src/lib.rs:3"
+                },
+                {
+                  "badges": [
+                    {
+                      "text": "addressed",
+                      "tone": "info"
+                    },
+                    {
+                      "text": "agent",
+                      "tone": "accent"
+                    }
+                  ],
+                  "key": "t_0000000001000001",
+                  "subtitle": "This swallows the error; return it.",
+                  "title": "src/lib.rs:2"
+                }
+              ],
+              "key": "threads",
+              "type": "list"
+            }
+          ],
+          "title": "Threads",
+          "type": "section"
+        }
+      ],
+      "key": "rest",
+      "ratio": 0.72,
+      "type": "split"
+    }
+  ],
+  "key": "cols",
+  "ratio": 0.22,
+  "type": "split"
+}
