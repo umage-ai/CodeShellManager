@@ -266,7 +266,8 @@ error (`{"code":"refused","message":"..."}`). At most 8 `csm/call`s run at once 
 
 Each tool's effects map onto the app's effects, and **consent for MCP callers is derived from
 them**: a tool with `writes_filesystem` asks the person before an MCP client runs it, like any
-built-in tool with that effect. A tool with no effects runs without asking.
+built-in tool with that effect. A tool that declares `"effects": []` uses none and runs without
+asking.
 
 | add-on effect | tool effect | MCP consent |
 |---|---|---|
@@ -276,8 +277,13 @@ built-in tool with that effect. A tool with no effects runs without asking.
 | `writes_filesystem` | writes files | yes |
 | `accesses_network` | talks to the network | no (open-world hint only) |
 
-A tool with no `effects` declares none of them. The add-on as a whole is approved by the person,
-with its program and its declared effects shown in the consent dialog.
+A tool that **omits** `effects` is given all of the add-on's declared effects, so it asks before an
+MCP client runs it whenever the add-on declares any. Declaring a narrower list (or `[]`) is the
+plugin's choice, and it is only as honest as the plugin. The add-on as a whole is approved by the
+person, with its program and its declared effects shown in the consent dialog.
+
+A `csm/call` from a plugin runs as `add-on <id>`. An MCP client may not claim a name starting with
+`add-on ` (refused at the bridge), so only the add-on's own calls carry its grants.
 
 ### Failures and restarts
 

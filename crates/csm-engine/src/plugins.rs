@@ -705,9 +705,12 @@ fn drive(
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
+                // Its stdout closed. It may still be running, so it is killed rather than waited
+                // for: a wait could hang and ignore a stop or a disable.
+                let _ = child.kill();
                 return Exit::Failed(match child.wait().ok() {
-                    Some(s) => format!("exited ({s})"),
-                    None => "exited".into(),
+                    Some(s) => format!("closed its output and exited ({s})"),
+                    None => "closed its output".into(),
                 });
             }
         }

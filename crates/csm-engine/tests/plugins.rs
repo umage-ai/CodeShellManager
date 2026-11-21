@@ -118,11 +118,11 @@ fn mcp_consent_follows_the_declared_effects() {
     enable(&h);
     running(&h);
     let ext = Caller::External { client: "test-client".into(), session_id: None };
-    // No effects declared: an MCP caller runs it without a question.
+    // An explicit empty `effects` list: an MCP caller runs it without a question.
     assert_eq!(h.engine.call(ext.clone(), "echo-test.echo", json!({})).unwrap().message, "echoed");
     // writes_filesystem declared: the person is asked first, and a denial stops it.
     let events = h.engine.subscribe();
-    let rx = h.engine.submit(ext, "echo-test.write", json!({}));
+    let rx = h.engine.submit(ext.clone(), "echo-test.write", json!({}));
     let request = loop {
         match events.recv_timeout(Duration::from_secs(5)) {
             Ok(Event::ConsentRequested { request }) if request["tool"] == "echo-test.write" => break request,
@@ -133,6 +133,18 @@ fn mcp_consent_follows_the_declared_effects() {
     assert!(rx.try_recv().is_err(), "must not run before the answer");
     h.ui("consent_answer", json!({"request_id": request["request_id"], "answer": "deny"})).unwrap();
     assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err(csm_engine::ToolError::Declined(_))));
+    // A tool that omits `effects` inherits the add-on's declared ones, so it asks too.
+    let rx = h.engine.submit(ext, "echo-test.inherit", json!({}));
+    let request = loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            Ok(Event::ConsentRequested { request }) if request["tool"] == "echo-test.inherit" => break request,
+            Ok(_) => continue,
+            Err(e) => panic!("no consent request for the inheriting tool: {e}"),
+        }
+    };
+    assert!(rx.try_recv().is_err(), "must not run before the answer");
+    h.ui("consent_answer", json!({"request_id": request["request_id"], "answer": "allow_once"})).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap().message, "inherited");
     h.engine.shutdown();
 }
 
@@ -260,6 +272,18 @@ fn an_undeclared_effect_drops_only_that_tool() {
     assert!(h.engine.registry().get("echo-test.sneaky").is_none());
     let problems = row["problems"].as_array().unwrap();
     assert!(problems.iter().any(|p| p.as_str().unwrap_or_default().contains("did not declare")), "{row}");
+    h.engine.shutdown();
+}
+
+#[test]
+fn nothing_is_started_before_the_person_enables_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    // Give a wrongly started process time to answer the handshake and register its tools.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(h.engine.registry().get("echo-test.echo").is_none(), "a disabled add-on has no tools");
+    assert!(process(&h).is_none(), "a disabled add-on is not a running process");
     h.engine.shutdown();
 }
 

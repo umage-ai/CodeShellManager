@@ -122,7 +122,8 @@ pub fn split_tool_id(id: &str) -> Option<(&str, &str)> {
 /// [`PROTOCOL_API`], or `tools`/`subscriptions` that are not arrays. Per entry (reported in
 /// `problems`, the rest still loads): a tool whose id is not `addon.name` for this add-on, a
 /// duplicate, a tool using an effect the add-on did not declare, a bad schema, an unknown event
-/// kind.
+/// kind. A tool that omits `effects` gets all of the add-on's declared effects (the most it may
+/// use), so it asks for consent like any tool that uses them.
 pub fn parse_handshake(result: &Value, addon: &str, declared: &[ProcessEffect]) -> Result<Handshake, String> {
     let obj = result.as_object().ok_or("the answer to initialize is not an object")?;
     if let Some(api) = obj.get("api")
@@ -208,7 +209,16 @@ fn parse_tool(entry: &Value, addon: &str, declared: &[ProcessEffect]) -> Result<
     };
     let mut effects = Vec::new();
     match obj.get("effects") {
-        None | Some(Value::Null) => {}
+        // Omitted: the tool may use everything the add-on declared, so consent for an MCP caller
+        // follows the add-on's ceiling and a tool cannot skip consent by leaving `effects` out.
+        // An explicit `[]` says the tool uses none of them.
+        None | Some(Value::Null) => {
+            for e in declared {
+                if !effects.contains(e) {
+                    effects.push(*e);
+                }
+            }
+        }
         Some(Value::Array(a)) => {
             for e in a {
                 let word = e.as_str().ok_or_else(|| format!("tool `{id}`: effects must be strings"))?;
@@ -335,6 +345,24 @@ mod tests {
         assert_eq!(h.tools[1].input_schema["type"], "object");
         assert_eq!(h.subscriptions, vec!["session_changed", "inbox_changed"]);
         assert!(h.problems.is_empty(), "{:?}", h.problems);
+    }
+
+    #[test]
+    fn a_tool_that_omits_effects_gets_the_add_ons_ceiling() {
+        let h = hs(
+            json!({"name": "E", "tools": [
+                {"id": "echo-test.omitted"},
+                {"id": "echo-test.none", "effects": []},
+                {"id": "echo-test.one", "effects": ["writes_filesystem"]}
+            ]}),
+            &[ProcessEffect::WritesFilesystem, ProcessEffect::SendsInput],
+        )
+        .unwrap();
+        assert_eq!(h.tools[0].effects, vec![ProcessEffect::WritesFilesystem, ProcessEffect::SendsInput]);
+        assert!(h.tools[1].effects.is_empty(), "an explicit empty list declares none");
+        assert_eq!(h.tools[2].effects, vec![ProcessEffect::WritesFilesystem]);
+        let none = hs(json!({"name": "E", "tools": [{"id": "echo-test.omitted"}]}), &[]).unwrap();
+        assert!(none.tools[0].effects.is_empty(), "with no declared effects there is nothing to inherit");
     }
 
     #[test]

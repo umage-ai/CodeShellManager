@@ -69,7 +69,8 @@ fn main() {
                     _ => {}
                 }
                 let mut tools = vec![
-                    json!({"id": "echo-test.echo", "title": "Echo", "summary": "Returns its arguments and how many events it has seen"}),
+                    json!({"id": "echo-test.echo", "title": "Echo", "summary": "Returns its arguments and how many events it has seen", "effects": []}),
+                    json!({"id": "echo-test.inherit", "title": "Inherit", "summary": "Declares no effects, so it gets the add-on's"}),
                     json!({"id": "echo-test.write", "title": "Write", "summary": "Pretends to write a file", "effects": ["writes_filesystem"]}),
                     json!({"id": "echo-test.exit", "title": "Exit", "summary": "Exits the process (a crash)"}),
                     json!({"id": "echo-test.callback", "title": "Callback", "summary": "Calls session_list through csm/call"}),
@@ -95,6 +96,7 @@ fn main() {
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
                 match name.as_str() {
                     "echo-test.echo" => send(&mut out, &reply(&id, json!({"message": "echoed", "data": {"echo": args, "events_seen": events}}))),
+                    "echo-test.inherit" => send(&mut out, &reply(&id, json!({"message": "inherited"}))),
                     "echo-test.write" => send(&mut out, &reply(&id, json!({"message": "wrote (pretend)"}))),
                     "echo-test.exit" => std::process::exit(3),
                     "echo-test.callback" => {
