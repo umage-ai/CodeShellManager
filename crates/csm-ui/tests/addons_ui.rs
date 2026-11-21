@@ -33,6 +33,7 @@ fn addon(id: &str, state: AddonState, command_title: &str) -> AddonSummary {
         commands: vec![CommandSummary { id: format!("{id}.cmd"), title: command_title.into(), tool: "session_list".into(), params: json!({"include_asleep": false}) }],
         process_effects: vec![],
         process_command_line: None,
+        process_calls: vec![],
         process: None,
         problems: vec![],
     }

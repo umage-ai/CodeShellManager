@@ -174,11 +174,45 @@ pub struct ProcessSpec {
     pub argv: Vec<String>,
     /// Effects the process may request, from [`PROCESS_EFFECTS`].
     pub effects: Vec<String>,
+    /// `calls`: core tools the add-on may run through `csm/call` without a consent card, for
+    /// exactly this list. Shown when the add-on is enabled and tied to the manifest digest.
+    /// Tools that are never for add-ons ([`never_for_addons`]) are dropped and reported.
+    pub calls: Vec<String>,
+}
+
+/// Most tools one `calls` list may name.
+pub const MAX_CALLS: usize = 64;
+
+/// Why an add-on may never be granted `tool` (in `calls`): the add-on management tools,
+/// consent, settings writes, and the tools that already refuse every MCP caller because they
+/// decide what runs. `None` when the tool is not on that list. Pure and by name; the engine also
+/// drops names that are not tools and any tool that turns on an extension.
+pub fn never_for_addons(tool: &str) -> Option<&'static str> {
+    if tool.starts_with("addon_") || tool.starts_with("plugin_") {
+        return Some("managing add-ons is for the person");
+    }
+    if tool.starts_with("consent_") {
+        return Some("only the person answers a consent card");
+    }
+    match tool {
+        "settings_set" => Some("settings are changed by the person"),
+        "state_import" | "run_edit" | "open_with_set" => Some("it decides what runs, so it is refused for every caller but the person"),
+        "app_quit" => Some("quitting is for the person"),
+        _ if tool.contains('.') => Some("another add-on's tools are not callable from a manifest list"),
+        _ => None,
+    }
 }
 
 /// The effect names a process add-on may declare (the consent dialog lists them).
-pub const PROCESS_EFFECTS: [&str; 6] =
-    ["launches_process", "sends_input", "reads_session_content", "writes_filesystem", "accesses_network", "stores_secrets"];
+pub const PROCESS_EFFECTS: [&str; 7] = [
+    "launches_process",
+    "sends_input",
+    "reads_session_content",
+    "writes_filesystem",
+    "accesses_network",
+    "stores_secrets",
+    "stores_data",
+];
 
 /// One entry or table that was skipped, and why. `scope` names it ("profile 2 `claude`").
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +272,7 @@ pub fn parse(text: &str, folder: &str) -> Result<ParsedAddon, AddonError> {
     let commands = entries(&table, "command", &mut problems, parse_command);
     let process = match meta.kind {
         AddonKind::Process => match table.get("process") {
-            Some(Value::Table(t)) => match parse_process(t) {
+            Some(Value::Table(t)) => match parse_process(t, &mut problems) {
                 Ok(p) => Some(p),
                 Err(m) => {
                     problems.push(Problem { scope: "[process]".into(), message: m });
@@ -469,7 +503,7 @@ fn parse_command(t: &Table) -> Result<CommandSpec, String> {
     Ok(CommandSpec { id: id.to_owned(), title, tool: tool.to_owned(), params })
 }
 
-fn parse_process(t: &Table) -> Result<ProcessSpec, String> {
+fn parse_process(t: &Table, problems: &mut Vec<Problem>) -> Result<ProcessSpec, String> {
     let argv = argv_field(t, "argv", true)?;
     no_placeholders(&argv, "argv", "[process]")?;
     let effects = match t.get("effects") {
@@ -489,7 +523,47 @@ fn parse_process(t: &Table) -> Result<ProcessSpec, String> {
         }
         Some(_) => return Err("process effects must be an array of strings".into()),
     };
-    Ok(ProcessSpec { argv, effects })
+    let calls = parse_calls(t, problems);
+    Ok(ProcessSpec { argv, effects, calls })
+}
+
+/// `calls = ["session_list", ...]`: tolerant per name. A name that is not a tool id, one that
+/// is never for add-ons, or one past [`MAX_CALLS`] is reported and dropped; a repeat is ignored.
+fn parse_calls(t: &Table, problems: &mut Vec<Problem>) -> Vec<String> {
+    let mut report = |message: String| problems.push(Problem { scope: "[process] calls".into(), message });
+    let items = match t.get("calls") {
+        None => return Vec::new(),
+        Some(Value::Array(a)) => a,
+        Some(_) => {
+            report("must be an array of tool ids; ignored".into());
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let Some(name) = item.as_str() else {
+            report("entries must be strings; one ignored".into());
+            continue;
+        };
+        let shown = clean_text(name, 64);
+        let id_ok = !name.is_empty()
+            && name.len() <= 64
+            && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
+            && !name.starts_with('_')
+            && !name.ends_with('_');
+        if !id_ok {
+            report(format!("`{shown}` is not a tool id; ignored"));
+        } else if let Some(why) = never_for_addons(name) {
+            report(format!("`{shown}` cannot be listed: {why}; ignored"));
+        } else if out.iter().any(|x| x == name) {
+            // A repeat is harmless.
+        } else if out.len() >= MAX_CALLS {
+            report(format!("more than {MAX_CALLS} tools; `{shown}` ignored"));
+        } else {
+            out.push(name.to_owned());
+        }
+    }
+    out
 }
 
 /// A name or id field: non-empty, control characters dropped, at most [`MAX_NAME`] characters.
@@ -835,6 +909,32 @@ tool = "Rm -rf"
         assert!(p.problems.is_empty());
         let p = parse(&format!("{text}[process]\nargv = [\"x\"]\neffects = [\"teleport\"]\n"), "demo").unwrap();
         assert!(p.process.is_none());
+    }
+
+    #[test]
+    fn calls_are_a_fixed_list_and_never_include_what_add_ons_may_not_have() {
+        let text = HEAD.replace("kind = \"pack\"", "kind = \"process\"");
+        let toml = format!(
+            "{text}[process]\nargv = [\"x\"]\neffects = [\"stores_data\"]\ncalls = [\"session_list\", \"session_wake\", \"session_list\", \"addon_enable\", \"consent_answer\", \"settings_set\", \"plugin_restart\", \"other.tool\", \"Bad Name\", 7]\n"
+        );
+        let p = parse(&toml, "demo").unwrap();
+        let spec = p.process.clone().unwrap();
+        assert_eq!(spec.calls, vec!["session_list", "session_wake"]);
+        assert_eq!(spec.effects, vec!["stores_data"]);
+        for name in ["addon_enable", "consent_answer", "settings_set", "plugin_restart", "other.tool"] {
+            assert!(p.problems.iter().any(|x| x.scope == "[process] calls" && x.message.contains(name)), "{name}: {:?}", p.problems);
+        }
+        assert!(p.problems.iter().any(|x| x.message.contains("Bad Name")));
+        // Not an array: reported, and the rest of [process] still loads.
+        let p = parse(&format!("{text}[process]\nargv = [\"x\"]\ncalls = \"session_list\"\n"), "demo").unwrap();
+        assert!(p.problems.iter().any(|x| x.message.contains("array")));
+        assert!(p.process.unwrap().calls.is_empty());
+        // No `calls` is no standing consent.
+        assert!(parse(&format!("{text}[process]\nargv = [\"x\"]\n"), "demo").unwrap().process.unwrap().calls.is_empty());
+        // The cap.
+        let many: Vec<String> = (0..80).map(|i| format!("\"tool_{i}\"")).collect();
+        let p = parse(&format!("{text}[process]\nargv = [\"x\"]\ncalls = [{}]\n", many.join(",")), "demo").unwrap();
+        assert_eq!(p.process.unwrap().calls.len(), MAX_CALLS);
     }
 
     #[test]

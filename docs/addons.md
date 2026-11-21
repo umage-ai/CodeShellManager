@@ -57,7 +57,8 @@ params = { include_asleep = false }
 [process]                       # only for kind = "process": the program CSM starts (see Process add-ons)
 argv = ["my-helper"]
 effects = ["launches_process"]  # from: launches_process, sends_input, reads_session_content,
-                                #       writes_filesystem, accesses_network
+                                #       writes_filesystem, accesses_network, stores_secrets, stores_data
+calls = ["session_list"]        # core tools it may run through csm/call without a card (optional)
 ```
 
 Unknown top-level tables are reported and ignored. A `[process]` table in a pack is reported and
@@ -202,6 +203,7 @@ a process add-on that declares them has them ignored, and the problem is listed.
 [process]
 argv = ["my-helper", "--stdio"]     # plain tokens; the program and its arguments, no shell
 effects = ["writes_filesystem"]     # the most the add-on's tools may use (see below)
+calls = ["session_list"]            # core tools it may call without a consent card (see below)
 ```
 
 ### Start and stop
@@ -218,7 +220,8 @@ Newline-delimited **JSON-RPC 2.0**, one message per line, each **at most 1 MiB**
 CSM sends is the handshake:
 
 ```
--> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"api":1,"csm_version":"0.0.1"}}
+-> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"api":1,"csm_version":"0.0.1",
+    "capabilities":{"caller":1,"data_dir":1,"standing_calls":1},"data_dir":null}}
 <- {"jsonrpc":"2.0","id":1,"result":{"api":1,"name":"Echo test","tools":[
       {"id":"echo-test.echo","title":"Echo","summary":"Returns its arguments",
        "input_schema":{"type":"object"},"effects":[]},
@@ -227,6 +230,14 @@ CSM sends is the handshake:
 ```
 
 - `api` must be 1 (`PROTOCOL_API`). Another value refuses the plugin.
+- `capabilities` is an object of feature name to version, so a plugin can tell what this CSM does:
+  `caller` (`tools/call` carries `caller`), `data_dir` (the data folder below), `standing_calls`
+  (`[process] calls`). Names are only ever added; ignore the ones you do not know. A CSM that
+  predates one leaves it out, so check before relying on it.
+- `data_dir` is the add-on's own folder, `<state folder>/addon-data/<id>/`, which CSM creates when
+  the process starts. It is a string only for an add-on that declared `stores_data` and only when
+  the run has a state folder; it is **`null`** otherwise, and always under `--clean` and in an
+  isolated run (nothing is written there). A plugin given `null` keeps its data in memory.
 - Each tool id must be **`<add-on id>.<name>`**, with `<name>` lowercase letters, digits and `_`
   (up to 48 bytes). Any other prefix is refused.
 - A tool's `effects` may only name effects the `[process]` table declares. A tool that names an
@@ -242,9 +253,19 @@ CSM sends is the handshake:
 **Calls into the plugin.** A tool call from the app, the CLI or MCP becomes:
 
 ```
--> {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo-test.echo","arguments":{}}}
+-> {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo-test.echo","arguments":{},
+    "caller":{"kind":"external","client":"claude-code","session_id":"...","session_name":"...","project":"..."}}}
 <- {"jsonrpc":"2.0","id":7,"result":{"message":"echoed","data":{}}}
 ```
+
+**Who is calling (`caller`).** CSM fills `caller` on every `tools/call` from its own record of who
+asked; it is never taken from the plugin or the arguments, and an argument named `caller` stays an
+argument. `kind` is one of: `ui` (the person, in the app), `cli` (`csm <tool>`), `external` (an MCP
+client: `client` is the name it gave, and when it runs inside one of our sessions also
+`session_id`, `session_name` and `project`, the project key tasks use), or `addon` (another add-on's
+`csm/call`, or this one's own: `addon` is its id). A plugin uses it to refuse what only the person
+should do (for example pairing a device from an MCP agent) and to scope an agent to its project. It
+is only present on calls that come through CSM, which is all of them.
 
 `message` (500 characters) and `data` are both optional. An error answer
 (`{"error":{"code":..,"message":..}}`) becomes a failed call with its message. A call that is not
@@ -267,6 +288,27 @@ names the add-on. A failed call answers with `error.code = -32000` and `error.da
 error (`{"code":"refused","message":"..."}`). At most 8 `csm/call`s run at once per add-on.
 `csm/log` with `{"message": "..."}` is written to the app log. Any other method is answered with
 `-32601`.
+
+**Standing consent (`calls`).** `[process] calls` lists core tools that this add-on may run through
+`csm/call` **without a consent card**, for exactly that list:
+
+```toml
+[process]
+argv = ["my-helper"]
+calls = ["session_list", "session_wake"]
+```
+
+- The enable dialog lists each tool with its effects, so the person approves the list together with
+  the program. It is tied to the manifest digest like everything else in `addon.toml`: if the file
+  changes, the add-on is off and the list is not in force until it is approved again. Disabling it
+  ends the list too.
+- Only the add-on's own `csm/call`s use it. An MCP client, the CLI or another add-on calling the
+  same tool is treated as before. A tool **not** in the list asks as before.
+- A name that is not a tool, an add-on's tool, a tool that turns on extensions (`addon_enable`),
+  `addon_*`/`plugin_*` management, `consent_*`, `settings_set`, `state_import`, `run_edit`,
+  `open_with_set` or `app_quit` is reported as a problem and **not** granted. Listing a tool never
+  lifts a tool's own refusals: a tool that refuses add-on callers still does. At most 64 tools.
+- `addon_list` shows the tools in force as `process_calls` (`tool`, `title`, `effects`, `asks`).
 
 ### Remotes, session notes, sleep and wake, and secrets
 
@@ -375,6 +417,10 @@ asking.
 | `writes_filesystem` | writes files | yes |
 | `accesses_network` | talks to the network | no (open-world hint only) |
 | `stores_secrets` | keeps secrets in the OS keychain | no: only the add-on itself can call them |
+| `stores_data` | writes only inside its own `data_dir` | no: counted as the app's own state, like `task_new` |
+
+`stores_data` means the add-on writes only inside its own data folder. It is shown in the enable
+dialog ("Stores its own data"), asks no one, and is only as honest as the plugin, like every effect.
 
 A tool that **omits** `effects` is given all of the add-on's declared effects, so it asks before an
 MCP client runs it whenever the add-on declares any. Declaring a narrower list (or `[]`) is the

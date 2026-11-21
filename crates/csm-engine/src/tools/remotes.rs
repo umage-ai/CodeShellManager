@@ -130,7 +130,8 @@ fn remote_open(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             }
             let Some(parked) = ctx.park() else { return Err(ToolError::Failed("cannot wait for the add-on here".into())) };
             let (tx, rx) = mpsc::channel::<Reply>();
-            ctx.engine.host.dispatch(p.addon.clone(), name.clone(), params, tx);
+            let who = crate::plugins::caller_json(ctx.state, ctx.caller);
+            ctx.engine.host.dispatch(p.addon.clone(), name.clone(), params, who, tx);
             let (engine, addon) = (ctx.engine.clone(), p.addon);
             let spawned = thread::Builder::new().name("csm-remote-open".into()).spawn(move || {
                 let answer = rx.recv_timeout(OPEN_WAIT).unwrap_or_else(|_| Err(ToolError::TimedOut(format!("`{name}` did not say what to open"))));

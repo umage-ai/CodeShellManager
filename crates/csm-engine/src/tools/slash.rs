@@ -22,7 +22,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
     vec![ToolSpec {
         id: "session_send_command",
         title: "Send a Claude command",
-        summary: "Type one of the configured Claude slash commands (settings ClaudeCommands: /help, /clear, /compact, /status, /memory, /init, exit) into a session and press Enter. Refused into the caller's own session, and while the session is working unless force is true.",
+        summary: "Type one of the configured Claude slash commands (settings ClaudeCommands: /help, /clear, /compact, /status, /memory, /init, /remote-control, exit) into a session and press Enter. Refused into the caller's own session, and while the session is working unless force is true.",
         toolset: Toolset::Core,
         effects: Effects::SENDS_INPUT,
         input_schema: schema_of::<SendCommandParams>,

@@ -203,7 +203,7 @@ Refused for MCP clients before any consent card. `usage_stats` reads the index's
 table (schema 2; per command and UTC day, the WPF shape): a start is counted when a session's
 process spawns, its running time when it exits or is torn down. `session_send_command`
 (session_id, command, force?) types one of the `ClaudeCommands` setting's entries (default /help,
-/clear, /compact, /status, /memory, /init, exit; app-only key) and presses Enter separately; any
+/clear, /compact, /status, /memory, /init, /remote-control, exit; app-only key) and presses Enter separately; any
 other text is refused (use `session_send_text`, which pastes). File drops onto a pane go through
 `session_send_text` with `csm_core::dropped_paths` quoting (control and format characters
 rejected, Windows double quotes / POSIX single quotes, ≤ 64 paths).
@@ -460,7 +460,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `search_output` | search | content | asks | Full-text search of everything every session printed (ANSI stripped). The query is taken literally as a phrase unless advanced is true (FTS5 syntax: AND, OR, NOT, prefix*). Newest matches first. |
 | `search_notes` | search | content | asks | Search every folder's notes for a piece of text (case-insensitive, literal). |
 | `search_reopen_session` | search | state, launch | asks | Start a new session from the configuration a closed session had (session_id from a search result). Refused when that session is still in the sidebar. |
-| `session_send_command` | core | input | asks | Type one of the configured Claude slash commands (settings ClaudeCommands: /help, /clear, /compact, /status, /memory, /init, exit) into a session and press Enter. Refused into the caller's own session, and while the session is working unless force is true. |
+| `session_send_command` | core | input | asks | Type one of the configured Claude slash commands (settings ClaudeCommands: /help, /clear, /compact, /status, /memory, /init, /remote-control, exit) into a session and press Enter. Refused into the caller's own session, and while the session is working unless force is true. |
 | `state_export` | app | files | asks | Write a backup of the whole setup (sessions, groups, layouts, settings) to a .csm file at `path` (absolute). The same JSON as state.json; the WPF app's Import reads it. An MCP client's export leaves out the API key and MCP grants. |
 | `state_import` | app | state, discard | asks | Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true. App and CLI only. |
 | `usage_stats` | app | read | no | Per command (claude, pwsh, …): how many sessions started, their total running time in seconds, and the last day (UTC) it was used. Counted on this machine only. |

@@ -148,6 +148,9 @@ pub(crate) struct PluginSpec {
     pub dir: PathBuf,
     pub argv: Vec<String>,
     pub effects: Vec<ProcessEffect>,
+    /// The add-on's own data folder (`initialize` `data_dir`): set only when it declared
+    /// `stores_data` and the run has a state folder; created when the process starts.
+    pub data_dir: Option<PathBuf>,
     /// The digest of the approved `addon.toml`; a change means a new process.
     pub digest: String,
 }
@@ -236,7 +239,7 @@ impl Host {
     /// Runs a tool of a running add-on on a call thread and answers `reply` with the result.
     /// At most [`MAX_CALL_THREADS`] such calls wait at once; more are refused. If the thread
     /// cannot start, `reply` is dropped and the caller gets the engine's "stopped".
-    pub(crate) fn dispatch(&self, addon: String, tool: String, params: Value, reply: Sender<Reply>) {
+    pub(crate) fn dispatch(&self, addon: String, tool: String, params: Value, caller: Value, reply: Sender<Reply>) {
         let Some(slot) = InflightSlot::take(&self.calls, MAX_CALL_THREADS) else {
             let _ = reply.send(Err(ToolError::Refused("too many add-on calls are waiting; try again shortly".into())));
             return;
@@ -244,7 +247,7 @@ impl Host {
         let links = self.links.clone();
         let spawned = thread::Builder::new().name("csm-plugin-call".into()).spawn(move || {
             let _slot = slot;
-            let r = call_tool(&links, &addon, &tool, params);
+            let r = call_tool(&links, &addon, &tool, params, caller);
             let _ = reply.send(r);
         });
         if let Err(e) = spawned {
@@ -470,6 +473,55 @@ pub(crate) fn addon_of(caller: &Caller) -> Option<&str> {
     }
 }
 
+/// The folder an add-on may keep its own data in: `<state folder>/addon-data/<id>/`. `None`
+/// under `--clean` and when there is no state folder (an isolated run): nothing is written then.
+pub(crate) fn data_dir_for(save_path: Option<&std::path::Path>, clean: bool, addon: &str) -> Option<PathBuf> {
+    if clean || !csm_core::addons::manifest::valid_id(addon) {
+        return None;
+    }
+    save_path.and_then(std::path::Path::parent).map(|p| p.join("addon-data").join(addon))
+}
+
+/// Engine thread: whether `caller` is an enabled process add-on whose approved manifest lists
+/// `tool` in `[process] calls`. The entry is `Loaded` only while its `addon.toml` digest is the
+/// one the person approved, so a changed file loses the list until it is approved again.
+pub(crate) fn standing_call(cat: &addons::Catalogue, caller: &Caller, tool: &str) -> bool {
+    let Some(addon) = addon_of(caller) else { return false };
+    addons::entry(cat, addon)
+        .filter(|e| e.state == AddonState::Loaded)
+        .and_then(|e| e.parsed.as_deref())
+        .and_then(|p| p.process.as_ref())
+        .is_some_and(|p| p.calls.iter().any(|c| c == tool))
+}
+
+/// The `caller` object CSM puts in a `tools/call` it sends a plugin. Filled here, from the
+/// engine's own record of who asked; nothing the plugin or the arguments say can change it.
+/// `kind` is `ui` (the person in the app), `cli`, `external` (an MCP client: `client`, and when
+/// it runs in one of our sessions `session_id`, `session_name` and `project`) or `addon`
+/// (another add-on's `csm/call`: `addon` is its id).
+pub(crate) fn caller_json(state: &crate::state::State, caller: &Caller) -> Value {
+    match caller {
+        Caller::Ui => json!({"kind": "ui"}),
+        Caller::Cli => json!({"kind": "cli"}),
+        Caller::External { .. } if addon_of(caller).is_some() => {
+            json!({"kind": "addon", "addon": addon_of(caller).unwrap_or_default()})
+        }
+        Caller::External { client, session_id } => {
+            let mut o = serde_json::Map::new();
+            o.insert("kind".into(), json!("external"));
+            o.insert("client".into(), json!(clean_text(client, 80)));
+            if let Some(sid) = session_id {
+                o.insert("session_id".into(), json!(sid));
+                if let Some(s) = state.app.sessions.iter().find(|s| &s.id == sid) {
+                    o.insert("session_name".into(), json!(clean_text(&s.name, 80)));
+                    o.insert("project".into(), json!(crate::snapshot::project_of(state, s)));
+                }
+            }
+            Value::Object(o)
+        }
+    }
+}
+
 /// Engine thread: what `addon` (an enabled process add-on) declared in `[process] effects`.
 pub(crate) fn declared_effects(cat: &addons::Catalogue, addon: &str) -> Vec<ProcessEffect> {
     addons::entry(cat, addon)
@@ -519,6 +571,7 @@ enum Exit {
 /// Engine thread: makes the running processes match the catalogue. Starts and stops them
 /// through the host, and forgets the runtime and tools of add-ons that are no longer enabled.
 pub(crate) fn sync(ctx: &mut Ctx<'_>) {
+    let (save_path, clean) = (ctx.state.options.save_path.clone(), ctx.state.options.clean);
     let specs: Vec<PluginSpec> = ctx
         .state
         .rt
@@ -531,7 +584,8 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
             let proc = p.process.as_ref()?;
             let digest = e.digest.clone()?;
             let effects = proc.effects.iter().filter_map(|n| ProcessEffect::ALL.into_iter().find(|x| x.name() == n.as_str())).collect();
-            Some(PluginSpec { addon: p.meta.id.clone(), dir: e.path.clone(), argv: proc.argv.clone(), effects, digest })
+            let data_dir = if proc.effects.iter().any(|x| x == "stores_data") { data_dir_for(save_path.as_deref(), clean, &p.meta.id) } else { None };
+            Some(PluginSpec { addon: p.meta.id.clone(), dir: e.path.clone(), argv: proc.argv.clone(), effects, data_dir, digest })
         })
         .collect();
     let wanted: Vec<String> = specs.iter().map(|s| s.addon.clone()).collect();
@@ -568,6 +622,8 @@ pub(crate) fn dynamic_tools(tools: &[DeclaredTool]) -> Vec<DynamicTool> {
                     ProcessEffect::WritesFilesystem => Effects::WRITES_FILESYSTEM,
                     ProcessEffect::AccessesNetwork => Effects::ACCESSES_NETWORK,
                     ProcessEffect::StoresSecrets => Effects::STORES_SECRETS,
+                    // Writes only inside its own folder: the class of `task_new`, no consent card.
+                    ProcessEffect::StoresData => Effects::MUTATES_STATE,
                 }
             });
             let (Some(id), Some(title), Some(summary)) = (intern(&t.id), intern(&t.title), intern(&t.summary)) else {
@@ -787,8 +843,22 @@ fn drive(
 ) -> Exit {
     let init_id: u64 = 1;
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    if out_tx.send(proto::request_line(init_id, "initialize", json!({"api": proto::PROTOCOL_API, "csm_version": env!("CARGO_PKG_VERSION")}))).is_err()
-    {
+    // The data folder is made when the process starts (on demand, never for an add-on that did
+    // not declare `stores_data`). If it cannot be made the plugin is told there is none.
+    let data_dir = spec.data_dir.as_ref().and_then(|d| match std::fs::create_dir_all(d) {
+        Ok(()) => Some(d.display().to_string()),
+        Err(e) => {
+            log::warn!("add-on {}: could not create its data folder {}: {e}", env.addon, d.display());
+            None
+        }
+    });
+    let init = json!({
+        "api": proto::PROTOCOL_API,
+        "csm_version": env!("CARGO_PKG_VERSION"),
+        "capabilities": proto::capabilities(),
+        "data_dir": data_dir,
+    });
+    if out_tx.send(proto::request_line(init_id, "initialize", init)).is_err() {
         return Exit::Failed("could not send initialize".into());
     }
     loop {
@@ -952,7 +1022,7 @@ impl Drop for CsmSlot {
 }
 
 /// A tool call from the app to a running plugin: writes `tools/call` and waits for the answer.
-fn call_tool(links: &Links, addon: &str, tool: &str, params: Value) -> Reply {
+fn call_tool(links: &Links, addon: &str, tool: &str, params: Value, caller: Value) -> Reply {
     let link = links
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -965,7 +1035,7 @@ fn call_tool(links: &Links, addon: &str, tool: &str, params: Value) -> Reply {
     }
     let _slot = InflightSlot(link.inflight.clone());
     let id = link.next_id.fetch_add(1, Ordering::AcqRel);
-    let line = proto::request_line(id, "tools/call", json!({"name": tool, "arguments": params}));
+    let line = proto::request_line(id, "tools/call", json!({"name": tool, "arguments": params, "caller": caller}));
     if !fits_line(&line) {
         return Err(ToolError::InvalidParams(format!("the arguments for `{tool}` are over 1 MiB, which an add-on cannot read; send less")));
     }
@@ -1029,6 +1099,15 @@ pub(crate) fn owner_of(id: &str) -> Option<&str> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_data_folder_is_beside_the_state_file_and_absent_when_clean_or_isolated() {
+        let p = std::path::Path::new("/x/y/state.json");
+        assert_eq!(data_dir_for(Some(p), false, "review"), Some(PathBuf::from("/x/y").join("addon-data").join("review")));
+        assert_eq!(data_dir_for(Some(p), true, "review"), None, "--clean writes nothing");
+        assert_eq!(data_dir_for(None, false, "review"), None, "an isolated run has no state folder");
+        assert_eq!(data_dir_for(Some(p), false, "../evil"), None, "only a valid add-on id names a folder");
+    }
 
     #[test]
     fn backoff_doubles_and_caps() {

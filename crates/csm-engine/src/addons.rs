@@ -49,6 +49,19 @@ pub(crate) struct Entry {
     pub message: Option<String>,
     /// Entries the install check dropped (a palette command naming an unknown tool).
     pub problems: Vec<Problem>,
+    /// The tools `[process] calls` lists that passed the install check, with their effects.
+    pub standing: Vec<StandingCall>,
+}
+
+/// One tool of `[process] calls`, as the enable dialog and `addon_list` show it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StandingCall {
+    pub tool: String,
+    pub title: String,
+    /// The tool's effects in words (`input`, `files`, `content`, ... or `read`).
+    pub effects: String,
+    /// Whether the tool would ask an MCP caller, so whether this list removes a card.
+    pub asks: bool,
 }
 
 /// The catalogue: runtime state, never persisted.
@@ -95,6 +108,9 @@ pub struct AddonSummary {
     pub process_effects: Vec<String>,
     /// For a process add-on: the program and its arguments, joined with spaces (every token plain).
     pub process_command_line: Option<String>,
+    /// For a process add-on: the core tools it may call without a consent card once enabled
+    /// (`[process] calls`). Approved with the rest of the manifest, and gone if the file changes.
+    pub process_calls: Vec<StandingCall>,
     /// For a process add-on that is enabled: whether it is running, its last error, its tools.
     pub process: Option<PluginRuntime>,
     /// Entries that were skipped, one line each.
@@ -209,7 +225,7 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
 
 fn build_entry(s: Scanned, registry: &Registry) -> Entry {
     match s.parsed {
-        Err(e) => Entry { folder: s.folder, path: s.path, parsed: None, digest: None, state: AddonState::Error, message: Some(e), problems: Vec::new() },
+        Err(e) => Entry { folder: s.folder, path: s.path, parsed: None, digest: None, state: AddonState::Error, message: Some(e), problems: Vec::new(), standing: Vec::new() },
         Ok((mut p, digest)) => {
             let mut problems = Vec::new();
             if p.meta.kind == AddonKind::Process {
@@ -241,9 +257,51 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
                     None => true,
                 }
             });
-            Entry { folder: s.folder, path: s.path, parsed: Some(Arc::new(p)), digest: Some(digest), state: AddonState::Disabled, message: None, problems }
+            // `[process] calls`: only real core tools that an add-on may be given. Anything else
+            // is dropped here and reported, so the list the person approves is the list in force.
+            let mut standing = Vec::new();
+            if let Some(proc) = p.process.as_mut() {
+                proc.calls.retain(|name| {
+                    let verdict = match registry.get(name) {
+                        None => Some(format!("`{name}` is not a tool this app has; ignored")),
+                        Some(t) if t.toolset == Toolset::Addons => Some(format!("`{name}` is an add-on tool; ignored")),
+                        Some(t) if t.effects.contains(Effects::ENABLES_EXTENSION) => Some(format!("`{name}` turns on extensions, which only the person may do; ignored")),
+                        Some(_) => None,
+                    };
+                    match verdict {
+                        Some(message) => {
+                            problems.push(Problem { scope: "[process] calls".into(), message });
+                            false
+                        }
+                        None => true,
+                    }
+                });
+                for name in &proc.calls {
+                    if let Some(t) = registry.get(name) {
+                        standing.push(StandingCall { tool: name.clone(), title: t.title.to_owned(), effects: effects_words(t.effects), asks: t.effects.needs_consent() });
+                    }
+                }
+            }
+            Entry { folder: s.folder, path: s.path, parsed: Some(Arc::new(p)), digest: Some(digest), state: AddonState::Disabled, message: None, problems, standing }
         }
     }
+}
+
+/// A tool's effects as short words for the consent dialog (`read` when it only reads).
+fn effects_words(e: Effects) -> String {
+    const WORDS: [(Effects, &str); 9] = [
+        (Effects::CHANGES_UI_STATE, "changes the view"),
+        (Effects::MUTATES_STATE, "changes app state"),
+        (Effects::LAUNCHES_PROCESS, "starts programs"),
+        (Effects::SENDS_INPUT, "types into sessions"),
+        (Effects::MAY_DISCARD_DATA, "may discard work"),
+        (Effects::WRITES_FILESYSTEM, "writes files"),
+        (Effects::ACCESSES_NETWORK, "uses the network"),
+        (Effects::READS_SESSION_CONTENT, "reads session content"),
+        (Effects::STORES_SECRETS, "keeps secrets"),
+    ];
+    let words: Vec<&str> = WORDS.iter().filter(|(f, _)| e.contains(*f)).map(|(_, w)| *w).collect();
+    if words.is_empty() { "read only".to_owned() } else { words.join(", ") }
 }
 
 /// The state of one entry from the approvals. Parse failures stay errors.
@@ -402,6 +460,7 @@ fn summary(e: &Entry, runtime: Option<&PluginRuntime>) -> AddonSummary {
         process_effects: p.and_then(|p| p.process.as_ref()).map_or_else(Vec::new, |s| s.effects.clone()),
         // The stderr tail is not in the list (`addon_list` is read-only; `plugin_status` returns it).
         process_command_line: p.and_then(|p| p.process.as_ref()).map(|s| s.argv.join(" ")),
+        process_calls: e.standing.clone(),
         process: runtime.map(|r| PluginRuntime { stderr_tail: String::new(), ..r.clone() }),
         problems,
     }
