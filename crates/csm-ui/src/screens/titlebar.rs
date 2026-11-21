@@ -17,6 +17,17 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     p.rect_filled(rect, 0.0, t.mantle);
     p.hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
 
+    // The bar's empty space behaves like a window title bar: drag moves the window, double-click
+    // maximizes or restores. Registered first, so the search field and buttons drawn on top of it
+    // take their own clicks.
+    let bg = ui.interact(rect, ui.id().with("tb-drag"), Sense::click_and_drag());
+    if bg.double_clicked() {
+        let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    } else if bg.drag_started_by(egui::PointerButton::Primary) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+
     // Brand.
     let logo = Rect::from_min_size(pos2(rect.min.x + space::MD, rect.center().y - space::LG / 2.0 - space::XXS), Vec2::splat(space::LG + space::XS));
     p.rect_filled(logo, CornerRadius::same(radius::SM + 1), t.blue);
