@@ -1,0 +1,120 @@
+{
+  "control": {
+    "client_hello_pairing": {
+      "host_id": "nn3h6velwf24defwqnrtcmzqrv",
+      "pairing_id": "Fh0kKzI5QEdOVVxjanF4fw",
+      "t": "hello",
+      "v": 1
+    },
+    "client_hello_token": {
+      "host_id": "nn3h6velwf24defwqnrtcmzqrv",
+      "t": "hello",
+      "token": "i5KZoKeutbzDytHY3-bt9PsCCRAXHiUsMzpBSE9WXWQ",
+      "v": 1
+    },
+    "host_allow": {
+      "t": "allow",
+      "tokens": [
+        "aWVrNrA7R6e3yFHKd09_CweEAJRMtNIAtfbmLx0XFms"
+      ]
+    },
+    "host_hello": {
+      "access": "enrol-secret",
+      "host_id": "nn3h6velwf24defwqnrtcmzqrv",
+      "host_secret": "2eDn7vX8AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7I",
+      "t": "hello",
+      "v": 1
+    },
+    "host_pairing_close": {
+      "t": "pairing_close"
+    },
+    "host_pairing_open": {
+      "expires_in": 600,
+      "pairing_id": "Fh0kKzI5QEdOVVxjanF4fw",
+      "t": "pairing_open"
+    },
+    "host_push": {
+      "body": "7_b9BAsSGSAnLjU8Q0pRWF9mbXR7gomQl56lrLO6wcjP1t3k6_L5AA",
+      "endpoint": "https://fcm.googleapis.com/fcm/send/abc",
+      "id": 1,
+      "t": "push",
+      "ttl": 60,
+      "urgency": "high"
+    },
+    "relay_error": {
+      "code": "not_enrolled",
+      "t": "error"
+    },
+    "relay_push_result": {
+      "code": "push_refused",
+      "id": 1,
+      "ok": false,
+      "t": "push_result"
+    },
+    "relay_ready": {
+      "t": "ready",
+      "v": 1
+    },
+    "relay_refusal": {
+      "code": "host_offline",
+      "t": "error"
+    }
+  },
+  "doc": "host socket binary frame = version(1) kind(1: data, 2: open, 3: close) channel(u32 BE) payload; open payload = 0x00 token_hash(32) | 0x01 pairing_id(16); close payload = u16 BE refusal number or 0",
+  "frames": [
+    {
+      "channel": 1,
+      "frame_hex": "0101000000016f7061717565",
+      "kind": "data",
+      "payload_hex": "6f7061717565"
+    },
+    {
+      "channel": 3735928559,
+      "frame_hex": "0101deadbeef",
+      "kind": "data",
+      "payload_hex": ""
+    },
+    {
+      "channel": 7,
+      "frame_hex": "01020000000700a1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a",
+      "kind": "open",
+      "payload_hex": "00a1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a"
+    },
+    {
+      "channel": 8,
+      "frame_hex": "01020000000801a1a8afb6bdc4cbd2d9e0e7eef5fc030a",
+      "kind": "open",
+      "payload_hex": "01a1a8afb6bdc4cbd2d9e0e7eef5fc030a"
+    },
+    {
+      "channel": 7,
+      "frame_hex": "0103000000070000",
+      "kind": "close",
+      "payload_hex": "0000"
+    },
+    {
+      "channel": 7,
+      "frame_hex": "010300000007000a",
+      "kind": "close",
+      "payload_hex": "000a"
+    }
+  ],
+  "invalid": [
+    {
+      "error": "too_short",
+      "frame_hex": ""
+    },
+    {
+      "error": "too_short",
+      "frame_hex": "0101000000"
+    },
+    {
+      "error": "version",
+      "frame_hex": "020100000001"
+    },
+    {
+      "error": "unknown_kind",
+      "frame_hex": "01630000000100"
+    }
+  ]
+}
