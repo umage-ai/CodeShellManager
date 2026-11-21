@@ -4,6 +4,7 @@ pub mod addon_screen;
 pub mod addons;
 pub mod backup;
 pub mod board;
+pub mod board_agents;
 pub mod broadcast;
 pub mod claude_commands;
 pub mod file_drop;

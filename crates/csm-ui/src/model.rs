@@ -227,6 +227,10 @@ pub struct SessionView {
     pub look: Option<csm_core::look::Look>,
     /// When it was last the focused session (ms since the epoch): the Recent menu's order.
     pub last_used_ms: Option<i64>,
+    /// The subagents Claude started in this session (read from its transcript folder); the Board
+    /// lists them under the card.
+    #[serde(skip)]
+    pub subagents: Option<std::sync::Arc<csm_core::subagents::SubagentsReport>>,
 }
 
 impl SessionView {

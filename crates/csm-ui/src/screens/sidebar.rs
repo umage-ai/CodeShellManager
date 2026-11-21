@@ -999,6 +999,12 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
         let label = if queued { "Queued".to_string() } else { s.status_text() };
         let lr =
             p.text(pos2(stripe.max.x + space::SM, y2), Align2::LEFT_CENTER, &label, theme::medium(text::CAPTION), icons::status_color(&t, status));
+        // Claude subagents, unobtrusively: "3 agents" beside the status while any run.
+        let mut lr = lr;
+        if let Some(r) = s.subagents.as_deref().filter(|r| r.running > 0) {
+            let b = super::board_agents::badge(r);
+            lr = p.text(pos2(lr.max.x, y2), Align2::LEFT_CENTER, format!(" · {b}"), theme::medium(text::CAPTION), t.mauve);
+        }
         widgets::paint_text(
             &child,
             pos2(lr.max.x, y2),

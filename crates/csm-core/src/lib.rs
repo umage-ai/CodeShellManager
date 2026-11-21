@@ -32,6 +32,7 @@ pub mod session_manager;
 pub mod session_names;
 pub mod session_order;
 pub mod session_sort;
+pub mod subagents;
 pub mod shell_integration;
 pub mod sidebar_drop;
 pub mod sidebar_selection;

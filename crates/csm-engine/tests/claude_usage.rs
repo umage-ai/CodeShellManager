@@ -162,3 +162,89 @@ fn usage_tools_refuse_what_they_cannot_answer() {
     assert!(matches!(plain.ui("usage_session", json!({"session_id": c})), Err(ToolError::Refused(_))));
     assert!(matches!(plain.ui("usage_summary", json!({})), Err(ToolError::Refused(_))));
 }
+
+#[test]
+fn session_subagents_reports_workflow_runs_and_states() {
+    let root = tempfile::tempdir().unwrap();
+    let h = usage_harness(root.path());
+    let id = h.session("claude");
+    let v = h.wait_until("an id", |v| v.session(&id).is_some_and(|s| s.claude_session_id.is_some()));
+    let cid = v.session(&id).unwrap().claude_session_id.clone().unwrap();
+    let path = transcript_for(root.path(), &cid);
+    let t0 = now_ms() - 1_000;
+    std::fs::write(&path, asst("m1", t0, "claude-opus-5-5", json!({"input_tokens": 10, "output_tokens": 5}), json!({}))).unwrap();
+    let sub = path.with_extension("").join("subagents");
+    let run = sub.join("workflows").join("wf_test");
+    std::fs::create_dir_all(&run).unwrap();
+    // A standalone agent that finished, and a hostile meta next to it.
+    std::fs::write(sub.join("agent-ex1.jsonl"), asst("e1", t0, "claude-opus-5-5", json!({"input_tokens": 1000}), json!({"agentId": "ex1"}))).unwrap();
+    std::fs::write(sub.join("agent-ex1.meta.json"), r#"{"agentType":"Explore","description":"Inventory features","model":"claude-opus-5-5","finished":true}"#).unwrap();
+    std::fs::write(sub.join("agent-bad.jsonl"), asst("b1", t0, "claude-opus-5-5", json!({"input_tokens": 1}), json!({"agentId": "bad"}))).unwrap();
+    std::fs::write(sub.join("agent-bad.meta.json"), "[[[ not json \u{0}").unwrap();
+    // A workflow with two agents in one phase, one with a result, and a third only in the journal.
+    for (a, label) in [("w1", "impl:core"), ("w2", "review:core:1")] {
+        std::fs::write(run.join(format!("agent-{a}.jsonl")), asst(&format!("{a}m"), t0 + 10, "claude-sonnet-5", json!({"input_tokens": 100}), json!({"agentId": a}))).unwrap();
+        std::fs::write(
+            run.join(format!("agent-{a}.meta.json")),
+            format!(r#"{{"agentType":"workflow-subagent","description":"{label}","workflowPhase":"Screens core","model":"sonnet","inWorkflowRun":true}}"#),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        run.join("journal.jsonl"),
+        "{\"type\":\"launched\"}\n{\"type\":\"started\",\"agentId\":\"w1\",\"label\":\"impl:core\",\"phase\":\"Screens core\"}\n\
+         {\"type\":\"started\",\"agentId\":\"w2\",\"label\":\"review:core:1\",\"phase\":\"Screens core\"}\n\
+         {\"type\":\"started\",\"agentId\":\"w3\",\"label\":\"impl:ui\",\"phase\":\"Screens ui\"}\n{\"type\":\"result\",\"agentId\":\"w1\",\"result\":{}}\n",
+    )
+    .unwrap();
+
+    let out = until(&h, "session_subagents", json!({"session_id": id}), "the subagents with usage", |o| {
+        o.data["agents"].as_array().is_some_and(|a| a.len() == 4) && o.data["agents"].as_array().unwrap().iter().all(|a| a["requests"] == 1)
+    });
+    let d = &out.data;
+    assert_eq!((d["running"].as_u64(), d["done"].as_u64(), d["stale"].as_u64()), (Some(2), Some(2), Some(0)));
+    let by = |id: &str| d["agents"].as_array().unwrap().iter().find(|a| a["id"] == id).unwrap().clone();
+    assert_eq!(by("ex1")["state"], "done");
+    assert_eq!(by("ex1")["label"], "Inventory features");
+    assert_eq!(by("w1")["state"], "done", "the journal's result marks it done");
+    assert_eq!(by("w2")["state"], "running");
+    assert_eq!(by("w2")["phase"], "Screens core");
+    assert_eq!(by("w2")["run"], "wf_test");
+    assert_eq!(by("bad")["state"], "running", "a hostile meta shows less, it does not fail");
+    assert_eq!(by("w2")["tokens"], 100);
+    assert!(by("w2")["cost_usd"].as_f64().is_some());
+    let run = &d["runs"][0];
+    assert_eq!(run["id"], "wf_test");
+    assert_eq!((run["done"].as_u64(), run["total"].as_u64()), (Some(1), Some(3)));
+    assert_eq!(run["phases"][0], json!({"name": "Screens core", "done": 1, "total": 2, "running": 1}));
+    assert_eq!(run["phases"][1]["name"], "Screens ui");
+    assert!(out.message.contains("4 subagents"), "{}", out.message);
+    // The snapshot carries the same report, and the counts.
+    let v = h.wait_until("the view has them", |v| v.session(&id).is_some_and(|s| s.subagents_total == 4));
+    assert_eq!(v.session(&id).unwrap().subagents_running, 2);
+    assert_eq!(v.session(&id).unwrap().subagents.as_ref().unwrap().runs.len(), 1);
+
+    // The journal grows: the rest of the phase finishes.
+    let mut f = std::fs::OpenOptions::new().append(true).open(run_journal(&path)).unwrap();
+    f.write_all(b"{\"type\":\"result\",\"agentId\":\"w2\"}\n").unwrap();
+    drop(f);
+    let out = until(&h, "session_subagents", json!({"session_id": id}), "w2 done", |o| o.data["runs"][0]["phases"][0]["done"] == 2);
+    assert_eq!(out.data["running"], 1, "only the hostile-meta agent still runs");
+}
+
+fn run_journal(main: &Path) -> PathBuf {
+    main.with_extension("").join("subagents").join("workflows").join("wf_test").join("journal.jsonl")
+}
+
+#[test]
+fn session_subagents_is_empty_for_a_session_without_any() {
+    let root = tempfile::tempdir().unwrap();
+    let h = usage_harness(root.path());
+    let id = h.session("claude");
+    let out = h.ok("session_subagents", json!({"session_id": id}));
+    assert_eq!(out.data["agents"], json!([]));
+    assert_eq!(out.data["following"], true);
+    assert!(out.message.contains("no subagents"), "{}", out.message);
+    assert!(h.ui("session_subagents", json!({"session_id": "nope"})).is_err());
+    assert!(h.ui("session_subagents", json!({"session_id": id, "extra": 1})).is_err());
+}

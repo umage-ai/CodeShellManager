@@ -471,6 +471,7 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         exit_code: s.exit_code,
         look: s.look.clone(),
         last_used_ms: s.last_activity_ms,
+        subagents: s.subagents.clone(),
     }
 }
 

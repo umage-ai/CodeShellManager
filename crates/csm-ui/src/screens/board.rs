@@ -352,7 +352,8 @@ fn agent_card(
     let task = task_of(model, s);
     let idle = s.status == Status::Idle;
     let lines = 3.0 + if task.is_some() { 1.0 } else { 0.0 };
-    let h = size::BOARD_LINE * lines + space::SM * 2.0;
+    let sub = s.subagents.as_deref().map(|r| super::board_agents::rows(r, model.now_ms)).unwrap_or_default();
+    let h = size::BOARD_LINE * lines + space::SM * 2.0 + super::board_agents::height(sub.len());
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     named(&resp, WidgetType::Button, format!("Agent: {}", s.name));
     let hover_drop = dragging && resp.dnd_hover_payload::<TaskDrag>().is_some();
@@ -421,6 +422,10 @@ fn agent_card(
             t.blue,
             x1 - x0 - icon::XS,
         );
+    }
+    // Below: its subagents.
+    if !sub.is_empty() {
+        super::board_agents::paint(ui, &sub, rect.min.y + space::SM + size::BOARD_LINE * lines + space::XS, x0, x1, model.now_ms);
     }
     if let Some(drop) = resp.dnd_release_payload::<TaskDrag>()
         && let Some(task) = model.tasks.iter().find(|x| x.id == drop.0)
