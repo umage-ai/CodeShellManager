@@ -481,7 +481,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `task_delete` | tasks | state, discard | asks | Delete a task for good. |
 | `addon_list` | addons | read | no | The add-ons in the add-ons folder: each one's name, version, kind, state (loaded, disabled or error) and why, what it contributes (profiles, run templates, slash presets, palette commands) and what was skipped. |
 | `addon_reload` | addons | state | no | Read the add-ons folder again. Enabled add-ons whose addon.toml changed are off until enabled again. Answers once the folder is read. |
-| `addon_enable` | addons | state | asks | Turn an add-on on. `version` must be the version the person was shown (from addon_list); the engine refuses if the file has changed since. Asks MCP clients first: an add-on can add commands, profiles and process effects. |
+| `addon_enable` | addons | state | asks | Turn an add-on on. `version` and `digest` must be the ones the person was shown (from addon_list); the engine refuses if the file has changed since. Asks MCP clients first: an add-on can add commands, profiles and process effects. |
 | `addon_disable` | addons | state | no | Turn an add-on off. Its contributions go away; enabling it again asks for consent again. |
 | `addon_open_folder` | addons | launch, files | asks | Open the add-ons folder in the file manager (created if it is missing). Not available for a --clean or isolated run. |
 | `addon_run_apply` | addons | state | no | Add one of an enabled add-on's run templates (`addon-id.name`, from addon_list) to a session's Runs. Refused for MCP clients, like run_edit: run commands decide what F5 runs. |

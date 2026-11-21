@@ -119,7 +119,8 @@ impl PartialEq for StatusRule {
 /// How a profile's session comes back after the app restarts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResumeRule {
-    /// Nothing: the session starts fresh.
+    /// Nothing: the session is not started again on restore. It comes back asleep and the
+    /// person wakes it. (An add-on that is not enabled is treated the same way.)
     None,
     /// Reattach by running the same argv again (the restore path already does this).
     ReRun,
@@ -351,6 +352,8 @@ fn parse_profile(t: &Table) -> Result<ProfileSpec, String> {
     let scope = format!("profile `{name}`");
     let argv = argv_field(t, "argv", true)?;
     let args = argv_field(t, "args", false)?;
+    no_placeholders(&argv, "argv", &scope)?;
+    no_placeholders(&args, "args", &scope)?;
     let resume = match t.get("resume") {
         None => ResumeRule::None,
         Some(Value::String(s)) => match s.as_str() {
@@ -413,6 +416,7 @@ fn parse_run_template(t: &Table) -> Result<RunTemplateSpec, String> {
     let name = name_field(t, "name")?;
     let scope = format!("run template `{name}`");
     let argv = argv_field(t, "argv", true)?;
+    no_placeholders(&argv, "argv", &scope)?;
     let cwd = match t.get("cwd") {
         None => None,
         Some(Value::String(c)) => {
@@ -466,6 +470,7 @@ fn parse_command(t: &Table) -> Result<CommandSpec, String> {
 
 fn parse_process(t: &Table) -> Result<ProcessSpec, String> {
     let argv = argv_field(t, "argv", true)?;
+    no_placeholders(&argv, "argv", "[process]")?;
     let effects = match t.get("effects") {
         None => Vec::new(),
         Some(Value::Array(items)) => {
@@ -515,13 +520,25 @@ fn argv_field(t: &Table, key: &str, required: bool) -> Result<Vec<String>, Strin
         let s = item.as_str().ok_or_else(|| format!("`{key}` elements must be strings"))?;
         if !plain_token(s) {
             return Err(format!(
-                "`{key}` element `{}` is not a plain token: use letters, digits and - _ . / \\ : = + @ , only (split words into separate elements; placeholders are {{session_id}} and {{folder}})",
+                "`{key}` element `{}` is not a plain token: use letters, digits and - _ . / \\ : = + @ , only (split words into separate elements)",
                 clean_text(s, 40)
             ));
         }
         out.push(s.to_owned());
     }
     Ok(out)
+}
+
+/// Argv lists take no placeholders: nothing substitutes them, so `{folder}` or `{session_id}`
+/// would reach the program as literal text. The resume template takes `{session_id}` and a run
+/// template's `cwd` takes `{folder}`; both are checked where they are parsed.
+fn no_placeholders(argv: &[String], key: &str, scope: &str) -> Result<(), String> {
+    if argv.iter().any(|a| a.contains('{')) {
+        return Err(format!(
+            "{scope}: `{key}` may not use {{session_id}} or {{folder}} (only a resume template takes {{session_id}}, and a run template's cwd takes {{folder}})"
+        ));
+    }
+    Ok(())
 }
 
 /// True for a token that can be exec'd and joined with spaces without any shell meaning:
@@ -736,6 +753,16 @@ command = ""
         let p = ok("[[profile]]\nname = \"p\"\nargv = [\"p\"]\nresume = [\"p\", \"--continue\"]\n");
         assert!(p.profiles.is_empty());
         assert!(p.problems[0].message.contains("{session_id}"));
+    }
+
+    #[test]
+    fn argv_lists_refuse_placeholders_nothing_would_substitute() {
+        let p = ok("[[profile]]\nname = \"p\"\nargv = [\"p\", \"--dir={folder}\"]\n[[profile]]\nname = \"q\"\nargv = [\"q\"]\nargs = [\"{session_id}\"]\n[[run_template]]\nname = \"r\"\nargv = [\"r\", \"{folder}\"]\n[[run_template]]\nname = \"ok\"\nargv = [\"ok\"]\ncwd = \"{folder}\"\n");
+        assert!(p.profiles.is_empty());
+        assert_eq!(p.problems.len(), 3, "{:?}", p.problems);
+        assert!(p.problems.iter().all(|x| x.message.contains("may not use")));
+        assert_eq!(p.run_templates.len(), 1);
+        assert_eq!(p.run_templates[0].name, "ok");
     }
 
     #[test]

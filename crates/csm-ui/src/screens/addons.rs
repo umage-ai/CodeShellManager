@@ -78,12 +78,14 @@ pub fn consent_body(a: &AddonSummary) -> String {
     if let Some(author) = &a.author {
         lines.push(format!("By {author}."));
     }
+    // The exact command lines are shown: the person approves what will run, not just a name.
     if !a.profiles.is_empty() {
-        lines.push(format!("Launch profiles: {}.", a.profiles.join(", ")));
+        let names: Vec<String> = a.profiles.iter().map(|p| format!("{} runs `{}` (on restore: {})", p.id, p.command_line, p.resume)).collect();
+        lines.push(format!("Launch profiles: {}.", names.join("; ")));
     }
     if !a.run_templates.is_empty() {
-        let names: Vec<&str> = a.run_templates.iter().map(|r| r.id.as_str()).collect();
-        lines.push(format!("Run commands: {}.", names.join(", ")));
+        let names: Vec<String> = a.run_templates.iter().map(|r| format!("{} runs `{}`", r.id, r.command_line)).collect();
+        lines.push(format!("Run commands, run in a shell when started: {}.", names.join("; ")));
     }
     if !a.slash.is_empty() {
         let names: Vec<&str> = a.slash.iter().map(|s| s.command.as_str()).collect();
@@ -105,7 +107,7 @@ pub fn consent_body(a: &AddonSummary) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use csm_engine::addons::{CommandSummary, RunTemplateSummary};
+    use csm_engine::addons::{CommandSummary, ProfileSummary, RunTemplateSummary};
 
     #[test]
     fn consent_text_lists_what_is_contributed() {
@@ -121,7 +123,8 @@ mod tests {
             message: None,
             folder: "demo".into(),
             path: "x".into(),
-            profiles: vec!["demo.agent".into()],
+            digest: Some("abc".into()),
+            profiles: vec![ProfileSummary { id: "demo.agent".into(), name: "agent".into(), command_line: "my-agent --plain".into(), resume: "re-run" }],
             run_templates: vec![RunTemplateSummary { id: "demo.test".into(), name: "test".into(), command_line: "cargo test".into(), cwd: None }],
             slash: vec![csm_core::models::SlashCommand::new("/review", "Review")],
             commands: vec![CommandSummary { id: "demo.list".into(), title: "List".into(), tool: "session_list".into(), params: json!({}) }],
@@ -132,5 +135,8 @@ mod tests {
         assert!(body.contains("demo.agent") && body.contains("demo.test") && body.contains("/review"));
         assert!(body.contains("calls session_list"));
         assert!(body.contains("saved"));
+        // The exact commands that will run are in the text, not just their names.
+        assert!(body.contains("`my-agent --plain`"), "{body}");
+        assert!(body.contains("`cargo test`"), "{body}");
     }
 }

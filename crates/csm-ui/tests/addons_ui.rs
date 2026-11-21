@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 use csm_core::models::SlashCommand;
-use csm_engine::addons::{AddonState, AddonSummary, CommandSummary};
+use csm_engine::addons::{AddonState, AddonSummary, CommandSummary, ProfileSummary};
 use csm_ui::screens::palette::{PalRow, rows};
 use csm_ui::theme::ThemeKind;
 use serde_json::json;
@@ -25,7 +25,8 @@ fn addon(id: &str, state: AddonState, command_title: &str) -> AddonSummary {
         message: None,
         folder: id.into(),
         path: format!("addons/{id}"),
-        profiles: vec![format!("{id}.agent")],
+        digest: Some(format!("{id}-digest")),
+        profiles: vec![ProfileSummary { id: format!("{id}.agent"), name: "agent".into(), command_line: "agent --plain".into(), resume: "re-run" }],
         run_templates: vec![],
         slash: vec![SlashCommand::new("/review", "Review the diff")],
         commands: vec![CommandSummary { id: format!("{id}.cmd"), title: command_title.into(), tool: "session_list".into(), params: json!({"include_asleep": false}) }],

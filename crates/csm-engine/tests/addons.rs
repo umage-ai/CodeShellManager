@@ -6,8 +6,10 @@ mod common;
 
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use common::{H, test_app};
+use csm_engine::{Engine, State};
 use serde_json::{Value, json};
 
 const DEMO: &str = r#"
@@ -25,6 +27,11 @@ argv = ["demo-agent"]
 args = ["--plain"]
 resume = "re-run"
 status = [{ match = "Allow\\?", status = "needs_you_approval" }]
+
+[[profile]]
+name = "quiet"
+argv = ["quiet-agent"]
+resume = "none"
 
 [[profile]]
 name = "bad"
@@ -82,6 +89,14 @@ fn list(h: &H) -> Value {
     h.ok("addon_list", json!({})).data["addons"].clone()
 }
 
+/// Enables `demo` the way the consent dialog does: with the version and digest `addon_list` shows.
+fn enable_demo(h: &H) {
+    let l = list(h);
+    let demo = find(&l, "demo");
+    let (version, digest) = (demo["version"].clone(), demo["digest"].clone());
+    h.ok("addon_enable", json!({"id": "demo", "version": version, "digest": digest}));
+}
+
 #[test]
 fn discovery_reports_each_state_and_nothing_is_enabled_by_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -96,7 +111,11 @@ fn discovery_reports_each_state_and_nothing_is_enabled_by_default() {
     assert!(find(&l, "newer")["message"].as_str().unwrap().contains("Update CodeShellManager"));
     // The bad profile and the unknown tool are reported, the good ones still listed.
     let demo = find(&l, "demo");
-    assert_eq!(demo["profiles"], json!(["demo.agent"]));
+    let profiles = demo["profiles"].as_array().unwrap();
+    assert_eq!(profiles.len(), 2, "{profiles:?}");
+    assert_eq!(profiles[0]["id"], "demo.agent");
+    assert_eq!(profiles[0]["command_line"], "demo-agent --plain", "the consent dialog shows the exact command");
+    assert_eq!(profiles[1]["resume"], "none");
     assert_eq!(demo["commands"].as_array().unwrap().len(), 1, "a command naming an unknown tool is dropped");
     let problems: Vec<&str> = demo["problems"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert!(problems.iter().any(|p| p.contains("not a plain token")), "{problems:?}");
@@ -112,9 +131,14 @@ fn enable_needs_the_version_shown_and_contributions_appear() {
     let (state, _) = fixture(dir.path());
     let h = start(&state);
     h.wait_until("add-ons", |s| s.addons.len() == 3);
-    let refused = h.ui("addon_enable", json!({"id": "demo", "version": "9.9.9"})).unwrap_err();
+    let digest = find(&list(&h), "demo")["digest"].clone();
+    let refused = h.ui("addon_enable", json!({"id": "demo", "version": "9.9.9", "digest": digest})).unwrap_err();
     assert!(refused.to_string().contains("review it again"), "{refused}");
-    h.ok("addon_enable", json!({"id": "demo", "version": "0.1.0"}));
+    // The same version with other bytes (a file changed after the dialog showed it) is refused too.
+    let stale = h.ui("addon_enable", json!({"id": "demo", "version": "0.1.0", "digest": "0".repeat(64)})).unwrap_err();
+    assert!(stale.to_string().contains("changed since it was shown"), "{stale}");
+    assert_eq!(find(&list(&h), "demo")["state"], "disabled", "a refused enable approves nothing");
+    enable_demo(&h);
     let l = list(&h);
     assert_eq!(find(&l, "demo")["state"], "loaded");
     let v = h.engine.view();
@@ -135,7 +159,7 @@ fn a_changed_file_is_off_until_enabled_again_and_disable_forgets_it() {
     let (state, root) = fixture(dir.path());
     let h = start(&state);
     h.wait_until("add-ons", |s| s.addons.len() == 3);
-    h.ok("addon_enable", json!({"id": "demo", "version": "0.1.0"}));
+    enable_demo(&h);
     write_addon(&root, "demo", &DEMO.replace("\"/review\"", "\"/audit\""));
     h.ok("addon_reload", json!({}));
     h.wait_until("reloaded", |s| s.addons.iter().any(|a| a.id == "demo" && a.state == csm_engine::addons::AddonState::Disabled));
@@ -156,7 +180,7 @@ fn a_profile_launches_its_argv_and_a_run_template_joins_its_tokens() {
     fs::create_dir_all(&folder).unwrap();
     let h = start(&state);
     h.wait_until("add-ons", |s| s.addons.len() == 3);
-    h.ok("addon_enable", json!({"id": "demo", "version": "0.1.0"}));
+    enable_demo(&h);
     // A profile sets the command: passing command or args with it is refused.
     let both = h.ui("session_new", json!({"folder": folder.display().to_string(), "profile": "demo.agent", "command": "claude"}));
     assert!(both.is_err());
@@ -176,6 +200,37 @@ fn a_profile_launches_its_argv_and_a_run_template_joins_its_tokens() {
     let off = h.ui("session_new", json!({"folder": folder.display().to_string(), "profile": "broken.agent"}));
     assert!(off.is_err());
     h.engine.shutdown();
+}
+
+#[test]
+fn a_restart_restores_resuming_profiles_only_and_waits_for_the_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = fixture(dir.path());
+    let folder = dir.path().join("work").display().to_string();
+    fs::create_dir_all(&folder).unwrap();
+    let h = start(&state);
+    h.wait_until("add-ons", |s| s.addons.len() == 3);
+    enable_demo(&h);
+    let agent = h.ok("session_new", json!({"folder": folder, "profile": "demo.agent", "focus": false})).data["id"].as_str().unwrap().to_owned();
+    let quiet = h.ok("session_new", json!({"folder": folder, "profile": "demo.quiet", "focus": false})).data["id"].as_str().unwrap().to_owned();
+    h.wait_status(&agent, csm_engine::Status::Idle);
+    h.wait_status(&quiet, csm_engine::Status::Idle);
+    h.engine.shutdown();
+    // Second run: the add-on scan is still on its worker when the restore begins, so the
+    // profile sessions wait for it. The re-run profile starts again; the `none` one stays asleep.
+    // Loaded from the state file, as a real start does (`H::start` builds a fresh state).
+    let ptys = Arc::new(Mutex::new(Vec::new()));
+    let mut o = common::fast_options(&ptys);
+    o.save_path = Some(state);
+    o.restore_on_start = true;
+    let (st, _) = State::load(o);
+    let h2 = H { engine: Engine::start(st, vec![]).unwrap(), ptys, dir: tempfile::tempdir().unwrap() };
+    h2.wait_until("both sessions", |s| s.session(&agent).is_some() && s.session(&quiet).is_some());
+    h2.wait_status(&agent, csm_engine::Status::Idle);
+    let v = h2.engine.view();
+    assert!(!v.session(&agent).unwrap().asleep, "the re-run profile restores");
+    assert!(v.session(&quiet).unwrap().asleep, "a resume `none` profile waits for the person");
+    h2.engine.shutdown();
 }
 
 #[test]

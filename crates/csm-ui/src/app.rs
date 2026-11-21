@@ -921,7 +921,8 @@ impl CsmApp {
                         body: crate::screens::addons::consent_body(a),
                         yes_label: "Enable".into(),
                         no_label: "Cancel".into(),
-                        yes: Box::new(Action::Tool("addon_enable", json!({"id": a.id, "version": a.version}))),
+                        // The digest pins the exact file the dialog listed (`addon_enable` refuses another).
+                        yes: Box::new(Action::Tool("addon_enable", json!({"id": a.id, "version": a.version, "digest": a.digest.clone().unwrap_or_default()}))),
                     });
                     self.ui.overlay = Overlay::Confirm;
                     ctx.request_repaint();

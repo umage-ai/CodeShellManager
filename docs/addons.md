@@ -66,11 +66,17 @@ ignored.
 ### Plain tokens
 
 Every argv element (profiles, run templates, `[process]`) is a **plain token**: letters, digits and
-`_ - . / \ : = + @ ,`, plus the placeholders `{session_id}` and `{folder}`. Nothing else is allowed,
-so no quote, space, `$`, `%`, `&`, `|`, `;` or backtick can ever reach a shell. Split a value with
-spaces into separate elements. A token that is not plain is reported and its entry is skipped.
-A run template's argv is joined with single spaces when added to a session. That is safe only
-because the tokens are plain.
+`_ - . / \ : = + @ ,`. Nothing else is allowed, so no quote, space, `$`, `%`, `&`, `|`, `;` or
+backtick can ever reach a shell. Split a value with spaces into separate elements. A token that is
+not plain is reported and its entry is skipped.
+
+Placeholders are not substituted in argv lists, so an argv element with `{session_id}` or `{folder}`
+is refused (reported, entry skipped). The two places they mean something are the resume template
+(`{session_id}`) and a run template's `cwd` (`{folder}`).
+
+A run template's argv is joined with single spaces when added to a session and then run **in a
+shell** (`cmd.exe` or the user's shell, as any Runs command). That is safe only because the tokens
+are plain. The consent dialog shows that exact command line.
 
 ### Limits
 
@@ -111,9 +117,15 @@ A profile is an agent launch profile. `addon-id.name` is its id.
   non-empty lines (up to 4 KiB) sets the status: `needs_you_approval`, `needs_you_question`,
   `working`, `idle` or `done` (done shows as "done, unseen"). No match leaves the status to the
   usual rules.
-- **Resume.** `"re-run"` relaunches the same argv on restore, which is what the restore path already
-  does for every session. `"none"` is the default. An argv template with `{session_id}` is validated
-  but **not applied yet** (no session id is passed to the program); see Limits.
+- **Resume.** Restore starts a session again unless its profile says otherwise:
+  - `"re-run"` (and the default, when the restore path can start the session) relaunches the same argv.
+  - `"none"` brings the session back **asleep**; the person wakes it.
+  - An argv template with `{session_id}` is validated but **not applied yet** (no session id is
+    passed to the program). It behaves like `"re-run"` until it is applied; see Limits.
+  - A session from a profile whose add-on is **not enabled** also comes back asleep. Nothing from an
+    add-on runs on restore unless it is enabled and its profile allows it.
+  - The add-on folder is read at start on a worker, so profile sessions wait for that read before
+    they restore (or stay asleep).
 
 ## Run templates
 
@@ -142,8 +154,9 @@ Add-ons are **off until the person enables them**.
    and its skipped entries.
 2. **Enable…** opens a confirm dialog listing what the add-on contributes: profiles, run
    commands, slash presets, palette commands, and for a process add-on the effects it declares.
-3. Confirming calls `addon_enable` with the `version` shown. The engine refuses if the file now
-   says another version.
+3. Confirming calls `addon_enable` with the `version` and `digest` shown (both from `addon_list`).
+   The engine refuses if the file now differs in either, so what the person approved is exactly the
+   text that loads.
 
 The engine stores the **SHA-256 of the `addon.toml` text** that was approved, in
 `state.json` settings under `AddonApprovals` (id to digest). An add-on whose file changes after
@@ -165,7 +178,7 @@ beside it without changing what is stored.
 |---|---|---|
 | `addon_list` | read | every add-on, its state, message, contributions and skipped entries; the folder; scan status |
 | `addon_reload` | state | read the folder again; answers when the read is done |
-| `addon_enable` | state, enables extension (consent for MCP) | `id`, `version` (the version shown) |
+| `addon_enable` | state, enables extension (consent for MCP) | `id`, `version` and `digest` (both as shown) |
 | `addon_disable` | state | `id`; forgets the approval |
 | `addon_open_folder` | launches a process, writes files | creates the folder if missing and opens it |
 | `addon_run_apply` | state (refused for MCP) | `session_id`, `template` (`addon-id.name`) |
@@ -195,3 +208,8 @@ parses it with no problems.
 - The quick-open does not list profiles yet (use `session_new` with `profile`, or the palette tool).
 - Runs has no "add from add-on" button yet (the `addon_run_apply` tool does it).
 - A status rule reads the screen about once a second; a short-lived match can be missed.
+- A profile's status rules stop applying the moment its add-on is off; the last status it set is
+  cleared on the next tick.
+- Run templates run in a shell, as any Runs command does; a `cwd` other than `{folder}` is refused.
+- A symlink to a file inside an add-on folder is followed (the file is size-capped, not refused);
+  Windows junctions are not detected as links.

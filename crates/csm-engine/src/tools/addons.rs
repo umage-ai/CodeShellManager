@@ -38,7 +38,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "addon_enable",
             title: "Enable an add-on",
-            summary: "Turn an add-on on. `version` must be the version the person was shown (from addon_list); the engine refuses if the file has changed since. Asks MCP clients first: an add-on can add commands, profiles and process effects.",
+            summary: "Turn an add-on on. `version` and `digest` must be the ones the person was shown (from addon_list); the engine refuses if the file has changed since. Asks MCP clients first: an add-on can add commands, profiles and process effects.",
             toolset: Toolset::Addons,
             effects: Effects::MUTATES_STATE | Effects::ENABLES_EXTENSION,
             input_schema: schema_of::<EnableParams>,
@@ -88,6 +88,9 @@ struct EnableParams {
     id: String,
     /// The version the person was shown in the consent dialog (`addon_list` gives it).
     version: String,
+    /// The digest of the `addon.toml` the person was shown (`addon_list` gives it). The engine
+    /// refuses if the file has changed since, even when the version did not.
+    digest: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -137,6 +140,9 @@ fn addon_enable(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     if digest.is_empty() {
         return Err(ToolError::Refused(format!("`{}` has no readable manifest", p.id)));
+    }
+    if digest != p.digest {
+        return Err(ToolError::Refused(format!("`{}` changed since it was shown; `addon_reload` and review it again before enabling", p.id)));
     }
     ctx.state.app.settings.addon_approvals.insert(p.id.clone(), digest);
     ctx.state.persist();

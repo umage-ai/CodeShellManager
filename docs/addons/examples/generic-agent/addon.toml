@@ -19,7 +19,7 @@ author = "CodeShellManager examples"
 name = "agent"
 argv = ["my-agent"]
 args = ["--plain"]
-# Restore relaunches the same argv (the default restore path). "none" starts fresh instead.
+# On restore the same argv is started again. "none" would bring the session back asleep instead.
 resume = "re-run"
 # The first rule whose regex matches the last lines of the screen sets the session's status.
 status = [

@@ -79,8 +79,10 @@ pub struct AddonSummary {
     pub message: Option<String>,
     pub folder: String,
     pub path: String,
-    /// `addon-id.name` ids.
-    pub profiles: Vec<String>,
+    /// The SHA-256 of the `addon.toml` the entries above come from. Enabling sends it back, so
+    /// the engine enables exactly what the consent dialog listed (`addon_enable`).
+    pub digest: Option<String>,
+    pub profiles: Vec<ProfileSummary>,
     pub run_templates: Vec<RunTemplateSummary>,
     pub slash: Vec<SlashCommand>,
     pub commands: Vec<CommandSummary>,
@@ -88,6 +90,18 @@ pub struct AddonSummary {
     pub process_effects: Vec<String>,
     /// Entries that were skipped, one line each.
     pub problems: Vec<String>,
+}
+
+/// A launch profile as the consent dialog and `addon_list` show it: the exact command it runs.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProfileSummary {
+    /// `addon-id.name`.
+    pub id: String,
+    pub name: String,
+    /// The program and its arguments, joined with spaces (every token is plain).
+    pub command_line: String,
+    /// `none`, `re-run` or `template` (`ResumeRule`).
+    pub resume: &'static str,
 }
 
 /// A run template as the Runs panel offers it.
@@ -145,9 +159,8 @@ pub(crate) fn reload(ctx: &mut Ctx<'_>) {
         engine.post(Box::new(move |ctx: &mut Ctx<'_>| install(ctx, scanned, err)));
     });
     if spawned.is_err() {
-        ctx.state.rt.addons.scanning = false;
-        ctx.state.rt.addons.scan_error = Some("could not start the add-on scan thread".into());
-        ctx.state.rt.dirty = true;
+        // Install an empty catalogue now, so the waiting `addon_reload` calls are answered too.
+        install(ctx, Vec::new(), Some("could not start the add-on scan thread".into()));
     }
 }
 
@@ -180,6 +193,8 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
         w.send(Ok(ToolOutput::new(format!("Reloaded {count} add-on folder(s)."), json!({"count": count}))));
     }
     ctx.state.rt.dirty = true;
+    // Sessions from add-on profiles that were waiting for this scan can restore now.
+    crate::lifecycle::restore_waiting_addons(ctx);
 }
 
 fn build_entry(s: Scanned, registry: &Registry) -> Entry {
@@ -295,6 +310,16 @@ pub(crate) fn status_rules(cat: &Catalogue, profile_id: &str) -> Option<Vec<Stat
     profile(cat, profile_id).ok().map(|(_, spec)| spec.status.clone()).filter(|r| !r.is_empty())
 }
 
+/// Whether a session launched from this profile is started again on restore. An empty id (a
+/// session the person started by hand) always is. A profile with resume `none`, and any profile
+/// whose add-on is not enabled, is not: the session comes back asleep and the person wakes it.
+pub(crate) fn restores_on_start(cat: &Catalogue, profile_id: &str) -> bool {
+    if profile_id.is_empty() {
+        return true;
+    }
+    profile(cat, profile_id).is_ok_and(|(_, spec)| spec.resume != core::ResumeRule::None)
+}
+
 /// The screen's status for a rule set, in the app's terms.
 pub(crate) fn screen_status(rules: &[StatusRule], screen: &str) -> Option<ProfileStatus> {
     core::match_status(rules, screen)
@@ -325,7 +350,22 @@ fn summary(e: &Entry) -> AddonSummary {
         message: e.message.clone(),
         folder: e.folder.clone(),
         path: e.path.display().to_string(),
-        profiles: p.map_or_else(Vec::new, |p| p.profiles.iter().map(|x| format!("{id}.{}", x.name)).collect()),
+        digest: e.digest.clone(),
+        profiles: p.map_or_else(Vec::new, |p| {
+            p.profiles
+                .iter()
+                .map(|x| ProfileSummary {
+                    id: format!("{id}.{}", x.name),
+                    name: x.name.clone(),
+                    command_line: x.argv.iter().chain(x.args.iter()).cloned().collect::<Vec<_>>().join(" "),
+                    resume: match &x.resume {
+                        core::ResumeRule::None => "none",
+                        core::ResumeRule::ReRun => "re-run",
+                        core::ResumeRule::Template(_) => "template",
+                    },
+                })
+                .collect()
+        }),
         run_templates: p.map_or_else(Vec::new, |p| {
             p.run_templates
                 .iter()
