@@ -27,7 +27,7 @@ use crate::terminal::lock;
 use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
-mod hl;
+pub mod hl;
 mod md;
 mod rows;
 mod view;

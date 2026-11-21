@@ -116,7 +116,7 @@ impl Highlighter {
             let (s, r) = channel::<Job>();
             let shared = self.shared.clone();
             let spawned = std::thread::Builder::new().name("csm-highlight".into()).spawn(move || {
-                while let Ok(job) = r.recv() {
+                while let Ok(job) = r.recv() { // policy-ok: the worker thread, never a frame
                     work(&shared, job);
                 }
             });
@@ -276,8 +276,6 @@ mod tests {
         let ctx = egui::Context::default();
         let h = Highlighter::with_engine(Arc::new(|t: &str, l: &str, p: &str| {
             if t.contains("boom") {
-                let v: Vec<u8> = Vec::new();
-                let _ = v.get(1).copied().unwrap_or(0);
                 std::panic::resume_unwind(Box::new("boom"));
             }
             csm_services::highlight::highlight(t, l, p)

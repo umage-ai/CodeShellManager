@@ -324,3 +324,37 @@ fn the_screen_tools_declare_honest_effects() {
     assert!(h.engine.call(ext, "screen_list", json!({})).is_ok());
     h.engine.shutdown();
 }
+
+#[test]
+fn code_and_diff_nodes_round_trip_with_range_actions_thread_toggles_and_a_too_large_notice() {
+    use csm_core::addons::screen::{CodeContent, Doc};
+    let (h, _dir) = started("ok");
+    let i = open(&h);
+    wait_status(&h, &i, "opened");
+    // The echo plugin keys its special answers on the event's key: send the key itself.
+    h.engine.screen_event(&i, ScreenEvent::new("showcode", EventKind::Click, Value::Null)).unwrap();
+    wait_status(&h, &i, "code shown");
+    let t = h.engine.screens().tree(&i).unwrap();
+    let Kind::Code(c) = &t.find("code").unwrap().kind else { panic!("a code node") };
+    assert_eq!((c.overlay.threads.len(), c.overlay.range_actions.len(), c.overlay.marks.len()), (2, 1, 1));
+    assert!(c.overlay.threads.iter().any(|th| th.open && th.anchor.start == 2 && th.anchor.end == 3));
+    assert!(matches!(&c.content, CodeContent::Text(d) if d.len() == 4 && Doc::line(d, 3) == "let s = \"hi\";"));
+    assert!(t.find("t-open-c").is_some(), "an open thread's child is in the tree");
+    assert!(matches!(&t.find("diff").unwrap().kind, Kind::Diff(d) if d.split));
+    // The events a person's clicks make reach the plugin with their values and the rev seen.
+    h.engine.screen_event(&i, ScreenEvent::new("code", EventKind::RangeAction, json!({"id": "comment", "side": "new", "start": 2, "end": 3}))).unwrap();
+    wait_status(&h, &i, "range_action code {\"end\":3,\"id\":\"comment\",\"side\":\"new\",\"start\":2}");
+    h.engine.screen_event(&i, ScreenEvent::new("code", EventKind::ThreadToggle, json!({"key": "t-closed"}))).unwrap();
+    wait_status(&h, &i, "thread_toggle code {\"key\":\"t-closed\"}");
+    let st = plugin_state(&h);
+    let kinds: Vec<&str> = st["log"].as_array().unwrap().iter().filter_map(|l| l["kind"].as_str()).collect();
+    assert!(kinds.contains(&"range_action") && kinds.contains(&"thread_toggle"), "{kinds:?}");
+    // Text over the cap does not take the screen down: the node says it is too large.
+    h.engine.screen_event(&i, ScreenEvent::new("bigcode", EventKind::Click, Value::Null)).unwrap();
+    wait_status(&h, &i, "code too big");
+    let t = h.engine.screens().tree(&i).unwrap();
+    let Kind::Code(c) = &t.find("code").unwrap().kind else { panic!() };
+    assert!(matches!(&c.content, CodeContent::Withheld(w) if w.0.contains("too large")));
+    assert!(plugin_state(&h)["errors"].as_array().unwrap().is_empty(), "the plugin was not told its view was refused");
+    h.engine.shutdown();
+}

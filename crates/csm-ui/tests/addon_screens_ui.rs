@@ -273,8 +273,8 @@ fn invisible_characters_are_drawn_as_visible_markers() {
 
 #[test]
 fn unknown_widgets_draw_as_a_small_unsupported_box() {
-    let (h, _) = app_with_screen(json!({"type": "column", "children": [{"type": "diff", "patch": "x"}, {"type": "text", "text": "after"}]}));
-    assert!(has(&h, "unsupported: diff") && has(&h, "after"));
+    let (h, _) = app_with_screen(json!({"type": "column", "children": [{"type": "hologram", "patch": "x"}, {"type": "text", "text": "after"}]}));
+    assert!(has(&h, "unsupported: hologram") && has(&h, "after"));
 }
 
 #[test]

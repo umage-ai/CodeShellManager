@@ -471,8 +471,8 @@ pub fn align_split(hunk: &Hunk) -> Vec<SplitRow<'_>> {
     fn flush<'a>(rows: &mut Vec<SplitRow<'a>>, dels: &mut Vec<&'a DiffLine>, adds: &mut Vec<&'a DiffLine>) {
         let n = dels.len().max(adds.len());
         for i in 0..n {
-            let old = dels.get(i).and_then(|l| l.old_no.map(|no| SplitCell { no, line: *l }));
-            let new = adds.get(i).and_then(|l| l.new_no.map(|no| SplitCell { no, line: *l }));
+            let old = dels.get(i).and_then(|l| l.old_no.map(|no| SplitCell { no, line: l }));
+            let new = adds.get(i).and_then(|l| l.new_no.map(|no| SplitCell { no, line: l }));
             rows.push(SplitRow { old, new });
         }
         dels.clear();

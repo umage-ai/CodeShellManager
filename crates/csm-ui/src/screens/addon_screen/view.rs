@@ -390,6 +390,8 @@ pub(crate) struct ViewState {
     pub(crate) thread_h: HashMap<(String, String, String), (f32, f32)>,
     pub(crate) models: HashMap<(String, String), Arc<Model>>,
     pub(crate) scrolled: HashMap<(String, String), u32>,
+    /// Views that had keyboard focus last frame.
+    pub(crate) had_focus: std::collections::HashSet<(String, String)>,
 }
 
 impl ViewState {
@@ -399,6 +401,7 @@ impl ViewState {
         self.thread_h.retain(|(i, _, _), _| alive(i));
         self.models.retain(|(i, _), _| alive(i));
         self.scrolled.retain(|(i, _), _| alive(i));
+        self.had_focus.retain(|(i, _)| alive(i));
     }
 }
 
@@ -605,7 +608,9 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
     let mut inner = ui.new_child(UiBuilder::new().max_rect(outer).layout(egui::Layout::top_down(Align::Min)));
     inner.set_clip_rect(outer.intersect(ui.clip_rect()));
     inner.painter().rect_filled(outer, 0.0, t.bg);
-    let view_id = Id::new(("code-view", &instance, key, ui.next_auto_id()));
+    // A keyed node keeps its scroll position and focus; a node without a key (it sends nothing) is told apart by where it sits.
+    let uniq = if key.is_empty() { ui.next_auto_id().value() } else { 0 };
+    let view_id = Id::new(("code-view", &instance, key, uniq));
 
     let n = m.n_rows();
     let last_row = n.saturating_sub(1);
@@ -615,10 +620,10 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
     open.sort_by_key(|i| placed.get(*i).copied().unwrap_or(0));
     let inserts: Vec<(usize, f32)> = open
         .iter()
-        .map(|i| {
-            let th = &overlay.threads[*i];
+        .filter_map(|i| {
+            let th = overlay.threads.get(*i)?;
             let h = cx.st.view.thread_h.get(&(instance.clone(), key.to_owned(), th.key.clone())).map_or(THREAD_GUESS_H, |(_, h)| *h);
-            (placed.get(*i).copied().unwrap_or(0), h)
+            Some((placed.get(*i).copied().unwrap_or(0), h))
         })
         .collect();
     let layout = RowLayout::new(n, row_h, inserts);
@@ -637,9 +642,18 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
     // Selection, keyboard, copy.
     let mut sel = cx.st.view.sels.get(&vkey).copied();
     let focused = ui.memory(|mem| mem.has_focus(view_id));
+    // egui drops focus on Escape before we look, so Escape counts when the view had it last frame.
+    let had_focus = cx.st.view.had_focus.contains(&vkey);
     if focused {
+        cx.st.view.had_focus.insert(vkey.clone());
+    } else {
+        cx.st.view.had_focus.remove(&vkey);
+    }
+    if focused || had_focus {
         let (up, down, esc, shift, copy) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Escape), i.modifiers.shift, i.events.iter().any(|e| matches!(e, egui::Event::Copy))));
-        if let Some(s) = sel.as_mut() {
+        if let Some(s) = sel.as_mut()
+            && focused
+        {
             if shift && (up || down)
                 && let Some(next) = m.step(s.side, s.head, down)
             {
@@ -672,11 +686,11 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
 
     let mut events: Vec<(EventKind, serde_json::Value)> = Vec::new();
     let mut new_sel = sel;
-    let mut scroll_to: Option<Rect> = None;
+    let mut scroll_to: Option<Rect> = None; // set when a scroll was asked for this frame
     let scroll_target = overlay.scroll_to.filter(|n| cx.st.view.scrolled.get(&vkey) != Some(n));
     let mut measured: Vec<(String, f32, f32)> = Vec::new();
 
-    let area = egui::ScrollArea::vertical().id_salt(("code-scroll", &instance, key)).auto_shrink([false, false]).show_viewport(&mut inner, |ui, vp| {
+    let area = egui::ScrollArea::vertical().id_salt(("code-scroll", &instance, key, uniq)).auto_shrink([false, false]).show_viewport(&mut inner, |ui, vp| {
         let w = ui.available_width();
         let (content, _) = ui.allocate_exact_size(vec2(w, layout.total().max(row_h)), Sense::hover());
         let geo = Geo { x0: content.min.x, w, ..geo };
@@ -931,15 +945,15 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
         if let Some(n) = scroll_target {
             let row = m.row_of(Side::New, n).or_else(|| m.row_of(Side::Old, n));
             if let Some(r) = row {
-                scroll_to = Some(Rect::from_min_size(pos2(content.min.x, ytop(layout.row_top(r))), vec2(1.0, row_h)));
+                ui.scroll_to_rect(Rect::from_min_size(pos2(content.min.x, ytop(layout.row_top(r))), vec2(1.0, row_h)), Some(Align::Center));
+                scroll_to = Some(Rect::NOTHING);
             }
         }
         (content, vis, body)
     });
     let (content, vis, _body) = area.inner;
     let _ = content;
-    if let Some(r) = scroll_to {
-        inner.scroll_to_rect(r, Some(Align::Center));
+    if scroll_to.is_some() {
         ui.ctx().request_repaint();
     }
     if scroll_target.is_some() {

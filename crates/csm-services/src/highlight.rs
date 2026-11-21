@@ -358,4 +358,14 @@ mod tests {
         assert!(h.partial);
         assert_eq!(h.lines.len(), 3000, "every line still has an entry");
     }
+
+    #[test]
+    fn the_bundled_grammars_carry_only_permissive_licences() {
+        use two_face::acknowledgement::LicenseType::*;
+        let a = two_face::acknowledgement::listing();
+        assert!(a.for_syntaxes().len() > 10, "the notices are bundled");
+        for l in a.for_syntaxes() {
+            assert!(matches!(l.ty, Mit | Apache2 | Bsd2Clause | Bsd2ClauseFreeBsd | Bsd3Clause | Unlicense | Wtfpl | Sublime), "a grammar with a licence we did not review: {:?}", l.ty);
+        }
+    }
 }
