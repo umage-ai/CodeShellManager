@@ -640,6 +640,7 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
             }
         };
         stamp_profile(&mut params, q);
+        use_addon_profile(&mut params, q);
         out.push(Action::Tool("session_new", params));
         return out;
     }
@@ -647,6 +648,7 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
     let (program, args) = split_command(&cmd);
     let mut params = json!({"folder": folder, "command": program, "args": args, "group": q.group});
     stamp_profile(&mut params, q);
+    use_addon_profile(&mut params, q);
     out.push(Action::Tool("session_new", params));
     // The ticked sibling worktrees: the same command, group and look, not focused (WPF's "Also
     // start sessions in sibling worktrees"). The engine staggers Claude launches.
@@ -656,9 +658,21 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
         if let Some(look) = &look {
             p["look"] = look.clone();
         }
+        use_addon_profile(&mut p, q);
         out.push(Action::Tool("session_new", p));
     }
     out
+}
+
+/// A new session that the picked add-on profile starts: `profile` replaces `command` and `args`
+/// (the engine takes the command line from the profile, and refuses both together).
+fn use_addon_profile(params: &mut serde_json::Value, q: &QuickOpenState) {
+    let Some(id) = &q.addon_profile else { return };
+    if let Some(o) = params.as_object_mut() {
+        o.remove("command");
+        o.remove("args");
+        o.insert("profile".into(), json!(id));
+    }
 }
 
 /// A new session's params with the picked profile: its look, and its name when the panel has
@@ -824,8 +838,9 @@ fn track_siblings(ctx: &egui::Context, app: &mut CsmApp) {
     }
 }
 
-/// The Profile row: none / keep / each Windows Terminal profile, one click each.
-fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: bool, launch: &[String]) {
+/// The Profile row: none / keep / each Windows Terminal profile, one click each, then the enabled
+/// add-ons' launch profiles (`addon_profiles`: id, name, command line; new sessions only).
+fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: bool, launch: &[String], addon_profiles: &[(String, String, String)]) {
     let t = Tokens::get(ui.ctx());
     let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
     ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
@@ -859,6 +874,15 @@ fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: b
                 let tip = format!("{} · {}", p["commandline"].as_str().unwrap_or_default(), p["source"].as_str().unwrap_or_default());
                 if chip(ui, name, on, &tip) {
                     take_profile(q, p, launch);
+                }
+            }
+            if q.edit.is_none() {
+                for (id, name, command_line) in addon_profiles {
+                    let on = q.addon_profile.as_deref() == Some(id.as_str());
+                    let tip = format!("Add-on profile {id}: runs `{command_line}`. Click again to start a plain session.");
+                    if chip(ui, &format!("Add-on: {name}"), on, &tip) {
+                        q.addon_profile = if on { None } else { Some(id.clone()) };
+                    }
                 }
             }
             if import_on && q.profiles.as_ref().is_some_and(Vec::is_empty) {
@@ -961,6 +985,13 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         q.profiles = Some(Vec::new());
     }
     let launch = model.launch_commands.clone();
+    // Enabled add-ons' launch profiles: `addon-id.name`, its command line, for the Profile row.
+    let addon_profiles: Vec<(String, String, String)> = model
+        .addons
+        .iter()
+        .filter(|a| a.state == csm_engine::addons::AddonState::Loaded)
+        .flat_map(|a| a.profiles.iter().map(|p| (p.id.clone(), p.name.clone(), p.command_line.clone())))
+        .collect();
     card(ctx, "quick-open", size::PALETTE_W, |ui| {
         let t = Tokens::get(ui.ctx());
         if let Some(id) = &q.edit {
@@ -1157,8 +1188,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 });
             });
         });
-        if import_on || has_look {
-            profile_row(ui, &mut q, has_look, import_on, &launch);
+        if import_on || has_look || (q.edit.is_none() && !addon_profiles.is_empty()) {
+            profile_row(ui, &mut q, has_look, import_on, &launch, &addon_profiles);
         }
         if q.remote {
             let picker = q.rkind == RemoteKind::Wsl && q.distros.as_ref().is_some_and(|d| !d.is_empty());
@@ -1370,4 +1401,23 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         });
     }
     app.ui.prompt = Some(p);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_picked_add_on_profile_replaces_the_command_and_args() {
+        let mut params = json!({"folder": "C:/work", "command": "claude", "args": "--continue", "group": null});
+        let mut q = QuickOpenState::default();
+        use_addon_profile(&mut params, &q);
+        assert_eq!(params["command"], "claude", "no profile picked: the launch command stays");
+        q.addon_profile = Some("demo.agent".into());
+        use_addon_profile(&mut params, &q);
+        assert!(params.get("command").is_none() && params.get("args").is_none(), "{params}");
+        assert_eq!(params["profile"], "demo.agent");
+        assert_eq!(params["folder"], "C:/work");
+    }
 }

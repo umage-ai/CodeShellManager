@@ -12,7 +12,7 @@ folder `state.json` lives in (`--config-dir`, `CSM_CONFIG_DIR`, the portable fol
 platform data dir).
 
 - The folder name **must equal the id**. Ids are 1 to 64 characters: `a-z`, `0-9`, `-`.
-- Symlinked add-on folders are not followed. Other files in the folder are ignored.
+- Symlinked add-on folders are not followed, and a `addon.toml` that is a link is refused. Other files in the folder are ignored.
 - `addon.toml` is read only if it is 256 KiB or less and valid UTF-8.
 - Up to 256 folders are looked at per scan.
 - **Nothing is read under `--clean`, and no add-on loads in an isolated run** (no state folder).
@@ -144,8 +144,13 @@ the person already has is not added. Its description says which add-on it came f
 ## Palette commands
 
 `addon-id.id` is the command id. Each one calls its tool through the normal dispatch, with its
-fixed params, on behalf of the person in the app (the palette is a UI caller, so no consent card,
-as with any button). A command can only name a tool this app has, and never an `addon_*` tool.
+fixed params, on behalf of the person in the app. The palette is a UI caller, so a click runs it
+with no second prompt, as with any palette tool. That is a deliberate choice: the enable dialog
+lists each command with its tool and its exact params, and the person approved those. A command
+can only name a tool this app has. It can never name an `addon_*` tool, a tool that writes into a
+session (`SENDS_INPUT`, so a pack's text never reaches a PTY through one click), or a tool that
+turns on another extension (`ENABLES_EXTENSION`). Such a command is dropped when the add-on loads,
+with a note.
 
 ## Enabling: the consent point
 
@@ -206,11 +211,10 @@ parses it with no problems.
 - Profile resume templates (`{session_id}`) are validated but not applied.
 - Run templates with a working folder are refused (run commands have none).
 - No registry, signing or update check: add-ons are trusted on enable, with the consent above.
-- The quick-open does not list profiles yet (use `session_new` with `profile`, or the palette tool).
-- Runs has no "add from add-on" button yet (the `addon_run_apply` tool does it).
+- The quick-open offers an enabled add-on's profiles as "Add-on: name" chips in the Profile row (new sessions only); `session_new` with `profile` does the same for MCP and CLI callers.
+- Runs shows "<name> (add-on)" buttons for each enabled add-on's run templates (`addon_run_apply`).
 - A status rule reads the screen about once a second; a short-lived match can be missed.
 - A profile's status rules stop applying the moment its add-on is off; the last status it set is
   cleared on the next tick.
 - Run templates run in a shell, as any Runs command does; a `cwd` other than `{folder}` is refused.
-- A symlink to a file inside an add-on folder is followed (the file is size-capped, not refused);
-  Windows junctions are not detected as links.
+- A symlink to another file inside an add-on folder is not followed for the manifest; other files are ignored. Windows junctions are not detected as links.

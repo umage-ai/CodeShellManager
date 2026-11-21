@@ -364,6 +364,9 @@ pub struct QuickOpenState {
     pub profiles: Option<Vec<Value>>,
     /// The Profile picker's choice.
     pub profile: ProfilePick,
+    /// An enabled add-on's launch profile (`addon-id.name`) the new session starts with; the
+    /// engine takes the command from it (`session_new` `profile`).
+    pub addon_profile: Option<String>,
 }
 
 /// What the quick-open's Profile picker says about the session's look.

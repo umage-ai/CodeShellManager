@@ -250,16 +250,21 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     }
     for (id, rules) in rules_for {
         let Some(rt) = ctx.state.rt.sessions.get_mut(&id) else { continue };
-        if rt.has_program_status || rt.phase != Phase::Live || now_ms - rt.addon_checked_ms < 1000 {
+        // One read at a time per session: a read still in flight is not joined by another.
+        if rt.has_program_status || rt.phase != Phase::Live || now_ms - rt.addon_checked_ms < 1000 || rt.addon_busy.load(Ordering::Acquire) {
             continue;
         }
         rt.addon_checked_ms = now_ms;
         let io = rt.io.clone();
         let instance = io.instance;
         let engine = ctx.engine.clone();
-        let _ = std::thread::Builder::new().name("csm-addon-status".into()).spawn(move || {
+        let busy = rt.addon_busy.clone();
+        busy.store(true, Ordering::Release);
+        let worker_busy = busy.clone();
+        let spawned = std::thread::Builder::new().name("csm-addon-status".into()).spawn(move || {
             let text = crate::screen::screen(&mut io.lock_terminal());
             let status = crate::addons::screen_status(&rules, &text);
+            worker_busy.store(false, Ordering::Release);
             engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
                 if let Some(rt) = ctx.state.rt.sessions.get_mut(&id)
                     && rt.io.instance == instance
@@ -270,6 +275,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 }
             }));
         });
+        if spawned.is_err() {
+            busy.store(false, Ordering::Release);
+        }
     }
 
     // Waits that ran out of time.

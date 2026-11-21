@@ -78,10 +78,14 @@ fn read_one(folder: String, path: PathBuf, symlink: bool) -> Found {
 /// Reads `addon.toml`, refusing anything over [`MAX_MANIFEST_BYTES`] (checked twice: by the
 /// metadata and by the bounded read, in case the file grows in between).
 pub fn read_manifest(file: &Path) -> Result<String, String> {
-    let meta = fs::metadata(file).map_err(|e| match e.kind() {
+    // `symlink_metadata`: a manifest that is a link (to anything) is refused, not followed.
+    let meta = fs::symlink_metadata(file).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => format!("no {MANIFEST_FILE} in this folder"),
         _ => format!("could not read {MANIFEST_FILE}: {e}"),
     })?;
+    if meta.file_type().is_symlink() {
+        return Err(format!("{MANIFEST_FILE} is a link; copy the file instead"));
+    }
     if !meta.is_file() {
         return Err(format!("{MANIFEST_FILE} is not a file"));
     }
@@ -143,6 +147,19 @@ mod tests {
         write(dir.path(), "Not Valid", "x");
         let found = scan(dir.path()).unwrap();
         assert!(found[0].text.as_ref().unwrap_err().contains("not a valid add-on id"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_manifest_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("elsewhere.toml");
+        fs::write(&target, "x").unwrap();
+        let d = dir.path().join("linked");
+        fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink(&target, d.join(MANIFEST_FILE)).unwrap();
+        let found = scan(dir.path()).unwrap();
+        assert!(found[0].text.as_ref().unwrap_err().contains("is a link"));
     }
 
     #[test]

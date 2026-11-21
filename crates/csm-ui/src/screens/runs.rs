@@ -117,6 +117,29 @@ pub fn fenced(command_line: &str, output: &str) -> String {
     format!("Output of `{}`:\n{fence}\n{}\n{fence}\n", command_line.replace('`', "'"), out.trim_end())
 }
 
+/// "+ <template> (add-on)" buttons: each enabled add-on's run templates, added to this session
+/// through `addon_run_apply` (the template's command line is fixed by the add-on).
+fn addon_templates_row(ui: &mut Ui, app: &CsmApp, s: &SessionView, actions: &mut Vec<Action>) {
+    let templates: Vec<(String, String)> = app
+        .model
+        .addons
+        .iter()
+        .filter(|a| a.state == csm_engine::addons::AddonState::Loaded)
+        .flat_map(|a| a.run_templates.iter().map(|r| (r.id.clone(), r.name.clone())))
+        .collect();
+    if templates.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for (id, name) in &templates {
+            let label = format!("{name} (add-on)");
+            if widgets::button(ui, ButtonKind::Ghost, Some("plus"), &label, None).on_hover_text(format!("Add the add-on's run command `{id}`")).clicked() {
+                actions.push(Action::Tool("addon_run_apply", json!({"session_id": s.id, "template": id})));
+            }
+        }
+    });
+}
+
 pub fn show(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let editing: Option<Vec<EditRow>> = ui.ctx().data(|d| d.get_temp(editor_id(&s.id)));
@@ -143,6 +166,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Ac
                     open_editor(ui.ctx(), s);
                 }
             });
+            addon_templates_row(ui, app, s, actions);
         });
         return;
     }
@@ -155,6 +179,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Ac
             }
         });
     });
+    addon_templates_row(ui, app, s, actions);
     let sel_key = selected_id(&s.id);
     let stored: Option<String> = ui.ctx().data(|d| d.get_temp(sel_key));
     let selected = stored
