@@ -4,6 +4,7 @@
 
 pub mod manifest;
 pub mod protocol;
+pub mod screen;
 
 pub use manifest::{
     AddonError, AddonKind, AddonMeta, CommandSpec, Problem, ProcessSpec, ProfileSpec, ProfileStatus, ParsedAddon, ResumeRule, RunTemplateSpec,

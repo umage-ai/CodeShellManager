@@ -45,6 +45,14 @@ pub enum PalRow {
         detail: String,
         idx: Vec<usize>,
     },
+    /// An add-on's screen: "Open <title>" (`screen_open`, on the active session).
+    Screen {
+        id: String,
+        title: String,
+        addon_name: String,
+        icon: String,
+        idx: Vec<usize>,
+    },
     /// A Claude slash command for the active Claude session (`session_send_command`).
     Slash {
         command: String,
@@ -169,6 +177,14 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
             }
         } else if let Some((_, idx)) = fuzzy(q, &c.title) {
             out.push(PalRow::Addon { title: c.title.clone(), tool, params: c.params.clone(), idx });
+        }
+    }
+    // Add-on screens: all of them after ">", the matching ones when typing.
+    for d in app.backend.screen_declared() {
+        let title = format!("Open {}", d.title);
+        let hit = if q.is_empty() { commands_only.then(Vec::new) } else { fuzzy(q, &title).map(|(_, idx)| idx) };
+        if let Some(idx) = hit {
+            out.push(PalRow::Screen { id: d.id, title, addon_name: d.addon_name, icon: d.icon, idx });
         }
     }
     // Process add-ons' remotes: all of them after ">", the matching ones when typing.
@@ -331,6 +347,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     PalRow::Tool { .. } => "Commands",
                     PalRow::Addon { .. } => "Add-on commands",
                     PalRow::Remote { .. } => "Remote",
+                    PalRow::Screen { .. } => "Add-on screens",
                     PalRow::Slash { .. } => "Claude commands",
                 };
                 if section != last_section {
@@ -403,6 +420,25 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         let job = highlighted(ui, title, idx, t.fg);
                         let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
                         ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
+                        title.clone()
+                    }
+                    PalRow::Screen { title, addon_name, icon: ic, idx, .. } => {
+                        let ic = if icons::exists(ic) { ic.as_str() } else { "layers" };
+                        icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), ic, icon::LG, t.muted);
+                        x += icon::LG + space::ROW_X;
+                        let job = highlighted(ui, title, idx, t.fg);
+                        let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                        let gw = g.size().x;
+                        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
+                        widgets::paint_text(
+                            ui,
+                            pos2(x + gw + space::ROW_X, cy),
+                            Align2::LEFT_CENTER,
+                            addon_name,
+                            theme::regular(text::CAPTION),
+                            t.faint,
+                            (rect.max.x - x - gw - space::LG).max(0.0),
+                        );
                         title.clone()
                     }
                     PalRow::Remote { title, detail, idx, .. } => {
@@ -552,6 +588,10 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
         PalRow::Search(q) => out.push(Action::OpenSearch(q.clone())),
         PalRow::Addon { tool, params, .. } => out.push(Action::Tool(tool, params.clone())),
         PalRow::Remote { addon, remote_id, .. } => out.push(Action::Tool("remote_open", json!({"addon": addon, "remote_id": remote_id}))),
+        PalRow::Screen { id, .. } => {
+            let context = app.model.active.as_ref().map_or_else(|| json!({}), |a| json!({"session_id": a}));
+            out.push(Action::Tool("screen_open", json!({"screen": id, "context": context})));
+        }
         PalRow::Slash { command, .. } => {
             if let Some(a) = &app.model.active {
                 out.push(Action::Tool("session_send_command", json!({"session_id": a, "command": command, "force": true})));

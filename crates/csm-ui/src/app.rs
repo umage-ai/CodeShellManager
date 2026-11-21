@@ -94,6 +94,16 @@ pub enum Action {
     NewTaskPrompt { project: String, assign_to: Option<SessionId> },
     /// The prompt was answered: `task_new`, then (`assign_to`) `task_assign` once it is made.
     NewTask { project: String, title: String, assign_to: Option<SessionId> },
+    /// A widget in an add-on screen raised an event for its plugin (widget-level input, like a
+    /// keystroke into a pane: not a tool).
+    ScreenEvent { instance: String, event: csm_core::addons::screen::ScreenEvent },
+    /// A button in an add-on screen runs a tool, through the normal dispatch. `confirm`: CSM
+    /// asks first, showing the add-on, the tool and the exact text and target.
+    ScreenTool { instance: String, tool: String, params: Value, confirm: bool },
+    /// The person confirmed a [`Action::ScreenTool`].
+    ScreenConfirmed { tool: String, params: Value },
+    /// Show this add-on screen in the view strip; `None` shows the sessions.
+    ScreenFocus(Option<String>),
 }
 
 /// Which popup menu is open.
@@ -471,6 +481,10 @@ pub struct UiState {
     /// `task_new` calls whose task is to be assigned (and sent) to a session once it exists:
     /// (the call's params, the session).
     pub pending_assign: Vec<(Value, SessionId)>,
+    /// The add-on screens: the view strip's selection, drafts, split ratios (see `screens::addon_screen`).
+    pub screens: Arc<Mutex<screens::addon_screen::ScreenUi>>,
+    /// The add-on screens open this frame (fetched once per frame).
+    pub screen_infos: Vec<csm_engine::ScreenInfo>,
 }
 
 /// A native dialog the UI asks the host for. The answer comes back on a later frame; the frame
@@ -617,6 +631,10 @@ impl CsmApp {
                 Notice::Toast(t) if !t.is_empty() => self.toast(ctx, t),
                 Notice::Toast(_) => {}
                 Notice::Focus(id) => self.ui.focus_terminal = Some(id),
+                Notice::FocusScreen(instance) => {
+                    lock(&self.ui.screens).active = Some(instance);
+                    self.ui.settings.open = false;
+                }
                 // OSC 52 (#156): egui's output sets the clipboard after the frame, no blocking.
                 Notice::Clipboard(text) => ctx.copy_text(text),
                 Notice::QuitReady => {
@@ -1131,6 +1149,17 @@ impl CsmApp {
                 self.ui.menu = None;
                 self.ui.overlay = if self.ui.overlay == Overlay::Help { Overlay::None } else { Overlay::Help };
             }
+            Action::ScreenFocus(i) => {
+                lock(&self.ui.screens).active = i;
+                self.ui.settings.open = false;
+            }
+            Action::ScreenEvent { instance, event } => {
+                if let Err(e) = self.backend.screen_event(&instance, event) {
+                    self.toast(ctx, e);
+                }
+            }
+            Action::ScreenTool { instance, tool, params, confirm } => self.screen_tool(ctx, &instance, tool, params, confirm),
+            Action::ScreenConfirmed { tool, params } => self.dispatch.submit(&tool, params),
             Action::Confirm(c) => {
                 self.ui.menu = None;
                 self.ui.confirm = Some(c);
@@ -1229,6 +1258,23 @@ impl CsmApp {
         set_edit_command(&mut q, &s.command, &self.model.launch_commands);
         self.ui.quick = q;
         self.dispatch.submit("session_get", json!({"session_id": id}));
+    }
+    /// group the panes show); tools that need typed input open their own panel.
+    /// A button in an add-on screen runs `tool`. Direct tools go through the dispatch at once, as a
+    /// palette click does; the ones that need a question (a paste into a session, a link, an
+    /// editor) first show a confirm CSM draws, with the add-on's name, the tool and the exact
+    /// parameters, because the button's label is the plugin's.
+    fn screen_tool(&mut self, ctx: &egui::Context, instance: &str, tool: String, params: Value, confirm: bool) {
+        if !confirm {
+            self.dispatch.submit(&tool, params);
+            return;
+        }
+        let info = self.ui.screen_infos.iter().find(|i| i.instance == instance).cloned();
+        let (name, id) = info.map_or_else(|| ("An add-on".to_owned(), String::new()), |i| (i.addon_name, i.addon));
+        let session = params.get("session_id").and_then(Value::as_str).and_then(|s| self.model.session(s)).map(|s| s.name.clone());
+        let (title, body) = screens::addon_screen::confirm_text(&name, &id, &tool, &params, session.as_deref());
+        let yes = Box::new(Action::ScreenConfirmed { tool, params });
+        self.run(ctx, Action::Confirm(ConfirmState { title, body, yes_label: "Run it".into(), no_label: "Cancel".into(), yes }));
     }
 
     /// A tool picked in the palette: params are filled from context (the active session, the
@@ -1522,6 +1568,7 @@ impl CsmApp {
         // the tray): `logic`, which runs while hidden too.
         self.logic_in_frame(&ctx);
         screens::usage::poll(self, &ctx);
+        screens::addon_screen::tick(self);
         let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
         if let Some(p) = self.main_window.step(&ctx, self.model.windows.get("main").copied(), &self.monitors, min) {
             self.dispatch.submit("window_placement_set", p);
@@ -1603,6 +1650,7 @@ impl CsmApp {
         }
         self.inline_fallback();
         screens::panes::torn_windows(&ctx, self);
+        screens::addon_screen::pop_windows(&ctx, self);
 
         // Overlays, top-most last.
         screens::open_with::show(&ctx, self, &mut actions);

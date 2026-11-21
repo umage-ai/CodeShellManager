@@ -163,7 +163,7 @@ impl Engine {
                 rx.recv_timeout(CONSENT_TIMEOUT + Duration::from_secs(30)).unwrap_or_else(|_| Err(ToolError::TimedOut(format!("`{id}` did not answer"))))
             })
         };
-        let host = Arc::new(plugins::Host::start(post, call, events.subscribe()));
+        let host = Arc::new(plugins::Host::start(post, call, events.subscribe(), crate::plugin_screens::ScreenStore::new(events.clone())));
         let engine = Engine {
             tx,
             events: events.clone(),
@@ -248,6 +248,22 @@ impl Engine {
             Ok(next) => *slot = Arc::new(next),
             Err(e) => log::error!("add-on tools were not registered: {e}"),
         }
+    }
+
+    /// The add-on screens: what running add-ons declared, the open instances and their trees.
+    /// One short lock per call; safe to read every frame.
+    pub fn screens(&self) -> &crate::ScreenStore {
+        self.host.screens()
+    }
+
+    /// A widget in an add-on screen raised an event (a click, a selection, a submitted text):
+    /// sent to the plugin that owns the screen. Widget-level input like a keystroke into a pane,
+    /// so it is not a tool; what a button does is (`action` buttons run a tool). Never blocks:
+    /// a full queue holds a `change` event and refuses the others.
+    pub fn screen_event(&self, instance: &str, event: csm_core::addons::screen::ScreenEvent) -> Result<(), ToolError> {
+        let addon = self.screens().instance(instance).map(|i| i.addon);
+        let link = addon.and_then(|a| self.host.link(&a));
+        crate::plugin_screens::send_event(self.screens(), link, instance, event)
     }
 
     /// Subscribe to engine events (UI, IPC clients, the MCP bridge).

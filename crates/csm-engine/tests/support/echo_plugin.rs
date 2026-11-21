@@ -9,8 +9,19 @@
 //! `.offer` sends `csm/remotes_changed` with the `remotes` it is given; `.open_agent` answers with
 //! a `session` to open (an ssh config/alias session). It counts the events it was sent, keeps their
 //! kinds, and reports both from `echo`, with the `caller` of that call and the `initialize` params.
+//!
+//! **Screens.** When CSM says `capabilities.screens`, it declares `echo-test.main` (global) and
+//! `echo-test.proj` (project scope); mode `noscreens` declares none. `screen/open` answers with a
+//! view (a title, a `status` text, buttons, a text input, a file list, a list, markdown). Each
+//! `screen/event` is remembered and answered with a new `screen/render` whose `status` shows it,
+//! except a few special keys: `patch` answers with a `screen/patch` of `status`, `badpatch` with a
+//! patch on the wrong base (CSM must answer `screen/refresh`, which gets a full render), `bad` with
+//! an over-cap tree (CSM must refuse it and answer `screen/error`), `flood` with 200 renders.
+//! `screen/closed`, `screen/refresh` and `screen/error` are remembered; `echo-test.screen_state`
+//! reports everything it has seen. Mode `badopen` answers `screen/open` with an over-cap tree.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Lines, StdinLock, Write};
 
 use serde_json::{Value, json};
@@ -54,6 +65,11 @@ fn main() {
     let mut kinds: Vec<String> = Vec::new();
     let mut next_csm_id: u64 = 1000;
     let mut init_params = Value::Null;
+    let mut screen_rev: HashMap<String, u64> = HashMap::new();
+    let mut screen_log: Vec<Value> = Vec::new();
+    let mut screen_closed: Vec<String> = Vec::new();
+    let mut screen_errors: Vec<String> = Vec::new();
+    let mut refreshes: u64 = 0;
     while let Some(line) = next_line(&mut lines) {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_owned();
@@ -88,14 +104,63 @@ fn main() {
                 if mode == "undeclared" {
                     tools.push(json!({"id": "echo-test.sneaky", "title": "Sneaky", "effects": ["sends_input"]}));
                 }
-                send(
-                    &mut out,
-                    &reply(
-                        &id,
-                        json!({"api": 1, "name": "Echo test plugin", "tools": tools, "subscriptions": ["session_changed", "inbox_changed", "session_asleep", "session_awake", "not_an_event"]}),
-                    ),
-                );
+                tools.push(json!({"id": "echo-test.screen_state", "title": "Screen state", "summary": "What the screens have seen", "effects": []}));
+                let screens_ok = init_params["capabilities"]["screens"].as_u64() >= Some(1) && mode != "noscreens";
+                let mut answer = json!({"api": 1, "name": "Echo test plugin", "tools": tools, "subscriptions": ["session_changed", "inbox_changed", "session_asleep", "session_awake", "not_an_event"]});
+                if screens_ok {
+                    answer["screens"] = json!([
+                        {"id": "echo-test.main", "title": "Echo screen", "icon": "layers", "scope": "global", "summary": "A screen for the tests"},
+                        {"id": "echo-test.proj", "title": "Echo project", "icon": "branch", "scope": "project"}
+                    ]);
+                }
+                send(&mut out, &reply(&id, answer));
             }
+            ("screen/open", Some(id)) => {
+                let instance = params["instance"].as_str().unwrap_or_default().to_owned();
+                screen_log.push(json!({"open": instance, "screen": params["screen"], "context": params["context"], "theme": params["theme"]}));
+                screen_rev.insert(instance.clone(), 1);
+                let root = if mode == "badopen" { too_big() } else { view(&instance, "opened") };
+                send(&mut out, &reply(&id, json!({"rev": 1, "root": root})));
+            }
+            ("screen/event", None) => {
+                let instance = params["instance"].as_str().unwrap_or_default().to_owned();
+                let key = params["key"].as_str().unwrap_or_default().to_owned();
+                screen_log.push(json!({"event": params["key"], "kind": params["kind"], "value": params["value"], "rev": params["rev"], "instance": instance}));
+                let rev = screen_rev.get(&instance).copied().unwrap_or(0);
+                let note = format!("{} {} {}", params["kind"].as_str().unwrap_or_default(), key, params["value"]);
+                let line = |m: &str, p: Value| json!({"jsonrpc": "2.0", "method": m, "params": p});
+                match key.as_str() {
+                    "patch" => {
+                        screen_rev.insert(instance.clone(), rev + 1);
+                        send(&mut out, &line("screen/patch", json!({"instance": instance, "rev": rev + 1, "base": rev, "ops": [{"op": "replace", "key": "status", "node": {"type": "text", "key": "status", "text": format!("patched {}", rev + 1)}}]})));
+                    }
+                    "badpatch" => {
+                        send(&mut out, &line("screen/patch", json!({"instance": instance, "rev": rev + 10, "base": rev + 5, "ops": []})));
+                    }
+                    "bad" => {
+                        send(&mut out, &line("screen/render", json!({"instance": instance, "rev": rev + 1, "root": too_big()})));
+                    }
+                    "flood" => {
+                        for n in 1..=200u64 {
+                            send(&mut out, &line("screen/render", json!({"instance": instance, "rev": rev + n, "root": view(&instance, &format!("flood {n}"))})));
+                        }
+                        screen_rev.insert(instance.clone(), rev + 200);
+                    }
+                    _ => {
+                        screen_rev.insert(instance.clone(), rev + 1);
+                        send(&mut out, &line("screen/render", json!({"instance": instance, "rev": rev + 1, "root": view(&instance, &note)})));
+                    }
+                }
+            }
+            ("screen/refresh", None) => {
+                refreshes += 1;
+                let instance = params["instance"].as_str().unwrap_or_default().to_owned();
+                let rev = screen_rev.get(&instance).copied().unwrap_or(0) + 20;
+                screen_rev.insert(instance.clone(), rev);
+                send(&mut out, &json!({"jsonrpc": "2.0", "method": "screen/render", "params": {"instance": instance, "rev": rev, "root": view(&instance, "refreshed")}}));
+            }
+            ("screen/closed", None) => screen_closed.push(params["instance"].as_str().unwrap_or_default().to_owned()),
+            ("screen/error", None) => screen_errors.push(params["message"].as_str().unwrap_or_default().to_owned()),
             ("event", None) => {
                 events += 1;
                 let kind = params.get("event").and_then(Value::as_str).unwrap_or_default();
@@ -110,6 +175,7 @@ fn main() {
                         &mut out,
                         &reply(&id, json!({"message": "echoed", "data": {"echo": args, "events_seen": events, "event_kinds": kinds, "caller": params.get("caller"), "init": init_params}})),
                     ),
+                    "echo-test.screen_state" => send(&mut out, &reply(&id, json!({"message": "state", "data": {"log": screen_log, "closed": screen_closed, "errors": screen_errors, "refreshes": refreshes}}))),
                     "echo-test.inherit" => send(&mut out, &reply(&id, json!({"message": "inherited"}))),
                     "echo-test.write" => send(&mut out, &reply(&id, json!({"message": "wrote (pretend)"}))),
                     "echo-test.exit" => std::process::exit(3),
@@ -143,4 +209,29 @@ fn main() {
             _ => {}
         }
     }
+}
+
+/// The view every screen shows. `status` is the node tests watch.
+fn view(instance: &str, status: &str) -> Value {
+    json!({"type": "column", "key": "root", "gap": "md", "children": [
+        {"type": "text", "key": "title", "style": "title", "text": format!("Echo screen {instance}")},
+        {"type": "text", "key": "status", "text": status},
+        {"type": "toolbar", "children": [
+            {"type": "button", "key": "btn", "label": "Ping", "kind": "primary", "event": true},
+            {"type": "button", "label": "Echo tool", "action": {"tool": "echo-test.echo", "params": {"from": "screen"}}},
+            {"type": "button", "label": "Send hi", "action": {"tool": "session_send_text", "params": {"session_id": "s1", "text": "hello from the screen"}}},
+            {"type": "button", "label": "Quit app", "action": {"tool": "app_quit"}}
+        ]},
+        {"type": "text_input", "key": "name", "value": "", "placeholder": "Name", "submit_label": "Go"},
+        {"type": "file_list", "key": "files", "view": "tree", "files": [
+            {"path": "src/lib.rs", "status": "M"}, {"path": "src/ui/a.rs", "status": "A"}, {"path": "README.md", "status": "?"}]},
+        {"type": "list", "key": "items", "items": [{"key": "one", "title": "One", "subtitle": "first"}, {"key": "two", "title": "Two"}]},
+        {"type": "markdown", "source": "Hello **world**"}
+    ]})
+}
+
+/// A tree over the node cap.
+fn too_big() -> Value {
+    let kids: Vec<Value> = (0..6000).map(|_| json!({"type": "spacer"})).collect();
+    json!({"type": "column", "children": kids})
 }

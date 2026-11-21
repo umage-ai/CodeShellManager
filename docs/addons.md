@@ -221,7 +221,7 @@ CSM sends is the handshake:
 
 ```
 -> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"api":1,"csm_version":"0.0.1",
-    "capabilities":{"caller":1,"data_dir":1,"standing_calls":1},"data_dir":null}}
+    "capabilities":{"caller":1,"data_dir":1,"standing_calls":1,"screens":1},"data_dir":null}}
 <- {"jsonrpc":"2.0","id":1,"result":{"api":1,"name":"Echo test","tools":[
       {"id":"echo-test.echo","title":"Echo","summary":"Returns its arguments",
        "input_schema":{"type":"object"},"effects":[]},
@@ -232,7 +232,7 @@ CSM sends is the handshake:
 - `api` must be 1 (`PROTOCOL_API`). Another value refuses the plugin.
 - `capabilities` is an object of feature name to version, so a plugin can tell what this CSM does:
   `caller` (`tools/call` carries `caller`), `data_dir` (the data folder below), `standing_calls`
-  (`[process] calls`). Names are only ever added; ignore the ones you do not know. A CSM that
+  (`[process] calls`), `screens` (the add-on may declare screens; see Screens below). Names are only ever added; ignore the ones you do not know. A CSM that
   predates one leaves it out, so check before relying on it.
 - `data_dir` is the add-on's own folder, `<state folder>/addon-data/<id>/`, which CSM creates when
   the process starts. It is a string only for an add-on that declared `stores_data` and only when
@@ -452,6 +452,7 @@ A `csm/call` from a plugin runs as `add-on <id>`. An MCP client may not claim a 
 | `remote_open` | state, launch, network (consent for MCP) | `addon`, `remote_id`, optional `focus` |
 | `session_annotate` | ui | add-on callers only: `session_id`, `status`, `annotation` on a session the add-on owns |
 | `addon_secret_set` / `_get` / `_delete` | secrets | add-on callers only: `key` (and `value`) in the add-on's own keychain namespace |
+| `screen_list`, `screen_open`, `screen_close`, `screen_pop_out`, `screen_dock` | read / ui | the add-on screens (see Screens below) |
 
 While its process runs, the add-on's own tools (`echo-test.echo` and so on) appear in `tool_list`,
 the palette, the CLI (`csm echo-test.echo`) and MCP, in the `addons` toolset. They cannot be
@@ -462,7 +463,8 @@ palette commands: a command names a built-in tool.
 `crates/csm-engine/tests/support/echo_plugin.rs` (built as `csm-echo-plugin`, not shipped) is a
 complete example in Rust. `crates/csm-engine/tests/plugins.rs` runs it through the engine: the
 handshake, a call, consent, `csm/call`, events, a crash and restart, disabling, the three
-misbehaviour caps, and shutdown.
+misbehaviour caps, and shutdown. `crates/csm-engine/tests/screens.rs` drives its screen (open, render,
+event, patch, refresh, an over-cap tree, a stop and a restart, close) through the engine.
 
 ### Sample plugin: Session summary
 
@@ -478,9 +480,202 @@ no consent card. Its `argv` is the bare name `csm-session-summary`; the plugin h
 
 ### Not in this phase
 
-Declarative UI panels, signed add-ons, a registry, a version check or update for a process add-on,
+The code and diff widgets, screens as panes in the layouts, signed add-ons, a registry, a version check or update for a process add-on,
 and a process add-on's own profiles or palette commands. Protocol `api` 1 is the only version.
 
+
+## Screens
+
+A process add-on can show **its own screens** inside CSM. It declares them in its `initialize`
+answer; when the person opens one, CSM asks the plugin for a **view tree** (JSON), validates it off
+the UI thread, and draws it with CSM's own widgets and theme tokens inside a frame CSM draws. The
+plugin never draws pixels, never sends escape sequences, never picks colours, sizes or fonts, and
+never opens windows. Check `capabilities.screens` (version 1) in `initialize` before declaring one.
+
+This is the first part of the screens work: the protocol, the tools and the basic widgets. The code
+and diff widgets, syntax highlighting, comment threads and screens as panes inside the layouts are
+later work; a plugin that sends `code` or `diff` today gets a small "unsupported" box.
+
+### Declaring and opening
+
+```json
+<- {"jsonrpc":"2.0","id":1,"result":{"api":1,"name":"Review","tools":[...],
+    "screens":[{"id":"review.changes","title":"Review","icon":"layers","scope":"project",
+                "summary":"Changed files and diffs"}]}}
+```
+
+- `id` is `<add-on id>.<name>` (same rules as a tool id). `title` is required (64 characters).
+  `icon` names an icon from CSM's own set (an unknown one draws none). `scope` is `project`,
+  `session` or `global` (the default): it decides which context the screen needs when it is opened.
+- At most 4 screens. A bad entry is dropped and listed in `problems` (`plugin_status`).
+- The screens are offered while the process runs, in the palette ("Open <title>") and in
+  `screen_list`. They go away when it stops.
+
+CSM sends `screen/open` as a **request**; the plugin has 10 seconds to answer with
+`{"rev": 1, "root": {...}}`. Until then the tab shows a spinner; after that, "<add-on> did not
+answer" with **Retry**.
+
+```
+-> {"jsonrpc":"2.0","id":12,"method":"screen/open",
+    "params":{"screen":"review.changes","instance":"i7",
+              "context":{"session_id":"s3","project":"repo:C:/x","folder":"C:/x","path":null,"args":null},
+              "theme":"dark"}}
+<- {"jsonrpc":"2.0","id":12,"result":{"rev":1,"root":{"type":"column","children":[...]}}}
+```
+
+`instance` names this open screen in every later message. When it is closed CSM sends the
+notification `screen/closed {instance}`.
+
+### The tools (toolset `addons`)
+
+| id | effects | what |
+|---|---|---|
+| `screen_list` | read | the screens running add-ons offer, and the open instances (phase, rev, error, own window) |
+| `screen_open` | ui | `screen`, optional `context` (`session_id`, `project`, `path`, `args` up to 4 KiB), `focus`, `theme`; returns `instance`. The same screen on the same context is focused, not opened twice. A screen that did not answer is asked again. At most 8 instances per add-on |
+| `screen_close` | ui | `instance`; the plugin gets `screen/closed` |
+| `screen_pop_out`, `screen_dock` | ui | move an instance into its own window, or back into the tab strip |
+
+They change only what the app shows, so an MCP agent may call them without a consent card ("I
+opened the review for you"), like `session_focus`. A `session_id` gives the screen the session's
+project (the key tasks use) and working folder. Project screens need a project; session screens need
+a session.
+
+### Updates: render, patch, refresh, error
+
+The plugin updates a screen with notifications. `rev` increases strictly (a plugin restart starts
+again at 1):
+
+```
+<- {"jsonrpc":"2.0","method":"screen/render","params":{"instance":"i7","rev":5,"root":{...}}}
+<- {"jsonrpc":"2.0","method":"screen/patch","params":{"instance":"i7","rev":6,"base":5,
+     "ops":[{"op":"replace","key":"status","node":{...}},
+            {"op":"remove","key":"draft-3"},
+            {"op":"append","key":"comments","node":{...}}]}}
+```
+
+- A render or patch whose `rev` is not newer than what is shown is dropped.
+- A patch applies only if `base` is the revision shown. Otherwise it is dropped and CSM sends the
+  notification `screen/refresh {instance}`; the plugin answers with a full `screen/render`. So the
+  protocol heals itself without CSM tracking diffs.
+- `replace` swaps the node with that `key`; `remove` takes a child out of a `column`, `row`,
+  `toolbar` or `section` (never one of a `split`'s two, or a `scroll`'s or `tabs`' child: replace
+  those); `append` adds a child to one of those. At most 256 ops. `set` (prop-level patches) is not
+  built yet.
+- A tree or patch that breaks a cap or is malformed is **refused as a whole**: the previous tree
+  stays on screen, the frame shows "<add-on> sent a view CSM could not show: <reason>", and the plugin
+  gets the notification `screen/error {instance, message}`. Nothing panics.
+- Renders are published to the window at most 30 times a second per instance, latest wins; every
+  render is still applied to the latest tree.
+- A text input keeps what the person is typing in CSM, keyed by `(instance, key)`. A re-render does
+  not overwrite it, unless the node carries `reset: true` (send it after a successful submit).
+
+### Events and buttons
+
+Widgets send events to the plugin as notifications; the plugin answers with a render or patch.
+
+```
+-> {"jsonrpc":"2.0","method":"screen/event",
+    "params":{"instance":"i7","rev":6,"key":"files","kind":"select","value":{"path":"src/lib.rs"}}}
+```
+
+`rev` is the revision the person saw. The kinds and their `value`:
+
+| kind | from | value |
+|---|---|---|
+| `click` | a `button` with `"event": true` | null |
+| `select` | `list`, `file_list`, `select`, `segmented`, `tabs` | `{"key"}` (list, tabs), `{"path"}` (file_list), `{"value"}` (select, segmented) |
+| `toggle` | `checkbox` | `{"checked": bool}` |
+| `submit` | `text_input` (Enter, or its `submit_label` button) | `{"value": text}` |
+| `change` | `text_input` with `on_change`, 300 ms after the last keystroke | `{"value": text}` |
+| `link` | a `csm:` link in Markdown text | `{"href": "csm:..."}` |
+
+(`range_action`, `thread_toggle` and `visible` are reserved for the code and diff widgets.)
+Events are queued without waiting: a full queue (64 messages per add-on) keeps the latest `change`
+and refuses others with a toast ("<add-on> is busy").
+
+**Buttons bound to tools.** A `button` with `"action": {"tool": ..., "params": {...}}` runs that tool
+through the normal dispatch as a click of the person, so a button does nothing an agent could not do
+with the same tool. Which tools is decided when the tree is parsed, by the tool id:
+
+- The add-on's own tools (`<its id>.*`) run directly.
+- `session_focus`, `screen_open`, `screen_close` and `inspector_show` run directly.
+- `session_send_text`, `open_url` and `open_with` run only after **a confirm CSM draws**: it names
+  the add-on, the tool, the exact text or address and the target session (invisible characters shown
+  as markers). The button's label is the plugin's, so the confirm is where the truth is shown.
+- Everything else (`addon_*`, `plugin_*`, `consent_*`, `settings_set`, anything that enables an
+  extension or may discard data, another add-on's tools) is refused: the button draws disabled, with
+  the reason as its tooltip.
+
+### The widgets
+
+A node is `{"type": ..., "key"?: string, ...props}`. A `key` (1 to 64 characters, no control
+characters, unique in the tree) is required on every node that sends events. An unknown `type` draws
+as a small "unsupported: <type>" box (its children are ignored), so a newer plugin degrades on an
+older CSM; unknown props are ignored. A prop of the wrong type falls back to its default; a missing
+required child, a duplicate key or a cap breach refuses the tree. `tone` is
+`default | muted | info | success | warning | danger | accent`; `gap` is `none | xs | sm | md | lg`.
+
+| type | props |
+|---|---|
+| `column`, `row` | `children`, `gap`, `align` (`start`, `center`, `end`, `stretch`) |
+| `split` | `children` (exactly two), `ratio` (0.15 to 0.85), `min_px`: a draggable divider; CSM remembers the ratio per instance (needs a `key`) |
+| `scroll` | `child` |
+| `tabs` | `key`, `tabs: [{key, label, badge?}]`, `selected`, `child` (the plugin renders the selected tab's content) |
+| `section` | `title`, `badge?`, `collapsible?` (needs a `key`), `collapsed?`, `children` |
+| `divider`, `spacer`, `toolbar` | `toolbar`: `children`, a right-aligned strip |
+| `text` | `text`, `style` (`body`, `caption`, `title`, `mono`), `tone`, `wrap` |
+| `markdown` | `source` (up to 64 KiB): paragraphs, headings, emphasis, code spans and fenced code, lists, quotes, rules, links. No images (the alt text shows), no HTML (shown as text), no tables |
+| `badge` | `text`, `tone` |
+| `icon` | `name` (CSM's set), `tone` |
+| `kv` | `rows: [[key, value]]` (up to 500) |
+| `empty` | `title`, `body?`, `icon?` |
+| `progress` | `value?` (0 to 1; absent is a spinner), `label?` |
+| `comment` | `author: {name, kind: "person"\|"agent"}`, `time_ms`, `body` (Markdown), `badges?`, `actions?` (buttons). `kind: agent` gets CSM's agent mark |
+| `button` | `label`, `kind` (`primary`, `secondary`, `ghost`, `danger`), `icon?`, `disabled?`, and either `action` or `"event": true` |
+| `text_input` | `key`, `value`, `placeholder`, `multiline?`, `max_len` (up to 16 KiB), `submit_label?`, `on_change?`, `reset?` |
+| `checkbox` | `key`, `label`, `checked` |
+| `select`, `segmented` | `key`, `options: [{value, label}]` (up to 200), `selected` |
+| `list` | `key`, `items: [{key, title, subtitle?, icon?, badges?}]` (up to 20,000, virtualised), `selected?` |
+| `file_list` | `key`, `files: [{path, status?: M A D R C U ?, old_path?, badges?}]` (up to 20,000), `view: "tree"` (default) or `"flat"`, `selected?`: CSM builds the folder tree from the paths; folders fold locally |
+
+**Caps** (checked before anything is kept; a breach refuses the whole tree):
+
+| limit | value |
+|---|---|
+| a message | 1 MiB (as for every message) |
+| a tree, serialized | 768 KiB |
+| nodes | 5,000 |
+| depth | 32 |
+| one plain string | 16 KiB; a label is cut at 200 characters |
+| Markdown source | 64 KiB (2,000 blocks, 8 levels of lists and quotes) |
+| operations in a patch | 256 |
+| screens declared per add-on | 4 |
+| open instances per add-on | 8 |
+
+### What the person sees, and what a screen cannot do
+
+- **The tab strip.** With a screen open, a strip of views appears under the group bar: `Sessions`
+  and a tab per open screen (its icon, title, an "Add-on" mark and a close x). **Pop out** (in the
+  frame's header) moves a screen into its own window, using the same viewport machinery as the
+  tear-offs; its tab stays, and clicking it docks it back. Closing the window docks it.
+- **The frame.** Every screen sits inside a header CSM draws (the screen's title, an "Add-on" badge
+  and the add-on's name and id) and a 1 px border, and is clipped to the area below it, so a view
+  can neither cover nor imitate it. A click with no new render after 300 ms shows a small spinner in
+  the header.
+- **Placeholders.** Opening (spinner), "did not answer" (Retry, Close), "is not running" (Restart,
+  Close). When the process stops, the last tree stays on screen, greyed out and disabled, under a
+  bar; when it is running again the open instances are asked to open again, on their old context.
+  Disabling the add-on closes its screens.
+- **Untrusted text.** Labels drop control, bidi and zero-width characters. Text, comments and
+  Markdown keep them but draw each one as a visible marker (an ESC symbol, `⟨U+202E⟩`, in a warning
+  tint): a review screen shows a Trojan-Source trick instead of hiding or obeying it. A text a person
+  types goes only to the add-on that owns the screen.
+- **Links.** Only absolute `http` and `https` links are live (the tooltip shows the real address; a
+  click runs `open_url` as the person's click; text that names a different URL shows both). `csm:`
+  links become `link` events. Any other scheme is plain text.
+- **Above everything.** Screens draw in the main panel, below menus, dialogs, toasts and consent
+  cards (which name the add-on and are `Foreground` areas). A screen in its own window is a separate
+  OS window: a consent card appears in the main window.
 
 ## Example
 

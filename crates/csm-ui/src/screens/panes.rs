@@ -240,8 +240,28 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let rect = ui.max_rect();
     let bar = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + size::GROUP_BAR));
     ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| group_bar(ui, app, actions));
-    let area = Rect::from_min_max(pos2(rect.min.x, bar.max.y), rect.max);
+    // Add-on screens add a strip of views above the pane area (`Sessions | <screen> ...`); the
+    // selected screen replaces the panes below it.
+    let infos = app.ui.screen_infos.clone();
+    let mut top = bar.max.y;
+    let mut screen = None;
+    if !infos.is_empty() {
+        let strip = Rect::from_min_max(pos2(rect.min.x, bar.max.y), pos2(rect.max.x, bar.max.y + size::VIEW_STRIP));
+        let st = lock(&app.ui.screens);
+        screen = super::addon_screen::shown(&infos, &st).cloned();
+        let active = screen.as_ref().map(|i| i.instance.clone());
+        drop(st);
+        super::addon_screen::strip(ui, strip, &infos, active.as_deref(), actions);
+        top = strip.max.y;
+    }
+    let area = Rect::from_min_max(pos2(rect.min.x, top), rect.max);
     ui.painter().rect_filled(area, 0.0, t.crust);
+    if let Some(info) = screen {
+        let tree = app.backend.screen_tree(&info.instance);
+        let mut st = lock(&app.ui.screens);
+        super::addon_screen::show(ui, area.shrink(space::PANE_GAP), &info, tree.as_ref(), &mut st, false, actions);
+        return;
+    }
     let inner = area.shrink(space::PANE_GAP);
     let model = app.model.clone();
     let scope = model.pane_scope();
