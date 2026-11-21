@@ -174,3 +174,14 @@ fn split_alignment_pairs_blocks_and_pads_the_shorter_side() {
     let p = parse_unified("--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n+n\n-o\n");
     assert_eq!(align_split(&p.files[0].hunks[0]).len(), 2);
 }
+
+#[test]
+fn more_hunks_than_the_cap_are_dropped_and_reported_as_truncated() {
+    let mut s = String::from("--- a/f\n+++ b/f\n");
+    for i in 0..(MAX_HUNKS + 2) {
+        s.push_str(&format!("@@ -{0} +{0} @@\n-a\n+b\n", i + 1));
+    }
+    let p = parse_unified(&s);
+    assert_eq!(p.files[0].hunks.len(), MAX_HUNKS);
+    assert!(p.truncated, "the dropped hunks are said to be dropped");
+}

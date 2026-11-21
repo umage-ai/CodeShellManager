@@ -125,6 +125,9 @@ pub(crate) struct Model {
     by_line: HashMap<(Side, u32), usize>,
     max_no: u32,
     max_cols: usize,
+    /// The patch a diff model was built from. Held here so its address (the model's id) cannot
+    /// be reused by a later patch while this model is cached.
+    _patch: Option<Arc<Patch>>,
 }
 
 fn cols(s: &str) -> usize {
@@ -241,6 +244,7 @@ fn code_model(v: &CodeView, doc: &Arc<Doc>) -> Model {
         by_line: HashMap::new(),
         max_no: last,
         max_cols,
+        _patch: None,
     }
 }
 
@@ -355,7 +359,7 @@ fn diff_model(v: &DiffView, patch: &Arc<Patch>) -> Model {
     if patch.truncated {
         rows.push(Row::Banner("The diff was cut short: it has more files or lines than CSM shows.".into(), BannerKind::Notice));
     }
-    Model { id: diff_id(v, patch), gutter: if split { Gutter::Split } else { Gutter::Double }, docs, body: Body::Table(rows), by_line, max_no, max_cols }
+    Model { id: diff_id(v, patch), gutter: if split { Gutter::Split } else { Gutter::Double }, docs, body: Body::Table(rows), by_line, max_no, max_cols, _patch: Some(patch.clone()) }
 }
 
 fn diff_id(v: &DiffView, patch: &Arc<Patch>) -> u64 {
@@ -409,23 +413,31 @@ impl ViewState {
 // Entry points
 // ---------------------------------------------------------------------------------------------
 
+/// The state key of a view. A keyless node sends nothing, so it only needs its own slot: its
+/// position in the layout tells it apart from the other keyless views of the same screen.
+fn state_key(ui: &mut Ui, key: &str) -> String {
+    if key.is_empty() { format!("~{}", ui.next_auto_id().value()) } else { key.to_owned() }
+}
+
 pub(super) fn code(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, v: &CodeView) {
+    let key = state_key(ui, key);
     match &v.content {
         CodeContent::Withheld(w) => notice(ui, cx, w),
         CodeContent::Text(doc) if doc.is_empty() => notice(ui, cx, &Withheld("This file is empty.".into())),
         CodeContent::Text(doc) => {
-            let m = cached(cx, key, code_id(v, doc), || code_model(v, doc));
-            show(ui, cx, key, &m, &v.overlay, &v.highlight_lines);
+            let m = cached(cx, &key, code_id(v, doc), || code_model(v, doc));
+            show(ui, cx, &key, &m, &v.overlay, &v.highlight_lines);
         }
     }
 }
 
 pub(super) fn diff(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, v: &DiffView) {
+    let key = state_key(ui, key);
     match &v.content {
         DiffContent::Withheld(w) => notice(ui, cx, w),
         DiffContent::Patch(p) => {
-            let m = cached(cx, key, diff_id(v, p), || diff_model(v, p));
-            show(ui, cx, key, &m, &v.overlay, &[]);
+            let m = cached(cx, &key, diff_id(v, p), || diff_model(v, p));
+            show(ui, cx, &key, &m, &v.overlay, &[]);
         }
     }
 }
@@ -749,11 +761,12 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
                     if *kind == BannerKind::File {
                         painter.hline(rrect.x_range(), rrect.max.y - 0.5, Stroke::new(size::HAIRLINE, t.surface0));
                     }
-                    let tr = painter.with_clip_rect(rrect).text(pos2(rrect.min.x + space::MD, rrect.center().y), Align2::LEFT_CENTER, txt.as_ref(), font, color);
-                    let _ = tr;
+                    // Banners carry names and headings from the plugin: shown with invisible characters marked.
+                    let shown_txt = shown(txt);
+                    painter.with_clip_rect(rrect).text(pos2(rrect.min.x + space::MD, rrect.center().y), Align2::LEFT_CENTER, &shown_txt, font, color);
                     let r = ui.interact(rrect, Id::new((view_id, "banner", i)), Sense::hover());
                     r.widget_info({
-                        let l = txt.to_string();
+                        let l = shown_txt.clone();
                         move || WidgetInfo::labeled(WidgetType::Label, true, l.clone())
                     });
                 }
@@ -881,7 +894,8 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
                     }
                 }
             }
-            if let Row::Line(_) = &row
+            // Pairs drew their badges above; a line or a banner (a thread on a line the diff does not show) draws here.
+            if !matches!(row, Row::Pair(..))
                 && let Some(list) = closed_at.get(&i)
             {
                 for k in list {

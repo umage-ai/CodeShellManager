@@ -447,3 +447,21 @@ fn code_and_diff_screenshots_in_both_themes() {
         assert!(count_near(&ci, diff_bg_over(&t, t.diff_del_bg), 4) > 1000, "{theme:?}: deleted lines have the delete band");
     }
 }
+
+#[test]
+fn file_and_hunk_banners_show_invisible_characters_as_markers() {
+    // A file name with a right-to-left override and a heading with an escape: shown, not applied.
+    let patch = "--- a/x\u{202e}y.rs\n+++ b/x\u{202e}y.rs\n@@ -1 +1 @@ fn \u{1b}[2J()\n-a\n+b\n";
+    let (h, _) = app_with_screen(diff_view(false, json!({"patch": patch})));
+    assert!(has_part(&h, "\u{27E8}U+202E\u{27E9}y.rs"), "the file banner marks the override");
+    assert!(has_part(&h, "\u{241B}[2J"), "the hunk heading marks the escape");
+}
+
+#[test]
+fn a_closed_thread_on_a_banner_row_still_has_its_badge() {
+    // An empty patch shows only a banner: a thread anchored to a line it does not show is placed there.
+    let closed = json!({"key": "t", "anchor": {"start": 5, "end": 5}, "open": false, "count": 2, "child": {"type": "text", "text": "x"}});
+    let (h, _) = app_with_screen(diff_view(false, json!({"patch": "", "threads": [closed]})));
+    assert!(has(&h, "No changes to show."));
+    assert!(has(&h, "Open thread (2)"), "the badge is drawn although the row is a banner");
+}

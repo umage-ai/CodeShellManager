@@ -163,10 +163,12 @@ struct Parser {
 
 impl Parser {
     fn flush_hunk(&mut self) {
-        if let (Some(h), Some(f)) = (self.hunk.take(), self.cur.as_mut())
-            && f.hunks.len() < MAX_HUNKS
-        {
-            f.hunks.push(h);
+        if let (Some(h), Some(f)) = (self.hunk.take(), self.cur.as_mut()) {
+            if f.hunks.len() < MAX_HUNKS {
+                f.hunks.push(h);
+            } else {
+                self.out.truncated = true;
+            }
         }
         self.rem = None;
     }
