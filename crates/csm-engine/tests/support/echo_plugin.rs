@@ -8,7 +8,7 @@
 //! `.csm` runs any CSM tool through `csm/call` (`tool`, `params`) and returns the answer or error;
 //! `.offer` sends `csm/remotes_changed` with the `remotes` it is given; `.open_agent` answers with
 //! a `session` to open (an ssh config/alias session). It counts the events it was sent, keeps their
-//! kinds, and reports both from `echo`.
+//! kinds, and reports both from `echo`, with the `caller` of that call and the `initialize` params.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::{self, BufRead, Lines, StdinLock, Write};
@@ -53,6 +53,7 @@ fn main() {
     let mut events: u64 = 0;
     let mut kinds: Vec<String> = Vec::new();
     let mut next_csm_id: u64 = 1000;
+    let mut init_params = Value::Null;
     while let Some(line) = next_line(&mut lines) {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_owned();
@@ -60,6 +61,7 @@ fn main() {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         match (method.as_str(), id) {
             ("initialize", Some(id)) => {
+                init_params = params.clone();
                 match mode.as_str() {
                     "oversize" => {
                         let _ = writeln!(out, "{}", "x".repeat(2 * 1024 * 1024));
@@ -104,7 +106,10 @@ fn main() {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
                 match name.as_str() {
-                    "echo-test.echo" => send(&mut out, &reply(&id, json!({"message": "echoed", "data": {"echo": args, "events_seen": events, "event_kinds": kinds}}))),
+                    "echo-test.echo" => send(
+                        &mut out,
+                        &reply(&id, json!({"message": "echoed", "data": {"echo": args, "events_seen": events, "event_kinds": kinds, "caller": params.get("caller"), "init": init_params}})),
+                    ),
                     "echo-test.inherit" => send(&mut out, &reply(&id, json!({"message": "inherited"}))),
                     "echo-test.write" => send(&mut out, &reply(&id, json!({"message": "wrote (pretend)"}))),
                     "echo-test.exit" => std::process::exit(3),

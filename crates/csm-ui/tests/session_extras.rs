@@ -135,7 +135,7 @@ fn a_claude_pane_menu_offers_the_slash_commands_and_sends_one() {
     for _ in 0..3 {
         h.step();
     }
-    for c in ["/help", "/clear", "/compact", "/status", "/memory", "/init", "exit"] {
+    for c in ["/help", "/clear", "/compact", "/status", "/memory", "/init", "/remote-control", "exit"] {
         assert!(has(&h, c), "{c} listed");
     }
     h.get_by_label("/compact").click();
@@ -307,7 +307,7 @@ fn claude_commands_are_edited_in_settings() {
     settle(&mut h);
     let (id, params) = last_call(&h);
     assert_eq!((id.as_str(), params["key"].as_str()), ("settings_set", Some("ClaudeCommands")));
-    assert_eq!(commands_in(&params), ["/clear", "/compact", "/status", "/memory", "/init", "exit"]);
+    assert_eq!(commands_in(&params), ["/clear", "/compact", "/status", "/memory", "/init", "/remote-control", "exit"]);
 
     // The engine answered with the new list; add one with Enter in the field.
     h.get_by_label("New Claude command").focus();

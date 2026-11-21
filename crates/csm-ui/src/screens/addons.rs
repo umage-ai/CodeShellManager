@@ -134,6 +134,16 @@ pub fn consent_body(a: &AddonSummary) -> String {
         let effects = if a.process_effects.is_empty() { "none declared".to_owned() } else { a.process_effects.join(", ") };
         let command = a.process_command_line.clone().unwrap_or_default();
         lines.push(format!("Process add-on. It runs `{command}` as a program, with its working folder set to the add-on folder. It may request: {effects}. Its tools appear in the palette, the CLI and MCP; a tool that uses an effect asks before it runs for MCP clients."));
+        if a.process_effects.iter().any(|e| e == "stores_data") {
+            lines.push("Stores its own data: it keeps files in a folder of its own (addon-data/<id>) and nowhere else. This needs no approval card.".into());
+        }
+        if !a.process_calls.is_empty() {
+            let list: Vec<String> = a.process_calls.iter().map(|c| format!("{} ({})", c.tool, c.effects)).collect();
+            lines.push(format!(
+                "Standing permission: enabling this add-on lets it run exactly these app tools without asking each time: {}. Any other tool it calls asks as usual. If the file changes, this ends until you approve it again.",
+                list.join("; ")
+            ));
+        }
     }
     lines.push("Enabling is saved. If the file changes later, it is turned off until you enable it again.".into());
     lines.join("\n")
@@ -166,6 +176,7 @@ mod tests {
             commands: vec![CommandSummary { id: "demo.list".into(), title: "List".into(), tool: "session_list".into(), params: json!({}) }],
             process_effects: vec![],
             process_command_line: None,
+            process_calls: vec![],
             process: None,
             problems: vec![],
         };
@@ -176,5 +187,41 @@ mod tests {
         // The exact commands that will run are in the text, not just their names.
         assert!(body.contains("`my-agent --plain`"), "{body}");
         assert!(body.contains("`cargo test`"), "{body}");
+    }
+
+    #[test]
+    fn consent_text_lists_the_standing_tools_and_the_data_folder() {
+        let a = AddonSummary {
+            id: "phone".into(),
+            name: "Phone".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            kind: "process",
+            author: None,
+            homepage: None,
+            state: AddonState::Disabled,
+            message: None,
+            folder: "phone".into(),
+            path: "x".into(),
+            digest: Some("abc".into()),
+            profiles: vec![],
+            run_templates: vec![],
+            slash: vec![],
+            commands: vec![],
+            process_effects: vec!["stores_data".into()],
+            process_command_line: Some("phone-helper".into()),
+            process_calls: vec![csm_engine::addons::StandingCall {
+                tool: "session_wake".into(),
+                title: "Wake".into(),
+                effects: "starts programs".into(),
+                asks: true,
+            }],
+            process: None,
+            problems: vec![],
+        };
+        let body = consent_body(&a);
+        assert!(body.contains("Standing permission") && body.contains("session_wake (starts programs)"), "{body}");
+        assert!(body.contains("Stores its own data"), "{body}");
+        assert!(body.contains("turned off until you enable it again"), "{body}");
     }
 }

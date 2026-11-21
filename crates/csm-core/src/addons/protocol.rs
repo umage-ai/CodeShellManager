@@ -51,16 +51,19 @@ pub enum ProcessEffect {
     AccessesNetwork,
     /// Keeps secrets of its own in the OS keychain (`addon_secret_set` / `_get` / `_delete`).
     StoresSecrets,
+    /// Writes only inside its own data folder (`data_dir` in `initialize`). No consent card.
+    StoresData,
 }
 
 impl ProcessEffect {
-    pub const ALL: [ProcessEffect; 6] = [
+    pub const ALL: [ProcessEffect; 7] = [
         ProcessEffect::LaunchesProcess,
         ProcessEffect::SendsInput,
         ProcessEffect::ReadsSessionContent,
         ProcessEffect::WritesFilesystem,
         ProcessEffect::AccessesNetwork,
         ProcessEffect::StoresSecrets,
+        ProcessEffect::StoresData,
     ];
 
     /// The manifest and wire name, as in `addon.toml`.
@@ -72,6 +75,7 @@ impl ProcessEffect {
             ProcessEffect::WritesFilesystem => "writes_filesystem",
             ProcessEffect::AccessesNetwork => "accesses_network",
             ProcessEffect::StoresSecrets => "stores_secrets",
+            ProcessEffect::StoresData => "stores_data",
         }
     }
 
@@ -101,6 +105,13 @@ pub struct Handshake {
     /// Event kinds from [`EVENT_KINDS`], deduplicated.
     pub subscriptions: Vec<&'static str>,
     pub problems: Vec<String>,
+}
+
+/// What CSM tells a plugin it supports, in `initialize` (`capabilities`): feature name to the
+/// version of that feature. Additive: a plugin ignores names it does not know, and a CSM that
+/// predates one leaves it out.
+pub fn capabilities() -> Value {
+    json!({"caller": 1, "data_dir": 1, "standing_calls": 1})
 }
 
 /// Whether `name` is a legal tool name after the `addon.` prefix: lowercase letters, digits and
@@ -657,6 +668,7 @@ mod tests {
     #[test]
     fn the_secrets_effect_and_sleep_events_are_known() {
         assert_eq!(ProcessEffect::from_name("stores_secrets"), Some(ProcessEffect::StoresSecrets));
+        assert_eq!(ProcessEffect::from_name("stores_data"), Some(ProcessEffect::StoresData));
         assert!(ProcessEffect::ALL.iter().all(|e| ProcessEffect::from_name(e.name()) == Some(*e)));
         assert!(EVENT_KINDS.contains(&"session_asleep") && EVENT_KINDS.contains(&"session_awake"));
     }

@@ -39,6 +39,7 @@ impl SlashCommand {
             ("/status", "Show status"),
             ("/memory", "Show memory"),
             ("/init", "Initialize project"),
+            ("/remote-control", "Continue in the Claude app"),
             ("exit", "Exit the shell"),
         ]
         .iter()
@@ -90,7 +91,7 @@ mod tests {
     fn defaults_follow_the_wpf_panel() {
         let d = SlashCommand::defaults();
         let cmds: Vec<&str> = d.iter().map(|c| c.command.as_str()).collect();
-        assert_eq!(cmds, ["/help", "/clear", "/compact", "/status", "/memory", "/init", "exit"]);
+        assert_eq!(cmds, ["/help", "/clear", "/compact", "/status", "/memory", "/init", "/remote-control", "exit"]);
         assert_eq!(AppSettings::default().claude_commands, d);
     }
 

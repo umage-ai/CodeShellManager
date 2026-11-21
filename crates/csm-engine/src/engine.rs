@@ -397,7 +397,8 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                     return true;
                 }
                 if let Caller::External { client, .. } = &caller {
-                    let granted = state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id);
+                    let granted = state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id)
+                        || plugins::standing_call(&state.rt.addons, &caller, spec.id);
                     if spec.effects.needs_consent() && !granted {
                         let key = *next_id;
                         *next_id = next_id.saturating_add(1);
@@ -421,7 +422,8 @@ fn ctx<'a>(state: &'a mut State, caller: &'a Caller, engine: &'a Engine, reply: 
 /// A process add-on's tool runs on its add-on's call thread; every other tool runs here.
 fn run_or_dispatch(spec: &ToolSpec, state: &mut State, caller: &Caller, params: Value, engine: &Engine, reply: Sender<Reply>) {
     if is_add_on_tool_id(spec.id) {
-        engine.host.dispatch(plugins::owner_of(spec.id).unwrap_or_default().to_owned(), spec.id.to_owned(), params, reply);
+        let who = plugins::caller_json(state, caller);
+        engine.host.dispatch(plugins::owner_of(spec.id).unwrap_or_default().to_owned(), spec.id.to_owned(), params, who, reply);
         return;
     }
     run_tool(spec, state, caller, params, engine, reply);
