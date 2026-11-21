@@ -15,6 +15,7 @@ csm-core = { path = "../csm-core" }
 csm-pty = { path = "../csm-pty" }
 csm-term = { path = "../csm-term" }
 csm-engine = { path = "../csm-engine" }
+csm-services = { path = "../csm-services" }
 egui = "0.36"
 # SVG icons (the mock-up's Lucide-style set) rasterised at the on-screen size with resvg.
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }

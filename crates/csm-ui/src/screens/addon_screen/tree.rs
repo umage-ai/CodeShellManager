@@ -280,6 +280,8 @@ pub(super) fn node(ui: &mut Ui, cx: &mut Cx<'_>, n: &Node) {
         Kind::Segmented { options, selected } => segmented(ui, cx, &key, options, selected),
         Kind::List { items, selected } => list(ui, cx, &key, items, selected.as_deref()),
         Kind::FileList { files, tree, selected } => file_list(ui, cx, &key, files, *tree, selected.as_deref()),
+        Kind::Code(c) => super::view::code(ui, cx, &key, c),
+        Kind::Diff(d) => super::view::diff(ui, cx, &key, d),
         Kind::Unsupported { type_name } => {
             egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
                 ui.label(egui::RichText::new(format!("unsupported: {type_name}")).font(theme::mono(text::MONO_SM)).color(t.muted));

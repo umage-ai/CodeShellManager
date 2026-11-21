@@ -104,6 +104,26 @@ pub struct Tokens {
     pub term_selection: Color32,
     pub scrim: Color32,
     pub shadow: Color32,
+    // Code and diff in add-on screens: syntax classes (from `csm_services::highlight`), diff
+    // backgrounds (translucent, drawn over the code background), the gutter and a line range.
+    pub syn_keyword: Color32,
+    pub syn_string: Color32,
+    pub syn_comment: Color32,
+    pub syn_number: Color32,
+    pub syn_type: Color32,
+    pub syn_function: Color32,
+    pub syn_constant: Color32,
+    pub syn_macro: Color32,
+    pub syn_operator: Color32,
+    pub syn_punct: Color32,
+    pub syn_tag: Color32,
+    pub syn_attribute: Color32,
+    pub diff_add_bg: Color32,
+    pub diff_del_bg: Color32,
+    pub diff_hunk_bg: Color32,
+    pub gutter_fg: Color32,
+    pub range_sel_bg: Color32,
+    pub thread_bar: Color32,
 }
 
 impl Tokens {
@@ -154,6 +174,24 @@ impl Tokens {
                 term_selection: hex(0x585b70),
                 scrim: Color32::from_rgba_unmultiplied(8, 8, 14, 148),
                 shadow: Color32::from_black_alpha(140),
+                syn_keyword: hex(0xcba6f7),
+                syn_string: hex(0xa6e3a1),
+                syn_comment: hex(0x7f849c),
+                syn_number: hex(0xfab387),
+                syn_type: hex(0xf9e2af),
+                syn_function: hex(0x89b4fa),
+                syn_constant: hex(0xfab387),
+                syn_macro: hex(0x94e2d5),
+                syn_operator: hex(0x89dceb),
+                syn_punct: hex(0x9399b2),
+                syn_tag: hex(0x89b4fa),
+                syn_attribute: hex(0xf2cdcd),
+                diff_add_bg: Color32::from_rgba_unmultiplied(166, 227, 161, 38),
+                diff_del_bg: Color32::from_rgba_unmultiplied(243, 139, 168, 38),
+                diff_hunk_bg: Color32::from_rgba_unmultiplied(137, 180, 250, 26),
+                gutter_fg: hex(0x7f849c),
+                range_sel_bg: Color32::from_rgba_unmultiplied(137, 180, 250, 60),
+                thread_bar: hex(0xcba6f7),
             },
             ThemeKind::Latte => Tokens {
                 kind,
@@ -202,6 +240,26 @@ impl Tokens {
                 term_selection: hex(0xbcc0cc),
                 scrim: Color32::from_rgba_unmultiplied(76, 79, 105, 82),
                 shadow: Color32::from_black_alpha(46),
+                // The Latte accents that are too light for text on this background (green 2.9:1,
+                // peach 2.6:1, yellow 2.5:1, sky 2.4:1) are darkened to about 4:1 for code.
+                syn_keyword: hex(0x8839ef),
+                syn_string: hex(0x2f7d1f),
+                syn_comment: hex(0x7c7f93),
+                syn_number: hex(0xc94f00),
+                syn_type: hex(0xa96500),
+                syn_function: hex(0x1e66f5),
+                syn_constant: hex(0xc94f00),
+                syn_macro: hex(0x0f7a80),
+                syn_operator: hex(0x2a7fa8),
+                syn_punct: hex(0x6c6f85),
+                syn_tag: hex(0x1e66f5),
+                syn_attribute: hex(0xb4505a),
+                diff_add_bg: Color32::from_rgba_unmultiplied(64, 160, 43, 44),
+                diff_del_bg: Color32::from_rgba_unmultiplied(210, 15, 57, 34),
+                diff_hunk_bg: Color32::from_rgba_unmultiplied(30, 102, 245, 22),
+                gutter_fg: hex(0x7c7f93),
+                range_sel_bg: Color32::from_rgba_unmultiplied(30, 102, 245, 44),
+                thread_bar: hex(0x8839ef),
             },
         }
     }
@@ -388,6 +446,24 @@ pub mod size {
     pub const INBOX_MAX_H: f32 = 560.0;
     pub const SPLIT_GRIP: f32 = 10.0;
     pub const DIVIDER: f32 = 6.0;
+    /// The mark column of a code or diff gutter (dots, counts, closed-thread badges).
+    pub const GUTTER_MARK: f32 = 22.0;
+    /// The strip right of the numbers where a thread's bar runs.
+    pub const GUTTER_BAR: f32 = 8.0;
+    /// A thread's bar.
+    pub const THREAD_BAR: f32 = 3.0;
+    /// A gutter mark's dot radius, its count's box and the step between marks.
+    pub const MARK_DOT: f32 = 3.0;
+    pub const MARK_COUNT: f32 = 14.0;
+    pub const MARK_STEP: f32 = 10.0;
+    /// A closed thread's badge in the gutter.
+    pub const THREAD_BADGE_W: f32 = 18.0;
+    pub const THREAD_BADGE_H: f32 = 15.0;
+    /// The sideways scroll bar of a code view: its height, the gap under it and beside it, the shortest thumb.
+    pub const HBAR_H: f32 = 6.0;
+    pub const HBAR_GAP: f32 = 2.0;
+    pub const HBAR_SIDE: f32 = 12.0;
+    pub const HBAR_MIN: f32 = 24.0;
     pub const RESTORE_RAIL: f32 = 2.0;
     pub const BAR: f32 = 6.0;
     pub const GRID_TILE_W: f32 = 92.0;
@@ -448,6 +524,13 @@ pub mod alpha {
     pub const PICKED: f32 = 0.2;
     /// The warning bands behind the Usage tab's context gauge.
     pub const GAUGE_BAND: f32 = 0.28;
+    /// The empty half of a side-by-side row.
+    pub const CODE_FILLER: f32 = 0.35;
+    /// A gutter count's tint.
+    pub const MARK: f32 = 0.28;
+    /// A closed thread's badge, and under the pointer.
+    pub const THREAD_BADGE: f32 = 0.25;
+    pub const THREAD_BADGE_HOVER: f32 = 0.4;
 }
 
 /// How long a toast stays, and the status glyph animation rate.

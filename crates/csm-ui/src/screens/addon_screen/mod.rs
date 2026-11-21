@@ -27,7 +27,10 @@ use crate::terminal::lock;
 use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
+mod hl;
 mod md;
+mod rows;
+mod view;
 pub mod tree;
 
 /// What a drawn tree asks for; turned into [`Action`]s after the draw.
@@ -66,6 +69,10 @@ pub struct ScreenUi {
     pub(super) folds: HashMap<(String, String), HashSet<String>>,
     pub(super) fold_gen: u64,
     row_cache: HashMap<(String, String), RowCache>,
+    /// The line selections, scroll positions, thread heights and models of code and diff views.
+    pub(super) view: view::ViewState,
+    /// The highlight worker (frames ask it; it never runs on the UI thread).
+    pub hl: hl::Highlighter,
     awaiting: HashMap<String, Await>,
     /// Events sent to plugins, most recent last (capped), for tests and diagnostics.
     sent: Vec<(String, ScreenEvent)>,
@@ -101,6 +108,14 @@ impl ScreenUi {
         self.drafts.get(&(instance.to_owned(), key.to_owned())).map(|d| d.text.as_str())
     }
 
+    /// The line range selected in a code or diff view: `(side, first, last)`.
+    pub fn selection(&self, instance: &str, key: &str) -> Option<(csm_core::diff::Side, u32, u32)> {
+        self.view.sels.get(&(instance.to_owned(), key.to_owned())).map(|s| {
+            let (a, b) = s.range();
+            (s.side, a, b)
+        })
+    }
+
     /// Events sent to plugins, most recent last: (instance, event).
     pub fn sent(&self) -> &[(String, ScreenEvent)] {
         &self.sent
@@ -114,6 +129,7 @@ impl ScreenUi {
         self.sections.retain(|(i, _), _| alive(i));
         self.folds.retain(|(i, _), _| alive(i));
         self.row_cache.retain(|(i, _), _| alive(i));
+        self.view.sync(&alive);
         self.awaiting.retain(|i, _| alive(i));
         if self.active.as_deref().is_some_and(|a| !alive(a)) {
             self.active = None;
@@ -330,7 +346,7 @@ pub fn show(ui: &mut Ui, rect: Rect, info: &ScreenInfo, tree: Option<&Arc<Screen
             }
             {
                 let mut cx = Cx { info, rev: tr.rev, st, out: &mut outs, t };
-                if matches!(tr.root.kind, Kind::Split { .. } | Kind::Scroll { .. } | Kind::List { .. } | Kind::FileList { .. }) {
+                if matches!(tr.root.kind, Kind::Split { .. } | Kind::Scroll { .. } | Kind::List { .. } | Kind::FileList { .. } | Kind::Code(_) | Kind::Diff(_)) {
                     tree::node(&mut child, &mut cx, &tr.root);
                 } else {
                     egui::ScrollArea::vertical().id_salt(("screen-root", &info.instance)).auto_shrink([false, false]).show(&mut child, |ui| {

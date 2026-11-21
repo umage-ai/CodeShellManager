@@ -133,8 +133,7 @@ fn unknown_types_degrade_and_odd_shapes_are_refused() {
     let t = ok(json!({"type": "hologram", "key": "h", "children": [{"type": "text"}]}));
     assert!(matches!(&t.root.kind, Kind::Unsupported { type_name } if type_name == "hologram"));
     assert_eq!(t.nodes, 1, "an unsupported node's children are not parsed");
-    // The same for the reserved code and diff widgets, until the next stream draws them.
-    assert!(matches!(ok(json!({"type": "diff", "patch": ""})).root.kind, Kind::Unsupported { .. }));
+    assert!(matches!(ok(json!({"type": "hologram", "patch": ""})).root.kind, Kind::Unsupported { .. }));
     for bad in [json!(5), json!("x"), json!([]), json!(null), json!({}), json!({"type": 4}), json!({"type": "column", "children": 5}), json!({"type": "column", "children": [1]})] {
         assert!(matches!(render(bad.clone()), Err(UpdateError::Invalid(_))), "{bad}");
     }
