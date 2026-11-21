@@ -246,7 +246,11 @@ CSM sends is the handshake:
 
 `message` (500 characters) and `data` are both optional. An error answer
 (`{"error":{"code":..,"message":..}}`) becomes a failed call with its message. A call that is not
-answered in **30 seconds** times out. At most 16 calls are in flight per add-on.
+answered in **30 seconds** times out. At most 16 calls are in flight per add-on, and at most 64 wait
+at once across all add-ons; more are refused.
+
+CSM never sends a message over 1 MiB. A call whose arguments are that large fails before it is sent;
+a `csm/call` result that would be is answered with an error instead; an event that would be is dropped.
 
 **Calls out of the plugin (`csm/call`).** A plugin may run any CSM tool:
 
@@ -341,6 +345,6 @@ parses it with no problems.
 - Run templates run in a shell, as any Runs command does; a `cwd` other than `{folder}` is refused.
 - A symlink to another file inside an add-on folder is not followed for the manifest; other files are ignored. Windows junctions are not detected as links.
 - A process add-on's restarts are not rate-limited by hand: `plugin_restart` (and the Restart button) starts it at once. Only crashes back off.
-- The title and summary text of a process add-on's tools is kept for the life of the app, once per distinct text. A plugin that changes them on every start grows memory by that text.
+- Distinct tool id, title and summary texts of process add-ons are kept for the life of the app, up to 4096 in all. A tool past that is not registered (logged), so a plugin that changes its text on every start uses up that room and then loses its new tools.
 - A process add-on's tool calls are not cancelled when its process stops; they fail with "stopped before it answered".
 - No signing, registry or version check for process add-ons; consent is per `addon.toml` digest, as for packs.

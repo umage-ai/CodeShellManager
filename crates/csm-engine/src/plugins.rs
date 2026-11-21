@@ -62,6 +62,10 @@ const IN_QUEUE: usize = 64;
 const MAX_CALLS_IN_FLIGHT: usize = 16;
 /// `csm/call` requests from one plugin being answered at once.
 const MAX_CSM_CALLS: usize = 8;
+/// Tool calls from the app waiting on add-on processes at once, across all add-ons.
+const MAX_CALL_THREADS: usize = 64;
+/// Distinct id, title and summary strings kept for the life of the app (see [`intern`]).
+const MAX_INTERNED: usize = 4096;
 /// The stderr bytes kept for the status (the last ones).
 const STDERR_TAIL: usize = 2048;
 /// How long shutdown waits for the plugins to go.
@@ -178,6 +182,8 @@ type Links = Arc<Mutex<HashMap<String, Arc<Link>>>>;
 pub(crate) struct Host {
     cmds: Sender<Cmd>,
     links: Links,
+    /// Call threads waiting for a plugin's answer (see [`MAX_CALL_THREADS`]).
+    calls: Arc<AtomicUsize>,
     manager: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -194,7 +200,7 @@ impl Host {
             .spawn(move || manager(rx, events, manager_links, post, call))
             .map_err(|e| log::error!("could not start the add-on process manager: {e}"))
             .ok();
-        Host { cmds, links, manager: Mutex::new(manager) }
+        Host { cmds, links, calls: Arc::new(AtomicUsize::new(0)), manager: Mutex::new(manager) }
     }
 
     /// The desired list: starts what is new or changed, stops what is gone. Never blocks.
@@ -217,10 +223,16 @@ impl Host {
     }
 
     /// Runs a tool of a running add-on on a call thread and answers `reply` with the result.
-    /// If the thread cannot start, `reply` is dropped and the caller gets the engine's "stopped".
+    /// At most [`MAX_CALL_THREADS`] such calls wait at once; more are refused. If the thread
+    /// cannot start, `reply` is dropped and the caller gets the engine's "stopped".
     pub(crate) fn dispatch(&self, addon: String, tool: String, params: Value, reply: Sender<Reply>) {
+        let Some(slot) = InflightSlot::take(&self.calls, MAX_CALL_THREADS) else {
+            let _ = reply.send(Err(ToolError::Refused("too many add-on calls are waiting; try again shortly".into())));
+            return;
+        };
         let links = self.links.clone();
         let spawned = thread::Builder::new().name("csm-plugin-call".into()).spawn(move || {
+            let _slot = slot;
             let r = call_tool(&links, &addon, &tool, params);
             let _ = reply.send(r);
         });
@@ -323,6 +335,9 @@ fn forward(ev: &Event, links: &Links) {
         return;
     }
     let line = proto::notification_line("event", v.clone());
+    if !fits_line(&line) {
+        return;
+    }
     for l in targets {
         if l.out.try_send(line.clone()).is_err() {
             log::debug!("an add-on's queue is full; the `{kind}` event is not sent to it");
@@ -417,11 +432,12 @@ pub(crate) fn restart(ctx: &mut Ctx<'_>, addon: &str) {
     ctx.engine.host.restart(addon);
 }
 
-/// Registry entries for a plugin's declared tools.
+/// Registry entries for a plugin's declared tools. A tool whose text cannot be kept (see
+/// [`intern`]) is left out and logged.
 pub(crate) fn dynamic_tools(tools: &[DeclaredTool]) -> Vec<DynamicTool> {
     tools
         .iter()
-        .map(|t| {
+        .filter_map(|t| {
             let effects = t.effects.iter().fold(Effects::empty(), |acc, e| {
                 acc | match e {
                     ProcessEffect::LaunchesProcess => Effects::LAUNCHES_PROCESS,
@@ -431,18 +447,22 @@ pub(crate) fn dynamic_tools(tools: &[DeclaredTool]) -> Vec<DynamicTool> {
                     ProcessEffect::AccessesNetwork => Effects::ACCESSES_NETWORK,
                 }
             });
-            DynamicTool {
+            let (Some(id), Some(title), Some(summary)) = (intern(&t.id), intern(&t.title), intern(&t.summary)) else {
+                log::error!("add-on tool `{}` was not registered: too many distinct tool texts this run", t.id);
+                return None;
+            };
+            Some(DynamicTool {
                 spec: ToolSpec {
-                    id: intern(&t.id),
-                    title: intern(&t.title),
-                    summary: intern(&t.summary),
+                    id,
+                    title,
+                    summary,
                     toolset: Toolset::Addons,
                     effects,
                     input_schema: placeholder_schema,
                     run: placeholder_run,
                 },
                 schema: t.input_schema.clone(),
-            }
+            })
         })
         .collect()
 }
@@ -458,17 +478,28 @@ fn placeholder_run(_: &mut Ctx<'_>, _: Value) -> Reply {
 }
 
 /// A `'static` copy of a string, shared by equal strings, so a restart of the same plugin does
-/// not leak again. Bounded by the distinct ids, titles and summaries the add-ons declare.
-fn intern(s: &str) -> &'static str {
+/// not leak again. At most [`MAX_INTERNED`] distinct strings are kept for the life of the app;
+/// beyond that `None` (the caller drops the tool), so a plugin that changes its text on every
+/// start cannot grow memory without limit.
+fn intern(s: &str) -> Option<&'static str> {
     static TABLE: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
     let mut guard = TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     let table = guard.get_or_insert_with(HashSet::new);
     if let Some(found) = table.get(s) {
-        return found;
+        return Some(found);
+    }
+    if table.len() >= MAX_INTERNED {
+        return None;
     }
     let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
     table.insert(leaked);
-    leaked
+    Some(leaked)
+}
+
+/// Whether one wire line fits the protocol's cap. A line over it would make the plugin stop
+/// reading, so CSM refuses to send it instead.
+fn fits_line(line: &str) -> bool {
+    line.len() <= proto::MAX_LINE_BYTES
 }
 
 /// One supervisor: runs the child, restarts it with backoff, and reports each change.
@@ -627,7 +658,6 @@ fn drive(
 ) -> Exit {
     let init_id: u64 = 1;
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    let csm_slots = Arc::new(AtomicUsize::new(0));
     if out_tx.send(proto::request_line(init_id, "initialize", json!({"api": proto::PROTOCOL_API, "csm_version": env!("CARGO_PKG_VERSION")}))).is_err()
     {
         return Exit::Failed("could not send initialize".into());
@@ -685,7 +715,7 @@ fn drive(
                         if link.is_none() {
                             let _ = out_tx.try_send(proto::response_err(&id, proto::ERR_METHOD_NOT_FOUND, "send initialize first", Value::Null));
                         } else if method == "csm/call" {
-                            csm_call(env, &csm_slots, out_tx, id, &params);
+                            csm_call(env, out_tx, id, &params);
                         } else {
                             let text = format!("no method `{}`", clean_text(&method, 64));
                             let _ = out_tx.try_send(proto::response_err(&id, proto::ERR_METHOD_NOT_FOUND, &text, Value::Null));
@@ -719,7 +749,7 @@ fn drive(
 
 /// A `csm/call` request: runs the tool through the engine as the add-on's own caller, on a call
 /// thread, and answers when it is done. At most [`MAX_CSM_CALLS`] run at once per add-on.
-fn csm_call(env: &Env, _slots: &Arc<AtomicUsize>, out: &SyncSender<String>, id: Value, params: &Value) {
+fn csm_call(env: &Env, out: &SyncSender<String>, id: Value, params: &Value) {
     let Some(tool) = params.get("tool").and_then(Value::as_str).map(str::to_owned) else {
         let _ = out.try_send(proto::response_err(&id, proto::ERR_INVALID_PARAMS, "csm/call needs a `tool`", Value::Null));
         return;
@@ -735,7 +765,14 @@ fn csm_call(env: &Env, _slots: &Arc<AtomicUsize>, out: &SyncSender<String>, id: 
     let spawned = thread::Builder::new().name("csm-plugin-csm-call".into()).spawn(move || {
         let _slot = slot;
         let line = match call(caller, &tool, args) {
-            Ok(ToolOutput { message, data }) => proto::response_ok(&id, json!({"message": clean_text(&message, MAX_MESSAGE), "data": data})),
+            Ok(ToolOutput { message, data }) => {
+                let line = proto::response_ok(&id, json!({"message": clean_text(&message, MAX_MESSAGE), "data": data}));
+                if fits_line(&line) {
+                    line
+                } else {
+                    proto::response_err(&id, proto::ERR_TOOL, "the result is over 1 MiB, which an add-on cannot read; ask for less", Value::Null)
+                }
+            }
             Err(e) => proto::response_err(&id, proto::ERR_TOOL, &e.to_string(), serde_json::to_value(&e).unwrap_or(Value::Null)),
         };
         let _ = out.send(line);
@@ -789,9 +826,12 @@ fn call_tool(links: &Links, addon: &str, tool: &str, params: Value) -> Reply {
     }
     let _slot = InflightSlot(link.inflight.clone());
     let id = link.next_id.fetch_add(1, Ordering::AcqRel);
+    let line = proto::request_line(id, "tools/call", json!({"name": tool, "arguments": params}));
+    if !fits_line(&line) {
+        return Err(ToolError::InvalidParams(format!("the arguments for `{tool}` are over 1 MiB, which an add-on cannot read; send less")));
+    }
     let (tx, rx) = mpsc::channel();
     link.pending.lock().unwrap_or_else(PoisonError::into_inner).insert(id, tx);
-    let line = proto::request_line(id, "tools/call", json!({"name": tool, "arguments": params}));
     if link.out.try_send(line).is_err() {
         link.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
         return Err(ToolError::Failed(format!("the add-on `{addon}` is not taking requests right now; try again")));
@@ -821,7 +861,19 @@ fn reply_from(tool: &str, result: Value) -> Reply {
     Ok(ToolOutput::new(message, obj.get("data").cloned().unwrap_or(Value::Null)))
 }
 
+/// One count held while a call waits: released when the holder is dropped.
 struct InflightSlot(Arc<AtomicUsize>);
+
+impl InflightSlot {
+    /// A count for one more waiting call, or `None` when `limit` are already waiting.
+    fn take(counter: &Arc<AtomicUsize>, limit: usize) -> Option<InflightSlot> {
+        if counter.fetch_add(1, Ordering::AcqRel) >= limit {
+            counter.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(InflightSlot(counter.clone()))
+    }
+}
 
 impl Drop for InflightSlot {
     fn drop(&mut self) {
@@ -849,9 +901,37 @@ mod tests {
 
     #[test]
     fn interning_shares_equal_strings() {
-        let a = intern("demo.echo");
-        let b = intern("demo.echo");
+        let a = intern("demo.echo").unwrap();
+        let b = intern("demo.echo").unwrap();
         assert!(std::ptr::eq(a, b));
+    }
+
+    #[test]
+    fn a_tool_whose_text_cannot_be_kept_is_left_out() {
+        // The table is process-wide and shared by the other tests in this binary: fill it up to
+        // the cap with this test's own strings, which ends at the first refusal.
+        let mut n = 0usize;
+        while intern(&format!("cap-test.{n}")).is_some() {
+            n += 1;
+        }
+        let tools = vec![DeclaredTool {
+            id: "cap-test.fresh-after-the-cap".into(),
+            title: "T".into(),
+            summary: String::new(),
+            input_schema: json!({"type": "object"}),
+            effects: Vec::new(),
+        }];
+        assert!(dynamic_tools(&tools).is_empty(), "a new string past the cap is refused");
+    }
+
+    #[test]
+    fn call_threads_are_bounded() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let held: Vec<InflightSlot> = (0..MAX_CALL_THREADS).filter_map(|_| InflightSlot::take(&counter, MAX_CALL_THREADS)).collect();
+        assert_eq!(held.len(), MAX_CALL_THREADS);
+        assert!(InflightSlot::take(&counter, MAX_CALL_THREADS).is_none());
+        drop(held);
+        assert_eq!(counter.load(Ordering::Acquire), 0, "every refused take gave its count back");
     }
 
     #[test]

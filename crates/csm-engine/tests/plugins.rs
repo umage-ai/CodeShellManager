@@ -236,6 +236,23 @@ fn disabling_stops_the_process_and_removes_its_tools() {
 }
 
 #[test]
+fn an_oversized_argument_is_refused_before_it_is_sent_and_the_plugin_keeps_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    let first = running(&h);
+    // 1.5 MiB of arguments: the plugin would stop reading at 1 MiB, so CSM refuses the call.
+    let big = "x".repeat(1536 * 1024);
+    let err = h.ui("echo-test.echo", json!({"big": big})).unwrap_err();
+    assert!(err.to_string().contains("1 MiB"), "{err}");
+    let row = running(&h);
+    assert_eq!(row["pid"], first["pid"], "the same process, not restarted");
+    assert_eq!(h.ok("echo-test.echo", json!({"small": 1})).data["echo"]["small"], 1);
+    h.engine.shutdown();
+}
+
+#[test]
 fn an_oversized_line_stops_the_plugin_and_is_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let h = start(&fixture(dir.path(), "oversize"));
