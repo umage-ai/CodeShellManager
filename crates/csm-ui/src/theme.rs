@@ -85,6 +85,8 @@ pub struct Tokens {
     pub pink: Color32,
     pub maroon: Color32,
     pub flamingo: Color32,
+    /// umage.ai's brand gold (the ".ai" in the wordmark; the About page).
+    pub brand: Color32,
     /// Text and marks on a filled accent (a primary button, a count badge).
     pub on_accent: Color32,
     // The status vocabulary.
@@ -137,6 +139,7 @@ impl Tokens {
                 pink: hex(0xf5c2e7),
                 maroon: hex(0xeba0ac),
                 flamingo: hex(0xf2cdcd),
+                brand: hex(0xb8966a),
                 on_accent: hex(0x11111b),
                 st_working: hex(0x89b4fa),
                 st_approval: hex(0xfab387),
@@ -182,6 +185,7 @@ impl Tokens {
                 pink: hex(0xea76cb),
                 maroon: hex(0xe64553),
                 flamingo: hex(0xdd7878),
+                brand: hex(0x8a6a3e),
                 on_accent: hex(0xffffff),
                 st_working: hex(0x1e66f5),
                 // Latte's peach, yellow and green are 2.4, 2.2 and 2.75:1 on the sidebar: darkened to keep
@@ -311,6 +315,8 @@ pub mod text {
     pub const INPUT: f32 = 15.0;
     /// Dialog titles.
     pub const TITLE: f32 = 16.0;
+    /// The app name on the About page.
+    pub const DISPLAY: f32 = 22.0;
     /// Branch chips, paths, durations.
     pub const MONO_SM: f32 = 11.0;
     pub const MONO: f32 = 12.0;
@@ -332,6 +338,8 @@ pub mod icon {
 
 /// Fixed sizes of the window's parts.
 pub mod size {
+    /// The logo on the About page.
+    pub const ABOUT_LOGO: f32 = 56.0;
     pub const HAIRLINE: f32 = 1.0;
     pub const RING: f32 = 2.0;
     pub const STRIPE: f32 = 3.0;

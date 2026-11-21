@@ -189,6 +189,16 @@ fn screens() {
         },
     );
     shoot(
+        "13-settings-about-latte",
+        ThemeKind::Latte,
+        |_| {},
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenSettings);
+            h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::About;
+        },
+    );
+    shoot(
         "13-settings-appearance",
         ThemeKind::Latte,
         |_| {},
