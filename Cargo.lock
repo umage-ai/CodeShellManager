@@ -907,9 +907,11 @@ dependencies = [
  "base64",
  "regex",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -978,6 +980,7 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

@@ -117,6 +117,9 @@ fn worktree_entries(model: &UiModel, s: &crate::model::SessionView) -> Vec<Entry
 /// The Claude slash commands the person configured (`ClaudeCommands`, as `settings_get` last
 /// told the app; the defaults until it answered), cleaned like the engine cleans them.
 pub fn claude_commands(app: &CsmApp) -> Vec<csm_core::models::SlashCommand> {
+    if !app.model.slash_presets.is_empty() {
+        return app.model.slash_presets.clone();
+    }
     use csm_core::models::SlashCommand;
     let list = app
         .ui

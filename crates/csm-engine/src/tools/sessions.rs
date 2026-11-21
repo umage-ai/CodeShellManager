@@ -312,6 +312,9 @@ struct WslParams {
 struct NewParams {
     /// Local folder to start in (local sessions). Default: the configured default folder.
     folder: Option<String>,
+    /// An add-on profile (`addon-id.name`, from `addon_list`): its argv becomes the command. Leave
+    /// `command` and `args` out with it.
+    profile: Option<String>,
     /// Program to run (default: the configured default command, usually `claude`).
     command: Option<String>,
     /// Arguments, as typed on a command line.
@@ -432,10 +435,27 @@ fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if let Some(a) = &p.after {
         find(ctx.state, a)?;
     }
+    let chosen = match p.profile.as_deref() {
+        None => None,
+        Some(id) => {
+            if p.command.is_some() || p.args.is_some() {
+                return Err(ToolError::Refused("a profile sets the command and the arguments; leave `command` and `args` out".into()));
+            }
+            let (_, spec) = crate::addons::profile(&ctx.state.rt.addons, id)?;
+            let mut argv = spec.argv.clone();
+            argv.extend(spec.args.iter().cloned());
+            let Some((program, rest)) = argv.split_first() else {
+                return Err(ToolError::Refused(format!("profile `{id}` has no program")));
+            };
+            Some((id.to_owned(), program.clone(), rest.join(" ")))
+        }
+    };
     let settings = &ctx.state.app.settings;
-    let command = p.command.clone().filter(|c| !c.trim().is_empty()).unwrap_or_else(|| settings.default_command.clone());
+    let (command, args) = match &chosen {
+        Some((_, program, rest)) => (program.clone(), rest.clone()),
+        None => (p.command.clone().filter(|c| !c.trim().is_empty()).unwrap_or_else(|| settings.default_command.clone()), p.args.clone().unwrap_or_default()),
+    };
     no_controls("command", &command)?;
-    let args = p.args.clone().unwrap_or_default();
     no_controls("args", &args)?;
     let folder = match kind {
         KindParam::Local => {
@@ -458,6 +478,9 @@ fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         last_activity_at: now,
         ..Default::default()
     };
+    if let Some((pid, _, _)) = &chosen {
+        s.addon_profile.clone_from(pid);
+    }
     if let Some(look) = &p.look {
         if let Some(msg) = look.validate() {
             return Err(ToolError::InvalidParams(msg));

@@ -162,6 +162,8 @@ pub(crate) struct Wait {
 /// Runtime-only state: never persisted.
 #[derive(Default)]
 pub(crate) struct Runtime {
+    /// Add-ons found on disk and their state (`addons.rs`).
+    pub(crate) addons: crate::addons::Catalogue,
     pub sessions: HashMap<String, SessionRt>,
     pub focused: Option<String>,
     /// Sessions being restarted: their old PTY is going, the new one not started yet.

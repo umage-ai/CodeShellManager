@@ -89,6 +89,7 @@ pub(crate) fn on_start(ctx: &mut Ctx<'_>) {
         let _ = cell.set(text);
     });
     crate::tools::open::on_start(ctx);
+    crate::addons::reload(ctx);
     if ctx.state.options.restore_on_start {
         begin_restore(ctx);
     }
@@ -178,6 +179,40 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             rt.heuristic_message = Some(a.message);
             ctx.state.rt.dirty = true;
         }
+    }
+
+    // Profile status rules (add-ons): a session launched from a profile with status rules has its
+    // screen read on a worker about once a second; the rule that matches sets its status.
+    let rules_for: Vec<(String, Vec<csm_core::addons::StatusRule>)> = ctx
+        .state
+        .app
+        .sessions
+        .iter()
+        .filter(|s| !s.addon_profile.is_empty())
+        .filter_map(|s| crate::addons::status_rules(&ctx.state.rt.addons, &s.addon_profile).map(|r| (s.id.clone(), r)))
+        .collect();
+    for (id, rules) in rules_for {
+        let Some(rt) = ctx.state.rt.sessions.get_mut(&id) else { continue };
+        if rt.has_program_status || rt.phase != Phase::Live || now_ms - rt.addon_checked_ms < 1000 {
+            continue;
+        }
+        rt.addon_checked_ms = now_ms;
+        let io = rt.io.clone();
+        let instance = io.instance;
+        let engine = ctx.engine.clone();
+        let _ = std::thread::Builder::new().name("csm-addon-status".into()).spawn(move || {
+            let text = crate::screen::screen(&mut io.lock_terminal());
+            let status = crate::addons::screen_status(&rules, &text);
+            engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
+                if let Some(rt) = ctx.state.rt.sessions.get_mut(&id)
+                    && rt.io.instance == instance
+                    && rt.addon_status != status
+                {
+                    rt.addon_status = status;
+                    ctx.state.rt.dirty = true;
+                }
+            }));
+        });
     }
 
     // Waits that ran out of time.

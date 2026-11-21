@@ -127,6 +127,10 @@ pub struct ClosedView {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
     pub version: u64,
+    /// Add-ons and their state (Settings > Add-ons, the palette, the slash menu).
+    pub addons: Vec<crate::addons::AddonSummary>,
+    /// The slash menu's list: the person's presets, then enabled add-ons' presets.
+    pub slash_presets: Vec<csm_core::models::SlashCommand>,
     /// In sidebar order (the persisted order), live and asleep.
     pub sessions: Vec<SessionView>,
     pub groups: Vec<GroupInfo>,
@@ -354,6 +358,8 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         windows.insert("main".into(), WindowSlot { placement: p, maximized: state.app.window_maximized });
     }
     Snapshot {
+        addons: crate::addons::summaries(&state.rt.addons),
+        slash_presets: crate::addons::slash_presets(&state.rt.addons, &state.app.settings.claude_commands),
         version,
         sessions,
         groups,

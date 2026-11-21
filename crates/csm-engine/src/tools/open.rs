@@ -544,7 +544,7 @@ pub fn folder_command(target: &str, platform: Platform) -> (PathBuf, Vec<String>
     }
 }
 
-fn open_folder_now(target: &str) -> Result<(), String> {
+pub(crate) fn open_folder_now(target: &str) -> Result<(), String> {
     let (program, args, raw) = folder_command(target, Platform::native());
     spawn_detached(&program, &args, raw.as_deref()).map_err(|e| format!("could not open the folder: {e}"))
 }

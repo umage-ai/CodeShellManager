@@ -172,6 +172,10 @@ pub struct AppSettings {
     /// changed from the defaults.
     #[serde(deserialize_with = "nd", skip_serializing_if = "SlashCommand::is_default_list")]
     pub claude_commands: Vec<SlashCommand>,
+    /// Add-ons the person enabled, by id, with the digest of the `addon.toml` they approved
+    /// (`csm-engine::addons`). Changed only by the add-on tools, never by `settings_set`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub addon_approvals: std::collections::BTreeMap<String, String>,
     /// Programs in a session may set the clipboard with OSC 52 (tmux, Claude Code's fullscreen
     /// mode, remote shells), as Windows Terminal allows by default. Reading the clipboard
     /// (an OSC 52 query) is never answered. Issue #156. Written only when turned off.
@@ -258,6 +262,7 @@ impl Default for AppSettings {
             terminal_padding: default_padding(),
             terminal_font_points: 0,
             claude_commands: SlashCommand::defaults(),
+            addon_approvals: Default::default(),
             allow_osc52_clipboard: t(),
             ui_zoom_percent: UI_ZOOM_DEFAULT,
             close_to_tray: false,

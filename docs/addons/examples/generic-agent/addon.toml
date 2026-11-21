@@ -1,0 +1,49 @@
+# Example add-on: a generic command-line agent.
+#
+# Copy this folder to <config dir>/addons/generic-agent/ (Settings > Add-ons > Open folder), then
+# enable it there. The id must equal the folder name. See docs/addons.md for every field.
+
+[addon]
+id = "generic-agent"
+name = "Generic agent"
+version = "0.1.0"
+description = "Launches a generic command-line coding agent, with a test run and a review preset."
+api = 1
+kind = "pack"
+author = "CodeShellManager examples"
+
+# An agent launch profile: a session started from it runs `my-agent --plain`.
+# Argv elements are plain tokens only (letters, digits and - _ . / \ : = + @ ,); split words into
+# separate elements. The profile sets the session's command, so do not pass `command` with it.
+[[profile]]
+name = "agent"
+argv = ["my-agent"]
+args = ["--plain"]
+# Restore relaunches the same argv (the default restore path). "none" starts fresh instead.
+resume = "re-run"
+# The first rule whose regex matches the last lines of the screen sets the session's status.
+status = [
+  { match = "\\(y/n\\)\\s*$", status = "needs_you_approval" },
+  { match = "^\\?\\s", status = "needs_you_question" },
+  { match = "^thinking", status = "working" },
+  { match = "^> $", status = "idle" },
+]
+
+# A run command the person can add to a session's Runs (Runs > Add from add-on).
+[[run_template]]
+name = "test"
+argv = ["npm", "test"]
+cwd = "{folder}"
+
+# A Claude slash preset, added to the slash menu when the person does not already have it.
+[[slash]]
+command = "/review"
+description = "Review the uncommitted changes"
+
+# A palette command: calls an existing tool with fixed params, through the normal dispatch and
+# consent. The tool id must be one this app has (checked when the add-on loads).
+[[command]]
+id = "list-sessions"
+title = "List sessions (generic agent example)"
+tool = "session_list"
+params = { include_asleep = false }

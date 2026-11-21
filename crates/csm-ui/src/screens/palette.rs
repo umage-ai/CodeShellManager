@@ -30,6 +30,13 @@ pub enum PalRow {
         idx: Vec<usize>,
         hint: Option<&'static str>,
     },
+    /// A palette command from an enabled add-on: calls `tool` with its fixed params (`addons.rs`).
+    Addon {
+        title: String,
+        tool: &'static str,
+        params: serde_json::Value,
+        idx: Vec<usize>,
+    },
     /// A Claude slash command for the active Claude session (`session_send_command`).
     Slash {
         command: String,
@@ -105,6 +112,14 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
         }
     }
     let reg = app.dispatch.registry();
+    let addon_cmds: Vec<(&csm_engine::addons::CommandSummary, &'static str)> = app
+        .model
+        .addons
+        .iter()
+        .filter(|a| a.state == csm_engine::addons::AddonState::Loaded)
+        .flat_map(|a| a.commands.iter())
+        .filter_map(|c| reg.get(&c.tool).map(|s| (c, s.id)))
+        .collect();
     if q.is_empty() {
         for id in SUGGESTED {
             if let Some(s) = reg.get(id) {
@@ -132,6 +147,16 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
         }
         tools.sort_by(|a, b| b.0.total_cmp(&a.0));
         out.extend(tools.into_iter().take(if commands_only { 40 } else { 8 }).map(|(_, r)| r));
+    }
+    // Enabled add-ons' palette commands: all of them after ">", the matching ones when typing.
+    for (c, tool) in &addon_cmds {
+        if q.is_empty() {
+            if commands_only {
+                out.push(PalRow::Addon { title: c.title.clone(), tool, params: c.params.clone(), idx: Vec::new() });
+            }
+        } else if let Some((_, idx)) = fuzzy(q, &c.title) {
+            out.push(PalRow::Addon { title: c.title.clone(), tool, params: c.params.clone(), idx });
+        }
     }
     out
 }
@@ -283,6 +308,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     PalRow::Session { .. } => "Sessions",
                     PalRow::Search(_) => "Search",
                     PalRow::Tool { .. } => "Commands",
+                    PalRow::Addon { .. } => "Add-on commands",
                     PalRow::Slash { .. } => "Claude commands",
                 };
                 if section != last_section {
@@ -347,6 +373,15 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         let kw = widgets::kbd_width(ui, "Ctrl F");
                         widgets::paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::SM - kw / 2.0, cy), vec2(kw, size::KBD)), "Ctrl F");
                         l
+                    }
+                    PalRow::Addon { title, tool, idx, .. } => {
+                        let ic = tool_icon(tool);
+                        icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), ic, icon::LG, t.muted);
+                        x += icon::LG + space::ROW_X;
+                        let job = highlighted(ui, title, idx, t.fg);
+                        let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
+                        title.clone()
                     }
                     PalRow::Tool { id, title, idx, hint } => {
                         let spec = app.dispatch.registry().get(id).copied();
@@ -475,6 +510,7 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
     match row {
         PalRow::Session { id, .. } => out.push(Action::Tool("session_focus", json!({"session_id": id}))),
         PalRow::Search(q) => out.push(Action::OpenSearch(q.clone())),
+        PalRow::Addon { tool, params, .. } => out.push(Action::Tool(tool, params.clone())),
         PalRow::Slash { command, .. } => {
             if let Some(a) = &app.model.active {
                 out.push(Action::Tool("session_send_command", json!({"session_id": a, "command": command, "force": true})));
