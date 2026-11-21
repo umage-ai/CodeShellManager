@@ -561,6 +561,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
     let folders = folders(&sessions, &opts.folders);
     UiModel {
         addons: view.addons.clone(),
+        remotes: view.remotes.clone(),
         slash_presets: view.slash_presets.clone(),
         group_mode: match view.view {
             EngineGroupView::Rail => GroupMode::Rail,

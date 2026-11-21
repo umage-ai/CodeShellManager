@@ -110,3 +110,42 @@ fn a_process_add_on_shows_its_state_its_last_error_and_a_restart_button() {
     h.get_by_label("Restart").click();
     settle(&mut h);
 }
+
+fn remote(addon: &str, id: &str, label: &str) -> csm_engine::RemoteView {
+    csm_engine::RemoteView {
+        addon: addon.into(),
+        addon_name: format!("{addon} add-on"),
+        id: id.into(),
+        label: label.into(),
+        detail: "idle".into(),
+        opens: "session",
+    }
+}
+
+#[test]
+fn an_add_on_s_remotes_are_palette_rows_that_call_remote_open() {
+    let mut b = backend(ThemeKind::Mocha);
+    b.model_mut().remotes = vec![remote("demo", "a-1", "Build box"), remote("demo", "a-2", "Staging")];
+    b.publish();
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    h.step();
+    // Listed after ">", titled "Remote… › add-on › label".
+    let all: Vec<String> = rows(h.state(), ">")
+        .into_iter()
+        .filter_map(|r| match r {
+            PalRow::Remote { title, .. } => Some(title),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(all, vec!["Remote… › demo add-on › Build box".to_string(), "Remote… › demo add-on › Staging".to_string()]);
+    // Typing finds one by its label, and only that one.
+    let found: Vec<(String, String)> = rows(h.state(), "stag")
+        .into_iter()
+        .filter_map(|r| match r {
+            PalRow::Remote { addon, remote_id, .. } => Some((addon, remote_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(found, vec![("demo".to_string(), "a-2".to_string())]);
+}

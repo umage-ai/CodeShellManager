@@ -773,6 +773,8 @@ pub struct ShutdownBoard {
 pub struct UiModel {
     /// Add-ons and their state (Settings > Add-ons, the palette, the slash menu).
     pub addons: Vec<csm_engine::addons::AddonSummary>,
+    /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).
+    pub remotes: Vec<csm_engine::RemoteView>,
     /// The slash menu's list: the person's presets, then enabled add-ons' presets.
     pub slash_presets: Vec<csm_core::models::SlashCommand>,
     pub sessions: Vec<SessionView>,

@@ -2,7 +2,7 @@
 //! entries for quick-open and the palette, a status override and note on the sessions an add-on
 //! opened, and secrets in the OS keychain.
 //!
-//! None of this is NEXUS-specific or anything-specific: a process add-on offers the places it can
+//! None of this is specific to one service: a process add-on offers the places it can
 //! open a session to (`csm/remotes_changed`), and these tools are how the app, the CLI, MCP and
 //! the add-on itself reach them.
 //!
