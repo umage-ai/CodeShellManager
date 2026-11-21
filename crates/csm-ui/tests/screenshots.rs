@@ -96,6 +96,8 @@ fn screens() {
     shoot("06-inspector-notes", ThemeKind::Latte, |b| b.model_mut().inspector = Some(InspectorTab::Notes), |_| {});
     shoot("06-inspector-usage", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Usage), |_| {});
     shoot("06-inspector-usage-latte", ThemeKind::Latte, |b| b.model_mut().inspector = Some(InspectorTab::Usage), |_| {});
+    shoot("20-inspector-docs", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Docs), |_| {});
+    shoot("20-inspector-docs-latte", ThemeKind::Latte, |b| b.model_mut().inspector = Some(InspectorTab::Docs), |_| {});
     shoot(
         "07-palette",
         ThemeKind::Mocha,

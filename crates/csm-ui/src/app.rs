@@ -454,6 +454,8 @@ pub struct UiState {
     pub inline: Option<InlineEdit>,
     /// When the usage tools were last asked (the Usage tab, the sidebar chips, Settings → Usage).
     pub usage: crate::screens::usage::PollState,
+    /// The Docs tab: the doc chosen per folder, and when the docs tools were last asked.
+    pub docs: crate::screens::docs::DocsUi,
     pub confirm: Option<ConfirmState>,
     /// The busy-close dialog's "Don't warn me again".
     pub dont_warn: bool,

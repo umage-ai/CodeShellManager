@@ -174,7 +174,16 @@ tested as in craft's `theme.rs`):
   git, restart, sleep, edit) moves to the `⋯` menu, the palette and the inspector.
 - **Inspector, one right-hand panel** with tabs *Notes · Runs · Git · Session*, replacing the
   three drawers. It docks beside the active pane instead of stacking above it (craft-ui docking),
-  and it is collapsible.
+  and it is collapsible. (Built since: *Notes · Docs · Runs · Git · Session · Usage*.)
+  - *Docs* (added 2026-11-21) shows the project docs of the active session's folder, read-only
+    and rendered as Markdown: `README.md`, `CLAUDE.md`, `AGENTS.md`, `CLAUDE.local.md`,
+    `GEMINI.md` and `.claude/CLAUDE.md` (any case), from the folder and from the top of its git
+    repository when that is another folder. A picker chooses the file (CLAUDE.md first, then
+    AGENTS.md, then README.md; the choice is kept per folder for the run); links to another
+    listed doc switch to it, `http(s)` links open through `open_url`. The header has the path,
+    size and age, *Open in editor* (`open_with`, the folder) and *Copy path*. The tab polls
+    `project_docs_list` every 2 s and re-reads the shown doc when its size or time changes;
+    files over 1 MiB are not shown. Screens: `docs/screens/20-inspector-docs.png` (and `-latte`).
 - **Layouts (decided 2026-11-19):** a layout belongs to a **group**, not to the whole app; each
   group remembers its own. Five modes, with the intent modes as the default:
   - *Focus*: one pane; the sidebar is the switcher. Intent mode.

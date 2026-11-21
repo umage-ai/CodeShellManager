@@ -86,6 +86,8 @@ pub struct EngineBackend {
     git: crate::git_model::GitDetails,
     /// The usage numbers, from the usage tools' replies.
     usage: crate::usage_model::UsageDetails,
+    /// The Docs tab's project docs, from the docs tools' replies.
+    docs: crate::docs_model::DocsDetails,
 }
 
 impl EngineBackend {
@@ -104,6 +106,7 @@ impl EngineBackend {
             waker: None,
             git: crate::git_model::GitDetails::default(),
             usage: crate::usage_model::UsageDetails { live: true, ..Default::default() },
+            docs: crate::docs_model::DocsDetails { live: true, ..Default::default() },
         };
         b.refresh(true);
         b
@@ -145,6 +148,7 @@ impl EngineBackend {
         m.git = self.git.map.clone();
         m.folder_worktrees = self.git.folders.clone();
         m.usage = self.usage.clone();
+        m.docs = self.docs.clone();
         if let Some(q) = &self.quit {
             let used = q.started.elapsed().as_secs_f32().min(self.opts.shutdown_budget_s.max(1.0));
             m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: self.opts.shutdown_budget_s.max(1.0) });
@@ -220,6 +224,11 @@ impl Backend for EngineBackend {
         }
         // Usage replies (often a periodic poll) never toast: the screens show their errors.
         if self.usage.on_reply(call, reply).is_some() {
+            self.refresh(true);
+            return Vec::new();
+        }
+        // The Docs tab polls: its errors are shown in the tab, never toasted.
+        if self.docs.on_reply(call, reply).is_some() {
             self.refresh(true);
             return Vec::new();
         }
@@ -595,6 +604,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
             CoreTab::Git => InspectorTab::Git,
             CoreTab::Session => InspectorTab::Session,
             CoreTab::Usage => InspectorTab::Usage,
+            CoreTab::Docs => InspectorTab::Docs,
         }),
         inbox_panel: InboxPanel {
             open: view.inbox_open,
@@ -616,6 +626,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         git: Default::default(),
         folder_worktrees: Default::default(),
         usage: Default::default(),
+        docs: Default::default(),
         open_with: view
             .open_with
             .iter()

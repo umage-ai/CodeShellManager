@@ -40,6 +40,8 @@ pub enum InspectorTab {
     Session,
     /// Claude token and cost analytics (`usage_session`).
     Usage,
+    /// The project docs (README.md, CLAUDE.md, AGENTS.md...) of the session's folder.
+    Docs,
 }
 
 fn default_cols() -> u8 {
