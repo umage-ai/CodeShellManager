@@ -129,7 +129,7 @@ pub fn parse_handshake(result: &Value, addon: &str, declared: &[ProcessEffect]) 
     if let Some(api) = obj.get("api")
         && api.as_u64() != Some(PROTOCOL_API)
     {
-        return Err(format!("the plugin speaks protocol {api}, and CodeShellManager speaks {PROTOCOL_API}"));
+        return Err(format!("the plugin speaks protocol {}, and CodeShellManager speaks {PROTOCOL_API}", clean_text(&api.to_string(), 40)));
     }
     let name = obj
         .get("name")
@@ -177,7 +177,7 @@ pub fn parse_handshake(result: &Value, addon: &str, declared: &[ProcessEffect]) 
                     subscriptions.push(kind);
                 }
             }
-            None => problems.push(format!("`{}` is not an event kind (use one of {})", s, EVENT_KINDS.join(", "))),
+            None => problems.push(format!("`{}` is not an event kind (use one of {})", clean_text(&s.to_string(), 40), EVENT_KINDS.join(", "))),
         }
     }
 
@@ -187,6 +187,7 @@ pub fn parse_handshake(result: &Value, addon: &str, declared: &[ProcessEffect]) 
 fn parse_tool(entry: &Value, addon: &str, declared: &[ProcessEffect]) -> Result<DeclaredTool, String> {
     let obj = entry.as_object().ok_or("a tool entry is not an object")?;
     let id = obj.get("id").and_then(Value::as_str).ok_or("a tool has no `id`")?;
+    let shown = clean_text(id, 80);
     let prefix = format!("{addon}.");
     let name = id.strip_prefix(&prefix).ok_or_else(|| format!("tool `{}` must be named `{addon}.<name>`", clean_text(id, 80)))?;
     if !valid_tool_name(name) {
@@ -198,14 +199,14 @@ fn parse_tool(entry: &Value, addon: &str, declared: &[ProcessEffect]) -> Result<
         None | Some(Value::Null) => json!({"type": "object", "properties": {}, "additionalProperties": false}),
         Some(v @ Value::Object(_)) => {
             if v.get("type").is_some_and(|t| t != "object") {
-                return Err(format!("tool `{id}`: input_schema must describe an object"));
+                return Err(format!("tool `{shown}`: input_schema must describe an object"));
             }
             if serde_json::to_string(v).map_or(true, |s| s.len() > MAX_SCHEMA_BYTES) {
-                return Err(format!("tool `{id}`: input_schema is larger than {MAX_SCHEMA_BYTES} bytes"));
+                return Err(format!("tool `{shown}`: input_schema is larger than {MAX_SCHEMA_BYTES} bytes"));
             }
             v.clone()
         }
-        Some(_) => return Err(format!("tool `{id}`: input_schema must be an object")),
+        Some(_) => return Err(format!("tool `{shown}`: input_schema must be an object")),
     };
     let mut effects = Vec::new();
     match obj.get("effects") {
@@ -221,17 +222,17 @@ fn parse_tool(entry: &Value, addon: &str, declared: &[ProcessEffect]) -> Result<
         }
         Some(Value::Array(a)) => {
             for e in a {
-                let word = e.as_str().ok_or_else(|| format!("tool `{id}`: effects must be strings"))?;
-                let effect = ProcessEffect::from_name(word).ok_or_else(|| format!("tool `{id}`: `{}` is not an effect", clean_text(word, 40)))?;
+                let word = e.as_str().ok_or_else(|| format!("tool `{shown}`: effects must be strings"))?;
+                let effect = ProcessEffect::from_name(word).ok_or_else(|| format!("tool `{shown}`: `{}` is not an effect", clean_text(word, 40)))?;
                 if !declared.contains(&effect) {
-                    return Err(format!("tool `{id}` uses `{}`, which the add-on did not declare in its [process] effects; refused", effect.name()));
+                    return Err(format!("tool `{shown}` uses `{}`, which the add-on did not declare in its [process] effects; refused", effect.name()));
                 }
                 if !effects.contains(&effect) {
                     effects.push(effect);
                 }
             }
         }
-        Some(_) => return Err(format!("tool `{id}`: effects must be an array")),
+        Some(_) => return Err(format!("tool `{shown}`: effects must be an array")),
     }
     Ok(DeclaredTool { id: id.to_owned(), title, summary, input_schema, effects })
 }
@@ -439,6 +440,18 @@ mod tests {
         let h = hs(json!({"name": "E", "tools": [{"id": "echo-test.big", "input_schema": {"type": "object", "description": big}}]}), &[]).unwrap();
         assert!(h.tools.is_empty());
         assert!(h.problems[0].contains("larger than"));
+    }
+
+    #[test]
+    fn problem_text_from_the_plugin_is_capped() {
+        // A refused entry's id and a bad subscription are echoed into `problems`; a 1 MiB id must not be.
+        let long = format!("echo-test.{}", "x".repeat(200_000));
+        let h = hs(json!({"name": "E", "tools": [{"id": long, "effects": ["no_such_effect"]}], "subscriptions": ["y".repeat(100_000)]}), &[]).unwrap();
+        assert!(h.tools.is_empty());
+        assert_eq!(h.problems.len(), 2);
+        assert!(h.problems.iter().all(|p| p.chars().count() < 400), "{:?}", h.problems.iter().map(|p| p.len()).collect::<Vec<_>>());
+        let bad_api = hs(json!({"name": "E", "api": "z".repeat(100_000)}), &[]);
+        assert!(bad_api.is_err_and(|e| e.chars().count() < 200));
     }
 
     #[test]

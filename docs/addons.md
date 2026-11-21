@@ -305,7 +305,7 @@ A `csm/call` from a plugin runs as `add-on <id>`. An MCP client may not claim a 
 
 | id | effects | what |
 |---|---|---|
-| `plugin_status` | read, returns session-like output | the table above |
+| `plugin_status` | reads session content: asks for MCP clients, since it returns the stderr tail | the table above |
 | `plugin_restart` | launches a process, may discard data | `id`: stop and start an enabled process add-on |
 
 While its process runs, the add-on's own tools (`echo-test.echo` and so on) appear in `tool_list`,
