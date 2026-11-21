@@ -103,6 +103,12 @@ pub struct SessionView {
     /// The session's own terminal look (colours, font size, cursor, padding); `None` follows
     /// the app's settings. `session_look_set` changes it.
     pub look: Option<csm_core::look::Look>,
+    /// Claude subagents running now / known (`session_subagents` has the list).
+    pub subagents_running: usize,
+    pub subagents_total: usize,
+    /// The full report the Board draws (`session_subagents` returns the same data).
+    #[serde(skip)]
+    pub subagents: Option<std::sync::Arc<csm_core::subagents::SubagentsReport>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -286,6 +292,9 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         runs: crate::runs::views(state, s),
         open_with: crate::tools::open::targets(&state.app.settings.open_with, s),
         look: Some(csm_core::look::Look::from_session(s)).filter(|l| !l.is_empty()),
+        subagents_running: state.rt.subagents.get(&s.id).map_or(0, |r| r.running),
+        subagents_total: state.rt.subagents.get(&s.id).map_or(0, |r| r.total()),
+        subagents: state.rt.subagents.get(&s.id).cloned(),
     }
 }
 

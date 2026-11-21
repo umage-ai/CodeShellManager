@@ -15,13 +15,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use csm_core::claude_usage::{Compaction, UsageRequest, project_name};
+use csm_core::subagents::{AgentInput, RunInput, SubagentsReport};
 use csm_index::{ClaudeFile, ClaudeIngest, Index};
-use csm_services::claude_usage::{self as cu, Batch, OverrideStatus, PriceTable, discover, tail};
+use csm_services::claude_usage::{self as cu, Batch, OverrideStatus, PriceTable, discover, subagents as sub, tail};
 
 use crate::state::State;
 
@@ -59,8 +60,18 @@ pub struct PriceSource {
     pub status: String,
 }
 
+/// What the thread publishes for the engine: each followed session's subagents.
+#[derive(Debug, Default)]
+pub(crate) struct Shared {
+    /// Bumped when `map` changes.
+    pub generation: u64,
+    pub map: HashMap<String, SubagentsReport>,
+}
+
 /// The engine's handle to the thread.
 pub(crate) struct UsageTail {
+    pub subagents: Arc<Mutex<Shared>>,
+    seen_gen: u64,
     tx: Sender<Msg>,
     last: Vec<Link>,
     last_check: Option<Instant>,
@@ -91,13 +102,15 @@ impl UsageTail {
         let override_path = save_path.and_then(Path::parent).map(|d| d.join(cu::OVERRIDE_FILE));
         let prices = Arc::new(OnceLock::new());
         let cell = prices.clone();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let shared2 = shared.clone();
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("csm-usage".into())
-            .spawn(move || run(rx, index, roots, override_path, poll, cell))
+            .spawn(move || run(rx, index, roots, override_path, poll, cell, shared2))
             .map_err(|e| log::warn!("usage: could not start the transcript reader: {e}"))
             .ok()?;
-        Some(UsageTail { tx, last: Vec::new(), last_check: None, prices, handle: Some(handle) })
+        Some(UsageTail { subagents: shared, seen_gen: 0, tx, last: Vec::new(), last_check: None, prices, handle: Some(handle) })
     }
 
     pub(crate) fn shutdown(&mut self) {
@@ -126,6 +139,7 @@ pub(crate) fn links(state: &State) -> Vec<Link> {
 
 /// From the engine's tick: tells the thread when the followed sessions changed. Cheap.
 pub(crate) fn tick(state: &mut State) {
+    take_subagents(state);
     let due = match state.rt.usage.as_ref() {
         Some(u) => u.last_check.is_none_or(|t| t.elapsed() >= LINK_CHECK),
         None => false,
@@ -183,6 +197,9 @@ struct Tailer {
     mains: HashMap<String, MainLook>,
     /// How often every project folder may be searched for a transcript ([`FULL_SCAN_POLLS`]).
     full_every: Duration,
+    /// Parsed subagent meta files and workflow journals.
+    cache: sub::Cache,
+    shared: Arc<Mutex<Shared>>,
 }
 
 /// Where a followed session's main transcript was found (or not), and when.
@@ -195,7 +212,7 @@ struct MainLook {
     full_at: Option<Instant>,
 }
 
-fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cell: Arc<OnceLock<PriceSource>>) {
+fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cell: Arc<OnceLock<PriceSource>>, shared: Arc<Mutex<Shared>>) {
     let (table, source) = load_prices(override_path.as_deref());
     let _ = cell.set(source);
     let table = Arc::new(table);
@@ -219,7 +236,7 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
         },
     );
     let full_every = poll.saturating_mul(FULL_SCAN_POLLS);
-    let mut t = Tailer { index, table, roots: resolve_roots(&roots), files: HashMap::new(), mains: HashMap::new(), full_every };
+    let mut t = Tailer { index, table, roots: resolve_roots(&roots), files: HashMap::new(), mains: HashMap::new(), full_every, cache: sub::Cache::default(), shared };
     let mut roots_at = Instant::now();
     let mut links: Vec<Link> = Vec::new();
     let mut more = false;
@@ -246,6 +263,7 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
         for link in &links {
             more |= t.pass(link);
         }
+        t.prune_reports(&links);
     }
 }
 
@@ -289,10 +307,66 @@ impl Tailer {
         let Some((sid, main)) = self.main_of(link) else { return false };
         let mut more = self.file(link, &sid, None, &main);
         let project = self.files.get(&main.to_string_lossy().into_owned()).and_then(|f| f.project.clone());
-        for (agent, path) in discover::subagent_files(&main) {
-            more |= self.file_with_project(link, &sid, Some(agent), &path, project.clone());
+        let found = sub::find(&main);
+        for f in &found {
+            more |= self.file_with_project(link, &sid, Some(f.id.clone()), &f.transcript, project.clone());
         }
+        self.report(link, &found);
         more
+    }
+
+    /// The link's subagents: what the disk and the index say, published for the engine when it
+    /// changed. Reads only small files, each again only when it changed.
+    fn report(&mut self, link: &Link, found: &[sub::Found]) {
+        self.cache.retain(found);
+        let report = if found.is_empty() {
+            None
+        } else {
+            let sid = link.csm_session.clone();
+            let mut usage: HashMap<String, csm_core::subagents::AgentUsage> =
+                self.index.call_blocking(move |db| db.claude_agents_for(&sid)).unwrap_or_default().into_iter().collect();
+            let mut runs: Vec<RunInput> = Vec::new();
+            let mut agents: Vec<AgentInput> = Vec::new();
+            for f in found {
+                if let Some((rid, dir)) = &f.run
+                    && !runs.iter().any(|r| &r.id == rid)
+                {
+                    runs.push(RunInput { id: rid.clone(), journal: self.cache.journal(dir) });
+                }
+                agents.push(AgentInput {
+                    id: f.id.clone(),
+                    run: f.run.as_ref().map(|(r, _)| r.clone()),
+                    meta: self.cache.meta(&f.transcript),
+                    mtime_ms: f.mtime_ms,
+                    usage: usage.remove(&f.id).unwrap_or_default(),
+                });
+            }
+            Some(csm_core::subagents::derive(agents, runs, crate::session::now_ms()))
+        };
+        let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        match report {
+            Some(r) => {
+                if sh.map.get(&link.csm_session) != Some(&r) {
+                    sh.map.insert(link.csm_session.clone(), r);
+                    sh.generation += 1;
+                }
+            }
+            None => {
+                if sh.map.remove(&link.csm_session).is_some() {
+                    sh.generation += 1;
+                }
+            }
+        }
+    }
+
+    /// Drops the reports of sessions no longer followed.
+    fn prune_reports(&mut self, links: &[Link]) {
+        let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = sh.map.len();
+        sh.map.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
+        if sh.map.len() != before {
+            sh.generation += 1;
+        }
     }
 
     fn file(&mut self, link: &Link, sid: &str, agent: Option<String>, path: &Path) -> bool {
@@ -390,4 +464,19 @@ impl Drop for UsageTail {
     fn drop(&mut self) {
         let _ = self.tx.send(Msg::Shutdown);
     }
+}
+
+/// Copies the reader's subagent reports into the state when they changed (marks it dirty so a
+/// snapshot follows). Never waits: a busy lock is tried again on the next tick.
+fn take_subagents(state: &mut State) {
+    let Some(u) = state.rt.usage.as_mut() else { return };
+    let Ok(sh) = u.subagents.try_lock() else { return };
+    if sh.generation == u.seen_gen {
+        return;
+    }
+    u.seen_gen = sh.generation;
+    let map: HashMap<String, Arc<SubagentsReport>> = sh.map.iter().map(|(k, v)| (k.clone(), Arc::new(v.clone()))).collect();
+    drop(sh);
+    state.rt.subagents = map;
+    state.rt.dirty = true;
 }

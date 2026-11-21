@@ -311,6 +311,33 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// What each subagent of a CSM session has used so far: `(agent id, usage)`. Numbers only.
+    pub fn claude_agents_for(&self, csm_session: &str) -> Result<Vec<(String, csm_core::subagents::AgentUsage)>, IndexError> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT r.agent_id, COUNT(*), SUM(r.input + r.output + r.cache_read + r.cache_w5 + r.cache_w1h),
+                    SUM(r.cost), SUM(r.cost IS NULL), MIN(r.ts), MAX(r.ts),
+                    (SELECT model FROM claude_requests m WHERE m.csm_session = r.csm_session AND m.agent_id = r.agent_id ORDER BY m.ts DESC, m.id DESC LIMIT 1)
+             FROM claude_requests r WHERE r.csm_session = ?1 AND r.agent_id IS NOT NULL GROUP BY r.agent_id",
+        )?;
+        let rows = st.query_map([csm_session], |r| {
+            let unpriced: i64 = r.get::<_, Option<i64>>(4)?.unwrap_or(0);
+            let n: i64 = r.get(1)?;
+            Ok((
+                r.get::<_, String>(0)?,
+                csm_core::subagents::AgentUsage {
+                    requests: u(n),
+                    tokens: u(r.get::<_, Option<i64>>(2)?.unwrap_or(0)),
+                    cost_usd: if unpriced < n { r.get::<_, Option<f64>>(3)? } else { None },
+                    unpriced: u(unpriced),
+                    model: r.get(7)?,
+                    first_ms: r.get(5)?,
+                    last_ms: r.get(6)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// The compactions of a CSM session's transcripts, oldest first.
     pub fn claude_compactions_for(&self, csm_session: &str) -> Result<Vec<Compaction>, IndexError> {
         let mut st = self.conn.prepare(
@@ -464,6 +491,30 @@ mod tests {
             bad_lines: 1,
             ..ClaudeFile::default()
         }
+    }
+
+    #[test]
+    fn per_agent_totals_leave_unpriced_unknown() {
+        let mut db = mem();
+        let ing = ClaudeIngest {
+            file: file("/t/a1.jsonl", "s1", 10),
+            requests: vec![
+                req("m0", 500, None, 1, "claude-x"),
+                req("m1", 1000, Some("a1"), 5, "claude-x"),
+                req("m2", 2000, Some("a1"), 7, "claude-y"),
+                req("m3", 3000, Some("a2"), 9, "qwen"),
+            ],
+            ..ClaudeIngest::default()
+        };
+        db.claude_ingest(&ing, &price).unwrap();
+        let mut rows = db.claude_agents_for("s1").unwrap();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(rows.len(), 2, "the main thread is not an agent");
+        assert_eq!((rows[0].0.as_str(), rows[0].1.requests, rows[0].1.cost_usd), ("a1", 2, Some(12.0)));
+        assert_eq!((rows[0].1.first_ms, rows[0].1.last_ms, rows[0].1.model.as_deref()), (Some(1000), Some(2000), Some("claude-y")));
+        assert_eq!(rows[0].1.tokens, 5 + 10 + 7 + 10);
+        assert_eq!((rows[1].1.cost_usd, rows[1].1.unpriced), (None, 1));
+        assert!(db.claude_agents_for("nope").unwrap().is_empty());
     }
 
     #[test]

@@ -218,6 +218,9 @@ pub(crate) struct Runtime {
     pub git: crate::tools::git::GitRt,
     /// The Claude transcript reader (usage tools), when the run has an index and roots.
     pub usage: Option<crate::usage_tail::UsageTail>,
+    /// Each followed Claude session's subagents, as the reader last published them (shared, so
+    /// the snapshot clones only a pointer).
+    pub subagents: std::collections::HashMap<String, std::sync::Arc<csm_core::subagents::SubagentsReport>>,
     /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,

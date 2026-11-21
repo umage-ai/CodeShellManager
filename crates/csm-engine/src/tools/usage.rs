@@ -44,6 +44,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: usage_session,
         },
         ToolSpec {
+            id: "session_subagents",
+            title: "Subagents of a Claude session",
+            summary: "The subagents a Claude session has started (Task/Agent calls and dynamic-workflow agents): label, type, model, state (running, idle after 5 minutes without output, done), workflow run and phase, tokens and API-equivalent cost, plus workflow runs with per-phase done/total. Read from Claude Code's own transcript folder (an undocumented layout, parsed leniently); numbers and the agents' short descriptions only.",
+            toolset: Toolset::App,
+            effects: Effects::READ_ONLY,
+            input_schema: schema_of::<SessionParams>,
+            run: session_subagents,
+        },
+        ToolSpec {
             id: "usage_context",
             title: "Claude context fill",
             summary: "For every live Claude session: how full its context is (tokens, window, ratio, ok/warn/critical near auto-compact) and its API-equivalent cost so far.",
@@ -361,6 +370,34 @@ fn usage_summary(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         },
     );
     Ok(ToolOutput::message(""))
+}
+
+fn session_subagents(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: SessionParams = parse_params(params)?;
+    let i = super::find(ctx.state, &p.session_id)?;
+    let s = ctx.state.app.sessions.get(i).ok_or_else(|| ToolError::NotFound("gone".into()))?;
+    let name = display_name(s);
+    let following = ctx.state.rt.usage.is_some();
+    let report = ctx.state.rt.subagents.get(&p.session_id).map(|r| (**r).clone()).unwrap_or_default();
+    let message = if !following {
+        "Claude transcripts are not followed in this run.".to_string()
+    } else if report.total() == 0 {
+        format!("{name} has no subagents.")
+    } else {
+        format!(
+            "{name}: {} subagents ({} running, {} idle, {} done); {} API-equivalent.",
+            report.total(),
+            report.running,
+            report.stale,
+            report.done,
+            format_usd(report.total_cost_usd)
+        )
+    };
+    let mut data = serde_json::to_value(&report).unwrap_or(Value::Null);
+    data["session_id"] = json!(p.session_id);
+    data["following"] = json!(following);
+    data["note"] = json!(API_NOTE);
+    Ok(ToolOutput::new(message, data))
 }
 
 #[cfg(test)]
