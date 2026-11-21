@@ -1259,7 +1259,6 @@ impl CsmApp {
         self.ui.quick = q;
         self.dispatch.submit("session_get", json!({"session_id": id}));
     }
-    /// group the panes show); tools that need typed input open their own panel.
     /// A button in an add-on screen runs `tool`. Direct tools go through the dispatch at once, as a
     /// palette click does; the ones that need a question (a paste into a session, a link, an
     /// editor) first show a confirm CSM draws, with the add-on's name, the tool and the exact

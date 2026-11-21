@@ -1,6 +1,6 @@
 //! Draws the Markdown subset an add-on sent (`csm_core::addons::screen::markdown`): the blocks are
 //! already parsed (off the UI thread), so this only walks them. Links: an `http(s)` one shows its
-//! real target in the tooltip and goes through `open_url` as the person's click; a `csm:` one
+//! real target in the tooltip and goes through `open_url` after a confirm; a `csm:` one
 //! stays in the screen as a `link` event; anything else is plain text. Text that names one URL
 //! while linking to another shows both. Invisible characters are drawn as visible markers.
 
@@ -107,7 +107,8 @@ fn link(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, href: &Href, kids: &[Inline], s
     });
     if resp.clicked() {
         match href {
-            Href::Http(url) => cx.out.push(Out::Tool { tool: "open_url".into(), params: json!({"url": url}), confirm: false }),
+            // The add-on chose the text and the address separately: CSM asks first, showing the address.
+            Href::Http(url) => cx.out.push(Out::Tool { tool: "open_url".into(), params: json!({"url": url}), confirm: true }),
             Href::Csm(h) => cx.event(key, EventKind::Link, json!({"href": h})),
             Href::Inert => {}
         }

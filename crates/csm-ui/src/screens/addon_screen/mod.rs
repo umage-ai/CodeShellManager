@@ -430,7 +430,10 @@ fn reveal_line(s: &str) -> String {
 /// the exact text and the target session. Invisible characters in the plugin's text are shown as
 /// markers, and a long text is cut with its length.
 pub fn confirm_text(addon_name: &str, addon_id: &str, tool: &str, params: &Value, session_name: Option<&str>) -> (String, String) {
-    const SHOWN: usize = 3000;
+    // A button's params are capped at MAX_ACTION_PARAMS bytes (compact) when the tree is parsed; the
+    // pretty-printed form of the same params is at most a few times that, so nothing a person
+    // approves is cut.
+    const SHOWN: usize = csm_core::addons::screen::MAX_ACTION_PARAMS * 4;
     let who = reveal_line(addon_name);
     let title = match tool {
         "session_send_text" => format!("{who} wants to paste text into a session"),
@@ -538,9 +541,13 @@ mod tests {
 
     #[test]
     fn a_long_text_is_cut_and_other_tools_show_their_params() {
-        let (_, body) = confirm_text("A", "a", "session_send_text", &json!({"session_id": "s", "text": "y".repeat(5000)}), Some("N"));
+        // Anything a button can carry (MAX_ACTION_PARAMS) is shown whole; only a longer text is cut.
+        let shown = csm_core::addons::screen::MAX_ACTION_PARAMS * 4;
+        let (_, body) = confirm_text("A", "a", "session_send_text", &json!({"session_id": "s", "text": "y".repeat(csm_core::addons::screen::MAX_ACTION_PARAMS)}), Some("N"));
+        assert!(!body.contains("more characters"), "a button-sized text is not cut");
+        let (_, body) = confirm_text("A", "a", "session_send_text", &json!({"session_id": "s", "text": "y".repeat(shown + 2000)}), Some("N"));
         assert!(body.contains("and 2000 more characters"));
-        assert!(body.len() < 3600);
+        assert!(body.len() < shown + 600);
         let (title, body) = confirm_text("A", "a", "open_url", &json!({"url": "https://example.com"}), None);
         assert!(title.contains("open a link") && body.contains("https://example.com"));
         let (title, body) = confirm_text("A", "a", "open_with", &json!({"path": "C:/x"}), None);

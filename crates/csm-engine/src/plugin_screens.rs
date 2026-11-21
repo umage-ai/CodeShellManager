@@ -418,21 +418,34 @@ impl ScreenStore {
         let applied = {
             let mut g = self.lock();
             let Some(inst) = g.instances.get_mut(instance).filter(|i| i.generation == generation && i.info.phase != ScreenPhase::Stopped) else { return Applied::Ignored };
+            // The tree was built outside the lock. An answer to `screen/open` (its own thread) may
+            // have moved the screen on meanwhile: an older tree must not overwrite it, and a patch
+            // built on a superseded base asks for a full render instead.
+            if inst.info.rev != rev {
+                if patch {
+                    return Applied::Refresh;
+                }
+                return Applied::Ignored;
+            }
             match result {
                 Ok(tree) => {
                     accept(inst, tree);
                     publish_due(inst, now, false);
-                    return Applied::Yes;
+                    Applied::Yes
                 }
-                Err(UpdateError::Stale { .. }) => return Applied::Ignored,
-                Err(UpdateError::BaseMismatch { .. }) => return Applied::Refresh,
+                Err(UpdateError::Stale { .. }) => Applied::Ignored,
+                Err(UpdateError::BaseMismatch { .. }) => Applied::Refresh,
                 Err(UpdateError::Invalid(e)) => {
                     inst.info.error = Some(e.to_string());
                     Applied::Refused(e.to_string())
                 }
             }
         };
-        self.changed([instance.to_owned()]);
+        // Every outcome that changes what the UI shows says so (an accepted tree too: the UI
+        // repaints on the event, not on a timer).
+        if applied == Applied::Yes || matches!(applied, Applied::Refused(_)) {
+            self.changed([instance.to_owned()]);
+        }
         applied
     }
 
@@ -701,6 +714,29 @@ mod tests {
             assert!(Instant::now() < deadline, "the latest render was never published");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn an_accepted_render_tells_the_ui_at_once() {
+        let events = Events::default();
+        let s = ScreenStore::new(events.clone());
+        assert!(s.set_declared("demo", 1, "Demo", vec![decl("demo.main")]).is_empty());
+        let rx = events.subscribe();
+        let i = open(&s);
+        while rx.try_recv().is_ok() {}
+        assert_eq!(s.opened("demo", 1, &i, Ok(&json!({"rev": 1, "root": {"type": "text", "text": "a"}})), false), Applied::Yes);
+        let mut told = false;
+        while let Ok(e) = rx.try_recv() {
+            told |= matches!(e, Event::ScreenChanged { ref instance } if *instance == i);
+        }
+        assert!(told, "the UI repaints on the event, not on a timer");
+        while rx.try_recv().is_ok() {}
+        assert_eq!(s.update("demo", 1, &render(&i, 2, "b"), false), Applied::Yes);
+        let mut told = false;
+        while let Ok(e) = rx.try_recv() {
+            told |= matches!(e, Event::ScreenChanged { ref instance } if *instance == i);
+        }
+        assert!(told, "an accepted render says so");
     }
 
     #[test]

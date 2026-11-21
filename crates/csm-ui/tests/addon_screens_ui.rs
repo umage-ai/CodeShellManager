@@ -263,9 +263,12 @@ fn invisible_characters_are_drawn_as_visible_markers() {
     assert!(h.query_by_label_contains("\u{241B}[2J").is_some(), "ESC shown, not sent anywhere");
     assert!(has(&h, "Badge: ab"), "labels drop them");
     assert!(has(&h, "Gonow"));
-    // A javascript: link is plain text; an https one asks open_url as the person's click.
+    // A javascript: link is plain text; an https one asks first (CSM draws the confirm with the address).
     assert!(!has(&h, "Link: here"));
     h.get_by_label("Link: site").click();
+    settle(&mut h);
+    assert!(calls(&h, "open_url").is_empty(), "nothing opens before the person confirms");
+    h.get_by_label("Run it").click();
     settle(&mut h);
     assert_eq!(calls(&h, "open_url"), vec![json!({"url": "https://example.com/x"})]);
     assert!(events(&handle).is_empty());

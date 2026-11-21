@@ -133,7 +133,8 @@ fn screen_open(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         _ => {}
     }
     context.validate().map_err(|e| ToolError::InvalidParams(e.to_string()))?;
-    let link = ctx.engine.host.link(&addon.addon);
+    // Checked before anything is recorded: an instance that could not be sent would sit in "Opening" forever.
+    let link = ctx.engine.host.link(&addon.addon).ok_or_else(|| ToolError::Refused(format!("the add-on `{}` is not running", addon.addon)))?;
     let focus = p.focus.unwrap_or(true);
     let theme = p.theme.filter(|t| t == "dark" || t == "light");
     let (instance, created) = match store.open(&addon.addon, &p.screen, context.clone())? {
@@ -146,14 +147,9 @@ fn screen_open(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         Opened::Existing(i, _) => (i, false),
     };
     if created {
-        match link {
-            Some(l) => {
-                let generation = store.instance_generation(&instance).unwrap_or(0);
-                let req = plugin_screens::OpenRequest { addon: addon.addon.clone(), generation, instance: instance.clone(), screen: p.screen.clone(), context, theme };
-                plugin_screens::request_open(store, l, req);
-            }
-            None => return Err(ToolError::Refused(format!("the add-on `{}` is not running", addon.addon))),
-        }
+        let generation = store.instance_generation(&instance).unwrap_or(0);
+        let req = plugin_screens::OpenRequest { addon: addon.addon.clone(), generation, instance: instance.clone(), screen: p.screen.clone(), context, theme };
+        plugin_screens::request_open(store, link, req);
     }
     if focus {
         ctx.events.emit(Event::ScreenFocusRequested { instance: instance.clone() });
