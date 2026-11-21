@@ -19,3 +19,4 @@ serde_json = "1"
 semver = "1"
 toml = "1"
 thiserror = "2"
+pulldown-cmark = { version = "0.13", default-features = false }

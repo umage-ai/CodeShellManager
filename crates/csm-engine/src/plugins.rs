@@ -39,6 +39,7 @@ use serde_json::{Value, json};
 use crate::addons::{self, AddonState};
 use crate::engine::{Ctx, Job, Reply};
 use crate::events::Event;
+use crate::plugin_screens::{self, ScreenStore};
 use crate::registry::{DynamicTool, is_add_on_tool_id};
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset};
 
@@ -179,6 +180,46 @@ pub(crate) struct Link {
     subs: Vec<&'static str>,
 }
 
+/// Why a request to a plugin got no answer.
+pub(crate) enum ReqError {
+    /// Not sent: the plugin's queue is full.
+    Refused(String),
+    TimedOut,
+    Failed(String),
+}
+
+impl Link {
+    /// A notification to the plugin. Dropped (false) when its queue is full or the line is over the cap.
+    pub(crate) fn notify(&self, method: &str, params: Value) -> bool {
+        let line = proto::notification_line(method, params);
+        fits_line(&line) && self.out.try_send(line).is_ok()
+    }
+
+    /// A request, waiting up to `timeout` for the answer. Blocks: call it on a thread of its own.
+    pub(crate) fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, ReqError> {
+        let id = self.next_id.fetch_add(1, Ordering::AcqRel);
+        let line = proto::request_line(id, method, params);
+        if !fits_line(&line) {
+            return Err(ReqError::Failed(format!("the `{method}` request is over 1 MiB")));
+        }
+        let (tx, rx) = mpsc::channel();
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner).insert(id, tx);
+        if self.out.try_send(line).is_err() {
+            self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+            return Err(ReqError::Refused("the add-on is not taking requests right now".into()));
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(ReqError::Failed(clean_text(&e.message, MAX_MESSAGE))),
+            Err(RecvTimeoutError::Timeout) => {
+                self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+                Err(ReqError::TimedOut)
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(ReqError::Failed("the add-on stopped before it answered".into())),
+        }
+    }
+}
+
 type Links = Arc<Mutex<HashMap<String, Arc<Link>>>>;
 
 /// The running add-ons. One per engine; shared by the engine and its call threads.
@@ -188,22 +229,35 @@ pub(crate) struct Host {
     /// Call threads waiting for a plugin's answer (see [`MAX_CALL_THREADS`]).
     calls: Arc<AtomicUsize>,
     manager: Mutex<Option<JoinHandle<()>>>,
+    /// The screens of the running add-ons (`plugin_screens`).
+    screens: ScreenStore,
 }
 
 impl Host {
     /// Starts the manager thread. `events` is the engine's event stream (forwarded to the
     /// plugins that subscribed to a kind). Failing to start the thread only disables add-on
     /// processes; the rest of the app is unaffected.
-    pub(crate) fn start(post: PostFn, call: CallFn, events: Receiver<Event>) -> Host {
+    pub(crate) fn start(post: PostFn, call: CallFn, events: Receiver<Event>, screens: ScreenStore) -> Host {
         let (cmds, rx) = mpsc::channel::<Cmd>();
         let links: Links = Arc::new(Mutex::new(HashMap::new()));
         let manager_links = links.clone();
+        let manager_screens = screens.clone();
         let manager = thread::Builder::new()
             .name("csm-plugins".into())
-            .spawn(move || manager(rx, events, manager_links, post, call))
+            .spawn(move || manager(rx, events, manager_links, post, call, manager_screens))
             .map_err(|e| log::error!("could not start the add-on process manager: {e}"))
             .ok();
-        Host { cmds, links, calls: Arc::new(AtomicUsize::new(0)), manager: Mutex::new(manager) }
+        Host { cmds, links, calls: Arc::new(AtomicUsize::new(0)), manager: Mutex::new(manager), screens }
+    }
+
+    /// The screens of the running add-ons.
+    pub(crate) fn screens(&self) -> &ScreenStore {
+        &self.screens
+    }
+
+    /// The write side of `addon`'s running process, once its handshake is done.
+    pub(crate) fn link(&self, addon: &str) -> Option<Arc<Link>> {
+        self.links.lock().unwrap_or_else(PoisonError::into_inner).get(addon).cloned()
     }
 
     /// The desired list: starts what is new or changed, stops what is gone. Never blocks.
@@ -257,12 +311,12 @@ impl Host {
 }
 
 /// Manager thread: applies commands, forwards events, and stops everything on shutdown.
-fn manager(cmds: Receiver<Cmd>, events: Receiver<Event>, links: Links, post: PostFn, call: CallFn) {
+fn manager(cmds: Receiver<Cmd>, events: Receiver<Event>, links: Links, post: PostFn, call: CallFn, screens: ScreenStore) {
     let mut running: HashMap<String, Running> = HashMap::new();
     let mut generation: u64 = 0;
     loop {
         match cmds.recv_timeout(POLL) {
-            Ok(Cmd::Sync(list)) => sync_running(&mut running, list, &mut generation, &links, &post, &call),
+            Ok(Cmd::Sync(list)) => sync_running(&mut running, list, &mut generation, &links, &post, &call, &screens),
             Ok(Cmd::Restart(id)) => {
                 if let Some(r) = running.get(&id) {
                     let _ = r.ctl.send(Ctl::Restart);
@@ -291,7 +345,7 @@ struct Running {
     handle: Option<JoinHandle<()>>,
 }
 
-fn sync_running(running: &mut HashMap<String, Running>, list: Vec<PluginSpec>, generation: &mut u64, links: &Links, post: &PostFn, call: &CallFn) {
+fn sync_running(running: &mut HashMap<String, Running>, list: Vec<PluginSpec>, generation: &mut u64, links: &Links, post: &PostFn, call: &CallFn, screens: &ScreenStore) {
     let wanted: HashMap<String, PluginSpec> = list.into_iter().map(|s| (s.addon.clone(), s)).collect();
     let stale: Vec<String> =
         running.iter().filter(|(id, r)| wanted.get(*id).is_none_or(|s| s.digest != r.digest)).map(|(id, _)| id.clone()).collect();
@@ -318,6 +372,7 @@ fn sync_running(running: &mut HashMap<String, Running>, list: Vec<PluginSpec>, g
             links: links.clone(),
             post: post.clone(),
             call: call.clone(),
+            screens: screens.clone(),
             tail: Arc::new(StderrTail::new(STDERR_TAIL)),
         };
         let (ctl_tx, ctl_rx) = mpsc::channel::<Ctl>();
@@ -367,6 +422,7 @@ struct Env {
     links: Links,
     post: PostFn,
     call: CallFn,
+    screens: ScreenStore,
     tail: Arc<StderrTail>,
 }
 
@@ -385,6 +441,8 @@ impl Env {
 
     /// The process stopped: what it offered and set at runtime goes with it.
     fn clear_contributions(&self) {
+        // Its screens show "not running" at once; the rest goes with the engine thread's next step.
+        self.screens.mark_stopped(&self.addon, self.generation);
         let (addon, generation) = (self.addon.clone(), self.generation);
         (self.post)(Box::new(move |ctx: &mut Ctx<'_>| clear_contributions(ctx, &addon, generation)));
     }
@@ -599,6 +657,12 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
     let gone: Vec<String> = ctx.state.rt.addons.remotes.keys().cloned().chain(ctx.state.rt.plugin_marks.values().map(|m| m.addon.clone())).filter(|a| !wanted.contains(a)).collect();
     for a in gone {
         clear_contributions(ctx, &a, u64::MAX);
+    }
+    // A disabled add-on's screens close; an enabled one keeps them across a restart.
+    for owner in ctx.engine.host.screens().owners() {
+        if !wanted.contains(&owner) {
+            ctx.engine.host.screens().remove_addon(&owner);
+        }
     }
     ctx.engine.host.sync(specs);
 }
@@ -870,6 +934,10 @@ fn drive(
         if link.is_none() && Instant::now() >= deadline {
             return Exit::Failed(format!("did not answer initialize within {} seconds", HANDSHAKE_TIMEOUT.as_secs()));
         }
+        if let Some(l) = link.as_ref() {
+            env.screens.flush();
+            plugin_screens::flush_held(&env.screens, l, &env.addon);
+        }
         match in_rx.recv_timeout(POLL) {
             Ok(Inbound::TooLong) => return Exit::Failed(format!("sent a message over {} bytes; stopped", proto::MAX_LINE_BYTES)),
             Ok(Inbound::Line(line)) => {
@@ -902,6 +970,7 @@ fn drive(
                         rt.problems = hs.problems;
                         rt.subscriptions = hs.subscriptions.iter().map(|s| (*s).to_owned()).collect();
                         env.apply_tools(dynamic_tools(&hs.tools));
+                        screens_ready(env, link.as_ref(), rt.name.clone(), hs.screens);
                         env.report(rt);
                     }
                     Incoming::Response { id, outcome } => {
@@ -931,6 +1000,8 @@ fn drive(
                                 }
                                 Err(e) => log::warn!("add-on {}: csm/remotes_changed ignored: {e}", env.addon),
                             }
+                        } else if method == "screen/render" || method == "screen/patch" {
+                            screen_update(env, link.as_ref(), &method, &params);
                         } else if method == "csm/log" {
                             let text = params.get("message").and_then(Value::as_str).map(|s| clean_text(s, 300)).unwrap_or_default();
                             log::info!("add-on {}: {text}", env.addon);
@@ -952,6 +1023,36 @@ fn drive(
                     None => "closed its output".into(),
                 });
             }
+        }
+    }
+}
+
+/// The handshake declared `screens`: offer them, and open again the instances an earlier process
+/// of this add-on left.
+fn screens_ready(env: &Env, link: Option<&Arc<Link>>, name: Option<String>, screens: Vec<csm_core::addons::screen::ScreenDecl>) {
+    let name = name.unwrap_or_else(|| env.addon.clone());
+    let reopen = env.screens.set_declared(&env.addon, env.generation, &name, screens);
+    let Some(link) = link else { return };
+    for (instance, screen, context) in reopen {
+        plugin_screens::request_open(env.screens.clone(), link.clone(), env.addon.clone(), env.generation, instance, screen, context, None);
+    }
+}
+
+/// A `screen/render` or `screen/patch` from the plugin: validated and stored. A refusal is told to
+/// the plugin (`screen/error`); a patch on the wrong base asks for a full render (`screen/refresh`).
+fn screen_update(env: &Env, link: Option<&Arc<Link>>, method: &str, params: &Value) {
+    use plugin_screens::Applied;
+    let applied = env.screens.update(&env.addon, env.generation, params, method == "screen/patch");
+    let Some(link) = link else { return };
+    let instance = params.get("instance").and_then(Value::as_str).unwrap_or_default();
+    match applied {
+        Applied::Yes | Applied::Ignored => {}
+        Applied::Refresh => {
+            link.notify("screen/refresh", json!({"instance": instance}));
+        }
+        Applied::Refused(msg) => {
+            log::warn!("add-on {}: {method} refused: {msg}", env.addon);
+            link.notify("screen/error", json!({"instance": instance, "message": clean_text(&msg, MAX_MESSAGE)}));
         }
     }
 }

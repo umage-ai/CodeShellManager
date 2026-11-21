@@ -62,6 +62,15 @@ pub enum Event {
     ClipboardOffered {
         session_id: String,
     },
+    /// An add-on screen has a new tree, phase or window state (`instance` is its id). The tree is
+    /// not in the event (events reach IPC clients): read it with [`crate::Engine::screens`].
+    ScreenChanged {
+        instance: String,
+    },
+    /// The UI should show this add-on screen (`screen_open`).
+    ScreenFocusRequested {
+        instance: String,
+    },
     /// `settings_set` saved a setting (from any caller), so a window can follow settings it
     /// applies live (the UI zoom, close to tray) when the CLI or an MCP client changes them.
     SettingChanged {

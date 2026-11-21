@@ -105,13 +105,15 @@ pub struct Handshake {
     /// Event kinds from [`EVENT_KINDS`], deduplicated.
     pub subscriptions: Vec<&'static str>,
     pub problems: Vec<String>,
+    /// The screens it declared (at most [`screen::MAX_SCREENS`]), validated.
+    pub screens: Vec<super::screen::ScreenDecl>,
 }
 
 /// What CSM tells a plugin it supports, in `initialize` (`capabilities`): feature name to the
 /// version of that feature. Additive: a plugin ignores names it does not know, and a CSM that
 /// predates one leaves it out.
 pub fn capabilities() -> Value {
-    json!({"caller": 1, "data_dir": 1, "standing_calls": 1})
+    json!({"caller": 1, "data_dir": 1, "standing_calls": 1, "screens": 1})
 }
 
 /// Whether `name` is a legal tool name after the `addon.` prefix: lowercase letters, digits and
@@ -196,7 +198,9 @@ pub fn parse_handshake(result: &Value, addon: &str, declared: &[ProcessEffect]) 
         }
     }
 
-    Ok(Handshake { name, tools, subscriptions, problems })
+    let (screens, screen_problems) = super::screen::parse_screens(obj.get("screens"), addon);
+    problems.extend(screen_problems);
+    Ok(Handshake { name, tools, subscriptions, problems, screens })
 }
 
 fn parse_tool(entry: &Value, addon: &str, declared: &[ProcessEffect]) -> Result<DeclaredTool, String> {
