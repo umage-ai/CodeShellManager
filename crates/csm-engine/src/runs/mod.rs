@@ -191,6 +191,8 @@ fn spec_of(s: &ShellSession) -> sl::LaunchSpec {
         ssh_host: s.ssh_host.clone(),
         ssh_port: s.ssh_port,
         ssh_remote_folder: s.ssh_remote_folder.clone(),
+        ssh_config_file: s.ssh_config_file.clone(),
+        ssh_remote_argv: s.ssh_remote_argv.clone(),
         wsl_distro: s.wsl_distro.clone(),
         wsl_user: s.wsl_user.clone(),
         wsl_working_folder: s.wsl_working_folder.clone(),

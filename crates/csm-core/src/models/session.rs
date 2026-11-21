@@ -77,6 +77,14 @@ pub struct ShellSession {
     pub ssh_port: i32,
     #[serde(deserialize_with = "nd")]
     pub ssh_remote_folder: String,
+    /// An ssh config file for this session (`ssh -F <file>`). With it, `ssh_host` may be a host
+    /// alias from that file and `ssh_user` / `ssh_port` can stay blank. Not in the WPF format.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ssh_config_file: String,
+    /// A command to run on the remote host, one argv element each (`tmux new-session -A -s
+    /// main`). Empty: `command` and `args` are the remote command, as before. Not in the WPF format.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_remote_argv: Vec<String>,
 
     /// WSL distro name (matches `wsl -l -q`), e.g. "Ubuntu".
     #[serde(deserialize_with = "nd")]
@@ -118,6 +126,12 @@ pub struct ShellSession {
     #[serde(deserialize_with = "nd")]
     pub run_commands: Vec<RunCommandItem>,
 
+    /// Reconnect re-runs the same argv: no `--resume` / `--session-id` is added, and the session
+    /// comes back on restore and wake like any other. For remote and plugin-opened sessions
+    /// whose own program reattaches (`tmux new-session -A`). Not in the WPF format.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_rerun: bool,
+
     /// The Claude Code conversation this session runs (`--session-id` when CSM started it,
     /// the id passed to `--resume` otherwise). Untrusted (it came from a state file): checked
     /// against a strict alphabet before it goes on a command line. Not in the WPF format.
@@ -148,6 +162,8 @@ impl Default for ShellSession {
             ssh_host: String::new(),
             ssh_port: default_ssh_port(),
             ssh_remote_folder: String::new(),
+            ssh_config_file: String::new(),
+            ssh_remote_argv: Vec::new(),
             wsl_distro: String::new(),
             wsl_user: String::new(),
             wsl_working_folder: String::new(),
@@ -164,6 +180,7 @@ impl Default for ShellSession {
             profile_color_scheme_json: None,
             run_commands: Vec::new(),
             claude_session_id: None,
+            resume_rerun: false,
         }
     }
 }
@@ -235,6 +252,9 @@ impl ShellSession {
             SessionKind::Ssh if !is_argument_safe_name(&self.ssh_host) || !is_argument_safe_name(&self.ssh_user) => Some(
                 "This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.",
             ),
+            SessionKind::Ssh if self.ssh_config_file.chars().any(char::is_control) || self.ssh_remote_argv.iter().any(|a| a.chars().any(char::is_control)) => {
+                Some("This SSH session's config file or remote command contains a control character. Edit the session and fix it.")
+            }
             SessionKind::Wsl if self.wsl_distro.trim().is_empty() => Some("This WSL session has no distro. Edit the session and pick one."),
             SessionKind::Wsl if !is_argument_safe_name(&self.wsl_distro) || !is_argument_safe_name(&self.wsl_user) => Some(
                 "This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.",

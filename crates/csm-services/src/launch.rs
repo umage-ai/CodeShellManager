@@ -30,6 +30,11 @@ pub struct LaunchSpec {
     pub ssh_host: String,
     pub ssh_port: i32,
     pub ssh_remote_folder: String,
+    /// `ssh -F <file>`; `ssh_host` may then be an alias from it. Blank: ssh's own config.
+    pub ssh_config_file: String,
+    /// The remote command as argv elements, built into one quoted remote command line. Empty:
+    /// `command` and `args`.
+    pub ssh_remote_argv: Vec<String>,
     pub wsl_distro: String,
     pub wsl_user: String,
     /// Linux-style folder inside the distro; empty means the user's home.
@@ -50,6 +55,8 @@ impl Default for LaunchSpec {
             ssh_host: String::new(),
             ssh_port: 22,
             ssh_remote_folder: String::new(),
+            ssh_config_file: String::new(),
+            ssh_remote_argv: Vec::new(),
             wsl_distro: String::new(),
             wsl_user: String::new(),
             wsl_working_folder: String::new(),
@@ -68,6 +75,8 @@ pub enum LaunchError {
     /// An SSH host or user that ssh would read as an option (starts with `-`) or that holds a
     /// control character.
     OptionLikeSshName,
+    /// The ssh config file path or an element of the remote command holds a control character.
+    ControlInSshField,
     /// A WSL distro or user that wsl.exe would read as an option (starts with `-`; quoting does
     /// not help) or that holds a control character. Issue #123.
     OptionLikeWslName,
@@ -76,6 +85,7 @@ pub enum LaunchError {
 impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ControlInSshField => f.write_str("The SSH config file or remote command contains a control character."),
             Self::MissingSshHost => f.write_str("SshHost must be set for remote sessions."),
             Self::MissingWslDistro => f.write_str("WslDistro must be set for WSL sessions."),
             Self::OptionLikeSshName => {
@@ -107,6 +117,9 @@ fn check_ssh(spec: &LaunchSpec) -> Result<(), LaunchError> {
     if !argument_safe(&spec.ssh_host) || !argument_safe(&spec.ssh_user) {
         return Err(LaunchError::OptionLikeSshName);
     }
+    if spec.ssh_config_file.chars().any(char::is_control) || spec.ssh_remote_argv.iter().any(|a| a.chars().any(char::is_control)) {
+        return Err(LaunchError::ControlInSshField);
+    }
     Ok(())
 }
 
@@ -130,6 +143,9 @@ pub fn launch_validation_error(spec: &LaunchSpec) -> Option<&'static str> {
         SessionKind::Ssh if check_ssh(spec).is_err() => Some(
             "This SSH session's host or user starts with '-' or contains a control character, so ssh would read it as an option. Edit the session and fix it.",
         ),
+        SessionKind::Ssh if check_ssh(spec) == Err(LaunchError::ControlInSshField) => {
+            Some("This SSH session's config file or remote command contains a control character. Edit the session and fix it.")
+        }
         SessionKind::Wsl if blank(&spec.wsl_distro) => Some("This WSL session has no distro. Edit the session and pick one."),
         SessionKind::Wsl if check_wsl(spec).is_err() => Some(
             "This WSL session's distro or user name starts with '-' or contains a control character, so wsl.exe would read it as an option. Edit the session and fix it.",
@@ -147,6 +163,13 @@ fn ssh_target(spec: &LaunchSpec) -> String {
 /// single quoted argv element.
 fn ssh_args_with_remote(spec: &LaunchSpec, remote: &str) -> String {
     let mut out = String::new();
+    // `-F <file>` first. The path is one quoted argv element, and `-F` takes the next word
+    // whatever it looks like, so a leading `-` cannot turn it into another option.
+    if !blank(&spec.ssh_config_file) {
+        out.push_str("-F ");
+        out.push_str(&quote_for_cmd(spec.ssh_config_file.trim(), false));
+        out.push(' ');
+    }
     if spec.ssh_port != 22 {
         out.push_str(&format!("-p {} ", spec.ssh_port));
     }
@@ -165,6 +188,15 @@ fn ssh_args_with_remote(spec: &LaunchSpec, remote: &str) -> String {
     out
 }
 
+/// An argv as the one remote command line ssh hands to the remote shell: each element is a
+/// POSIX word, left bare when it is made of safe characters and single-quoted otherwise, so an
+/// element never splits, expands or ends the command. (The Windows layer around the whole line
+/// is [`quote_for_cmd`], applied by the caller.)
+fn remote_command_line(argv: &[String]) -> String {
+    let safe = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&b));
+    argv.iter().map(|w| if safe(w) { w.clone() } else { posix_single_quote(w) }).collect::<Vec<_>>().join(" ")
+}
+
 /// The argument string for the ssh executable, e.g.
 /// `-t alice@dev.example.com "cd '/proj' && bash"`.
 ///
@@ -178,10 +210,14 @@ pub fn build_ssh_args(spec: &LaunchSpec) -> Result<String, LaunchError> {
     }
     // Command/Args are arbitrary remote execution by design; becoming *local* execution is
     // not, which is why they sit inside the quoted element too.
-    remote.push_str(if blank(&spec.command) { "bash" } else { &spec.command });
-    if !blank(&spec.args) {
-        remote.push(' ');
-        remote.push_str(&spec.args);
+    if spec.ssh_remote_argv.is_empty() {
+        remote.push_str(if blank(&spec.command) { "bash" } else { &spec.command });
+        if !blank(&spec.args) {
+            remote.push(' ');
+            remote.push_str(&spec.args);
+        }
+    } else {
+        remote.push_str(&remote_command_line(&spec.ssh_remote_argv));
     }
     Ok(ssh_args_with_remote(spec, &remote))
 }
@@ -460,6 +496,33 @@ mod tests {
     fn full_command_line_local_returns_command_and_args() {
         let s = LaunchSpec { command: "claude".into(), args: "--continue".into(), ..LaunchSpec::default() };
         assert_eq!(full_command_line(&s), "claude --continue");
+    }
+
+    #[test]
+    fn ssh_config_file_and_alias_come_first() {
+        let s = LaunchSpec { ssh_config_file: "/c/my cfg".into(), ..ssh("", "alias1", 22, "", "bash") };
+        assert_eq!(build_ssh_args(&s).unwrap(), "-F \"/c/my cfg\" -t alias1 \"bash\"");
+        let plain = LaunchSpec { ssh_config_file: "/c/cfg".into(), ..ssh("", "alias1", 22, "", "bash") };
+        assert_eq!(build_ssh_args(&plain).unwrap(), "-F /c/cfg -t alias1 \"bash\"");
+    }
+
+    #[test]
+    fn ssh_remote_argv_is_quoted_word_by_word() {
+        let argv = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let s = LaunchSpec { ssh_remote_argv: argv(&["tmux", "new-session", "-A", "-s", "main"]), ..ssh("", "a", 22, "", "ignored") };
+        assert_eq!(build_ssh_args(&s).unwrap(), "-t a \"tmux new-session -A -s main\"");
+        let hostile = LaunchSpec { ssh_remote_argv: argv(&["echo", "a b", "it's", "\"x\"", "$(id)", ""]), ..ssh("", "a", 22, "/srv", "") };
+        let args = build_ssh_args(&hostile).unwrap();
+        let parts = split(&args);
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert_eq!(parts[2], "cd '/srv' && echo 'a b' 'it'\\''s' '\"x\"' '$(id)' ''");
+        let ctl = LaunchSpec { ssh_remote_argv: argv(&["a
+b"]), ..ssh("", "a", 22, "", "") };
+        assert_eq!(build_ssh_args(&ctl), Err(LaunchError::ControlInSshField));
+        assert!(launch_validation_error(&ctl).is_some());
+        let ctl2 = LaunchSpec { ssh_config_file: "a
+b".into(), ..ssh("", "a", 22, "", "") };
+        assert!(build_ssh_args(&ctl2).is_err());
     }
 
     #[test]

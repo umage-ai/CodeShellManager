@@ -146,7 +146,8 @@ fn profile_of(state: &State, id: &str) -> String {
 fn restore_sessions(ctx: &mut Ctx<'_>, ids: &[String]) {
     for id in ids {
         let profile = profile_of(ctx.state, id);
-        let outcome = if crate::addons::restores_on_start(&ctx.state.rt.addons, &profile) {
+        let rerun = ctx.state.app.sessions.iter().any(|s| s.id == *id && s.resume_rerun);
+        let outcome = if rerun || crate::addons::restores_on_start(&ctx.state.rt.addons, &profile) {
             launch(ctx, id, true)
         } else {
             Err(format!("its add-on profile `{profile}` is off or does not restore on start"))

@@ -297,3 +297,43 @@ fn the_last_text_line_skips_borders_and_blank_rows() {
     assert_eq!(t.last_text_line(200).as_deref(), Some("Running tests: 12 passed"));
     assert_eq!(t.last_text_line(7).as_deref(), Some("Running"), "capped");
 }
+
+/// tmux's passthrough wrapper: `ESC P tmux ;` + the payload with every ESC doubled + `ESC \`.
+fn tmux_wrap(inner: &[u8]) -> Vec<u8> {
+    let mut out = b"\x1bPtmux;".to_vec();
+    for &b in inner {
+        out.push(b);
+        if b == 0x1b {
+            out.push(0x1b);
+        }
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
+#[test]
+fn tmux_passthrough_reaches_the_handlers() {
+    let inner: &[&[u8]] = &[
+        b"\x1b]9001;git-branch=main;git-dirty=1\x07",
+        b"\x1b]9001;title=two\x1b\\",
+        b"\x1b]7501;state=working\x1b\\",
+        b"\x1b]7;file://host/home/me\x07",
+        b"\x1b]133;D;3\x07",
+    ];
+    let mut input = b"before".to_vec();
+    for i in inner {
+        input.extend(tmux_wrap(i));
+    }
+    input.extend_from_slice(b"after");
+    let (events, _) = run_all_splits(&input, ProbeReply::Off);
+    assert_eq!(
+        taps(&events),
+        vec![
+            TapEvent::ShellIntegration(vec![("git-branch".into(), "main".into()), ("git-dirty".into(), "1".into())]),
+            TapEvent::ShellIntegration(vec![("title".into(), "two".into())]),
+            TapEvent::ProgramStatus("state=working".into()),
+            TapEvent::Cwd("file://host/home/me".into()),
+            TapEvent::Prompt(PromptMark::CommandFinished { exit_code: Some(3) }),
+        ]
+    );
+}
