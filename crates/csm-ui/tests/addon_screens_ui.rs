@@ -352,7 +352,12 @@ fn pop_out_and_dock_are_tool_calls_and_the_window_holds_the_screen() {
     assert!(has(&h, "View: Echo screen"));
     assert!(has(&h, "Dock back into the main window"), "the window's header offers Dock");
     h.get_by_label("Dock back into the main window").click();
-    settle(&mut h);
+    // The button is in the pop-out window, whose actions reach the main window a frame later, so
+    // `settle` alone can return before the call is sent: wait for its effect, with a deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while handle.lock().unwrap().instances[0].popped_out && std::time::Instant::now() < deadline {
+        settle(&mut h);
+    }
     assert_eq!(calls(&h, "screen_dock"), vec![json!({"instance": "i1"})]);
     assert!(!handle.lock().unwrap().instances[0].popped_out);
 }
