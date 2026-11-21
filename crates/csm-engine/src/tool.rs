@@ -36,6 +36,9 @@ bitflags! {
         const ACCESSES_NETWORK = 1 << 7;
         /// Returns what a session printed (output, screen, notes). May contain secrets.
         const READS_SESSION_CONTENT = 1 << 8;
+        /// Turns on something the person has not seen yet: an add-on (its commands, profiles and
+        /// process effects). Consent for MCP callers, like the rest.
+        const ENABLES_EXTENSION = 1 << 9;
     }
 }
 
@@ -66,7 +69,8 @@ impl Effects {
                 | Effects::MAY_DISCARD_DATA
                 | Effects::LAUNCHES_PROCESS
                 | Effects::WRITES_FILESYSTEM
-                | Effects::READS_SESSION_CONTENT,
+                | Effects::READS_SESSION_CONTENT
+                | Effects::ENABLES_EXTENSION,
         )
     }
 }
@@ -87,10 +91,12 @@ pub enum Toolset {
     App,
     /// The Board's tasks: list, create, claim, update, finish, hand off, assign.
     Tasks,
+    /// Add-ons: list, reload, enable, disable, open the folder, add a run template.
+    Addons,
 }
 
 impl Toolset {
-    pub const ALL: [Toolset; 9] = [
+    pub const ALL: [Toolset; 10] = [
         Toolset::Core,
         Toolset::Groups,
         Toolset::Layout,
@@ -100,6 +106,7 @@ impl Toolset {
         Toolset::Search,
         Toolset::App,
         Toolset::Tasks,
+        Toolset::Addons,
     ];
 
     pub fn id(self) -> &'static str {
@@ -113,6 +120,7 @@ impl Toolset {
             Toolset::Search => "search",
             Toolset::App => "app",
             Toolset::Tasks => "tasks",
+            Toolset::Addons => "addons",
         }
     }
 
@@ -131,6 +139,7 @@ impl Toolset {
             Toolset::Search => "Search",
             Toolset::App => "App and settings",
             Toolset::Tasks => "Tasks (the Board)",
+            Toolset::Addons => "Add-ons",
         }
     }
 }
@@ -256,6 +265,7 @@ mod tests {
         assert!(!Effects::UI.needs_consent());
         assert!(Effects::SENDS_INPUT.needs_consent());
         assert!(Effects::READS_SESSION_CONTENT.needs_consent());
+        assert!(Effects::ENABLES_EXTENSION.needs_consent());
     }
 
     #[test]

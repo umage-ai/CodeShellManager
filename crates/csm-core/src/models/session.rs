@@ -87,6 +87,10 @@ pub struct ShellSession {
     /// Linux-style working folder inside the distro. Empty = the user's home.
     #[serde(deserialize_with = "nd")]
     pub wsl_working_folder: String,
+    /// The add-on profile this session was launched from (`addon-id.profile`), empty for a
+    /// session the person started by hand. Stored so a restore can apply the profile again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub addon_profile: String,
 
     // Per-session appearance overrides; `None` = use the global terminal settings.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,6 +151,7 @@ impl Default for ShellSession {
             wsl_distro: String::new(),
             wsl_user: String::new(),
             wsl_working_folder: String::new(),
+            addon_profile: String::new(),
             profile_font_family: None,
             profile_font_size: None,
             profile_font_weight: None,

@@ -20,6 +20,9 @@ use crate::theme::{self, ThemeKind, size};
 pub enum Action {
     /// `engine.submit(Caller::Ui, id, params)`.
     Tool(&'static str, Value),
+    /// Ask the person to enable an add-on: a confirm dialog lists what it contributes, then
+    /// `addon_enable` with the version shown.
+    AddonConsent(String),
     OpenPalette,
     /// Open (or close) the Recent menu under the title bar's clock button (Ctrl+Shift+E).
     OpenRecent,
@@ -167,17 +170,20 @@ pub enum SettingsSection {
     Appearance,
     Groups,
     Mcp,
+    /// Add-ons: the folder, enable and disable with consent, reload (`screens::addons`).
+    Addons,
     /// Sessions and running time per command (`usage_stats`).
     Usage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 6] = [
+    pub const ALL: [SettingsSection; 7] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Groups,
         SettingsSection::Mcp,
+        SettingsSection::Addons,
         SettingsSection::Usage,
         SettingsSection::About,
     ];
@@ -188,6 +194,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Groups => "Group view",
             SettingsSection::Mcp => "MCP",
+            SettingsSection::Addons => "Add-ons",
             SettingsSection::Usage => "Usage",
             SettingsSection::About => "About",
         }
@@ -199,6 +206,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "sun",
             SettingsSection::Groups => "layers",
             SettingsSection::Mcp => "server",
+            SettingsSection::Addons => "extensions",
             SettingsSection::Usage => "history",
             SettingsSection::About => "terminal",
         }
@@ -356,6 +364,9 @@ pub struct QuickOpenState {
     pub profiles: Option<Vec<Value>>,
     /// The Profile picker's choice.
     pub profile: ProfilePick,
+    /// An enabled add-on's launch profile (`addon-id.name`) the new session starts with; the
+    /// engine takes the command from it (`session_new` `profile`).
+    pub addon_profile: Option<String>,
 }
 
 /// What the quick-open's Profile picker says about the session's look.
@@ -906,6 +917,20 @@ impl CsmApp {
 
     pub fn run(&mut self, ctx: &egui::Context, action: Action) {
         match action {
+            Action::AddonConsent(id) => {
+                if let Some(a) = self.model.addons.iter().find(|a| a.id == id) {
+                    self.ui.confirm = Some(ConfirmState {
+                        title: format!("Enable {}?", a.name),
+                        body: crate::screens::addons::consent_body(a),
+                        yes_label: "Enable".into(),
+                        no_label: "Cancel".into(),
+                        // The digest pins the exact file the dialog listed (`addon_enable` refuses another).
+                        yes: Box::new(Action::Tool("addon_enable", json!({"id": a.id, "version": a.version, "digest": a.digest.clone().unwrap_or_default()}))),
+                    });
+                    self.ui.overlay = Overlay::Confirm;
+                    ctx.request_repaint();
+                }
+            }
             Action::Tool(id, params) => {
                 // Opening a menu item closes the menu.
                 self.ui.menu = None;

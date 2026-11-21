@@ -1,6 +1,7 @@
 //! The engine's tools (docs/tools.md): sessions and the inbox, groups, layout and view, app.
 //! Git is in [`git`]; notes and search are in `search`; run commands are a separate module not built yet.
 
+mod addons;
 mod app;
 mod backup;
 mod bulk;
@@ -42,6 +43,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(usage::specs());
     v.extend(snapshots::specs());
     v.extend(tasks::specs());
+    v.extend(addons::specs());
     v
 }
 

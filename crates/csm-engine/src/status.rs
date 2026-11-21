@@ -146,6 +146,16 @@ pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>)
         let progress = if s == Status::Working { sum.progress } else { None };
         return (s, progress, sum.message);
     }
+    if let Some(a) = rt.addon_status {
+        let s = match a {
+            csm_core::addons::ProfileStatus::NeedsYouApproval => Status::NeedsYouApproval,
+            csm_core::addons::ProfileStatus::NeedsYouQuestion => Status::NeedsYouQuestion,
+            csm_core::addons::ProfileStatus::Working => Status::Working,
+            csm_core::addons::ProfileStatus::Idle => Status::Idle,
+            csm_core::addons::ProfileStatus::Done => Status::DoneUnseen,
+        };
+        return (s, None, None);
+    }
     if let Some(alert) = rt.heuristic {
         let s = match alert {
             AlertType::ToolApproval => Status::NeedsYouApproval,

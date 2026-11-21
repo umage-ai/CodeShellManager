@@ -12,6 +12,7 @@
 // Tests may unwrap (repo rule); production code may not.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod addons;
 pub mod alert_detector;
 pub mod bulk_restart;
 pub mod busy_rules;

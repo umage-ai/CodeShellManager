@@ -89,6 +89,7 @@ pub(crate) fn on_start(ctx: &mut Ctx<'_>) {
         let _ = cell.set(text);
     });
     crate::tools::open::on_start(ctx);
+    crate::addons::reload(ctx);
     if ctx.state.options.restore_on_start {
         begin_restore(ctx);
     }
@@ -108,13 +109,54 @@ pub(crate) fn begin_restore(ctx: &mut Ctx<'_>) {
         ctx.state.persist();
         return;
     }
-    for id in &ids {
-        match launch(ctx, id, true) {
+    // Sessions from an add-on profile need the add-on catalogue, which is still being read on a
+    // worker at start. They wait for it (`restore_waiting_addons`); the rest start now.
+    let scanning = ctx.state.rt.addons.scanning;
+    let mut now = Vec::new();
+    for id in ids {
+        if scanning && !profile_of(ctx.state, &id).is_empty() {
+            ctx.state.rt.addon_restore_waiting.push(id);
+        } else {
+            now.push(id);
+        }
+    }
+    restore_sessions(ctx, &now);
+    ctx.state.persist();
+}
+
+/// Called when an add-on scan finishes: the sessions that waited for it start (or stay asleep)
+/// now.
+pub(crate) fn restore_waiting_addons(ctx: &mut Ctx<'_>) {
+    let ids = std::mem::take(&mut ctx.state.rt.addon_restore_waiting);
+    if ids.is_empty() {
+        return;
+    }
+    restore_sessions(ctx, &ids);
+    ctx.state.persist();
+}
+
+/// The add-on profile a session was launched from (empty for one the person started by hand).
+fn profile_of(state: &State, id: &str) -> String {
+    state.app.sessions.iter().find(|s| s.id == id).map(|s| s.addon_profile.clone()).unwrap_or_default()
+}
+
+/// Launches each session again, except one from an add-on profile that is off or has resume
+/// "none": that one comes back asleep, so nothing from an add-on runs on restore unless its
+/// profile says so.
+fn restore_sessions(ctx: &mut Ctx<'_>, ids: &[String]) {
+    for id in ids {
+        let profile = profile_of(ctx.state, id);
+        let outcome = if crate::addons::restores_on_start(&ctx.state.rt.addons, &profile) {
+            launch(ctx, id, true)
+        } else {
+            Err(format!("its add-on profile `{profile}` is off or does not restore on start"))
+        };
+        match outcome {
             Ok(()) => {
                 ctx.state.rt.restore_pending.insert(id.clone());
             }
             Err(msg) => {
-                log::warn!("restore: {id} not started: {msg}");
+                log::info!("restore: {id} not started: {msg}");
                 if let Some(i) = session_index(ctx.state, id)
                     && let Some(s) = ctx.state.app.sessions.get_mut(i)
                 {
@@ -123,11 +165,11 @@ pub(crate) fn begin_restore(ctx: &mut Ctx<'_>) {
             }
         }
     }
-    let total = ctx.state.rt.restore_pending.len();
-    if total > 0 {
-        ctx.state.rt.restore = Some(Progress { done: 0, total });
+    let pending = ctx.state.rt.restore_pending.len();
+    if pending > 0 {
+        let done = ctx.state.rt.restore.as_ref().map_or(0, |p| p.done);
+        ctx.state.rt.restore = Some(Progress { done, total: done + pending });
     }
-    ctx.state.persist();
 }
 
 fn finish_restore_item(state: &mut State, id: &str) {
@@ -177,6 +219,64 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             rt.heuristic = Some(a.alert_type);
             rt.heuristic_message = Some(a.message);
             ctx.state.rt.dirty = true;
+        }
+    }
+
+    // Profile status rules (add-ons): a session launched from a profile with status rules has its
+    // screen read on a worker about once a second; the rule that matches sets its status.
+    let rules_for: Vec<(String, Vec<csm_core::addons::StatusRule>)> = ctx
+        .state
+        .app
+        .sessions
+        .iter()
+        .filter(|s| !s.addon_profile.is_empty())
+        .filter_map(|s| crate::addons::status_rules(&ctx.state.rt.addons, &s.addon_profile).map(|r| (s.id.clone(), r)))
+        .collect();
+    // A profile whose add-on is now off (or has no rules) no longer sets a status: drop the last one.
+    let unruled: Vec<String> = ctx
+        .state
+        .app
+        .sessions
+        .iter()
+        .filter(|s| !s.addon_profile.is_empty() && crate::addons::status_rules(&ctx.state.rt.addons, &s.addon_profile).is_none())
+        .map(|s| s.id.clone())
+        .collect();
+    for id in unruled {
+        if let Some(rt) = ctx.state.rt.sessions.get_mut(&id)
+            && rt.addon_status.take().is_some()
+        {
+            ctx.state.rt.dirty = true;
+        }
+    }
+    for (id, rules) in rules_for {
+        let Some(rt) = ctx.state.rt.sessions.get_mut(&id) else { continue };
+        // One read at a time per session: a read still in flight is not joined by another.
+        if rt.has_program_status || rt.phase != Phase::Live || now_ms - rt.addon_checked_ms < 1000 || rt.addon_busy.load(Ordering::Acquire) {
+            continue;
+        }
+        rt.addon_checked_ms = now_ms;
+        let io = rt.io.clone();
+        let instance = io.instance;
+        let engine = ctx.engine.clone();
+        let busy = rt.addon_busy.clone();
+        busy.store(true, Ordering::Release);
+        let worker_busy = busy.clone();
+        let spawned = std::thread::Builder::new().name("csm-addon-status".into()).spawn(move || {
+            let text = crate::screen::screen(&mut io.lock_terminal());
+            let status = crate::addons::screen_status(&rules, &text);
+            worker_busy.store(false, Ordering::Release);
+            engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
+                if let Some(rt) = ctx.state.rt.sessions.get_mut(&id)
+                    && rt.io.instance == instance
+                    && rt.addon_status != status
+                {
+                    rt.addon_status = status;
+                    ctx.state.rt.dirty = true;
+                }
+            }));
+        });
+        if spawned.is_err() {
+            busy.store(false, Ordering::Release);
         }
     }
 

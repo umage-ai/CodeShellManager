@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod addons;
 mod engine;
 pub mod events;
 mod index;

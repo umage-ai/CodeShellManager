@@ -560,6 +560,8 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let folders = folders(&sessions, &opts.folders);
     UiModel {
+        addons: view.addons.clone(),
+        slash_presets: view.slash_presets.clone(),
         group_mode: match view.view {
             EngineGroupView::Rail => GroupMode::Rail,
             EngineGroupView::Headers => GroupMode::Headers,

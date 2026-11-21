@@ -246,6 +246,9 @@ struct SetParams {
 fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: SetParams = parse_params(params)?;
     let key = pascal(&p.key);
+    if key == "AddonApprovals" {
+        return Err(ToolError::Refused("add-ons are enabled and disabled with addon_enable and addon_disable (the person sees what they contribute first)".into()));
+    }
     if ctx.caller.is_external() && APP_ONLY_KEYS.contains(&key.as_str()) {
         return Err(ToolError::Refused(format!("`{key}` decides what runs; change it in the app's settings")));
     }

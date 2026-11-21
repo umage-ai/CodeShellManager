@@ -54,6 +54,12 @@ pub(crate) struct SessionRt {
     /// The screen heuristic's current alert (only when no program status).
     pub heuristic: Option<AlertType>,
     pub heuristic_message: Option<String>,
+    /// The status a profile's status rules read from the screen (`addons.rs`), when they match.
+    pub addon_status: Option<csm_core::addons::ProfileStatus>,
+    /// When the screen was last read for those rules (ms since the epoch).
+    pub addon_checked_ms: i64,
+    /// A screen read for those rules is still on its worker: no second one starts meanwhile.
+    pub addon_busy: Arc<AtomicBool>,
     /// Pushed by OSC 9001 (`git-branch`, `git-dirty`); display only.
     pub git_branch: Option<String>,
     pub git_dirty: bool,
@@ -84,6 +90,9 @@ impl SessionRt {
             has_program_status: false,
             heuristic: None,
             heuristic_message: None,
+            addon_status: None,
+            addon_checked_ms: 0,
+            addon_busy: Arc::new(AtomicBool::new(false)),
             git_branch: None,
             git_dirty: false,
             git_osc: false,

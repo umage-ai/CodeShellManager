@@ -162,12 +162,16 @@ pub(crate) struct Wait {
 /// Runtime-only state: never persisted.
 #[derive(Default)]
 pub(crate) struct Runtime {
+    /// Add-ons found on disk and their state (`addons.rs`).
+    pub(crate) addons: crate::addons::Catalogue,
     pub sessions: HashMap<String, SessionRt>,
     pub focused: Option<String>,
     /// Sessions being restarted: their old PTY is going, the new one not started yet.
     pub restarting: HashSet<String>,
     /// Restore loop: sessions still to start.
     pub restore_pending: HashSet<String>,
+    /// Sessions from an add-on profile, waiting for the add-on scan before they can restore.
+    pub(crate) addon_restore_waiting: Vec<String>,
     pub restore: Option<Progress>,
     /// A restart (single or bulk) holds this for its whole run.
     pub restart_active: bool,

@@ -8,7 +8,6 @@
 
 use std::time::Duration;
 
-use csm_core::models::SlashCommand;
 use csm_term::input;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -49,7 +48,7 @@ fn session_send_command(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     {
         return Err(ToolError::Refused("a session cannot send input to itself".into()));
     }
-    let presets = SlashCommand::clean_list(&ctx.state.app.settings.claude_commands);
+    let presets = crate::addons::slash_presets(&ctx.state.rt.addons, &ctx.state.app.settings.claude_commands);
     let wanted = p.command.trim();
     let Some(cmd) = presets.iter().find(|c| c.command == wanted).map(|c| c.command.clone()) else {
         let list: Vec<&str> = presets.iter().map(|c| c.command.as_str()).collect();
