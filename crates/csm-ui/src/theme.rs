@@ -345,6 +345,10 @@ pub mod size {
     pub const STRIPE: f32 = 3.0;
     pub const TITLE_BAR: f32 = 40.0;
     pub const GROUP_BAR: f32 = 44.0;
+    /// The strip of views (`Sessions`, add-on screens) above the pane area.
+    pub const VIEW_STRIP: f32 = 36.0;
+    /// The widest a tab in that strip gets.
+    pub const VIEW_TAB_MAX_W: f32 = 260.0;
     pub const PANE_HEADER: f32 = 32.0;
     pub const PANE_HEADER_MINI: f32 = 28.0;
     pub const RAIL: f32 = 48.0;

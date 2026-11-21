@@ -149,7 +149,8 @@ fn screen_open(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         match link {
             Some(l) => {
                 let generation = store.instance_generation(&instance).unwrap_or(0);
-                plugin_screens::request_open(store, l, addon.addon.clone(), generation, instance.clone(), p.screen.clone(), context, theme);
+                let req = plugin_screens::OpenRequest { addon: addon.addon.clone(), generation, instance: instance.clone(), screen: p.screen.clone(), context, theme };
+                plugin_screens::request_open(store, l, req);
             }
             None => return Err(ToolError::Refused(format!("the add-on `{}` is not running", addon.addon))),
         }

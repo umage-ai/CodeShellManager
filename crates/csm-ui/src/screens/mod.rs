@@ -1,5 +1,6 @@
 //! The screens of the mock-up, each a function over the app and its snapshot.
 
+pub mod addon_screen;
 pub mod addons;
 pub mod backup;
 pub mod board;

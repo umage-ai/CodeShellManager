@@ -40,6 +40,8 @@ pub enum Notice {
     Toast(String),
     /// Bring this session into view (switch rail tab, focus its pane).
     Focus(SessionId),
+    /// Show this add-on screen in the view strip (`screen_open`).
+    FocusScreen(String),
     /// `app_quit` finished (every process is gone, the state is saved): close the window.
     QuitReady,
     /// A session set the clipboard (OSC 52; the setting allows it): put the text on it.
@@ -59,6 +61,24 @@ pub trait Backend {
     /// Once a frame, before drawing (timers, repaint scheduling).
     fn tick(&mut self, _ctx: &egui::Context) -> Vec<Notice> {
         Vec::new()
+    }
+    /// The add-on screens open now (the view strip's tabs). Empty without a screens-capable
+    /// backend.
+    fn screens(&self) -> Vec<csm_engine::ScreenInfo> {
+        Vec::new()
+    }
+    /// The screens running add-ons offer (the palette's "Open ..." rows).
+    fn screen_declared(&self) -> Vec<csm_engine::DeclaredScreen> {
+        Vec::new()
+    }
+    /// The validated view tree of an open screen: an `Arc` clone, never waits for the add-on.
+    fn screen_tree(&self, _instance: &str) -> Option<Arc<csm_core::addons::screen::ScreenTree>> {
+        None
+    }
+    /// A widget in an add-on screen raised an event for its plugin. Widget-level input like a
+    /// keystroke into a pane, so not a tool. Never blocks; `Err` is a message to show.
+    fn screen_event(&mut self, _instance: &str, _event: csm_core::addons::screen::ScreenEvent) -> Result<(), String> {
+        Ok(())
     }
     /// The live output of a run command's last run (the Runs tab reads its tail when the
     /// generation changes). `None`: the model's `RunView::output` is all there is (the demo).

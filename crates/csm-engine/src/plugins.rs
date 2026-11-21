@@ -1034,7 +1034,8 @@ fn screens_ready(env: &Env, link: Option<&Arc<Link>>, name: Option<String>, scre
     let reopen = env.screens.set_declared(&env.addon, env.generation, &name, screens);
     let Some(link) = link else { return };
     for (instance, screen, context) in reopen {
-        plugin_screens::request_open(env.screens.clone(), link.clone(), env.addon.clone(), env.generation, instance, screen, context, None);
+        let req = plugin_screens::OpenRequest { addon: env.addon.clone(), generation: env.generation, instance, screen, context, theme: None };
+        plugin_screens::request_open(env.screens.clone(), link.clone(), req);
     }
 }
 

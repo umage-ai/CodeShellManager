@@ -493,9 +493,21 @@ fn publish_due(inst: &mut Instance, now_ms: u64, force: bool) -> bool {
     false
 }
 
+/// What `screen/open` is about.
+pub(crate) struct OpenRequest {
+    pub addon: String,
+    /// The process the instance belongs to.
+    pub generation: u64,
+    pub instance: String,
+    pub screen: String,
+    pub context: ScreenContext,
+    pub theme: Option<String>,
+}
+
 /// Asks the plugin to open `instance`, on a thread of its own, and applies the answer. The
 /// plugin has [`OPEN_TIMEOUT`]; past it (or on an error answer) the tab shows the retry state.
-pub(crate) fn request_open(store: ScreenStore, link: Arc<Link>, addon: String, generation: u64, instance: String, screen: String, context: ScreenContext, theme: Option<String>) {
+pub(crate) fn request_open(store: ScreenStore, link: Arc<Link>, req: OpenRequest) {
+    let OpenRequest { addon, generation, instance, screen, context, theme } = req;
     let addon_for_error = addon.clone();
     let spawned = std::thread::Builder::new().name("csm-screen-open".into()).spawn({
         let (store, instance) = (store.clone(), instance.clone());

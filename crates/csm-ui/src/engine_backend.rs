@@ -262,6 +262,7 @@ impl Backend for EngineBackend {
         match event {
             Event::Toast { message } => vec![Notice::Toast(message.clone())],
             Event::FocusRequested { session_id } => vec![Notice::Focus(session_id.clone())],
+            Event::ScreenFocusRequested { instance } => vec![Notice::FocusScreen(instance.clone())],
             Event::ClipboardOffered { .. } => self.engine.take_clipboard().map(Notice::Clipboard).into_iter().collect(),
             Event::QuitProgress { session_id, phase, elapsed_ms } => {
                 if self.quit.is_none() {
@@ -291,6 +292,22 @@ impl Backend for EngineBackend {
             }
             _ => vec![],
         }
+    }
+
+    fn screens(&self) -> Vec<csm_engine::ScreenInfo> {
+        self.engine.screens().instances()
+    }
+
+    fn screen_declared(&self) -> Vec<csm_engine::DeclaredScreen> {
+        self.engine.screens().declared()
+    }
+
+    fn screen_tree(&self, instance: &str) -> Option<Arc<csm_core::addons::screen::ScreenTree>> {
+        self.engine.screens().tree(instance)
+    }
+
+    fn screen_event(&mut self, instance: &str, event: csm_core::addons::screen::ScreenEvent) -> Result<(), String> {
+        self.engine.screen_event(instance, event).map_err(|e| e.to_string())
     }
 
     fn run_output(&self, session: &str, run: &str) -> Option<csm_engine::RunOutputHandle> {

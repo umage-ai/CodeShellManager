@@ -76,6 +76,8 @@ pub struct DemoBackend {
     restoring: Option<Instant>,
     /// The session last focused per group, as the engine's `UiState::group_focus` (#137).
     group_focus: HashMap<String, SessionId>,
+    /// Add-on screens as a test or a screenshot set them up (see [`DemoBackend::screens_handle`]).
+    screens: Arc<std::sync::Mutex<DemoScreens>>,
 }
 
 fn now_ms() -> u64 {
@@ -398,6 +400,7 @@ impl DemoBackend {
             quitting: None,
             restoring: None,
             group_focus: HashMap::new(),
+            screens: Arc::default(),
         };
         let ids: Vec<SessionId> = b.model.sessions.iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         for id in ids {
@@ -1300,6 +1303,10 @@ impl Backend for DemoBackend {
 
     fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice> {
         use csm_engine::ToolError;
+        // The screen tools change the demo's own screens (the demo engine has no add-ons).
+        if call.id.starts_with("screen_") && self.apply_screen_call(call) {
+            return Vec::new();
+        }
         let out = match reply {
             // The fixture's folders are Windows paths, which the engine refuses as relative on
             // other systems: the demo answers `worktree_list` from its fixture regardless.
@@ -1322,6 +1329,27 @@ impl Backend for DemoBackend {
             }
             _ => vec![],
         }
+    }
+
+    fn screens(&self) -> Vec<csm_engine::ScreenInfo> {
+        self.screen_lock().instances.clone()
+    }
+
+    fn screen_declared(&self) -> Vec<csm_engine::DeclaredScreen> {
+        self.screen_lock().declared.clone()
+    }
+
+    fn screen_tree(&self, instance: &str) -> Option<Arc<csm_core::addons::screen::ScreenTree>> {
+        self.screen_lock().trees.get(instance).cloned()
+    }
+
+    fn screen_event(&mut self, instance: &str, event: csm_core::addons::screen::ScreenEvent) -> Result<(), String> {
+        let mut g = self.screen_lock();
+        if let Some(m) = &g.refuse_events {
+            return Err(m.clone());
+        }
+        g.events.push((instance.to_owned(), event));
+        Ok(())
     }
 
     fn tick(&mut self, ctx: &egui::Context) -> Vec<Notice> {
@@ -1360,5 +1388,51 @@ impl DemoBackend {
     /// Value of a JSON param, for screens that want to show what a call did.
     pub fn describe(call: &Call) -> String {
         format!("{} {}", call.id, Value::to_string(&call.params))
+    }
+}
+
+/// The add-on screens the demo backend shows: what a running add-on would have declared and
+/// opened, with the validated trees, and the events the UI sent to its "plugin". A test keeps the
+/// handle from [`DemoBackend::screens_handle`] and changes it while the app runs (a re-render is
+/// replacing a tree here).
+#[derive(Default)]
+pub struct DemoScreens {
+    pub declared: Vec<csm_engine::DeclaredScreen>,
+    pub instances: Vec<csm_engine::ScreenInfo>,
+    pub trees: HashMap<String, Arc<csm_core::addons::screen::ScreenTree>>,
+    /// Events the UI sent, most recent last: (instance, event).
+    pub events: Vec<(String, csm_core::addons::screen::ScreenEvent)>,
+    /// When set, `screen_event` fails with this message (a busy plugin).
+    pub refuse_events: Option<String>,
+}
+
+impl DemoBackend {
+    /// The handle to the demo's add-on screens.
+    pub fn screens_handle(&self) -> Arc<std::sync::Mutex<DemoScreens>> {
+        self.screens.clone()
+    }
+
+    fn screen_lock(&self) -> std::sync::MutexGuard<'_, DemoScreens> {
+        self.screens.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The effect of the screen tools on the demo's screens (the real engine applied it).
+    fn apply_screen_call(&mut self, call: &Call) -> bool {
+        let Some(instance) = call.params.get("instance").and_then(Value::as_str) else { return false };
+        let mut g = self.screen_lock();
+        match call.id.as_str() {
+            "screen_close" => {
+                g.instances.retain(|i| i.instance != instance);
+                g.trees.remove(instance);
+            }
+            "screen_pop_out" | "screen_dock" => {
+                let popped = call.id == "screen_pop_out";
+                if let Some(i) = g.instances.iter_mut().find(|i| i.instance == instance) {
+                    i.popped_out = popped;
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 }
