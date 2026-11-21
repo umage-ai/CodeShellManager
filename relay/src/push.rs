@@ -55,7 +55,7 @@ impl Vapid {
     /// The uncompressed public point (65 bytes), base64url: the `applicationServerKey` a phone
     /// subscribes with, and the `k=` of the Authorization header.
     pub fn public_key(&self) -> String {
-        b64_encode(self.key.verifying_key().to_encoded_point(false).as_bytes())
+        b64_encode(self.key.verifying_key().to_sec1_point(false).as_bytes())
     }
 
     /// An ES256 JWT for `aud` (the push service origin), valid 12 hours from `now_secs`.

@@ -28,7 +28,7 @@ toml = "1"
 sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.3"
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "std"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "arithmetic", "std"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json", "std", "ansi"] }
