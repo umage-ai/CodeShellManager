@@ -1,0 +1,24 @@
+[package]
+name = "csm-session-summary"
+description = "Sample process add-on: a session-summary.summarise tool built on csm/call session_list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "csm-session-summary"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+csm-core = { path = "../../crates/csm-core" }
+csm-engine = { path = "../../crates/csm-engine" }
+csm-pty = { path = "../../crates/csm-pty" }
+tempfile = "3"

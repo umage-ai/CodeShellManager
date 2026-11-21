@@ -37,6 +37,66 @@ pub fn ensure_dir(root: &Path) -> std::io::Result<()> {
     fs::create_dir_all(root)
 }
 
+/// Largest file copied out of a sample folder.
+const MAX_SAMPLE_FILE: u64 = 1024 * 1024;
+
+/// What [`install_samples`] did, by add-on id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstallReport {
+    /// Folders copied into the add-ons folder.
+    pub installed: Vec<String>,
+    /// Folders left alone because something is already there under that id.
+    pub skipped: Vec<String>,
+}
+
+/// Copies each sample add-on folder under `samples` into `root` (`<config dir>/addons`) unless
+/// `root/<id>` already exists (as anything, a link included): nothing is ever overwritten or
+/// merged, so a sample the person edited or enabled is untouched. Only the files directly in a
+/// sample folder are copied (regular files up to 1 MiB; links are not followed). A missing
+/// `samples` folder is an error: the build has none. Blocking file I/O: call from a worker.
+pub fn install_samples(samples: &Path, root: &Path) -> Result<InstallReport, String> {
+    let entries = fs::read_dir(samples).map_err(|e| format!("could not read the samples folder {}: {e}", samples.display()))?;
+    let mut dirs: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .filter(|(name, _)| valid_id(name))
+        .collect();
+    dirs.sort();
+    dirs.truncate(MAX_FOLDERS);
+    ensure_dir(root).map_err(|e| format!("could not create {}: {e}", root.display()))?;
+    let mut report = InstallReport::default();
+    for (id, src) in dirs {
+        let dest = root.join(&id);
+        if fs::symlink_metadata(&dest).is_ok() {
+            report.skipped.push(id);
+            continue;
+        }
+        // `create_dir` (not `_all`) fails if something appeared since the check.
+        if fs::create_dir(&dest).is_err() {
+            report.skipped.push(id);
+            continue;
+        }
+        if let Err(e) = copy_files(&src, &dest) {
+            let _ = fs::remove_dir_all(&dest);
+            return Err(format!("could not copy {id}: {e}"));
+        }
+        report.installed.push(id);
+    }
+    Ok(report)
+}
+
+fn copy_files(src: &Path, dest: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(src)?.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_file() || entry.metadata().map_or(true, |m| m.len() > MAX_SAMPLE_FILE) {
+            continue;
+        }
+        fs::copy(entry.path(), dest.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
 /// Every folder under `root` that could be an add-on, sorted by name. A missing `root` is an
 /// empty list (no add-ons yet), not an error.
 pub fn scan(root: &Path) -> Result<Vec<Found>, String> {
@@ -118,6 +178,27 @@ mod tests {
         let d = root.join(folder);
         fs::create_dir_all(&d).unwrap();
         fs::write(d.join(MANIFEST_FILE), text).unwrap();
+    }
+
+    #[test]
+    fn samples_are_copied_once_and_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let samples = dir.path().join("samples");
+        write(&samples, "alpha", "a");
+        write(&samples, "beta", "b");
+        fs::write(samples.join("beta").join("extra.txt"), "x").unwrap();
+        fs::create_dir_all(samples.join("Bad Name")).unwrap();
+        let root = dir.path().join("addons");
+        write(&root, "beta", "mine");
+        let r = install_samples(&samples, &root).unwrap();
+        assert_eq!(r.installed, vec!["alpha"]);
+        assert_eq!(r.skipped, vec!["beta"]);
+        assert_eq!(fs::read_to_string(root.join("alpha").join(MANIFEST_FILE)).unwrap(), "a");
+        assert_eq!(fs::read_to_string(root.join("beta").join(MANIFEST_FILE)).unwrap(), "mine");
+        assert!(!root.join("beta").join("extra.txt").exists());
+        let again = install_samples(&samples, &root).unwrap();
+        assert!(again.installed.is_empty() && again.skipped.len() == 2);
+        assert!(install_samples(&dir.path().join("none"), &root).is_err());
     }
 
     #[test]

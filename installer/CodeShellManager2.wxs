@@ -40,7 +40,17 @@
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="ManufacturerFolder" Name="umage">
-        <Directory Id="INSTALLFOLDER" Name="CodeShellManager 2 Beta" />
+        <Directory Id="INSTALLFOLDER" Name="CodeShellManager 2 Beta">
+          <!-- Sample add-ons. Settings > Add-ons > "Install samples" copies them into the
+               person's own add-ons folder; they stay disabled until enabled there. -->
+          <Directory Id="SamplesFolder" Name="samples">
+            <Directory Id="SamplesAddonsFolder" Name="addons">
+              <Directory Id="SampleCodexCli" Name="codex-cli" />
+              <Directory Id="SampleGeminiCli" Name="gemini-cli" />
+              <Directory Id="SampleSessionSummary" Name="session-summary" />
+            </Directory>
+          </Directory>
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -75,6 +85,23 @@
       </Component>
       <Component Directory="INSTALLFOLDER" Guid="*">
         <File Source="$(var.PublishDir)\OpenConsole.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- The "Session summary" sample add-on's program. The add-on's addon.toml names it as
+           `csm-session-summary`, and the plugin host finds it beside codeshell.exe (the app's own
+           folder, which is also on PATH). -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\csm-session-summary.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Directory="SampleCodexCli" Guid="*">
+        <File Source="$(var.PublishDir)\samples\addons\codex-cli\addon.toml" KeyPath="yes" />
+      </Component>
+      <Component Directory="SampleGeminiCli" Guid="*">
+        <File Source="$(var.PublishDir)\samples\addons\gemini-cli\addon.toml" KeyPath="yes" />
+      </Component>
+      <Component Directory="SampleSessionSummary" Guid="*">
+        <File Source="$(var.PublishDir)\samples\addons\session-summary\addon.toml" KeyPath="yes" />
       </Component>
 
       <!-- Tells the app which AppUserModelID its toasts go out under (apps/codeshell/src/os_notify.rs). -->

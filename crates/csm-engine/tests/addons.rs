@@ -281,3 +281,42 @@ fn palette_commands_may_not_write_into_sessions() {
     assert!(find(&l, "typer")["problems"].to_string().contains("may not do"), "{l}");
     h.engine.shutdown();
 }
+
+#[test]
+fn install_samples_copies_missing_ones_disabled_and_never_overwrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    let samples = dir.path().join("bundled");
+    write_addon(&samples, "demo", DEMO);
+    write_addon(&samples, "fresh", &DEMO.replace("id = \"demo\"", "id = \"fresh\""));
+    // The person already has their own `demo`; it must survive.
+    let mine = DEMO.replace("Demo pack", "My edited demo");
+    write_addon(&dir.path().join("addons"), "demo", &mine);
+    let s2 = state.clone();
+    let h = H::start(test_app(), move |o| {
+        o.save_path = Some(s2);
+        o.restore_on_start = false;
+        o.samples_dir = Some(samples);
+    });
+    h.wait_until("the one add-on", |s| s.addons.len() == 1);
+    let out = h.ok("addon_install_samples", json!({}));
+    assert!(out.message.contains("Installed 1"), "{}", out.message);
+    assert_eq!(out.data["installed"], json!(["fresh"]));
+    assert_eq!(out.data["skipped"], json!(["demo"]));
+    h.wait_until("both add-ons", |s| s.addons.len() == 2);
+    let l = list(&h);
+    assert_eq!(find(&l, "fresh")["state"], "disabled", "installed samples are off until enabled");
+    assert_eq!(find(&l, "demo")["name"], "My edited demo");
+    assert_eq!(fs::read_to_string(dir.path().join("addons").join("demo").join("addon.toml")).unwrap(), mine);
+    h.engine.shutdown();
+}
+
+#[test]
+fn install_samples_is_refused_without_bundled_samples() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    let h = start(&state);
+    let e = h.ui("addon_install_samples", json!({})).unwrap_err();
+    assert!(e.to_string().contains("no bundled samples"), "{e}");
+    h.engine.shutdown();
+}

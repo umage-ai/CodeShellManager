@@ -1,0 +1,75 @@
+# Sample add-on: OpenAI Codex CLI (the `codex` program).
+#
+# Shipped with CodeShellManager under <install dir>\samples\addons\. Settings > Add-ons >
+# "Install samples" copies it into your add-ons folder; it stays off until you Enable it.
+# Needs `codex` on PATH (npm i -g @openai/codex, or brew install codex). See docs/addons.md.
+#
+# UNCERTAINTY: the status regexes below were written from how the Codex TUI looks at the time of
+# writing (an approval list reading "Would you like to run the following command?" with
+# "Yes, proceed", a "Working (12s . esc to interrupt)" line, a composer footer with
+# "? for shortcuts" / "NN% context left"). Codex's wording changes between releases; if a status
+# stops tracking, adjust the patterns here (the file's digest changes, so you enable it again).
+# Rules match against the last 12 non-empty screen lines; the first matching rule wins.
+# Patterns are TOML literal strings ('...'), so a backslash is a regex backslash.
+
+[addon]
+id = "codex-cli"
+name = "Codex CLI"
+version = "0.1.0"
+description = "Launch profiles for OpenAI's Codex CLI, with status detection for approvals, questions, work and idle."
+api = 1
+kind = "pack"
+author = "CodeShellManager samples"
+homepage = "https://github.com/openai/codex"
+
+# A new Codex session. Restore starts `codex` again (a new conversation); use the
+# "resume-last" profile to continue the most recent one. CodeShellManager does not know Codex's
+# session ids, so a {session_id} resume template would not help here.
+[[profile]]
+name = "agent"
+argv = ["codex"]
+resume = "re-run"
+status = [
+  { match = '(?i)would you like to (run|make|grant|apply|allow)|yes, proceed|allow codex to', status = "needs_you_approval" },
+  { match = '(?i)enter to submit answer|question \d+/\d+', status = "needs_you_question" },
+  { match = '(?i)esc to interrupt', status = "working" },
+  { match = '(?i)\? for shortcuts|context left', status = "idle" },
+]
+
+# Continue the most recent Codex conversation (`codex resume --last`).
+[[profile]]
+name = "resume-last"
+argv = ["codex", "resume", "--last"]
+resume = "re-run"
+status = [
+  { match = '(?i)would you like to (run|make|grant|apply|allow)|yes, proceed|allow codex to', status = "needs_you_approval" },
+  { match = '(?i)enter to submit answer|question \d+/\d+', status = "needs_you_question" },
+  { match = '(?i)esc to interrupt', status = "working" },
+  { match = '(?i)\? for shortcuts|context left', status = "idle" },
+]
+
+# Codex slash commands (added to the slash menu only when you do not already have them).
+[[slash]]
+command = "/review"
+description = "Review the working tree changes"
+
+[[slash]]
+command = "/diff"
+description = "Show the git diff, including untracked files"
+
+[[slash]]
+command = "/compact"
+description = "Summarise the conversation to free context"
+
+# Palette commands: each calls an existing tool with fixed parameters.
+[[command]]
+id = "new"
+title = "New Codex session"
+tool = "session_new"
+params = { profile = "codex-cli.agent", name = "Codex" }
+
+[[command]]
+id = "resume-last"
+title = "Resume the last Codex session"
+tool = "session_new"
+params = { profile = "codex-cli.resume-last", name = "Codex (resumed)" }

@@ -985,6 +985,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "csm-session-summary"
+version = "0.0.1"
+dependencies = [
+ "csm-core",
+ "csm-engine",
+ "csm-pty",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "csm-setup"
 version = "0.0.1"
 dependencies = [

@@ -63,6 +63,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: addon_open_folder,
         },
         ToolSpec {
+            id: "addon_install_samples",
+            title: "Install sample add-ons",
+            summary: "Copy the sample add-ons that ship with the app (Codex CLI, Gemini CLI, Session summary) into the add-ons folder. A sample whose folder already exists is left alone, never overwritten. They arrive disabled; enabling each one asks for consent as usual. Not available for a --clean or isolated run.",
+            toolset: Toolset::Addons,
+            effects: Effects::MUTATES_STATE | Effects::WRITES_FILESYSTEM,
+            input_schema: crate::tool::empty_schema,
+            run: addon_install_samples,
+        },
+        ToolSpec {
             id: "addon_run_apply",
             title: "Add a pack's run command",
             summary: "Add one of an enabled add-on's run templates (`addon-id.name`, from addon_list) to a session's Runs. Refused for MCP clients, like run_edit: run commands decide what F5 runs.",
@@ -236,6 +245,43 @@ fn addon_open_folder(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
     });
     match spawned {
         Ok(_) => Ok(ToolOutput::message("Opening the add-ons folder.")),
+        Err(e) => Err(ToolError::Failed(format!("could not start a worker: {e}"))),
+    }
+}
+
+fn addon_install_samples(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    let Some(root) = ctx.state.rt.addons.root.clone() else {
+        return Err(ToolError::Refused("there is no add-ons folder in this run (--clean or an isolated run)".into()));
+    };
+    let Some(samples) = ctx.state.options.samples_dir.clone() else {
+        return Err(ToolError::Refused("this build has no bundled samples".into()));
+    };
+    let reply = ctx.park();
+    let engine = ctx.engine.clone();
+    let spawned = std::thread::Builder::new().name("csm-addon-samples".into()).spawn(move || match csm_services::addons::install_samples(&samples, &root) {
+        Err(e) => {
+            if let Some(reply) = reply {
+                reply.send(Err(ToolError::Failed(e)));
+            }
+        }
+        Ok(report) => {
+            engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
+                // Read the folder again so the new add-ons show up (disabled).
+                addons::reload(ctx);
+                if let Some(reply) = reply {
+                    let msg = match (report.installed.len(), report.skipped.len()) {
+                        (0, 0) => "There are no samples to install.".to_owned(),
+                        (0, _) => "Every sample is already in the add-ons folder; nothing was changed.".to_owned(),
+                        (n, 0) => format!("Installed {n} sample add-on(s). Enable the ones you want."),
+                        (n, s) => format!("Installed {n} sample add-on(s); {s} already there were left alone. Enable the ones you want."),
+                    };
+                    reply.send(Ok(ToolOutput::new(msg, json!({"installed": report.installed, "skipped": report.skipped}))));
+                }
+            }));
+        }
+    });
+    match spawned {
+        Ok(_) => Ok(ToolOutput::message("Installing the sample add-ons.")),
         Err(e) => Err(ToolError::Failed(format!("could not start a worker: {e}"))),
     }
 }
