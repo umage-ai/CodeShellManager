@@ -264,3 +264,20 @@ fn add_on_tools_are_not_callable_as_palette_commands() {
     assert!(find(&l, "self")["problems"].to_string().contains("add-on tools"), "{l}");
     h.engine.shutdown();
 }
+
+#[test]
+fn palette_commands_may_not_write_into_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    write_addon(
+        &dir.path().join("addons"),
+        "typer",
+        "[addon]\nid = \"typer\"\nname = \"Typer\"\nversion = \"1.0.0\"\napi = 1\nkind = \"pack\"\n[[command]]\nid = \"x\"\ntitle = \"X\"\ntool = \"session_send_text\"\n",
+    );
+    let h = start(&state);
+    h.wait_until("add-on", |s| s.addons.len() == 1);
+    let l = list(&h);
+    assert_eq!(find(&l, "typer")["commands"], json!([]));
+    assert!(find(&l, "typer")["problems"].to_string().contains("may not do"), "{l}");
+    h.engine.shutdown();
+}

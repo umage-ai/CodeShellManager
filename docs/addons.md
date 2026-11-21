@@ -102,7 +102,8 @@ are plain. The consent dialog shows that exact command line.
   id is not valid. A bad status rule drops its whole profile, since the profile's behaviour would be
   wrong without it.
 - **A palette command naming a tool that does not exist** is dropped when the add-on loads (the
-  registry is the authority). A command may never call an `addon_*` tool.
+  registry is the authority). A command may never call an `addon_*` tool, and may not call a tool
+  that writes into a session (`session_send_text` and similar) or enables an extension.
 
 ## Profiles
 

@@ -23,7 +23,7 @@ use serde_json::json;
 
 use crate::engine::{Ctx, ParkedReply};
 use crate::registry::Registry;
-use crate::tool::{Toolset, ToolError, ToolOutput};
+use crate::tool::{Effects, Toolset, ToolError, ToolOutput};
 
 /// Where an add-on stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -211,13 +211,25 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
                 p.slash.clear();
                 p.commands.clear();
             }
-            // A palette command must name a real tool, and never an add-on tool.
+            // A palette command must name a real tool, never an add-on tool, and never one that
+            // writes into a session or turns on another extension: a pack's fixed text must not
+            // reach a PTY through one click, and that path is not reviewed here.
             p.commands.retain(|c| {
-                let known = registry.get(&c.tool).is_some_and(|t| t.toolset != Toolset::Addons);
-                if !known {
-                    problems.push(Problem { scope: format!("command `{}`", c.id), message: format!("`{}` is not a tool this app has; ignored", c.tool) });
+                let verdict = match registry.get(&c.tool) {
+                    None => Some(format!("`{}` is not a tool this app has; ignored", c.tool)),
+                    Some(t) if t.toolset == Toolset::Addons => Some("add-on tools cannot be palette commands; ignored".to_owned()),
+                    Some(t) if t.effects.intersects(Effects::SENDS_INPUT | Effects::ENABLES_EXTENSION) => {
+                        Some(format!("`{}` writes into sessions or enables extensions, which a palette command may not do; ignored", c.tool))
+                    }
+                    Some(_) => None,
+                };
+                match verdict {
+                    Some(message) => {
+                        problems.push(Problem { scope: format!("command `{}`", c.id), message });
+                        false
+                    }
+                    None => true,
                 }
-                known
             });
             Entry { folder: s.folder, path: s.path, parsed: Some(Arc::new(p)), digest: Some(digest), state: AddonState::Disabled, message: None, problems }
         }
