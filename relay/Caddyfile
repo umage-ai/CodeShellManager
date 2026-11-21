@@ -1,0 +1,8 @@
+# Caddy in front of csm-relay: automatic TLS, WebSocket upgrades pass through, and Caddy sets
+# X-Forwarded-For to the real client address (replacing anything the client sent), which the relay
+# uses for its per-IP limits when CSM_RELAY_TRUST_FORWARDED_FOR=1.
+#
+# Replace the host name. DNS for it must point at this machine, ports 80 and 443 must be open.
+relay.example.org {
+	reverse_proxy relay:8787
+}

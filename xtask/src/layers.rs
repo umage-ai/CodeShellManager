@@ -12,6 +12,7 @@ use crate::Findings;
 /// ends over the engine (MCP bridge, egui UI); L5 what only programs use (`csm-setup`); L6 programs.
 pub const LAYERS: &[(&str, u8)] = &[
     ("csm-core", 0),
+    ("csm-remote-proto", 0), // phone remote wire protocol: pure, no csm-core dependency
     ("csm-pty", 1),
     ("csm-term", 1),
     ("csm-services", 2),
@@ -24,6 +25,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-cli", 6),
     ("csm-session-summary", 6),
     ("term-spike", 6),
+    ("csm-relay", 6), // relay/: self-hostable phone-remote relay; speaks only csm-remote-proto
 ];
 
 /// Crates allowed to depend on egui.

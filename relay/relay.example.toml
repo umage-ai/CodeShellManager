@@ -1,0 +1,62 @@
+# csm-relay configuration. Every key is optional except that [access] must admit someone.
+# Any key can also be set from the environment (CSM_RELAY_*; see README.md), and the environment wins.
+
+# Where to listen. Plain HTTP/WebSocket: put a TLS proxy (Caddy, nginx) in front.
+bind = "127.0.0.1:8787"
+
+# Use the last X-Forwarded-For entry as the client address. Only behind a proxy that sets it
+# and only when clients cannot reach the relay directly.
+trust_forwarded_for = false
+
+# Browser origins allowed to open /v1/client (your phone app's origin). Empty = any.
+# Defence in depth only: a non-browser client sends any Origin it likes.
+allowed_origins = []
+
+# "text" or "json". Log level: CSM_RELAY_LOG (default "info"), for example CSM_RELAY_LOG=warn.
+log_format = "text"
+
+[access]
+# Which hosts (CSM installations) may use this relay. The relay refuses to start if nobody is
+# admitted at all. Pick what fits; they combine (a host passes if any rule admits it).
+
+# A relay for yourself or a private network: admit every host.
+open = false
+
+# Admit these host ids (shown in CSM: Settings > Add-ons > Phone remote).
+allowed_hosts = []
+
+# Or a file with one host id per line (# comments). Re-read at every host connection: add a line,
+# no restart.
+# allowed_hosts_file = "/etc/csm-relay/hosts.txt"
+
+# Or enrolment tokens: whoever has the secret can connect as a host. Each entry is the secret
+# (16+ characters, no spaces) or sha256:<hex>; `csm-relay enrol-token <secret>` prints that form.
+enrol_tokens = []
+
+[limits]
+# max_hosts = 10000
+# max_channels_per_host = 16
+# max_allow_entries = 64
+# max_sockets_per_ip = 20
+# new_connections_per_ip_per_minute = 10
+# frames_per_second_per_channel = 50
+# bytes_per_second_per_channel = 262144
+# host_silence_secs = 90
+# client_idle_secs = 600
+# hello_timeout_secs = 10
+# max_pairing_attempts = 5
+# max_pairing_secs = 600
+# max_frame_bytes = 65536
+
+[push]
+# Web Push forwarding. Set enabled = false to run without it (GET /v1/vapid then answers 404).
+enabled = true
+# The VAPID private key. Created on first run if missing (mode 0600). Keep it: phones subscribe
+# to the matching public key, and a new key invalidates every subscription.
+vapid_key_file = "vapid.key"
+# Contact for the push services (they may write to it about abuse). Use your own.
+vapid_subject = "mailto:admin@example.invalid"
+# Push services the relay may POST to ("*." matches subdomains only).
+allowed_hosts = ["*.push.apple.com", "fcm.googleapis.com", "updates.push.services.mozilla.com", "*.notify.windows.com"]
+per_host_per_hour = 60
+per_endpoint_per_hour = 20

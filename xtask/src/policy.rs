@@ -36,7 +36,7 @@ const UNSAFE_ALLOWED: &[&str] = &["crates/csm-pty/src/conpty.rs", "crates/csm-pt
 const UI_FRAME: &[&str] =
     &["crates/csm-ui/src/screens/", "crates/csm-ui/src/widgets.rs", "crates/csm-ui/src/terminal/view.rs", "crates/csm-ui/src/terminal/render.rs"];
 /// Crate roots that must carry the clippy denies. Extend as each crate is cleaned up.
-const DENY_ROOTS: &[&str] = &["crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "crates/csm-pty/", "xtask/"];
+const DENY_ROOTS: &[&str] = &["crates/csm-remote-proto/", "relay/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "crates/csm-pty/", "xtask/"];
 const DENY_LINTS: &[&str] = &["unwrap_used", "expect_used", "panic", "unimplemented", "todo", "unreachable"];
 
 pub fn check() -> Result<Findings, String> {
@@ -51,6 +51,8 @@ pub fn check() -> Result<Findings, String> {
         }
     }
     walk(&root.join("xtask").join("src"), &root, &mut problems);
+    // relay/ is a top-level app: one crate whose sources are checked like any other.
+    walk(&root.join("relay").join("src"), &root, &mut problems);
     Ok(problems)
 }
 

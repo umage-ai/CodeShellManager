@@ -1,0 +1,39 @@
+[package]
+name = "csm-relay"
+description = "csm-relay: untrusted, self-hostable relay for the CSM phone remote (routes opaque end-to-end encrypted frames, forwards Web Push)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "csm_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "csm-relay"
+path = "src/main.rs"
+
+[dependencies]
+csm-remote-proto = { path = "../crates/csm-remote-proto" }
+axum = { version = "0.8", default-features = false, features = ["ws", "http1", "tokio", "query"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "std"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json", "std", "ansi"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tokio = { version = "1", features = ["io-util"] }

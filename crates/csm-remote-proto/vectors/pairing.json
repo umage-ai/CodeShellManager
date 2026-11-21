@@ -1,0 +1,53 @@
+{
+  "doc": "QR payload = base64url_nopad(compact JSON of the offer, key order v,r,h,k,i,p); URL = <app_origin>/v/<version>/#p=<payload>",
+  "encoded": "eyJ2IjoxLCJyIjoid3NzOi8vcmVsYXkuZXhhbXBsZS50ZXN0IiwiaCI6Im5uM2g2dmVsd2YyNGRlZndxbnJ0Y216cXJ2IiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiRmgwa0t6STVRRWRPVlZ4amFuRjRmdyIsInAiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZNUEswZGpmNXUzMC13SUpFQmNlSlN3In0",
+  "invalid": [
+    {
+      "error": "format",
+      "input": ""
+    },
+    {
+      "error": "format",
+      "input": "p=!!!"
+    },
+    {
+      "error": "field r",
+      "input": "eyJ2IjoxLCJyIjoiaHR0cDovL2luc2VjdXJlLmV4YW1wbGUiLCJoIjoibm4zaDZ2ZWx3ZjI0ZGVmd3FucnRjbXpxcnYiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJGaDBrS3pJNVFFZE9WVnhqYW5GNGZ3IiwicCI6IlUxcGhhRzkyZllTTGtwbWdwNjYxdk1QSzBkamY1dTMwLXdJSkVCY2VKU3cifQ"
+    },
+    {
+      "error": "field h",
+      "input": "eyJ2IjoxLCJyIjoid3NzOi8vcmVsYXkuZXhhbXBsZS50ZXN0IiwiaCI6InNob3J0IiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiRmgwa0t6STVRRWRPVlZ4amFuRjRmdyIsInAiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZNUEswZGpmNXUzMC13SUpFQmNlSlN3In0"
+    },
+    {
+      "error": "version 2",
+      "input": "eyJ2IjoyLCJyIjoid3NzOi8vcmVsYXkuZXhhbXBsZS50ZXN0IiwiaCI6Im5uM2g2dmVsd2YyNGRlZndxbnJ0Y216cXJ2IiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiRmgwa0t6STVRRWRPVlZ4amFuRjRmdyIsInAiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZNUEswZGpmNXUzMC13SUpFQmNlSlN3In0"
+    }
+  ],
+  "messages": {
+    "accept": {
+      "device_id": "d1",
+      "level": "operator",
+      "routing_token": "i5KZoKeutbzDytHY3-bt9PsCCRAXHiUsMzpBSE9WXWQ",
+      "t": "accept"
+    },
+    "deny": {
+      "reason": "denied",
+      "t": "deny"
+    },
+    "hello": {
+      "name": "Pixel 9",
+      "t": "hello",
+      "v": 1
+    }
+  },
+  "offer": {
+    "h": "nn3h6velwf24defwqnrtcmzqrv",
+    "i": "Fh0kKzI5QEdOVVxjanF4fw",
+    "k": "eoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz5FTFM",
+    "p": "U1phaG92fYSLkpmgp661vMPK0djf5u30-wIJEBceJSw",
+    "r": "wss://relay.example.test",
+    "v": 1
+  },
+  "offer_json": "{\"v\":1,\"r\":\"wss://relay.example.test\",\"h\":\"nn3h6velwf24defwqnrtcmzqrv\",\"k\":\"eoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz5FTFM\",\"i\":\"Fh0kKzI5QEdOVVxjanF4fw\",\"p\":\"U1phaG92fYSLkpmgp661vMPK0djf5u30-wIJEBceJSw\"}",
+  "url": "https://phone.example.test/v/0.1.0/#p=eyJ2IjoxLCJyIjoid3NzOi8vcmVsYXkuZXhhbXBsZS50ZXN0IiwiaCI6Im5uM2g2dmVsd2YyNGRlZndxbnJ0Y216cXJ2IiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiRmgwa0t6STVRRWRPVlZ4amFuRjRmdyIsInAiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZNUEswZGpmNXUzMC13SUpFQmNlSlN3In0"
+}

@@ -7,3 +7,5 @@
 /publish
 .vs/
 .claude/
+/relay/relay.toml
+/relay/vapid.key
