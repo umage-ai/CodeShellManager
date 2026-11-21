@@ -11,10 +11,10 @@
 //! - A panicking tool becomes [`ToolError::Failed`]; the engine thread keeps running.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::events::{Event, Events};
-use crate::registry::Registry;
+use crate::plugins::{self, CallFn, PostFn};
+use crate::registry::{DynamicTool, Registry, is_add_on_tool_id};
 use crate::session::TerminalHandle;
 use crate::snapshot::Snapshot;
 use crate::state::State;
@@ -38,7 +39,7 @@ pub struct Ctx<'a> {
     pub state: &'a mut State,
     pub caller: &'a Caller,
     pub events: &'a Events,
-    pub registry: &'a Registry,
+    pub registry: Arc<Registry>,
     /// Lets a tool hand work to a background thread that later re-enters the engine
     /// (`engine.post(...)`) without holding the state.
     pub engine: &'a Engine,
@@ -114,12 +115,21 @@ struct Pending {
 /// state (`AppState::mcp_grants`), so it survives a restart; `grant_list` / `grant_revoke`.
 pub use csm_core::models::McpGrant as Grant;
 
+/// The tools of each process add-on, with the generation of the process that registered them.
+type PluginTools = BTreeMap<String, (u64, Vec<DynamicTool>)>;
+
 /// Cheap to clone; all clones talk to the same engine thread.
 #[derive(Clone)]
 pub struct Engine {
     tx: Sender<Msg>,
     events: Events,
-    registry: Arc<Registry>,
+    /// The current registry: built-in tools plus the running process add-ons' tools. Replaced
+    /// as a whole when an add-on's tools change (`set_plugin_tools`).
+    registry: Arc<RwLock<Arc<Registry>>>,
+    /// The tools each process add-on registered, with the generation of the process that did.
+    plugin_tools: Arc<Mutex<PluginTools>>,
+    /// The process add-ons (`plugins.rs`).
+    pub(crate) host: Arc<plugins::Host>,
     joined: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     view: Arc<Mutex<Arc<Snapshot>>>,
     /// Text a session asked to put on the clipboard (OSC 52), waiting for the UI (issue #156).
@@ -132,13 +142,34 @@ impl Engine {
     /// engine tool (sessions, groups, layout, app) is always registered; `tools` adds more.
     /// The restore loop starts right away when `state` has sessions to restore.
     pub fn start(state: State, tools: Vec<ToolSpec>) -> Result<Engine, ToolError> {
-        let registry = Arc::new(Registry::new(builtin_specs().into_iter().chain(crate::tools::specs()).chain(tools).collect())?);
+        let registry = Registry::new(builtin_specs().into_iter().chain(crate::tools::specs()).chain(tools).collect())?;
         let (tx, rx) = mpsc::channel::<Msg>();
         let events = Events::default();
+        // The process add-ons' host reaches the engine only through these: a job to post, and a
+        // call that waits for the answer. Neither holds the engine, so there is no reference cycle.
+        let post: PostFn = {
+            let tx = tx.clone();
+            Arc::new(move |job: Job| {
+                let _ = tx.send(Msg::Post(job));
+            })
+        };
+        let call: CallFn = {
+            let tx = tx.clone();
+            Arc::new(move |caller: Caller, id: &str, params: Value| {
+                let (reply, rx) = mpsc::channel();
+                if tx.send(Msg::Call { caller, id: id.to_string(), params, reply }).is_err() {
+                    return Err(ToolError::Failed("the engine stopped".into()));
+                }
+                rx.recv_timeout(CONSENT_TIMEOUT + Duration::from_secs(30)).unwrap_or_else(|_| Err(ToolError::TimedOut(format!("`{id}` did not answer"))))
+            })
+        };
+        let host = Arc::new(plugins::Host::start(post, call, events.subscribe()));
         let engine = Engine {
             tx,
             events: events.clone(),
-            registry: registry.clone(),
+            registry: Arc::new(RwLock::new(Arc::new(registry))),
+            plugin_tools: Arc::new(Mutex::new(BTreeMap::new())),
+            host,
             joined: Arc::new(Mutex::new(None)),
             view: Arc::new(Mutex::new(Arc::new(Snapshot::default()))),
             clipboard: Arc::new(Mutex::new(None)),
@@ -159,8 +190,64 @@ impl Engine {
         Ok(engine)
     }
 
-    pub fn registry(&self) -> &Registry {
-        &self.registry
+    /// The current registry: the built-in tools and the running process add-ons' tools. A
+    /// snapshot; it does not change under the caller.
+    pub fn registry(&self) -> Arc<Registry> {
+        self.registry.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The generation of the process whose tools are registered for `addon`, if any.
+    pub(crate) fn plugin_tool_gen(&self, addon: &str) -> Option<u64> {
+        self.plugin_tools.lock().unwrap_or_else(PoisonError::into_inner).get(addon).map(|(g, _)| *g)
+    }
+
+    /// The add-ons that have tools registered.
+    pub(crate) fn plugin_tool_owners(&self) -> Vec<String> {
+        self.plugin_tools.lock().unwrap_or_else(PoisonError::into_inner).keys().cloned().collect()
+    }
+
+    /// Sets the tools of one add-on process (`generation`). A process older than the one whose tools are
+    /// registered is ignored, so a stopped process cannot overwrite its replacement. Engine thread.
+    pub(crate) fn set_plugin_tools(&self, addon: &str, generation: u64, tools: Vec<DynamicTool>) {
+        {
+            let mut map = self.plugin_tools.lock().unwrap_or_else(PoisonError::into_inner);
+            if map.get(addon).is_some_and(|(old, _)| *old > generation) {
+                return;
+            }
+            if tools.is_empty() {
+                map.remove(addon);
+            } else {
+                map.insert(addon.to_owned(), (generation, tools));
+            }
+        }
+        self.rebuild_registry();
+    }
+
+    /// Removes an add-on's tools whatever process they came from. Engine thread.
+    pub(crate) fn clear_plugin_tools(&self, addon: &str) {
+        self.plugin_tools.lock().unwrap_or_else(PoisonError::into_inner).remove(addon);
+        self.rebuild_registry();
+    }
+
+    /// Rebuilds the registry from the built-in tools and every add-on's tools. An add-on whose
+    /// tools clash with a built-in tool or another add-on's is left out (and logged); the rest
+    /// still register.
+    fn rebuild_registry(&self) {
+        let map = self.plugin_tools.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let mut slot = self.registry.write().unwrap_or_else(PoisonError::into_inner);
+        let mut accepted: Vec<DynamicTool> = Vec::new();
+        for (addon, (_, tools)) in &map {
+            let mut trial = accepted.clone();
+            trial.extend(tools.iter().cloned());
+            match slot.with_dynamic(&trial) {
+                Ok(_) => accepted = trial,
+                Err(e) => log::error!("the tools of add-on `{addon}` were not registered: {e}"),
+            }
+        }
+        match slot.with_dynamic(&accepted) {
+            Ok(next) => *slot = Arc::new(next),
+            Err(e) => log::error!("add-on tools were not registered: {e}"),
+        }
     }
 
     /// Subscribe to engine events (UI, IPC clients, the MCP bridge).
@@ -226,6 +313,8 @@ impl Engine {
         if let Some(h) = handle {
             let _ = h.join();
         }
+        // After the engine thread: no tool can start a plugin any more; the plugins stop within the budget.
+        self.host.shutdown();
     }
 }
 
@@ -298,7 +387,7 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                     }
                     _ => {}
                 }
-                let Some(spec) = engine.registry.get(&id).copied() else {
+                let Some(spec) = engine.registry().get(&id).copied() else {
                     let _ = reply.send(Err(ToolError::UnknownTool(id)));
                     return true;
                 };
@@ -318,7 +407,7 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                         return true;
                     }
                 }
-                run_tool(&spec, state, &caller, params, engine, reply);
+                run_or_dispatch(&spec, state, &caller, params, engine, reply);
             }
         }
     }
@@ -326,7 +415,16 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
 }
 
 fn ctx<'a>(state: &'a mut State, caller: &'a Caller, engine: &'a Engine, reply: Option<Sender<Reply>>) -> Ctx<'a> {
-    Ctx { state, caller, events: &engine.events, registry: &engine.registry, engine, reply }
+    Ctx { state, caller, events: &engine.events, registry: engine.registry(), engine, reply }
+}
+
+/// A process add-on's tool runs on its add-on's call thread; every other tool runs here.
+fn run_or_dispatch(spec: &ToolSpec, state: &mut State, caller: &Caller, params: Value, engine: &Engine, reply: Sender<Reply>) {
+    if is_add_on_tool_id(spec.id) {
+        engine.host.dispatch(plugins::owner_of(spec.id).unwrap_or_default().to_owned(), spec.id.to_owned(), params, reply);
+        return;
+    }
+    run_tool(spec, state, caller, params, engine, reply);
 }
 
 /// Runs a tool and answers `reply`, unless the tool parked it.
@@ -419,7 +517,7 @@ fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, s
                 Some(err) => {
                     let _ = req.reply.send(Err(err));
                 }
-                None => run_tool(&req.spec, state, &req.caller, req.params, engine, req.reply),
+                None => run_or_dispatch(&req.spec, state, &req.caller, req.params, engine, req.reply),
             }
         }
     }

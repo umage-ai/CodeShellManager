@@ -88,7 +88,7 @@ impl Dispatcher {
         &self.engine
     }
 
-    pub fn registry(&self) -> &Registry {
+    pub fn registry(&self) -> std::sync::Arc<Registry> {
         self.engine.registry()
     }
 

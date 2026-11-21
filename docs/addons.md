@@ -1,6 +1,6 @@
 # Add-ons
 
-Status: phase 1 (declarative packs). Process add-ons are parsed and validated, not run yet.
+Status: phase 2 (declarative packs, and process add-ons over stdio). Signing and a registry are not built yet.
 Spec for the manifest format, the enable rules and the tools. The code is `csm-core::addons`
 (parsing, pure), `csm-services::addons` (the folder), `csm-engine::addons` and `tools/addons.rs`
 (state and tools), and `csm-ui/src/screens/addons.rs` (Settings > Add-ons).
@@ -54,7 +54,7 @@ title = "List sessions"
 tool = "session_list"
 params = { include_asleep = false }
 
-[process]                       # only for kind = "process" (validated, not run yet)
+[process]                       # only for kind = "process": the program CSM starts (see Process add-ons)
 argv = ["my-helper"]
 effects = ["launches_process"]  # from: launches_process, sends_input, reads_session_content,
                                 #       writes_filesystem, accesses_network
@@ -191,12 +191,129 @@ beside it without changing what is stored.
 
 `session_new` takes `profile`, and `session_send_command` and the slash menu read the merged slash list.
 
-## Process add-ons (phase 2)
+## Process add-ons
 
-`kind = "process"` with a `[process]` table is parsed and validated, and its effects are shown in the
-consent dialog. It **runs nothing yet**: it contributes no profiles, commands or presets, and enabling
-it adds nothing beyond the approval. Phase 2 will start it out of process over stdio, with a tool
-surface and event subscriptions, and each effect checked against what it declared here.
+`kind = "process"` with a `[process]` table makes the add-on a **program that CSM starts**. It
+contributes tools, not profiles, run commands, presets or palette commands. Those belong to packs:
+a process add-on that declares them has them ignored, and the problem is listed.
+
+```toml
+[process]
+argv = ["my-helper", "--stdio"]     # plain tokens; the program and its arguments, no shell
+effects = ["writes_filesystem"]     # the most the add-on's tools may use (see below)
+```
+
+### Start and stop
+
+- Enabling it (the same consent as a pack) starts the program. Disabling it, a reload that finds a
+  changed `addon.toml`, or quitting the app stops it. Quitting waits at most 3 seconds for it.
+- It runs with **argv only** (no shell), its **working folder is the add-on folder**, its stdin and
+  stdout are pipes, and on Windows it opens **no console window**. It inherits the app's environment.
+- Its stderr is captured into a 2 KiB tail, shown by `plugin_status`. Nothing else is read from it.
+
+### Messages
+
+Newline-delimited **JSON-RPC 2.0**, one message per line, each **at most 1 MiB**. The first message
+CSM sends is the handshake:
+
+```
+-> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"api":1,"csm_version":"0.0.1"}}
+<- {"jsonrpc":"2.0","id":1,"result":{"api":1,"name":"Echo test","tools":[
+      {"id":"echo-test.echo","title":"Echo","summary":"Returns its arguments",
+       "input_schema":{"type":"object"},"effects":[]},
+      {"id":"echo-test.write","title":"Write","summary":"Writes a file","effects":["writes_filesystem"]}],
+    "subscriptions":["session_changed","inbox_changed"]}}
+```
+
+- `api` must be 1 (`PROTOCOL_API`). Another value refuses the plugin.
+- Each tool id must be **`<add-on id>.<name>`**, with `<name>` lowercase letters, digits and `_`
+  (up to 48 bytes). Any other prefix is refused.
+- A tool's `effects` may only name effects the `[process]` table declares. A tool that names an
+  undeclared one is **refused** (the other tools still load), and the problem is shown.
+- `input_schema` is an object schema, at most 16 KiB. Omitted, it accepts no fields.
+- `subscriptions` may name `session_changed`, `session_removed` and `inbox_changed`. Each matching
+  event is sent to the plugin as a notification:
+  `{"jsonrpc":"2.0","method":"event","params":{"event":"session_changed","session_id":"..."}}`.
+  Events carry only what the engine event carries (ids, not text).
+- Limits: 32 tools, 8 subscriptions, title 64 characters, summary 500 characters.
+
+**Calls into the plugin.** A tool call from the app, the CLI or MCP becomes:
+
+```
+-> {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo-test.echo","arguments":{}}}
+<- {"jsonrpc":"2.0","id":7,"result":{"message":"echoed","data":{}}}
+```
+
+`message` (500 characters) and `data` are both optional. An error answer
+(`{"error":{"code":..,"message":..}}`) becomes a failed call with its message. A call that is not
+answered in **30 seconds** times out. At most 16 calls are in flight per add-on.
+
+**Calls out of the plugin (`csm/call`).** A plugin may run any CSM tool:
+
+```
+-> {"jsonrpc":"2.0","id":9,"method":"csm/call","params":{"tool":"session_list","params":{}}}
+<- {"jsonrpc":"2.0","id":9,"result":{"message":"...","data":{}}}
+```
+
+The call runs as the **add-on's own caller** (`add-on <id>`, not the person). It is consent-checked
+like an MCP call, so a tool whose effects need consent asks the person first, and the consent card
+names the add-on. A failed call answers with `error.code = -32000` and `error.data` holding the tool
+error (`{"code":"refused","message":"..."}`). At most 8 `csm/call`s run at once per add-on.
+`csm/log` with `{"message": "..."}` is written to the app log. Any other method is answered with
+`-32601`.
+
+### Effects and consent
+
+Each tool's effects map onto the app's effects, and **consent for MCP callers is derived from
+them**: a tool with `writes_filesystem` asks the person before an MCP client runs it, like any
+built-in tool with that effect. A tool with no effects runs without asking.
+
+| add-on effect | tool effect | MCP consent |
+|---|---|---|
+| `launches_process` | launches a process | yes |
+| `sends_input` | writes into sessions | yes |
+| `reads_session_content` | returns session content | yes |
+| `writes_filesystem` | writes files | yes |
+| `accesses_network` | talks to the network | no (open-world hint only) |
+
+A tool with no `effects` declares none of them. The add-on as a whole is approved by the person,
+with its program and its declared effects shown in the consent dialog.
+
+### Failures and restarts
+
+- A process that **exits**, writes a line that is **not JSON** or not a JSON-RPC message, writes a
+  line **over 1 MiB**, or does **not answer `initialize` within 10 seconds** is stopped. Its tools
+  are removed, and any call waiting on it fails with "stopped before it answered".
+- A stopped process starts again after a backoff of 1, 2, 4, 8 and 16 seconds (capped at 30). After
+  **5 failures in a row** it is left alone (state `gave_up`) until `plugin_restart`. A run that lasted
+  60 seconds before it failed starts the count again.
+- `plugin_status` shows, per enabled process add-on: `state` (`starting`, `running`, `crashed`,
+  `gave_up`, `stopped`), `pid`, `restarts`, `last_error`, its `tools`, the handshake `problems`, and
+  the stderr tail. Settings > Add-ons shows the state, the last error and a **Restart** button.
+
+### Tools
+
+| id | effects | what |
+|---|---|---|
+| `plugin_status` | read, returns session-like output | the table above |
+| `plugin_restart` | launches a process, may discard data | `id`: stop and start an enabled process add-on |
+
+While its process runs, the add-on's own tools (`echo-test.echo` and so on) appear in `tool_list`,
+the palette, the CLI (`csm echo-test.echo`) and MCP, in the `addons` toolset. They cannot be
+palette commands: a command names a built-in tool.
+
+### Test plugin
+
+`crates/csm-engine/tests/support/echo_plugin.rs` (built as `csm-echo-plugin`, not shipped) is a
+complete example in Rust. `crates/csm-engine/tests/plugins.rs` runs it through the engine: the
+handshake, a call, consent, `csm/call`, events, a crash and restart, disabling, the three
+misbehaviour caps, and shutdown.
+
+### Not in this phase
+
+Declarative UI panels, signed add-ons, a registry, a version check or update for a process add-on,
+and a process add-on's own profiles or palette commands. Protocol `api` 1 is the only version.
+
 
 ## Example
 
@@ -205,9 +322,8 @@ with status rules, a run template, a slash preset and a palette command. Copy th
 `<config dir>/addons/`, then enable it in Settings > Add-ons. `crates/csm-core/tests/example_pack.rs`
 parses it with no problems.
 
-## Limits (phase 1)
+## Limits
 
-- Process add-ons do not run.
 - Profile resume templates (`{session_id}`) are validated but not applied.
 - Run templates with a working folder are refused (run commands have none).
 - No registry, signing or update check: add-ons are trusted on enable, with the consent above.
@@ -218,3 +334,7 @@ parses it with no problems.
   cleared on the next tick.
 - Run templates run in a shell, as any Runs command does; a `cwd` other than `{folder}` is refused.
 - A symlink to another file inside an add-on folder is not followed for the manifest; other files are ignored. Windows junctions are not detected as links.
+- A process add-on's restarts are not rate-limited by hand: `plugin_restart` (and the Restart button) starts it at once. Only crashes back off.
+- The title and summary text of a process add-on's tools is kept for the life of the app, once per distinct text. A plugin that changes them on every start grows memory by that text.
+- A process add-on's tool calls are not cancelled when its process stops; they fail with "stopped before it answered".
+- No signing, registry or version check for process add-ons; consent is per `addon.toml` digest, as for packs.

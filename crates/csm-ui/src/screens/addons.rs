@@ -53,11 +53,43 @@ fn row(ui: &mut Ui, a: &AddonSummary, actions: &mut Vec<Action>) {
     if let Some(m) = &a.message {
         caption(ui, m);
     }
+    if let Some(rt) = &a.process {
+        let mut line = format!("Process: {}", process_label(rt.state));
+        if let Some(pid) = rt.pid {
+            line.push_str(&format!(" · pid {pid}"));
+        }
+        if rt.restarts > 0 {
+            line.push_str(&format!(" · restarted {} time(s)", rt.restarts));
+        }
+        if !rt.tools.is_empty() {
+            line.push_str(&format!(" · {} tool(s)", rt.tools.len()));
+        }
+        caption(ui, &line);
+        if let Some(e) = &rt.last_error {
+            caption(ui, &format!("Last error: {e}"));
+        }
+        ui.horizontal(|ui| {
+            if widgets::button(ui, ButtonKind::Secondary, None, "Restart", None).clicked() {
+                actions.push(Action::Tool("plugin_restart", json!({"id": a.id})));
+            }
+        });
+    }
     if !a.description.is_empty() {
         caption(ui, &a.description);
     }
     for p in &a.problems {
         caption(ui, &format!("Skipped: {p}"));
+    }
+}
+
+fn process_label(s: csm_engine::RunState) -> &'static str {
+    use csm_engine::RunState;
+    match s {
+        RunState::Starting => "starting",
+        RunState::Running => "running",
+        RunState::Crashed => "crashed, starting again soon",
+        RunState::GaveUp => "gave up after repeated crashes",
+        RunState::Stopped => "stopped",
     }
 }
 
@@ -97,7 +129,8 @@ pub fn consent_body(a: &AddonSummary) -> String {
     }
     if a.kind == "process" {
         let effects = if a.process_effects.is_empty() { "none declared".to_owned() } else { a.process_effects.join(", ") };
-        lines.push(format!("Process add-on. It may request: {effects}. Process add-ons do not run yet, so enabling adds nothing else."));
+        let command = a.process_command_line.clone().unwrap_or_default();
+        lines.push(format!("Process add-on. It runs `{command}` as a program, with its working folder set to the add-on folder. It may request: {effects}. Its tools appear in the palette, the CLI and MCP; a tool that uses an effect asks before it runs for MCP clients."));
     }
     lines.push("Enabling is saved. If the file changes later, it is turned off until you enable it again.".into());
     lines.join("\n")
@@ -129,6 +162,8 @@ mod tests {
             slash: vec![csm_core::models::SlashCommand::new("/review", "Review")],
             commands: vec![CommandSummary { id: "demo.list".into(), title: "List".into(), tool: "session_list".into(), params: json!({}) }],
             process_effects: vec![],
+            process_command_line: None,
+            process: None,
             problems: vec![],
         };
         let body = consent_body(&a);
