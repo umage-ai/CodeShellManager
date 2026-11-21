@@ -75,6 +75,9 @@ pub struct StateOptions {
     pub claude_roots: crate::usage_tail::ClaudeRoots,
     /// How often followed transcripts are checked for new lines.
     pub usage_poll: Duration,
+    /// The bundled sample add-ons (`<install dir>/samples/addons`), which `addon_install_samples`
+    /// copies into the add-ons folder. `None` (tests, unless they say otherwise): no samples.
+    pub samples_dir: Option<PathBuf>,
 }
 
 /// The Windows Terminal settings the profile tools read.
@@ -108,9 +111,15 @@ impl Default for StateOptions {
             terminal_profiles: TerminalProfiles::None,
             claude_roots: crate::usage_tail::ClaudeRoots::None,
             usage_poll: Duration::from_secs(2),
+            samples_dir: None,
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
         }
     }
+}
+
+/// `samples/addons` beside the running exe (where the installer and the portable zip put it).
+fn bundled_samples_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|d| d.join("samples").join("addons"))
 }
 
 impl StateOptions {
@@ -123,6 +132,7 @@ impl StateOptions {
             terminal_profiles: TerminalProfiles::Installed,
             claude_roots: crate::usage_tail::ClaudeRoots::Auto,
             url_opener: real_url_opener(),
+            samples_dir: bundled_samples_dir(),
             ..Self::default()
         }
     }

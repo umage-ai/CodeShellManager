@@ -25,6 +25,9 @@ pub fn show(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
         if widgets::button(ui, ButtonKind::Secondary, None, "Open folder", None).clicked() {
             actions.push(Action::Tool("addon_open_folder", json!({})));
         }
+        if widgets::button(ui, ButtonKind::Secondary, None, "Install samples", None).clicked() {
+            actions.push(Action::Tool("addon_install_samples", json!({})));
+        }
     });
     ui.add_space(space::MD);
     if app.model.addons.is_empty() {

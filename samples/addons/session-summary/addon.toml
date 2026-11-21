@@ -1,0 +1,25 @@
+# Sample process add-on: "Summarise sessions".
+#
+# A small program (csm-session-summary, written in Rust, installed beside codeshell.exe) that CSM
+# starts when you enable this add-on. It adds one tool, session-summary.summarise, which calls
+# session_list through csm/call and returns counts by status, the sessions that need you, and the
+# sessions per repo. See docs/addons.md, "Process add-ons", and apps/csm-session-summary/.
+#
+# The program is found by name: CSM looks in its own folder (where the installer puts it) and on
+# PATH. Argv elements must be plain tokens, so there is no path with spaces here.
+#
+# Effects are declared honestly: session_list is read-only and returns no terminal text, the program
+# opens no file and no network connection, so it declares none.
+
+[addon]
+id = "session-summary"
+name = "Session summary"
+version = "0.1.0"
+description = "Adds a tool that summarises your sessions: counts by status, which need you, and per-repo grouping. A sample process add-on."
+api = 1
+kind = "process"
+author = "CodeShellManager samples"
+
+[process]
+argv = ["csm-session-summary"]
+effects = []

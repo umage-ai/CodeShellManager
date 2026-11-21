@@ -187,6 +187,7 @@ beside it without changing what is stored.
 | `addon_enable` | state, enables extension (consent for MCP) | `id`, `version` and `digest` (both as shown) |
 | `addon_disable` | state | `id`; forgets the approval |
 | `addon_open_folder` | launches a process, writes files | creates the folder if missing and opens it |
+| `addon_install_samples` | state, writes files | copies the bundled sample add-ons that are not in the folder yet (never overwrites); they arrive disabled |
 | `addon_run_apply` | state (refused for MCP) | `session_id`, `template` (`addon-id.name`) |
 
 `session_new` takes `profile`, and `session_send_command` and the slash menu read the merged slash list.
@@ -319,6 +320,18 @@ complete example in Rust. `crates/csm-engine/tests/plugins.rs` runs it through t
 handshake, a call, consent, `csm/call`, events, a crash and restart, disabling, the three
 misbehaviour caps, and shutdown.
 
+### Sample plugin: Session summary
+
+`apps/csm-session-summary` is a small shipped process add-on in Rust (no runtime to install). It
+does the handshake, declares `session-summary.summarise` (input `include_asleep`, default false),
+and on a call runs `session_list` through `csm/call` and answers with a one-paragraph `message`
+(counts by status, the sessions that need you, repos in play) and a `data` object with the full
+detail (`total`, `by_status`, `needs_you`, `by_repo`). `session_list` is read-only and returns no
+terminal text, so the add-on and its tool both declare `effects = []`: an MCP client runs it with
+no consent card. Its `argv` is the bare name `csm-session-summary`; the plugin host finds it beside
+`codeshell.exe` (and on PATH, where the installer puts the app's folder). Test:
+`apps/csm-session-summary/tests/summary.rs` runs it through the real host.
+
 ### Not in this phase
 
 Declarative UI panels, signed add-ons, a registry, a version check or update for a process add-on,
@@ -331,6 +344,26 @@ and a process add-on's own profiles or palette commands. Protocol `api` 1 is the
 with status rules, a run template, a slash preset and a palette command. Copy the folder into
 `<config dir>/addons/`, then enable it in Settings > Add-ons. `crates/csm-core/tests/example_pack.rs`
 parses it with no problems.
+
+## Samples that ship with the app
+
+`samples/addons/` holds three real add-ons, staged by the release workflow into
+`<install dir>\samples\addons\` (MSI and portable zip alike):
+
+| id | kind | what |
+|---|---|---|
+| `codex-cli` | pack | profiles `agent` (`codex`) and `resume-last` (`codex resume --last`), status rules, `/review` `/diff` `/compact`, palette commands to start either |
+| `gemini-cli` | pack | profiles `agent` (`gemini`) and `resume-latest` (`gemini --resume`), status rules, `/compress` `/stats` `/memory`, palette commands to start either |
+| `session-summary` | process | the Session summary plugin above |
+
+The MSI installs per machine and add-ons live per user, so nothing is enabled or copied at install
+time. **Settings > Add-ons > Install samples** (`addon_install_samples`) copies each sample folder
+that is not already in the add-ons folder; an existing folder (yours, edited, enabled) is never
+touched. They appear **disabled**; **Enable...** shows what each adds and asks, as for any add-on.
+The profile resume is `re-run`: CSM does not know Codex's or Gemini's session ids, so restore
+starts a new conversation and the `resume-*` profiles continue the last one. The status rules match
+the TUIs' wording as last seen and may need adjusting after a release of either tool (see the
+comments in each file). `crates/csm-core/tests/sample_packs.rs` parses all three with no problems.
 
 ## Limits
 

@@ -1,0 +1,74 @@
+# Sample add-on: Google Gemini CLI (the `gemini` program).
+#
+# Shipped with CodeShellManager under <install dir>\samples\addons\. Settings > Add-ons >
+# "Install samples" copies it into your add-ons folder; it stays off until you Enable it.
+# Needs `gemini` on PATH (npm i -g @google/gemini-cli). See docs/addons.md.
+#
+# Resume: `gemini --resume` with no value loads the latest session (documented in the Gemini CLI
+# session-management docs; `--resume <index|uuid>` also exists). Restore of a profile session
+# starts `gemini` again (a new session); the "resume-latest" profile continues the last one.
+#
+# UNCERTAINTY: the status regexes were written from how the Gemini CLI looks at the time of writing
+# (a confirmation box with "Allow once" / "Allow for this session" / "No, suggest changes",
+# "Apply this change?", a spinner line "Thinking... (esc to cancel, 5s)", an input box with the
+# placeholder "Type your message or @path/to/file"). The question rule is the least certain. The
+# wording changes between releases; adjust here if a status stops tracking. Rules match against the
+# last 12 non-empty screen lines; the first matching rule wins.
+# Patterns are TOML literal strings ('...'), so a backslash is a regex backslash.
+
+[addon]
+id = "gemini-cli"
+name = "Gemini CLI"
+version = "0.1.0"
+description = "Launch profiles for Google's Gemini CLI, with status detection for approvals, questions, work and idle."
+api = 1
+kind = "pack"
+author = "CodeShellManager samples"
+homepage = "https://github.com/google-gemini/gemini-cli"
+
+[[profile]]
+name = "agent"
+argv = ["gemini"]
+resume = "re-run"
+status = [
+  { match = '(?i)allow once|allow for this session|apply this change\?|allow execution of|waiting for user confirmation', status = "needs_you_approval" },
+  { match = '(?i)enter to select.*esc to cancel', status = "needs_you_question" },
+  { match = '(?i)esc to cancel, \d|thinking\.\.\.', status = "working" },
+  { match = '(?i)type your message or @path', status = "idle" },
+]
+
+# Continue the latest Gemini session (`gemini --resume`).
+[[profile]]
+name = "resume-latest"
+argv = ["gemini", "--resume"]
+resume = "re-run"
+status = [
+  { match = '(?i)allow once|allow for this session|apply this change\?|allow execution of|waiting for user confirmation', status = "needs_you_approval" },
+  { match = '(?i)enter to select.*esc to cancel', status = "needs_you_question" },
+  { match = '(?i)esc to cancel, \d|thinking\.\.\.', status = "working" },
+  { match = '(?i)type your message or @path', status = "idle" },
+]
+
+[[slash]]
+command = "/compress"
+description = "Replace the context with a summary"
+
+[[slash]]
+command = "/stats"
+description = "Show token usage and session statistics"
+
+[[slash]]
+command = "/memory"
+description = "Manage GEMINI.md instructional memory"
+
+[[command]]
+id = "new"
+title = "New Gemini session"
+tool = "session_new"
+params = { profile = "gemini-cli.agent", name = "Gemini" }
+
+[[command]]
+id = "resume-latest"
+title = "Resume the latest Gemini session"
+tool = "session_new"
+params = { profile = "gemini-cli.resume-latest", name = "Gemini (resumed)" }
