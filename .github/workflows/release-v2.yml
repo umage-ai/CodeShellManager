@@ -82,21 +82,21 @@ jobs:
         run: ./scripts/get-conpty.ps1
 
       - name: Build
-        run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary
+        run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary -p csm-review
 
       # ── Stage the files the MSI and the zip ship ─────────────────────────────
       - name: Stage
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force publish, dist | Out-Null
-          foreach ($f in 'codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'conpty.dll', 'OpenConsole.exe') {
+          foreach ($f in 'codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'csm-review.exe', 'conpty.dll', 'OpenConsole.exe') {
             $p = "target/release/$f"
             if (-not (Test-Path $p)) { throw "missing from the build: $f" }
             Copy-Item $p publish/
           }
           # Sample add-ons (disabled until the person installs and enables them). They sit under
           # samples/addons beside the exes: the app copies them on "Install samples".
-          $samples = @('codex-cli', 'gemini-cli', 'session-summary')
+          $samples = @('codex-cli', 'gemini-cli', 'review', 'session-summary')
           foreach ($s in $samples) {
             New-Item -ItemType Directory -Force "publish/samples/addons/$s" | Out-Null
             Copy-Item "samples/addons/$s/addon.toml" "publish/samples/addons/$s/"
@@ -112,7 +112,7 @@ jobs:
           # program (its output must reach the terminal). The sample plugin is a console program too
           # (it talks over stdin/stdout pipes); the plugin host starts it with CREATE_NO_WINDOW, so
           # no window flashes. PE optional header field Subsystem: 2 = Windows GUI, 3 = console.
-          foreach ($pair in @(@('codeshell.exe', 2), @('csm.exe', 3), @('csm-session-summary.exe', 3))) {
+          foreach ($pair in @(@('codeshell.exe', 2), @('csm.exe', 3), @('csm-session-summary.exe', 3), @('csm-review.exe', 3))) {
             $b = [System.IO.File]::ReadAllBytes("publish/$($pair[0])")
             $pe = [BitConverter]::ToInt32($b, 0x3C)
             $subsystem = [BitConverter]::ToUInt16($b, $pe + 24 + 68)
@@ -120,7 +120,7 @@ jobs:
           }
           # Every staged file must be in the installer (a file left out ships only in the zip).
           $wxs = Get-Content installer/CodeShellManager2.wxs -Raw
-          $staged = @('codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'conpty.dll', 'OpenConsole.exe', 'codeshell.aumid')
+          $staged = @('codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'csm-review.exe', 'conpty.dll', 'OpenConsole.exe', 'codeshell.aumid')
           foreach ($s in $samples) { $staged += "samples\addons\$s\addon.toml" }
           foreach ($f in $staged) {
             if ($wxs -notmatch [regex]::Escape("`$(var.PublishDir)\$f")) { throw "installer/CodeShellManager2.wxs does not install $f" }
@@ -140,7 +140,7 @@ jobs:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\publish\codeshell.exe,${{ github.workspace }}\publish\csm.exe,${{ github.workspace }}\publish\csm-session-summary.exe
+          files: ${{ github.workspace }}\publish\codeshell.exe,${{ github.workspace }}\publish\csm.exe,${{ github.workspace }}\publish\csm-session-summary.exe,${{ github.workspace }}\publish\csm-review.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256

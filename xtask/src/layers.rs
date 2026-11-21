@@ -23,6 +23,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("codeshell", 6),
     ("csm-cli", 6),
     ("csm-session-summary", 6),
+    ("csm-review", 6),
     ("term-spike", 6),
 ];
 

@@ -11,6 +11,7 @@
 //! into a terminal: in a Claude session, typed text would land in Claude's prompt.
 
 pub(crate) mod rt;
+mod read;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -34,7 +35,7 @@ use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, parse_param
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let read = Effects::IDEMPOTENT.union(Effects::LAUNCHES_PROCESS);
     let write = Effects::LAUNCHES_PROCESS.union(Effects::WRITES_FILESYSTEM);
-    vec![
+    let mut v = vec![
         ToolSpec {
             id: "git_status",
             title: "Git status",
@@ -116,7 +117,9 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             input_schema: schema_of::<SidParams>,
             run: worktree_prune,
         },
-    ]
+    ];
+    v.extend(read::specs());
+    v
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

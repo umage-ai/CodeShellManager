@@ -1,0 +1,31 @@
+# First-party add-on: "Review".
+#
+# A program (csm-review, written in Rust, installed beside codeshell.exe) that CSM starts when you
+# enable this add-on. It adds a screen, Review, that shows the changed files of a session's
+# repository, the diff of each and any file as code, read-only, and lets you comment on lines.
+# Agents list, read and answer those comments with the review.* tools; only you resolve or delete
+# them. "Send to agent" pastes a short review prompt into the session (CSM asks you first).
+# See docs/addons.md ("Screens", "Sample plugin: Review") and apps/csm-review/.
+#
+# The program is found by name: CSM looks in its own folder (where the installer puts it) and on
+# PATH. Argv elements must be plain tokens, so there is no path with spaces here.
+#
+# Effects are declared honestly:
+#   stores_data  writes only inside its own data folder (the comment threads, one file per project).
+# It starts no process and opens no file or network connection of its own. It reads git through
+# CSM's own read-only tools, listed in `calls` so that each read does not ask: the enable dialog
+# shows the list, and a changed manifest turns the add-on off until you approve it again.
+
+[addon]
+id = "review"
+name = "Review"
+version = "0.1.0"
+description = "Read changed files and diffs, comment on lines, and let agents answer. View only: it never edits, stages or commits. A first-party add-on with a screen."
+api = 1
+kind = "process"
+author = "CodeShellManager"
+
+[process]
+argv = ["csm-review"]
+effects = ["stores_data"]
+calls = ["git_diff", "git_show_file", "git_ls_files", "session_list"]

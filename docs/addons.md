@@ -478,6 +478,71 @@ no consent card. Its `argv` is the bare name `csm-session-summary`; the plugin h
 `codeshell.exe` (and on PATH, where the installer puts the app's folder). Test:
 `apps/csm-session-summary/tests/summary.rs` runs it through the real host.
 
+### Review (first-party add-on with a screen)
+
+`apps/csm-review` is the **Review** add-on (`samples/addons/review/addon.toml`, id `review`): it is in
+this repository, ships with the installer and is **disabled until the person enables it** (Install
+samples, then Enable). It declares the effect `stores_data` and a `calls` list of
+`git_diff`, `git_show_file`, `git_ls_files` and `session_list`, so a read through them never shows a
+consent card; it starts no process itself and writes nothing outside its data folder. Its screen,
+`review.changes` (scope: project), is **view only**: it never edits, stages or commits.
+
+- **Screen.** Left: the files of a source (Working tree, Staged, or Files = every tracked file),
+  with the open-thread count per file. Middle: a title and controls (unified/split, the session to
+  send to when several are live in the repository, Refresh, Send to agent), then the selected file
+  as a `diff` (or as `code` for an untracked file and for Files) with inline threads; whole-file and
+  outdated comments sit above it. Right: the project's threads (open, addressed, resolved) as a list.
+  Select lines, press **+ Comment**, write, press Comment. Reply, Resolve, Reopen and Delete are
+  buttons bound to the add-on's own tools (`review.reply` through the box, `review.set_status`,
+  `review.delete`), run as a click of the person.
+- **Data.** `<data_dir>/projects/<key>/threads.json` (key: the first 16 hex characters of the
+  SHA-256 of the project id), one file per project, written atomically with one `.bak`; an
+  unreadable file is moved aside as `threads.json.bad-<ms>`. Under `--clean` and in an isolated run
+  there is no data folder and the threads stay in memory (the screen says so). Caps: 2,000 threads
+  per project, 200 comments per thread, 16 KiB per comment, 100 threads started by one agent session.
+- **Anchors.** A thread records the path, the side (`new`/`old`), the source, HEAD, the blob id of
+  the text seen, the lines, the quoted lines (at most 4 KiB) and two lines of context each side.
+  Where it is now is found again by: same blob or same place (**exact**); the snippet elsewhere, the
+  nearest occurrence (**moved**); the snippet ignoring whitespace (moved); the context lines with the
+  lines between them edited (moved); otherwise **outdated**, listed with its quoted code.
+- **Tools** (toolset `addons`; an MCP client runs `toolset_enable addons` first):
+
+| id | effects | what |
+|---|---|---|
+| `review.list` | none | `project?`, `status?` (default open and addressed; `all`), `path?`, `since_ms?`: id, status, file, current lines and whether they are exact, moved or outdated, first comment |
+| `review.get` | none | `thread_id`: every comment, where it is now, and the code on those lines (at most 4 KiB) |
+| `review.reply` | `stores_data` | `thread_id`, `body`, `status?`: an agent may set `addressed` in the same call |
+| `review.set_status` | `stores_data` | `thread_id`, `status`: an agent may set `open` or `addressed`; **`resolved` is the person's** |
+| `review.create` | `stores_data` | `path`, `start?`, `end?` (both left out: the whole file), `body`, `side?`, `source?`: marked as written by the agent |
+| `review.delete` | `stores_data` | person only |
+| `review.open` | none | show the screen to the person, on a thread or a path |
+| `review.prompt` | none | the text "Send to agent" pastes; the button and the tool share one formatter |
+
+  The add-on reads `caller` on every call. An agent in one of our sessions (`external` with a
+  `session_id`) works **in its own project only** (a different `project` is refused) and may read,
+  reply, create and mark threads addressed with no card (none of these declare a consent effect); an
+  MCP client outside our sessions must name a `project`; another add-on may read, not change. Only
+  `ui` and `cli` callers resolve or delete; anyone else is refused before anything is written. A reply
+  from the other party reopens an addressed or resolved thread.
+- **Send to agent.** A toolbar button (all open threads) and one per thread, bound to
+  `session_send_text` with `submit: false`: CSM draws its own confirm with the exact text and the
+  target session, then pastes it with bracketed paste. The text is short (under 5 KiB): one line per
+  thread with its id, and the tools to use, including "call `toolset_enable` with `addons` first".
+  Nothing is ever pasted without that click.
+- **Limits of this version.** Files and patches are read at most 300 KiB at a time (a longer one is
+  shown cut, and says so); the changed-file list is cut at 20,000 files; thread lines in the prompt
+  and list for files other than the open one are the stored lines (`review.get` and `review.list`
+  re-anchor); `Branch vs base` is not in the screen yet (the `git_diff` `range` source exists);
+  old-side (deleted-line) threads are re-anchored against HEAD's text of the file.
+
+Tests: `apps/csm-review/tests/review.rs` runs the real program through the real host on a
+throwaway repository (a comment from a selection, an agent that lists, reads, replies and marks
+addressed without a card, the refusals, the person resolving, persistence across a restart, threads
+moving and going outdated as the file changes, Send to agent as a bracketed paste, hostile file
+contents); `crates/csm-ui/tests/review_screen_ui.rs` draws the plugin's real view tree
+(`apps/csm-review/tests/fixture.rs` keeps `crates/csm-ui/tests/fixtures/review_screen.json` equal to
+it; regenerate with `CSM_REGEN_FIXTURE=1`).
+
 ### Not in this phase
 
 Screens as panes in the layouts, blobs for large code and diffs, signed add-ons, a registry, a version check or update for a process add-on,
@@ -759,6 +824,7 @@ parses it with no problems.
 |---|---|---|
 | `codex-cli` | pack | profiles `agent` (`codex`) and `resume-last` (`codex resume --last`), status rules, `/review` `/diff` `/compact`, palette commands to start either |
 | `gemini-cli` | pack | profiles `agent` (`gemini`) and `resume-latest` (`gemini --resume`), status rules, `/compress` `/stats` `/memory`, palette commands to start either |
+| `review` | process | the Review add-on above: changed files, diffs and comment threads that agents answer (first-party, with a screen) |
 | `session-summary` | process | the Session summary plugin above |
 
 The MSI installs per machine and add-ons live per user, so nothing is enabled or copied at install
@@ -768,7 +834,7 @@ touched. They appear **disabled**; **Enable...** shows what each adds and asks, 
 The profile resume is `re-run`: CSM does not know Codex's or Gemini's session ids, so restore
 starts a new conversation and the `resume-*` profiles continue the last one. The status rules match
 the TUIs' wording as last seen and may need adjusting after a release of either tool (see the
-comments in each file). `crates/csm-core/tests/sample_packs.rs` parses all three with no problems.
+comments in each file). `crates/csm-core/tests/sample_packs.rs` parses all of them with no problems.
 
 ## Limits
 
