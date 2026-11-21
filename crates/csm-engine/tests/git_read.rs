@@ -185,7 +185,7 @@ fn a_hostile_revision_path_or_folder_is_refused_before_git_runs() {
     assert!(h.ui("git_diff", json!({"folder": folder, "source": "range", "base": "--help"})).is_err());
     assert!(h.ui("git_diff", json!({"folder": folder, "source": "range"})).is_err(), "range needs a base");
     assert!(h.ui("git_diff", json!({"folder": folder, "source": "nonsense"})).is_err());
-    for path in ["../outside.txt", "/etc/passwd", "C:/Windows/win.ini", "a/../../b", "a\\b", "", "bad\nname"] {
+    for path in ["../outside.txt", "/etc/passwd", "C:/Windows/win.ini", "a/../../b", "a\\b", "", ".git/config", ".GIT/HEAD", "bad\nname"] {
         assert!(h.ui("git_show_file", json!({"folder": folder, "path": path})).is_err(), "{path:?}");
         assert!(h.ui("git_diff", json!({"folder": folder, "paths": [path]})).is_err(), "{path:?}");
     }

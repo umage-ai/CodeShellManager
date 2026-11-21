@@ -455,6 +455,9 @@ impl Host {
         if status == Some(Status::Resolved) && !who.is_person() {
             return fail("only the person resolves a thread; reply with status `addressed` and they will check it");
         }
+        if status.is_some() && !who.is_person() && self.store.thread(&project, id, now_ms()).is_some_and(|t| t.status == Status::Resolved) {
+            return fail("the person resolved this thread; only they change its status (a reply without `status` reopens it)");
+        }
         let author = self.author(who);
         let body = text_of(args, "body").unwrap_or_default();
         let t = self.store.reply(&project, id, body, author, status, now_ms())?;
@@ -467,6 +470,9 @@ impl Host {
         let status = text_of(args, "status").and_then(Status::parse).ok_or_else(|| Fail("`status` is open, addressed or resolved".into()))?;
         if status == Status::Resolved && !who.is_person() {
             return fail("only the person resolves a thread; mark it `addressed` and they will check it");
+        }
+        if !who.is_person() && self.store.thread(&project, id, now_ms()).is_some_and(|t| t.status == Status::Resolved) {
+            return fail("the person resolved this thread; only they change its status");
         }
         let t = self.store.set_status(&project, id, status, now_ms())?;
         self.changed(&project);

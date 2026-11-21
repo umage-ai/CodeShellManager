@@ -242,6 +242,8 @@ fn a_person_comments_an_agent_answers_and_only_the_person_resolves() {
     // The person resolves (UI, and the CLI), and the person deletes.
     let r = h.ok("review.set_status", json!({"thread_id": tid, "status": "resolved", "project": w.project}));
     assert_eq!(r.data["status"], "resolved");
+    assert!(call(h, agent(&w), "review.set_status", json!({"thread_id": tid, "status": "addressed"})).is_err(), "an agent cannot change a resolved thread");
+    assert!(call(h, agent(&w), "review.reply", json!({"thread_id": tid, "body": "x", "status": "open"})).is_err());
     assert_eq!(call(&w.h, Caller::Cli, "review.set_status", json!({"thread_id": tid, "status": "open", "project": w.project})).unwrap().data["status"], "open");
     assert!(call(h, Caller::Cli, "review.list", json!({})).is_err(), "the CLI names a project too");
     h.ok("review.delete", json!({"thread_id": note_id, "project": w.project}));

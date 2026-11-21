@@ -108,6 +108,7 @@ pub fn check_repo_path(path: &str) -> Result<String, String> {
         match part {
             "" | "." => {}
             ".." => return Err("a path cannot contain `..`".into()),
+            p if p.eq_ignore_ascii_case(".git") => return Err("a path cannot go through `.git`".into()),
             p => parts.push(p),
         }
     }
@@ -399,6 +400,11 @@ pub fn show_file(folder: &str, rev: Option<&str>, path: &str, max_bytes: usize) 
             if !file.starts_with(&real_top) || file.components().any(|c| matches!(c, Component::ParentDir)) {
                 return Err(format!("`{path}` resolves outside the repository; refused"));
             }
+            // Whatever the spelling (8.3 names, links), nothing under the repository .git folder is read.
+            let inside_git = file.strip_prefix(&real_top).ok().and_then(|r| r.components().next()).is_some_and(|c| c.as_os_str().eq_ignore_ascii_case(".git"));
+            if inside_git {
+                return Err(format!("`{path}` is inside .git; refused"));
+            }
             let meta = std::fs::metadata(&file).map_err(|e| format!("cannot read `{path}`: {e}"))?;
             if !meta.is_file() {
                 return Err(format!("`{path}` is not a file"));
@@ -459,7 +465,7 @@ mod tests {
     #[test]
     fn paths_are_repository_relative_and_normalised() {
         assert_eq!(check_repo_path("src/./a//b.rs").unwrap(), "src/a/b.rs");
-        for bad in ["", "/etc/passwd", "C:/x", "C:x", "../x", "a/../../x", "a\\b", "a\nb", ".", "./", "\u{7}"] {
+        for bad in ["", "/etc/passwd", "C:/x", "C:x", "../x", "a/../../x", "a\\b", "a\nb", ".", "./", "\u{7}", ".git/config", "a/.GIT/x"] {
             assert!(check_repo_path(bad).is_err(), "{bad:?}");
         }
     }
