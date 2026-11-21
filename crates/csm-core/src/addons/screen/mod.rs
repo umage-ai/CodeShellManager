@@ -10,9 +10,10 @@
 //! The tree is typed ([`Node`], [`Kind`]) so the renderer never touches JSON. Plugins never send
 //! colours, sizes or fonts: only semantic choices ([`Tone`], [`Gap`], [`TextStyle`],
 //! [`ButtonKind`]) that the renderer maps to theme tokens. `code` and `diff` nodes (the next
-//! stream's work) arrive as [`Kind::Unsupported`] today and get their own variants later; the
+//! stream) are [`Kind::Code`] and [`Kind::Diff`] (see [`code`]); the
 //! helpers here already treat every node generically (children, keys, size).
 
+pub mod code;
 pub mod files;
 pub mod markdown;
 mod text;
@@ -23,6 +24,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub use code::{Anchor, CodeContent, CodeView, DiffContent, DiffView, Doc, Mark, Overlay, RangeAction, Thread, Withheld};
 pub use files::{FileEntry, FileRow, file_rows, normalize_path};
 pub use markdown::{Block, Href, Inline};
 pub use text::{Seg, clean_label, has_invisible, is_invisible, marker_for, reveal};
@@ -399,6 +401,10 @@ pub enum Kind {
     Segmented { options: Vec<Opt>, selected: String },
     List { items: Vec<ListItem>, selected: Option<String> },
     FileList { files: Vec<FileEntry>, tree: bool, selected: Option<String> },
+    /// Text with line numbers, highlighting, marks and inline threads.
+    Code(Box<CodeView>),
+    /// A unified patch, as unified or side-by-side.
+    Diff(Box<DiffView>),
     /// A node type this CSM does not know (drawn as a small box naming it).
     Unsupported { type_name: String },
 }
@@ -412,6 +418,8 @@ impl Node {
             Kind::Scroll { child } => vec![&**child],
             Kind::Tabs { child: Some(c), .. } => vec![&**c],
             Kind::Comment(c) => c.actions.iter().collect(),
+            Kind::Code(c) => c.overlay.threads.iter().map(|t| &*t.child).collect(),
+            Kind::Diff(d) => d.overlay.threads.iter().map(|t| &*t.child).collect(),
             _ => Vec::new(),
         }
     }
@@ -423,7 +431,18 @@ impl Node {
             Kind::Scroll { child } => vec![&mut **child],
             Kind::Tabs { child: Some(c), .. } => vec![&mut **c],
             Kind::Comment(c) => c.actions.iter_mut().collect(),
+            Kind::Code(c) => c.overlay.threads.iter_mut().map(|t| &mut *t.child).collect(),
+            Kind::Diff(d) => d.overlay.threads.iter_mut().map(|t| &mut *t.child).collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// The inline threads of a `code` or `diff` node.
+    pub fn threads(&self) -> &[Thread] {
+        match &self.kind {
+            Kind::Code(c) => &c.overlay.threads,
+            Kind::Diff(d) => &d.overlay.threads,
+            _ => &[],
         }
     }
 
@@ -463,6 +482,8 @@ impl Node {
             Kind::Segmented { .. } => "segmented",
             Kind::List { .. } => "list",
             Kind::FileList { .. } => "file_list",
+            Kind::Code(_) => "code",
+            Kind::Diff(_) => "diff",
             Kind::Unsupported { type_name } => type_name,
         }
     }
@@ -488,6 +509,8 @@ impl Node {
             Kind::FileList { files, .. } => files.iter().map(|f| f.path.len() + f.old_path.as_ref().map_or(0, String::len) + 16).sum(),
             Kind::Tabs { tabs, selected, .. } => tabs.iter().map(|t| t.key.len() + t.label.len() + 8).sum::<usize>() + selected.len(),
             Kind::Section { title, badge, .. } => title.len() + badge.as_ref().map_or(0, String::len),
+            Kind::Code(c) => c.bytes(),
+            Kind::Diff(d) => d.bytes(),
             Kind::Unsupported { type_name } => type_name.len(),
             _ => 0,
         };
@@ -717,6 +740,11 @@ fn check_tree(root: &Node) -> Res<usize> {
             && !keys.insert(k)
         {
             return err(format!("two nodes have the key `{}`", clean_label(k, 40)));
+        }
+        for t in n.threads() {
+            if !keys.insert(t.key.as_str()) {
+                return err(format!("two nodes or threads have the key `{}`", clean_label(&t.key, 40)));
+            }
         }
         if let Kind::Split { children, .. } = &n.kind
             && children.len() != 2
@@ -1079,6 +1107,16 @@ impl<'a> TreeParser<'a> {
                 let tree = o.get("view").and_then(Value::as_str) != Some("flat");
                 Kind::FileList { files, tree, selected: o.get("selected").and_then(Value::as_str).map(normalize_path) }
             }
+            "code" => {
+                let (view, events) = self.code(o, depth)?;
+                needs_key = events;
+                Kind::Code(Box::new(view))
+            }
+            "diff" => {
+                let (view, events) = self.diff(o, depth)?;
+                needs_key = events;
+                Kind::Diff(Box::new(view))
+            }
             other => Kind::Unsupported { type_name: clean_label(other, 40) },
         };
         if needs_key && key.is_none() {
@@ -1190,3 +1228,6 @@ impl RateGate {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod code_tests;

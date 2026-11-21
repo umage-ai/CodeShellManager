@@ -480,7 +480,7 @@ no consent card. Its `argv` is the bare name `csm-session-summary`; the plugin h
 
 ### Not in this phase
 
-The code and diff widgets, screens as panes in the layouts, signed add-ons, a registry, a version check or update for a process add-on,
+Screens as panes in the layouts, blobs for large code and diffs, signed add-ons, a registry, a version check or update for a process add-on,
 and a process add-on's own profiles or palette commands. Protocol `api` 1 is the only version.
 
 
@@ -492,9 +492,10 @@ the UI thread, and draws it with CSM's own widgets and theme tokens inside a fra
 plugin never draws pixels, never sends escape sequences, never picks colours, sizes or fonts, and
 never opens windows. Check `capabilities.screens` (version 1) in `initialize` before declaring one.
 
-This is the first part of the screens work: the protocol, the tools and the basic widgets. The code
-and diff widgets, syntax highlighting, comment threads and screens as panes inside the layouts are
-later work; a plugin that sends `code` or `diff` today gets a small "unsupported" box.
+This covers the protocol, the tools, the basic widgets, and the **code and diff widgets** (line
+numbers, line-range selection, syntax highlighting, inline comment threads, unified and
+side-by-side diffs). Screens as panes inside the layouts, and blobs for content over 512 KiB, are
+later work.
 
 ### Declaring and opening
 
@@ -588,8 +589,10 @@ Widgets send events to the plugin as notifications; the plugin answers with a re
 | `submit` | `text_input` (Enter, or its `submit_label` button) | `{"value": text}` |
 | `change` | `text_input` with `on_change`, 300 ms after the last keystroke | `{"value": text}` |
 | `link` | a `csm:` link in Markdown text | `{"href": "csm:..."}` |
+| `range_action` | `code`, `diff` (a range action clicked) | `{"id", "side": "old" or "new", "start", "end"}` |
+| `thread_toggle` | `code`, `diff` (a closed thread's badge) | `{"key"}` |
 
-(`range_action`, `thread_toggle` and `visible` are reserved for the code and diff widgets.)
+(`visible` is reserved for blob ranges.)
 Events are queued without waiting: a full queue (64 messages per add-on) keeps the latest `change`
 and refuses others with a toast ("<add-on> is busy").
 
@@ -637,6 +640,69 @@ required child, a duplicate key or a cap breach refuses the tree. `tone` is
 | `select`, `segmented` | `key`, `options: [{value, label}]` (up to 200), `selected` |
 | `list` | `key`, `items: [{key, title, subtitle?, icon?, badges?}]` (up to 20,000, virtualised), `selected?` |
 | `file_list` | `key`, `files: [{path, status?: M A D R C U ?, old_path?, badges?}]` (up to 20,000), `view: "tree"` (default) or `"flat"`, `selected?`: CSM builds the folder tree from the paths; folders fold locally |
+
+### Code and diff
+
+`code` shows text with line numbers; `diff` shows a unified patch, as unified lines or side by side.
+The plugin sends **text and a language** (or a path to detect it from); CSM highlights it, so every
+add-on looks the same and the theme switch is free. Plugins never send colours.
+
+| type | props |
+|---|---|
+| `code` | `text` (up to 512 KiB), `language?` (a name or extension: `rust`, `rs`, `TypeScript`), `path?` (detects the language when `language` is empty or unknown), `first_line?` (the number of the first line, default 1), `highlight_lines?` (up to 5,000 numbers drawn with a band), `scroll_to?` (a line to bring into view; applied once per value) |
+| `diff` | `patch` (a unified diff, up to 512 KiB: git's output with renames, binary files and `\ No newline`, or a plain `---`/`+++` diff; several files are shown one after another), `view: "unified"` (default) or `"split"`, `language?` (otherwise each file's path decides) |
+
+Both take these, and need a `key` when they send events (they have `range_actions` or `threads`):
+
+- `marks: [{line, side?: "old"\|"new", tone?, count?}]` (up to 5,000): a gutter dot, or a small
+  count when `count` is given.
+- `threads: [{key, anchor: {side?, start, end}, open?, count?, child}]` (up to 500): an **inline
+  comment thread**. An open thread draws its `child` (any node, usually a `column` of `comment`
+  nodes and a `text_input`) as a full-width block under line `end`, with a bar in the gutter from
+  `start` to `end`. A closed thread is a badge with `count` in the gutter; clicking it sends
+  `thread_toggle {key}`, and the plugin answers by re-rendering with `open` set. A thread whose
+  lines the diff does not show draws at the end of the view. Thread keys share the key space of
+  the nodes, and the `child` is part of the tree (a patch can replace a node inside it by key).
+- `range_actions: [{id, label, icon?}]` (up to 4): when the person has selected lines, CSM draws
+  these as buttons in a small bar under the selection (for example "+ Comment"). A click sends
+  `range_action {id, side, start, end}` and clears the selection.
+
+Lines are addressed as `(side, number)`: `new` is the text after (and the only side of `code`),
+`old` the text before. A selection lives on one side.
+
+**Selecting.** Click a line number to select the line; Shift+click extends the range; dragging
+down the numbers extends it; with the view focused (after a click), Shift+Up and Shift+Down
+extend it and Escape clears it; Ctrl+C (Cmd+C) copies the selected lines. The selection is local:
+nothing is sent until a range action is clicked. A shift-click on the other side of a diff starts a
+new selection instead of mixing sides.
+
+**Highlighting** is done in CSM, off the UI thread: `syntect` with its pure-Rust regex engine and
+the `two-face` grammars (bat's set: Rust, Python, TypeScript, TOML, Dockerfile and about a hundred
+more). A frame never waits for it: the text is drawn plain until the colours arrive. The token
+classes (keyword, string, comment, number, type, function, constant, macro, operator, punctuation,
+tag, attribute) map to theme tokens `syn_*` in both themes. Results are cached (64 documents or
+64 MiB of spans). Text with no grammar stays plain. A document over 5 MB or 100,000 lines is not
+highlighted (it still shows); a line over 5,000 bytes is left plain; a run stops after 4 s with what
+it has. The notices of the grammars' licences are in `docs/third-party-syntaxes.md`.
+
+**Untrusted text.** Control characters, ESC, C1 controls, bidi overrides and isolates, and
+zero-width characters in code and diff text are drawn as visible markers (`␛`, `⟨U+202E⟩`, in a
+warning tint), never applied or dropped; a tab is four spaces; a CRLF is one line break and a lone
+CR is shown as `␍`. A line is drawn up to 4,000 columns and the cut is marked (scroll sideways with
+the wheel or the thin bar for long lines). A diff line over 20,000 characters is cut by the parser.
+
+**Too large.** Text or a patch over 512 KiB, and `blob` references (reserved, not built yet), do not
+refuse the tree: the node draws a notice ("This file is too large to show here (...)"; for a diff,
+"Open the file instead"). A message over 768 KiB is still refused as a whole.
+
+| limit | value |
+|---|---|
+| inline `text` or `patch` | 512 KiB |
+| marks, threads, range actions, highlighted lines per node | 5,000, 500, 4, 5,000 |
+| files, hunks per file, lines per patch | 500, 5,000, 200,000 (the rest is dropped and the view says so) |
+| a diff line | 20,000 characters (cut) |
+| a line drawn | 4,000 columns (cut, marked) |
+| highlighting | 5 MB, 100,000 lines, 5,000 bytes per line, 4 s |
 
 **Caps** (checked before anything is kept; a breach refuses the whole tree):
 

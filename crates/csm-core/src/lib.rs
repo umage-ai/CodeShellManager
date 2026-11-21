@@ -18,6 +18,7 @@ pub mod bulk_restart;
 pub mod busy_rules;
 pub mod claude_usage;
 pub mod color;
+pub mod diff;
 pub mod dropped_paths;
 pub mod look;
 pub mod models;

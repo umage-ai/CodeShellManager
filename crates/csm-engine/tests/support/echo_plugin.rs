@@ -19,6 +19,10 @@
 //! an over-cap tree (CSM must refuse it and answer `screen/error`), `flood` with 200 renders.
 //! `screen/closed`, `screen/refresh` and `screen/error` are remembered; `echo-test.screen_state`
 //! reports everything it has seen. Mode `badopen` answers `screen/open` with an over-cap tree.
+//! Code and diff: an event with the key `showcode` is answered with a view that has a `code` node
+//! (key `code`, a range action, one open and one closed thread) and a `diff` node (key `diff`);
+//! from then on every event on that instance re-renders that view with the event in `status`.
+//! The key `bigcode` answers with a code node whose text is over the 512 KiB cap.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
@@ -69,6 +73,7 @@ fn main() {
     let mut screen_log: Vec<Value> = Vec::new();
     let mut screen_closed: Vec<String> = Vec::new();
     let mut screen_errors: Vec<String> = Vec::new();
+    let mut code_mode: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut refreshes: u64 = 0;
     while let Some(line) = next_line(&mut lines) {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
@@ -130,6 +135,20 @@ fn main() {
                 let note = format!("{} {} {}", params["kind"].as_str().unwrap_or_default(), key, params["value"]);
                 let line = |m: &str, p: Value| json!({"jsonrpc": "2.0", "method": m, "params": p});
                 match key.as_str() {
+                    "showcode" => {
+                        code_mode.insert(instance.clone());
+                        screen_rev.insert(instance.clone(), rev + 1);
+                        send(&mut out, &line("screen/render", json!({"instance": instance, "rev": rev + 1, "root": code_view(&instance, "code shown", false)})));
+                    }
+                    "bigcode" => {
+                        code_mode.insert(instance.clone());
+                        screen_rev.insert(instance.clone(), rev + 1);
+                        send(&mut out, &line("screen/render", json!({"instance": instance, "rev": rev + 1, "root": code_view(&instance, "code too big", true)})));
+                    }
+                    _ if code_mode.contains(&instance) => {
+                        screen_rev.insert(instance.clone(), rev + 1);
+                        send(&mut out, &line("screen/render", json!({"instance": instance, "rev": rev + 1, "root": code_view(&instance, &note, false)})));
+                    }
                     "patch" => {
                         screen_rev.insert(instance.clone(), rev + 1);
                         send(&mut out, &line("screen/patch", json!({"instance": instance, "rev": rev + 1, "base": rev, "ops": [{"op": "replace", "key": "status", "node": {"type": "text", "key": "status", "text": format!("patched {}", rev + 1)}}]})));
@@ -234,4 +253,22 @@ fn view(instance: &str, status: &str) -> Value {
 fn too_big() -> Value {
     let kids: Vec<Value> = (0..6000).map(|_| json!({"type": "spacer"})).collect();
     json!({"type": "column", "children": kids})
+}
+
+/// A view with a code node and a diff node (`big`: the code text is over the 512 KiB cap).
+fn code_view(instance: &str, status: &str, big: bool) -> Value {
+    let text = if big { "x".repeat(600 * 1024) } else { "fn a() {}\nfn b() {}\nfn c() {}\nlet s = \"hi\";\n".to_owned() };
+    let thread = |key: &str, open: bool| {
+        json!({"key": key, "anchor": {"start": 2, "end": 3}, "open": open, "count": 2, "child": {"type": "comment", "key": format!("{key}-c"), "author": {"name": "Allan", "kind": "person"}, "body": "check this"}})
+    };
+    json!({"type": "column", "key": "root", "children": [
+        {"type": "text", "key": "title", "text": format!("Code {instance}")},
+        {"type": "text", "key": "status", "text": status},
+        {"type": "code", "key": "code", "text": text, "language": "rust", "path": "src/lib.rs",
+            "range_actions": [{"id": "comment", "label": "+ Comment"}],
+            "threads": [thread("t-open", true), thread("t-closed", false)],
+            "marks": [{"line": 1, "tone": "danger"}]},
+        {"type": "diff", "key": "diff", "view": "split", "patch": "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new\n",
+            "range_actions": [{"id": "comment", "label": "+ Comment"}]}
+    ]})
 }

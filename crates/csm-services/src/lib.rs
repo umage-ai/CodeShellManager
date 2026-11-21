@@ -25,6 +25,7 @@ pub mod addons;
 pub mod argv;
 pub mod claude_usage;
 pub mod git;
+pub mod highlight;
 pub mod launch;
 pub mod open_with;
 pub mod plugins;

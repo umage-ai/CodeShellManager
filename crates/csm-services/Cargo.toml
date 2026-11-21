@@ -32,6 +32,8 @@ sha2 = "0.10"
 # The OS keychain, for add-ons that keep secrets of their own (secrets.rs). Pure Rust on every OS:
 # Credential Manager, Keychain, and the Secret Service over zbus (no libdbus to install).
 keyring = "4"
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy"] }
 
 [dev-dependencies]
 tempfile = "3"
