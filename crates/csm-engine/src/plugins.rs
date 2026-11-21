@@ -484,11 +484,16 @@ fn placeholder_run(_: &mut Ctx<'_>, _: Value) -> Reply {
 fn intern(s: &str) -> Option<&'static str> {
     static TABLE: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
     let mut guard = TABLE.lock().unwrap_or_else(PoisonError::into_inner);
-    let table = guard.get_or_insert_with(HashSet::new);
+    intern_in(guard.get_or_insert_with(HashSet::new), MAX_INTERNED, s)
+}
+
+/// [`intern`] on a given table with a given cap, so the cap can be tested without filling the
+/// process-wide table that other code (and tests running in parallel) share.
+fn intern_in(table: &mut HashSet<&'static str>, cap: usize, s: &str) -> Option<&'static str> {
     if let Some(found) = table.get(s) {
         return Some(found);
     }
-    if table.len() >= MAX_INTERNED {
+    if table.len() >= cap {
         return None;
     }
     let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
@@ -907,21 +912,14 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_whose_text_cannot_be_kept_is_left_out() {
-        // The table is process-wide and shared by the other tests in this binary: fill it up to
-        // the cap with this test's own strings, which ends at the first refusal.
-        let mut n = 0usize;
-        while intern(&format!("cap-test.{n}")).is_some() {
-            n += 1;
-        }
-        let tools = vec![DeclaredTool {
-            id: "cap-test.fresh-after-the-cap".into(),
-            title: "T".into(),
-            summary: String::new(),
-            input_schema: json!({"type": "object"}),
-            effects: Vec::new(),
-        }];
-        assert!(dynamic_tools(&tools).is_empty(), "a new string past the cap is refused");
+    fn interning_stops_at_the_cap_but_still_finds_known_strings() {
+        // A table of its own: filling the process-wide one would starve tests running in
+        // parallel (it did on CI).
+        let mut table = HashSet::new();
+        let a = intern_in(&mut table, 2, "cap-test.a").unwrap();
+        assert!(intern_in(&mut table, 2, "cap-test.b").is_some());
+        assert!(intern_in(&mut table, 2, "cap-test.fresh-after-the-cap").is_none(), "a new string past the cap is refused");
+        assert!(std::ptr::eq(intern_in(&mut table, 2, "cap-test.a").unwrap(), a), "a known string is still shared");
     }
 
     #[test]
