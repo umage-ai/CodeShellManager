@@ -953,6 +953,7 @@ fn about_promotes_umage_ai_and_its_links_open_through_the_open_tool() {
     h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::About;
     settle(&mut h);
     assert!(h.query_by_label("Made by ").is_some(), "the umage.ai byline");
+    assert!(h.query_by_label("umage.ai logo").is_some(), "the official logo, not a typed wordmark");
     assert!(h.query_by_label("Agentic development").is_some());
     assert!(h.query_by_label("Diagnostics").is_some(), "the diagnostics stay");
     for (label, _, url) in csm_ui::screens::settings::ABOUT_LINKS {

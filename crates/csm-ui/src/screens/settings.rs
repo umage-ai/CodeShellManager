@@ -501,7 +501,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
     ui.add_space(space::XL);
 
-    // Made by umage.ai: the wordmark ("umage." light, "ai" in the brand gold), the pitch, the links.
+    // Made by umage.ai: the official logo (the website's SVG, black on light, white on dark), the pitch, the links.
     egui::Frame::new()
         .fill(t.mantle)
         .stroke(Stroke::new(size::HAIRLINE, t.surface0))
@@ -510,10 +510,13 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.label(egui::RichText::new("Made by ").font(theme::regular(text::TITLE)).color(t.muted));
-                ui.label(egui::RichText::new("umage.").font(semibold(text::TITLE)).color(t.fg2));
-                ui.label(egui::RichText::new("ai").font(semibold(text::TITLE)).color(t.brand));
+                let logo = if t.dark() {
+                    egui::include_image!("../../assets/brand/umage-ai-logo-white.svg")
+                } else {
+                    egui::include_image!("../../assets/brand/umage-ai-logo.svg")
+                };
+                ui.add(egui::Image::new(logo).fit_to_exact_size(vec2(f32::INFINITY, text::TITLE * 2.0)).alt_text("umage.ai logo"));
             });
             ui.add_space(space::XS);
             ui.add(
