@@ -65,6 +65,8 @@ pub(crate) struct Catalogue {
     pub scan_error: Option<String>,
     /// The runtime state of each enabled process add-on, by id (`plugins.rs`).
     pub runtime: BTreeMap<String, PluginRuntime>,
+    /// What each running process add-on offers under "Remote…" (`csm/remotes_changed`).
+    pub remotes: BTreeMap<String, Vec<csm_core::addons::Remote>>,
 }
 
 /// What the UI and `addon_list` show for one add-on.

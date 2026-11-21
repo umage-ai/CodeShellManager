@@ -297,3 +297,102 @@ fn the_last_text_line_skips_borders_and_blank_rows() {
     assert_eq!(t.last_text_line(200).as_deref(), Some("Running tests: 12 passed"));
     assert_eq!(t.last_text_line(7).as_deref(), Some("Running"), "capped");
 }
+
+/// tmux's passthrough wrapper: `ESC P tmux ;` + the payload with every ESC doubled + `ESC \`.
+fn tmux_wrap(inner: &[u8]) -> Vec<u8> {
+    let mut out = b"\x1bPtmux;".to_vec();
+    for &b in inner {
+        out.push(b);
+        if b == 0x1b {
+            out.push(0x1b);
+        }
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
+#[test]
+fn tmux_passthrough_reaches_the_handlers() {
+    let inner: &[&[u8]] = &[
+        b"\x1b]9001;git-branch=main;git-dirty=1\x07",
+        b"\x1b]9001;title=two\x1b\\",
+        b"\x1b]7501;state=working\x1b\\",
+        b"\x1b]7;file://host/home/me\x07",
+        b"\x1b]133;D;3\x07",
+    ];
+    let mut input = b"before".to_vec();
+    for i in inner {
+        input.extend(tmux_wrap(i));
+    }
+    input.extend_from_slice(b"after");
+    let (events, _) = run_all_splits(&input, ProbeReply::Off);
+    assert_eq!(
+        taps(&events),
+        vec![
+            TapEvent::ShellIntegration(vec![("git-branch".into(), "main".into()), ("git-dirty".into(), "1".into())]),
+            TapEvent::ShellIntegration(vec![("title".into(), "two".into())]),
+            TapEvent::ProgramStatus("state=working".into()),
+            TapEvent::Cwd("file://host/home/me".into()),
+            TapEvent::Prompt(PromptMark::CommandFinished { exit_code: Some(3) }),
+        ]
+    );
+}
+
+#[test]
+fn tmux_passthrough_malformed_input_never_panics_and_recovers() {
+    // Pieces a hostile or broken stream might contain, glued together in a fixed pseudo-random
+    // order. Whatever happens, the terminal keeps going and a clean sequence after a reset
+    // (ST, CAN, then a new sequence) is still seen.
+    let pieces: &[&[u8]] = &[
+        b"\x1bPtmux;",
+        b"\x1bPtmux;\x1b\x1b]9001;title=x",
+        b"\x1b\x1b]9001;title=y\x07",
+        b"\x1b\\",
+        b"\x1b\x1b\\",
+        b"\x1bPtmux;\x1bPtmux;\x1b\x1b\x1b\x1b",
+        b"\x1b",
+        b"\x18",
+        b"\x9b\x9d\x90",
+        b"\x1b]9001;",
+        b"\x07",
+        b"\xff\xfe\x00",
+        b"\x1bP",
+        b"\x1bPtmux",
+    ];
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for round in 0..300 {
+        let (mut t, _) = term(ProbeReply::Raw);
+        let mut input = Vec::new();
+        for _ in 0..(next() % 24) {
+            input.extend_from_slice(pieces[(next() % pieces.len() as u64) as usize]);
+        }
+        let cut = (next() % (input.len() as u64 + 1)) as usize;
+        t.advance(&input[..cut]);
+        t.advance(&input[cut..]);
+        let _ = t.take_events();
+        t.advance(b"\x18\x1b\\x18\x1b]9001;title=clean\x07");
+        let seen = taps(&t.take_events());
+        assert!(seen.contains(&TapEvent::ShellIntegration(vec![("title".into(), "clean".into())])), "round {round}: {input:?}");
+    }
+}
+
+#[test]
+fn tmux_passthrough_oversize_payloads_are_dropped_not_forwarded() {
+    let (mut t, _) = term(ProbeReply::Off);
+    let huge = format!("\x1b]9001;title={}\x07", "a".repeat(100_000));
+    t.advance(&tmux_wrap(huge.as_bytes()));
+    let seen = taps(&t.take_events());
+    for e in &seen {
+        if let TapEvent::ShellIntegration(f) = e {
+            assert!(f.iter().all(|(_, v)| v.len() <= 1024), "values stay capped");
+        }
+    }
+    t.advance(&tmux_wrap(b"\x1b]9001;title=ok\x07"));
+    assert!(taps(&t.take_events()).contains(&TapEvent::ShellIntegration(vec![("title".into(), "ok".into())])));
+}

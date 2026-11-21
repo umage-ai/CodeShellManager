@@ -124,7 +124,7 @@ impl WaitUntil {
 }
 
 /// The unified status of a session plus its progress and message.
-pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>) -> (Status, Option<u8>, Option<String>) {
+pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>, mark: Option<&crate::plugins::PluginMark>) -> (Status, Option<u8>, Option<String>) {
     if is_dormant {
         return (Status::Asleep, None, None);
     }
@@ -133,6 +133,11 @@ pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>)
     };
     if matches!(rt.phase, Phase::Starting) {
         return (Status::Starting, None, None);
+    }
+    // A process add-on that opened this session may say what it is doing (a remote agent the app
+    // cannot see into). It outranks what the screen suggests, but not a process that has ended.
+    if let Some(s) = mark.and_then(|m| m.status).filter(|_| !matches!(rt.phase, Phase::Exited { .. })) {
+        return (s, None, None);
     }
     let sum = rt.records.summarize();
     let reported = match sum.state {

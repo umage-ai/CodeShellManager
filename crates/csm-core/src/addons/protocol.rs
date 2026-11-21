@@ -38,7 +38,7 @@ pub const ERR_BUSY: i64 = -32001;
 /// The event kinds a process add-on may subscribe to. Each is sent as a notification
 /// `event` whose params are the engine event (`{"event": kind, ...}`), with no content beyond
 /// what the event itself carries (session ids and the like).
-pub const EVENT_KINDS: [&str; 3] = ["session_changed", "session_removed", "inbox_changed"];
+pub const EVENT_KINDS: [&str; 5] = ["session_changed", "session_removed", "inbox_changed", "session_asleep", "session_awake"];
 
 /// An effect a process add-on may declare in `[process] effects` (and a tool may then use).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -49,15 +49,18 @@ pub enum ProcessEffect {
     ReadsSessionContent,
     WritesFilesystem,
     AccessesNetwork,
+    /// Keeps secrets of its own in the OS keychain (`addon_secret_set` / `_get` / `_delete`).
+    StoresSecrets,
 }
 
 impl ProcessEffect {
-    pub const ALL: [ProcessEffect; 5] = [
+    pub const ALL: [ProcessEffect; 6] = [
         ProcessEffect::LaunchesProcess,
         ProcessEffect::SendsInput,
         ProcessEffect::ReadsSessionContent,
         ProcessEffect::WritesFilesystem,
         ProcessEffect::AccessesNetwork,
+        ProcessEffect::StoresSecrets,
     ];
 
     /// The manifest and wire name, as in `addon.toml`.
@@ -68,6 +71,7 @@ impl ProcessEffect {
             ProcessEffect::ReadsSessionContent => "reads_session_content",
             ProcessEffect::WritesFilesystem => "writes_filesystem",
             ProcessEffect::AccessesNetwork => "accesses_network",
+            ProcessEffect::StoresSecrets => "stores_secrets",
         }
     }
 
@@ -314,6 +318,101 @@ pub fn response_err(id: &Value, code: i64, message: &str, data: Value) -> String
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message, "data": data}}).to_string()
 }
 
+/// Most entries a plugin may offer in one `csm/remotes_changed`. Extra entries are reported and
+/// ignored.
+pub const MAX_REMOTES: usize = 200;
+/// Longest remote label and detail, in characters.
+pub const MAX_REMOTE_LABEL: usize = 80;
+pub const MAX_REMOTE_DETAIL: usize = 160;
+/// Largest session spec or tool-call params of one remote, serialized.
+pub const MAX_REMOTE_SPEC_BYTES: usize = 8 * 1024;
+/// Longest remote id, in bytes.
+pub const MAX_REMOTE_ID: usize = 64;
+
+/// What opening a remote does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoteOpen {
+    /// The parameters of `session_new` (an ssh config/alias session, usually), opened as given.
+    Session(Value),
+    /// A tool of the same add-on, called with `params`; its `data.session` is then opened as in
+    /// [`RemoteOpen::Session`].
+    Tool { name: String, params: Value },
+}
+
+/// One entry a process add-on offers under "Remote…" in quick-open and the palette.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Remote {
+    /// Unique within the add-on.
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+    pub open: RemoteOpen,
+}
+
+/// Whether `id` is a legal remote id: letters, digits and `. _ : -`, up to [`MAX_REMOTE_ID`].
+pub fn valid_remote_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_REMOTE_ID && id.bytes().all(|b| b.is_ascii_alphanumeric() || b".:_-".contains(&b))
+}
+
+/// Validates the params of `csm/remotes_changed`: `{"remotes": [..]}`, the plugin's complete
+/// current list (an empty list withdraws all of them).
+///
+/// `Err` when the params are not that shape. Per entry (reported, the rest still load): a bad id,
+/// a duplicate, a missing label, neither or both of `session` and `tool`, a `tool` that is not
+/// `<addon>.<name>`, a spec over [`MAX_REMOTE_SPEC_BYTES`]. At most [`MAX_REMOTES`] are kept.
+pub fn parse_remotes(params: &Value, addon: &str) -> Result<(Vec<Remote>, Vec<String>), String> {
+    let list = params.get("remotes").and_then(Value::as_array).ok_or("`remotes` must be an array")?;
+    let mut problems = Vec::new();
+    if list.len() > MAX_REMOTES {
+        problems.push(format!("more than {MAX_REMOTES} remotes; {} ignored", list.len() - MAX_REMOTES));
+    }
+    let mut out: Vec<Remote> = Vec::new();
+    for entry in list.iter().take(MAX_REMOTES) {
+        match parse_remote(entry, addon) {
+            Ok(r) if out.iter().any(|x| x.id == r.id) => problems.push(format!("remote `{}` is listed twice; the second is ignored", r.id)),
+            Ok(r) => out.push(r),
+            Err(e) => problems.push(e),
+        }
+    }
+    Ok((out, problems))
+}
+
+fn parse_remote(entry: &Value, addon: &str) -> Result<Remote, String> {
+    let obj = entry.as_object().ok_or("a remote entry is not an object")?;
+    let id = obj.get("id").and_then(Value::as_str).ok_or("a remote has no `id`")?;
+    if !valid_remote_id(id) {
+        return Err(format!("remote id `{}` is not valid: use letters, digits and . _ : - (up to {MAX_REMOTE_ID})", clean_text(id, 40)));
+    }
+    let label = obj.get("label").and_then(Value::as_str).map(|s| clean_text(s, MAX_REMOTE_LABEL)).filter(|s| !s.is_empty()).ok_or_else(|| format!("remote `{id}` has no `label`"))?;
+    let detail = obj.get("detail").and_then(Value::as_str).map(|s| clean_text(s, MAX_REMOTE_DETAIL)).unwrap_or_default();
+    let too_big = |v: &Value| serde_json::to_string(v).map_or(true, |s| s.len() > MAX_REMOTE_SPEC_BYTES);
+    let open = match (obj.get("session"), obj.get("tool")) {
+        (Some(s @ Value::Object(_)), None) => {
+            if too_big(s) {
+                return Err(format!("remote `{id}`: the session spec is over {MAX_REMOTE_SPEC_BYTES} bytes"));
+            }
+            RemoteOpen::Session(s.clone())
+        }
+        (None, Some(Value::String(t))) => {
+            let ok = t.strip_prefix(addon).and_then(|r| r.strip_prefix('.')).is_some_and(valid_tool_name);
+            if !ok {
+                return Err(format!("remote `{id}`: `tool` must be one of this add-on's tools, `{addon}.<name>`"));
+            }
+            let params = match obj.get("params") {
+                None | Some(Value::Null) => json!({}),
+                Some(p @ Value::Object(_)) => p.clone(),
+                Some(_) => return Err(format!("remote `{id}`: `params` must be an object")),
+            };
+            if too_big(&params) {
+                return Err(format!("remote `{id}`: `params` is over {MAX_REMOTE_SPEC_BYTES} bytes"));
+            }
+            RemoteOpen::Tool { name: t.clone(), params }
+        }
+        _ => return Err(format!("remote `{id}` needs exactly one of `session` (an object) and `tool` (a string)")),
+    };
+    Ok(Remote { id: id.to_owned(), label, detail, open })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -516,5 +615,49 @@ mod tests {
         );
         let n = notification_line("event", json!({"event": "inbox_changed"}));
         assert_eq!(parse_line(&n).unwrap(), Incoming::Notification { method: "event".into(), params: json!({"event": "inbox_changed"}) });
+    }
+
+    #[test]
+    fn remotes_are_validated_entry_by_entry() {
+        let big = "x".repeat(MAX_REMOTE_SPEC_BYTES);
+        let (list, problems) = parse_remotes(
+            &json!({"remotes": [
+                {"id": "a", "label": "Agent A", "detail": "idle", "session": {"ssh": {"host": "h", "config_file": "/c"}}},
+                {"id": "b", "label": "Agent B", "tool": "echo-test.open", "params": {"name": "b"}},
+                {"id": "a", "label": "dup", "session": {}},
+                {"id": "bad id", "label": "x", "session": {}},
+                {"id": "c", "session": {}},
+                {"id": "d", "label": "both", "session": {}, "tool": "echo-test.open"},
+                {"id": "e", "label": "neither"},
+                {"id": "f", "label": "other add-on", "tool": "other.open"},
+                {"id": "g", "label": "big", "session": {"x": big}},
+                {"id": "h", "label": "bad params", "tool": "echo-test.open", "params": [1]},
+                "nope"
+            ]}),
+            "echo-test",
+        )
+        .unwrap();
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(list[0].open, RemoteOpen::Session(json!({"ssh": {"host": "h", "config_file": "/c"}})));
+        assert_eq!(list[1].open, RemoteOpen::Tool { name: "echo-test.open".into(), params: json!({"name": "b"}) });
+        assert_eq!(problems.len(), 9, "{problems:?}");
+        assert!(parse_remotes(&json!({"remotes": "x"}), "echo-test").is_err());
+        assert!(parse_remotes(&json!({}), "echo-test").is_err());
+        assert!(parse_remotes(&json!({"remotes": []}), "echo-test").unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn remotes_are_capped() {
+        let many: Vec<Value> = (0..MAX_REMOTES + 5).map(|i| json!({"id": format!("r{i}"), "label": "l", "session": {}})).collect();
+        let (list, problems) = parse_remotes(&json!({"remotes": many}), "echo-test").unwrap();
+        assert_eq!(list.len(), MAX_REMOTES);
+        assert_eq!(problems.len(), 1);
+    }
+
+    #[test]
+    fn the_secrets_effect_and_sleep_events_are_known() {
+        assert_eq!(ProcessEffect::from_name("stores_secrets"), Some(ProcessEffect::StoresSecrets));
+        assert!(ProcessEffect::ALL.iter().all(|e| ProcessEffect::from_name(e.name()) == Some(*e)));
+        assert!(EVENT_KINDS.contains(&"session_asleep") && EVENT_KINDS.contains(&"session_awake"));
     }
 }

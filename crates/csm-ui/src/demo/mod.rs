@@ -275,6 +275,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
     );
     UiModel {
         addons: Vec::new(),
+        remotes: Vec::new(),
         slash_presets: Vec::new(),
         sessions: s,
         groups,

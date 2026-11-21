@@ -29,6 +29,9 @@ serde_json = "1"
 log = "0.4"
 notify = "8"
 sha2 = "0.10"
+# The OS keychain, for add-ons that keep secrets of their own (secrets.rs). Pure Rust on every OS:
+# Credential Manager, Keychain, and the Secret Service over zbus (no libdbus to install).
+keyring = "4"
 
 [dev-dependencies]
 tempfile = "3"

@@ -31,7 +31,7 @@ kind = "process"
 
 [process]
 argv = [{exe}, "{mode}"]
-effects = ["writes_filesystem"]
+effects = ["writes_filesystem", "stores_secrets"]
 "#
     )
 }
@@ -314,4 +314,257 @@ fn shutdown_stops_the_plugin_within_the_budget() {
     let started = Instant::now();
     h.engine.shutdown();
     assert!(started.elapsed() < Duration::from_secs(10), "shutdown took {:?}", started.elapsed());
+}
+
+// ── What plugins contribute to sessions: remotes, status notes, secrets ─────────────────────
+
+/// A plugin tool that runs a CSM tool through `csm/call`: the answer (`data` or the error).
+fn plugin_csm(h: &H, tool: &str, params: Value) -> Value {
+    // The `csm/call` answer: `{message, data}`, or an error whose `data` is the tool error.
+    h.ok("echo-test.csm", json!({"tool": tool, "params": params})).data["data"].clone()
+}
+
+fn offer(h: &H, remotes: Value) {
+    h.ok("echo-test.offer", json!({"remotes": remotes}));
+    // A notification: wait for the snapshot to carry it.
+    let want = remotes.as_array().map_or(0, |a| a.iter().filter(|r| r["id"] != "bad id").count());
+    h.wait_until("the remotes", |s| s.remotes.len() == want);
+}
+
+fn ssh_remote() -> Value {
+    json!({"id": "agent-1", "label": "Agent 1", "detail": "idle", "session": {
+        "name": "Agent 1",
+        "ssh": {"host": "agent-alias", "config_file": "cfg/ssh_config", "remote_argv": ["tmux", "new-session", "-A", "-s", "main"]},
+        "resume": "rerun"
+    }})
+}
+
+fn view_of(h: &H, id: &str) -> csm_engine::SessionView {
+    h.engine.view().sessions.iter().find(|s| s.id == id).cloned().unwrap_or_else(|| panic!("no session {id}"))
+}
+
+fn has<'a>(s: &'a csm_engine::Snapshot, id: &str) -> Option<&'a csm_engine::SessionView> {
+    s.sessions.iter().find(|v| v.id == id)
+}
+
+#[test]
+fn a_plugin_offers_remotes_and_opening_one_starts_its_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+    offer(
+        &h,
+        json!([
+            ssh_remote(),
+            {"id": "agent-2", "label": "Agent 2", "tool": "echo-test.open_agent", "params": {"name": "Second"}},
+            {"id": "bad id", "label": "x", "session": {}}
+        ]),
+    );
+    let listed = h.ok("remote_list", json!({})).data["remotes"].clone();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "the bad entry was dropped: {listed}");
+    assert_eq!(listed[0]["addon"], "echo-test");
+    assert_eq!(listed[0]["addon_name"], "Echo test plugin");
+    assert_eq!(listed[0]["opens"], "session");
+    assert_eq!(listed[1]["opens"], "tool");
+
+    // A session entry opens as given: ssh with the config file, the alias, the remote command as
+    // one quoted argument, and the session is the add-on's, re-run on resume.
+    let before = h.pty_count();
+    let out = h.ok("remote_open", json!({"addon": "echo-test", "remote_id": "agent-1"}));
+    let id = out.data["id"].as_str().unwrap().to_owned();
+    let pty = h.pty(before);
+    assert_eq!(&pty.argv[..2], ["ssh", "-F"], "{:?}", pty.argv);
+    assert_eq!(pty.argv[2], "cfg/ssh_config");
+    assert!(pty.argv.contains(&"agent-alias".to_owned()), "{:?}", pty.argv);
+    assert_eq!(pty.argv.last().map(String::as_str), Some("tmux new-session -A -s main"));
+    let v = view_of(&h, &id);
+    assert_eq!(v.owner_addon.as_deref(), Some("echo-test"));
+    assert_eq!(v.name, "Agent 1");
+
+    // A tool entry asks the plugin's own tool what to open.
+    let out = h.ok("remote_open", json!({"addon": "echo-test", "remote_id": "agent-2"}));
+    let id2 = out.data["id"].as_str().unwrap().to_owned();
+    assert_eq!(view_of(&h, &id2).name, "Second");
+    assert_eq!(view_of(&h, &id2).owner_addon.as_deref(), Some("echo-test"));
+
+    // Unknown entries and add-ons are refused plainly.
+    assert!(h.ui("remote_open", json!({"addon": "echo-test", "remote_id": "nope"})).unwrap_err().to_string().contains("no remote"));
+    assert!(h.ui("remote_open", json!({"addon": "other", "remote_id": "agent-1"})).is_err());
+
+    // Opening reaches the network and starts a process: an MCP client is asked first.
+    assert!(h.engine.registry().get("remote_open").unwrap().effects.needs_consent());
+    assert!(!h.engine.registry().get("remote_list").unwrap().effects.needs_consent());
+
+    // Withdrawing the list, and disabling the add-on, take the entries away.
+    offer(&h, json!([]));
+    offer(&h, json!([ssh_remote()]));
+    h.ok("addon_disable", json!({"id": "echo-test"}));
+    h.wait_until("the remotes to go with the add-on", |s| s.remotes.is_empty());
+    h.engine.shutdown();
+}
+
+#[test]
+fn a_plugin_sets_a_status_and_note_on_its_own_sessions_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+    offer(&h, json!([ssh_remote()]));
+    let mine = h.ok("remote_open", json!({"addon": "echo-test", "remote_id": "agent-1"})).data["id"].as_str().unwrap().to_owned();
+    let theirs = h.session("sleep 1");
+
+    let set = plugin_csm(&h, "session_annotate", json!({"session_id": mine, "status": "working", "annotation": "running remotely"}));
+    assert_eq!(set["session_id"], mine.as_str(), "{set}");
+    let snap = h.wait_until("the note", |s| has(s, &mine).is_some_and(|v| v.annotation.is_some()));
+    let v = has(&snap, &mine).unwrap();
+    assert_eq!(v.annotation.as_deref(), Some("running remotely"));
+    assert_eq!(v.status, csm_engine::Status::Working);
+    assert!(v.folder_short.ends_with("running remotely"), "{}", v.folder_short);
+
+    // Someone else's session, a made-up status, the person, and an MCP client are all refused.
+    let other = plugin_csm(&h, "session_annotate", json!({"session_id": theirs, "annotation": "mine now"}));
+    assert_eq!(other["code"], "refused", "{other}");
+    let bad = plugin_csm(&h, "session_annotate", json!({"session_id": mine, "status": "exited"}));
+    assert_eq!(bad["code"], "invalid_params", "{bad}");
+    assert!(h.ui("session_annotate", json!({"session_id": mine, "annotation": "x"})).is_err());
+    let ext = Caller::External { client: "test-client".into(), session_id: None };
+    assert!(h.engine.call(ext, "session_annotate", json!({"session_id": mine, "annotation": "x"})).is_err());
+    assert!(view_of(&h, &theirs).annotation.is_none());
+
+    // Clearing: an empty string.
+    plugin_csm(&h, "session_annotate", json!({"session_id": mine, "status": "", "annotation": ""}));
+    h.wait_until("the note to clear", |s| has(s, &mine).is_some_and(|v| v.annotation.is_none() && v.status != csm_engine::Status::Working));
+
+    // It goes with the plugin's process: a restart clears what the last one set.
+    plugin_csm(&h, "session_annotate", json!({"session_id": mine, "annotation": "again"}));
+    h.wait_until("the note", |s| has(s, &mine).is_some_and(|v| v.annotation.is_some()));
+    assert!(h.ui("echo-test.exit", json!({})).is_err());
+    h.wait_until("the note to go with the process", |s| has(s, &mine).is_some_and(|v| v.annotation.is_none()));
+    // Ownership outlives the process: the session still names its add-on.
+    assert_eq!(view_of(&h, &mine).owner_addon.as_deref(), Some("echo-test"));
+    h.engine.shutdown();
+}
+
+#[test]
+fn a_plugin_hears_when_its_own_sessions_sleep_and_wake_and_only_those() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+    offer(&h, json!([ssh_remote()]));
+    let mine = h.ok("remote_open", json!({"addon": "echo-test", "remote_id": "agent-1"})).data["id"].as_str().unwrap().to_owned();
+    let theirs = h.session("sleep 1");
+    h.ok("session_sleep", json!({"session_id": theirs}));
+    h.ok("session_sleep", json!({"session_id": mine}));
+    let count_of = |kind: &str| {
+        let kinds = h.ok("echo-test.echo", json!({})).data["event_kinds"].clone();
+        kinds.as_array().unwrap().iter().filter(|k| *k == kind).count()
+    };
+    let wait_for_kind = |kind: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while count_of(kind) == 0 {
+            assert!(Instant::now() < deadline, "never saw {kind}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    wait_for_kind("session_asleep");
+    assert_eq!(count_of("session_asleep"), 1, "only the add-on's own session");
+    h.ok("session_wake", json!({"session_id": mine}));
+    wait_for_kind("session_awake");
+    h.ok("session_wake", json!({"session_id": theirs}));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(count_of("session_awake"), 1);
+    h.engine.shutdown();
+}
+
+#[test]
+fn a_plugin_keeps_secrets_in_its_own_namespace_and_nobody_else_can() {
+    use csm_services::secrets::{MemoryStore, SecretStore, service_for};
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let state = fixture(dir.path(), "ok");
+    let h = {
+        let (state, store) = (state.clone(), store.clone());
+        H::start(test_app(), move |o| {
+            o.save_path = Some(state);
+            o.restore_on_start = false;
+            o.secrets = store;
+        })
+    };
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+
+    let set = plugin_csm(&h, "addon_secret_set", json!({"key": "ssh-key.path", "value": "/keys/id"}));
+    assert_eq!(set["key"], "ssh-key.path", "{set}");
+    assert_eq!(store.get(&service_for("echo-test"), "ssh-key.path").unwrap().as_deref(), Some("/keys/id"));
+    assert_eq!(store.get(&service_for("someone-else"), "ssh-key.path").unwrap(), None, "the namespace is the caller's");
+    let got = plugin_csm(&h, "addon_secret_get", json!({"key": "ssh-key.path"}));
+    assert_eq!(got["value"], "/keys/id");
+    assert_eq!(plugin_csm(&h, "addon_secret_get", json!({"key": "missing"}))["value"], Value::Null);
+
+    // The secret is in no state file.
+    h.ok("session_new", json!({"command": "sleep 1", "folder": "."}));
+    std::thread::sleep(Duration::from_millis(900));
+    let saved = fs::read_to_string(dir.path().join("state.json")).unwrap_or_default();
+    assert!(!saved.is_empty() && !saved.contains("/keys/id"), "a secret reached state.json");
+
+    // Bad keys and oversize values are refused; the person, the CLI and MCP cannot touch secrets.
+    assert_eq!(plugin_csm(&h, "addon_secret_get", json!({"key": "Bad Key"}))["code"], "invalid_params");
+    let big = "x".repeat(csm_services::secrets::MAX_VALUE_BYTES + 1);
+    assert_eq!(plugin_csm(&h, "addon_secret_set", json!({"key": "k", "value": big}))["code"], "invalid_params");
+    for caller in [Caller::Ui, Caller::Cli, Caller::External { client: "test-client".into(), session_id: None }] {
+        let e = h.engine.call(caller, "addon_secret_get", json!({"key": "ssh-key.path"})).unwrap_err();
+        assert!(e.to_string().contains("belong to an add-on"), "{e}");
+    }
+    assert!(!h.engine.registry().get("addon_secret_get").unwrap().effects.needs_consent());
+
+    let gone = plugin_csm(&h, "addon_secret_delete", json!({"key": "ssh-key.path"}));
+    assert_eq!(gone["removed"], true);
+    assert_eq!(store.get(&service_for("echo-test"), "ssh-key.path").unwrap(), None);
+    h.engine.shutdown();
+}
+
+#[test]
+fn secrets_need_the_declared_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = fixture(dir.path(), "ok");
+    let toml = dir.path().join("addons").join("echo-test").join("addon.toml");
+    fs::write(&toml, manifest("ok").replace(r#"effects = ["writes_filesystem", "stores_secrets"]"#, r#"effects = ["writes_filesystem"]"#)).unwrap();
+    let h = start(&state);
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+    let refused = plugin_csm(&h, "addon_secret_set", json!({"key": "k", "value": "v"}));
+    assert_eq!(refused["code"], "refused", "{refused}");
+    assert!(refused["message"].as_str().unwrap().contains("stores_secrets"), "{refused}");
+    h.engine.shutdown();
+}
+
+#[test]
+fn a_session_a_plugin_opens_with_csm_call_is_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+    // session_new starts a process, so the plugin's call asks the person first.
+    let events = h.engine.subscribe();
+    let caller = h.engine.submit(Caller::Ui, "echo-test.csm", json!({"tool": "session_new", "params": {"command": "sleep 1", "folder": "."}}));
+    let request = loop {
+        match events.recv_timeout(Duration::from_secs(10)) {
+            Ok(Event::ConsentRequested { request }) if request["tool"] == "session_new" => break request,
+            Ok(_) => continue,
+            Err(e) => panic!("no consent request: {e}"),
+        }
+    };
+    h.ui("consent_answer", json!({"request_id": request["request_id"], "answer": "allow_once"})).unwrap();
+    let out = caller.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    let id = out.data["data"]["id"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(view_of(&h, &id).owner_addon.as_deref(), Some("echo-test"), "{}", out.data);
+    h.engine.shutdown();
 }

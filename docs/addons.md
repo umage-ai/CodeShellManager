@@ -232,7 +232,8 @@ CSM sends is the handshake:
 - A tool's `effects` may only name effects the `[process]` table declares. A tool that names an
   undeclared one is **refused** (the other tools still load), and the problem is shown.
 - `input_schema` is an object schema, at most 16 KiB. Omitted, it accepts no fields.
-- `subscriptions` may name `session_changed`, `session_removed` and `inbox_changed`. Each matching
+- `subscriptions` may name `session_changed`, `session_removed`, `inbox_changed`, and, for sessions the
+  add-on owns, `session_asleep` and `session_awake`. Each matching
   event is sent to the plugin as a notification:
   `{"jsonrpc":"2.0","method":"event","params":{"event":"session_changed","session_id":"..."}}`.
   Events carry only what the engine event carries (ids, not text).
@@ -267,6 +268,98 @@ error (`{"code":"refused","message":"..."}`). At most 8 `csm/call`s run at once 
 `csm/log` with `{"message": "..."}` is written to the app log. Any other method is answered with
 `-32601`.
 
+### Remotes, session notes, sleep and wake, and secrets
+
+Four hooks let a process add-on connect CSM to a place CSM does not know about (a build farm, a
+container host, anything reached over ssh). They are generic: the add-on supplies the knowledge, the
+app supplies the session.
+
+**Remotes (`csm/remotes_changed`).** The plugin tells CSM what it can open a session on. The message
+is a notification carrying the *complete* current list (an empty list withdraws everything), at most
+200 entries; send it again whenever the list changes. The entries show up in the palette (type `>`
+or part of the name) as `Remote… › <add-on name> › <label>` and as chips in the New session dialog's
+Remote… row. They go away when the add-on stops or is disabled.
+
+```
+-> (plugin) {"jsonrpc":"2.0","method":"csm/remotes_changed","params":{"remotes":[
+     {"id":"agent-1","label":"Agent 1","detail":"idle, image current",
+      "session":{"name":"Agent 1","resume":"rerun",
+                 "ssh":{"host":"agent-1","config_file":"/path/to/ssh_config",
+                        "remote_argv":["tmux","new-session","-A","-s","main"]}}},
+     {"id":"new","label":"New agent…","tool":"my-addon.open_agent","params":{"template":"default"}}]}}
+```
+
+- `id`: letters, digits and `. _ : -`, up to 64 bytes, unique in the list. `label` (80 characters)
+  is required; `detail` (160) is optional.
+- Exactly one of `session` and `tool`. `session` is the parameter object of `session_new` (an ssh
+  session with a config file and alias, usually) and is opened as given. `tool` names one of **this
+  add-on's own** tools (`<add-on id>.<name>`), called with `params`; its answer must carry
+  `data.session`, the same object, which is then opened. Each is at most 8 KiB. A bad entry is
+  dropped and logged; the rest still load.
+- Opening goes through the tool **`remote_open`** (`addon`, `remote_id`, optional `focus`): effects
+  state, launch and network, so an MCP client is asked first. `remote_list` (read) lists the
+  entries. Both work from the palette, the CLI (`csm remote-open`) and MCP.
+- The session is **owned** by the add-on: it is stored as `OwnerAddon` in `state.json` (an id, not a
+  secret) and survives a restart of the app and of the plugin. A session the plugin opens itself with
+  `csm/call` `session_new` is owned the same way.
+
+**SSH sessions from a config file.** `session_new` and `session_edit` take, under `ssh`:
+`config_file` (`ssh -F <file>`; `host` may then be an alias defined in it, and `user` and `port`
+can stay empty) and `remote_argv` (the command to run on the remote host as an argv list, at most
+64 elements of 4096 bytes; for example `["tmux","new-session","-A","-s","main"]`). The remote
+command is built as argv: each element is a POSIX word, left bare when it only has safe characters
+and single-quoted otherwise, joined into one remote command line, and that whole line is one
+argument to `ssh` (the quoting rules of `docs/wpf/lessons.md`, "Two escaping layers"). A value can
+never become another `ssh` option. Control characters are refused.
+
+**Resume by re-running (`resume`).** `session_new` and `session_edit` take `resume: "rerun"`. A
+session marked this way is started again with exactly the same command line on restore, wake and
+restart: no Claude `--resume` or `--session-id` is added, and it comes back even when its add-on
+profile says `resume = "none"`. It is for programs that reattach by themselves, such as
+`tmux new-session -A`. A pack profile's `resume = "re-run"` means the same for sessions started
+from that profile.
+
+**Status and note (`session_annotate`).** Through `csm/call`, a plugin may set a status override
+and a short note on **sessions it owns** (and only those; other callers, the person and MCP clients
+are refused):
+
+```
+csm/call {"tool":"session_annotate","params":{"session_id":"...","status":"working","annotation":"running remotely"}}
+```
+
+`status` is `working`, `needs_you_approval`, `needs_you_question`, `done_unseen`, `error`, `idle`, or
+`""` to clear; `annotation` is up to 80 characters or `""`. Leave a field out to keep it. The status
+outranks what the screen suggests, except that a process that has ended stays `exited` (and a
+sleeping session stays `asleep`). The note appears after the session's subtitle in the sidebar.
+Both are runtime only and are cleared when the plugin's process stops, crashes or is disabled; set
+them again after the handshake.
+
+**Sleep and wake.** A plugin that subscribes to `session_asleep` and `session_awake` is sent
+`{"method":"event","params":{"event":"session_asleep","session_id":"..."}}` when a session it owns
+goes to sleep or is woken, and for no other session. A session that sleeps closes its local process
+(for an ssh session, the connection); what runs on the far side is the plugin's to track.
+
+**Secrets (`addon_secret_set`, `addon_secret_get`, `addon_secret_delete`).** An add-on that declares
+the effect `stores_secrets` may keep small secrets in the OS keychain (Windows Credential Manager,
+macOS Keychain, the Secret Service on Linux), through `csm/call`:
+
+```
+csm/call {"tool":"addon_secret_set","params":{"key":"ssh-key.path","value":"..."}}
+csm/call {"tool":"addon_secret_get","params":{"key":"ssh-key.path"}}   -> data: {"key":..,"value":".."|null}
+csm/call {"tool":"addon_secret_delete","params":{"key":"ssh-key.path"}} -> data: {"removed": true|false}
+```
+
+- `key`: lowercase letters, digits and `. _ -`, up to 64 bytes; `value` up to 2048 bytes.
+- The keychain service is `codeshell-addon:<add-on id>`, taken from **who is calling**, never from a
+  parameter: an add-on cannot name another's secrets. The person, the CLI and MCP clients are refused
+  (a secret goes from the keychain to the add-on that stored it and nowhere else). Nothing is written
+  to `state.json`, and the value is in the result's `data`, never in its message.
+- The effect `stores_secrets` is shown in the consent dialog when the add-on is enabled; that is
+  the consent, so these calls do not ask again. The calls run off the engine thread (a locked
+  keychain can wait), and fail with the keychain's reason if there is none.
+- Secrets stay in the keychain when the add-on is disabled or removed; delete them first if that
+  matters.
+
 ### Effects and consent
 
 Each tool's effects map onto the app's effects, and **consent for MCP callers is derived from
@@ -281,6 +374,7 @@ asking.
 | `reads_session_content` | returns session content | yes |
 | `writes_filesystem` | writes files | yes |
 | `accesses_network` | talks to the network | no (open-world hint only) |
+| `stores_secrets` | keeps secrets in the OS keychain | no: only the add-on itself can call them |
 
 A tool that **omits** `effects` is given all of the add-on's declared effects, so it asks before an
 MCP client runs it whenever the add-on declares any. Declaring a narrower list (or `[]`) is the
@@ -308,6 +402,10 @@ A `csm/call` from a plugin runs as `add-on <id>`. An MCP client may not claim a 
 |---|---|---|
 | `plugin_status` | reads session content: asks for MCP clients, since it returns the stderr tail | the table above |
 | `plugin_restart` | launches a process, may discard data | `id`: stop and start an enabled process add-on |
+| `remote_list` | read | the remotes enabled process add-ons offer |
+| `remote_open` | state, launch, network (consent for MCP) | `addon`, `remote_id`, optional `focus` |
+| `session_annotate` | ui | add-on callers only: `session_id`, `status`, `annotation` on a session the add-on owns |
+| `addon_secret_set` / `_get` / `_delete` | secrets | add-on callers only: `key` (and `value`) in the add-on's own keychain namespace |
 
 While its process runs, the add-on's own tools (`echo-test.echo` and so on) appear in `tool_list`,
 the palette, the CLI (`csm echo-test.echo`) and MCP, in the `addons` toolset. They cannot be

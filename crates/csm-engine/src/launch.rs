@@ -66,6 +66,8 @@ fn spec_of(s: &ShellSession, wsl_shell: Option<&str>) -> LaunchSpec {
         ssh_host: s.ssh_host.clone(),
         ssh_port: s.ssh_port,
         ssh_remote_folder: s.ssh_remote_folder.clone(),
+        ssh_config_file: s.ssh_config_file.clone(),
+        ssh_remote_argv: s.ssh_remote_argv.clone(),
         wsl_distro: s.wsl_distro.clone(),
         wsl_user: s.wsl_user.clone(),
         wsl_working_folder: s.wsl_working_folder.clone(),
@@ -397,6 +399,10 @@ pub fn choose_claude_id(
     guess: impl FnOnce() -> Option<(String, SystemTime)>,
     fresh: impl FnOnce() -> String,
 ) -> ClaudeChoice {
+    // "Re-run argv" sessions never get `--resume` or `--session-id`: the program reattaches by itself.
+    if s.resume_rerun {
+        return ClaudeChoice::None;
+    }
     if s.kind != SessionKind::Local || !is_claude_command(&s.command) {
         return ClaudeChoice::None;
     }
@@ -556,6 +562,33 @@ mod tests {
         assert_eq!(p.cwd, None);
         let bad = ShellSession { kind: SessionKind::Ssh, ..Default::default() };
         assert!(plan(&bad, None, "pwsh.exe", "/bin/sh").is_err());
+    }
+
+    #[test]
+    fn ssh_config_alias_and_remote_argv_become_arguments() {
+        let s = ShellSession {
+            id: "s".into(),
+            kind: SessionKind::Ssh,
+            ssh_host: "agent-1".into(),
+            ssh_config_file: "/cfg dir/ssh_config".into(),
+            ssh_remote_argv: ["tmux", "new-session", "-A", "-s", "ma in; rm -rf x"].map(String::from).to_vec(),
+            ..Default::default()
+        };
+        let p = plan(&s, None, "pwsh.exe", "/bin/sh").unwrap();
+        assert_eq!(&p.argv[..4], ["ssh", "-F", "/cfg dir/ssh_config", "-t"], "{:?}", p.argv);
+        assert_eq!(p.argv[4], "agent-1");
+        assert_eq!(p.argv[5], "tmux new-session -A -s 'ma in; rm -rf x'");
+        assert_eq!(p.argv.len(), 6);
+    }
+
+    #[test]
+    fn rerun_sessions_never_get_a_claude_id() {
+        let mut s = claude("", Some("11111111-2222-3333-4444-555555555555"));
+        s.resume_rerun = true;
+        let c = choose_claude_id(&s, true, true, |_| Some(SystemTime::UNIX_EPOCH), || None, || "x".into());
+        assert_eq!(c, ClaudeChoice::None);
+        s.resume_rerun = false;
+        assert!(matches!(choose_claude_id(&s, true, true, |_| Some(SystemTime::UNIX_EPOCH), || None, || "x".into()), ClaudeChoice::Resume(_)));
     }
 
     fn claude(args: &str, stored: Option<&str>) -> ShellSession {

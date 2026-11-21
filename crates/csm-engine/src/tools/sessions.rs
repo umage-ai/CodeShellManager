@@ -259,7 +259,7 @@ fn session_get(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         "config": {
             "command": s.command, "args": s.args, "folder": s.working_folder,
             "kind": view.as_ref().map(|v| v.kind),
-            "ssh": {"user": s.ssh_user, "host": s.ssh_host, "port": s.ssh_port, "remote_folder": s.ssh_remote_folder},
+            "ssh": {"user": s.ssh_user, "host": s.ssh_host, "port": s.ssh_port, "remote_folder": s.ssh_remote_folder, "config_file": s.ssh_config_file, "remote_argv": s.ssh_remote_argv},
             "wsl": {"distro": s.wsl_distro, "user": s.wsl_user, "folder": s.wsl_working_folder},
             "color_override": s.color_override,
             "look": csm_core::look::Look::from_session(s),
@@ -281,6 +281,13 @@ enum KindParam {
     Wsl,
 }
 
+#[derive(Deserialize, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ResumeParam {
+    Default,
+    Rerun,
+}
+
 #[derive(Deserialize, schemars::JsonSchema, Clone)]
 #[serde(deny_unknown_fields)]
 struct SshParams {
@@ -293,6 +300,13 @@ struct SshParams {
     /// Folder on the remote host to start in.
     #[serde(default)]
     remote_folder: Option<String>,
+    /// An ssh config file (`ssh -F <file>`). `host` may then be an alias defined in it.
+    #[serde(default)]
+    config_file: Option<String>,
+    /// The command to run on the remote host, one argv element each (for example
+    /// `["tmux","new-session","-A","-s","main"]`). Empty: `command` and `args` run there.
+    #[serde(default)]
+    remote_argv: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Clone)]
@@ -332,7 +346,14 @@ struct NewParams {
     after: Option<String>,
     /// Its own terminal look (e.g. a Windows Terminal profile's, from `profile_list`).
     look: Option<csm_core::look::Look>,
+    /// `rerun`: reconnecting re-runs the same command line (no Claude `--resume`); for sessions
+    /// whose own program reattaches, such as `tmux new-session -A`. Default: the usual rules.
+    resume: Option<ResumeParam>,
 }
+
+/// Most elements of an ssh remote command, and the longest one, in bytes.
+const MAX_REMOTE_ARGV: usize = 64;
+const MAX_REMOTE_ARG: usize = 4096;
 
 fn validate_port(port: Option<i32>) -> Result<i32, ToolError> {
     match port {
@@ -384,6 +405,17 @@ fn apply_connection(
                 let rf = x.remote_folder.unwrap_or_default();
                 no_controls("ssh.remote_folder", &rf)?;
                 s.ssh_remote_folder = rf;
+                let cf = x.config_file.unwrap_or_default();
+                no_controls("ssh.config_file", &cf)?;
+                s.ssh_config_file = cf.trim().to_owned();
+                let argv = x.remote_argv.unwrap_or_default();
+                if argv.len() > MAX_REMOTE_ARGV || argv.iter().any(|a| a.len() > MAX_REMOTE_ARG) {
+                    return Err(ToolError::InvalidParams(format!("`ssh.remote_argv` has more than {MAX_REMOTE_ARGV} elements or one over {MAX_REMOTE_ARG} bytes")));
+                }
+                for a in &argv {
+                    no_controls("ssh.remote_argv", a)?;
+                }
+                s.ssh_remote_argv = argv;
                 s.working_folder.clear();
             }
             if s.ssh_host.trim().is_empty() {
@@ -418,6 +450,14 @@ fn apply_connection(
 }
 
 fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    // A session an add-on opens through `csm/call` is that add-on's: it may annotate it.
+    let owner = crate::plugins::addon_of(ctx.caller).map(str::to_owned);
+    session_new_owned(ctx, params, owner)
+}
+
+/// `session_new`, with the add-on that owns the session (it may set a status override and an
+/// annotation on it), if any.
+pub(crate) fn session_new_owned(ctx: &mut Ctx<'_>, params: Value, owner: Option<String>) -> Reply {
     let p: NewParams = parse_params(params)?;
     if ctx.state.rt.shutting_down {
         return Err(ToolError::Refused("the app is closing".into()));
@@ -481,6 +521,8 @@ fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if let Some((pid, _, _)) = &chosen {
         s.addon_profile.clone_from(pid);
     }
+    s.resume_rerun = p.resume == Some(ResumeParam::Rerun);
+    s.owner_addon = owner.unwrap_or_default();
     if let Some(look) = &p.look {
         if let Some(msg) = look.validate() {
             return Err(ToolError::InvalidParams(msg));
@@ -558,6 +600,9 @@ struct EditParams {
     ssh: Option<SshParams>,
     #[serde(default)]
     wsl: Option<WslParams>,
+    /// `rerun` or `default`: see `session_new`.
+    #[serde(default)]
+    resume: Option<ResumeParam>,
     /// Restart now when the change needs a new process (default false: it applies at the next
     /// start).
     #[serde(default)]
@@ -604,13 +649,16 @@ fn session_edit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         (SessionKind::Wsl, ..) => KindParam::Wsl,
     });
     apply_connection(&mut s, kind, p.folder.clone(), p.ssh.clone(), p.wsl.clone())?;
+    if let Some(r) = p.resume {
+        s.resume_rerun = r == ResumeParam::Rerun;
+    }
     if let Some(n) = &p.name {
         let n = clean_name(n, MAX_NAME);
         if !n.is_empty() {
             s.name = n;
         }
     }
-    let relaunch = launch_fields(&old) != launch_fields(&s);
+    let relaunch = launch_fields(&old) != launch_fields(&s) || old.ssh_config_file != s.ssh_config_file || old.ssh_remote_argv != s.ssh_remote_argv;
     // Another folder, kind or program: the stored Claude conversation is not this session's any
     // more (`claude --resume` looks conversations up by folder).
     if (s.kind, s.command.to_lowercase(), s.working_folder.trim_end_matches(['/', '\\']).to_lowercase())

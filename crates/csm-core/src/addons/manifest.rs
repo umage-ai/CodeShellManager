@@ -177,7 +177,8 @@ pub struct ProcessSpec {
 }
 
 /// The effect names a process add-on may declare (the consent dialog lists them).
-pub const PROCESS_EFFECTS: [&str; 5] = ["launches_process", "sends_input", "reads_session_content", "writes_filesystem", "accesses_network"];
+pub const PROCESS_EFFECTS: [&str; 6] =
+    ["launches_process", "sends_input", "reads_session_content", "writes_filesystem", "accesses_network", "stores_secrets"];
 
 /// One entry or table that was skipped, and why. `scope` names it ("profile 2 `claude`").
 #[derive(Debug, Clone, PartialEq, Eq)]

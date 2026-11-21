@@ -35,6 +35,10 @@ pub struct SessionView {
     pub folder: String,
     /// The sidebar subtitle (leaf folder, host, `distro: leaf`).
     pub folder_short: String,
+    /// A short note a process add-on set on a session it opened ("running remotely"); already part of `folder_short`.
+    pub annotation: Option<String>,
+    /// The process add-on that opened it, when one did.
+    pub owner_addon: Option<String>,
     pub command: String,
     /// Empty when ungrouped.
     pub group_id: String,
@@ -129,6 +133,8 @@ pub struct Snapshot {
     pub version: u64,
     /// Add-ons and their state (Settings > Add-ons, the palette, the slash menu).
     pub addons: Vec<crate::addons::AddonSummary>,
+    /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).
+    pub remotes: Vec<crate::plugins::RemoteView>,
     /// The slash menu's list: the person's presets, then enabled add-ons' presets.
     pub slash_presets: Vec<csm_core::models::SlashCommand>,
     /// In sidebar order (the persisted order), live and asleep.
@@ -221,7 +227,12 @@ pub(crate) fn layout_key(state: &State) -> String {
 /// Builds a session's view (also updates when it entered the inbox).
 pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) -> SessionView {
     let rt = state.rt.sessions.get(&s.id);
-    let (st, progress, message) = status::derive(s.is_dormant, state.rt.restarting.contains(&s.id), rt);
+    let (st, progress, message) = status::derive(s.is_dormant, state.rt.restarting.contains(&s.id), rt, state.rt.plugin_marks.get(&s.id));
+    let annotation = state.rt.plugin_marks.get(&s.id).and_then(|m| m.annotation.clone());
+    let folder_short = match &annotation {
+        Some(a) => format!("{} · {a}", s.folder_short()),
+        None => s.folder_short(),
+    };
     let accent = s.color_override.clone().unwrap_or_else(|| csm_core::color::hex_color(&s.accent_key()).to_owned());
     let name = if s.name.trim().is_empty() { s.default_display_name() } else { s.name.clone() };
     let git = crate::tools::git::view_fields(state, s);
@@ -235,7 +246,9 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
             SessionKind::Wsl => "wsl",
         },
         folder: s.working_folder.clone(),
-        folder_short: s.folder_short(),
+        folder_short,
+        annotation,
+        owner_addon: Some(s.owner_addon.clone()).filter(|a| !a.is_empty()),
         command: s.command.clone(),
         group_id: s.group_id.clone(),
         accent,
@@ -359,6 +372,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
     }
     Snapshot {
         addons: crate::addons::summaries(&state.rt.addons),
+        remotes: crate::plugins::remote_views(&state.rt.addons),
         slash_presets: crate::addons::slash_presets(&state.rt.addons, &state.app.settings.claude_commands),
         version,
         sessions,

@@ -13,6 +13,7 @@ pub mod open;
 mod platform;
 mod runs;
 mod search;
+mod remotes;
 mod sessions;
 mod slash;
 mod snapshots;
@@ -44,6 +45,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(snapshots::specs());
     v.extend(tasks::specs());
     v.extend(addons::specs());
+    v.extend(remotes::specs());
     v
 }
 

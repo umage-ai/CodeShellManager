@@ -37,12 +37,25 @@ pub enum PalRow {
         params: serde_json::Value,
         idx: Vec<usize>,
     },
+    /// A place an enabled process add-on offers to open a session on (`remote_open`).
+    Remote {
+        addon: String,
+        remote_id: String,
+        title: String,
+        detail: String,
+        idx: Vec<usize>,
+    },
     /// A Claude slash command for the active Claude session (`session_send_command`).
     Slash {
         command: String,
         description: String,
         idx: Vec<usize>,
     },
+}
+
+/// The palette title of a remote: `Remote… › add-on › label`.
+fn remote_title(r: &csm_engine::RemoteView) -> String {
+    format!("Remote… › {} › {}", r.addon_name, r.label)
 }
 
 /// Keyboard hints for tools that have a shortcut.
@@ -156,6 +169,14 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
             }
         } else if let Some((_, idx)) = fuzzy(q, &c.title) {
             out.push(PalRow::Addon { title: c.title.clone(), tool, params: c.params.clone(), idx });
+        }
+    }
+    // Process add-ons' remotes: all of them after ">", the matching ones when typing.
+    for r in &app.model.remotes {
+        let title = remote_title(r);
+        let hit = if q.is_empty() { commands_only.then(Vec::new) } else { fuzzy(q, &title).map(|(_, idx)| idx) };
+        if let Some(idx) = hit {
+            out.push(PalRow::Remote { addon: r.addon.clone(), remote_id: r.id.clone(), title, detail: r.detail.clone(), idx });
         }
     }
     out
@@ -309,6 +330,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     PalRow::Search(_) => "Search",
                     PalRow::Tool { .. } => "Commands",
                     PalRow::Addon { .. } => "Add-on commands",
+                    PalRow::Remote { .. } => "Remote",
                     PalRow::Slash { .. } => "Claude commands",
                 };
                 if section != last_section {
@@ -381,6 +403,24 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         let job = highlighted(ui, title, idx, t.fg);
                         let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
                         ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
+                        title.clone()
+                    }
+                    PalRow::Remote { title, detail, idx, .. } => {
+                        icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), "server", icon::LG, t.muted);
+                        x += icon::LG + space::ROW_X;
+                        let job = highlighted(ui, title, idx, t.fg);
+                        let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                        let gw = g.size().x;
+                        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, t.fg);
+                        widgets::paint_text(
+                            ui,
+                            pos2(x + gw + space::ROW_X, cy),
+                            Align2::LEFT_CENTER,
+                            detail,
+                            theme::regular(text::CAPTION),
+                            t.faint,
+                            (rect.max.x - x - gw - space::LG).max(0.0),
+                        );
                         title.clone()
                     }
                     PalRow::Tool { id, title, idx, hint } => {
@@ -511,6 +551,7 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
         PalRow::Session { id, .. } => out.push(Action::Tool("session_focus", json!({"session_id": id}))),
         PalRow::Search(q) => out.push(Action::OpenSearch(q.clone())),
         PalRow::Addon { tool, params, .. } => out.push(Action::Tool(tool, params.clone())),
+        PalRow::Remote { addon, remote_id, .. } => out.push(Action::Tool("remote_open", json!({"addon": addon, "remote_id": remote_id}))),
         PalRow::Slash { command, .. } => {
             if let Some(a) = &app.model.active {
                 out.push(Action::Tool("session_send_command", json!({"session_id": a, "command": command, "force": true})));
@@ -838,6 +879,32 @@ fn track_siblings(ctx: &egui::Context, app: &mut CsmApp) {
     }
 }
 
+/// The Remote row: one chip per place an enabled process add-on offers (`remote_open`), under
+/// "Remote…". Clicking one starts that session at once.
+fn remote_row(ui: &mut Ui, remotes: &[csm_engine::RemoteView], picked: &mut Option<(String, String)>) {
+    let t = Tokens::get(ui.ctx());
+    let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
+    ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric((space::MD + space::XXS) as i8, space::SM as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Remote…").font(theme::regular(text::CAPTION)).color(t.muted))
+                .on_hover_text("Places an add-on offers to open a session on");
+            for r in remotes.iter().take(24) {
+                let shown: String = r.label.chars().take(40).collect();
+                let tip = format!("{} · {}
+{}", r.addon_name, r.detail, "Click to open it");
+                let resp = widgets::button(ui, ButtonKind::Ghost, Some("server"), &shown, None).on_hover_text(tip);
+                let l = format!("Remote: {} › {}", r.addon_name, r.label);
+                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
+                if resp.clicked() {
+                    *picked = Some((r.addon.clone(), r.id.clone()));
+                }
+            }
+        });
+    });
+}
+
 /// The Profile row: none / keep / each Windows Terminal profile, one click each, then the enabled
 /// add-ons' launch profiles (`addon_profiles`: id, name, command line; new sessions only).
 fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: bool, launch: &[String], addon_profiles: &[(String, String, String)]) {
@@ -992,6 +1059,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         .filter(|a| a.state == csm_engine::addons::AddonState::Loaded)
         .flat_map(|a| a.profiles.iter().map(|p| (p.id.clone(), p.name.clone(), p.command_line.clone())))
         .collect();
+    let remotes = model.remotes.clone();
+    let mut picked_remote: Option<(String, String)> = None;
     card(ctx, "quick-open", size::PALETTE_W, |ui| {
         let t = Tokens::get(ui.ctx());
         if let Some(id) = &q.edit {
@@ -1191,6 +1260,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         if import_on || has_look || (q.edit.is_none() && !addon_profiles.is_empty()) {
             profile_row(ui, &mut q, has_look, import_on, &launch, &addon_profiles);
         }
+        if q.edit.is_none() && !remotes.is_empty() {
+            remote_row(ui, &remotes, &mut picked_remote);
+        }
         if q.remote {
             let picker = q.rkind == RemoteKind::Wsl && q.distros.as_ref().is_some_and(|d| !d.is_empty());
             let extra = if picker { size::CONTROL + space::SM } else { 0.0 };
@@ -1314,6 +1386,12 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             .or_else(|| rows.get(q.sel).and_then(|(i, _)| model.folders.get(*i)).map(|f| f.path.clone()))
             .unwrap_or_default();
         app.ui.dialog_request = Some(crate::app::DialogRequest::Folder { start });
+    }
+    if let Some((addon, remote_id)) = picked_remote {
+        app.ui.quick = q;
+        actions.push(Action::CloseOverlays);
+        actions.push(Action::Tool("remote_open", json!({"addon": addon, "remote_id": remote_id})));
+        return;
     }
     if ask_distros {
         actions.push(Action::Tool("wsl_distros", json!({})));

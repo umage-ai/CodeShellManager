@@ -21,6 +21,7 @@ const EFFECT_WORDS: &[(Effects, &str)] = &[
     (Effects::WRITES_FILESYSTEM, "files"),
     (Effects::ACCESSES_NETWORK, "network"),
     (Effects::READS_SESSION_CONTENT, "content"),
+    (Effects::STORES_SECRETS, "secrets"),
 ];
 
 /// `read` for a tool that only reads, else the effect words.

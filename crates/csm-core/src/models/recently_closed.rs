@@ -46,6 +46,12 @@ pub struct RecentlyClosedEntry {
     pub ssh_port: i32,
     #[serde(deserialize_with = "nd")]
     pub ssh_remote_folder: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ssh_config_file: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_remote_argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_rerun: bool,
 
     #[serde(deserialize_with = "nd")]
     pub wsl_distro: String,
@@ -96,6 +102,9 @@ impl Default for RecentlyClosedEntry {
             ssh_host: String::new(),
             ssh_port: default_ssh_port(),
             ssh_remote_folder: String::new(),
+            ssh_config_file: String::new(),
+            ssh_remote_argv: Vec::new(),
+            resume_rerun: false,
             wsl_distro: String::new(),
             wsl_user: String::new(),
             wsl_working_folder: String::new(),
@@ -151,6 +160,9 @@ impl RecentlyClosedEntry {
             ssh_host: s.ssh_host.clone(),
             ssh_port: s.ssh_port,
             ssh_remote_folder: s.ssh_remote_folder.clone(),
+            ssh_config_file: s.ssh_config_file.clone(),
+            ssh_remote_argv: s.ssh_remote_argv.clone(),
+            resume_rerun: s.resume_rerun,
             wsl_distro: s.wsl_distro.clone(),
             wsl_user: s.wsl_user.clone(),
             wsl_working_folder: s.wsl_working_folder.clone(),
