@@ -101,6 +101,15 @@ jobs:
               throw "Bundled ConPTY file $f is not validly Microsoft-signed ($($sig.Status))."
             }
           }
+          # The app must be a GUI program (no console window opens with it) and the CLI a console
+          # program (its output must reach the terminal). PE optional header field Subsystem:
+          # 2 = Windows GUI, 3 = console.
+          foreach ($pair in @(@('codeshell.exe', 2), @('csm.exe', 3))) {
+            $b = [System.IO.File]::ReadAllBytes("publish/$($pair[0])")
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            $subsystem = [BitConverter]::ToUInt16($b, $pe + 24 + 68)
+            if ($subsystem -ne $pair[1]) { throw "$($pair[0]) has PE subsystem $subsystem, expected $($pair[1])" }
+          }
           # Every staged file must be in the installer (a file left out ships only in the zip).
           $wxs = Get-Content installer/CodeShellManager2.wxs -Raw
           foreach ($f in 'codeshell.exe', 'csm.exe', 'conpty.dll', 'OpenConsole.exe', 'codeshell.aumid') {

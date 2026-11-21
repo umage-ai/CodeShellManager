@@ -12,6 +12,9 @@
 //! codeshell [--clean] [--config-dir DIR] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! codeshell --demo [--static] [--restore] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! ```
+// A GUI program on Windows, so no console window opens with it. Release builds only: a debug
+// build (`cargo run`) keeps its console for the log. The `csm` CLI stays a console program.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
 mod os_notify;
