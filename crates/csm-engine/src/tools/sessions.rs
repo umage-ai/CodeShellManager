@@ -450,6 +450,14 @@ fn apply_connection(
 }
 
 fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    // A session an add-on opens through `csm/call` is that add-on's: it may annotate it.
+    let owner = crate::plugins::addon_of(ctx.caller).map(str::to_owned);
+    session_new_owned(ctx, params, owner)
+}
+
+/// `session_new`, with the add-on that owns the session (it may set a status override and an
+/// annotation on it), if any.
+pub(crate) fn session_new_owned(ctx: &mut Ctx<'_>, params: Value, owner: Option<String>) -> Reply {
     let p: NewParams = parse_params(params)?;
     if ctx.state.rt.shutting_down {
         return Err(ToolError::Refused("the app is closing".into()));
@@ -514,6 +522,7 @@ fn session_new(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         s.addon_profile.clone_from(pid);
     }
     s.resume_rerun = p.resume == Some(ResumeParam::Rerun);
+    s.owner_addon = owner.unwrap_or_default();
     if let Some(look) = &p.look {
         if let Some(msg) = look.validate() {
             return Err(ToolError::InvalidParams(msg));

@@ -131,6 +131,10 @@ pub struct ShellSession {
     /// whose own program reattaches (`tmux new-session -A`). Not in the WPF format.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_rerun: bool,
+    /// The process add-on that opened this session (its id), empty for one the person opened.
+    /// Only that add-on may set a status override and annotation on it. Not in the WPF format.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner_addon: String,
 
     /// The Claude Code conversation this session runs (`--session-id` when CSM started it,
     /// the id passed to `--resume` otherwise). Untrusted (it came from a state file): checked
@@ -181,6 +185,7 @@ impl Default for ShellSession {
             run_commands: Vec::new(),
             claude_session_id: None,
             resume_rerun: false,
+            owner_addon: String::new(),
         }
     }
 }

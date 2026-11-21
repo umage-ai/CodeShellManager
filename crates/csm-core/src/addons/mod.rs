@@ -9,4 +9,4 @@ pub use manifest::{
     AddonError, AddonKind, AddonMeta, CommandSpec, Problem, ProcessSpec, ProfileSpec, ProfileStatus, ParsedAddon, ResumeRule, RunTemplateSpec,
     SlashSpec, StatusRule, API_VERSION, match_status, parse, plain_token, valid_id,
 };
-pub use protocol::{DeclaredTool, Handshake, Incoming, ProcessEffect, RpcError};
+pub use protocol::{DeclaredTool, Handshake, Incoming, ProcessEffect, Remote, RemoteOpen, RpcError};

@@ -7,7 +7,7 @@
 //! later ones (e.g. Claude's DA1 sentinel). Colour OSCs stop the tap too, so a colour query that
 //! follows a colour change in the same chunk is answered from the changed palette.
 //!
-//! tmux passthrough (`ESC P tmux ; <payload, every ESC doubled> ESC `) needs no special case: `vte`
+//! tmux passthrough (`ESC P tmux ; <payload, every ESC doubled> ST`) needs no special case: `vte`
 //! ends the DCS at the first ESC, and the doubled ESC then starts the inner sequence, so an OSC
 //! 9001 / 7501 / 7 / 133 inside tmux reaches the handlers below as if it were bare. The tests in
 //! `tests/osc.rs` pin that, with split chunks, malformed wrappers and oversize payloads.

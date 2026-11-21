@@ -28,6 +28,7 @@ pub mod git;
 pub mod launch;
 pub mod open_with;
 pub mod plugins;
+pub mod secrets;
 pub mod winpath;
 pub mod wsl;
 pub mod wt_profiles;

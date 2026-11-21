@@ -854,3 +854,39 @@ fn a_new_claude_session_runs_and_stores_its_own_conversation_id() {
     h.ok("session_edit", json!({"session_id": id, "folder": other.path().to_string_lossy()}));
     assert_eq!(h.engine.view().session(&id).unwrap().claude_session_id, None);
 }
+
+#[test]
+fn an_ssh_config_alias_session_runs_ssh_with_the_file_and_the_remote_command_as_argv() {
+    let h = H::new();
+    let out = h.ok(
+        "session_new",
+        json!({"kind": "ssh", "name": "box", "resume": "rerun", "focus": false,
+               "ssh": {"host": "alias-1", "config_file": "conf/ssh cfg", "remote_argv": ["tmux", "new-session", "-A", "-s", "my main"]}}),
+    );
+    let id = out.data["id"].as_str().unwrap().to_owned();
+    let argv = h.pty(0).argv.clone();
+    assert_eq!(argv[..3], ["ssh", "-F", "conf/ssh cfg"], "{argv:?}");
+    assert_eq!(argv[argv.len() - 2], "alias-1");
+    assert_eq!(argv.last().unwrap(), "tmux new-session -A -s 'my main'");
+    // The settings read back, and a hostile element is refused before anything starts.
+    let cfg = h.ok("session_get", json!({"session_id": id})).data["config"]["ssh"].clone();
+    assert_eq!(cfg["config_file"], "conf/ssh cfg");
+    assert_eq!(cfg["remote_argv"][4], "my main");
+    let e = h.ui("session_new", json!({"kind": "ssh", "ssh": {"host": "h", "remote_argv": ["a\nb"]}})).unwrap_err();
+    assert!(matches!(e, ToolError::InvalidParams(_)), "{e}");
+    let e = h.ui("session_new", json!({"kind": "ssh", "ssh": {"host": "h", "remote_argv": vec!["x"; 65]}})).unwrap_err();
+    assert!(matches!(e, ToolError::InvalidParams(_)), "{e}");
+}
+
+#[test]
+fn a_rerun_session_comes_back_without_a_claude_resume_flag() {
+    let mut app = test_app();
+    let mut s = ShellSession { id: "r".into(), command: "claude".into(), args: "--model x".into(), resume_rerun: true, claude_session_id: Some("11111111-2222-3333-4444-555555555555".into()), ..Default::default() };
+    s.working_folder = std::env::temp_dir().to_string_lossy().into_owned();
+    app.sessions.push(s);
+    let h = H::start(app, |_| {});
+    h.wait_status("r", Status::Idle);
+    let argv = h.pty_of("r").argv.join(" ");
+    assert!(!argv.contains("--resume") && !argv.contains("--session-id"), "{argv}");
+    assert!(argv.contains("--model x"), "{argv}");
+}

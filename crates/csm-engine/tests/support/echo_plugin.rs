@@ -5,7 +5,10 @@
 //! initialize), `badjson` (writes a line that is not JSON at initialize), `undeclared` (declares a
 //! tool with an effect its add-on did not declare). Its tools are `echo-test.echo`, `.write`,
 //! `.exit` (crashes the process) and `.callback` (calls `session_list` through `csm/call`).
-//! It counts the events it was sent and reports the count from `echo`.
+//! `.csm` runs any CSM tool through `csm/call` (`tool`, `params`) and returns the answer or error;
+//! `.offer` sends `csm/remotes_changed` with the `remotes` it is given; `.open_agent` answers with
+//! a `session` to open (an ssh config/alias session). It counts the events it was sent, keeps their
+//! kinds, and reports both from `echo`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::{self, BufRead, Lines, StdinLock, Write};
@@ -26,11 +29,12 @@ fn next_line(lines: &mut Lines<StdinLock<'static>>) -> Option<String> {
 }
 
 /// Reads until the answer to `want` arrives. Events that come in the meantime are counted.
-fn wait_for(lines: &mut Lines<StdinLock<'static>>, want: u64, events: &mut u64) -> Value {
+fn wait_for(lines: &mut Lines<StdinLock<'static>>, want: u64, events: &mut u64, kinds: &mut Vec<String>) -> Value {
     while let Some(line) = next_line(lines) {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         if msg.get("method").and_then(Value::as_str) == Some("event") {
             *events += 1;
+            kinds.push(msg["params"]["event"].as_str().unwrap_or_default().to_owned());
             continue;
         }
         if msg.get("id").and_then(Value::as_u64) == Some(want) {
@@ -47,6 +51,7 @@ fn main() {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut events: u64 = 0;
+    let mut kinds: Vec<String> = Vec::new();
     let mut next_csm_id: u64 = 1000;
     while let Some(line) = next_line(&mut lines) {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
@@ -74,6 +79,9 @@ fn main() {
                     json!({"id": "echo-test.write", "title": "Write", "summary": "Pretends to write a file", "effects": ["writes_filesystem"]}),
                     json!({"id": "echo-test.exit", "title": "Exit", "summary": "Exits the process (a crash)"}),
                     json!({"id": "echo-test.callback", "title": "Callback", "summary": "Calls session_list through csm/call"}),
+                    json!({"id": "echo-test.csm", "title": "Csm", "summary": "Runs a CSM tool through csm/call", "effects": []}),
+                    json!({"id": "echo-test.offer", "title": "Offer", "summary": "Sends csm/remotes_changed", "effects": []}),
+                    json!({"id": "echo-test.open_agent", "title": "Open agent", "summary": "Says which session to open", "effects": []}),
                 ];
                 if mode == "undeclared" {
                     tools.push(json!({"id": "echo-test.sneaky", "title": "Sneaky", "effects": ["sends_input"]}));
@@ -82,28 +90,46 @@ fn main() {
                     &mut out,
                     &reply(
                         &id,
-                        json!({"api": 1, "name": "Echo test plugin", "tools": tools, "subscriptions": ["session_changed", "inbox_changed", "not_an_event"]}),
+                        json!({"api": 1, "name": "Echo test plugin", "tools": tools, "subscriptions": ["session_changed", "inbox_changed", "session_asleep", "session_awake", "not_an_event"]}),
                     ),
                 );
             }
             ("event", None) => {
                 events += 1;
                 let kind = params.get("event").and_then(Value::as_str).unwrap_or_default();
+                kinds.push(kind.to_owned());
                 eprintln!("event {kind}");
             }
             ("tools/call", Some(id)) => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
                 match name.as_str() {
-                    "echo-test.echo" => send(&mut out, &reply(&id, json!({"message": "echoed", "data": {"echo": args, "events_seen": events}}))),
+                    "echo-test.echo" => send(&mut out, &reply(&id, json!({"message": "echoed", "data": {"echo": args, "events_seen": events, "event_kinds": kinds}}))),
                     "echo-test.inherit" => send(&mut out, &reply(&id, json!({"message": "inherited"}))),
                     "echo-test.write" => send(&mut out, &reply(&id, json!({"message": "wrote (pretend)"}))),
                     "echo-test.exit" => std::process::exit(3),
+                    "echo-test.csm" => {
+                        next_csm_id += 1;
+                        let cid = next_csm_id;
+                        let call = json!({"tool": args["tool"], "params": args.get("params").cloned().unwrap_or(json!({}))});
+                        send(&mut out, &json!({"jsonrpc": "2.0", "id": cid, "method": "csm/call", "params": call}));
+                        let answer = wait_for(&mut lines, cid, &mut events, &mut kinds);
+                        send(&mut out, &reply(&id, json!({"message": "csm", "data": answer})));
+                    }
+                    "echo-test.offer" => {
+                        send(&mut out, &json!({"jsonrpc": "2.0", "method": "csm/remotes_changed", "params": {"remotes": args["remotes"]}}));
+                        send(&mut out, &reply(&id, json!({"message": "offered"})));
+                    }
+                    "echo-test.open_agent" => {
+                        let name = args["name"].as_str().unwrap_or("agent").to_owned();
+                        let session = json!({"name": name, "ssh": {"host": "agent-alias", "config_file": "cfg/ssh_config", "remote_argv": ["tmux", "new-session", "-A", "-s", "main"]}, "resume": "rerun"});
+                        send(&mut out, &reply(&id, json!({"message": "open this", "data": {"session": session}})));
+                    }
                     "echo-test.callback" => {
                         next_csm_id += 1;
                         let cid = next_csm_id;
                         send(&mut out, &json!({"jsonrpc": "2.0", "id": cid, "method": "csm/call", "params": {"tool": "session_list", "params": {}}}));
-                        let answer = wait_for(&mut lines, cid, &mut events);
+                        let answer = wait_for(&mut lines, cid, &mut events, &mut kinds);
                         send(&mut out, &reply(&id, json!({"message": "called", "data": answer})));
                     }
                     _ => send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no such tool"}})),

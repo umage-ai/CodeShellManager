@@ -39,6 +39,10 @@ bitflags! {
         /// Turns on something the person has not seen yet: an add-on (its commands, profiles and
         /// process effects). Consent for MCP callers, like the rest.
         const ENABLES_EXTENSION = 1 << 9;
+        /// Keeps a secret in the OS keychain, in an add-on's own namespace. Only the add-on itself
+        /// may call such a tool; nobody else can read or change its secrets, so there is no consent
+        /// card (the person approved the add-on's declared `stores_secrets` when enabling it).
+        const STORES_SECRETS = 1 << 10;
     }
 }
 

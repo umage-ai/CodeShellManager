@@ -986,6 +986,13 @@ pub(crate) fn forget_session(state: &mut State, id: &str) {
     }
 }
 
+/// Tells the add-on that opened a session (if it subscribed) that the session went to sleep or woke.
+fn tell_owner(ctx: &Ctx<'_>, id: &str, kind: &str) {
+    if let Some(owner) = ctx.state.app.sessions.iter().find(|s| s.id == id).map(|s| s.owner_addon.as_str()).filter(|o| !o.is_empty()) {
+        ctx.engine.host.notify_session(owner, kind, id);
+    }
+}
+
 pub(crate) fn sleep_session(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError> {
     let Some(i) = session_index(ctx.state, id) else {
         return Err(ToolError::NotFound(format!("no session `{id}`")));
@@ -1006,6 +1013,7 @@ pub(crate) fn sleep_session(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, T
     if let Some(p) = pty {
         retire(p, claude, ctx.state.options.exit_wait);
     }
+    tell_owner(ctx, id, "session_asleep");
     ctx.state.persist();
     Ok(ToolOutput::new(format!("{name} is asleep. Its settings and place are kept."), json!({"session_id": id})))
 }
@@ -1033,6 +1041,7 @@ pub(crate) fn wake_session(ctx: &mut Ctx<'_>, id: &str, then: Option<StartedCb>)
             {
                 rt.on_started.push(cb);
             }
+            tell_owner(ctx, id, "session_awake");
             ctx.state.persist();
             Ok(ToolOutput::new(format!("Waking {name}."), json!({"session_id": id})))
         }

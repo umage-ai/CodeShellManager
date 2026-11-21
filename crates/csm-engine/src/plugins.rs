@@ -222,6 +222,17 @@ impl Host {
         }
     }
 
+    /// Tells `addon` about one of its own sessions (`session_asleep`, `session_awake`) if it
+    /// subscribed to that kind. Dropped when its queue is full. Never blocks.
+    pub(crate) fn notify_session(&self, addon: &str, kind: &str, session_id: &str) {
+        let link = self.links.lock().unwrap_or_else(PoisonError::into_inner).get(addon).cloned();
+        let Some(link) = link.filter(|l| l.subs.contains(&kind)) else { return };
+        let line = proto::notification_line("event", json!({"event": kind, "session_id": session_id}));
+        if fits_line(&line) && link.out.try_send(line).is_err() {
+            log::debug!("an add-on's queue is full; the `{kind}` event is not sent to it");
+        }
+    }
+
     /// Runs a tool of a running add-on on a call thread and answers `reply` with the result.
     /// At most [`MAX_CALL_THREADS`] such calls wait at once; more are refused. If the thread
     /// cannot start, `reply` is dropped and the caller gets the engine's "stopped".
@@ -363,6 +374,18 @@ impl Env {
         (self.post)(Box::new(move |ctx: &mut Ctx<'_>| store_runtime(ctx, &addon, generation, snapshot)));
     }
 
+    /// Posts the plugin's complete list of remotes (replacing the last one).
+    fn set_remotes(&self, list: Vec<csm_core::addons::Remote>) {
+        let (addon, generation) = (self.addon.clone(), self.generation);
+        (self.post)(Box::new(move |ctx: &mut Ctx<'_>| store_remotes(ctx, &addon, generation, list)));
+    }
+
+    /// The process stopped: what it offered and set at runtime goes with it.
+    fn clear_contributions(&self) {
+        let (addon, generation) = (self.addon.clone(), self.generation);
+        (self.post)(Box::new(move |ctx: &mut Ctx<'_>| clear_contributions(ctx, &addon, generation)));
+    }
+
     fn apply_tools(&self, tools: Vec<DynamicTool>) {
         let (addon, generation) = (self.addon.clone(), self.generation);
         (self.post)(Box::new(move |ctx: &mut Ctx<'_>| {
@@ -390,6 +413,100 @@ fn store_runtime(ctx: &mut Ctx<'_>, addon: &str, generation: u64, rt: PluginRunt
 /// Whether `addon` is an enabled process add-on right now (the engine thread's view).
 fn is_running_process(cat: &addons::Catalogue, addon: &str) -> bool {
     addons::entry(cat, addon).is_some_and(|e| e.state == AddonState::Loaded && e.parsed.as_deref().is_some_and(|p| p.process.is_some()))
+}
+
+/// A process add-on's status override and annotation on one session it opened.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PluginMark {
+    pub addon: String,
+    /// The process that set it; a stopped process's marks go with it.
+    pub generation: u64,
+    pub status: Option<crate::status::Status>,
+    pub annotation: Option<String>,
+}
+
+/// One entry under "Remote…", as the snapshot (and so quick-open and the palette) shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RemoteView {
+    /// The add-on that offers it.
+    pub addon: String,
+    pub addon_name: String,
+    /// Unique within the add-on; `remote_open` takes `addon` and this.
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+    /// `session` (opens as given) or `tool` (the add-on's own tool says what to open).
+    pub opens: &'static str,
+}
+
+/// The entries of every running process add-on, in add-on id order.
+pub(crate) fn remote_views(cat: &addons::Catalogue) -> Vec<RemoteView> {
+    let mut out = Vec::new();
+    for (addon, list) in &cat.remotes {
+        let addon_name = cat.runtime.get(addon).and_then(|r| r.name.clone()).unwrap_or_else(|| addon.clone());
+        for r in list {
+            out.push(RemoteView {
+                addon: addon.clone(),
+                addon_name: addon_name.clone(),
+                id: r.id.clone(),
+                label: r.label.clone(),
+                detail: r.detail.clone(),
+                opens: match r.open {
+                    csm_core::addons::RemoteOpen::Session(_) => "session",
+                    csm_core::addons::RemoteOpen::Tool { .. } => "tool",
+                },
+            });
+        }
+    }
+    out
+}
+
+/// The add-on a call comes from (`add-on <id>`, the caller a plugin's `csm/call` runs as), if it
+/// is one. An MCP client cannot claim such a name (refused at the bridge).
+pub(crate) fn addon_of(caller: &Caller) -> Option<&str> {
+    match caller {
+        Caller::External { client, .. } => client.strip_prefix("add-on ").filter(|id| csm_core::addons::manifest::valid_id(id)),
+        _ => None,
+    }
+}
+
+/// Engine thread: what `addon` (an enabled process add-on) declared in `[process] effects`.
+pub(crate) fn declared_effects(cat: &addons::Catalogue, addon: &str) -> Vec<ProcessEffect> {
+    addons::entry(cat, addon)
+        .filter(|e| e.state == AddonState::Loaded)
+        .and_then(|e| e.parsed.as_deref())
+        .and_then(|p| p.process.as_ref())
+        .map(|p| p.effects.iter().filter_map(|n| ProcessEffect::from_name(n)).collect())
+        .unwrap_or_default()
+}
+
+/// Engine thread: drops what `addon` contributed at runtime (its remotes, and its marks on
+/// sessions) if the process that did is not newer than `generation`.
+pub(crate) fn clear_contributions(ctx: &mut Ctx<'_>, addon: &str, generation: u64) {
+    let newer = ctx.engine.plugin_tool_gen(addon).is_some_and(|g| g > generation);
+    if newer {
+        return;
+    }
+    let had_remotes = ctx.state.rt.addons.remotes.remove(addon).is_some();
+    let before = ctx.state.rt.plugin_marks.len();
+    ctx.state.rt.plugin_marks.retain(|_, m| !(m.addon == addon && m.generation <= generation));
+    if had_remotes || ctx.state.rt.plugin_marks.len() != before {
+        ctx.state.touch();
+    }
+}
+
+/// Engine thread: keeps a plugin's list of remotes if its add-on is still an enabled process
+/// add-on and the list is not from an older process than the tools registered.
+fn store_remotes(ctx: &mut Ctx<'_>, addon: &str, generation: u64, list: Vec<csm_core::addons::Remote>) {
+    if !is_running_process(&ctx.state.rt.addons, addon) || ctx.engine.plugin_tool_gen(addon).is_some_and(|g| g > generation) {
+        return;
+    }
+    if list.is_empty() {
+        ctx.state.rt.addons.remotes.remove(addon);
+    } else {
+        ctx.state.rt.addons.remotes.insert(addon.to_owned(), list);
+    }
+    ctx.state.touch();
 }
 
 /// How one run of a child ended.
@@ -424,6 +541,11 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
             ctx.engine.clear_plugin_tools(&owner);
         }
     }
+    // Disabled or removed add-ons: whatever they offered or set on sessions goes now.
+    let gone: Vec<String> = ctx.state.rt.addons.remotes.keys().cloned().chain(ctx.state.rt.plugin_marks.values().map(|m| m.addon.clone())).filter(|a| !wanted.contains(a)).collect();
+    for a in gone {
+        clear_contributions(ctx, &a, u64::MAX);
+    }
     ctx.engine.host.sync(specs);
 }
 
@@ -445,6 +567,7 @@ pub(crate) fn dynamic_tools(tools: &[DeclaredTool]) -> Vec<DynamicTool> {
                     ProcessEffect::ReadsSessionContent => Effects::READS_SESSION_CONTENT,
                     ProcessEffect::WritesFilesystem => Effects::WRITES_FILESYSTEM,
                     ProcessEffect::AccessesNetwork => Effects::ACCESSES_NETWORK,
+                    ProcessEffect::StoresSecrets => Effects::STORES_SECRETS,
                 }
             });
             let (Some(id), Some(title), Some(summary)) = (intern(&t.id), intern(&t.title), intern(&t.summary)) else {
@@ -520,6 +643,7 @@ fn supervise(spec: PluginSpec, ctl: Receiver<Ctl>, env: Env) {
         rt.pid = None;
         rt.tools.clear();
         env.apply_tools(Vec::new());
+        env.clear_contributions();
         match exit {
             Exit::Stopped => {
                 rt.state = RunState::Stopped;
@@ -727,7 +851,17 @@ fn drive(
                         }
                     }
                     Incoming::Notification { method, params } => {
-                        if method == "csm/log" {
+                        if method == "csm/remotes_changed" {
+                            match proto::parse_remotes(&params, &env.addon) {
+                                Ok((list, problems)) => {
+                                    for p in problems {
+                                        log::warn!("add-on {}: {p}", env.addon);
+                                    }
+                                    env.set_remotes(list);
+                                }
+                                Err(e) => log::warn!("add-on {}: csm/remotes_changed ignored: {e}", env.addon),
+                            }
+                        } else if method == "csm/log" {
                             let text = params.get("message").and_then(Value::as_str).map(|s| clean_text(s, 300)).unwrap_or_default();
                             log::info!("add-on {}: {text}", env.addon);
                         }

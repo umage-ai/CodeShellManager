@@ -75,6 +75,9 @@ pub struct StateOptions {
     pub claude_roots: crate::usage_tail::ClaudeRoots,
     /// How often followed transcripts are checked for new lines.
     pub usage_poll: Duration,
+    /// Where process add-ons keep their secrets. Default (tests): memory. Production: the OS
+    /// keychain.
+    pub secrets: Arc<dyn csm_services::secrets::SecretStore>,
 }
 
 /// The Windows Terminal settings the profile tools read.
@@ -108,6 +111,7 @@ impl Default for StateOptions {
             terminal_profiles: TerminalProfiles::None,
             claude_roots: crate::usage_tail::ClaudeRoots::None,
             usage_poll: Duration::from_secs(2),
+            secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
         }
     }
@@ -123,6 +127,7 @@ impl StateOptions {
             terminal_profiles: TerminalProfiles::Installed,
             claude_roots: crate::usage_tail::ClaudeRoots::Auto,
             url_opener: real_url_opener(),
+            secrets: Arc::new(csm_services::secrets::KeyringStore),
             ..Self::default()
         }
     }
@@ -212,6 +217,9 @@ pub(crate) struct Runtime {
     pub tasks_view: Option<(u64, Arc<Vec<csm_core::tasks::Task>>)>,
     /// Each session's status and when it entered it (epoch ms): `status_since_ms`, the status log.
     pub status_since: HashMap<String, (crate::status::Status, i64)>,
+    /// A process add-on's status override and annotation on sessions it opened, by session id.
+    /// Runtime only: cleared when its add-on stops or is disabled.
+    pub(crate) plugin_marks: HashMap<String, crate::plugins::PluginMark>,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].
