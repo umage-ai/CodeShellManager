@@ -982,3 +982,17 @@ fn side_by_side_keeps_the_unpinned_pane_when_a_pin_is_clicked() {
     assert!(has(&h, "Pane: search-sort"), "clicking a pinned session keeps the unpinned one beside it");
     assert!(has(&h, "Pane: Odulodo.Web"), "the pins stay");
 }
+
+#[test]
+fn the_pane_menu_button_is_labelled_when_there_is_room() {
+    let mut h = h();
+    h.get_by_label("Layout: Focus").click();
+    settle(&mut h);
+    // One wide pane: "Actions ▾", wider than an icon button; it opens the pane menu.
+    let b = h.get_by_label("Session actions  (Ctrl+.)");
+    assert!(b.rect().width() > csm_ui::theme::size::CONTROL_SM * 2.0, "labelled, not just ⋯");
+    b.click();
+    settle(&mut h);
+    assert!(matches!(h.state().ui.menu, Some(csm_ui::app::Menu::Pane { .. })), "the pane menu opened");
+    // Overview's mini panes have no menu button; a narrow Side by side pane falls back to ⋯.
+}

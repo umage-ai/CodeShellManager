@@ -370,7 +370,7 @@ fn every_layout_mode_has_the_window_bar_and_narrow_headers_do_not_overflow() {
         // Every header's controls stay inside it and leave the name its room.
         for head in h.query_all_by_label_contains("Pane: ").map(|n| n.rect()).collect::<Vec<_>>() {
             let row = head.expand2(vec2(size::SPLIT_GRIP, 0.0));
-            for label in ["Close session", "Minimize", "Maximize", "More  (Ctrl+.)"] {
+            for label in ["Close session", "Minimize", "Maximize", "Session actions  (Ctrl+.)"] {
                 for r in h.query_all_by_label(label).map(|n| n.rect()).filter(|r| row.contains(r.center())) {
                     assert!(r.max.x <= head.max.x + size::SPLIT_GRIP, "{mode:?} {label} inside the header");
                     assert!(r.min.x >= head.min.x + size::PANE_NAME_MIN_W, "{mode:?} {label} leaves the name its room");

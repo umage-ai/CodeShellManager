@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use csm_core::models::{WindowSlot, group_window_key, pane_window_key};
 use egui::{
-    Align2, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportId,
+    Align2, Color32, CornerRadius, CursorIcon, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportId,
     WidgetInfo, WidgetType, pos2, vec2,
 };
 
@@ -1040,6 +1040,7 @@ pub fn pane(
     named(&head_resp, WidgetType::Other, format!("Pane: {}", s.name));
     let head_resp = if splittable { head_resp.on_hover_cursor(CursorIcon::Grab) } else { head_resp };
     // Right-hand controls, right to left: the window bar (close, maximize/restore, minimize),
+    // "Actions ▾" (⋯ when narrow),
     // ⋯, then tear-off, dock / float, pin, `{ }` and Run. The window bar and ⋯ always show; the
     // rest by priority (dock/float, tear-off, pin, Run, `{ }`) while the name keeps its room, and
     // the ⋯ menu has them all.
@@ -1069,6 +1070,10 @@ pub fn pane(
     let tear_on = free_ctls && !o.torn && take_room(&mut room, icon_w);
     let pin_on = !o.mini && !o.maximized && o.mode == Some(LayoutMode::Side) && take_room(&mut room, icon_w);
     let run_on = run.is_some() && take_room(&mut room, run_main_w + run_caret_w + space::XS * 2.0);
+    // ⋯ grows into a labelled "Actions ▾" button when there is room (the menu holds a lot).
+    let actions_font = theme::medium(text::CAPTION);
+    let actions_w = space::SM + widgets::text_width(ui, "Actions", actions_font.clone()) + space::XS + icon::XS + space::SM;
+    let actions_labelled = !o.mini && take_room(&mut room, actions_w - size::CONTROL_SM);
     let editor_on = editor.is_some() && take_room(&mut room, icon_w);
 
     // The window bar.
@@ -1090,8 +1095,23 @@ pub fn pane(
         actions.push(toggle_max());
     }
     if !o.mini {
-        let more = ctl(ui, "more", false, "More  (Ctrl+.)", &mut x);
-        let more_at = pos2(x + size::CONTROL_SM, head.max.y + space::XS);
+        let tip = "Session actions  (Ctrl+.)";
+        let (more, more_at) = if actions_labelled {
+            x -= actions_w;
+            let b = Rect::from_min_size(pos2(x, cy - size::CONTROL_SM / 2.0), vec2(actions_w, size::CONTROL_SM));
+            x -= space::XXS;
+            let resp = ui.interact(b, Id::new(("pane-ctl", s.id.clone(), "more".to_string(), o.torn)), Sense::click());
+            let (bg, fg) = if resp.hovered() { (t.row_sel, t.fg) } else { (Color32::TRANSPARENT, t.muted) };
+            ui.painter().rect_filled(b, CornerRadius::same(radius::SM), bg);
+            let lr = ui.painter().text(pos2(b.min.x + space::SM, cy), Align2::LEFT_CENTER, "Actions", actions_font.clone(), fg);
+            icons::paint(ui, Rect::from_min_size(pos2(lr.max.x + space::XS, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "chevD", icon::XS, fg);
+            named(&resp, WidgetType::Button, tip.to_string());
+            let clicked = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip).clicked();
+            (clicked, pos2(b.min.x, head.max.y + space::XS))
+        } else {
+            let clicked = ctl(ui, "more", false, tip, &mut x);
+            (clicked, pos2(x + size::CONTROL_SM, head.max.y + space::XS))
+        };
         if more {
             actions.push(Action::OpenMenu(Menu::Pane { session: s.id.clone(), at: more_at }));
         }
