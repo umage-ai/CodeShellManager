@@ -37,6 +37,26 @@ pub fn icon_button(ui: &mut Ui, name: &str, side: f32, on: bool, tooltip: &str) 
     resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tooltip)
 }
 
+/// What the Remote Control mark says (its tooltip and its name for screen readers and tests).
+pub const REMOTE_CONTROL_TIP: &str = "Remote Control is on \u{2014} continue from claude.ai or the Claude app";
+
+/// The quiet "Claude Code Remote Control is on" mark (a phone glyph) centred in `rect`, sized
+/// `side`. With the session's link it is a button (the caller opens the link through
+/// `open_url`); without one it only explains itself.
+pub fn remote_control_mark(ui: &mut Ui, rect: Rect, id: egui::Id, side: f32, url: Option<&str>) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let sense = if url.is_some() { Sense::click() } else { Sense::hover() };
+    let resp = ui.interact(rect, id, sense);
+    let tint = if url.is_some() && resp.hovered() { t.fg } else { t.teal };
+    icons::paint(ui, rect, "remote", side, tint);
+    let ty = if url.is_some() { WidgetType::Button } else { WidgetType::Label };
+    info(&resp, ty, REMOTE_CONTROL_TIP);
+    match url {
+        Some(u) => resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(format!("{REMOTE_CONTROL_TIP}\nClick to open {u}")),
+        None => resp.on_hover_text(REMOTE_CONTROL_TIP),
+    }
+}
+
 /// An icon button at a fixed place (inside a painted header).
 pub fn icon_button_at(ui: &mut Ui, rect: Rect, id: egui::Id, name: &str, on: bool, tooltip: &str) -> Response {
     let resp = ui.interact(rect, id, Sense::click());

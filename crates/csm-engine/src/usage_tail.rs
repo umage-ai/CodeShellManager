@@ -60,12 +60,15 @@ pub struct PriceSource {
     pub status: String,
 }
 
-/// What the thread publishes for the engine: each followed session's subagents.
+/// What the thread publishes for the engine: each followed session's subagents and Remote
+/// Control lines.
 #[derive(Debug, Default)]
 pub(crate) struct Shared {
     /// Bumped when `map` changes.
     pub generation: u64,
     pub map: HashMap<String, SubagentsReport>,
+    /// The last Remote Control line of each followed session's main transcript.
+    pub remote: HashMap<String, csm_core::remote_control::RemoteControlMark>,
 }
 
 /// The engine's handle to the thread.
@@ -362,9 +365,10 @@ impl Tailer {
     /// Drops the reports of sessions no longer followed.
     fn prune_reports(&mut self, links: &[Link]) {
         let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = sh.map.len();
+        let before = sh.map.len() + sh.remote.len();
         sh.map.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
-        if sh.map.len() != before {
+        sh.remote.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
+        if sh.map.len() + sh.remote.len() != before {
             sh.generation += 1;
         }
     }
@@ -430,6 +434,16 @@ impl Tailer {
                 })
             })
             .collect();
+        // Remote Control is the conversation's: only its main transcript says.
+        if agent.is_none()
+            && let Some(mark) = batch.remote_control.take()
+        {
+            let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            if sh.remote.get(&link.csm_session) != Some(&mark) {
+                sh.remote.insert(link.csm_session.clone(), mark);
+                sh.generation += 1;
+            }
+        }
         let file = ClaudeFile {
             path: key.clone(),
             claude_sid: sid.to_owned(),
@@ -466,8 +480,9 @@ impl Drop for UsageTail {
     }
 }
 
-/// Copies the reader's subagent reports into the state when they changed (marks it dirty so a
-/// snapshot follows). Never waits: a busy lock is tried again on the next tick.
+/// Copies the reader's subagent reports and Remote Control lines into the state when they
+/// changed (marks it dirty so a snapshot follows). Never waits: a busy lock is tried again on
+/// the next tick.
 fn take_subagents(state: &mut State) {
     let Some(u) = state.rt.usage.as_mut() else { return };
     let Ok(sh) = u.subagents.try_lock() else { return };
@@ -476,7 +491,25 @@ fn take_subagents(state: &mut State) {
     }
     u.seen_gen = sh.generation;
     let map: HashMap<String, Arc<SubagentsReport>> = sh.map.iter().map(|(k, v)| (k.clone(), Arc::new(v.clone()))).collect();
+    let remote = sh.remote.clone();
     drop(sh);
     state.rt.subagents = map;
+    apply_remote_control(state, &remote);
     state.rt.dirty = true;
+}
+
+/// Folds each session's last Remote Control line into its runtime: only into a running process,
+/// and only a line written since that process started (`csm_core::remote_control::apply`).
+pub(crate) fn apply_remote_control(state: &mut State, marks: &HashMap<String, csm_core::remote_control::RemoteControlMark>) {
+    for (id, mark) in marks {
+        let Some(rt) = state.rt.sessions.get_mut(id) else { continue };
+        if rt.phase != crate::session::Phase::Live {
+            continue;
+        }
+        let next = csm_core::remote_control::apply(rt.remote_control.clone(), mark, rt.started_ms);
+        if next != rt.remote_control {
+            rt.remote_control = next;
+            state.rt.dirty = true;
+        }
+    }
 }

@@ -481,6 +481,8 @@ fn session_from_engine(s: &csm_engine::SessionView) -> SessionView {
         look: s.look.clone(),
         last_used_ms: s.last_activity_ms,
         subagents: s.subagents.clone(),
+        remote_control: s.remote_control,
+        remote_control_url: s.remote_control_url.clone(),
     }
 }
 

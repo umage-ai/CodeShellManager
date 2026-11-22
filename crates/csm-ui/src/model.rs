@@ -232,6 +232,13 @@ pub struct SessionView {
     /// lists them under the card.
     #[serde(skip)]
     pub subagents: Option<std::sync::Arc<csm_core::subagents::SubagentsReport>>,
+    /// Claude Code Remote Control is on: the session can be continued from claude.ai or the
+    /// Claude app. The sidebar row and the pane header show a quiet mark.
+    #[serde(default)]
+    pub remote_control: bool,
+    /// Its claude.ai link while on, when known: clicking the mark opens it (`open_url`).
+    #[serde(default)]
+    pub remote_control_url: Option<String>,
 }
 
 impl SessionView {

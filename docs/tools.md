@@ -63,8 +63,8 @@ Status: ✅ built · 🚧 in progress · ⬜ planned. Params in brief; the schem
 | id | params | effects | what |
 |---|---|---|---|
 | `tool_list` ✅ | toolset? | read | every tool |
-| `session_list` ✅ | group?, status?, include_asleep? | read | id, name, kind, folder, group, status, branch, live/asleep |
-| `session_get` ✅ | session_id | read | one session in full, incl. program-status records |
+| `session_list` ✅ | group?, status?, include_asleep? | read | id, name, kind, folder, group, status, branch, live/asleep, remote_control (+ remote_control_url) |
+| `session_get` ✅ | session_id | read | one session in full, incl. program-status records and Remote Control (on, claude.ai link) |
 | `session_new` ✅ | folder, command?, name?, group?, kind (local/ssh/wsl)?, ssh{user,host,port,remote_folder}?, wsl{distro,user,folder}?, focus?, look? | launch, state | open a session (the quick-open and the "New session" panel call this) |
 | `session_focus` ✅ | session_id | ui | focus it (switches the rail tab; wakes if asleep → `session_wake`) |
 | `session_rename` ✅ | session_id, name | state | |
@@ -388,8 +388,8 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `tool_list` | core | read | no | Every tool: id, title, summary, toolset and effects. Filter by toolset. |
 | `consent_list` | app | read | no | Requests from MCP clients waiting for the person to allow or deny them. |
 | `consent_answer` | app | state | no | Allow once, allow always for this client, or deny a waiting request. App only. |
-| `session_list` | core | read | no | Every session in sidebar order: id, name, kind, folder, group, status (working, needs_you_approval, needs_you_question, done_unseen, error, idle, asleep, starting, exited), branch. |
-| `session_get` | core | read | no | One session in full: its launch settings and its status, including the program-status message. |
+| `session_list` | core | read | no | Every session in sidebar order: id, name, kind, folder, group, status (working, needs_you_approval, needs_you_question, done_unseen, error, idle, asleep, starting, exited), branch, remote_control (Claude Code Remote Control is on) and remote_control_url. |
+| `session_get` | core | read | no | One session in full: its launch settings and its status, including the program-status message and whether Claude Code Remote Control is on (with its claude.ai link). |
 | `session_new` | core | state, launch | asks | Open a session: a folder and a command (default: the configured one, usually claude), locally, over SSH or in WSL. It starts when its pane is measured, or after 1.5 s headless. |
 | `session_focus` | core | ui, launch | asks | Bring a session to the front (switches the rail tab to its group, wakes it when asleep) and mark its results seen. |
 | `session_rename` | core | state | no | Give a session a new name. |

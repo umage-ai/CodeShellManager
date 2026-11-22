@@ -83,6 +83,11 @@ pub struct SessionView {
     pub claude_session_id: Option<String>,
     /// Speaks OSC 7501 (its status is reported, not guessed).
     pub reports_status: bool,
+    /// Claude Code Remote Control is on: the session can be continued from claude.ai or the
+    /// Claude app (read from its transcript; local Claude sessions only).
+    pub remote_control: bool,
+    /// The session's claude.ai link while Remote Control is on, when known (http/https only).
+    pub remote_control_url: Option<String>,
     /// Epoch ms of the last focus (the Recent menu).
     pub last_activity_ms: Option<i64>,
     /// Epoch ms when it entered the inbox.
@@ -283,6 +288,8 @@ pub(crate) fn session_view(state: &State, s: &csm_core::models::ShellSession) ->
         is_claude: crate::launch::is_claude_command(&s.command),
         claude_session_id: s.claude_session_id.clone(),
         reports_status: rt.is_some_and(|r| r.has_program_status),
+        remote_control: rt.is_some_and(|r| r.remote_control.is_some()),
+        remote_control_url: rt.and_then(|r| r.remote_control.as_ref()).and_then(|r| r.url.clone()),
         last_activity_ms: s.last_activity_at.epoch_ms(),
         inbox_since_ms: state.rt.inbox_since.get(&s.id).copied(),
         status_since_ms: state.rt.status_since.get(&s.id).map(|(_, t)| *t),

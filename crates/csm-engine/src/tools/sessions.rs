@@ -30,7 +30,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "session_list",
             title: "List sessions",
-            summary: "Every session in sidebar order: id, name, kind, folder, group, status (working, needs_you_approval, needs_you_question, done_unseen, error, idle, asleep, starting, exited), branch.",
+            summary: "Every session in sidebar order: id, name, kind, folder, group, status (working, needs_you_approval, needs_you_question, done_unseen, error, idle, asleep, starting, exited), branch, remote_control (Claude Code Remote Control is on) and remote_control_url.",
             toolset: Toolset::Core,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<ListParams>,
@@ -39,7 +39,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "session_get",
             title: "Session details",
-            summary: "One session in full: its launch settings and its status, including the program-status message.",
+            summary: "One session in full: its launch settings and its status, including the program-status message and whether Claude Code Remote Control is on (with its claude.ai link).",
             toolset: Toolset::Core,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<IdParams>,

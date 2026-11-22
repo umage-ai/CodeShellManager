@@ -693,6 +693,7 @@ pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, id: &str, instance: u64, result: Res
             }
             let Some(rt) = ctx.state.rt.sessions.get_mut(id) else { return };
             rt.usage = Some((command, Instant::now()));
+            rt.started_ms = now_ms();
             rt.backend = Some(pty.backend());
             if pty.has_exited() {
                 rt.phase = Phase::Exited { code: pty.exit_code() };
@@ -741,6 +742,8 @@ pub(crate) fn on_exited(ctx: &mut Ctx<'_>, id: &str, instance: u64, code: Option
     }
     rt.end_usage(index.as_ref());
     rt.phase = Phase::Exited { code };
+    // Remote Control lives in the process.
+    rt.remote_control = None;
     rt.io.detector().dispose();
     // Working, blocked and idle records end with the process; done/error stay until seen.
     if rt.records.drop_transient() && rt.records.count() == 0 && rt.has_program_status {

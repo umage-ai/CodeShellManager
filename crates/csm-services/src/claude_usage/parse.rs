@@ -4,11 +4,13 @@
 //! string, a float, `null` or a missing key all work or fall back to nothing), unknown keys are
 //! ignored, and a line that is not JSON is a [`Line::Bad`] to count, never an error.
 //! Only numbers, ids, model names, timestamps and the working folder are kept: no content.
+//! (Remote Control lines are classified from their text and link; the text is not kept.)
 
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use csm_core::claude_usage::Tokens;
+use csm_core::remote_control::{self, RemoteControlMark};
 use csm_core::time::Timestamp;
 
 /// What one line is.
@@ -18,6 +20,8 @@ pub enum Line {
     Request(ParsedRequest),
     /// `system` / `compact_boundary`.
     Compaction(ParsedCompaction),
+    /// A main-thread `system` line about Remote Control (`csm_core::remote_control`).
+    RemoteControl { mark: RemoteControlMark, cwd: Option<String> },
     /// Anything else that is valid (user lines, titles, snapshots...): carries the `cwd` when the
     /// line has one.
     Other { cwd: Option<String> },
@@ -96,6 +100,10 @@ struct RawLine {
     message: Option<Value>,
     #[serde(deserialize_with = "lenient")]
     compact_metadata: Option<Value>,
+    #[serde(deserialize_with = "lenient")]
+    content: Option<Value>,
+    #[serde(deserialize_with = "lenient")]
+    url: Option<Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -220,6 +228,19 @@ pub fn parse_line(line: &str) -> Line {
                 pre_tokens: as_u64(&md.pre_tokens),
                 post_tokens: as_u64(&md.post_tokens),
             })
+        }
+        // Remote Control: only the conversation's own lines (a subagent's say nothing about it).
+        // The text is read to classify the line and not kept.
+        "system" if agent_id.is_none() => {
+            let text = |v: &Option<Value>| match v {
+                Some(Value::String(s)) => Some(s.chars().take(4096).collect::<String>()),
+                _ => None,
+            };
+            let subtype = as_string(&raw.subtype);
+            match remote_control::classify(subtype.as_deref(), text(&raw.content).as_deref(), text(&raw.url).as_deref()) {
+                Some(event) => Line::RemoteControl { mark: RemoteControlMark { event, ts_ms }, cwd },
+                None => Line::Other { cwd },
+            }
         }
         _ => Line::Other { cwd },
     }
@@ -358,5 +379,32 @@ mod tests {
         assert_eq!(parse_line(&l.to_string()), Line::Other { cwd: None });
         let l = json!({"type": "assistant", "message": {"id": "m", "model": "claude-x"}});
         assert_eq!(parse_line(&l.to_string()), Line::Other { cwd: None });
+    }
+
+    #[test]
+    fn remote_control_lines_from_the_main_thread_only() {
+        use csm_core::remote_control::RemoteControlEvent;
+        let url = "https://claude.ai/code/session_01W2nwy51AsMgseViHRgKABa";
+        let on = json!({"type": "system", "subtype": "bridge_status", "content": format!("/remote-control is active \u{b7} Continue here, on your phone, or at {url}"),
+            "url": url, "isMeta": false, "timestamp": "2026-05-29T10:30:01.718Z", "cwd": "C:/x"});
+        match parse_line(&on.to_string()) {
+            Line::RemoteControl { mark, cwd } => {
+                assert_eq!(mark.event, RemoteControlEvent::On { url: Some(url.to_owned()) });
+                assert!(mark.ts_ms.is_some());
+                assert_eq!(cwd.as_deref(), Some("C:/x"));
+            }
+            other => panic!("not remote control: {other:?}"),
+        }
+        let off = json!({"type": "system", "subtype": "local_command", "content": "<local-command-stdout>Remote Control disconnected.</local-command-stdout>", "level": "info"});
+        assert!(matches!(parse_line(&off.to_string()), Line::RemoteControl { mark, .. } if mark.event == RemoteControlEvent::Off));
+        // A subagent's line, and a content that is not text, say nothing.
+        let side = json!({"type": "system", "subtype": "bridge_status", "url": url, "isSidechain": true});
+        assert_eq!(parse_line(&side.to_string()), Line::Other { cwd: None });
+        let odd = json!({"type": "system", "subtype": "local_command", "content": {"x": 1}, "url": 7});
+        assert_eq!(parse_line(&odd.to_string()), Line::Other { cwd: None });
+        let mut b = super::super::Batch::default();
+        b.push(&on.to_string());
+        b.push(&off.to_string());
+        assert_eq!(b.remote_control.map(|m| m.event), Some(RemoteControlEvent::Off));
     }
 }

@@ -181,6 +181,9 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         x.ahead = 2;
         x.progress = Some(40);
         x.runs = runs_npm();
+        // Claude Code Remote Control is on: continued from the phone.
+        x.remote_control = true;
+        x.remote_control_url = Some("https://claude.ai/code/session_01DemoRemoteControlLink".into());
     });
     set(&mut s, "build", &|x| {
         // A colour the remote's prompt hook pushed (OSC 9001): "Reset accent colour" applies.
