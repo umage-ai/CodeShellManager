@@ -490,7 +490,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         icons::paint(ui, logo, "terminal", icon::HERO, t.on_accent);
         ui.add_space(space::LG);
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new("CodeShellManager 2").font(semibold(text::DISPLAY)).color(t.fg));
+            ui.label(egui::RichText::new("CodeShellManager").font(semibold(text::DISPLAY)).color(t.fg));
             ui.label(egui::RichText::new("A multi-terminal host for Claude Code & friends").font(theme::regular(text::BODY)).color(t.fg2));
             ui.label(
                 egui::RichText::new(format!("Version {} · beta · {}", s("version"), s("platform")))
