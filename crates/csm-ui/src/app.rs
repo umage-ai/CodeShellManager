@@ -56,6 +56,12 @@ pub enum Action {
     FocusTerminal(SessionId),
     /// The busy-close dialog (closing the app).
     AskQuit,
+    /// The answer to "Keep CodeShellManager running?" (closing the window with `CloseAction`
+    /// Ask): hide to the tray or quit, and with `remember` make it the `CloseAction`.
+    CloseAnswer {
+        tray: bool,
+        remember: bool,
+    },
     /// Close one session from the UI (a pane's ✕, its ⋯ menu, the sidebar menu, Ctrl+W):
     /// `session_close`, asking first when it is busy unless that warning is off.
     CloseSession(SessionId),
@@ -145,6 +151,8 @@ pub enum Overlay {
     Help,
     /// A yes/no question ([`ConfirmState`]).
     Confirm,
+    /// Closing the window: keep running in the tray, or quit? (`CloseAction` Ask.)
+    CloseAsk,
 }
 
 /// A yes/no question: "Restart now?" after an edit that needs a new process.
@@ -275,8 +283,10 @@ pub struct Prefs {
     pub notification_sound: bool,
     /// `UiZoomPercent` (see [`crate::zoom`]).
     pub ui_zoom_percent: i32,
-    /// `CloseToTray` (see [`crate::background`]).
-    pub close_to_tray: bool,
+    /// `CloseAction` (see [`crate::background`]).
+    pub close_action: csm_core::models::CloseAction,
+    /// `TrayNoticeShown`: "still running in the tray" was said once, in some run.
+    pub tray_notice_shown: bool,
 }
 
 impl Default for Prefs {
@@ -289,7 +299,8 @@ impl Default for Prefs {
             notifications: false,
             notification_sound: false,
             ui_zoom_percent: csm_core::models::UI_ZOOM_DEFAULT,
-            close_to_tray: false,
+            close_action: csm_core::models::CloseAction::Ask,
+            tray_notice_shown: false,
         }
     }
 }
@@ -466,6 +477,8 @@ pub struct UiState {
     pub confirm: Option<ConfirmState>,
     /// The busy-close dialog's "Don't warn me again".
     pub dont_warn: bool,
+    /// The close dialog's "Remember my choice".
+    pub close_remember: bool,
     /// The sidebar is folded to the rail (a narrow window).
     pub compact: bool,
     /// Compact: the sidebar shown over the panes (the rail's last button).
@@ -547,6 +560,10 @@ pub struct CsmApp {
     pub background: crate::background::Background,
     /// A minimized or hidden start (`StartMinimized`), set by the host before the first frame.
     pub start: crate::start_window::StartUp,
+    /// The host opened the main window without the OS title bar (Windows): the title bar then
+    /// carries minimize, maximize and close, and the window's edges resize it
+    /// ([`screens::titlebar`]).
+    pub window_controls: bool,
 }
 
 impl CsmApp {
@@ -572,6 +589,7 @@ impl CsmApp {
             main_window: crate::placement::WindowTracker::new("main"),
             background: crate::background::Background::default(),
             start: crate::start_window::StartUp::default(),
+            window_controls: false,
         };
         // The settings the screens follow (theme, terminal font size and padding, the busy warning).
         app.dispatch.submit("settings_get", json!({}));
@@ -843,8 +861,12 @@ impl CsmApp {
         if let Some(n) = s.num("UiZoomPercent") {
             p.ui_zoom_percent = crate::zoom::sanitize(n);
         }
-        if let Some(b) = s.bool("CloseToTray") {
-            p.close_to_tray = b;
+        // Its number from `settings_get`, its name as a `settings_set` echoes it.
+        if let Some(a) = s.values.get("CloseAction").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            p.close_action = a;
+        }
+        if let Some(b) = s.bool("TrayNoticeShown") {
+            p.tray_notice_shown = b;
         }
         self.prefs = p;
     }
@@ -1123,6 +1145,18 @@ impl CsmApp {
                     self.ui.overlay = Overlay::Busy;
                 } else {
                     self.run(ctx, Action::Tool("app_quit", json!({})));
+                }
+            }
+            Action::CloseAnswer { tray, remember } => {
+                self.run(ctx, Action::CloseOverlays);
+                if remember {
+                    let value = if tray { "Tray" } else { "Quit" };
+                    self.run(ctx, Action::Tool("settings_set", json!({"key": "CloseAction", "value": value})));
+                }
+                if tray {
+                    self.hide_to_tray(ctx);
+                } else {
+                    self.run(ctx, Action::AskQuit);
                 }
             }
             Action::Consent { request_id, answer } => {
@@ -1707,6 +1741,9 @@ impl CsmApp {
             screens::search::show(&ctx, self, &mut actions);
         }
         screens::overlays::show(&ctx, self, &mut actions);
+        if self.window_controls {
+            screens::titlebar::resize_edges(&ctx);
+        }
         // A drag that left the window or was dropped nowhere ends here.
         if !ctx.input(|i| i.pointer.any_down()) {
             self.ui.drags.row = None;

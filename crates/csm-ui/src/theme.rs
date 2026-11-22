@@ -89,6 +89,9 @@ pub struct Tokens {
     pub brand: Color32,
     /// Text and marks on a filled accent (a primary button, a count badge).
     pub on_accent: Color32,
+    /// The title bar's Close under the pointer, and its ✕ there: Windows' own caption red.
+    pub close_hover: Color32,
+    pub on_close_hover: Color32,
     // The status vocabulary.
     pub st_working: Color32,
     pub st_approval: Color32,
@@ -161,6 +164,8 @@ impl Tokens {
                 flamingo: hex(0xf2cdcd),
                 brand: hex(0xb8966a),
                 on_accent: hex(0x11111b),
+                close_hover: hex(0xc42b1c),
+                on_close_hover: hex(0xffffff),
                 st_working: hex(0x89b4fa),
                 st_approval: hex(0xfab387),
                 st_question: hex(0xf9e2af),
@@ -225,6 +230,8 @@ impl Tokens {
                 flamingo: hex(0xdd7878),
                 brand: hex(0x8a6a3e),
                 on_accent: hex(0xffffff),
+                close_hover: hex(0xc42b1c),
+                on_close_hover: hex(0xffffff),
                 st_working: hex(0x1e66f5),
                 // Latte's peach, yellow and green are 2.4, 2.2 and 2.75:1 on the sidebar: darkened to keep
                 // status glyphs at 3:1 (a deviation from the mock-up's exact Latte values).
@@ -402,6 +409,13 @@ pub mod size {
     pub const RING: f32 = 2.0;
     pub const STRIPE: f32 = 3.0;
     pub const TITLE_BAR: f32 = 40.0;
+    /// Minimize, maximize and close at the title bar's right end: as wide as Windows' caption
+    /// buttons, the bar's full height.
+    pub const CAPTION_BUTTON_W: f32 = 46.0;
+    /// The frameless window's resize zones: the band along each edge, and how far a corner's
+    /// diagonal resize reaches along the edges.
+    pub const WINDOW_RESIZE_EDGE: f32 = 5.0;
+    pub const WINDOW_RESIZE_CORNER: f32 = 14.0;
     pub const GROUP_BAR: f32 = 44.0;
     /// The strip of views (`Sessions`, add-on screens) above the pane area.
     pub const VIEW_STRIP: f32 = 36.0;

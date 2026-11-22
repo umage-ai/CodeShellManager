@@ -14,7 +14,7 @@ mod ui_state;
 
 pub use alert_event::{AlertEvent, AlertType};
 pub use app_state::{
-    AppSettings, AppState, GroupDisplayMode, McpGrant, ProgramStatusProbeMode, SidebarActionIconsMode, UI_ZOOM_DEFAULT, UI_ZOOM_RANGE, WindowBounds,
+    AppSettings, AppState, CloseAction, GroupDisplayMode, McpGrant, ProgramStatusProbeMode, SidebarActionIconsMode, UI_ZOOM_DEFAULT, UI_ZOOM_RANGE, WindowBounds,
     WindowPlacementState,
 };
 pub use group::SessionGroup;

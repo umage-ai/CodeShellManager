@@ -63,6 +63,7 @@ pub fn normalize(mut state: AppState) -> AppState {
     for entry in &mut state.recently_closed {
         entry.migrate_legacy_fields();
     }
+    state.settings.migrate_legacy_fields();
     state
 }
 
@@ -407,6 +408,17 @@ mod tests {
         // Kind is authoritative once present; a stale IsRemote must not clobber it.
         let mixed = r#"{ "Sessions": [ { "Kind": 2, "IsRemote": true, "WslDistro": "Ubuntu" } ] }"#;
         assert_eq!(load_state(mixed).sessions[0].kind, SessionKind::Wsl);
+    }
+
+    #[test]
+    fn normalize_folds_the_legacy_close_to_tray_into_close_action() {
+        use crate::models::CloseAction;
+        assert_eq!(load_state(r#"{ "Settings": { "CloseToTray": true } }"#).settings.close_action, CloseAction::Tray);
+        assert_eq!(load_state(r#"{ "Settings": { "CloseToTray": false } }"#).settings.close_action, CloseAction::Ask);
+        let chosen = load_state(r#"{ "Settings": { "CloseToTray": true, "CloseAction": 2 } }"#);
+        assert_eq!(chosen.settings.close_action, CloseAction::Quit, "a later choice wins");
+        let written = serde_json::to_string(&chosen.settings).unwrap();
+        assert!(!written.contains("CloseToTray"), "{written}");
     }
 
     #[test]

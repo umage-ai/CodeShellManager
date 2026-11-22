@@ -1,5 +1,5 @@
 //! Things drawn over everything: toasts (`Event::Toast`), consent cards
-//! (`Event::ConsentRequested` → `consent_answer`), the busy-close dialog, the shutdown board and
+//! (`Event::ConsentRequested` → `consent_answer`), the close and busy-close dialogs, the shutdown board and
 //! the restore rail. A native renderer can draw these over live panes; WebView2 never could.
 
 use egui::{Align2, CornerRadius, Id, Order, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
@@ -30,6 +30,9 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     if app.ui.overlay == Overlay::Confirm {
         confirm_dialog(ctx, app, actions);
+    }
+    if app.ui.overlay == Overlay::CloseAsk {
+        close_dialog(ctx, app, actions);
     }
     if app.ui.overlay == Overlay::Help {
         help(ctx, actions);
@@ -70,6 +73,47 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
                     actions.push(Action::CloseOverlays);
                 }
             });
+        });
+    });
+}
+
+/// Closing the window with `CloseAction` Ask: keep running in the tray (Enter) or quit. Esc
+/// cancels (the window stays). "Remember my choice" makes the answer the setting.
+fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ctx);
+    scrim(ctx, "close-scrim");
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+        actions.push(Action::CloseAnswer { tray: true, remember: app.ui.close_remember });
+        return;
+    }
+    let screen = ctx.content_rect();
+    egui::Area::new(Id::new("close-ask")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
+        widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
+            ui.set_width(size::DIALOG_W);
+            ui.spacing_mut().item_spacing.y = space::MD;
+            ui.label(egui::RichText::new("Keep CodeShellManager running?").font(semibold(text::TITLE)).color(t.fg));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Your sessions keep running in the tray. Quit stops them.").font(theme::regular(text::BODY)).color(t.fg2),
+                )
+                .wrap(),
+            );
+            ui.horizontal(|ui| {
+                let cr = ui.add(egui::Checkbox::new(
+                    &mut app.ui.close_remember,
+                    egui::RichText::new("Remember my choice").font(theme::regular(text::BODY)).color(t.fg2),
+                ));
+                cr.on_hover_text("Settings › General › When I close the window changes it later.");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::button(ui, ButtonKind::Primary, None, "Keep running in tray", Some("Enter")).clicked() {
+                        actions.push(Action::CloseAnswer { tray: true, remember: app.ui.close_remember });
+                    }
+                    if widgets::button(ui, ButtonKind::Secondary, None, "Quit", None).clicked() {
+                        actions.push(Action::CloseAnswer { tray: false, remember: app.ui.close_remember });
+                    }
+                });
+            });
+            ui.label(egui::RichText::new("Esc keeps the window open.").font(theme::regular(text::CAPTION)).color(t.muted));
         });
     });
 }

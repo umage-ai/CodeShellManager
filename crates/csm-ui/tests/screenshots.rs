@@ -37,7 +37,11 @@ fn shoot_sized(
     let mut b = backend(theme);
     setup(&mut b);
     b.publish();
-    let mut h = harness_wgpu_sized(app_with(b), 1.0, size);
+    let mut app = app_with(b);
+    // As on Windows: one title bar, with the window's own minimize, maximize and close.
+    app.window_controls = true;
+    app.background.tray_available = true;
+    let mut h = harness_wgpu_sized(app, 1.0, size);
     settle(&mut h);
     after(&mut h);
     settle(&mut h);
@@ -188,6 +192,22 @@ fn screens() {
             h.state_mut().run(&ctx, Action::AskQuit);
         },
     );
+    // The title bar's Close under the pointer, then closing the window (CloseAction Ask).
+    for (name, theme) in [("01-main-close-hover", ThemeKind::Mocha), ("01-main-close-hover-latte", ThemeKind::Latte)] {
+        let at = egui::pos2(1280.0 - csm_ui::theme::size::CAPTION_BUTTON_W / 2.0, csm_ui::theme::size::TITLE_BAR / 2.0);
+        shoot(name, theme, |_| {}, |h| h.hover_at(at));
+    }
+    for (name, theme) in [("10-close-ask", ThemeKind::Mocha), ("10-close-ask-latte", ThemeKind::Latte)] {
+        shoot(
+            name,
+            theme,
+            |_| {},
+            |h| {
+                h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+                h.step();
+            },
+        );
+    }
     shoot("11-inbox-closed", ThemeKind::Mocha, |b| b.model_mut().inbox_panel.open = false, |_| {});
     // The Recent menu (Ctrl+Shift+E), with one session closed so "Recently closed" shows.
     for (name, theme) in [("18-recent", ThemeKind::Mocha), ("18-recent-latte", ThemeKind::Latte)] {

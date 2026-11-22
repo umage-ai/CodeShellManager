@@ -178,7 +178,8 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("ClaudeCommands").or_insert(json!(s.claude_commands));
         m.entry("AllowOsc52Clipboard").or_insert(json!(s.allow_osc52_clipboard));
         m.entry("UiZoomPercent").or_insert(json!(s.ui_zoom_percent));
-        m.entry("CloseToTray").or_insert(json!(s.close_to_tray));
+        m.entry("CloseAction").or_insert(json!(s.close_action));
+        m.entry("TrayNoticeShown").or_insert(json!(s.tray_notice_shown));
         m.entry("PassSessionNameToClaude").or_insert(json!(s.pass_session_name_to_claude));
         m.entry("ClaudeUsageHistory").or_insert(json!(s.claude_usage_history));
         m.entry("StartMinimized").or_insert(json!(s.start_minimized));
@@ -264,6 +265,9 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     m.insert(key.clone(), p.value.clone());
     let updated: AppSettings =
         serde_json::from_value(Value::Object(m)).map_err(|e| ToolError::InvalidParams(format!("`{key}` cannot be {}: {e}", p.value)))?;
+    if key == "CloseAction" && !close_action_ok(&p.value) {
+        return Err(ToolError::InvalidParams("CloseAction is Ask, Tray or Quit (or 0, 1, 2)".into()));
+    }
     if key == "UiZoomPercent" && !UI_ZOOM_RANGE.contains(&updated.ui_zoom_percent) {
         return Err(ToolError::InvalidParams(format!("UiZoomPercent is a percentage from {} to {}", UI_ZOOM_RANGE.start(), UI_ZOOM_RANGE.end())));
     }
@@ -280,6 +284,15 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let restart = matches!(key.as_str(), "UseBundledConPty");
     let msg = if restart { format!("{key} saved; it takes effect when the app restarts.") } else { format!("{key} saved.") };
     Ok(ToolOutput::new(msg, json!({"key": key, "value": p.value})))
+}
+
+/// A value `CloseAction` takes: its name or its number (the enum reads anything else as Ask).
+fn close_action_ok(v: &Value) -> bool {
+    match v {
+        Value::String(t) => ["Ask", "Tray", "Quit"].contains(&t.as_str()),
+        Value::Number(n) => n.as_i64().and_then(csm_core::models::CloseAction::from_number).is_some(),
+        _ => false,
+    }
 }
 
 /// The Recent menu's list (Ctrl+Shift+E), ordered by `csm_core::recent_sessions`.

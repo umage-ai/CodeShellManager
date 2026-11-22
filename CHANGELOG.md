@@ -67,8 +67,10 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   **sort** by name, folder, last active, branch, changes or repository.
 - **Send to all sessions** of a group.
 - **Light theme** (Catppuccin Latte) beside Mocha, and interface zoom.
-- **Tray**: the Needs you count on the icon, and an option to keep running in the tray when the
-  window closes.
+- **Tray**: the Needs you count on the icon. Closing the window asks whether to keep running in
+  the tray or quit (Remember my choice; Settings › General › When I close the window).
+- **One title bar** on Windows: CSM's own, with minimize, maximize and close, in place of the OS
+  title bar above it.
 - **Start at sign-in**, optionally minimized or hidden in the tray (Settings → General →
   Start-up; `app_autostart_set`). Launching the app again shows the running window instead of
   opening a second one on the same sessions.

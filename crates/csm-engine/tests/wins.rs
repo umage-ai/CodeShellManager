@@ -126,7 +126,11 @@ fn settings_set_announces_changes_and_bounds_the_ui_zoom() {
         assert!(matches!(h.ui("settings_set", json!({"key": "UiZoomPercent", "value": bad})), Err(ToolError::InvalidParams(_))), "{bad}");
     }
     assert_eq!(h.ok("settings_get", json!({"key": "UiZoomPercent"})).data["value"], 125, "a refused value changes nothing");
-    h.ok("settings_set", json!({"key": "CloseToTray", "value": true}));
+    h.ok("settings_set", json!({"key": "CloseAction", "value": "Tray"}));
+    assert_eq!(h.ok("settings_get", json!({"key": "CloseAction"})).data["value"], 1, "stored as its number");
+    for bad in [json!("Hide"), json!(3), json!(true)] {
+        assert!(matches!(h.ui("settings_set", json!({"key": "CloseAction", "value": bad})), Err(ToolError::InvalidParams(_))), "{bad}");
+    }
     h.ok("settings_set", json!({"key": "AnthropicApiKey", "value": "sk-secret"}));
     h.ok("settings_set", json!({"key": "AnthropicApiKey", "value": ""}));
     let seen: Vec<(String, serde_json::Value)> = events
@@ -137,7 +141,7 @@ fn settings_set_announces_changes_and_bounds_the_ui_zoom() {
         })
         .collect();
     assert_eq!(seen[0], ("UiZoomPercent".to_string(), json!(125)));
-    assert_eq!(seen[1], ("CloseToTray".to_string(), json!(true)));
+    assert_eq!(seen[1], ("CloseAction".to_string(), json!("Tray")));
     assert_eq!(seen[2], ("AnthropicApiKey".to_string(), json!("(set)")), "a secret never goes out in an event");
     assert_eq!(seen[3], ("AnthropicApiKey".to_string(), json!("")), "masked as settings_get masks it");
 }

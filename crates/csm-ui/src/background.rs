@@ -1,8 +1,11 @@
 //! Close to tray (#149) and the work that must go on while the main window is hidden.
 //!
-//! With `CloseToTray` on (and a tray icon to come back from), closing the main window hides it
-//! instead of quitting; sessions keep running. The tray's Show window (`window_show`) brings it
-//! back; the tray's Quit, the menu's Quit and `app_quit` still quit through the shutdown board.
+//! Where there is a tray icon to come back from, closing the main window (its ✕, Alt+F4, the OS)
+//! follows `CloseAction`: Ask (the default) shows "Keep CodeShellManager running?", Tray hides
+//! the window and sessions keep running, Quit quits. Without a tray it always quits, as it did
+//! before the setting. The tray's Show window (`window_show`) brings a hidden window back; the
+//! tray's Quit, the title bar's power button and `app_quit` always quit through the shutdown
+//! board.
 //!
 //! **Why this module exists.** eframe runs no UI pass for a hidden window. Before this, the frame
 //! polled the engine, decided OS notifications and closed the window on `QuitReady`; hidden, none
@@ -27,10 +30,11 @@
 
 use std::time::{Duration, Instant};
 
+use csm_core::models::CloseAction;
 use csm_core::notify_rules::{Attention, Notification};
 use serde_json::json;
 
-use crate::app::{Action, CsmApp};
+use crate::app::{Action, CsmApp, Overlay};
 
 /// How often the hidden window's logic runs when nothing else wakes it.
 pub const HIDDEN_TICK: Duration = Duration::from_secs(1);
@@ -40,14 +44,23 @@ pub const HIDDEN_TICK: Duration = Duration::from_secs(1);
 pub enum CloseChoice {
     /// Hide it to the tray; sessions keep running.
     Hide,
+    /// Ask: keep running in the tray, or quit.
+    Ask,
     /// The usual quit: the busy warning, then `app_quit` and the shutdown board.
     Quit,
 }
 
-/// Hide only when the setting is on, there is a tray icon to come back from (none on Linux, and
-/// none if the OS refused one), and no quit is already running.
-pub fn close_choice(close_to_tray: bool, tray_available: bool, quitting: bool) -> CloseChoice {
-    if close_to_tray && tray_available && !quitting { CloseChoice::Hide } else { CloseChoice::Quit }
+/// The setting decides only when there is a tray icon to come back from (none on Linux, and none
+/// if the OS refused one) and no quit is already running; otherwise closing quits.
+pub fn close_choice(action: CloseAction, tray_available: bool, quitting: bool) -> CloseChoice {
+    if !tray_available || quitting {
+        return CloseChoice::Quit;
+    }
+    match action {
+        CloseAction::Ask => CloseChoice::Ask,
+        CloseAction::Tray => CloseChoice::Hide,
+        CloseAction::Quit => CloseChoice::Quit,
+    }
 }
 
 /// The hidden state and the clock that runs while egui's doesn't.
@@ -63,7 +76,7 @@ pub struct Background {
     logic_pass: Option<u64>,
     /// egui's time at the last UI pass, and when that was.
     clock: Option<(f64, Instant)>,
-    /// "Still running in the tray" was said this run.
+    /// "Still running in the tray" was said this run (`TrayNoticeShown` keeps it said for good).
     told: bool,
 }
 
@@ -111,8 +124,9 @@ impl CsmApp {
         }
     }
 
-    /// The main window's close button (or Alt+F4): hide to the tray or ask to quit. A close
-    /// that arrives while hidden (logoff, another program's `WM_CLOSE`) quits at once.
+    /// The main window's close button (the title bar's or the OS's, Alt+F4): hide to the tray,
+    /// ask, or quit, as `CloseAction` says. A close that arrives while hidden (logoff, another
+    /// program's `WM_CLOSE`) quits at once.
     fn close_requested(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         if self.background.hidden {
@@ -120,14 +134,19 @@ impl CsmApp {
             self.run(ctx, Action::Tool("app_quit", json!({})));
             return;
         }
-        match close_choice(self.prefs.close_to_tray, self.background.tray_available, self.model.shutdown.is_some()) {
+        match close_choice(self.prefs.close_action, self.background.tray_available, self.model.shutdown.is_some()) {
             CloseChoice::Hide => self.hide_to_tray(ctx),
+            CloseChoice::Ask => {
+                self.run(ctx, Action::CloseOverlays);
+                self.ui.close_remember = false;
+                self.ui.overlay = Overlay::CloseAsk;
+            }
             CloseChoice::Quit => self.run(ctx, Action::AskQuit),
         }
     }
 
-    /// Hides the main window; sessions keep running. The first time in a run, one notification
-    /// says where the app went.
+    /// Hides the main window; sessions keep running. The first time ever (`TrayNoticeShown`),
+    /// one notification says where the app went.
     pub fn hide_to_tray(&mut self, ctx: &egui::Context) {
         self.run(ctx, Action::CloseMenu);
         self.flush_placements(ctx);
@@ -136,14 +155,15 @@ impl CsmApp {
         b.hidden_at_pass = ctx.cumulative_pass_nr();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         ctx.request_repaint_after(HIDDEN_TICK);
-        if !std::mem::replace(&mut self.background.told, true) {
+        if !self.prefs.tray_notice_shown && !std::mem::replace(&mut self.background.told, true) {
             self.queue_notification(Notification {
                 session_id: String::new(),
                 kind: Attention::Done,
                 title: "CodeShellManager is still running".into(),
-                body: "Your sessions keep working. Click the tray icon to show the window; its menu has Quit.".into(),
+                body: "Click the tray icon to open it.".into(),
                 sound: false,
             });
+            self.run(ctx, Action::Tool("settings_set", json!({"key": "TrayNoticeShown", "value": true})));
         }
     }
 
@@ -158,11 +178,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_window_hides_only_with_the_setting_a_tray_and_no_quit_running() {
-        assert_eq!(close_choice(true, true, false), CloseChoice::Hide);
-        assert_eq!(close_choice(false, true, false), CloseChoice::Quit, "off by default: closing quits");
-        assert_eq!(close_choice(true, false, false), CloseChoice::Quit, "no tray to come back from");
-        assert_eq!(close_choice(true, true, true), CloseChoice::Quit, "already quitting");
+    fn the_setting_decides_only_with_a_tray_and_no_quit_running() {
+        assert_eq!(close_choice(CloseAction::default(), true, false), CloseChoice::Ask, "asks by default");
+        assert_eq!(close_choice(CloseAction::Tray, true, false), CloseChoice::Hide);
+        assert_eq!(close_choice(CloseAction::Quit, true, false), CloseChoice::Quit);
+        for a in [CloseAction::Ask, CloseAction::Tray, CloseAction::Quit] {
+            assert_eq!(close_choice(a, false, false), CloseChoice::Quit, "no tray to come back from");
+            assert_eq!(close_choice(a, true, true), CloseChoice::Quit, "already quitting");
+        }
     }
 
     #[test]
