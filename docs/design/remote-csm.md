@@ -568,3 +568,34 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 - Q3 consent: cards raised by office agents are answerable from the laptop; first answer wins.
 - Layout/grids are per client (laptop screens are smaller): the client keeps its own layout, focus, rail and inspector state.
 - Server mode is explicitly opt-in, off by default; agents (MCP or CLI) can never enable it.
+
+## P0 findings: grid serializer spike
+
+Base sha for this step: `277182a05544069b13ea767e0649202f19c209c2`. Emulator: `alacritty_terminal` 0.26.0 (vte 0.15.0). Code: `crates/csm-term/src/replay.rs` (`snapshot`, `render`, `serialize`), tests in `crates/csm-term/tests/replay.rs`. No new crate; `Terminal::title()` is new (the crate keeps the title only as events).
+
+**Exposed and used:** `Term::grid()` with the rows by `Line` (negative lines are scrollback, independent of `display_offset`), `Grid::cursor` and `saved_cursor` (point, template, pending wrap), `Term::mode()`, `cursor_style()`, `colors()` (OSC 4/10/11/12 overrides), each cell's `c`, `fg`, `bg`, `flags`, `zerowidth()`, `hyperlink()` and `underline_color()`.
+
+**Not exposed, so not replayed:**
+- Scroll region (`Term.scroll_region`): private, no getter. Content replays; the replay's next scroll uses the full screen. Pinned by `known_gap_scroll_region_is_not_replayed`. A fix needs a DECSTBM shadow in the tap or a crate change.
+- Tab stops (`Term.tabs`): private. Custom stops (HTS, TBC) are lost.
+- Active character set (`active_charset`) and the kitty keyboard stack: private. Cell characters are already mapped, so content is unaffected; only future input is.
+- Hollow block and hidden cursor shapes have no DECSCUSR form; written as a block.
+- The alternate screen's inactive buffer is reachable only through `swap_alt()`, which is not reversible: swapping back runs the "enter alternate screen" branch (clears the alternate buffer, copies cursors). `snapshot` clones the alternate grid, swaps, reads, swaps back and puts the clone back. While the alternate screen is active the primary's saved cursor equals its cursor, so the copy the branch makes is harmless. Selection is saved and restored too.
+
+**Behaviour the replay has to work around (each has a test):**
+- `put_tab` writes `\t` into a blank cell it passes over, and into a wide character's spacer. The replay prints a space, then sends HT with absolute column moves.
+- Overwriting a wide character's spacer blanks the glyph (`clear_wide` sets `' '`). The state that survives is a WIDE glyph with no spacer (erase resets only the spacer's cell); and an orphan spacer after an erase of its glyph. Both are reproduced.
+- SGR 0 keeps the template's hyperlink and underline colour (`Attr::Reset` resets fg, bg and flags only). The emitter writes OSC 8 and `59` after every pen change.
+- `ESC 7` stores the cursor's current line, and scrolling does not move it. Saved cursors are therefore placed after the content, not inline in it.
+- A pending wrap (cursor past the last column) can only be set by printing, and printing overwrites the cell's flags. The replay re-prints the last cell with its own character and pen, or the wide glyph one column to the left.
+- Hyperlink ids that the crate generates (OSC 8 without an id) are written back explicitly. Titles and link fields are stripped of control characters before they are written, so a hostile title cannot inject a sequence (tested).
+
+**Wrap markers: known gaps.** `WRAPLINE` is set only by wrapping, so a marker is reproduced when its continuation follows it in the stream. Not reproduced:
+1. A tab in the last column of a wrapped row: the wrap needs a print that would overwrite the tab.
+2. A wrapped row whose continuation was later erased or overwritten (including a leading spacer whose glyph was overwritten), and a `WRAPLINE` on the bottom row (its continuation is off screen).
+3. A saved cursor pending on a wrapped cell: the saved cursor is restored, but re-printing the cell clears its `WRAPLINE`.
+4. `WRAPLINE` on a column other than the last (ICH and DCH shift cells with their flags).
+
+Measured: 11 of 360 random streams (three sizes, 250 tokens each) and 2 of 40 deep-scrollback streams differ only in wrap markers or in the history line structure they cause. They are pinned by seed (`KNOWN_WRAP_GAPS`, `KNOWN_SCROLLBACK_WRAP_GAPS`), and each pinned stream must still differ, so a fixed one has to be unpinned. The random check ignores `WRAPLINE` and the leading-spacer flag (`wrap_free`); everything else is compared exactly: characters, zero-width marks, colours, attributes, links, wide glyphs, cursors, saved cursors, modes, title, palette and the scrollback text.
+
+**Not measured yet:** serialization cost and output size per screen (the spike is about correctness); the snapshot clones the alternate grid when the alternate screen is active. The serializer reads only cols and rows: `GridSize`'s cell pixels feed window-size replies and nothing in the grid.
