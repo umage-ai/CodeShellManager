@@ -701,6 +701,18 @@ impl DemoBackend {
             id.as_deref().and_then(|i| me.model.session(i)).map_or_else(|| "the session".into(), |s| s.name.clone())
         };
         match call.id.as_str() {
+            // The dashboard: built from the demo's request history, like the engine would.
+            "usage_report" => {
+                let names = self.model.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
+                match crate::usage_model::demo_report(&call.params, &names) {
+                    Some(v) => {
+                        self.model.usage.report = Some(v);
+                        self.model.usage.report_error = None;
+                    }
+                    None => self.model.usage.report_error = Some("Not a date: use YYYY-MM-DD.".into()),
+                }
+                vec![]
+            }
             "session_new" => parse::<SessionNewParams>(call).map(|p| self.new_session(p)).unwrap_or_default(),
             "session_focus" => sid.map(|id| self.focus(&id)).unwrap_or_default(),
             "session_wake" => sid.map(|id| self.wake(&id)).unwrap_or_default(),

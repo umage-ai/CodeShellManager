@@ -71,6 +71,9 @@ pub enum Action {
     /// `app_info` and `grant_list`.
     OpenSettings,
     CloseSettings,
+    /// The Usage dashboard (a page over the work area, like Settings), on a session when given.
+    OpenUsage(Option<crate::screens::usage_page::Drill>),
+    CloseUsage,
     /// The keyboard shortcuts (`?`, F1, Ctrl+/).
     ShowHelp,
     /// Ask before running `yes` (a small dialog; Enter is the default answer).
@@ -454,6 +457,8 @@ pub struct UiState {
     pub inline: Option<InlineEdit>,
     /// When the usage tools were last asked (the Usage tab, the sidebar chips, Settings → Usage).
     pub usage: crate::screens::usage::PollState,
+    /// The Usage dashboard.
+    pub usage_page: crate::screens::usage_page::PageState,
     /// The Docs tab: the doc chosen per folder, and when the docs tools were last asked.
     pub docs: crate::screens::docs::DocsUi,
     pub confirm: Option<ConfirmState>,
@@ -1136,8 +1141,20 @@ impl CsmApp {
                 self.ui.menu = None;
                 self.ui.overlay = Overlay::None;
                 self.ui.settings.open = true;
+                self.ui.usage_page.open = false;
                 for (id, p) in [("settings_get", json!({})), ("app_info", json!({})), ("grant_list", json!({}))] {
                     self.dispatch.submit(id, p);
+                }
+            }
+            Action::OpenUsage(drill) => {
+                self.ui.menu = None;
+                self.ui.overlay = Overlay::None;
+                screens::usage_page::open(self, drill);
+            }
+            Action::CloseUsage => {
+                self.ui.usage_page.open = false;
+                if let Some(a) = self.model.active.clone() {
+                    self.ui.focus_terminal = Some(a);
                 }
             }
             Action::CloseSettings => {
@@ -1154,6 +1171,7 @@ impl CsmApp {
             Action::ScreenFocus(i) => {
                 lock(&self.ui.screens).active = i;
                 self.ui.settings.open = false;
+                self.ui.usage_page.open = false;
             }
             Action::ScreenEvent { instance, event } => {
                 if let Err(e) = self.backend.screen_event(&instance, event) {
@@ -1298,6 +1316,7 @@ impl CsmApp {
                 return;
             }
             "settings_get" | "settings_set" | "app_info" | "grant_list" | "grant_revoke" => return self.run(ctx, Action::OpenSettings),
+            "usage_report" => return self.run(ctx, Action::OpenUsage(None)),
             "group_new" => return self.run(ctx, Action::NewGroupPrompt),
             "session_rename" => {
                 if let Some(a) = active {
@@ -1493,6 +1512,8 @@ impl CsmApp {
             self.run(ctx, Action::ClearSelection);
         } else if self.ui.settings.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseSettings);
+        } else if self.ui.usage_page.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.run(ctx, Action::CloseUsage);
         }
     }
 
@@ -1635,6 +1656,8 @@ impl CsmApp {
         let mut work = Rect::from_min_max(pos2(side.max.x, body.min.y), body.max);
         if self.ui.settings.open {
             ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::settings::show(ui, self, &mut actions));
+        } else if self.ui.usage_page.open {
+            ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::usage_page::show(ui, self, &mut actions));
         } else {
             if self.model.inspector.is_some() {
                 // Never narrower than a readable column, never more than 40% of the body.

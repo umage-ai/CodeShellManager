@@ -137,5 +137,22 @@ fn the_usage_tab_and_the_sidebar_chip_follow_a_real_transcript() {
     let asked: Vec<_> = h.state().submitted().iter().filter(|c| c.id == "usage_summary").map(|c| c.params["from"].clone()).collect();
     assert!(asked.contains(&json!("today")) && asked.contains(&json!("week")), "{asked:?}");
     assert_eq!(h.state().model.usage.summary["week"].rows.len(), 1);
+
+    // The dashboard: the real `usage_report`, a range switch, and a drill into the session.
+    h.state_mut().run(&ctx, Action::OpenUsage(None));
+    until(&mut h, "the report", |h| h.state().model.usage.report.as_ref().is_some_and(|r| r.report.total.requests == 1));
+    assert!(h.query_by_label("Claude usage").is_some());
+    h.get_by_label("Range: 30 days").click();
+    until(&mut h, "the 30-day report", |h| h.state().model.usage.report.as_ref().is_some_and(|r| r.params["from"] == "30d"));
+    let report = h.state().model.usage.report.clone().unwrap().report;
+    assert_eq!(report.days.len(), 30);
+    assert_eq!(report.rows[0].key, id, "the conversation is keyed by its CSM session");
+    let label = report.rows[0].label.clone();
+    h.get_by_label(&format!("Usage row: {label}")).click();
+    until(&mut h, "the session's models", |h| h.state().model.usage.report.as_ref().is_some_and(|r| r.params["session"] == json!(id)));
+    assert!(h.query_by_label("Usage row: opus-5-5").is_some());
+    let hit = h.state().model.usage.report.as_ref().unwrap().report.total.cache_hit_rate.unwrap();
+    assert!((hit - 140_000.0 / 150_000.0).abs() < 1e-9, "{hit}");
+    assert!(h.state().ui.toasts.is_empty());
     engine.shutdown();
 }

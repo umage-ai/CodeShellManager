@@ -334,3 +334,49 @@ fn screens() {
         |_| {},
     );
 }
+
+/// The Usage dashboard (the demo answers `usage_report` from its request history).
+#[test]
+fn usage_dashboard_screens() {
+    use csm_ui::screens::usage_page::{Drill, Range};
+    shoot(
+        "21-usage",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenUsage(None));
+        },
+    );
+    shoot(
+        "21-usage-30d-latte",
+        ThemeKind::Latte,
+        |_| {},
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenUsage(None));
+            h.state_mut().ui.usage_page.range = Range::Month;
+        },
+    );
+    shoot(
+        "21-usage-session",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenUsage(Some(Drill::Session { key: "rs".into(), label: "CodeShellManager-rs".into() })));
+            h.state_mut().ui.usage_page.range = Range::Month;
+        },
+    );
+    shoot_sized(
+        "21-usage-narrow-latte",
+        ThemeKind::Latte,
+        egui::vec2(900.0, 700.0),
+        |_| {},
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenUsage(None));
+            h.state_mut().ui.usage_page.group = Some(csm_core::usage_report::GroupBy::Model);
+        },
+    );
+}

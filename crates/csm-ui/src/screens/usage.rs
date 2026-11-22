@@ -244,6 +244,10 @@ pub fn tab(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
         app.ui.usage.session = Some((s.id.clone(), now));
         actions.push(Action::Tool("usage_session", json!({"session_id": s.id})));
     }
+    // The dashboard on this session: its cost per model and per day, over any range.
+    if widgets::button(ui, ButtonKind::Secondary, Some("gauge"), "Usage by model and day", None).clicked() {
+        actions.push(Action::OpenUsage(Some(super::usage_page::Drill::Session { key: s.id.clone(), label: s.name.clone() })));
+    }
 }
 
 /// Settings → Usage: API-equivalent cost per project, today and this week (`usage_summary`).
@@ -274,6 +278,9 @@ pub fn settings(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     if usage.live && widgets::button(ui, ButtonKind::Secondary, Some("restart"), "Refresh cost", None).clicked() {
         app.ui.usage.summary_asked = false;
+    }
+    if widgets::button(ui, ButtonKind::Secondary, Some("gauge"), "Open the usage dashboard", None).clicked() {
+        actions.push(Action::OpenUsage(None));
     }
 }
 

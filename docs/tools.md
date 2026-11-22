@@ -277,6 +277,16 @@ bills); a model without a price is listed as unpriced, never counted as $0.
 - **UI.** Inspector → Usage (the focused session, refreshed every 5 s while shown), a fill chip on
   Claude rows in the sidebar (`usage_context` every 10 s; cost too on wide rows; it gives way on
   narrow ones), Settings → Usage: cost per project today and this week.
+- **Usage dashboard** (`screens/usage_page.rs`, `docs/screens/21-usage*.png`): a page over the
+  work area like Settings, opened from the palette (`usage_report`), the Usage tab's "Usage by
+  model and day" (drilled into that session) and Settings → Usage; Esc closes it. Range (Today, 7
+  days, 30 days, All, Custom from–to), five figures (cost, tokens, cache hit rate, cache-miss cost
+  with the miss events, saved by caching; the whole story on hover), cost or tokens per day as
+  bars stacked by token class (cache read, 5m and 1h writes, input, output; a day's split on
+  hover), a table by session, project, model or day (sortable by any column, locally) whose rows
+  drill down — a session to its models and days, a model to its sessions, a day to that day —
+  with a breadcrumb back, and the costliest cache misses. It asks `usage_report` when what it
+  shows changes and every 30 s while open; the demo answers from a synthetic history.
 
 **Open folder / Open with** (`tools/open.rs`, rules in `csm-services::open_with`). `open_folder`
 (session_id) opens only an existing *directory* (a file would be run); Windows normalises to
