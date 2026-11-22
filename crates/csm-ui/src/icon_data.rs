@@ -103,4 +103,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("sort", r#"<path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16"/>"#),
     ("arrowUp", r#"<path d="M12 19V5M5 12l7-7 7 7"/>"#),
     ("arrowDown", r#"<path d="M12 5v14M19 12l-7 7-7-7"/>"#),
+    // Claude Code Remote Control is on (Lucide smartphone, with a signal arc): the sidebar row and
+    // pane header mark.
+    ("remote", r#"<rect x="4" y="5" width="11" height="17" rx="2"/><path d="M9.5 18h.01M18 5.5a4 4 0 0 1 0 5M20.5 3a7.5 7.5 0 0 1 0 10"/>"#),
 ];

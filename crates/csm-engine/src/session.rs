@@ -78,6 +78,11 @@ pub(crate) struct SessionRt {
     /// Usage stats: the command this run counts under and when its process started; taken
     /// (and its running time recorded) once, when the process ends or the runtime goes.
     pub usage: Option<(String, Instant)>,
+    /// When its process started (epoch ms; 0 until then): transcript lines older than this are
+    /// from an earlier run of the conversation.
+    pub started_ms: i64,
+    /// Claude Code Remote Control is on (`csm_core::remote_control`), from its transcript.
+    pub remote_control: Option<csm_core::remote_control::RemoteControl>,
 }
 
 impl SessionRt {
@@ -102,6 +107,8 @@ impl SessionRt {
             start_deadline,
             on_started: Vec::new(),
             usage: None,
+            started_ms: 0,
+            remote_control: None,
         }
     }
 

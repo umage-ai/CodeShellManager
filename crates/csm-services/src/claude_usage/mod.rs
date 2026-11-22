@@ -22,6 +22,8 @@ pub struct Batch {
     /// `(line number, compaction)`, line numbers counted from the file's start.
     pub compactions: Vec<(u64, ParsedCompaction)>,
     pub cwd: Option<String>,
+    /// The last Remote Control line of the pass (`csm_core::remote_control`), if any.
+    pub remote_control: Option<csm_core::remote_control::RemoteControlMark>,
     pub lines: u64,
     /// Not JSON, not an object, or an assistant line without a message.
     pub bad_lines: u64,
@@ -56,6 +58,12 @@ impl Batch {
                 }
             }
             Line::Compaction(c) => self.compactions.push((self.lines, c)),
+            Line::RemoteControl { mark, cwd } => {
+                if self.cwd.is_none() {
+                    self.cwd = cwd;
+                }
+                self.remote_control = Some(mark);
+            }
             Line::Other { cwd } => {
                 if self.cwd.is_none() {
                     self.cwd = cwd;

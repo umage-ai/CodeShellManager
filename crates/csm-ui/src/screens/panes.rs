@@ -1201,7 +1201,19 @@ pub fn pane(
     } else {
         ui.scope_builder(UiBuilder::new().max_rect(pill), |ui| widgets::status_pill(ui, status, &label));
     }
-    let right_limit = pill.min.x - space::SM;
+    let mut right_limit = pill.min.x - space::SM;
+    // Claude Code Remote Control is on: a quiet phone mark before the pill (opens its link).
+    if s.remote_control && !o.mini {
+        let side = icon::SM;
+        let mr = Rect::from_min_size(pos2(right_limit - size::CHIP, cy - size::CHIP / 2.0), Vec2::splat(size::CHIP));
+        let mark = widgets::remote_control_mark(ui, mr, Id::new(("pane-rc", s.id.clone(), o.torn)), side, s.remote_control_url.as_deref());
+        if mark.clicked()
+            && let Some(u) = &s.remote_control_url
+        {
+            actions.push(Action::Tool("open_url", json!({"url": u})));
+        }
+        right_limit = mr.min.x - space::XS;
+    }
 
     // Left: stripe, [badge] name, Preview, branch chip / group name.
     let mut lx = head.min.x + size::STRIPE + space::SM;

@@ -965,6 +965,17 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
         icons::request_spinner_repaint(&child);
     }
     let mut right = gx - space::SM;
+    // Claude Code Remote Control is on: a quiet phone mark (opens the session's claude.ai link).
+    if s.remote_control && !asleep {
+        let mr = Rect::from_min_size(pos2(right - icon::XS, cy - icon::XS / 2.0), Vec2::splat(icon::XS));
+        let mark = widgets::remote_control_mark(ui, mr, Id::new(("session-row-rc", s.id.clone())), icon::XS, s.remote_control_url.as_deref());
+        if mark.clicked()
+            && let Some(u) = &s.remote_control_url
+        {
+            actions.push(Action::Tool("open_url", json!({"url": u})));
+        }
+        right = mr.min.x - space::SM;
+    }
     if let Some(b) = &s.branch {
         let br = widgets::paint_text(&child, pos2(right, cy), Align2::RIGHT_CENTER, b, theme::mono(text::MONO_SM), t.muted, size::BRANCH_MAX_W);
         right = br.min.x - space::SM;
