@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn icon_set_has_what_the_screens_use() {
         for n in [
-            "more", "search", "plus", "x", "branch", "play", "pin", "inbox", "panelR", "history", "sliders", "focus", "side", "overview", "grid",
+            "more", "search", "plus", "x", "branch", "play", "pin", "inbox", "panelR", "panelRClose", "history", "sliders", "focus", "side", "overview", "grid",
             "free", "rail", "layers", "list", "chevD", "chevR", "tear", "float", "dock", "moon", "restart", "monitor",
         ] {
             assert!(exists(n), "{n}");

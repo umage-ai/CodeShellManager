@@ -32,7 +32,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let stripe = Rect::from_center_size(pos2(head.min.x + space::MD + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG));
     ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
     let close = Rect::from_center_size(pos2(head.max.x - space::SM - size::CONTROL_SM / 2.0, cy), Vec2::splat(size::CONTROL_SM));
-    if widgets::icon_button_at(ui, close, Id::new("insp-close"), "x", false, "Hide the inspector  Ctrl+I").clicked() {
+    if widgets::icon_button_at(ui, close, Id::new("insp-close"), "panelRClose", false, "Hide the inspector  Ctrl+I").clicked() {
         actions.push(Action::Tool("inspector_show", json!({"tab": "hidden"})));
     }
     let label = s.status_text();
