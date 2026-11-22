@@ -20,6 +20,7 @@ mod launch;
 mod lifecycle;
 /// `From` conversions from the read model and events to the owned wire types (`csm-peer-proto`).
 mod peer_wire;
+pub mod output_tap;
 pub mod persist;
 pub mod proc;
 pub mod registry;
