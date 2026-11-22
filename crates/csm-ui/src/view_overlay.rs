@@ -2,19 +2,24 @@
 //!
 //! The engine keeps the view state per app: the focused session, the rail tab, the layouts, the
 //! inbox panel, the inspector, the group view, the window placements, and each group's collapse,
-//! tear-off and dock. A remote client keeps its own copy of these, and a call whose declared
-//! effects are only [`Effects::CHANGES_UI_STATE`] runs against that copy, with the rules the
-//! engine applies. Every other call is forwarded to the server.
+//! tear-off and dock. A remote client keeps its own copy of these. A call that is only a UI
+//! change, and that the engine does nothing else with, runs against that copy. Every other call
+//! is forwarded to the server.
 //!
 //! Nothing is wired into the live app yet. The engine stays the owner, and server-side callers
 //! keep using the engine's own view state.
 //!
-//! - [`is_ui_only`] and [`route`] classify a tool from its effects.
-//! - [`apply`] runs a UI-only call against a [`ViewOverlay`], given the groups and sessions it
-//!   needs to check the call ([`ViewFacts`]).
+//! - [`route`] classifies a call from its tool and params (see [`Route`]).
+//! - [`apply`] runs a [`Route::Local`] or [`Route::Focus`] call against a [`ViewOverlay`], given
+//!   the groups and sessions it needs to check the call ([`ViewFacts`]).
 //!
-//! A UI-only tool whose state is not in the overlay (the window's own OS actions, the add-on
-//! screens, a session's status) gets [`Applied::NotInOverlay`]. The caller runs or forwards it.
+//! Open items before wiring (`docs/design/remote-csm.md`, section 2.3):
+//! - An overlay focus does not do the server's extras from `lifecycle::focus`: the result
+//!   acknowledgement (`rt.acknowledge`) and the last-activity stamp. Any overlay focus must be
+//!   forwarded, or replayed to the server, for those.
+//! - `inbox_next` and `view_set` with a `rail_tab` are forwarded, because the engine runs a focus
+//!   for them. The engine declares `inbox_next` as `UI` only, which under-states it (a launch
+//!   and a mutation). Fixing the declaration changes MCP consent, so Allan approves it first.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,18 +33,43 @@ use crate::backend::ToolInfo;
 /// The one tool that is UI-only in part: a local focus, and a `session_wake` when asleep.
 pub const SESSION_FOCUS: &str = "session_focus";
 
+/// UI-only tools that the engine also runs on its own state, so a client must not run them
+/// against the overlay. `inbox_next` wakes a dormant session and acknowledges its results
+/// (`lifecycle::focus`); it is declared `UI` only, which under-states it. Until the declaration
+/// is fixed (Allan's approval, since it changes MCP consent), this list is what routes it.
+pub const FORWARDED_UI: &[&str] = &["inbox_next"];
+
+/// The UI-only tools the overlay models: [`apply`] has an arm for each. `view_set` is listed,
+/// but its `rail_tab` form is forwarded (see [`route`]).
+pub const MODELLED_UI: &[&str] = &[
+    "view_set",
+    "layout_set",
+    "layout_pin",
+    "layout_unpin",
+    "inspector_show",
+    "inbox_panel_set",
+    "window_placement_set",
+    "group_collapse",
+    "group_tear_off",
+    "group_dock",
+];
+
 /// The window-placement size limit, in physical pixels (the engine's own).
 const MAX_WINDOW_PX: i32 = 1 << 16;
 
 /// How a client routes a call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
-    /// Only `CHANGES_UI_STATE`: applied to the overlay and never sent.
+    /// UI-only and modelled by the overlay: applied to it, never sent.
     Local,
     /// `session_focus`: a local focus, plus `session_wake` when the session is asleep.
     Focus,
-    /// Anything else: forwarded to the server.
+    /// Sent to the server: every call that is not UI-only, and every UI-only call the engine also
+    /// runs on its own state (see [`FORWARDED_UI`] and the `rail_tab` form of `view_set`).
     Forward,
+    /// UI-only, but its state is not in the overlay (the window's own OS actions, add-on screens,
+    /// a session's status). The caller runs it in its own UI or forwards it. It is never dropped.
+    UiNotModelled,
 }
 
 /// Whether the effects are UI-only: `CHANGES_UI_STATE`, with `IDEMPOTENT` allowed beside it.
@@ -49,17 +79,21 @@ pub fn is_ui_only(effects: Effects) -> bool {
     effects.difference(Effects::IDEMPOTENT) == Effects::CHANGES_UI_STATE
 }
 
-/// The route of a tool, from its declared effects. `session_focus` (UI plus launch, since waking
-/// starts a process) is [`Route::Focus`]; the server only ever gets its wake.
-pub fn route(tool: &ToolInfo) -> Route {
-    let focus_effects = Effects::UI.union(Effects::LAUNCHES_PROCESS);
-    if tool.id == SESSION_FOCUS && tool.effects.difference(Effects::IDEMPOTENT) == focus_effects {
-        Route::Focus
-    } else if is_ui_only(tool.effects) {
-        Route::Local
-    } else {
-        Route::Forward
+/// The route of a call, from its tool and params. The declared effects decide what is UI-only;
+/// [`FORWARDED_UI`] and the `rail_tab` form of `view_set` override a UI declaration, because the
+/// engine does more for them than the declaration says.
+pub fn route(tool: &ToolInfo, params: &Value) -> Route {
+    if tool.id == SESSION_FOCUS {
+        let focus_effects = Effects::UI.union(Effects::LAUNCHES_PROCESS);
+        return if tool.effects.difference(Effects::IDEMPOTENT) == focus_effects { Route::Focus } else { Route::Forward };
     }
+    if !is_ui_only(tool.effects) || FORWARDED_UI.contains(&tool.id.as_str()) {
+        return Route::Forward;
+    }
+    if tool.id == "view_set" && params.get("rail_tab").is_some_and(|tab| !tab.is_null()) {
+        return Route::Forward;
+    }
+    if MODELLED_UI.contains(&tool.id.as_str()) { Route::Local } else { Route::UiNotModelled }
 }
 
 /// One session, as the overlay checks calls against it.
@@ -71,15 +105,13 @@ pub struct SessionFact {
     pub asleep: bool,
 }
 
-/// The groups, sessions and inbox a UI-only call is checked against, as the server has them.
+/// The groups and sessions a UI-only call is checked against, as the server has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ViewFacts {
     /// Group ids.
     pub groups: BTreeSet<String>,
     /// Sessions, in sidebar order.
     pub sessions: Vec<SessionFact>,
-    /// Session ids in the inbox: needs-you first, then unseen results.
-    pub inbox: Vec<String>,
 }
 
 impl ViewFacts {
@@ -87,12 +119,7 @@ impl ViewFacts {
     pub fn from_snapshot(snap: &Snapshot) -> Self {
         Self {
             groups: snap.groups.iter().map(|g| g.id.clone()).collect(),
-            sessions: snap
-                .sessions
-                .iter()
-                .map(|s| SessionFact { id: s.id.clone(), group: s.group_id.clone(), asleep: s.asleep })
-                .collect(),
-            inbox: snap.inbox.clone(),
+            sessions: snap.sessions.iter().map(|s| SessionFact { id: s.id.clone(), group: s.group_id.clone(), asleep: s.asleep }).collect(),
         }
     }
 
@@ -213,40 +240,10 @@ impl ViewOverlay {
         }
     }
 
-    /// The session a rail tab focuses (issue #137): the focused session if it is already in the
-    /// group, else the group's remembered session when awake, else its first awake session.
-    fn group_tab_focus(&self, facts: &ViewFacts, group: &str) -> Option<String> {
-        let in_group = |id: &str| facts.session(id).is_some_and(|s| s.group == group);
-        if self.focused.as_deref().is_some_and(in_group) {
-            return None;
-        }
-        let remembered = self
-            .group_focus
-            .get(group)
-            .map(String::as_str)
-            .filter(|id| facts.session(id).is_some_and(|s| s.group == group && !s.asleep));
-        remembered.map(str::to_owned).or_else(|| facts.sessions.iter().find(|s| s.group == group && !s.asleep).map(|s| s.id.clone()))
-    }
-
-    fn view_set(&mut self, facts: &ViewFacts, p: ViewSetParams) -> Result<(), ToolError> {
-        if let Some(tab) = p.rail_tab.as_deref()
-            && tab != "all"
-        {
-            facts.require_group(tab)?;
-        }
+    fn view_set(&mut self, p: ViewSetParams) {
         if let Some(v) = p.view {
             self.view = v;
         }
-        if let Some(tab) = p.rail_tab {
-            self.rail_tab = (tab != "all").then(|| tab.clone());
-            if tab != "all"
-                && let Some(id) = self.group_tab_focus(facts, &tab)
-                && let Some(fact) = facts.session(&id).cloned()
-            {
-                self.focus(&fact);
-            }
-        }
-        Ok(())
     }
 
     fn layout_set(&mut self, facts: &ViewFacts, p: LayoutSetParams) -> Result<(), ToolError> {
@@ -256,8 +253,8 @@ impl ViewOverlay {
             layout.mode = m.into();
         }
         if let Some(preset) = &p.preset {
-            let (cols, rows) = parse_preset(preset)
-                .ok_or_else(|| ToolError::InvalidParams(format!("no grid preset `{preset}` (1, 2, 2x2, 3x2, 3x3)")))?;
+            let (cols, rows) =
+                parse_preset(preset).ok_or_else(|| ToolError::InvalidParams(format!("no grid preset `{preset}` (1, 2, 2x2, 3x2, 3x3)")))?;
             layout.grid_cols = cols;
             layout.grid_rows = rows;
             layout.mode = LayoutMode::Grid;
@@ -357,34 +354,29 @@ pub enum Applied {
     /// A session was focused on the overlay. When `wake` is set the session is asleep on the
     /// server, and the caller sends `session_wake` for it.
     Focused { session_id: String, wake: bool },
-    /// Not part of the overlay's state, or not a UI-only call. The caller runs or forwards it.
+    /// Not applied here: the call is forwarded, or it is UI-only but not modelled (see
+    /// [`Route::UiNotModelled`]). The caller runs or forwards it.
     NotInOverlay,
 }
 
-/// Runs a call against the overlay when it is UI-only (see [`route`]). A forwarded call, and a
-/// UI-only call the overlay does not model, return [`Applied::NotInOverlay`] and change nothing.
+/// Runs a call against the overlay when its [`route`] is [`Route::Local`] or [`Route::Focus`].
+/// A forwarded call, and a UI-only call the overlay does not model, return
+/// [`Applied::NotInOverlay`] and change nothing.
 ///
 /// An error is what the engine would return for the same params on the same state (the same
 /// [`ToolError`] kinds), and changes nothing.
 pub fn apply(overlay: &mut ViewOverlay, facts: &ViewFacts, tool: &ToolInfo, params: Value) -> Result<Applied, ToolError> {
-    let r = route(tool);
-    if r == Route::Forward {
-        return Ok(Applied::NotInOverlay);
+    match route(tool, &params) {
+        Route::Forward | Route::UiNotModelled => return Ok(Applied::NotInOverlay),
+        Route::Focus => {
+            let p: IdParams = parse_params(params)?;
+            return focus_call(overlay, facts, &p.session_id);
+        }
+        Route::Local => {}
     }
     match tool.id.as_str() {
-        SESSION_FOCUS if r == Route::Focus => {
-            let p: IdParams = parse_params(params)?;
-            focus_call(overlay, facts, &p.session_id)
-        }
-        "inbox_next" => {
-            let next = facts.inbox.iter().find(|id| overlay.focused.as_ref() != Some(*id)).or_else(|| facts.inbox.first());
-            match next {
-                Some(id) => focus_call(overlay, facts, id),
-                None => Ok(Applied::Local),
-            }
-        }
         "view_set" => {
-            overlay.view_set(facts, parse_params(params)?)?;
+            overlay.view_set(parse_params(params)?);
             Ok(Applied::Local)
         }
         "layout_set" => {
@@ -487,11 +479,11 @@ struct CollapseParams {
     collapsed: bool,
 }
 
+/// The local `view_set` fields. A `rail_tab` never gets here: [`route`] forwards it.
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct ViewSetParams {
     view: Option<GroupView>,
-    rail_tab: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -585,9 +577,11 @@ struct WindowPlacementParams {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::mem::discriminant;
     use std::sync::{Arc, OnceLock};
 
-    use csm_engine::Caller;
+    use csm_core::models::{AppState, SessionGroup, ShellSession};
+    use csm_engine::{Caller, Engine};
     use serde_json::json;
 
     use super::*;
@@ -613,8 +607,8 @@ mod tests {
         ToolInfo { id: id.into(), title: String::new(), summary: String::new(), toolset: csm_engine::Toolset::Core, effects, input_schema: json!({}) }
     }
 
-    /// The ui-effect rows of the generated catalogue in `docs/tools.md`: `(id, effects)`.
-    fn docs_ui_rows() -> Vec<String> {
+    /// The ids of the generated catalogue rows in `docs/tools.md` whose effects include `ui`.
+    fn catalogue_ui_ids() -> Vec<String> {
         let doc = include_str!("../../../docs/tools.md");
         let begin = doc.find("<!-- xtask:tools:begin").expect("the catalogue begins in docs/tools.md");
         let end = doc.find("<!-- xtask:tools:end").expect("the catalogue ends in docs/tools.md");
@@ -624,19 +618,34 @@ mod tests {
             if cells.len() < 5 || !cells[1].starts_with('`') {
                 continue;
             }
-            let effects_ui = cells[3].split(',').map(str::trim).any(|e| e == "ui");
-            if effects_ui {
-                ids.push(cells[1].trim_matches('`').to_owned());
+            let Some(id) = cells[1].split('`').nth(1) else { continue };
+            if cells[3].split(',').map(str::trim).any(|e| e == "ui") {
+                ids.push(id.to_owned());
             }
         }
         ids
     }
 
+    /// The route each UI-only tool must have, by id (the rules of [`route`], with no params).
+    fn expected_route(id: &str) -> Route {
+        if id == SESSION_FOCUS {
+            Route::Focus
+        } else if FORWARDED_UI.contains(&id) {
+            Route::Forward
+        } else if MODELLED_UI.contains(&id) {
+            Route::Local
+        } else {
+            Route::UiNotModelled
+        }
+    }
+
     #[test]
     fn the_catalogue_lists_ui_tools() {
-        let rows = docs_ui_rows();
+        let rows = catalogue_ui_ids();
         assert!(rows.len() >= 15, "the docs list the ui tools: {rows:?}");
-        assert!(rows.iter().any(|r| r == SESSION_FOCUS) && rows.iter().any(|r| r == "group_tear_off"));
+        for id in [SESSION_FOCUS, "group_tear_off", "inbox_next", "view_set"] {
+            assert!(rows.iter().any(|r| r == id), "`{id}` is a catalogue row");
+        }
     }
 
     #[test]
@@ -651,61 +660,87 @@ mod tests {
     }
 
     #[test]
-    fn routes_follow_the_effects_and_session_focus_is_its_own_route() {
-        assert_eq!(route(&info("view_set", Effects::UI)), Route::Local);
-        assert_eq!(route(&info("window_show", Effects::UI | Effects::IDEMPOTENT)), Route::Local);
-        assert_eq!(route(&info("session_new", Effects::MUTATES_STATE | Effects::LAUNCHES_PROCESS)), Route::Forward);
-        assert_eq!(route(&info(SESSION_FOCUS, Effects::UI | Effects::LAUNCHES_PROCESS)), Route::Focus);
-        // Another tool with the same effects does not get the focus route.
-        assert_eq!(route(&info("inbox_next", Effects::UI | Effects::LAUNCHES_PROCESS)), Route::Forward);
-        // Focus without the launch is just a local call (a registry that declares it so).
-        assert_eq!(route(&info(SESSION_FOCUS, Effects::UI)), Route::Local);
+    fn routes_follow_the_effects_and_the_forwarded_forms() {
+        let none = json!({});
+        assert_eq!(route(&info("layout_pin", Effects::UI), &none), Route::Local);
+        assert_eq!(route(&info("view_set", Effects::UI), &none), Route::Local);
+        assert_eq!(route(&info("view_set", Effects::UI), &json!({"view": "headers"})), Route::Local);
+        assert_eq!(route(&info("view_set", Effects::UI), &json!({"rail_tab": null})), Route::Local, "a null rail tab is no rail tab");
+        assert_eq!(
+            route(&info("view_set", Effects::UI), &json!({"rail_tab": "work"})),
+            Route::Forward,
+            "a rail tab focuses a session: the server does it"
+        );
+        assert_eq!(route(&info("window_show", Effects::UI | Effects::IDEMPOTENT), &none), Route::UiNotModelled);
+        assert_eq!(route(&info("session_new", Effects::MUTATES_STATE | Effects::LAUNCHES_PROCESS), &none), Route::Forward);
+        assert_eq!(route(&info("layout_pin", Effects::UI | Effects::MUTATES_STATE), &none), Route::Forward, "a mutation is never local");
+        assert_eq!(route(&info(SESSION_FOCUS, Effects::UI | Effects::LAUNCHES_PROCESS), &none), Route::Focus);
+        // Focus without the launch is not the focus route: it goes to the server.
+        assert_eq!(route(&info(SESSION_FOCUS, Effects::UI), &none), Route::Forward);
+        assert_eq!(route(&info("inbox_next", Effects::UI), &none), Route::Forward);
     }
 
     #[test]
-    fn every_ui_effect_tool_in_the_docs_is_ui_only_in_the_real_registry() {
-        for id in docs_ui_rows() {
-            let t = registry_tools().iter().find(|t| t.id == id).cloned().unwrap_or_else(|| panic!("`{id}` is in docs/tools.md but not in the registry"));
-            let expected = if id == SESSION_FOCUS { Route::Focus } else { Route::Local };
-            assert_eq!(route(&t), expected, "`{id}` ({:?}) routes as {expected:?}", t.effects);
+    fn forwarded_ui_tools_route_forward_even_when_declared_ui_only() {
+        // Fails for a route that trusts the declaration: `inbox_next` is declared `UI` only.
+        assert_eq!(route(&tool("inbox_next"), &json!({})), Route::Forward);
+        assert_eq!(route(&tool("view_set"), &json!({"rail_tab": "work"})), Route::Forward);
+        for id in FORWARDED_UI {
+            assert_eq!(route(&info(id, Effects::UI), &json!({})), Route::Forward, "`{id}`");
+        }
+    }
+
+    #[test]
+    fn every_ui_effect_tool_in_the_docs_is_routed_on_purpose() {
+        for id in catalogue_ui_ids() {
+            let t =
+                registry_tools().iter().find(|t| t.id == id).cloned().unwrap_or_else(|| panic!("`{id}` is in docs/tools.md but not in the registry"));
             assert!(t.effects.contains(Effects::CHANGES_UI_STATE), "`{id}` changes the UI");
+            assert_eq!(route(&t, &json!({})), expected_route(&id), "`{id}` ({:?})", t.effects);
         }
     }
 
     #[test]
     fn every_registry_tool_routes_by_its_effects() {
         let tools = registry_tools();
+        let doc = include_str!("../../../docs/tools.md");
+        let catalogue = catalogue_ui_ids();
         let mut local = 0;
-        for t in tools.iter() {
-            let r = route(t);
+        for t in tools.iter().filter(|t| !t.id.starts_with("demo_")) {
+            let r = route(t, &json!({}));
             if t.id == SESSION_FOCUS {
-                assert_eq!(r, Route::Focus);
-            } else if is_ui_only(t.effects) {
-                assert_eq!(r, Route::Local, "`{}` ({:?})", t.id, t.effects);
-                local += 1;
-            } else {
+                assert_eq!(r, Route::Focus, "`{}` ({:?})", t.id, t.effects);
+                continue;
+            }
+            if !is_ui_only(t.effects) {
                 assert_eq!(r, Route::Forward, "`{}` ({:?})", t.id, t.effects);
+                continue;
+            }
+            assert_eq!(r, expected_route(&t.id), "`{}` ({:?})", t.id, t.effects);
+            if r == Route::Local {
+                local += 1;
+            }
+            // A UI-only tool is documented: a catalogue row, or an app-registered `pane_*` tool
+            // that the catalogue's prose names.
+            if t.id.starts_with("pane_") {
+                assert!(doc.contains(&format!("`{}`", t.id)), "`{}` is UI-only but not in docs/tools.md", t.id);
+            } else {
+                assert!(catalogue.contains(&t.id), "`{}` is UI-only but not a catalogue row in docs/tools.md", t.id);
             }
         }
-        assert!(local >= 15, "the registry has UI-only tools ({local})");
-        // Every UI-only tool is documented in docs/tools.md: a catalogue row, or (the `pane_*` tools
-        // the app registers) a mention in the text. The demo's own tools (`demo_*`) are not the app's.
-        let doc = include_str!("../../../docs/tools.md");
-        for t in tools.iter().filter(|t| !t.id.starts_with("demo_")) {
-            if is_ui_only(t.effects) {
-                assert!(doc.contains(&format!("`{}`", t.id)), "`{}` is UI-only but not in docs/tools.md", t.id);
-            }
+        assert!(local >= 10, "the registry has modelled UI tools ({local})");
+        for id in MODELLED_UI.iter().chain(FORWARDED_UI.iter()) {
+            assert!(tools.iter().any(|t| t.id == *id), "`{id}` in the lists is a registry tool");
         }
     }
 
     /// Facts for a small fixed world: groups `work` and `home`; sessions `a` (work, awake), `b`
-    /// (work, asleep), `c` (ungrouped, awake) and `d` (home, awake); the inbox is `b`, `c`.
+    /// (work, asleep), `c` (ungrouped, awake) and `d` (home, awake).
     fn world() -> ViewFacts {
         let sess = |id: &str, group: &str, asleep: bool| SessionFact { id: id.into(), group: group.into(), asleep };
         ViewFacts {
             groups: ["work", "home"].iter().map(|s| s.to_string()).collect(),
             sessions: vec![sess("a", "work", false), sess("b", "work", true), sess("c", "", false), sess("d", "home", false)],
-            inbox: vec!["b".into(), "c".into()],
         }
     }
 
@@ -753,47 +788,26 @@ mod tests {
     }
 
     #[test]
-    fn inbox_next_walks_the_inbox_and_wakes_an_asleep_one() {
+    fn inbox_next_is_forwarded_and_the_overlay_does_not_change() {
         let facts = world();
         let mut o = ViewOverlay::default();
-        assert_eq!(run(&mut o, &facts, "inbox_next", json!({})).expect("next"), Applied::Focused { session_id: "b".into(), wake: true });
-        assert_eq!(run(&mut o, &facts, "inbox_next", json!({})).expect("next"), Applied::Focused { session_id: "c".into(), wake: false });
-        assert_eq!(run(&mut o, &facts, "inbox_next", json!({})).expect("next"), Applied::Focused { session_id: "b".into(), wake: true });
-
-        let empty = ViewFacts { inbox: Vec::new(), ..world() };
-        assert_eq!(run(&mut o, &empty, "inbox_next", json!({})).expect("nothing"), Applied::Local);
+        assert_eq!(run(&mut o, &facts, "inbox_next", json!({})).expect("forwarded"), Applied::NotInOverlay);
+        assert_eq!(o, ViewOverlay::default(), "the server wakes and acknowledges it, not the overlay");
     }
 
     #[test]
-    fn view_set_rail_tab_focuses_the_remembered_or_first_awake_session() {
-        let facts = world();
-        // Focused elsewhere: the first awake session of `work` (b is asleep, so a).
-        let mut o = ViewOverlay { focused: Some("d".into()), ..ViewOverlay::default() };
-        assert_eq!(run(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).expect("tab"), Applied::Local);
-        assert_eq!(o.rail_tab.as_deref(), Some("work"));
-        assert_eq!(o.focused.as_deref(), Some("a"));
-
-        // The focused session is already in the group: nothing moves.
-        let mut o = ViewOverlay { focused: Some("a".into()), ..ViewOverlay::default() };
-        run(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).expect("tab");
-        assert_eq!(o.focused.as_deref(), Some("a"));
-
-        // The remembered session wins when it is awake.
-        let mut o = ViewOverlay { focused: Some("d".into()), ..ViewOverlay::default() };
-        o.group_focus.insert("work".into(), "a".into());
-        run(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).expect("tab");
-        assert_eq!(o.focused.as_deref(), Some("a"));
-    }
-
-    #[test]
-    fn view_set_refuses_an_unknown_group_and_changes_nothing() {
+    fn view_set_with_a_rail_tab_is_forwarded_and_the_plain_view_is_local() {
         let facts = world();
         let mut o = ViewOverlay::default();
-        assert!(matches!(run(&mut o, &facts, "view_set", json!({"rail_tab": "nope"})), Err(ToolError::NotFound(_))));
-        assert_eq!(o, ViewOverlay::default());
-        run(&mut o, &facts, "view_set", json!({"view": "headers", "rail_tab": "all"})).expect("view");
-        assert_eq!((o.view, o.rail_tab.clone()), (GroupView::Headers, None));
+        assert_eq!(run(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).expect("forwarded"), Applied::NotInOverlay);
+        assert_eq!(o, ViewOverlay::default(), "a forwarded tab changes nothing here");
+
+        assert_eq!(run(&mut o, &facts, "view_set", json!({"view": "headers"})).expect("view"), Applied::Local);
+        assert_eq!(o.view, GroupView::Headers);
         assert_eq!(o.layout_key(), ALL_LAYOUT_KEY);
+
+        assert!(matches!(run(&mut o, &facts, "view_set", json!({"view": "rail", "x": 1})), Err(ToolError::InvalidParams(_))));
+        assert_eq!(o.view, GroupView::Headers, "a refused call changes nothing");
     }
 
     #[test]
@@ -864,7 +878,8 @@ mod tests {
     fn focus_reveals_a_minimized_session_and_gives_up_the_canvas() {
         let facts = world();
         let mut o = ViewOverlay::default();
-        let minimized_and_maximized = || GroupLayout { minimized: vec!["b".into(), "a".into()], maximized: Some("a".into()), ..GroupLayout::default() };
+        let minimized_and_maximized =
+            || GroupLayout { minimized: vec!["b".into(), "a".into()], maximized: Some("a".into()), ..GroupLayout::default() };
         o.layouts.insert("work".into(), minimized_and_maximized());
         // A layout that does not lay out a `work` session (another group's) keeps its canvas.
         o.layouts.insert("home".into(), minimized_and_maximized());
@@ -943,55 +958,98 @@ mod tests {
         let mut o = ViewOverlay::default();
         // A forwarded call.
         assert_eq!(run(&mut o, &facts, "session_new", json!({"folder": "x"})).expect("forward"), Applied::NotInOverlay);
-        // A UI-only call whose state is not in the overlay.
+        // A UI-only call whose state is not in the overlay: routed as not modelled, never dropped.
+        let window = tool("window_show");
+        assert_eq!(route(&window, &json!({})), Route::UiNotModelled);
         assert_eq!(run(&mut o, &facts, "window_show", json!({})).expect("window"), Applied::NotInOverlay);
         assert_eq!(run(&mut o, &facts, "session_status_clear", json!({"session_id": "a"})).expect("status"), Applied::NotInOverlay);
-        assert_eq!(o, ViewOverlay::default(), "neither touches the overlay");
+        assert_eq!(o, ViewOverlay::default(), "none of them touches the overlay");
     }
 
     #[test]
-    fn the_overlay_matches_the_engine_for_the_view_tools() {
-        let engine = crate::demo_engine().expect("the demo engine starts");
-        for name in ["work", "home"] {
-            engine.call(Caller::Ui, "group_new", json!({"name": name})).expect("a group");
+    fn every_modelled_tool_has_an_arm_in_apply() {
+        let facts = world();
+        for id in MODELLED_UI {
+            let mut o = ViewOverlay::default();
+            let got = run(&mut o, &facts, id, json!({}));
+            assert!(!matches!(got, Ok(Applied::NotInOverlay)), "`{id}` is modelled but apply does not run it: {got:?}");
         }
-        let ids: Vec<String> = engine.view().groups.iter().map(|g| g.id.clone()).collect();
-        let (g0, g1) = (ids[0].clone(), ids[1].clone());
-        let mut o = ViewOverlay::from_snapshot(&engine.view());
+    }
+
+    /// An engine over a fixed world: groups `work` and `home`; sessions `a` (work, awake), `b`
+    /// (work, asleep), `c` (ungrouped, awake) and `d` (home, awake). Nothing starts a process: the
+    /// demo's PTY factory refuses, so a wake of `b` fails in the engine (the overlay only reports it).
+    fn engine_with_world() -> Engine {
+        let session = |id: &str, group: &str, asleep: bool| ShellSession {
+            id: id.into(),
+            name: id.into(),
+            working_folder: format!(r"C:\src\{id}"),
+            group_id: group.into(),
+            is_dormant: asleep,
+            ..ShellSession::default()
+        };
+        let group = |id: &str, order: i32| SessionGroup { id: id.into(), name: id.into(), sort_order: order, ..SessionGroup::default() };
+        let app = AppState {
+            sessions: vec![session("a", "work", false), session("b", "work", true), session("c", "", false), session("d", "home", false)],
+            groups: vec![group("work", 0), group("home", 1)],
+            ..AppState::default()
+        };
+        crate::demo_engine_with(app).expect("the demo engine starts")
+    }
+
+    #[test]
+    fn the_overlay_matches_the_engine_for_the_modelled_tools() {
+        let engine = engine_with_world();
         let tools = EnginePort::new(engine.clone()).tools();
+        let mut o = ViewOverlay::from_snapshot(&engine.view());
+        let w =
+            |window: &str, left: i32| json!({"window": window, "left": left, "top": 2, "width": 800, "height": 600, "dpi": 96, "maximized": true});
 
         let steps: Vec<(&str, Value)> = vec![
-            ("view_set", json!({"rail_tab": g0})),
+            (SESSION_FOCUS, json!({"session_id": "a"})),
+            (SESSION_FOCUS, json!({"session_id": "d"})),
+            (SESSION_FOCUS, json!({"session_id": "c"})),
+            (SESSION_FOCUS, json!({"session_id": "zz"})),
+            (SESSION_FOCUS, json!({"session_id": "a", "x": 1})),
             ("view_set", json!({"view": "headers"})),
+            (SESSION_FOCUS, json!({"session_id": "d"})),
             ("view_set", json!({"view": "rail"})),
-            ("layout_set", json!({"group": g0, "preset": "2x2"})),
-            ("layout_set", json!({"group": g0, "preset": "5"})),
-            ("layout_set", json!({"cols": 9})),
+            (SESSION_FOCUS, json!({"session_id": "a"})),
+            ("layout_set", json!({"group": "work", "preset": "2x2"})),
+            ("layout_set", json!({"group": "work", "preset": "5"})),
+            ("layout_pin", json!({"session_id": "a", "group": "work"})),
+            ("layout_pin", json!({"session_id": "zz"})),
+            ("layout_unpin", json!({"session_id": "a", "group": "work"})),
             ("layout_set", json!({"group": "all", "mode": "focus"})),
-            ("layout_set", json!({"group": g0, "mode": "free", "free": {"split": 1}})),
-            ("layout_set", json!({"group": g0, "free": 3})),
-            ("layout_pin", json!({"session_id": "nope"})),
-            ("layout_unpin", json!({"session_id": "nope", "group": g0})),
+            ("layout_set", json!({"group": "work", "mode": "free", "free": {"split": 1}})),
+            ("layout_set", json!({"group": "work", "free": 3})),
             ("inspector_show", json!({"tab": "git"})),
             ("inspector_show", json!({"tab": "hidden"})),
             ("inbox_panel_set", json!({"height": 10.0})),
             ("inbox_panel_set", json!({"height": 300.0, "open": false})),
-            ("window_placement_set", json!({"window": "main", "left": 1, "top": 2, "width": 800, "height": 600, "dpi": 96, "maximized": true})),
-            ("window_placement_set", json!({"window": format!("group:{g0}"), "left": 3, "top": 4, "width": 500, "height": 400, "dpi": 120})),
-            ("window_placement_set", json!({"window": "group:nope", "left": 0, "top": 0, "width": 1, "height": 1, "dpi": 96})),
-            ("group_tear_off", json!({"group_id": g0})),
-            ("group_collapse", json!({"group_id": g1, "collapsed": true})),
-            ("group_dock", json!({"group_id": g0})),
-            ("view_set", json!({"rail_tab": "all"})),
-            ("view_set", json!({"rail_tab": "nope"})),
+            ("window_placement_set", w("main", 1)),
+            ("window_placement_set", w("group:work", 3)),
+            ("window_placement_set", w("group:nope", 0)),
+            ("group_tear_off", json!({"group_id": "work"})),
+            ("group_collapse", json!({"group_id": "home", "collapsed": true})),
+            ("group_dock", json!({"group_id": "work"})),
+            ("group_collapse", json!({"group_id": "nope", "collapsed": true})),
+            (SESSION_FOCUS, json!({"session_id": "c"})),
         ];
         for (id, params) in steps {
             let t = tools.iter().find(|t| t.id == id).cloned().unwrap_or_else(|| panic!("`{id}` is registered"));
             let facts = ViewFacts::from_snapshot(&engine.view());
             let got = apply(&mut o, &facts, &t, params.clone());
-            let want = engine.call(Caller::Ui, id, params.clone());
-            assert_eq!(got.is_ok(), want.is_ok(), "{id} {params}: overlay {got:?}, engine {want:?}");
+            assert!(!matches!(got, Ok(Applied::NotInOverlay)), "{id} {params}: a modelled step is applied: {got:?}");
+            let want = engine.call(Caller::Ui, id, params.clone()).map(|_| ());
+            let got = got.map(|_| ());
+            match (&got, &want) {
+                (Ok(()), Ok(())) => {}
+                (Err(a), Err(b)) => assert_eq!(discriminant(a), discriminant(b), "{id} {params}: overlay {a:?}, engine {b:?}"),
+                _ => panic!("{id} {params}: overlay {got:?}, engine {want:?}"),
+            }
             let snap = engine.view();
+            assert_eq!(o.focused, snap.focused, "{id} {params}: focused");
             assert_eq!(o.view, snap.view, "{id} {params}: view");
             assert_eq!(o.rail_tab, snap.rail_tab, "{id} {params}: rail tab");
             assert_eq!(o.layout_key(), snap.layout_key, "{id} {params}: layout key");

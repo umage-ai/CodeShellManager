@@ -115,6 +115,11 @@ const DEMO_WT_SETTINGS: &str = r##"{
 /// factory that refuses, so nothing the demo submits ever starts a process. The demo's sessions
 /// live in [`demo::DemoBackend`], not in this engine.
 pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
+    demo_engine_with(csm_core::models::AppState::default())
+}
+
+/// [`demo_engine`] over a given app state (the view overlay's tests need groups and sessions).
+fn demo_engine_with(app: csm_core::models::AppState) -> Result<csm_engine::Engine, csm_engine::ToolError> {
     let pty: csm_engine::PtyFactory = std::sync::Arc::new(|_| Err(std::io::Error::other("the demo starts no processes")));
     let options = csm_engine::StateOptions {
         pty,
@@ -123,7 +128,7 @@ pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
         terminal_profiles: csm_engine::TerminalProfiles::Texts(vec![("Stable".into(), DEMO_WT_SETTINGS.into())]),
         ..csm_engine::StateOptions::default()
     };
-    let state = csm_engine::State::new(csm_core::models::AppState::default(), options);
+    let state = csm_engine::State::new(app, options);
     let mut tools = demo::tools::stand_ins(demo::tools::StandIn::Echo);
     tools.extend(demo::tools::demo_only());
     tools.extend(pane_tools::tools());

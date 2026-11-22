@@ -206,6 +206,16 @@ it also wakes an asleep session (`docs/tools.md`: `session_focus`: "wakes if asl
 `session_wake`"), so the client sends `session_wake` when needed. Server-side MCP callers keep
 using the server's own view state.
 
+**Open items before wiring** (implemented as `csm-ui`'s `view_overlay` routes):
+- `inbox_next` and `view_set` with a `rail_tab` are forwarded, not local: the engine runs
+  `lifecycle::focus` for them (a wake and an acknowledgement). Their declared effects under-state
+  this (`inbox_next` is `UI` only). Fixing the declarations changes MCP consent, so Allan approves
+  it first.
+- An overlay focus does not do `lifecycle::focus`'s server extras: the result acknowledgement and
+  the last-activity stamp. Every overlay focus must be forwarded or replayed to the server for them.
+- A UI-only call the overlay does not model (window and add-on screen actions, a session's status)
+  is routed as not modelled: the client runs it or forwards it, and never drops it.
+
 ---
 
 ## 3. Protocol and transport
