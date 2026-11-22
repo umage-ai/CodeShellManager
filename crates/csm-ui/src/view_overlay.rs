@@ -652,6 +652,9 @@ mod tests {
     ];
     const FIXED_FORWARD: &[&str] = &["inbox_next"];
     const FIXED_NOT_MODELLED: &[&str] = &[
+        // A stored setting (ThemeDark/ThemeLight), not view state. Per-client themes are a P1
+        // decision (a laptop may want its own); until then the caller runs or forwards it.
+        "theme_set",
         "session_status_clear",
         "window_show",
         "notification_test",
