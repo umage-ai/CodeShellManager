@@ -1,0 +1,420 @@
+name: Release (v2 beta, Linux and macOS)
+
+# CodeShellManager 2 for Linux and macOS: release builds and packages, uploaded as WORKFLOW
+# ARTIFACTS only. Nothing here creates a GitHub Release, pushes to a package repository or tap,
+# or publishes anywhere: docs/distribution.md is the plan for that.
+#
+# Triggered exactly like release-v2.yml (the Windows MSI), so one tag or one dispatch builds every
+# platform and the versions line up:
+#   - a `v2.*` tag (e.g. v2.0.0-beta.1) on the v2 branch: version from the tag; the macOS app is
+#     signed and notarized when the Apple secrets below exist.
+#   - workflow_dispatch: a dry run, version 2.0.0-dev.<run number>, never signed.
+# Like release-v2.yml, GitHub only dispatches a workflow that exists on the default branch, so a
+# copy of this file must sit on main before `gh workflow run release-v2-unix.yml --ref v2` works.
+# The jobs refuse any ref other than the v2 branch or a v2.* tag.
+#
+# Artifacts (one per platform, named like release-v2.yml's `codeshellmanager-<version>`):
+#   codeshellmanager-<ver>-linux-x86_64   CodeShellManager-<ver>-linux-x86_64.tar.gz
+#                                         CodeShellManager-<ver>-x86_64.AppImage
+#                                         codeshellmanager_<debver>_amd64.deb
+#   codeshellmanager-<ver>-linux-aarch64  the same for aarch64 / arm64
+#   codeshellmanager-<ver>-macos          CodeShellManager-<ver>-macos-universal.dmg (arm64 + x86_64)
+#
+# macOS signing and notarization (skipped unless ALL of these secrets exist, and only on a tag):
+#   APPLE_CERTIFICATE_P12        base64 of a "Developer ID Application" certificate + key (.p12)
+#   APPLE_CERTIFICATE_PASSWORD   the .p12's password
+#   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: umage ApS (TEAMID1234)"
+#   APPLE_API_KEY_ID             App Store Connect API key id (notarytool)
+#   APPLE_API_ISSUER_ID          App Store Connect issuer id
+#   APPLE_API_KEY_P8             base64 of the AuthKey_<id>.p8 file
+# Without them the app is ad-hoc signed: it runs, but Gatekeeper blocks the first launch of a
+# downloaded copy (System Settings > Privacy & Security > Open Anyway).
+
+on:
+  push:
+    tags: ['v2.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read   # artifacts only; no release is created here
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Versions (shared, so every package carries the same numbers) ──────────────────────────
+  version:
+    if: github.ref == 'refs/heads/v2' || startsWith(github.ref, 'refs/tags/v2.')
+    runs-on: ubuntu-latest
+    outputs:
+      semver: ${{ steps.ver.outputs.semver }}
+      base: ${{ steps.ver.outputs.base }}
+      deb: ${{ steps.ver.outputs.deb }}
+    steps:
+      # semver (Cargo, file names):  2.0.0-beta.3
+      # base (CFBundleShortVersionString, must be numeric): 2.0.0
+      # deb (Debian sorts `~` before anything, so 2.0.0~beta.3 < 2.0.0): 2.0.0~beta.3
+      - name: Versions
+        id: ver
+        shell: bash
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_TAG" = "true" ]; then semver="${REF_NAME#v}"; else semver="2.0.0-dev.${RUN_NUMBER}"; fi
+          re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-(beta|rc|dev)\.([0-9]+))?$'
+          if ! [[ "$semver" =~ $re ]]; then
+            echo "::error::Tag version '$semver' is not MAJOR.MINOR.PATCH[-beta.N|-rc.N]"; exit 1
+          fi
+          base="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          if [ -n "${BASH_REMATCH[4]}" ]; then deb="${base}~${BASH_REMATCH[5]}.${BASH_REMATCH[6]}"; else deb="$base"; fi
+          { echo "semver=$semver"; echo "base=$base"; echo "deb=$deb"; } >> "$GITHUB_OUTPUT"
+          echo "semver $semver, base $base, deb $deb"
+
+  # ── Linux: tar.gz, AppImage, .deb ─────────────────────────────────────────────────────────
+  linux:
+    name: linux (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04, not latest: the binaries need the glibc they were linked against or newer, and
+          # 22.04's 2.35 keeps Debian 12, Ubuntu 22.04 and RHEL/Fedora of the same age working.
+          - { arch: x86_64,  deb_arch: amd64, runner: ubuntu-22.04 }
+          - { arch: aarch64, deb_arch: arm64, runner: ubuntu-22.04-arm }
+    env:
+      SEMVER: ${{ needs.version.outputs.semver }}
+      DEBVER: ${{ needs.version.outputs.deb }}
+      ARCH: ${{ matrix.arch }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      # appimagetool, pinned. Its release also fetches the matching type2 runtime at build time.
+      APPIMAGETOOL_VERSION: "1.9.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The gate's toolchain (see ci.yml).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.arch }}
+
+      # Build: the libraries ci.yml installs (egui / winit / wgpu headers). Packaging: dpkg-dev
+      # (dpkg-shlibdeps), desktop-file-utils (desktop-file-validate), file.
+      - name: System libraries and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev \
+            dpkg-dev desktop-file-utils file
+
+      - name: Stamp the workspace version
+        shell: bash
+        run: |
+          set -euo pipefail
+          perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{SEMVER}"/m' Cargo.toml
+          grep -q "^version = \"$SEMVER\"" Cargo.toml || { echo "::error::workspace version line not found in Cargo.toml"; exit 1; }
+
+      - name: Build
+        run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary -p csm-review
+
+      # The app directory every package ships: the programs and samples/addons side by side, as in
+      # the Windows zip (the app finds the sample add-ons and its helper programs beside its own exe).
+      - name: Stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=stage/app
+          mkdir -p "$app" dist stage/icons
+          for f in codeshell csm csm-session-summary csm-review; do
+            test -f "target/release/$f" || { echo "::error::missing from the build: $f"; exit 1; }
+            install -m 0755 "target/release/$f" "$app/"
+            # The right architecture, and an ELF executable (not a script or a stray file).
+            desc="$(file -b "$app/$f")"
+            echo "$f: $desc"
+            case "$ARCH" in
+              x86_64)  [[ "$desc" == *"ELF 64-bit"*"x86-64"* ]] ;;
+              aarch64) [[ "$desc" == *"ELF 64-bit"*"ARM aarch64"* ]] ;;
+            esac || { echo "::error::$f is not a $ARCH ELF executable"; exit 1; }
+          done
+          for d in samples/addons/*/; do
+            s="$(basename "$d")"
+            mkdir -p "$app/samples/addons/$s"
+            cp "samples/addons/$s/addon.toml" "$app/samples/addons/$s/"
+          done
+          python3 -I scripts/ico-to-png.py apps/codeshell/assets/codeshell.ico stage/icons/256.png
+          desktop-file-validate installer/linux/ai.umage.CodeShellManager.desktop
+          # The CLI must run on a machine with no display (it is what `csm mcp` clients start).
+          "$app/csm" --help > /dev/null || echo "::warning::csm --help exited non-zero"
+
+      - name: Tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="CodeShellManager-${SEMVER}-linux-${ARCH}"
+          root="stage/tar/$name"
+          mkdir -p "$root/share/applications" "$root/share/icons/hicolor/256x256/apps"
+          cp -a stage/app/. "$root/"
+          cp installer/linux/ai.umage.CodeShellManager.desktop "$root/share/applications/"
+          cp stage/icons/256.png "$root/share/icons/hicolor/256x256/apps/ai.umage.CodeShellManager.png"
+          cp LICENSE "$root/"
+          tar -C stage/tar -czf "dist/$name.tar.gz" "$name"
+
+      - name: Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg=stage/deb
+          lib="$pkg/usr/lib/codeshellmanager"
+          mkdir -p "$lib" "$pkg/usr/bin" "$pkg/usr/share/applications" \
+                   "$pkg/usr/share/icons/hicolor/256x256/apps" "$pkg/usr/share/doc/codeshellmanager" "$pkg/DEBIAN"
+          cp -a stage/app/. "$lib/"
+          # On PATH by symlink: the app resolves its own folder through /proc/self/exe, so it still
+          # finds samples/ and csm-review / csm-session-summary under /usr/lib/codeshellmanager.
+          ln -s ../lib/codeshellmanager/codeshell "$pkg/usr/bin/codeshell"
+          ln -s ../lib/codeshellmanager/csm "$pkg/usr/bin/csm"
+          cp installer/linux/ai.umage.CodeShellManager.desktop "$pkg/usr/share/applications/"
+          install -m 0644 stage/icons/256.png "$pkg/usr/share/icons/hicolor/256x256/apps/ai.umage.CodeShellManager.png"
+          install -m 0644 LICENSE "$pkg/usr/share/doc/codeshellmanager/copyright"
+
+          # Libraries the programs link against (normally only libc, libm, libgcc_s)...
+          mkdir -p stage/shlibs/debian
+          printf 'Source: codeshellmanager\n\nPackage: codeshellmanager\nArchitecture: any\n' > stage/shlibs/debian/control
+          linked="$(cd stage/shlibs && dpkg-shlibdeps -O $(for f in codeshell csm csm-session-summary csm-review; do echo "../../$lib/$f"; done) \
+                     | sed -n 's/^shlibs:Depends=//p')"
+          # ...plus the ones winit and wgpu open at run time with dlopen, which dpkg-shlibdeps cannot
+          # see: X11 or Wayland, xkbcommon, and EGL (GL fallback) / Vulkan (preferred) for wgpu.
+          dlopened="libxkbcommon0, libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libwayland-client0, libwayland-cursor0, libwayland-egl1, libegl1"
+          size="$(du -sk --exclude=DEBIAN "$pkg" | cut -f1)"
+          cat > "$pkg/DEBIAN/control" <<EOF
+          Package: codeshellmanager
+          Version: ${DEBVER}
+          Architecture: ${DEB_ARCH}
+          Maintainer: umage.ai <https://github.com/umage-ai/CodeShellManager/issues>
+          Installed-Size: ${size}
+          Depends: ${linked:+$linked, }${dlopened}
+          Recommends: libvulkan1, mesa-vulkan-drivers, gnome-keyring | kwalletmanager, git
+          Section: devel
+          Priority: optional
+          Homepage: https://github.com/umage-ai/CodeShellManager
+          Description: Terminal session manager for Claude Code and other coding CLIs
+           CodeShellManager runs and organises many terminal sessions (Claude Code, Codex,
+           Gemini CLI, plain shells) in one window, with status, search and an MCP bridge
+           (the csm command) for agents.
+          EOF
+          cat "$pkg/DEBIAN/control"
+          dpkg-deb --root-owner-group --build "$pkg" "dist/codeshellmanager_${DEBVER}_${DEB_ARCH}.deb"
+          dpkg-deb --info "dist/codeshellmanager_${DEBVER}_${DEB_ARCH}.deb"
+          dpkg-deb --contents "dist/codeshellmanager_${DEBVER}_${DEB_ARCH}.deb"
+
+      - name: AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          appdir=stage/AppDir
+          mkdir -p "$appdir/usr/lib/codeshellmanager" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps"
+          cp -a stage/app/. "$appdir/usr/lib/codeshellmanager/"
+          cp installer/linux/ai.umage.CodeShellManager.desktop "$appdir/"
+          cp installer/linux/ai.umage.CodeShellManager.desktop "$appdir/usr/share/applications/"
+          cp stage/icons/256.png "$appdir/ai.umage.CodeShellManager.png"
+          cp stage/icons/256.png "$appdir/usr/share/icons/hicolor/256x256/apps/ai.umage.CodeShellManager.png"
+          ln -s ai.umage.CodeShellManager.png "$appdir/.DirIcon"
+          # AppRun: the app by default; the CLI when called as `<AppImage> csm ...` or through a
+          # symlink named csm (so `csm mcp` can point at the AppImage). No LD_LIBRARY_PATH: the
+          # programs bundle no libraries, and shells started in the app must not inherit one.
+          cat > "$appdir/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          BIN="$HERE/usr/lib/codeshellmanager"
+          if [ "$(basename "${ARGV0:-$0}")" = "csm" ]; then exec "$BIN/csm" "$@"; fi
+          if [ "${1:-}" = "csm" ]; then shift; exec "$BIN/csm" "$@"; fi
+          exec "$BIN/codeshell" "$@"
+          EOF
+          chmod 0755 "$appdir/AppRun"
+
+          tool="stage/appimagetool-${ARCH}.AppImage"
+          curl -fsSL -o "$tool" "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${ARCH}.AppImage"
+          chmod +x "$tool"
+          # Runners have no FUSE: let the tool unpack itself instead of mounting.
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$tool" --no-appstream "$appdir" "dist/CodeShellManager-${SEMVER}-${ARCH}.AppImage"
+          chmod +x "dist/CodeShellManager-${SEMVER}-${ARCH}.AppImage"
+
+      - name: Checksums
+        shell: bash
+        run: cd dist && sha256sum * | tee SHA256SUMS-linux-${ARCH}.txt
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeshellmanager-${{ needs.version.outputs.semver }}-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ── macOS: universal .app in a .dmg ───────────────────────────────────────────────────────
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      SEMVER: ${{ needs.version.outputs.semver }}
+      BASE: ${{ needs.version.outputs.base }}
+      BUILD: ${{ github.run_number }}
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY_P8 != '' }}
+      # Matches LSMinimumSystemVersion in installer/macos/Info.plist.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-universal
+
+      - name: Stamp the workspace version
+        shell: bash
+        run: |
+          set -euo pipefail
+          perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{SEMVER}"/m' Cargo.toml
+          grep -q "^version = \"$SEMVER\"" Cargo.toml || { echo "::error::workspace version line not found in Cargo.toml"; exit 1; }
+
+      - name: Build (arm64 and x86_64)
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p codeshell -p csm-cli -p csm-session-summary -p csm-review
+          cargo build --release --target x86_64-apple-darwin  -p codeshell -p csm-cli -p csm-session-summary -p csm-review
+
+      # CodeShellManager.app/Contents/
+      #   Info.plist
+      #   MacOS/      codeshell (CFBundleExecutable), csm, csm-review, csm-session-summary
+      #   Resources/  AppIcon.icns, samples/addons/* (data files may not sit in MacOS/: codesign
+      #               would treat them as code; the app looks in ../Resources too)
+      - name: App bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="stage/CodeShellManager.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist
+          for f in codeshell csm csm-session-summary csm-review; do
+            lipo -create -output "$app/Contents/MacOS/$f" \
+              "target/aarch64-apple-darwin/release/$f" "target/x86_64-apple-darwin/release/$f"
+            archs="$(lipo -archs "$app/Contents/MacOS/$f")"
+            echo "$f: $archs"
+            [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "::error::$f is not universal"; exit 1; }
+          done
+          for d in samples/addons/*/; do
+            s="$(basename "$d")"
+            mkdir -p "$app/Contents/Resources/samples/addons/$s"
+            cp "samples/addons/$s/addon.toml" "$app/Contents/Resources/samples/addons/$s/"
+          done
+
+          # Icon: the .ico's 256 px image, scaled down for the smaller slots.
+          python3 -I scripts/ico-to-png.py apps/codeshell/assets/codeshell.ico stage/icon-256.png
+          set_dir=stage/AppIcon.iconset
+          mkdir -p "$set_dir"
+          for spec in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x 128:icon_128x128 256:icon_128x128@2x 256:icon_256x256; do
+            sips -z "${spec%%:*}" "${spec%%:*}" stage/icon-256.png --out "$set_dir/${spec#*:}.png" > /dev/null
+          done
+          iconutil -c icns "$set_dir" -o "$app/Contents/Resources/AppIcon.icns"
+
+          sed -e "s/@SHORT_VERSION@/${BASE}/" -e "s/@BUILD@/${BUILD}/" -e "s/@SEMVER@/${SEMVER}/" \
+            installer/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          printf 'APPL????' > "$app/Contents/PkgInfo"
+
+          "$app/Contents/MacOS/csm" --help > /dev/null || echo "::warning::csm --help exited non-zero"
+
+      # Developer ID signing, hardened runtime, secure timestamp: what notarization requires.
+      # The helpers are signed first, then the bundle (no --deep: it signs in the wrong order and
+      # hides mistakes).
+      - name: Sign (Developer ID)
+        if: env.IS_TAG == 'true' && env.HAS_APPLE_SIGNING == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_pw="$(openssl rand -hex 24)"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kc_pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pw" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$kc"
+          security set-key-partition-list -S apple-tool:,apple: -k "$kc_pw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          app="stage/CodeShellManager.app"
+          for f in csm csm-session-summary csm-review codeshell; do
+            codesign --force --options runtime --timestamp --keychain "$kc" --sign "$APPLE_SIGNING_IDENTITY" "$app/Contents/MacOS/$f"
+          done
+          codesign --force --options runtime --timestamp --keychain "$kc" --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+      # Unsigned build: ad-hoc sign the whole bundle so its seal covers Info.plist and Resources
+      # (the linker's per-binary ad-hoc signatures do not), which arm64 Macs need to launch it.
+      - name: Sign (ad hoc)
+        if: env.IS_TAG != 'true' || env.HAS_APPLE_SIGNING != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="stage/CodeShellManager.app"
+          for f in csm csm-session-summary csm-review codeshell; do codesign --force --sign - "$app/Contents/MacOS/$f"; done
+          codesign --force --sign - "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+      - name: Disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/dmg
+          cp -R stage/CodeShellManager.app stage/dmg/
+          ln -s /Applications stage/dmg/Applications
+          hdiutil create -volname "CodeShellManager" -srcfolder stage/dmg -ov -format UDZO \
+            "dist/CodeShellManager-${SEMVER}-macos-universal.dmg"
+
+      - name: Sign, notarize and staple the disk image
+        if: env.IS_TAG == 'true' && env.HAS_APPLE_SIGNING == 'true'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          dmg="dist/CodeShellManager-${SEMVER}-macos-universal.dmg"
+          codesign --force --timestamp --keychain "$RUNNER_TEMP/signing.keychain-db" --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          key="$RUNNER_TEMP/AuthKey.p8"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$key"
+          xcrun notarytool submit "$dmg" --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --wait --timeout 30m
+          rm -f "$key"
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+
+      - name: Remove the signing keychain
+        if: always() && env.IS_TAG == 'true' && env.HAS_APPLE_SIGNING == 'true'
+        shell: bash
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - name: Checksums
+        shell: bash
+        run: cd dist && shasum -a 256 * | tee SHA256SUMS-macos.txt
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeshellmanager-${{ needs.version.outputs.semver }}-macos
+          path: dist/*
+          if-no-files-found: error

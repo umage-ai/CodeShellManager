@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=CodeShellManager
+GenericName=Terminal Session Manager
+Comment=Run and organise terminal sessions for Claude Code and other coding CLIs
+Exec=codeshell
+Icon=ai.umage.CodeShellManager
+Terminal=false
+Categories=Development;Utility;
+Keywords=terminal;shell;console;claude;codex;session;
+# winit names the X11 window class after the executable. On Wayland the window has no app id
+# yet (see docs/distribution.md, "Runtime gaps"), so the shell may not match it to this file.
+StartupWMClass=codeshell
+StartupNotify=true
