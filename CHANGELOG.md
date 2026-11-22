@@ -69,6 +69,9 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 - **Light theme** (Catppuccin Latte) beside Mocha, and interface zoom.
 - **Tray**: the Needs you count on the icon, and an option to keep running in the tray when the
   window closes.
+- **Start at sign-in**, optionally minimized or hidden in the tray (Settings → General →
+  Start-up; `app_autostart_set`). Launching the app again shows the running window instead of
+  opening a second one on the same sessions.
 
 ### Kept from 0.x
 

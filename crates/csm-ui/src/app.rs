@@ -244,6 +244,8 @@ pub struct SettingsState {
     pub usage: crate::screens::backup::UsageState,
     /// Settings → General → Import…: the backup being reviewed before it replaces anything.
     pub import: Option<crate::screens::backup::ImportReview>,
+    /// Settings → General → Start-up: what `app_autostart_get` last said (`Null` until it answers).
+    pub autostart: Value,
 }
 
 impl SettingsState {
@@ -543,6 +545,8 @@ pub struct CsmApp {
     pub main_window: crate::placement::WindowTracker,
     /// Hidden to the tray, and what keeps running then (see [`crate::background`]).
     pub background: crate::background::Background,
+    /// A minimized or hidden start (`StartMinimized`), set by the host before the first frame.
+    pub start: crate::start_window::StartUp,
 }
 
 impl CsmApp {
@@ -567,6 +571,7 @@ impl CsmApp {
             monitors: crate::placement::Monitors::default(),
             main_window: crate::placement::WindowTracker::new("main"),
             background: crate::background::Background::default(),
+            start: crate::start_window::StartUp::default(),
         };
         // The settings the screens follow (theme, terminal font size and padding, the busy warning).
         app.dispatch.submit("settings_get", json!({}));
@@ -851,6 +856,7 @@ impl CsmApp {
             self.on_app_reply(ctx, &call, &reply);
             self.on_tool_reply(&call, &reply);
             screens::backup::on_reply(self, ctx, &call, &reply);
+            screens::startup::on_reply(self, &call, &reply);
             let n = self.backend.on_reply(&call, &reply);
             self.notices(ctx, n);
         }
@@ -873,6 +879,7 @@ impl CsmApp {
                 }
                 _ => {}
             }
+            screens::startup::on_event(self, &e);
             let n = self.backend.on_event(&e);
             self.notices(ctx, n);
         }
@@ -1142,7 +1149,7 @@ impl CsmApp {
                 self.ui.overlay = Overlay::None;
                 self.ui.settings.open = true;
                 self.ui.usage_page.open = false;
-                for (id, p) in [("settings_get", json!({})), ("app_info", json!({})), ("grant_list", json!({}))] {
+                for (id, p) in [("settings_get", json!({})), ("app_info", json!({})), ("grant_list", json!({})), ("app_autostart_get", json!({}))] {
                     self.dispatch.submit(id, p);
                 }
             }
@@ -1320,6 +1327,7 @@ impl CsmApp {
                 return;
             }
             "settings_get" | "settings_set" | "app_info" | "grant_list" | "grant_revoke" => return self.run(ctx, Action::OpenSettings),
+            "app_autostart_get" | "app_autostart_set" => return self.run(ctx, Action::OpenSettings),
             "usage_report" => return self.run(ctx, Action::OpenUsage(None)),
             "group_new" => return self.run(ctx, Action::NewGroupPrompt),
             "session_rename" => {
@@ -1605,9 +1613,7 @@ impl CsmApp {
         screens::usage::poll(self, &ctx);
         screens::addon_screen::tick(self);
         let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
-        if let Some(p) = self.main_window.step(&ctx, self.model.windows.get("main").copied(), &self.monitors, min) {
-            self.dispatch.submit("window_placement_set", p);
-        }
+        self.main_window_step(&ctx, min);
         if !self.apply_theme(&ctx) {
             return;
         }

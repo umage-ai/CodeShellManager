@@ -199,6 +199,16 @@ pub struct AppSettings {
     /// when turned off. Never read under `--clean` or an isolated run.
     #[serde(skip_serializing_if = "is_true")]
     pub claude_usage_history: bool,
+    /// The main window opens minimized (or, with [`Self::start_minimized_to_tray`] and a tray icon,
+    /// hidden in the tray) on every start, including a start at sign-in; sessions restore as
+    /// usual. Off by default. Starting at sign-in itself is the OS's entry, not a setting here
+    /// (`app_autostart_set`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub start_minimized: bool,
+    /// With `StartMinimized`: hide the window in the tray (notification area) instead of
+    /// minimizing it to the taskbar. Ignored where there is no tray (Linux).
+    #[serde(skip_serializing_if = "is_false")]
+    pub start_minimized_to_tray: bool,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -273,6 +283,8 @@ impl Default for AppSettings {
             close_to_tray: false,
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
+            start_minimized: false,
+            start_minimized_to_tray: false,
         }
     }
 }
@@ -431,6 +443,19 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(r#"{"AnswerProgramStatusProbe": false, "UseBundledConPty": true}"#).unwrap();
         assert_eq!(settings.program_status_probe, ProgramStatusProbeMode::Auto);
         assert!(settings.use_bundled_con_pty);
+    }
+
+    #[test]
+    fn start_minimized_is_off_by_default_written_only_when_on_and_round_trips() {
+        let d = AppSettings::default();
+        assert!(!d.start_minimized && !d.start_minimized_to_tray);
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(!json.contains("StartMinimized"), "a file the WPF app reads back stays as it wrote it: {json}");
+        let on = AppSettings { start_minimized: true, start_minimized_to_tray: true, ..Default::default() };
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains(r#""StartMinimized":true"#) && json.contains(r#""StartMinimizedToTray":true"#), "{json}");
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert!(back.start_minimized && back.start_minimized_to_tray);
     }
 
     #[test]

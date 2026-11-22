@@ -3,6 +3,7 @@
 
 mod addons;
 mod app;
+mod autostart;
 mod backup;
 mod bulk;
 mod docs;
@@ -35,6 +36,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(bulk::specs());
     v.extend(layout::specs());
     v.extend(app::specs());
+    v.extend(autostart::specs());
     v.extend(git::specs());
     v.extend(runs::specs());
     v.extend(open::specs());

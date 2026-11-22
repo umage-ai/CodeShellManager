@@ -225,6 +225,8 @@ Write your own: [docs/addons.md](docs/addons.md).
 - **Backup.** Export your whole setup to a `.csm` file and import it on another machine.
 - **Tray and notifications.** A tray icon with the Needs you count, system notifications, and the
   option to keep running in the tray when the window closes.
+- **Start at sign-in.** Settings → General → Start-up starts the app when you sign in (Windows,
+  macOS, Linux), optionally minimized or hidden in the tray, with your sessions restored.
 - **Drop files** on a pane to paste their paths, quoted for the session's shell.
 - **Light and dark themes** (Catppuccin Latte and Mocha) and interface zoom.
 
@@ -356,6 +358,12 @@ where you point them.
 **What happens to running agents when I close the window?** By default, closing quits: busy
 sessions are listed first, and every session gets a moment to exit. With *Keep running in the tray
 when the window closes*, they keep running until you quit from the tray.
+
+**How do I start it when I sign in, out of the way?** Settings → General → Start-up: *Start
+CodeShellManager when I sign in*, plus *Start minimized* (on Windows and macOS, *Start in the
+tray*). The switch shows what the system says: Windows keeps it in your Run key (Task Manager's
+Startup apps can turn it off), macOS in a LaunchAgent, Linux in `~/.config/autostart`. Start
+minimized applies to every start; launching the app again shows the running window.
 
 **Can I try it without touching my real sessions?** `codeshell --clean` starts empty and saves
 nothing.

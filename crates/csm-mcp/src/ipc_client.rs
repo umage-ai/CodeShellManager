@@ -180,6 +180,28 @@ impl RemoteBackend {
     }
 }
 
+/// A second launch of the app: when this user's app already runs on the same state file (and is not
+/// a `--clean` one), ask it to show its window (`app.activate`, which restores it from the taskbar
+/// or the tray) and answer true, so the new process can exit instead of opening a second window
+/// over the same `state.json`. False when none is running or the running one keeps its state
+/// elsewhere: start normally.
+pub fn activate_running(options: RemoteOptions, state_path: &std::path::Path) -> Result<bool, BridgeError> {
+    let mut b = RemoteBackend::new(RemoteOptions { start: false, ..options });
+    let dir = b.runtime()?;
+    let running = Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().any(|r| r.app == APP_ID);
+    if !running {
+        return Ok(false);
+    }
+    let info = b.call(&Caller::Cli, "app_info", json!({}))?.data;
+    let clean = info.get("clean").and_then(Value::as_bool).unwrap_or(true);
+    let same = info.get("state_path").and_then(Value::as_str) == Some(state_path.display().to_string().as_str());
+    if clean || !same {
+        return Ok(false);
+    }
+    b.with(|c| c.call("app.activate", json!({"from_pid": std::process::id()})))?;
+    Ok(true)
+}
+
 impl Backend for RemoteBackend {
     /// A fresh backend with the same options and no connection yet: each concurrent call makes
     /// (and drops) a connection of its own, so one parked on consent blocks nothing else.
