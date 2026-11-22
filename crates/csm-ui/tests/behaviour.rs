@@ -771,7 +771,7 @@ fn settings_round_trip_through_the_engine() {
     // Appearance: the theme follows.
     h.get_by_label("Settings: Appearance").click();
     settle(&mut h);
-    h.get_by_label("Theme: Light (Latte)").click();
+    h.get_by_label("Theme: Light").click();
     settle(&mut h);
     assert_eq!(get("Theme"), "light");
     assert_eq!(h.state().model.theme, csm_ui::theme::ThemeKind::Latte);

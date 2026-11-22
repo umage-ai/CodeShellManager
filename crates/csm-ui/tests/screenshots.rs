@@ -380,3 +380,62 @@ fn usage_dashboard_screens() {
         },
     );
 }
+
+/// The sample Themes pack, enabled, as the engine would publish it.
+fn themes_pack() -> csm_engine::addons::AddonSummary {
+    let text = include_str!("../../../samples/addons/themes/addon.toml");
+    let parsed = csm_core::addons::parse(text, "themes").unwrap();
+    csm_engine::addons::AddonSummary {
+        id: "themes".into(),
+        name: "Themes".into(),
+        version: "0.1.0".into(),
+        description: String::new(),
+        kind: "pack",
+        author: None,
+        homepage: None,
+        state: csm_engine::addons::AddonState::Loaded,
+        message: None,
+        folder: "themes".into(),
+        path: String::new(),
+        digest: None,
+        profiles: vec![],
+        run_templates: vec![],
+        slash: vec![],
+        commands: vec![],
+        process_effects: vec![],
+        process_command_line: None,
+        process_calls: vec![],
+        process: None,
+        themes: parsed.themes,
+        problems: vec![],
+    }
+}
+
+/// Add-on themes (samples/addons/themes): the main window and Settings › Appearance.
+#[test]
+fn theme_screens() {
+    for (name, id) in [("21-theme-frappe", "themes.frappe"), ("21-theme-macchiato", "themes.macchiato"), ("21-theme-high-contrast", "themes.high-contrast")] {
+        shoot(name, ThemeKind::Mocha, |b| b.model_mut().addons = vec![themes_pack()], |h| dark_theme(h, id));
+    }
+    shoot(
+        "21-theme-settings",
+        ThemeKind::Mocha,
+        |b| b.model_mut().addons = vec![themes_pack()],
+        |h| {
+            dark_theme(h, "themes.frappe");
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenSettings);
+            h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Appearance;
+        },
+    );
+}
+
+/// Chooses the dark theme the way another client would (`settings_set`; the demo engine has no
+/// add-ons, so `theme_set` would refuse an add-on id): the app follows the change event.
+fn dark_theme(h: &mut egui_kittest::Harness<'static, csm_ui::CsmApp>, id: &str) {
+    let engine = h.state().dispatch.engine().clone();
+    engine.call(csm_engine::Caller::Ui, "settings_set", serde_json::json!({"key": "ThemeDark", "value": id})).unwrap();
+    for _ in 0..5 {
+        h.step();
+    }
+}

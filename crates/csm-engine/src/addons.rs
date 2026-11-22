@@ -80,6 +80,9 @@ pub(crate) struct Catalogue {
     pub runtime: BTreeMap<String, PluginRuntime>,
     /// What each running process add-on offers under "Remote…" (`csm/remotes_changed`).
     pub remotes: BTreeMap<String, Vec<csm_core::addons::Remote>>,
+    /// The manifests the theme watcher polls (enabled add-ons with themes), shared with its
+    /// thread; `None` until the first one is enabled.
+    pub watch: Option<Arc<std::sync::Mutex<Vec<PathBuf>>>>,
 }
 
 /// What the UI and `addon_list` show for one add-on.
@@ -114,6 +117,9 @@ pub struct AddonSummary {
     /// For a process add-on that is enabled: whether it is running, its last error, its tools.
     pub process: Option<PluginRuntime>,
     /// Entries that were skipped, one line each.
+    /// `[[theme]]` palettes, offered in Settings › Appearance while the add-on is enabled (ids
+    /// there are `addon-id.theme-id`).
+    pub themes: Vec<csm_core::addons::ThemeSpec>,
     pub problems: Vec<String>,
 }
 
@@ -203,9 +209,12 @@ fn parse_found(f: disk::Found) -> Scanned {
 /// Engine thread: replaces the catalogue, derives each add-on's state from the approvals, and
 /// answers the waiting `addon_reload` calls.
 fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>) {
-    let approvals = ctx.state.app.settings.addon_approvals.clone();
     let registry = ctx.registry.clone();
     let entries: Vec<Entry> = scanned.into_iter().map(|s| build_entry(s, &registry)).collect();
+    if carry_theme_edits(&ctx.state.rt.addons, &entries, &mut ctx.state.app.settings.addon_approvals) {
+        ctx.state.persist();
+    }
+    let approvals = ctx.state.app.settings.addon_approvals.clone();
     let cat = &mut ctx.state.rt.addons;
     cat.entries = entries;
     cat.scanning = false;
@@ -218,6 +227,7 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
         w.send(Ok(ToolOutput::new(format!("Reloaded {count} add-on folder(s)."), json!({"count": count}))));
     }
     ctx.state.rt.dirty = true;
+    watch_themes(ctx);
     plugins::sync(ctx);
     // Sessions from add-on profiles that were waiting for this scan can restore now.
     crate::lifecycle::restore_waiting_addons(ctx);
@@ -229,13 +239,14 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
         Ok((mut p, digest)) => {
             let mut problems = Vec::new();
             if p.meta.kind == AddonKind::Process {
-                if !(p.profiles.is_empty() && p.run_templates.is_empty() && p.slash.is_empty() && p.commands.is_empty()) {
-                    problems.push(Problem { scope: "process add-on".into(), message: "its profiles, run commands, slash presets and palette commands are ignored; a process add-on contributes its tools only".into() });
+                if !(p.profiles.is_empty() && p.run_templates.is_empty() && p.slash.is_empty() && p.commands.is_empty() && p.themes.is_empty()) {
+                    problems.push(Problem { scope: "process add-on".into(), message: "its profiles, run commands, slash presets, palette commands and themes are ignored; a process add-on contributes its tools only".into() });
                 }
                 p.profiles.clear();
                 p.run_templates.clear();
                 p.slash.clear();
                 p.commands.clear();
+                p.themes.clear();
             }
             // A palette command must name a real tool, never an add-on tool, and never one that
             // writes into a session or turns on another extension: a pack's fixed text must not
@@ -333,7 +344,94 @@ pub(crate) fn refresh_all(ctx: &mut Ctx<'_>) {
         refresh_state(e, &approvals);
     }
     ctx.state.rt.dirty = true;
+    watch_themes(ctx);
     plugins::sync(ctx);
+}
+
+/// An enabled add-on whose file changed only in its `[[theme]]` tables stays enabled: themes are
+/// colours, nothing that runs or types, so the person's approval moves to the new digest (live
+/// reload while a theme is being written). Any other change still turns it off until it is
+/// approved again. Returns whether an approval moved.
+fn carry_theme_edits(old: &Catalogue, new: &[Entry], approvals: &mut BTreeMap<String, String>) -> bool {
+    let without_themes = |p: &ParsedAddon| ParsedAddon { themes: Vec::new(), problems: Vec::new(), ..p.clone() };
+    let mut moved = false;
+    for e in new {
+        let (Some(p), Some(digest)) = (e.parsed.as_deref(), e.digest.as_ref()) else { continue };
+        let Some(approved) = approvals.get(&p.meta.id) else { continue };
+        if approved == digest {
+            continue;
+        }
+        let was = entry(old, &e.folder).filter(|o| o.state == AddonState::Loaded && o.digest.as_ref() == Some(approved));
+        let Some(before) = was.and_then(|o| o.parsed.as_deref()) else { continue };
+        if (!before.themes.is_empty() || !p.themes.is_empty()) && without_themes(before) == without_themes(p) {
+            approvals.insert(p.meta.id.clone(), digest.clone());
+            moved = true;
+        }
+    }
+    moved
+}
+
+/// How often the theme watcher looks at the manifests of enabled add-ons with themes.
+const THEME_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Keeps the theme watcher's list current: the `addon.toml` of every enabled add-on with
+/// themes. The watcher is a worker that compares each file's modified time and size about once
+/// a second and posts a reload when one changes (no file I/O on the engine thread). It starts
+/// with the first such add-on and ends when the engine's state is dropped.
+fn watch_themes(ctx: &mut Ctx<'_>) {
+    let cat = &mut ctx.state.rt.addons;
+    let list: Vec<PathBuf> = cat
+        .entries
+        .iter()
+        .filter(|e| e.state == AddonState::Loaded && e.parsed.as_ref().is_some_and(|p| !p.themes.is_empty()))
+        .map(|e| e.path.join(disk::MANIFEST_FILE))
+        .collect();
+    if let Some(shared) = &cat.watch {
+        *shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = list;
+        return;
+    }
+    if list.is_empty() {
+        return;
+    }
+    let shared = Arc::new(std::sync::Mutex::new(list));
+    let mine = shared.clone();
+    let engine = ctx.engine.clone();
+    let spawned = std::thread::Builder::new().name("csm-theme-watch".into()).spawn(move || {
+        type Stamp = Option<(Option<std::time::SystemTime>, u64)>;
+        let mut seen: BTreeMap<PathBuf, Stamp> = BTreeMap::new();
+        loop {
+            std::thread::sleep(THEME_POLL);
+            // The catalogue is gone (the engine stopped): so is the reason to watch.
+            if Arc::strong_count(&mine) == 1 {
+                return;
+            }
+            let paths = mine.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            seen.retain(|p, _| paths.contains(p));
+            let mut changed = false;
+            for p in paths {
+                let now: Stamp = std::fs::metadata(&p).ok().map(|m| (m.modified().ok(), m.len()));
+                match seen.insert(p, now) {
+                    Some(before) if before != now => changed = true,
+                    _ => {}
+                }
+            }
+            if changed {
+                engine.post(Box::new(|ctx: &mut Ctx<'_>| {
+                    if !ctx.state.rt.addons.scanning {
+                        reload(ctx);
+                    }
+                }));
+            }
+        }
+    });
+    if spawned.is_ok() {
+        cat.watch = Some(shared);
+    }
+}
+
+/// The themes of the enabled add-ons: `(addon id, addon name, theme)`.
+pub(crate) fn themes(cat: &Catalogue) -> impl Iterator<Item = (&str, &str, &csm_core::addons::ThemeSpec)> {
+    loaded(cat).flat_map(|p| p.themes.iter().map(move |t| (p.meta.id.as_str(), p.meta.name.as_str(), t)))
 }
 
 /// The parsed contents of an enabled add-on (a cheap clone).
@@ -462,6 +560,7 @@ fn summary(e: &Entry, runtime: Option<&PluginRuntime>) -> AddonSummary {
         process_command_line: p.and_then(|p| p.process.as_ref()).map(|s| s.argv.join(" ")),
         process_calls: e.standing.clone(),
         process: runtime.map(|r| PluginRuntime { stderr_tail: String::new(), ..r.clone() }),
+        themes: p.map_or_else(Vec::new, |p| p.themes.clone()),
         problems,
     }
 }

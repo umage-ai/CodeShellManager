@@ -189,7 +189,8 @@ Add-ons extend the app: launch profiles for other agents (with status rules), ru
 slash-command presets and palette commands, or a separate program that adds its own tools and
 screens. Nothing runs until you enable it, and enabling shows what the add-on adds and asks.
 **Settings → Add-ons → Install samples** adds the ones that ship with the app: Codex CLI, Gemini
-CLI, Review (changed files, diffs and line comments that agents answer) and Session summary.
+CLI, Review (changed files, diffs and line comments that agents answer), Session summary and Themes.
+Themes come from add-on packs too: a pack lists colours (no code) and Settings → Appearance picks the dark and the light theme.
 Write your own: [docs/addons.md](docs/addons.md).
 
 ### And more

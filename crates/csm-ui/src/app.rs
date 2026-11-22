@@ -265,6 +265,9 @@ impl SettingsState {
 pub struct Prefs {
     /// `dark`, `light` or `system`.
     pub theme: String,
+    /// `ThemeDark` / `ThemeLight`: the theme ids drawn in dark and in light mode.
+    pub theme_dark: String,
+    pub theme_light: String,
     pub warn_on_close_when_busy: bool,
     pub terminal_font_size: Option<f32>,
     pub terminal_padding: f32,
@@ -281,6 +284,8 @@ impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             theme: "dark".into(),
+            theme_dark: "mocha".into(),
+            theme_light: "latte".into(),
             warn_on_close_when_busy: true,
             terminal_font_size: None,
             terminal_padding: theme::space::SM,
@@ -531,7 +536,7 @@ pub struct CsmApp {
     pub model: Arc<UiModel>,
     /// Actions raised inside torn-off windows, drained by the main frame.
     pub remote_actions: Arc<Mutex<Vec<Action>>>,
-    theme_applied: Option<ThemeKind>,
+    theme_applied: Option<theme::Palette>,
     fonts_installed: bool,
     /// `app_quit` finished: the window may close now.
     pub quit_ready: bool,
@@ -819,6 +824,12 @@ impl CsmApp {
         if let Some(t) = s.str("Theme") {
             p.theme = t.to_ascii_lowercase();
         }
+        if let Some(t) = s.str("ThemeDark") {
+            p.theme_dark = t.trim().to_owned();
+        }
+        if let Some(t) = s.str("ThemeLight") {
+            p.theme_light = t.trim().to_owned();
+        }
         if let Some(w) = s.bool("WarnOnCloseWhenBusy") {
             p.warn_on_close_when_busy = w;
         }
@@ -892,16 +903,19 @@ impl CsmApp {
         if !bound {
             if !self.fonts_installed {
                 setup(ctx, self.model.theme);
-                self.theme_applied = Some(self.model.theme);
+                self.theme_applied = Some(theme::Palette::builtin(self.model.theme));
                 self.fonts_installed = true;
             }
             ctx.request_repaint();
             return false;
         }
         let kind = self.effective_theme(ctx);
-        if self.theme_applied != Some(kind) {
-            theme::apply(ctx, kind);
-            self.theme_applied = Some(kind);
+        // The chosen theme for this mode; an add-on theme arrives with the snapshot (and again
+        // when its file changes), so this follows it without reading anything here.
+        let (palette, _) = self.theme_palette(kind);
+        if self.theme_applied != Some(palette) {
+            theme::apply_palette(ctx, &palette);
+            self.theme_applied = Some(palette);
         }
         // Terminal glyph weight follows the theme (measured against egui's text: see
         // `tests/text_weight.rs`); glyphs already in the atlas were made with the old curve.
@@ -920,6 +934,13 @@ impl CsmApp {
             }
         }
         true
+    }
+
+    /// The palette drawn in `kind`'s mode (`ThemeDark` or `ThemeLight`), and why it is the
+    /// built-in when the chosen theme is not available.
+    pub fn theme_palette(&self, kind: ThemeKind) -> (theme::Palette, Option<String>) {
+        let id = if kind == ThemeKind::Mocha { &self.prefs.theme_dark } else { &self.prefs.theme_light };
+        theme::resolve(kind, id, &self.model.addons)
     }
 
     /// The theme to draw: the snapshot's, or the OS's when the setting is `system`.

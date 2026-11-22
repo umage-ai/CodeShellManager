@@ -103,8 +103,8 @@ fn installed_samples_are_all_disabled_and_the_packs_load_clean() {
     let h = start(&state, Some(samples_dir()));
     h.wait_until("scan", |s| s.addons.is_empty());
     let out = h.ok("addon_install_samples", json!({}));
-    assert_eq!(out.data["installed"], json!(["codex-cli", "gemini-cli", "review", "session-summary"]), "{}", out.message);
-    h.wait_until("four add-ons", |s| s.addons.len() == 4);
+    assert_eq!(out.data["installed"], json!(["codex-cli", "gemini-cli", "review", "session-summary", "themes"]), "{}", out.message);
+    h.wait_until("five add-ons", |s| s.addons.len() == 5);
     let list = h.ok("addon_list", json!({})).data["addons"].clone();
     for a in list.as_array().unwrap() {
         assert_eq!(a["state"], "disabled", "{a}");
@@ -122,9 +122,14 @@ fn installed_samples_are_all_disabled_and_the_packs_load_clean() {
     let gemini = list.as_array().unwrap().iter().find(|a| a["id"] == "gemini-cli").unwrap();
     assert_eq!(gemini["problems"].as_array().unwrap().len(), 0, "{gemini}");
     assert_eq!(gemini["commands"].as_array().unwrap().len(), 2);
+    // The themes pack: three dark themes, offered by theme_list once it is enabled.
+    enable(&h, "themes");
+    let themes = h.ok("theme_list", json!({})).data["themes"].clone();
+    let ids: Vec<&str> = themes.as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+    assert_eq!(ids, vec!["mocha", "latte", "themes.frappe", "themes.macchiato", "themes.high-contrast"]);
     // A second install changes nothing.
     let again = h.ok("addon_install_samples", json!({}));
     assert_eq!(again.data["installed"], json!([]));
-    assert_eq!(again.data["skipped"].as_array().unwrap().len(), 4);
+    assert_eq!(again.data["skipped"].as_array().unwrap().len(), 5);
     h.engine.shutdown();
 }

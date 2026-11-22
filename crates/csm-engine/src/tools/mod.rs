@@ -20,6 +20,7 @@ mod sessions;
 mod slash;
 mod snapshots;
 mod tasks;
+mod themes;
 mod usage;
 
 use serde_json::Value;
@@ -40,6 +41,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(open::specs());
     v.extend(platform::specs());
     v.extend(look::specs());
+    v.extend(themes::specs());
     v.extend(search::specs());
     v.extend(docs::specs());
     v.extend(slash::specs());

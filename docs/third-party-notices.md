@@ -38,4 +38,4 @@ Notable components:
 | Figtree (UI font) | SIL OFL 1.1 | `crates/csm-ui/assets/fonts/OFL-Figtree.txt` |
 | The umage.ai logo | © umage.ai | shown on the About page; not covered by the MIT licence |
 
-The colour themes follow the [Catppuccin](https://github.com/catppuccin/catppuccin) palette (MIT).
+The colour themes follow the [Catppuccin](https://github.com/catppuccin/catppuccin) palette (MIT). The sample Themes pack (`samples/addons/themes`) carries the official Catppuccin Frappé and Macchiato palettes from [catppuccin/palette](https://github.com/catppuccin/palette) (MIT License, Copyright (c) 2021 Catppuccin); its High contrast theme is our own.

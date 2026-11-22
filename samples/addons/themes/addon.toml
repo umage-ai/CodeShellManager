@@ -1,0 +1,134 @@
+# Sample add-on: three themes, nothing else (no programs, no commands).
+#
+# Shipped with CodeShellManager under <install dir>\samples\addons\. Settings > Add-ons >
+# "Install samples" copies it into your add-ons folder; it stays off until you Enable it. Then
+# Settings > Appearance offers the themes as the dark theme. See docs/addons.md, "Themes".
+#
+# Catppuccin Frappé and Macchiato are the official Catppuccin palettes
+# (https://github.com/catppuccin/palette, MIT License, Copyright (c) 2021 Catppuccin).
+# "High contrast" is CodeShellManager's own: white text on black, with bright accents.
+#
+# Every colour is optional: a missing one is the base theme's (Mocha for "dark", Latte for
+# "light"). Edit this file while the add-on is enabled and the window follows within a second.
+
+[addon]
+id = "themes"
+name = "Themes"
+version = "0.1.0"
+description = "Catppuccin Frappé and Macchiato, and a high-contrast dark theme."
+api = 1
+kind = "pack"
+author = "CodeShellManager samples"
+homepage = "https://github.com/catppuccin/palette"
+
+[[theme]]
+id = "frappe"
+name = "Catppuccin Frappé"
+base = "dark"
+description = "Catppuccin's softer dark flavour (MIT, catppuccin/palette)."
+
+[theme.colors]
+rosewater = "#f2d5cf"
+flamingo = "#eebebe"
+pink = "#f4b8e4"
+mauve = "#ca9ee6"
+red = "#e78284"
+maroon = "#ea999c"
+peach = "#ef9f76"
+yellow = "#e5c890"
+green = "#a6d189"
+teal = "#81c8be"
+sky = "#99d1db"
+sapphire = "#85c1dc"
+blue = "#8caaee"
+lavender = "#babbf1"
+text = "#c6d0f5"
+subtext1 = "#b5bfe2"
+subtext0 = "#a5adce"
+overlay2 = "#949cbb"
+overlay1 = "#838ba7"
+overlay0 = "#737994"
+surface2 = "#626880"
+surface1 = "#51576d"
+surface0 = "#414559"
+base = "#303446"
+mantle = "#292c3c"
+crust = "#232634"
+
+[[theme]]
+id = "macchiato"
+name = "Catppuccin Macchiato"
+base = "dark"
+description = "Catppuccin's medium-contrast dark flavour (MIT, catppuccin/palette)."
+
+[theme.colors]
+rosewater = "#f4dbd6"
+flamingo = "#f0c6c6"
+pink = "#f5bde6"
+mauve = "#c6a0f6"
+red = "#ed8796"
+maroon = "#ee99a0"
+peach = "#f5a97f"
+yellow = "#eed49f"
+green = "#a6da95"
+teal = "#8bd5ca"
+sky = "#91d7e3"
+sapphire = "#7dc4e4"
+blue = "#8aadf4"
+lavender = "#b7bdf8"
+text = "#cad3f5"
+subtext1 = "#b8c0e0"
+subtext0 = "#a5adcb"
+overlay2 = "#939ab7"
+overlay1 = "#8087a2"
+overlay0 = "#6e738d"
+surface2 = "#5b6078"
+surface1 = "#494d64"
+surface0 = "#363a4f"
+base = "#24273a"
+mantle = "#1e2030"
+crust = "#181926"
+
+[[theme]]
+id = "high-contrast"
+name = "High contrast"
+base = "dark"
+description = "White text on black with bright accents, for low vision and bright rooms."
+
+[theme.colors]
+rosewater = "#ffd9cc"
+flamingo = "#ffb8b8"
+pink = "#ff8ad8"
+mauve = "#d49cff"
+red = "#ff6b6b"
+maroon = "#ff8a9c"
+peach = "#ffa64d"
+yellow = "#ffe14d"
+green = "#5cff8a"
+teal = "#4dffe1"
+sky = "#4de1ff"
+sapphire = "#4dc3ff"
+blue = "#5cb8ff"
+lavender = "#b3b3ff"
+text = "#ffffff"
+subtext1 = "#f0f0f0"
+subtext0 = "#e0e0e0"
+overlay2 = "#c8c8c8"
+overlay1 = "#b0b0b0"
+overlay0 = "#9e9e9e"
+surface2 = "#5a5a5a"
+surface1 = "#444444"
+surface0 = "#2a2a2a"
+base = "#000000"
+mantle = "#0d0d0d"
+crust = "#000000"
+
+[theme.terminal]
+foreground = "#ffffff"
+background = "#000000"
+cursor = "#ffe14d"
+selection = "#3d5a80"
+black = "#4d4d4d"
+bright_black = "#808080"
+white = "#e6e6e6"
+bright_white = "#ffffff"

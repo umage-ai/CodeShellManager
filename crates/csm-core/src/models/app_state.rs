@@ -194,6 +194,13 @@ pub struct AppSettings {
     /// line, and a Claude CLI too old to know `--name` would refuse to start.
     #[serde(skip_serializing_if = "is_false")]
     pub pass_session_name_to_claude: bool,
+    /// The theme drawn in dark mode: `mocha` or an add-on theme `addon-id.theme-id` (docs/addons.md,
+    /// "Themes"). One that is not available falls back to Mocha.
+    #[serde(skip_serializing_if = "is_mocha")]
+    pub theme_dark: String,
+    /// The theme drawn in light mode: `latte` or a light add-on theme; falls back to Latte.
+    #[serde(skip_serializing_if = "is_latte")]
+    pub theme_light: String,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -212,6 +219,12 @@ fn is_zero(n: &i32) -> bool {
 }
 fn is_default_padding(n: &i32) -> bool {
     *n == default_padding()
+}
+fn is_mocha(s: &str) -> bool {
+    s == "mocha"
+}
+fn is_latte(s: &str) -> bool {
+    s == "latte"
 }
 fn is_default_zoom(n: &i32) -> bool {
     *n == UI_ZOOM_DEFAULT
@@ -240,6 +253,8 @@ impl Default for AppSettings {
             legacy_default_group_cleared: false,
             search_collapse_after_navigate: t(),
             theme: default_theme(),
+            theme_dark: "mocha".to_owned(),
+            theme_light: "latte".to_owned(),
             max_search_results: default_max_search(),
             show_terminal_status_dot: t(),
             import_windows_terminal_profiles: false,

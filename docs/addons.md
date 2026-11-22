@@ -59,6 +59,13 @@ argv = ["my-helper"]
 effects = ["launches_process"]  # from: launches_process, sends_input, reads_session_content,
                                 #       writes_filesystem, accesses_network, stores_secrets, stores_data
 calls = ["session_list"]        # core tools it may run through csm/call without a card (optional)
+
+[[theme]]                       # a colour theme (see Themes)
+id = "dusk"
+name = "Dusk"
+base = "dark"                   # "dark" or "light": the fallback for missing colours
+[theme.colors]
+base = "#202030"
 ```
 
 Unknown top-level tables are reported and ignored. A `[process]` table in a pack is reported and
@@ -152,6 +159,67 @@ can only name a tool this app has. It can never name an `addon_*` tool, a tool t
 session (`SENDS_INPUT`, so a pack's text never reaches a PTY through one click), or a tool that
 turns on another extension (`ENABLES_EXTENSION`). Such a command is dropped when the add-on loads,
 with a note.
+
+## Themes
+
+A pack can carry colour themes: colours only, no code. A minimal one:
+
+```toml
+[[theme]]
+id = "dusk"                     # a-z, 0-9, '-'; the app's id is `addon-id.dusk`
+name = "Dusk"
+base = "dark"                   # "dark" or "light"
+description = "Optional"
+
+[theme.colors]
+base = "#202030"
+mantle = "#1a1a28"
+text = "#e0e0f0"
+blue = "#7aa2f7"
+green = "#9ece6a"
+```
+
+**Keys.** Every colour is optional, `"#rrggbb"` or `"#rrggbbaa"`. A missing one is the base
+theme's: Catppuccin Mocha for `dark`, Latte for `light`.
+
+- `[theme.colors]`, the 26 palette slots the app's design tokens are derived from (Catppuccin's
+  names): `rosewater`, `flamingo`, `pink`, `mauve`, `red`, `maroon`, `peach`, `yellow`, `green`,
+  `teal`, `sky`, `sapphire`, `blue`, `lavender`, `text`, `subtext1`, `subtext0`, `overlay2`,
+  `overlay1`, `overlay0`, `surface2`, `surface1`, `surface0`, `base`, `mantle`, `crust`.
+- `[theme.terminal]`, optional: the 16 ANSI colours `black`, `red`, `green`, `yellow`, `blue`,
+  `magenta`, `cyan`, `white`, `bright_black` … `bright_white`, and `foreground`, `background`,
+  `cursor`, `selection`. When not given they follow the palette: dark themes use Mocha's mapping
+  (`black` = `surface1`, `white` = `subtext1`, `bright_black` = `surface2`, `bright_white` =
+  `subtext0`, the colours from the accents), light themes Latte's; `foreground` is `text`,
+  `background` is `base`, `cursor` is `rosewater`.
+
+**How the window's colours follow.** About 60 tokens (surfaces, text, accents, status colours,
+syntax and diff colours, the terminal) each derive from one slot. A token keeps the offset it has
+from its slot in the base theme: `bg` is `base`, `field` is `base` lifted by a few steps, Latte's
+darker status orange is `peach` darkened the same way. So a theme built on Mocha's own values gives
+exactly Mocha. Tints keep their alpha; a slot's own alpha scales it.
+
+**Problems.** A colour that does not parse, an unknown key or an unknown `[theme.*]` table is
+skipped and listed under the add-on in Settings > Add-ons; the theme still loads with the base's
+colour there. An entry with no `id`, `name` or a valid `base` is skipped, and so is a second theme
+with the same id. Up to 32 themes per add-on. Contrast is checked against WCAG: `text` on `base`,
+`mantle`, `crust` and `surface0`, `subtext1` on `base` (4.5:1), `overlay2` on `base` (3:1) and the
+terminal's foreground on its background (4.5:1). A pair below is reported as a `warning:` problem;
+it is not refused.
+
+**Choosing.** Settings > Appearance has the mode (Dark, Light, System) and a Dark theme and a Light
+theme list with swatches: the built-ins and every enabled add-on's themes of that base. A click
+switches at once. Tools: `theme_list` and `theme_set` (`mode`, `dark`, `light`; UI-state effects,
+so an MCP client changes it without a consent card). The choices are the settings `Theme`,
+`ThemeDark` (`mocha` by default) and `ThemeLight` (`latte`). A chosen theme that is no longer
+available (its add-on turned off or removed) is drawn as the built-in, and Settings > Appearance
+and `theme_list` say so; turn the add-on back on and it returns.
+
+**Live reload.** While an add-on with themes is enabled, its `addon.toml` is checked about once a
+second (modified time and size, on a worker). A change reloads the add-ons, and the window takes
+the new colours. An edit that only touches `[[theme]]` tables keeps the add-on enabled (colours run
+nothing); any other change turns it off until it is enabled again, as for every add-on. A process
+add-on's themes are ignored, like its other declarative entries.
 
 ## Enabling: the consent point
 
@@ -817,7 +885,7 @@ parses it with no problems.
 
 ## Samples that ship with the app
 
-`samples/addons/` holds three real add-ons, staged by the release workflow into
+`samples/addons/` holds five add-ons, staged by the release workflow into
 `<install dir>\samples\addons\` (MSI and portable zip alike):
 
 | id | kind | what |
@@ -826,6 +894,7 @@ parses it with no problems.
 | `gemini-cli` | pack | profiles `agent` (`gemini`) and `resume-latest` (`gemini --resume`), status rules, `/compress` `/stats` `/memory`, palette commands to start either |
 | `review` | process | the Review add-on above: changed files, diffs and comment threads that agents answer (first-party, with a screen) |
 | `session-summary` | process | the Session summary plugin above |
+| `themes` | pack | three dark themes: Catppuccin Frappé and Macchiato (official palette, MIT) and an original High contrast |
 
 The MSI installs per machine and add-ons live per user, so nothing is enabled or copied at install
 time. **Settings > Add-ons > Install samples** (`addon_install_samples`) copies each sample folder
