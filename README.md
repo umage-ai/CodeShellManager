@@ -119,7 +119,20 @@ One panel on the right (`Ctrl+I`), with tabs for the focused session:
 | **Runs** | The session's run commands (see below). |
 | **Git** | Branch, ahead/behind and changed files; Fetch, fast-forward Pull, Switch branch; worktrees. Read-mostly on purpose: no commit, push or merge, and nothing is ever typed into the terminal. |
 | **Session** | Folder, command, connection and look; edit them here. |
-| **Usage** | For Claude sessions: context fill, API-equivalent cost (today, total, subagents), cache hits and compactions. |
+| **Usage** | For Claude sessions: context fill, API-equivalent cost (today, total, subagents), cache hits and compactions. Part of the opt-in **Claude usage** add-on (below). |
+
+### Claude usage (opt-in)
+
+**Claude usage** is a built-in add-on, off until you turn it on in **Settings → Add-ons**. It reads
+Claude Code's own transcripts on this machine for tokens and API-equivalent cost (what the tokens
+would cost at API list prices, not what a subscription bills): the inspector's Usage tab, a usage
+dashboard (ranges, per day, per session, project and model, cache hit rate and cache-miss cost),
+cost on the sidebar chips and in Settings → Usage, and the `usage_*` tools. With **Read past Claude
+history** on (the default once it is on; Settings → Usage) it also imports every past transcript,
+not only the sessions the app runs; turn it off to count only those, and **Forget imported
+history** to delete what it imported. A `--clean` run never reads the history. Without the add-on
+the sidebar still shows each Claude session's context fill, and subagents and Remote Control work
+as before. Numbers only; nothing leaves the machine.
 
 ![The inspector's Docs tab showing a project's CLAUDE.md](docs/screens/20-inspector-docs.png)
 
@@ -188,7 +201,7 @@ caller asks for it explicitly. The full catalogue is in [docs/tools.md](docs/too
 Add-ons extend the app: launch profiles for other agents (with status rules), run templates,
 slash-command presets and palette commands, or a separate program that adds its own tools and
 screens. Nothing runs until you enable it, and enabling shows what the add-on adds and asks.
-**Settings → Add-ons → Install samples** adds the ones that ship with the app: Codex CLI, Gemini
+Claude usage is built in and listed there too. **Settings → Add-ons → Install samples** adds the ones that ship with the app: Codex CLI, Gemini
 CLI, Review (changed files, diffs and line comments that agents answer) and Session summary.
 Write your own: [docs/addons.md](docs/addons.md).
 

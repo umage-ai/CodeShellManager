@@ -13,10 +13,10 @@ use crate::theme::{self, Tokens, space, text};
 use crate::widgets::{self, ButtonKind};
 
 /// The Settings page for add-ons.
-pub fn show(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     section(ui, "Add-ons");
-    caption(ui, "Add-ons are folders in the add-ons folder beside state.json. Each one is off until you enable it; enabling shows what it adds first.");
+    caption(ui, "Add-ons are built in or folders in the add-ons folder beside state.json. Each one is off until you enable it; enabling shows what it adds first.");
     ui.add_space(space::SM);
     ui.horizontal(|ui| {
         if widgets::button(ui, ButtonKind::Secondary, None, "Reload", None).clicked() {
@@ -34,8 +34,12 @@ pub fn show(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
         ui.label(egui::RichText::new("No add-ons found.").font(theme::regular(text::BODY)).color(t.muted));
         return;
     }
-    for a in &app.model.addons {
+    let list = app.model.addons.clone();
+    for a in &list {
         row(ui, a, actions);
+        if a.id == csm_engine::addons::CLAUDE_USAGE_ID && a.state == AddonState::Loaded {
+            crate::screens::usage::history_controls(ui, app, actions);
+        }
         ui.add_space(space::SM);
     }
 }
@@ -45,7 +49,7 @@ fn row(ui: &mut Ui, a: &AddonSummary, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         let title = if a.version.is_empty() { a.name.clone() } else { format!("{} {}", a.name, a.version) };
         ui.label(egui::RichText::new(title).font(theme::medium(text::BODY)).color(t.fg));
-        ui.label(egui::RichText::new(format!("{} · {}", a.kind, state_label(a.state))).font(theme::regular(text::CAPTION)).color(t.muted));
+        ui.label(egui::RichText::new(format!("{} · {}", kind_label(a.kind), state_label(a.state))).font(theme::regular(text::CAPTION)).color(t.muted));
         if a.state == AddonState::Loaded && widgets::button(ui, ButtonKind::Ghost, None, "Disable", None).clicked() {
             actions.push(Action::Tool("addon_disable", json!({"id": a.id})));
         }
@@ -94,6 +98,10 @@ fn process_label(s: csm_engine::RunState) -> &'static str {
         RunState::GaveUp => "gave up after repeated crashes",
         RunState::Stopped => "stopped",
     }
+}
+
+fn kind_label(kind: &str) -> &str {
+    if kind == "builtin" { "built in" } else { kind }
 }
 
 fn state_label(s: AddonState) -> &'static str {
@@ -145,7 +153,11 @@ pub fn consent_body(a: &AddonSummary) -> String {
             ));
         }
     }
-    lines.push("Enabling is saved. If the file changes later, it is turned off until you enable it again.".into());
+    if a.kind == "builtin" {
+        lines.push("Built into the app: it runs no program of its own. Enabling is saved; Disable turns it off again, and what it recorded is kept.".into());
+    } else {
+        lines.push("Enabling is saved. If the file changes later, it is turned off until you enable it again.".into());
+    }
     lines.join("\n")
 }
 

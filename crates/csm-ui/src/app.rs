@@ -1149,7 +1149,11 @@ impl CsmApp {
             Action::OpenUsage(drill) => {
                 self.ui.menu = None;
                 self.ui.overlay = Overlay::None;
-                screens::usage_page::open(self, drill);
+                if self.model.claude_usage_on() {
+                    screens::usage_page::open(self, drill);
+                } else {
+                    self.toast(ctx, csm_engine::addons::CLAUDE_USAGE_OFF);
+                }
             }
             Action::CloseUsage => {
                 self.ui.usage_page.open = false;
@@ -1654,6 +1658,10 @@ impl CsmApp {
             self.ui.peek_sidebar &= self.ui.overlay == Overlay::None;
         }
         let mut work = Rect::from_min_max(pos2(side.max.x, body.min.y), body.max);
+        if self.ui.usage_page.open && !self.model.claude_usage_on() {
+            // The Claude usage add-on was turned off while the dashboard was open.
+            self.ui.usage_page.open = false;
+        }
         if self.ui.settings.open {
             ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::settings::show(ui, self, &mut actions));
         } else if self.ui.usage_page.open {
