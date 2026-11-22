@@ -6,7 +6,8 @@
 //! - Windows: a WinRT toast (as the WPF app's tray balloon, which Windows shows as a toast).
 //!   Windows shows a toast only for an AppUserModelID that a Start-menu shortcut carries. The MSI
 //!   installs that shortcut and, beside the exe, `codeshell.aumid` holding the same id; when the
-//!   file is there the toast is sent under it (header "CodeShellManager 2 Beta"). A portable or
+//!   file is there the toast is sent under it (header: the shortcut's name, "CodeShellManager",
+//!   or "CodeShellManager 2 Beta" for a beta install; docs/release.md). A portable or
 //!   dev build has no shortcut, so it falls back to PowerShell's id and the header reads
 //!   "Windows PowerShell". The sound is the system's default notification sound, or none.
 //! - macOS and Linux: `notify-rust` (the notification centre; the freedesktop D-Bus service).

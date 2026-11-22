@@ -19,20 +19,25 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask ci --skip-cargo                      # layers, source policy, tool catalogue, secrets
 ```
 
-## Releases (beta)
+## Releases
 
-- A `v2.*` tag on this branch (for example `v2.0.0-beta.1`) builds, signs and publishes a GitHub
-  pre-release through `.github/workflows/release-v2.yml`: signed `codeshell.exe` and `csm.exe`,
-  a signed MSI and a portable zip. Never create a tag without Allan's say-so.
-- The MSI installs as **CodeShellManager 2 Beta** beside the WPF app (its own UpgradeCode,
-  folder and Start-menu entry).
-- Betas are GitHub pre-releases only: no winget or Chocolatey beta packages (Allan's decision,
-  2026-11-20). At 2.0 final the existing packages (`codeshellmanager`, `UmageAI.CodeShellManager`)
-  are updated to 2.0, and the final MSI takes the 1.x UpgradeCode so it replaces 1.x in place.
+`docs/release.md` is the checklist and the table of every identity the installer must keep.
+
+- A tag `vX.Y.Z[-beta.N|-rc.N]` (X >= 2) builds, signs and publishes a GitHub release through
+  `.github/workflows/release-v2.yml` (Windows): signed exes, a signed MSI and a portable zip.
+  Never create a tag without Allan's say-so. Versions start at 2.0.0 (the WPF app is 0.x).
+- Two MSI channels from `installer/CodeShellManager2.wxs`: `-beta.N` installs as
+  **CodeShellManager 2 Beta** beside the WPF app (own UpgradeCode, folder, Start-menu entry);
+  `-rc.N` and final install as **CodeShellManager** with the WPF app's UpgradeCode, so they
+  replace it in place (and remove a beta). Never change either UpgradeCode.
+- Betas and rcs are GitHub pre-releases only (Allan, 2026-11-20). A final release is "latest"
+  and goes to winget (`UmageAI.CodeShellManager`) and Chocolatey (`codeshellmanager`) by
+  dispatching `winget.yml` / `chocolatey.yml` with its tag, by hand, only when Allan says so.
 - A dry run (unsigned MSI and zip as a workflow artifact, no release):
-  `gh workflow run release-v2.yml --ref v2`. A copy of the workflow sits on `main` only so that
-  GitHub allows the dispatch; a run with `--ref v2` uses v2's version of the file.
-- An MSI version must be numeric: `2.0.0-beta.N` is built as MSI version `2.0.0.N`.
+  `gh workflow run release-v2.yml --ref v2 -f channel=beta|stable`.
+- MSI versions are numeric: `2.0.0-beta.N` -> `2.0.0.N`, `-rc.N` -> `2.0.0.(100+N)`, final -> `2.0.0`.
+- First start with no state of its own imports the WPF app's sessions, groups and notes
+  (`persist::first_run_wpf_import`); the WPF data folder is only read, never changed.
 
 ## Rules (mandatory)
 

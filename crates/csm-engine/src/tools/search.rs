@@ -50,7 +50,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             id: "notes_import_wpf",
-            title: "Import notes from CodeShellManager (WPF)…",
+            title: "Import notes from CodeShellManager 0.x…",
             summary: "Import the per-folder notes from the WPF app's output.db (default: its usual location). The file is opened read-only; a note already here is kept unless the imported one is newer.",
             toolset: Toolset::Notes,
             effects: Effects::MUTATES_STATE.union(Effects::READS_SESSION_CONTENT),

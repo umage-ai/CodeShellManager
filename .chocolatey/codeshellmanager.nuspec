@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>codeshellmanager</id>
+    <version>__VERSION__</version>
+    <packageSourceUrl>https://github.com/umage-ai/CodeShellManager/tree/main/.chocolatey</packageSourceUrl>
+    <owners>athraen</owners>
+    <title>CodeShellManager</title>
+    <authors>umage.ai</authors>
+    <projectUrl>https://umage.ai/products/code-shell-manager/</projectUrl>
+    <!-- Must be a CDN — raw.githubusercontent.com is not permitted by Chocolatey moderation.
+         Pinned to a commit rather than a branch so the icon can never change under a
+         published package. -->
+    <iconUrl>https://cdn.jsdelivr.net/gh/umage-ai/CodeShellManager@ad0ea186aefc00c4d4494f04d15f5dd5492c774e/src/CodeShellManager/Assets/app.png</iconUrl>
+    <copyright>Copyright (c) 2025 umage.ai</copyright>
+    <licenseUrl>https://github.com/umage-ai/CodeShellManager/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/umage-ai/CodeShellManager</projectSourceUrl>
+    <docsUrl>https://github.com/umage-ai/CodeShellManager#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/umage-ai/CodeShellManager/issues</bugTrackerUrl>
+    <tags>codeshellmanager terminal claude claude-code conpty mcp ai coding-agent admin</tags>
+    <summary>Multi-terminal host for Claude Code and other CLI coding agents on Windows.</summary>
+    <description><![CDATA[
+**CodeShellManager** is a desktop app for running many AI coding agents side by side: Claude Code, Codex, GitHub Copilot, or any CLI tool, in one window of terminal panes over Windows ConPTY.
+
+Version 2 is a rewrite in Rust. It upgrades an installed CodeShellManager 0.x in place and, on first start, brings over its sessions (asleep), groups and project notes; the old data folder is left untouched.
+
+## Features
+
+* Many terminal sessions in tiled, side-by-side and floating layouts, grouped by project
+* Sleep and wake: park sessions without losing them; sessions are restored on start
+* Full-text search across session output, per-project notes, git status and worktrees
+* Alerts when a session needs you, as Windows notifications and in the tray
+* The `csm` command-line tool and an MCP server (`csm mcp`) that let agents drive the app
+* WSL and SSH sessions, configurable launch commands, Open with
+
+## Requirements
+
+* Windows 10 or Windows 11, x64
+
+## License
+
+CodeShellManager is open source under the [MIT License](https://github.com/umage-ai/CodeShellManager/blob/main/LICENSE).
+]]></description>
+    <releaseNotes>https://github.com/umage-ai/CodeShellManager/releases/tag/v__VERSION__</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

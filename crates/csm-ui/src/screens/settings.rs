@@ -492,11 +492,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new("CodeShellManager").font(semibold(text::DISPLAY)).color(t.fg));
             ui.label(egui::RichText::new("A multi-terminal host for Claude Code & friends").font(theme::regular(text::BODY)).color(t.fg2));
-            ui.label(
-                egui::RichText::new(format!("Version {} · beta · {}", s("version"), s("platform")))
-                    .font(theme::regular(text::CAPTION))
-                    .color(t.muted),
-            );
+            ui.label(egui::RichText::new(about_version_line(&s("version"), &s("platform"))).font(theme::regular(text::CAPTION)).color(t.muted));
         });
     });
     ui.add_space(space::XL);
@@ -601,4 +597,21 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
     ui.add_space(space::SM);
     caption(ui, "The search index and notes live beside the state file; a portable marker beside the exe keeps everything there.");
+}
+
+/// The About hero's version line: "Version 2.0.0 · windows-x86_64", with "pre-release" between
+/// them for a version that has a semver pre-release part (2.0.0-beta.4, 2.0.0-dev.12).
+fn about_version_line(version: &str, platform: &str) -> String {
+    if version.contains('-') { format!("Version {version} · pre-release · {platform}") } else { format!("Version {version} · {platform}") }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::about_version_line;
+
+    #[test]
+    fn only_a_pre_release_version_says_so() {
+        assert_eq!(about_version_line("2.0.0", "windows"), "Version 2.0.0 · windows");
+        assert_eq!(about_version_line("2.0.0-beta.4", "windows"), "Version 2.0.0-beta.4 · pre-release · windows");
+    }
 }

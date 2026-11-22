@@ -61,7 +61,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ),
         t(
             "state_import_wpf",
-            "Import from CodeShellManager (WPF)…",
+            "Import from CodeShellManager 0.x…",
             "Import sessions and groups from the WPF app's state.json (default: its usual location). Imported sessions arrive asleep; existing ones are kept.",
             Toolset::App,
             Effects::MUTATES_STATE,

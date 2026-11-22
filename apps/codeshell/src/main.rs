@@ -301,6 +301,31 @@ enum Mode {
     Demo { live: bool, restore: bool, shell: Vec<OsString> },
 }
 
+/// First start after the MSI replaced the WPF app (or any first start beside it): bring over the
+/// WPF app's sessions and groups (`state_import_wpf`: they arrive asleep) and its project notes
+/// (`notes_import_wpf`), through the same tools the empty screen's button and the palette use.
+/// Off the UI thread; the WPF files are only read. Failures are logged, never shown as errors:
+/// the empty screen still offers the import by hand.
+fn import_wpf_on_first_run(engine: &Engine, state_json: PathBuf) {
+    let engine = engine.clone();
+    let worker = move || {
+        log::info!("first run: importing the WPF app's state from {}", state_json.display());
+        match engine.call(csm_engine::Caller::Ui, "state_import_wpf", json!({"path": state_json.display().to_string()})) {
+            Ok(out) => log::info!("first run: {}", out.message),
+            Err(e) => log::warn!("first run: the WPF state was not imported: {e}"),
+        }
+        if let Some(db) = csm_engine::wpf_output_db().filter(|p| p.is_file()) {
+            match engine.call(csm_engine::Caller::Ui, "notes_import_wpf", json!({"path": db.display().to_string()})) {
+                Ok(out) => log::info!("first run: {}", out.message),
+                Err(e) => log::warn!("first run: the WPF notes were not imported: {e}"),
+            }
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("csm-wpf-import".into()).spawn(worker) {
+        log::warn!("first run: could not start the WPF import: {e}");
+    }
+}
+
 fn start_failed(e: impl std::fmt::Display) -> ! {
     eprintln!("could not start the engine: {e}");
     std::process::exit(1);
@@ -354,7 +379,11 @@ fn main() {
         let folders = [home(), std::env::current_dir().ok()].into_iter().flatten().map(|p| p.display().to_string()).collect();
         let opts =
             EngineOptions { theme: theme_kind, launch_commands: settings.launch_commands.clone(), folders, wpf_import, shutdown_budget_s: budget };
+        let first_run_import = persist::first_run_wpf_import(args.config_dir.as_deref(), args.clean, report.source);
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
+        if let Some(path) = first_run_import {
+            import_wpf_on_first_run(&engine, path);
+        }
         (engine, Mode::Real { opts }, theme_kind)
     };
 

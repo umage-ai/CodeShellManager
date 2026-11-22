@@ -77,6 +77,30 @@ pub fn wpf_state_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("CodeShellManager").join("state.json"))
 }
 
+/// The WPF app's `state.json` to import on its own at start-up, if any (docs/release.md: the
+/// stable MSI replaces the WPF app, so its people must find their sessions in the new app).
+///
+/// Only on a true first run: no state file of ours, not even a `.bak` ([`LoadSource::FirstRun`];
+/// an unreadable one is not a first run), not `--clean`, and only for the default state location
+/// (no `--config-dir`, `CSM_CONFIG_DIR`, `CSM_STATE_PATH` or portable install), so tests and
+/// side-by-side runs never pick it up. The import reads the WPF files and never writes them;
+/// once it has run our own `state.json` exists, so it runs once.
+///
+/// [`LoadSource::FirstRun`]: csm_core::state::LoadSource::FirstRun
+pub fn first_run_wpf_import(cli_config_dir: Option<&Path>, clean: bool, source: Option<state::LoadSource>) -> Option<PathBuf> {
+    let state_path_set = std::env::var_os(STATE_PATH_ENV).is_some_and(|p| !p.is_empty());
+    let default_location = !state_path_set && dirs::data_dir().is_some_and(|d| config_dir(cli_config_dir) == ConfigDir::Dir(d.join(APP_DIR)));
+    first_run_wpf_import_if(default_location, clean, source, wpf_state_path())
+}
+
+/// [`first_run_wpf_import`]'s decision, given what it reads from the environment (tests).
+pub fn first_run_wpf_import_if(default_location: bool, clean: bool, source: Option<state::LoadSource>, wpf: Option<PathBuf>) -> Option<PathBuf> {
+    if !default_location || clean || source != Some(state::LoadSource::FirstRun) {
+        return None;
+    }
+    wpf.filter(|p| p.is_file())
+}
+
 /// Moves the pre-v2 data folders (`CodeShellManager-rs`, roaming and local) to `CodeShellManager2`,
 /// once: only where the old folder exists and the new one does not. Call it at start-up, before
 /// the state is loaded (not for `--clean`). It does nothing unless the state lives in the default
@@ -422,6 +446,24 @@ mod tests {
         assert!(b.path().join(LEGACY_APP_DIR).is_dir());
         // A second run has nothing to do.
         assert!(migrate_legacy_in(&[a.path().to_path_buf(), b.path().to_path_buf()]).is_empty());
+    }
+
+    #[test]
+    fn the_wpf_state_is_imported_on_its_own_only_on_a_true_first_run_in_the_default_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let wpf = dir.path().join("state.json");
+        fs::write(&wpf, "{}").unwrap();
+        let first = Some(LoadSource::FirstRun);
+        assert_eq!(first_run_wpf_import_if(true, false, first, Some(wpf.clone())), Some(wpf.clone()));
+        // Not a first run: our state (or only its backup) was there, or it was unreadable.
+        for other in [LoadSource::Primary, LoadSource::Backup, LoadSource::Unreadable] {
+            assert_eq!(first_run_wpf_import_if(true, false, Some(other), Some(wpf.clone())), None, "{other:?}");
+        }
+        assert_eq!(first_run_wpf_import_if(true, false, None, Some(wpf.clone())), None, "isolated");
+        assert_eq!(first_run_wpf_import_if(true, true, first, Some(wpf.clone())), None, "--clean");
+        assert_eq!(first_run_wpf_import_if(false, false, first, Some(wpf.clone())), None, "--config-dir, env or portable");
+        assert_eq!(first_run_wpf_import_if(true, false, first, Some(dir.path().join("none.json"))), None, "no WPF state");
+        assert_eq!(first_run_wpf_import_if(true, false, first, None), None);
     }
 
     #[test]
