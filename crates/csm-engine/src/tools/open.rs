@@ -84,6 +84,22 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             empty_schema,
             open_with_detect,
         ),
+        t(
+            "open_with_pending",
+            "Editors from CodeShellManager 0.x",
+            "The Open with entries imported from CodeShellManager 0.x that wait for the person's answer, each with the program and arguments it would run. open_with_pending_answer adds or discards them.",
+            Effects::READ_ONLY,
+            empty_schema,
+            open_with_pending,
+        ),
+        t(
+            "open_with_pending_answer",
+            "Use the editors from CodeShellManager 0.x…",
+            "Answer the pending Open with entries from CodeShellManager 0.x (open_with_pending lists them): adopt_open_with: true adds the ones not listed yet (0.x's default becomes the default), false discards them. App and CLI only.",
+            Effects::MUTATES_STATE,
+            schema_of::<PendingAnswerParams>,
+            open_with_pending_answer,
+        ),
     ]
 }
 
@@ -500,6 +516,111 @@ fn open_with_detect(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
         Ok(_) => Ok(ToolOutput::message("Detecting.")),
         Err(e) => Err(ToolError::Failed(format!("could not start a worker: {e}"))),
     }
+}
+
+// ── Open with entries from CodeShellManager 0.x (`state_import_wpf`) ─────────────────────
+
+/// The pending answer tool decides what runs on a click: refused for MCP clients before any
+/// consent card (`tools::precheck`).
+pub(super) fn precheck(id: &str, caller: &Caller) -> Option<ToolError> {
+    (id == "open_with_pending_answer" && caller.is_external())
+        .then(|| ToolError::Refused("the Open with list decides what runs on a click; answer in the app".into()))
+}
+
+/// True when `e` launches the same program with the same local arguments as one in `list`.
+fn listed(list: &[CoreEntry], e: &CoreEntry) -> bool {
+    list.iter().any(|x| x.executable.eq_ignore_ascii_case(&e.executable) && x.local_args == e.local_args)
+}
+
+/// Offers an imported (already sanitised) Open with list for consent: the entries not listed
+/// yet become `PendingOpenWith`, replacing an earlier offer. Returns how many wait. Nothing is
+/// added to the list itself.
+pub(crate) fn offer_pending(ctx: &mut Ctx<'_>, imported: Vec<CoreEntry>) -> usize {
+    let ours = &ctx.state.app.settings.open_with;
+    let mut pending: Vec<CoreEntry> = Vec::new();
+    for e in imported {
+        if !listed(ours, &e) && !listed(&pending, &e) {
+            pending.push(e);
+        }
+    }
+    let n = pending.len();
+    if n > 0 {
+        ctx.state.app.pending_open_with = pending;
+    }
+    n
+}
+
+fn open_with_pending(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    let list = &ctx.state.app.pending_open_with;
+    let review = if list.is_empty() { String::new() } else { describe_for_review(list) };
+    Ok(ToolOutput::new(
+        if list.is_empty() { "No editors from CodeShellManager 0.x are waiting.".to_owned() } else { format!("{} editors wait for your answer.", list.len()) },
+        json!({"entries": list_view(list), "review": review}),
+    ))
+}
+
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PendingAnswerParams {
+    /// true: add the pending editors to the Open with list. false: discard them.
+    adopt_open_with: bool,
+}
+
+fn open_with_pending_answer(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    if ctx.caller.is_external() {
+        return Err(ToolError::Refused("the Open with list decides what runs on a click; answer in the app".into()));
+    }
+    let p: PendingAnswerParams = parse_params(params)?;
+    let pending = std::mem::take(&mut ctx.state.app.pending_open_with);
+    if pending.is_empty() {
+        return Ok(ToolOutput::new("No editors from CodeShellManager 0.x were waiting.", json!({"added": 0, "discarded": 0})));
+    }
+    if !p.adopt_open_with {
+        let n = pending.len();
+        ctx.state.persist();
+        return Ok(ToolOutput::new(format!("Discarded {n} editors from CodeShellManager 0.x."), json!({"added": 0, "discarded": n})));
+    }
+    // Checked again (pure rules; the programs were checked on disk at import time).
+    let wrapped: Vec<Option<SvcEntry>> = pending.iter().map(|e| Some(to_svc(e))).collect();
+    let clean: Vec<CoreEntry> =
+        ow::sanitize_for(&wrapped, true, Rules::native(), &mut |m| log::warn!("open with, from 0.x: {m}")).into_iter().map(to_core).collect();
+    let list = &mut ctx.state.app.settings.open_with;
+    let mut added = 0;
+    let mut new_default: Option<String> = None;
+    for e in clean {
+        if list.len() >= ow::MAX_ENTRIES {
+            break;
+        }
+        if e.is_default {
+            new_default = Some(e.id.clone());
+        }
+        if !listed(list, &e) {
+            let mut e = e;
+            if e.id.trim().is_empty() || list.iter().any(|x| x.id == e.id) {
+                e.id = format!("wpf-{}", list.len() + added + 1);
+            }
+            if e.is_default {
+                new_default = Some(e.id.clone());
+            }
+            list.push(e);
+            added += 1;
+        }
+    }
+    // The person chose to use their 0.x editors: its default is the default here too.
+    if let Some(id) = new_default
+        && list.iter().any(|x| x.id == id)
+    {
+        for x in list.iter_mut() {
+            x.is_default = x.id == id;
+        }
+    }
+    CoreEntry::ensure_single_default(list);
+    ctx.state.app.settings.open_with_seeded = true;
+    ctx.state.persist();
+    Ok(ToolOutput::new(
+        format!("Added {added} editors from CodeShellManager 0.x."),
+        json!({"added": added, "discarded": 0, "entries": list_view(&ctx.state.app.settings.open_with)}),
+    ))
 }
 
 // ── Folder opening (FolderOpener) ────────────────────────────────────────────────────────

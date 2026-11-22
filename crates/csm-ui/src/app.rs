@@ -1345,6 +1345,15 @@ impl CsmApp {
                 return self.run(ctx, Action::OpenMenu(Menu::Row { session: first, at }));
             }
             "app_quit" => return self.run(ctx, Action::AskQuit),
+            // The 0.x editors are answered on their card, where the commands are spelled out.
+            "open_with_pending" | "open_with_pending_answer" => {
+                let msg = if self.model.pending_open_with.is_empty() {
+                    "No editors from CodeShellManager 0.x are waiting."
+                } else {
+                    "The card at the bottom right lists the editors from CodeShellManager 0.x: Allow or Don't allow there."
+                };
+                return self.toast(ctx, msg);
+            }
             // Backup and Usage: the same path as Settings' buttons (file dialog, then the review).
             "state_export" | "state_import" | "usage_stats" => return screens::backup::from_palette(self, ctx, id),
             "inspector_show" => {

@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $packageName = 'codeshellmanager'
-# Exactly 'CodeShellManager': 'CodeShellManager*' would also match a 'CodeShellManager 2 Beta'
+# Exactly 'CodeShellManager': 'CodeShellManager*' would also match a 'CodeShellManager Beta'
 # install, and two matches make this script refuse to uninstall anything.
 $softwareName = 'CodeShellManager'
 

@@ -8,8 +8,8 @@ name: Release (Windows)
 #
 #   - stable: THE CodeShellManager. The MSI carries the WPF app's UpgradeCode, name and folder,
 #     so it major-upgrades an installed WPF CodeShellManager (0.x) in place, and removes a
-#     CodeShellManager 2 Beta install. Release candidates and final releases use it.
-#   - beta:   "CodeShellManager 2 Beta", installed BESIDE the WPF app (its own UpgradeCode,
+#     CodeShellManager Beta install. Release candidates and final releases use it.
+#   - beta:   "CodeShellManager Beta", installed BESIDE the WPF app (its own UpgradeCode,
 #     folder and app id). `-beta.N` tags use it.
 #
 # Triggers:
@@ -121,7 +121,11 @@ jobs:
         shell: pwsh
         run: ./scripts/get-conpty.ps1
 
+      # The channel is compiled in (csm_core::channel): a beta has its own data folders
+      # (CodeShellManager2-Beta) and IPC app id (codeshell-beta). Unset means stable.
       - name: Build
+        env:
+          CSM_CHANNEL: ${{ steps.ver.outputs.channel }}
         run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary -p csm-review
 
       # The third-party licence bundle (about.toml / about.hbs), shipped beside the exes in the

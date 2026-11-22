@@ -302,10 +302,12 @@ enum Mode {
 }
 
 /// First start after the MSI replaced the WPF app (or any first start beside it): bring over the
-/// WPF app's sessions and groups (`state_import_wpf`: they arrive asleep) and its project notes
-/// (`notes_import_wpf`), through the same tools the empty screen's button and the palette use.
-/// Off the UI thread; the WPF files are only read. Failures are logged, never shown as errors:
-/// the empty screen still offers the import by hand.
+/// WPF app's sessions and groups (`state_import_wpf`: they arrive asleep), the settings that map
+/// onto ours (theme, commands, font size…; its Open with list waits on a consent card,
+/// `open_with_pending`), and its project notes (`notes_import_wpf`), through the same tools the
+/// empty screen's button and the palette use. Never with `--clean`. Off the UI thread; the WPF
+/// files are only read. Failures are logged, never shown as errors: the empty screen still offers
+/// the import by hand.
 fn import_wpf_on_first_run(engine: &Engine, state_json: PathBuf) {
     let engine = engine.clone();
     let worker = move || {
@@ -358,12 +360,12 @@ fn main() {
         let theme_kind = if args.latte { ThemeKind::Latte } else { ThemeKind::Mocha };
         (engine, Mode::Demo { live: args.live, restore: args.restore, shell }, theme_kind)
     } else {
-        // The data folder was renamed for v2 (CodeShellManager-rs -> CodeShellManager2): move it
-        // once, before anything reads it. Start-up, before the UI exists, so the disk is fine here.
-        if !args.clean {
-            for line in persist::migrate_legacy_data_dirs(args.config_dir.as_deref()) {
-                log::info!("data folder: {line}");
-            }
+        // The data folders, once, before anything reads them: a stable build moves the pre-v2
+        // folder (CodeShellManager-rs -> CodeShellManager2), a beta build copies the stable app's
+        // folders on its first start. Nothing for --clean. Start-up, before the UI exists, so the
+        // disk is fine here.
+        for line in persist::prepare_data_dirs(args.config_dir.as_deref(), args.clean) {
+            log::info!("data folder: {line}");
         }
         let options = StateOptions { save_path: persist::state_path(args.config_dir.as_deref()), clean: args.clean, ..StateOptions::production() };
         let budget = options.shutdown_budget.as_secs_f32();

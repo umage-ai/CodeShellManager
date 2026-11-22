@@ -22,9 +22,14 @@ pub const PORTABLE_MARKER: &str = "portable";
 /// The persisted-file version written into `state.json` (`CsmRsVersion`).
 pub const STATE_FILE_VERSION: u32 = 1;
 
-/// The app's folder name under the platform data dirs (roaming: state; local: the index).
-pub const APP_DIR: &str = "CodeShellManager2";
-/// The folder name before the v2 move (2026-11-20); moved to [`APP_DIR`] once, on start.
+/// The app's folder name under the platform data dirs (roaming: state; local: the index), by
+/// release channel (`csm_core::channel`): `CodeShellManager2` for stable builds (and every local
+/// build), `CodeShellManager2-Beta` for beta builds, so a beta installed beside the stable app
+/// never shares its state.
+pub const APP_DIR: &str = csm_core::channel::CURRENT.app_dir();
+pub use csm_core::channel::{BETA_APP_DIR, STABLE_APP_DIR};
+/// The folder name before the v2 move (2026-11-20); moved to [`STABLE_APP_DIR`] once, on start
+/// (stable builds only).
 pub const LEGACY_APP_DIR: &str = "CodeShellManager-rs";
 
 /// Where the config folder is, and why.
@@ -88,9 +93,118 @@ pub fn wpf_state_path() -> Option<PathBuf> {
 ///
 /// [`LoadSource::FirstRun`]: csm_core::state::LoadSource::FirstRun
 pub fn first_run_wpf_import(cli_config_dir: Option<&Path>, clean: bool, source: Option<state::LoadSource>) -> Option<PathBuf> {
+    first_run_wpf_import_if(is_default_location(cli_config_dir), clean, source, wpf_state_path())
+}
+
+/// True when the state lives in this channel's default folder: no `--config-dir`,
+/// `CSM_CONFIG_DIR`, `CSM_STATE_PATH` or portable install. Only then does start-up touch the
+/// shared data folders (the legacy move, the beta's one-time copy, the first-run import).
+pub fn is_default_location(cli_config_dir: Option<&Path>) -> bool {
     let state_path_set = std::env::var_os(STATE_PATH_ENV).is_some_and(|p| !p.is_empty());
-    let default_location = !state_path_set && dirs::data_dir().is_some_and(|d| config_dir(cli_config_dir) == ConfigDir::Dir(d.join(APP_DIR)));
-    first_run_wpf_import_if(default_location, clean, source, wpf_state_path())
+    !state_path_set && dirs::data_dir().is_some_and(|d| config_dir(cli_config_dir) == ConfigDir::Dir(d.join(APP_DIR)))
+}
+
+/// Start-up work on the data folders, before the state is loaded. Nothing at all for `--clean`
+/// or a state file outside the default location. Stable builds move the pre-v2 folder
+/// ([`migrate_legacy_in`]); beta builds copy the stable app's folders once
+/// ([`seed_beta_in`]). Returns one line per thing done, for the log. Never fails.
+pub fn prepare_data_dirs(cli_config_dir: Option<&Path>, clean: bool) -> Vec<String> {
+    let roaming = dirs::data_dir();
+    let local = dirs::data_local_dir();
+    prepare_data_dirs_in(csm_core::channel::CURRENT, is_default_location(cli_config_dir), clean, roaming.as_deref(), local.as_deref())
+}
+
+/// [`prepare_data_dirs`] for a channel over the given parent folders (tests).
+pub fn prepare_data_dirs_in(
+    channel: csm_core::channel::Channel,
+    default_location: bool,
+    clean: bool,
+    roaming: Option<&Path>,
+    local: Option<&Path>,
+) -> Vec<String> {
+    if clean || !default_location {
+        return Vec::new();
+    }
+    let Some(roaming) = roaming else { return Vec::new() };
+    match channel {
+        csm_core::channel::Channel::Stable => {
+            let mut bases: Vec<PathBuf> = [Some(roaming), local].into_iter().flatten().map(Path::to_path_buf).collect();
+            bases.dedup();
+            migrate_legacy_in(&bases)
+        }
+        csm_core::channel::Channel::Beta => seed_beta_in(roaming, local),
+    }
+}
+
+/// A beta build's first start: copy the stable app's data folders (`CodeShellManager2`, roaming
+/// state and local index) to the beta's (`CodeShellManager2-Beta`), so testers keep their
+/// sessions, notes and add-ons. Once: only when the beta's roaming folder does not exist yet
+/// (it exists from then on). Never the other way, and the stable folders are only read. Each
+/// folder is copied into a `.copying` folder first and renamed into place, so a copy cut short
+/// never looks finished; a file that cannot be read is reported and skipped.
+pub fn seed_beta_in(roaming: &Path, local: Option<&Path>) -> Vec<String> {
+    let mut report = Vec::new();
+    if roaming.join(BETA_APP_DIR).exists() {
+        return report;
+    }
+    let mut bases = vec![roaming.to_path_buf()];
+    if let Some(l) = local.filter(|l| *l != roaming) {
+        bases.push(l.to_path_buf());
+    }
+    for base in bases {
+        let (from, to) = (base.join(STABLE_APP_DIR), base.join(BETA_APP_DIR));
+        if !from.is_dir() || to.exists() {
+            continue;
+        }
+        let staging = base.join(format!("{BETA_APP_DIR}.copying"));
+        if staging.exists()
+            && let Err(e) = fs::remove_dir_all(&staging)
+        {
+            report.push(format!("could not clear {}: {e}; not copied", staging.display()));
+            continue;
+        }
+        let mut problems = Vec::new();
+        let copied = copy_tree(&from, &staging, &mut problems);
+        report.extend(problems);
+        match copied.and_then(|n| fs::rename(&staging, &to).map(|()| n)) {
+            Ok(n) => report.push(format!("copied {n} files from {} to {} (first start of this beta)", from.display(), to.display())),
+            Err(e) => {
+                report.push(format!("could not copy {} to {}: {e}", from.display(), to.display()));
+                let _ = fs::remove_dir_all(&staging);
+            }
+        }
+    }
+    report
+}
+
+/// Copies a folder tree (plain files and folders; links and temp files are skipped). Returns the
+/// number of files copied; unreadable files are reported in `problems` and skipped.
+fn copy_tree(from: &Path, to: &Path, problems: &mut Vec<String>) -> io::Result<usize> {
+    fs::create_dir_all(to)?;
+    let mut n = 0;
+    for entry in fs::read_dir(from)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                problems.push(format!("could not list {}: {e}", from.display()));
+                continue;
+            }
+        };
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            match copy_tree(&src, &dst, problems) {
+                Ok(k) => n += k,
+                Err(e) => problems.push(format!("could not copy {}: {e}", src.display())),
+            }
+        } else if kind.is_file() && src.extension().is_none_or(|x| x != "tmp") {
+            match fs::copy(&src, &dst) {
+                Ok(_) => n += 1,
+                Err(e) => problems.push(format!("could not copy {}: {e}", src.display())),
+            }
+        }
+    }
+    Ok(n)
 }
 
 /// [`first_run_wpf_import`]'s decision, given what it reads from the environment (tests).
@@ -102,29 +216,12 @@ pub fn first_run_wpf_import_if(default_location: bool, clean: bool, source: Opti
 }
 
 /// Moves the pre-v2 data folders (`CodeShellManager-rs`, roaming and local) to `CodeShellManager2`,
-/// once: only where the old folder exists and the new one does not. Call it at start-up, before
-/// the state is loaded (not for `--clean`). It does nothing unless the state lives in the default
-/// location (no `--config-dir`, `CSM_CONFIG_DIR`, `CSM_STATE_PATH` or portable install). Returns
-/// what happened, one line per folder, for the log. Never fails: a folder that can't be moved is
-/// reported and left alone.
-pub fn migrate_legacy_data_dirs(cli_config_dir: Option<&Path>) -> Vec<String> {
-    if std::env::var_os(STATE_PATH_ENV).is_some_and(|p| !p.is_empty()) {
-        return Vec::new();
-    }
-    let Some(default) = dirs::data_dir().map(|d| d.join(APP_DIR)) else { return Vec::new() };
-    if config_dir(cli_config_dir) != ConfigDir::Dir(default) {
-        return Vec::new();
-    }
-    let mut bases: Vec<PathBuf> = [dirs::data_dir(), dirs::data_local_dir()].into_iter().flatten().collect();
-    bases.dedup();
-    migrate_legacy_in(&bases)
-}
-
-/// [`migrate_legacy_data_dirs`] over the given parent folders (tests).
+/// once: only where the old folder exists and the new one does not (stable builds, through
+/// [`prepare_data_dirs`]). Never fails: a folder that can't be moved is reported and left alone.
 pub fn migrate_legacy_in(bases: &[PathBuf]) -> Vec<String> {
     let mut report = Vec::new();
     for base in bases {
-        let (old, new) = (base.join(LEGACY_APP_DIR), base.join(APP_DIR));
+        let (old, new) = (base.join(LEGACY_APP_DIR), base.join(STABLE_APP_DIR));
         if !old.is_dir() || new.exists() {
             continue;
         }
@@ -438,14 +535,84 @@ mod tests {
         fs::write(a.path().join(LEGACY_APP_DIR).join("state.json"), "{}").unwrap();
         // b: both exist -> the new one wins and the old one is left alone.
         fs::create_dir_all(b.path().join(LEGACY_APP_DIR)).unwrap();
-        fs::create_dir_all(b.path().join(APP_DIR)).unwrap();
+        fs::create_dir_all(b.path().join(STABLE_APP_DIR)).unwrap();
         let report = migrate_legacy_in(&[a.path().to_path_buf(), b.path().to_path_buf()]);
         assert_eq!(report.len(), 1, "{report:?}");
-        assert!(a.path().join(APP_DIR).join("state.json").is_file());
+        assert!(a.path().join(STABLE_APP_DIR).join("state.json").is_file());
         assert!(!a.path().join(LEGACY_APP_DIR).exists());
         assert!(b.path().join(LEGACY_APP_DIR).is_dir());
         // A second run has nothing to do.
         assert!(migrate_legacy_in(&[a.path().to_path_buf(), b.path().to_path_buf()]).is_empty());
+    }
+
+
+    /// A stable app's data: roaming state with a sub-folder, a local index, and a temp file.
+    fn stable_data(roaming: &Path, local: &Path) {
+        fs::create_dir_all(roaming.join(STABLE_APP_DIR).join("addons").join("pack")).unwrap();
+        fs::write(roaming.join(STABLE_APP_DIR).join("state.json"), r#"{"Sessions":[{"Id":"s1"}]}"#).unwrap();
+        fs::write(roaming.join(STABLE_APP_DIR).join("state.json.tmp"), "torn").unwrap();
+        fs::write(roaming.join(STABLE_APP_DIR).join("addons").join("pack").join("addon.toml"), "id = 'x'").unwrap();
+        fs::create_dir_all(local.join(STABLE_APP_DIR)).unwrap();
+        fs::write(local.join(STABLE_APP_DIR).join("index.db"), "db").unwrap();
+    }
+
+    #[test]
+    fn a_beta_copies_the_stable_folders_once_and_never_back() {
+        use csm_core::channel::Channel;
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        stable_data(r.path(), l.path());
+        let report = prepare_data_dirs_in(Channel::Beta, true, false, Some(r.path()), Some(l.path()));
+        assert_eq!(report.len(), 2, "{report:?}");
+        let beta = r.path().join(BETA_APP_DIR);
+        assert_eq!(fs::read_to_string(beta.join("state.json")).unwrap(), r#"{"Sessions":[{"Id":"s1"}]}"#);
+        assert!(beta.join("addons").join("pack").join("addon.toml").is_file());
+        assert!(!beta.join("state.json.tmp").exists(), "temp files are not copied");
+        assert!(l.path().join(BETA_APP_DIR).join("index.db").is_file());
+        assert!(!r.path().join(format!("{BETA_APP_DIR}.copying")).exists());
+        // The stable folder is untouched.
+        assert!(r.path().join(STABLE_APP_DIR).join("state.json.tmp").is_file());
+        // Once: the beta's own changes are never overwritten by a later start.
+        fs::write(beta.join("state.json"), "{}").unwrap();
+        assert!(prepare_data_dirs_in(Channel::Beta, true, false, Some(r.path()), Some(l.path())).is_empty());
+        assert_eq!(fs::read_to_string(beta.join("state.json")).unwrap(), "{}");
+        // A stable build never copies the beta's folder back.
+        fs::remove_dir_all(r.path().join(STABLE_APP_DIR)).unwrap();
+        assert!(prepare_data_dirs_in(Channel::Stable, true, false, Some(r.path()), Some(l.path())).is_empty());
+        assert!(!r.path().join(STABLE_APP_DIR).exists());
+    }
+
+    #[test]
+    fn a_beta_without_a_stable_app_starts_empty() {
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        assert!(seed_beta_in(r.path(), Some(l.path())).is_empty());
+        assert!(!r.path().join(BETA_APP_DIR).exists(), "nothing made: the beta's first run (and its 0.x import) is still a first run");
+        // A copy cut short by a crash is redone from scratch.
+        stable_data(r.path(), l.path());
+        fs::create_dir_all(r.path().join(format!("{BETA_APP_DIR}.copying")).join("junk")).unwrap();
+        seed_beta_in(r.path(), Some(l.path()));
+        assert!(!r.path().join(BETA_APP_DIR).join("junk").exists());
+        assert!(r.path().join(BETA_APP_DIR).join("state.json").is_file());
+    }
+
+    #[test]
+    fn clean_starts_touch_no_data_folder_and_import_nothing() {
+        use csm_core::channel::Channel;
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        stable_data(r.path(), l.path());
+        fs::create_dir_all(r.path().join(LEGACY_APP_DIR)).unwrap();
+        let before = |p: &Path| fs::read_dir(p).unwrap().count();
+        let (nr, nl) = (before(r.path()), before(l.path()));
+        for channel in [Channel::Stable, Channel::Beta] {
+            assert!(prepare_data_dirs_in(channel, true, true, Some(r.path()), Some(l.path())).is_empty(), "{channel:?}");
+            // Outside the default location (--config-dir, CSM_CONFIG_DIR, portable) likewise.
+            assert!(prepare_data_dirs_in(channel, false, false, Some(r.path()), Some(l.path())).is_empty(), "{channel:?}");
+        }
+        assert_eq!((before(r.path()), before(l.path())), (nr, nl), "no folder made, moved or copied");
+        assert!(!r.path().join(BETA_APP_DIR).exists());
+        // No 0.x import either (sessions, settings, notes and the Open with offer all come from it).
+        let wpf = r.path().join("wpf-state.json");
+        fs::write(&wpf, "{}").unwrap();
+        assert_eq!(first_run_wpf_import_if(true, true, Some(LoadSource::FirstRun), Some(wpf)), None);
     }
 
     #[test]

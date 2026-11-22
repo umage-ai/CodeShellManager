@@ -62,7 +62,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "state_import_wpf",
             "Import from CodeShellManager 0.x…",
-            "Import sessions and groups from the WPF app's state.json (default: its usual location). Imported sessions arrive asleep; existing ones are kept.",
+            "Import sessions, groups and settings from CodeShellManager 0.x's state.json (default: its usual location; the file is only read). Imported sessions arrive asleep; existing ones are kept. Its Open with list is not applied: it waits for the person's answer (open_with_pending). App and CLI only.",
             Toolset::App,
             Effects::MUTATES_STATE,
             schema_of::<ImportParams>,
@@ -330,7 +330,51 @@ struct ImportParams {
     path: Option<String>,
 }
 
+/// A state file bigger than this is not a CodeShellManager state file.
+const MAX_WPF_STATE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// What the worker read from the WPF app's state file.
+struct WpfRead {
+    state: csm_core::models::AppState,
+    /// The file's `Settings` object, mapped on the engine thread (`csm_core::wpf_settings`).
+    settings: Value,
+    /// Its Open with list after `sanitize_imported` (disk checks: done here, on the worker).
+    open_with: Vec<csm_core::models::OpenWithEntry>,
+}
+
+/// Reads the WPF `state.json` (never writes it). The `Settings` object is taken out before the
+/// rest is parsed, so a bad setting never costs the sessions; it is read value by value later.
+fn read_wpf(path: &std::path::Path) -> Result<WpfRead, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    if !meta.is_file() || meta.len() > MAX_WPF_STATE_BYTES {
+        return Err(format!("{} is not a CodeShellManager state file", path.display()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let not_state = |e: &dyn std::fmt::Display| format!("{} is not a CodeShellManager state file: {e}", path.display());
+    let mut root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| not_state(&e))?;
+    let Some(obj) = root.as_object_mut() else { return Err(not_state(&"not a JSON object")) };
+    let settings = obj.remove("Settings").unwrap_or(Value::Null);
+    let state = serde_json::from_value(root).map(csm_core::state::normalize).map_err(|e| not_state(&e))?;
+    let offered = csm_core::wpf_settings::map(&settings, &AppSettings::default());
+    let open_with = if offered.open_with_seeded { super::open::sanitize_imported(&offered.open_with) } else { Vec::new() };
+    Ok(WpfRead { state, settings, open_with })
+}
+
+/// MCP clients may not run it: it sets the default and launch commands and offers editors.
+fn refused_for_mcp() -> ToolError {
+    ToolError::Refused("importing CodeShellManager 0.x decides what runs (commands, editors); do it in the app or with `csm state-import-wpf`".into())
+}
+
+/// Refused before any consent card (`tools::precheck`).
+pub(super) fn precheck(id: &str, caller: &Caller) -> Option<ToolError> {
+    (id == "state_import_wpf" && caller.is_external()).then(refused_for_mcp)
+}
+
 fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    if ctx.caller.is_external() {
+        return Err(refused_for_mcp());
+    }
     let p: ImportParams = parse_params(params)?;
     let path = match p.path.filter(|s| !s.trim().is_empty()) {
         Some(s) => PathBuf::from(s.trim()),
@@ -339,13 +383,11 @@ fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let reply = ctx.park();
     let engine = ctx.engine.clone();
     let worker = move || {
-        let result = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display())).and_then(|b| {
-            csm_core::state::parse(&String::from_utf8_lossy(&b)).map_err(|e| format!("{} is not a CodeShellManager state file: {e}", path.display()))
-        });
+        let result = read_wpf(&path);
         engine.post(Box::new(move |ctx| {
             let r = match result {
                 Err(msg) => Err(ToolError::Failed(msg)),
-                Ok(imported) => Ok(merge(ctx, imported)),
+                Ok(read) => Ok(merge(ctx, read)),
             };
             crate::lifecycle::after_step(ctx.state, ctx.engine);
             if let Some(reply) = reply {
@@ -357,8 +399,10 @@ fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     Ok(ToolOutput::message("Importing."))
 }
 
-/// Adds the imported groups and sessions that are not here yet (by id). Sessions arrive asleep.
-fn merge(ctx: &mut Ctx<'_>, mut imported: csm_core::models::AppState) -> ToolOutput {
+/// Adds the imported groups and sessions that are not here yet (by id; sessions arrive asleep),
+/// takes the 0.x settings that map onto ours, and offers its Open with list for consent.
+fn merge(ctx: &mut Ctx<'_>, read: WpfRead) -> ToolOutput {
+    let WpfRead { state: mut imported, settings, open_with } = read;
     let mut groups = 0;
     for g in imported.groups.drain(..) {
         if !g.id.trim().is_empty() && !ctx.state.app.groups.iter().any(|x| x.id == g.id) {
@@ -382,8 +426,40 @@ fn merge(ctx: &mut Ctx<'_>, mut imported: csm_core::models::AppState) -> ToolOut
     for (i, g) in ctx.state.app.groups.iter_mut().enumerate() {
         g.sort_order = i32::try_from(i).unwrap_or(i32::MAX);
     }
+    // Settings: value by value; anything unusable is skipped and logged, never fatal.
+    let mapped = csm_core::wpf_settings::map(&settings, &ctx.state.app.settings);
+    for line in &mapped.skipped {
+        log::warn!("import 0.x settings: {line}");
+    }
+    ctx.state.app.settings = mapped.settings;
+    if let Ok(m) = settings_map(&ctx.state.app.settings) {
+        for key in &mapped.changed {
+            if let Some(v) = m.get(*key) {
+                ctx.events.emit(crate::Event::SettingChanged { key: (*key).to_owned(), value: v.clone() });
+            }
+        }
+    }
+    // The Open with list runs programs: it waits for the person's answer.
+    let offered = super::open::offer_pending(ctx, open_with);
     ctx.state.persist();
-    ToolOutput::new(format!("Imported {sessions} sessions (asleep) and {groups} groups."), json!({"sessions": sessions, "groups": groups}))
+    let mut msg = format!("Imported {sessions} sessions (asleep) and {groups} groups");
+    if !mapped.changed.is_empty() {
+        msg.push_str(&format!(", and {} settings", mapped.changed.len()));
+    }
+    msg.push('.');
+    if offered > 0 {
+        msg.push_str(&format!(" {offered} editors from CodeShellManager 0.x are waiting for your OK."));
+    }
+    ToolOutput::new(
+        msg,
+        json!({
+            "sessions": sessions,
+            "groups": groups,
+            "settings": {"changed": mapped.changed, "skipped": mapped.skipped},
+            "open_with_pending": offered,
+            "launch_commands": ctx.state.app.settings.launch_commands,
+        }),
+    )
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]

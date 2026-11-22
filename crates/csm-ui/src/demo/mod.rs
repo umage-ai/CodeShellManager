@@ -303,6 +303,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         docs: crate::docs_model::demo_details(),
         folder_worktrees: BTreeMap::new(),
         open_with: demo_open_with(),
+        pending_open_with: Vec::new(),
         windows: BTreeMap::new(),
         recently_closed: Vec::new(),
         tasks: std::sync::Arc::new(demo_tasks(now)),

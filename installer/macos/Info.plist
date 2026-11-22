@@ -35,7 +35,7 @@
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>umage.ai. MIT OR Apache-2.0.</string>
+  <string>umage.ai. MIT.</string>
   <!-- Shells and CLIs started in CodeShellManager's terminals are attributed to the app by macOS
        privacy controls (TCC), so these prompts name what the person's own commands are doing. -->
   <key>NSDesktopFolderUsageDescription</key>

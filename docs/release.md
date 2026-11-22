@@ -21,13 +21,28 @@ this branch (`installer/CodeShellManager2.wxs`, `.github/workflows/{release-v2,w
 
 | | **stable** (rc and final tags) | **beta** (`-beta.N` tags) |
 |---|---|---|
-| Product name (Add/Remove Programs) | CodeShellManager | CodeShellManager 2 Beta |
+| Product name (Add/Remove Programs) | CodeShellManager | CodeShellManager Beta (was "CodeShellManager 2 Beta"; same UpgradeCode, so older betas upgrade in place) |
 | UpgradeCode | `3F7A9B1C-2D5E-4F8A-B0C3-6E1D9A4F2B7E` (the WPF app's) | `8B16A8B3-05F0-4048-B8DD-40B3AC84FF55` (its own) |
-| What it replaces | the WPF app (any 0.x), earlier v2 stable builds, and any CodeShellManager 2 Beta | earlier betas only |
-| Install folder | `C:\Program Files\umage\CodeShellManager` | `C:\Program Files\umage\CodeShellManager 2 Beta` |
-| Start menu / desktop | `CodeShellManager` | `CodeShellManager 2 Beta` |
+| What it replaces | the WPF app (any 0.x), earlier v2 stable builds, and any beta (found by the beta's UpgradeCode, not its name) | earlier betas only |
+| Install folder | `C:\Program Files\umage\CodeShellManager` | `C:\Program Files\umage\CodeShellManager Beta` |
+| Start menu / desktop / toast header | `CodeShellManager` | `CodeShellManager Beta` |
 | AppUserModelID | `UmageAI.CodeShellManager` | `UmageAI.CodeShellManager.Beta` |
-| HKCU key (shortcut key paths) | `Software\umage\CodeShellManager` | `Software\umage\CodeShellManager2Beta` |
+| HKCU key (shortcut key paths) | `Software\umage\CodeShellManager` | `Software\umage\CodeShellManager2Beta` (internal; kept so the key path stays stable across beta upgrades) |
+| Compiled-in channel (`CSM_CHANNEL`, `csm_core::channel`) | `stable` (also every local and dev build: unset = stable) | `beta` (set by `release-v2.yml` from the tag) |
+| Data folders | `%APPDATA%\CodeShellManager2`, index in `%LOCALAPPDATA%\CodeShellManager2` | `%APPDATA%\CodeShellManager2-Beta`, index in `%LOCALAPPDATA%\CodeShellManager2-Beta` |
+| IPC app id (craft-ipc discovery records; Windows pipe `craft-<user>-<app id>-<pid>`) | `codeshell` | `codeshell-beta` |
+| Per-session MCP configs when nothing is saved | `%TEMP%\CodeShellManager2-mcp` | `%TEMP%\CodeShellManager2-Beta-mcp` |
+
+**Beta data (Allan, 2026-11-22):** a beta build keeps its own data folders, so a beta installed
+beside the stable app after 2.0 never shares its state. On its first start, when
+`%APPDATA%\CodeShellManager2-Beta` does not exist yet, it copies the stable folders (roaming and
+local) once (`persist::seed_beta_in`: into a `.copying` folder, then renamed, so a copy cut short
+is redone), so testers keep their sessions, notes and add-ons. Never the other way: a stable build
+never reads or writes the beta folders. Not for `--clean`, `--config-dir`, `CSM_CONFIG_DIR`,
+`CSM_STATE_PATH` or a portable install. A beta `csm` only finds a beta app (the app id), and
+`csm --start` starts the `codeshell.exe` beside it before looking on PATH (with both installed,
+PATH could hold the other channel's). The Linux and macOS packages have no separate beta
+install, so `release-v2-unix.yml` builds the stable channel.
 
 The beta keeps its own identity so testers can run it beside the WPF app; a beta never
 upgrades or removes the WPF app. Release candidates use the stable channel so the real upgrade
@@ -57,9 +72,9 @@ for the stable channel.
 | Registry (HKCU) | `Software\umage\CodeShellManager` (StartMenu, Desktop: shortcut key paths) | same key and values | Matches. |
 | Protocol handlers / file associations | none (`.csm` backups only through file dialogs) | none | Nothing to migrate. |
 | Autostart | none | none | Nothing to migrate. |
-| Single instance | none | none | Running two copies is possible in both; see Risks. |
-| Data folder | `%APPDATA%\CodeShellManager\` : `state.json`(+`.bak`), `output.db` (search index and notes), `crash.log`, `update-cache.json`, `webview2\` | `%APPDATA%\CodeShellManager2\` : `state.json`(+`.bak`), `addons\`, `addon-data\`; index in `%LOCALAPPDATA%\CodeShellManager2\` | Deliberately separate: the formats differ and the WPF app's folder stays as it was, so a rollback to 0.x finds its data. |
-| First-run migration | n/a | On a true first run (no v2 `state.json` or `.bak`, default location, not `--clean`), `codeshell` imports the WPF app's sessions and groups (`state_import_wpf`, sessions arrive asleep) and project notes (`notes_import_wpf`) on a background thread | **New on this branch.** Reads the WPF files only; never writes or deletes them. Not imported: WPF settings, search history (output.db's indexed output). The empty screen still offers the import by hand. |
+| Single instance | none | none (the IPC endpoint is per channel: `codeshell` / `codeshell-beta`) | Running two copies is possible in both; see Risks. |
+| Data folder | `%APPDATA%\CodeShellManager\` : `state.json`(+`.bak`), `output.db` (search index and notes), `crash.log`, `update-cache.json`, `webview2\` | `%APPDATA%\CodeShellManager2\` : `state.json`(+`.bak`), `addons\`, `addon-data\`; index in `%LOCALAPPDATA%\CodeShellManager2\` (beta: `CodeShellManager2-Beta`, see Channels) | Deliberately separate: the formats differ and the WPF app's folder stays as it was, so a rollback to 0.x finds its data. |
+| First-run migration | n/a | On a true first run (no v2 `state.json` or `.bak`, default location, not `--clean`), `codeshell` imports the WPF app's sessions and groups (`state_import_wpf`, sessions arrive asleep), the settings that map onto version 2's (table "0.x settings" below), its Open with list **as a pending offer** (a one-time card, see below) and project notes (`notes_import_wpf`), on a background thread | Reads the WPF files only; never writes or deletes them. Not imported: search history (output.db's indexed output) and the settings marked "not carried". The empty screen and the palette still offer the import by hand, which does the same. |
 | Uninstall | removes program files and shortcuts; leaves `%APPDATA%\CodeShellManager` | same; leaves both data folders; removes the PATH entry | OK. |
 | Update check | GitHub `releases/latest` of `umage-ai/CodeShellManager`, compared as `Version` | none in v2 | A v2 final published as "latest" makes every running WPF app say "Update available 2.0.0" (pre-releases do not). |
 | Authenticode signing | Azure Trusted Signing (`azure/trusted-signing-action@v2.0.0`) on `CodeShellManager.exe` and the MSI; secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | same action and secrets, on `codeshell.exe`, `csm.exe`, `csm-session-summary.exe`, `csm-review.exe` and the MSI (never Microsoft's ConPTY files) | Already ported. Added: signatures verified before publishing; a stable tag refuses to publish unsigned. |
@@ -82,7 +97,14 @@ Nothing here runs without Allan's say-so. Tags are created by hand.
      Add/Remove Programs (version 2.0.0.101), the WPF app gone from `C:\Program Files\umage\CodeShellManager`,
      `%APPDATA%\CodeShellManager` untouched, and on first start the WPF sessions listed asleep
      and the notes present.
-   - with a CodeShellManager 2 Beta installed too: it is removed; its `%APPDATA%\CodeShellManager2` state is kept and used (no import then, because it is not a first run).
+   - with a beta installed too: it is removed (by its UpgradeCode). A beta built before the
+     beta data folder kept its state in `%APPDATA%\CodeShellManager2`, which the rc then uses (no
+     import, not a first run); a newer beta kept its own (`CodeShellManager2-Beta`), which the rc
+     does not read.
+   - the 0.x settings: theme, default and launch commands, font size, as the table below says;
+     and a card "Use these editors from CodeShellManager 0.x?" listing the 0.x Open with commands
+     (Allow adds them, Don't allow discards them; it does not come back).
+   - `codeshell --clean` on that machine: empty, no import, no card, nothing written.
    - `csm app-info` in a new terminal (PATH), a toast from a session, Start menu and desktop shortcuts.
 3. Final: tag `v2.0.0`. The release is a normal release, marked latest.
 4. Dispatch the package workflows with the tag (they never run on their own; see the comments
@@ -127,47 +149,84 @@ the previous one of the same channel, and the final replace an rc.
 - Until the merge, a `v2.*` tag on a v2 commit runs only v2's workflows (a tag runs the files of
   the commit it points at), so betas are safe to tag now.
 
+## 0.x settings
+
+What `state_import_wpf` (the first-run import and "Import from CodeShellManager 0.x…") does with
+each setting in the WPF app's `state.json` (`csm_core::wpf_settings`). The file is read value
+by value: a value of the wrong type or out of range is skipped and logged, keys this version
+does not know are logged and ignored, and a bad setting never stops the sessions importing. A
+missing value keeps version 2's. Re-running the import takes the 0.x values again.
+
+| 0.x setting | Version 2 | Notes |
+|---|---|---|
+| `Theme` | `Theme` | `dark`, `light` or `system` (any case); anything else skipped. Applied live. |
+| `DefaultCommand` | `DefaultCommand` | Trimmed; blank, control characters or over 2000 characters skipped. |
+| `DefaultWorkingFolder` | `DefaultWorkingFolder` | Trimmed; control characters skipped. |
+| `LaunchCommands` | `LaunchCommands` | Trimmed; blanks, control characters and duplicates dropped; at most 64. The quick-open follows live. |
+| `AutoRestoreSessions` | `AutoRestoreSessions` | |
+| `AutoResumeClaude` | `AutoResumeClaude` | |
+| `ClaudeLaunchStaggerMs` | `ClaudeLaunchStaggerMs` | 0 to 10000. |
+| `WarnOnCloseWhenBusy` | `WarnOnCloseWhenBusy` | |
+| `ShowToastNotifications`, `ShowNotificationSound` | same | |
+| `ShowGitBranch` | `ShowGitBranch` | |
+| `ImportWindowsTerminalProfiles` | `ImportWindowsTerminalProfiles` | |
+| `GroupDisplayMode` (0 None, 1 FilterStrip, 2 InlineHeaders) | `GroupDisplayMode` (Flat, Rail, Headers) | Same numbers. |
+| `ProgramStatusProbe` (0 Auto, 1 On, 2 Off) | `ProgramStatusProbe` | |
+| `TerminalFontSize` (CSS px) | `TerminalFontPoints` | Version 2's points are logical pixels, as CSS px are: same number, 6 to 32. Left at 0.x's default (14) it is not carried, so version 2's own default (12) stays. |
+| `OpenWith` + `OpenWithSeeded` | the Open with list, **only after consent** | Sanitised like a backup's (`sanitize_imported`: batch files dropped, programs checked at their real path); the entries not listed yet (same program and local arguments) wait in `PendingOpenWith` (state.json). A card "Use these editors from CodeShellManager 0.x?" lists each program and its arguments. Allow (`open_with_pending_answer`, `adopt_open_with: true`) adds them and makes 0.x's default the default; Don't allow discards them. Asked once; a manual re-import asks again only for entries still not listed. Never offered when `OpenWithSeeded` is false. |
+| `AnthropicApiKey` | not carried | Nothing in version 2 uses it, and a secret is not copied without a need. |
+| `TerminalFontFamily`, `TerminalFontWeight`, `TerminalFontLigatures`, `TerminalLetterSpacing`, `TerminalLineHeight` | not carried | xterm.js CSS values; version 2 draws its own font (built-in JetBrains Mono or `--font`), always with ligatures and its own metrics. |
+| `UseBundledConPty` | not carried | Version 2 ships and chooses its own ConPTY; a 0.x workaround for 0.x's bundle should not switch version 2 to the inbox one. |
+| `AutoFocusTerminalOnSelect`, `FilterGridByActiveGroup`, `PerGroupLayout`, `ShowGroupsTab`, `ShowWorktreeClusters`, `UngroupedSectionExpanded`, `SearchCollapseAfterNavigate`, `MaxSearchResults`, `ShowTerminalStatusDot`, `SidebarActionIconsMode` | not carried | No such setting in version 2 (it always focuses, keeps layouts per group, shows the status glyph, and so on). |
+| `IndexTerminalOutput`, `OutputRetentionDays` | not carried | Version 2's index has no switch or retention setting. |
+| `DebugTerminalTrace`, `LegacyDefaultGroupCleared` | not carried | 0.x diagnostics and a 0.x one-shot migration flag. |
+| Window bounds, `LastLayout`, `GroupLayouts`, `RecentlyClosed` (not settings) | not carried | Version 2 places its window and lays out panes its own way; the import runs after the window is open. |
+
 ## Decisions for Allan
 
-1. **Exe name** (`codeshell.exe` vs the WPF app's `CodeShellManager.exe`).
-   Recommendation: keep `codeshell.exe`. Renaming would need `csm --start`'s lookup
-   (craft-ipc `resolve("codeshell")`, `APP_ID` in csm-mcp) changed on Windows only, and buys one
-   thing: taskbar pins and hand-made shortcuts to
-   `CodeShellManager.exe` keep working. The Start-menu and desktop shortcuts, the only ones the
-   WPF installer made, are re-created by the upgrade. Mention "re-pin to the taskbar" in the
-   release notes.
+Decided by Allan on 2026-11-22: 1 (keep `codeshell.exe`), 3 and 8 (a beta data folder), 4
+(import 0.x settings, Open with only after consent) and 7 (MIT).
+
+1. **Exe name: decided, keep `codeshell.exe`** (Allan, 2026-11-22). Renaming would have needed
+   `csm --start`'s lookup changed on Windows only, and bought one thing: taskbar pins and
+   hand-made shortcuts to `CodeShellManager.exe` keep working. The Start-menu and desktop
+   shortcuts, the only ones the WPF installer made, are re-created by the upgrade. Mention
+   "re-pin to the taskbar" in the release notes.
 2. **Release candidates on the stable channel.** Implemented: `-rc.N` builds the stable MSI
    (replaces the WPF app; published only as a GitHub pre-release). Recommendation: keep, so the
    upgrade is tested before the final. Alternative: rc on the beta channel, and test the stable
    MSI only through a `channel=stable` dry run.
-3. **Stable removes CodeShellManager 2 Beta.** Implemented, because both use
-   `%APPDATA%\CodeShellManager2` and the apps have no single-instance guard. Recommendation:
-   keep. After 2.0.0, a new beta tag would again install beside the stable app and share its
-   state folder; if betas continue after 2.0, give them their own data folder first.
-4. **Which WPF data is imported.** Implemented: sessions, groups, notes, once, automatically on
-   first run. Not imported: WPF settings (theme, launch commands, Open with list), and the search
-   index's past output. Recommendation: settings would be good to import too (the `.csm` import
-   already maps settings via `adopt_settings`); it needs a decision because the WPF Open with
-   list runs programs and the `.csm` import only adopts it after asking.
+3. **Stable removes a beta install, and betas have their own data: decided** (Allan,
+   2026-11-22). The stable MSI still removes a beta, by its UpgradeCode. Betas keep their own data
+   folders (`CodeShellManager2-Beta`) and IPC app id and pipe (`codeshell-beta`), and copy the
+   stable folders once on their first start (see Channels). The beta product is now named
+   "CodeShellManager Beta" (was "CodeShellManager 2 Beta"; same UpgradeCode).
+4. **Which WPF data is imported: decided, settings too** (Allan, 2026-11-22). Sessions, groups,
+   notes and the settings in "0.x settings" above, once automatically on first run and by hand
+   the same way. The Open with list is only offered (the card), never applied silently. Not
+   imported: the search index's past output.
 5. **winget manifest extras.** komac copies the previous manifest's metadata. Recommendation:
    after the first 2.0.0 submission, add `Commands: [csm]` and refresh the description/tags in
    the winget-pkgs PR by hand (the WPF manifest says WebView2/WPF).
 6. **Chocolatey icon.** The nuspec still points at the WPF app's `app.png` pinned to a commit
    (jsDelivr). Version 2's only icon is `apps/codeshell/assets/codeshell.ico`. Recommendation:
    add a PNG of the v2 icon to the repo after the merge and pin `iconUrl` to that commit.
-7. **Licence metadata disagrees.** `Cargo.toml` says `license = "MIT OR Apache-2.0"`; `LICENSE`,
-   the README, the nuspec (`licenseUrl`) and the WPF app say MIT. Recommendation: make
-   `Cargo.toml` `MIT` unless dual licensing is intended (then add `LICENSE-APACHE` and say so).
-8. **Data folder name** `%APPDATA%\CodeShellManager2` stays. Recommendation: keep. Renaming it
-   to the WPF app's `CodeShellManager` would mix two state formats in one folder and break
-   rollback; renaming to anything else would need another migration for beta users (the
-   `CodeShellManager-rs` move in `persist::migrate_legacy_data_dirs` shows the pattern). It is
-   not user-facing.
+7. **Licence: decided, MIT** (Allan, 2026-11-22). The workspace `Cargo.toml` says
+   `license = "MIT"` (every crate inherits it) and the macOS `Info.plist` says MIT, matching
+   `LICENSE`, the README, the nuspec and the WPF app. `deny.toml` and `about.toml` accept MIT. The
+   remaining "MIT OR Apache-2.0" mentions are third-party code (craft-anything, craft-ipc, egui,
+   two-face), not ours.
+8. **Data folder name: decided.** `%APPDATA%\CodeShellManager2` stays for stable (Allan); the
+   beta's is `CodeShellManager2-Beta`. Neither is user-facing.
 9. **Workspace version.** `Cargo.toml` is `0.0.1`; only release builds carry the real version.
    Recommendation: set it to `2.0.0-dev` after the merge so local builds and `csm app-info`
    report a 2.x version (one test, `real_engine.rs` "CodeShellManager 0.", moves with it).
 10. **Package descriptions.** The nuspec description was rewritten for version 2 from the code,
    not from the user docs (another agent owns those); please read it before the first push.
+11. **(New) A beta tester's later changes stay in the beta.** The copy is one way, once: a tester
+   who moves from a new beta to the stable rc or final finds the stable folder as it was (or, with
+   none, gets the 0.x import). Betas built before this change used `CodeShellManager2`, so nothing
+   changes for them. Recommendation: accept, and say so in the beta release notes.
 
 ## Risks for existing WPF users
 
@@ -178,11 +237,13 @@ the previous one of the same channel, and the final replace an rc.
 - **Import is one-shot.** If someone starts version 2 before the WPF app has saved its last
   changes, or deletes v2's state later, the automatic import does not re-run while a v2 state
   file exists; the import is still available by hand (palette: "Import from CodeShellManager
-  0.x…") and merges by id, so running it again is safe.
+  0.x…") and merges sessions by id, so running it again is safe (it takes the 0.x settings again).
 - **Imported sessions arrive asleep**, not running, on the first start only. Waking one starts it.
 - **Rollback**: reinstalling the WPF MSI over version 2 fails with "A newer version is already
   installed"; uninstall version 2 first. The WPF data is untouched, so the WPF app comes back as it was.
-- **Two apps, one data folder**: a CodeShellManager 2 Beta installed after 2.0.0 shares
-  `%APPDATA%\CodeShellManager2` with the stable app (Decision 3).
+- **A beta's first copy** reads the stable index while the stable app may be running (SQLite);
+  a torn copy only affects the beta's search index and notes, never the stable app's.
+- **Two `csm` on PATH** with stable and beta both installed: the first on PATH wins, and it only
+  talks to its own channel's app (`csm setup` also registers both under the MCP name `codeshell`).
 - **Unsigned stable builds** can no longer be published (the workflow refuses), but a dry-run
   stable MSI is unsigned; installing one on a real machine upgrades its WPF app.

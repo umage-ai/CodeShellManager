@@ -6,8 +6,10 @@
      Channel=stable (rc and final releases): THE CodeShellManager. It carries the WPF app's
        (0.x) UpgradeCode, product name, folder, shortcut names and registry key, so it
        major-upgrades an installed WPF CodeShellManager in place (MSI, winget and Chocolatey
-       upgrades all go through this), and it also removes a "CodeShellManager 2 Beta" install.
-     Channel=beta: "CodeShellManager 2 Beta", installed BESIDE the WPF app with its own
+       upgrades all go through this), and it also removes a "CodeShellManager Beta" install.
+     Both channels' exes are built with CSM_CHANNEL set to the channel: a beta keeps its own
+       data folders (CodeShellManager2-Beta) and IPC app id (codeshell-beta).
+     Channel=beta: "CodeShellManager Beta", installed BESIDE the WPF app with its own
        UpgradeCode, folder, Start-menu entry and app id, so a beta never upgrades or removes it. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
@@ -29,9 +31,9 @@
     <!-- Must match the codeshell.aumid file the workflow writes into PublishDir. -->
     <?define AppUserModelId = "UmageAI.CodeShellManager" ?>
   <?elseif $(var.Channel) = "beta" ?>
-    <?define ProductName = "CodeShellManager 2 Beta" ?>
+    <?define ProductName = "CodeShellManager Beta" ?>
     <?define UpgradeCode = "$(var.BetaUpgradeCode)" ?>
-    <?define FolderName = "CodeShellManager 2 Beta" ?>
+    <?define FolderName = "CodeShellManager Beta" ?>
     <?define RegistryKey = "Software\umage\CodeShellManager2Beta" ?>
     <?define AppUserModelId = "UmageAI.CodeShellManager.Beta" ?>
   <?else?>
@@ -55,9 +57,10 @@
                   DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Please uninstall it first." />
 
     <?if $(var.Channel) = "stable" ?>
-    <!-- A CodeShellManager 2 Beta install is removed too: it keeps its state in the same folder
-         (%AppData%\CodeShellManager2), and two apps writing one state.json lose sessions. The
-         person's data is never touched by an uninstall. -->
+    <!-- A CodeShellManager Beta install is removed too, found by its UpgradeCode (never by its
+         name, which was "CodeShellManager 2 Beta" before). Betas built before the beta data
+         folder existed shared %AppData%\CodeShellManager2 with this app, and both put a `csm` on
+         PATH. The person's data is never touched by an uninstall. -->
     <Upgrade Id="$(var.BetaUpgradeCode)">
       <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" OnlyDetect="no" Property="CSMBETAFOUND" />
     </Upgrade>

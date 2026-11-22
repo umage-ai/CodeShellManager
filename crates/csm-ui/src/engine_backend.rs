@@ -299,6 +299,23 @@ impl Backend for EngineBackend {
                 self.quit_ready = true;
                 vec![Notice::QuitReady]
             }
+            // A setting changed elsewhere: the CLI, an MCP client, or the 0.x import (which runs
+            // outside the UI's dispatch on the first start). The theme and the quick-open follow.
+            Event::SettingChanged { key, value } => {
+                if key == "Theme"
+                    && let Some(v) = value.as_str()
+                {
+                    self.theme = theme_from_setting(v);
+                    self.refresh(true);
+                }
+                if key == "LaunchCommands"
+                    && let Some(list) = value.as_array()
+                {
+                    self.opts.launch_commands = list.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    self.refresh(true);
+                }
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -629,20 +646,8 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         folder_worktrees: Default::default(),
         usage: Default::default(),
         docs: Default::default(),
-        open_with: view
-            .open_with
-            .iter()
-            .map(|e| OpenWithEntryView {
-                id: e.id.clone(),
-                label: e.label.clone(),
-                executable: e.executable.clone(),
-                program: e.program.clone(),
-                local_args: e.local_args.clone(),
-                wsl_args: e.wsl_args.clone(),
-                ssh_args: e.ssh_args.clone(),
-                is_default: e.is_default,
-            })
-            .collect(),
+        open_with: view.open_with.iter().map(open_with_view).collect(),
+        pending_open_with: view.pending_open_with.iter().map(open_with_view).collect(),
         recently_closed: view
             .recently_closed
             .iter()
@@ -651,6 +656,19 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         tasks: view.tasks.clone(),
         sessions,
         groups,
+    }
+}
+
+fn open_with_view(e: &csm_engine::OpenWithView) -> OpenWithEntryView {
+    OpenWithEntryView {
+        id: e.id.clone(),
+        label: e.label.clone(),
+        executable: e.executable.clone(),
+        program: e.program.clone(),
+        local_args: e.local_args.clone(),
+        wsl_args: e.wsl_args.clone(),
+        ssh_args: e.ssh_args.clone(),
+        is_default: e.is_default,
     }
 }
 
