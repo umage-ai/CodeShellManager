@@ -119,3 +119,57 @@ fn reading_the_fixture_in_passes_gives_the_same_requests() {
     assert_eq!(lines, 8);
 }
 
+
+#[test]
+fn the_report_fixture_gives_the_report_numbers() {
+    use csm_core::usage_report::{Filter, GroupBy, ReportQuery, ReportRequest, build, utc_days};
+    const R1: &str = include_str!("fixtures/r1.jsonl");
+    const R2: &str = include_str!("fixtures/r2.jsonl");
+    let prices = PriceTable::embedded();
+    let mut rows: Vec<ReportRequest> = Vec::new();
+    for (text, sid, csm) in [(R1, "r1", Some("csm-shop")), (R2, "r2", None)] {
+        let b = fold(text);
+        let project = b.cwd.as_deref().map(|c| project_name(c, sid));
+        rows.extend(
+            priced(&b, sid, None, &prices)
+                .into_iter()
+                .map(|req| ReportRequest { req, csm_session: csm.map(Into::into), project: project.clone() }),
+        );
+    }
+    assert_eq!(rows.len(), 6, "the synthetic message is skipped");
+    // 2026-10-01T00:00Z .. 2026-10-03T00:00Z.
+    let (from, to) = (1_790_812_800_000, 1_790_985_600_000);
+    let q = |group_by| ReportQuery { from_ms: Some(from), to_ms: Some(to), days: utc_days(from, to), group_by, filter: Filter::default() };
+    let rates = |r: &UsageRequest| prices.rate_card(&r.model, &r.tokens, r.fast);
+    let rep = build(&rows, &q(GroupBy::Session), &rates);
+    let t = &rep.total;
+    assert_eq!(t.requests, 6);
+    assert_eq!((t.tokens.cache_write_5m, t.tokens.cache_write_1h), (6_000, 122_000), "1h writes are kept apart");
+    assert_eq!(t.unpriced_models, ["qwen3.8:27b"]);
+    // r1: opus 200*4 + 1000*20 + 60000*8 = 500800; 20*4 + 400*20 + 60000*0.2 + 2000*5 = 30080;
+    //     20*4 + 300*20 + 62000*8 = 502080; sonnet 3000*2 + 100*10 = 7000.
+    // r2: haiku-4-5 5000*1 + 500*5 + 20000*0.1 + 4000*1.25 = 14500.
+    let want = (500_800.0 + 30_080.0 + 502_080.0 + 7_000.0 + 14_500.0) / 1e6;
+    assert!((t.cost_usd - want).abs() < 1e-9, "{}", t.cost_usd);
+    assert!((t.cost_by_class.total() - want).abs() < 1e-9);
+    assert!((t.cost_by_class.cache_write_1h - 122_000.0 * 8.0 / 1e6).abs() < 1e-12);
+    // Hit rate: reads 80k of prompt 200+60000 + 20+60000+2000 + 20+62000 + 3000 + 5000+20000+4000 + 900.
+    let prompt = 217_140.0;
+    assert!((t.cache_hit_rate.unwrap() - 80_000.0 / prompt).abs() < 1e-12);
+    // The miss: r1_m3 re-wrote 62k (1h) after 2h14m idle.
+    assert_eq!(t.miss_events, 1);
+    assert_eq!(rep.misses[0].idle_gap_ms, Some((2 * 60 + 14) * 60_000));
+    assert!((rep.misses[0].impact_usd - 62_000.0 * 7.8 / 1e6).abs() < 1e-12);
+    // Over midnight: two requests on Oct 1, the rest on Oct 2.
+    let per_day: Vec<(&str, u64)> = rep.days.iter().map(|d| (d.day.as_str(), d.metrics.requests)).collect();
+    assert_eq!(per_day, [("2026-10-01", 2), ("2026-10-02", 4)]);
+    assert_eq!(rep.rows[0].key, "csm-shop");
+    assert_eq!(rep.rows[0].projects, ["Shop"]);
+    assert_eq!(rep.rows[1].key, "r2");
+    assert_eq!(rep.rows[1].projects, ["blog"]);
+    // Drill into the shop session: its models.
+    let mut drill = q(GroupBy::Model);
+    drill.filter.session = Some("csm-shop".into());
+    let d = build(&rows, &drill, &rates);
+    assert_eq!(d.rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["claude-opus-5-5", "claude-sonnet-5-5"]);
+}

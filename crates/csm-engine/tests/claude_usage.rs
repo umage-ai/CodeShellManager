@@ -248,3 +248,105 @@ fn session_subagents_is_empty_for_a_session_without_any() {
     assert!(h.ui("session_subagents", json!({"session_id": "nope"})).is_err());
     assert!(h.ui("session_subagents", json!({"session_id": id, "extra": 1})).is_err());
 }
+
+/// A conversation CSM never ran, in its own project folder.
+fn history_file(root: &Path, dir: &str, cid: &str, lines: &[String]) {
+    let d = root.join("projects").join(dir);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(format!("{cid}.jsonl")), lines.concat()).unwrap();
+}
+
+#[test]
+fn usage_report_reads_the_history_and_drills_down() {
+    let root = tempfile::tempdir().unwrap();
+    let now = now_ms();
+    let day = 86_400_000;
+    let opus = |id: &str, ts: i64, u: Value| asst(id, ts, "claude-opus-5-5", u, json!({}));
+    // Written before CSM starts: read by the history reader, not by a followed session.
+    history_file(
+        root.path(),
+        "C--work-shop",
+        "aaaa-1111",
+        &[
+            opus("h1", now - 60_000, json!({"input_tokens": 100, "output_tokens": 10, "cache_creation_input_tokens": 40_000, "cache_creation": {"ephemeral_1h_input_tokens": 40_000}})),
+            opus("h2", now - 30_000, json!({"input_tokens": 10, "output_tokens": 10, "cache_read_input_tokens": 40_000})),
+            asst("h3", now - 20_000, "claude-sonnet-5-5", json!({"input_tokens": 1_000, "output_tokens": 100}), json!({})),
+            opus("h4", now - 10 * day, json!({"input_tokens": 1, "output_tokens": 1})),
+            opus("h5", now - 40 * day, json!({"input_tokens": 2, "output_tokens": 2})),
+        ],
+    );
+    history_file(root.path(), "C--work-blog", "bbbb-2222", &[asst("b1", now - 50_000, "qwen3.8:27b", json!({"input_tokens": 700}), json!({}))]);
+    let sub = root.path().join("projects").join("C--work-shop").join("aaaa-1111").join("subagents");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("agent-x1.jsonl"), asst("s1", now - 40_000, "claude-sonnet-5-5", json!({"input_tokens": 5}), json!({"agentId": "x1"}))).unwrap();
+    let h = usage_harness(root.path());
+
+    let out = until(&h, "usage_report", json!({"from": "all"}), "the history", |o| o.data["total"]["requests"] == 7);
+    let d = &out.data;
+    assert_eq!(d["history"]["scanned"], true);
+    assert_eq!(d["group_by"], "session");
+    assert_eq!(d["sessions"], 2);
+    assert_eq!(d["rows"][0]["key"], "aaaa-1111", "a conversation CSM didn't run is keyed by its id");
+    assert_eq!(d["rows"][0]["label"], "shop · aaaa-111");
+    assert_eq!(d["rows"][0]["projects"], json!(["shop"]));
+    assert_eq!(d["rows"][1]["metrics"]["unpriced_models"], json!(["qwen3.8:27b"]));
+    assert!(d["days"].as_array().unwrap().len() >= 40, "all: from the first request's day");
+    assert!(d["definitions"].as_str().unwrap().contains("cache_hit_rate"));
+    assert_eq!(d["price_version"], "2026-11-15");
+    assert!(out.message.contains("API-equivalent"), "{}", out.message);
+    assert_eq!(d["total"]["tokens"]["cache_write_1h"], 40_000, "1h writes are kept apart");
+
+    // Ranges: today, 7 days, 30 days.
+    let n = |from: &str| h.ok("usage_report", json!({"from": from})).data["total"]["requests"].as_u64().unwrap();
+    assert_eq!(n("today"), 5, "h1, h2, h3, the subagent and b1 (unless the test straddles midnight)");
+    assert_eq!(n("7d"), 5);
+    assert_eq!(n("30d"), 6);
+    let week = h.ok("usage_report", json!({"from": "7d"}));
+    let days = week.data["days"].as_array().unwrap();
+    assert_eq!(days.len(), 7);
+    assert_eq!(days[6]["day"], json!(jiff::Zoned::now().date().to_string()));
+    let hit = week.data["total"]["cache_hit_rate"].as_f64().unwrap();
+    assert!((hit - 40_000.0 / (100.0 + 40_000.0 + 10.0 + 40_000.0 + 1_000.0 + 5.0 + 700.0)).abs() < 1e-9, "{hit}");
+    assert!(week.data["total"]["cache_miss_cost_usd"].as_f64().unwrap() > 0.0);
+    // A custom range: just the day ten days ago.
+    let ten = (jiff::Zoned::now().date() - jiff::Span::new().days(10)).to_string();
+    let custom = h.ok("usage_report", json!({"from": ten, "to": ten}));
+    assert_eq!(custom.data["total"]["requests"], 1);
+    assert_eq!(custom.data["days"].as_array().unwrap().len(), 1);
+
+    // Drill down: a session's models, then a model's sessions.
+    let models = h.ok("usage_report", json!({"from": "7d", "group_by": "model", "session": "aaaa-1111"}));
+    let keys: Vec<&str> = models.data["rows"].as_array().unwrap().iter().map(|r| r["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["claude-opus-5-5", "claude-sonnet-5-5"]);
+    assert_eq!(models.data["filter"]["session"], "aaaa-1111");
+    let sessions = h.ok("usage_report", json!({"from": "7d", "group_by": "session", "model": "claude-sonnet-5-5"}));
+    assert_eq!(sessions.data["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(sessions.data["rows"][0]["metrics"]["requests"], 2, "h3 and the subagent");
+    let by_project = h.ok("usage_report", json!({"from": "7d", "group_by": "project"}));
+    assert_eq!(by_project.data["rows"][0]["key"], "shop");
+    let by_day = h.ok("usage_report", json!({"from": "30d", "group_by": "day"}));
+    assert_eq!(by_day.data["rows"].as_array().unwrap().len(), 2, "only days with requests");
+
+    // Bad params are refused before any work.
+    assert!(matches!(h.ui("usage_report", json!({"from": "soon"})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(h.ui("usage_report", json!({"from": "2026-11-10", "to": "2026-11-01"})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(h.ui("usage_report", json!({"group_by": "colour"})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(h.ui("usage_report", json!({"nope": 1})), Err(ToolError::InvalidParams(_))));
+    assert!(matches!(H::new().ui("usage_report", json!({})), Err(ToolError::Refused(_))));
+}
+
+#[test]
+fn a_followed_session_takes_over_its_conversation_read_from_history() {
+    let root = tempfile::tempdir().unwrap();
+    let h = usage_harness(root.path());
+    let id = h.session("claude");
+    let v = h.wait_until("an id", |v| v.session(&id).is_some_and(|s| s.claude_session_id.is_some()));
+    let cid = v.session(&id).unwrap().claude_session_id.clone().unwrap();
+    let path = transcript_for(root.path(), &cid);
+    std::fs::write(&path, asst("m1", now_ms() - 1000, "claude-opus-5-5", json!({"input_tokens": 10, "output_tokens": 5}), json!({}))).unwrap();
+    // Whichever reader gets it first, the rows end up under the CSM session.
+    until(&h, "usage_session", json!({"session_id": id}), "the request", |o| o.data["total"]["requests"] == 1);
+    let rep = until(&h, "usage_report", json!({"from": "today"}), "the session row", |o| o.data["rows"][0]["key"] == json!(id));
+    assert_eq!(rep.data["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(rep.data["rows"][0]["csm_session"], json!(id));
+}

@@ -1,4 +1,5 @@
 {
+  "version": "2026-11-15",
   "source": "Anthropic first-party API list prices from https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-15. USD per million tokens. longContext: rates used instead when a request's whole prompt (input + cache reads + cache writes) is over `threshold` tokens.",
   "fastMultiplier": 2,
   "fastModels": ["claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"],

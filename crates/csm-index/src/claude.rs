@@ -6,6 +6,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
 
 use csm_core::claude_usage::{Compaction, Tokens, UsageRequest};
+use csm_core::usage_report::ReportRequest;
 
 use crate::db::{Db, IndexError};
 
@@ -93,6 +94,9 @@ pub struct ClaudeIngest {
     pub file: ClaudeFile,
     /// The file was rewritten: forget what was stored from it first.
     pub reset: bool,
+    /// The file is now linked to `file.csm_session`: what was stored from it without a session
+    /// (read from history before CSM followed it) takes that session.
+    pub claim: bool,
     pub requests: Vec<UsageRequest>,
     /// `(line number, compaction)`.
     pub compactions: Vec<(u64, Compaction)>,
@@ -147,6 +151,25 @@ fn i(v: u64) -> i64 {
 
 const REQ_COLS: &str = "id, claude_sid, agent_id, ts, model, price_key, fast, input, output, cache_read, cache_w5, cache_w1h, cost";
 
+const FILE_COLS: &str = "path, claude_sid, agent_id, csm_session, project, size, mtime_ms, offset, head, lines, bad_lines, unknown_lines";
+
+fn file_of(r: &Row<'_>) -> rusqlite::Result<ClaudeFile> {
+    Ok(ClaudeFile {
+        path: r.get(0)?,
+        claude_sid: r.get(1)?,
+        agent_id: r.get(2)?,
+        csm_session: r.get(3)?,
+        project: r.get(4)?,
+        size: u(r.get(5)?),
+        mtime_ms: r.get(6)?,
+        offset: u(r.get(7)?),
+        head: r.get::<_, Option<Vec<u8>>>(8)?.unwrap_or_default(),
+        lines: u(r.get(9)?),
+        bad_lines: u(r.get(10)?),
+        unknown_lines: u(r.get(11)?),
+    })
+}
+
 fn request_of(r: &Row<'_>) -> rusqlite::Result<UsageRequest> {
     Ok(UsageRequest {
         id: r.get(0)?,
@@ -170,30 +193,7 @@ fn request_of(r: &Row<'_>) -> rusqlite::Result<UsageRequest> {
 impl Db {
     /// The stored read position of a transcript.
     pub fn claude_file(&self, path: &str) -> Result<Option<ClaudeFile>, IndexError> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT path, claude_sid, agent_id, csm_session, project, size, mtime_ms, offset, head, lines, bad_lines, unknown_lines
-                 FROM claude_files WHERE path = ?1",
-                [path],
-                |r| {
-                    Ok(ClaudeFile {
-                        path: r.get(0)?,
-                        claude_sid: r.get(1)?,
-                        agent_id: r.get(2)?,
-                        csm_session: r.get(3)?,
-                        project: r.get(4)?,
-                        size: u(r.get(5)?),
-                        mtime_ms: r.get(6)?,
-                        offset: u(r.get(7)?),
-                        head: r.get::<_, Option<Vec<u8>>>(8)?.unwrap_or_default(),
-                        lines: u(r.get(9)?),
-                        bad_lines: u(r.get(10)?),
-                        unknown_lines: u(r.get(11)?),
-                    })
-                },
-            )
-            .optional()?)
+        Ok(self.conn.query_row(&format!("SELECT {FILE_COLS} FROM claude_files WHERE path = ?1"), [path], file_of).optional()?)
     }
 
     /// Stores one pass. A request already stored (the same `message.id`, from an earlier pass or
@@ -205,6 +205,10 @@ impl Db {
         if ing.reset {
             tx.execute("DELETE FROM claude_requests WHERE file = ?1", [&f.path])?;
             tx.execute("DELETE FROM claude_compactions WHERE file = ?1", [&f.path])?;
+        }
+        if let (true, Some(s)) = (ing.claim, f.csm_session.as_deref()) {
+            tx.execute("UPDATE claude_requests SET csm_session = ?2 WHERE file = ?1 AND csm_session IS NULL", params![f.path, s])?;
+            tx.execute("UPDATE claude_compactions SET csm_session = ?2 WHERE file = ?1 AND csm_session IS NULL", params![f.path, s])?;
         }
         {
             let mut get = tx.prepare_cached(&format!("SELECT {REQ_COLS} FROM claude_requests WHERE id = ?1"))?;
@@ -426,6 +430,29 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Every request with `from_ms <= ts < to_ms` (requests without a time only when `from_ms`
+    /// is `i64::MIN`), with its session link and project, for `csm_core::usage_report::build`.
+    /// Numbers only.
+    pub fn claude_report_rows(&self, from_ms: i64, to_ms: i64) -> Result<Vec<ReportRequest>, IndexError> {
+        let mut st = self.conn.prepare_cached(&format!(
+            "SELECT {REQ_COLS}, csm_session, project FROM claude_requests WHERE COALESCE(ts, ?3) >= ?1 AND COALESCE(ts, ?3) < ?2"
+        ))?;
+        let rows = st.query_map(params![from_ms, to_ms, i64::MIN], |r| Ok(ReportRequest { req: request_of(r)?, csm_session: r.get(13)?, project: r.get(14)? }))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The earliest request time stored (the start of an "all" report's days).
+    pub fn claude_first_ts(&self) -> Result<Option<i64>, IndexError> {
+        Ok(self.conn.query_row("SELECT MIN(ts) FROM claude_requests", [], |r| r.get(0))?)
+    }
+
+    /// Every stored read position, by path (the history reader's first scan).
+    pub fn claude_files_all(&self) -> Result<Vec<ClaudeFile>, IndexError> {
+        let mut st = self.conn.prepare(&format!("SELECT {FILE_COLS} FROM claude_files"))?;
+        let rows = st.query_map([], file_of)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn claude_meta(&self, key: &str) -> Result<Option<String>, IndexError> {
         Ok(self.conn.query_row("SELECT value FROM claude_meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
@@ -525,6 +552,7 @@ mod tests {
             requests: vec![req("m1", 1000, None, 5, "claude-x"), req("m2", 2000, Some("a1"), 7, "qwen")],
             compactions: vec![(3, Compaction { ts_ms: Some(1500), pre_tokens: Some(100), post_tokens: Some(10), ..Compaction::default() })],
             reset: false,
+            claim: false,
         };
         db.claude_ingest(&ing, &price).unwrap();
         let f = db.claude_file("/t/c1.jsonl").unwrap().unwrap();
@@ -564,9 +592,10 @@ mod tests {
             requests: vec![req("m1", 1000, None, 5, "claude-x")],
             compactions: vec![(1, Compaction::default())],
             reset: false,
+            claim: false,
         };
         db.claude_ingest(&ing, &price).unwrap();
-        let again = ClaudeIngest { file: file("/t/c1.jsonl", "s1", 5), requests: vec![req("m9", 1000, None, 1, "claude-x")], compactions: vec![], reset: true };
+        let again = ClaudeIngest { file: file("/t/c1.jsonl", "s1", 5), requests: vec![req("m9", 1000, None, 1, "claude-x")], compactions: vec![], reset: true, claim: false };
         db.claude_ingest(&again, &price).unwrap();
         let ids: Vec<String> = db.claude_requests_for("s1").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(ids, ["m9"]);
@@ -615,6 +644,31 @@ mod tests {
         db.claude_set_meta("price_sig", "abc").unwrap();
         assert_eq!(db.claude_meta("price_sig").unwrap().as_deref(), Some("abc"));
         assert_eq!(db.claude_meta("none").unwrap(), None);
+    }
+
+    #[test]
+    fn report_rows_carry_the_session_and_project_and_history_is_claimed_once_linked() {
+        let mut db = mem();
+        // Read from history first: no CSM session.
+        let mut f = file("/t/h.jsonl", "x", 10);
+        f.csm_session = None;
+        db.claude_ingest(&ClaudeIngest { file: f.clone(), requests: vec![req("h1", 1000, None, 5, "claude-x"), req("h2", 9000, None, 1, "qwen")], ..ClaudeIngest::default() }, &price)
+            .unwrap();
+        let rows = db.claude_report_rows(0, 5000).unwrap();
+        assert_eq!(rows.len(), 1, "h2 is outside the range");
+        assert_eq!((rows[0].csm_session.as_deref(), rows[0].project.as_deref(), rows[0].req.cost_usd), (None, Some("umage/app"), Some(5.0)));
+        assert_eq!(db.claude_first_ts().unwrap(), Some(1000));
+        assert_eq!(db.claude_files_all().unwrap().len(), 1);
+        // A CSM session follows it now: the rows take its session.
+        f.csm_session = Some("s9".into());
+        db.claude_ingest(&ClaudeIngest { file: f.clone(), claim: true, ..ClaudeIngest::default() }, &price).unwrap();
+        assert_eq!(db.claude_requests_for("s9").unwrap().len(), 2);
+        // A later claim by another session does not take them away.
+        f.csm_session = Some("other".into());
+        db.claude_ingest(&ClaudeIngest { file: f, claim: true, ..ClaudeIngest::default() }, &price).unwrap();
+        assert_eq!(db.claude_requests_for("s9").unwrap().len(), 2);
+        assert_eq!(db.claude_report_rows(i64::MIN, i64::MAX).unwrap().len(), 2);
+        assert!(mem().claude_first_ts().unwrap().is_none());
     }
 
     #[test]
