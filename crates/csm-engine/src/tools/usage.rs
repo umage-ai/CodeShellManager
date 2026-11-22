@@ -9,6 +9,7 @@
 //!   what a subscription bills. Numbers only; nothing leaves the machine.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use jiff::Span;
 use jiff::civil::Date;
@@ -18,7 +19,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use csm_core::claude_usage::{self as cu, ContextFill, format_tokens, format_usd, summarize_session};
+use csm_core::usage_report as ur;
 use csm_index::ClaudeGroupBy;
+use csm_services::claude_usage::PriceTable;
 
 use crate::engine::{Ctx, Reply};
 use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
@@ -70,7 +73,136 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             input_schema: schema_of::<SummaryParams>,
             run: usage_summary,
         },
+        ToolSpec {
+            id: "usage_report",
+            title: "Claude usage report",
+            summary: "Claude Code's tokens and API-equivalent cost between from and to (today, 7d, 30d, all, or YYYY-MM-DD local dates; default 7d), from every transcript on this machine: totals, one row per local day, and groups (session, project, model or day), each split into input, output, cache writes (5m and 1h) and cache reads, with cost per token class, cache hit rate, cache savings, write premium, cache-miss cost and cache-miss events. Filter by session, model or project to drill down. Numbers only.",
+            toolset: Toolset::App,
+            effects: Effects::READ_ONLY,
+            input_schema: schema_of::<ReportParams>,
+            run: usage_report,
+        },
     ]
+}
+
+#[derive(Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct ReportParams {
+    /// Start: `today`, `7d` (or `week`: today and the 6 days before), `30d` (or `month`), `all`,
+    /// or a local date `YYYY-MM-DD`. Default `7d`.
+    #[serde(default)]
+    from: Option<String>,
+    /// End (inclusive): `today` or a local date `YYYY-MM-DD`. Default: now.
+    #[serde(default)]
+    to: Option<String>,
+    /// `session` (default), `project`, `model` or `day`.
+    #[serde(default)]
+    group_by: Option<ur::GroupBy>,
+    /// Only this session: a group key from a `group_by: session` report (a CSM session id, or
+    /// Claude's conversation id for a conversation CSM didn't run).
+    #[serde(default)]
+    session: Option<String>,
+    /// Only this model: a group key from a `group_by: model` report (the price entry, or the
+    /// model id when unpriced).
+    #[serde(default)]
+    model: Option<String>,
+    /// Only this project: a group key from a `group_by: project` report.
+    #[serde(default)]
+    project: Option<String>,
+}
+
+/// How the report's cache numbers are defined (sent with every report).
+const REPORT_DEFINITIONS: &str = "cache_hit_rate = cache_read / (input + cache_read + cache writes). cache_savings = cache_read x (input rate - cache-read rate). cache_write_premium = 5m writes x (5m rate - input rate) + 1h writes x (1h rate - input rate). cache_miss_cost = input x (input rate - cache-read rate) + writes x (write rate - cache-read rate): what the tokens not read from the cache cost above cache reads. A cache-miss event is a request after the first of its stream with more than 20,000 tokens written and fewer read than half the previous request's prompt; its impact is its writes x (write rate - cache-read rate). As ContextCost computes them.";
+
+fn usage_report(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: ReportParams = parse_params(params)?;
+    let ix = index_of(ctx)?;
+    let today = today();
+    let first = start_day(p.from.as_deref().unwrap_or("7d"), today)?;
+    let last = match &p.to {
+        Some(w) => Some(end_day(w, today)?),
+        None => None,
+    };
+    if let (Some(f), Some(l)) = (first, last)
+        && l < f
+    {
+        return Err(ToolError::InvalidParams("`to` is before `from`".into()));
+    }
+    let from_ms = first.map(local_midnight);
+    let to_ms = last.map(|l| local_midnight(l.tomorrow().unwrap_or(l)));
+    let group_by = p.group_by.unwrap_or_default();
+    let filter = ur::Filter { session: p.session.filter(|s| !s.is_empty()), model: p.model.filter(|s| !s.is_empty()), project: p.project };
+    let table: Arc<PriceTable> =
+        ctx.state.rt.usage.as_ref().and_then(|u| u.table.get().cloned()).unwrap_or_else(|| Arc::new(PriceTable::embedded()));
+    let prices = price_source(ctx);
+    let price_version = table.version.clone();
+    let following = ctx.state.rt.usage.is_some();
+    let history = ctx.state.rt.usage.as_ref().and_then(|u| u.subagents.try_lock().ok().map(|s| s.history));
+    let names: HashMap<String, String> = ctx.state.app.sessions.iter().map(|s| (s.id.clone(), display_name(s))).collect();
+    let reply = ctx.park().ok_or_else(|| ToolError::Failed("this tool cannot run outside a call".into()))?;
+    ix.call(
+        move |db| {
+            // "all" starts at the first stored request's day.
+            let first = match first {
+                Some(f) => f,
+                None => db.claude_first_ts()?.map_or(today, |t| jiff::Timestamp::from_millisecond(t).map_or(today, |ts| ts.to_zoned(TimeZone::system()).date())),
+            };
+            let lookback = from_ms.map_or(i64::MIN, |f| f.saturating_sub(ur::LOOKBACK_MS));
+            let rows = db.claude_report_rows(lookback, to_ms.unwrap_or(i64::MAX))?;
+            let query = ur::ReportQuery { from_ms, to_ms, days: local_days(first, last.unwrap_or(today).max(first)), group_by, filter };
+            Ok(ur::build(&rows, &query, &|r| table.rate_card(&r.model, &r.tokens, r.fast)))
+        },
+        move |r| {
+            reply.send(match r {
+                Ok(mut rep) => {
+                    for row in &mut rep.rows {
+                        row.label = report_label(group_by, row, &names);
+                    }
+                    let t = &rep.total;
+                    let hit = t.cache_hit_rate.map_or_else(|| "–".to_owned(), |h| format!("{:.0}%", h * 100.0));
+                    let unpriced = if t.unpriced_requests > 0 { format!(" (+{} unpriced requests)", t.unpriced_requests) } else { String::new() };
+                    let msg = format!(
+                        "{}{unpriced} API-equivalent, {} tokens in {} requests across {} sessions; cache hit rate {hit}, cache-miss cost {}.",
+                        format_usd(t.cost_usd),
+                        format_tokens(t.tokens.total()),
+                        t.requests,
+                        rep.sessions,
+                        format_usd(t.cache_miss_cost_usd)
+                    );
+                    let mut data = serde_json::to_value(&rep).unwrap_or(Value::Null);
+                    data["following"] = json!(following);
+                    data["history"] = json!(history);
+                    data["prices"] = prices;
+                    data["price_version"] = json!(price_version);
+                    data["definitions"] = json!(REPORT_DEFINITIONS);
+                    data["note"] = json!(API_NOTE);
+                    Ok(ToolOutput::new(msg, data))
+                }
+                Err(e) => Err(ToolError::Failed(e.to_string())),
+            });
+        },
+    );
+    Ok(ToolOutput::message(""))
+}
+
+/// What a report row is called: a session by its CSM name (else its project and the start of
+/// Claude's conversation id), a project or model by its key.
+fn report_label(by: ur::GroupBy, row: &ur::GroupRow, names: &HashMap<String, String>) -> String {
+    match by {
+        ur::GroupBy::Session => {
+            if let Some(n) = row.csm_session.as_ref().and_then(|s| names.get(s)) {
+                return n.clone();
+            }
+            let short: String = row.claude_sids.first().unwrap_or(&row.key).chars().take(8).collect();
+            match row.projects.first().filter(|p| !p.is_empty()) {
+                Some(p) => format!("{p} · {short}"),
+                None if row.csm_session.is_some() => format!("closed session · {short}"),
+                None => short,
+            }
+        }
+        _ if row.key.is_empty() => "(unknown)".to_owned(),
+        _ => row.key.clone(),
+    }
 }
 
 fn usage_stats(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
@@ -162,23 +294,46 @@ fn days_before(day: Date, n: i64) -> Date {
 
 /// The start of a period word or date (pure apart from the local time zone).
 fn period_start(word: &str, today: Date) -> Result<i64, ToolError> {
-    let day = match word.trim().to_ascii_lowercase().as_str() {
+    Ok(start_day(word, today)?.map_or(i64::MIN, local_midnight))
+}
+
+/// The first local day of a period word or date; `None` for `all`.
+fn start_day(word: &str, today: Date) -> Result<Option<Date>, ToolError> {
+    Ok(Some(match word.trim().to_ascii_lowercase().as_str() {
         "today" => today,
-        "week" => days_before(today, 6),
-        "month" => days_before(today, 29),
-        "all" => return Ok(i64::MIN),
-        other => parse_day(other).ok_or_else(|| ToolError::InvalidParams(format!("`{word}` is not today, week, month, all or a YYYY-MM-DD date")))?,
-    };
-    Ok(local_midnight(day))
+        "week" | "7d" => days_before(today, 6),
+        "month" | "30d" => days_before(today, 29),
+        "all" => return Ok(None),
+        other => parse_day(other).ok_or_else(|| ToolError::InvalidParams(format!("`{word}` is not today, 7d, 30d, all or a YYYY-MM-DD date")))?,
+    }))
+}
+
+/// The last local day of a period (inclusive).
+fn end_day(word: &str, today: Date) -> Result<Date, ToolError> {
+    match word.trim().to_ascii_lowercase().as_str() {
+        "today" | "now" => Ok(today),
+        other => parse_day(other).ok_or_else(|| ToolError::InvalidParams(format!("`{word}` is not today or a YYYY-MM-DD date"))),
+    }
 }
 
 /// The (exclusive) end of a period: the end of that local day.
 fn period_end(word: &str, today: Date) -> Result<i64, ToolError> {
-    let day = match word.trim().to_ascii_lowercase().as_str() {
-        "today" | "now" => today,
-        other => parse_day(other).ok_or_else(|| ToolError::InvalidParams(format!("`{word}` is not today or a YYYY-MM-DD date")))?,
-    };
+    let day = end_day(word, today)?;
     Ok(local_midnight(day.tomorrow().unwrap_or(day)))
+}
+
+/// The local days `first..=last` with the instant each starts (at most ten years of them).
+fn local_days(first: Date, last: Date) -> Vec<ur::Day> {
+    let mut out = Vec::new();
+    let mut d = first;
+    while d <= last && out.len() < 3660 {
+        out.push(ur::Day { day: d.to_string(), start_ms: local_midnight(d) });
+        match d.tomorrow() {
+            Ok(n) => d = n,
+            Err(_) => break,
+        }
+    }
+    out
 }
 
 fn fill_json(c: &ContextFill) -> Value {

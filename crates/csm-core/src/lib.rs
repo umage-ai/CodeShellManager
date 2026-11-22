@@ -40,6 +40,7 @@ pub mod sidebar_selection;
 pub mod state;
 pub mod tasks;
 pub mod time;
+pub mod usage_report;
 pub mod window_placement;
 
 mod text;

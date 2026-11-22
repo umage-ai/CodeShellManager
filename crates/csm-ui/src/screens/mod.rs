@@ -24,3 +24,4 @@ pub mod settings;
 pub mod sidebar;
 pub mod titlebar;
 pub mod usage;
+pub mod usage_page;

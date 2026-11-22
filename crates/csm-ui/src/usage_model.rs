@@ -9,12 +9,26 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use csm_core::claude_usage::{ContextFill, SessionUsage, Tokens};
+use csm_core::usage_report::Report;
 
 use crate::backend::Call;
 use crate::model::SessionId;
 
 /// The usage tool ids whose replies land here.
-pub const TOOLS: [&str; 3] = ["usage_session", "usage_context", "usage_summary"];
+pub const TOOLS: [&str; 4] = ["usage_session", "usage_context", "usage_summary", "usage_report"];
+
+/// `usage_report`'s answer, for the Usage dashboard.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReportView {
+    /// The params it answers (the dashboard shows it while a newer one is on its way).
+    pub params: Value,
+    pub report: Report,
+    pub message: String,
+    /// The history reader has listed the transcripts at least once, and how many are left.
+    pub history_scanned: bool,
+    pub history_pending: u64,
+    pub price_version: Option<String>,
+}
 
 /// The Usage tab's numbers for one session.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -65,6 +79,22 @@ pub struct UsageDetails {
     /// By period (`today`, `week`).
     pub summary: BTreeMap<String, SummaryView>,
     pub summary_error: Option<String>,
+    /// The dashboard's last report, and the error of the last ask (kept, never toasted).
+    pub report: Option<ReportView>,
+    pub report_error: Option<String>,
+}
+
+/// A `usage_report` reply as the dashboard keeps it. `None` when its data is not a report.
+pub fn report_view(params: &Value, out: &csm_engine::ToolOutput) -> Option<ReportView> {
+    let report: Report = serde_json::from_value(out.data.clone()).ok()?;
+    Some(ReportView {
+        params: params.clone(),
+        report,
+        message: out.message.clone(),
+        history_scanned: out.data["history"]["scanned"].as_bool().unwrap_or(false),
+        history_pending: n(&out.data["history"]["pending"]),
+        price_version: out.data["price_version"].as_str().map(str::to_owned),
+    })
 }
 
 fn f(v: &Value) -> f64 {
@@ -149,6 +179,14 @@ impl UsageDetails {
                     Err(e) => self.summary_error = Some(e.to_string()),
                 }
             }
+            ("usage_report", Ok(o)) => match report_view(&call.params, o) {
+                Some(v) => {
+                    self.report = Some(v);
+                    self.report_error = None;
+                }
+                None => self.report_error = Some("The usage report could not be read.".into()),
+            },
+            ("usage_report", Err(e)) => self.report_error = Some(e.to_string()),
             // A failed `usage_context` keeps the last chips.
             _ => {}
         }
@@ -224,6 +262,133 @@ pub fn demo_details() -> UsageDetails {
         },
     );
     d
+}
+
+/// "Now" in the demo's usage history (its sessions' times are around it).
+pub const DEMO_NOW_MS: i64 = 1_795_513_000_000;
+const DAY_MS: i64 = 86_400_000;
+
+/// The demo's request history: 45 days of synthetic requests over the demo's Claude sessions
+/// and two conversations CSM didn't run. Deterministic.
+pub fn demo_requests() -> Vec<csm_core::usage_report::ReportRequest> {
+    use csm_core::claude_usage::UsageRequest;
+    use csm_core::usage_report::ReportRequest;
+    // (key, CSM session, project, model, subagent model, days back it ran (from, to), requests a day, 1h cache)
+    type Spec = (&'static str, Option<&'static str>, &'static str, &'static str, Option<&'static str>, (i64, i64), u64, bool);
+    let specs: [Spec; 6] = [
+        ("rs", Some("rs"), "umage/CodeShellManager-rs", "claude-opus-5-5", Some("claude-sonnet-5-5"), (0, 12), 34, false),
+        ("web", Some("web"), "GitHub/Odulodo.Web", "claude-opus-5-5", None, (0, 20), 18, false),
+        ("odulodo", Some("odulodo"), "GitHub/Odulodo", "claude-sonnet-5-5", None, (2, 30), 12, false),
+        ("csm", Some("csm"), "GitHub/CodeShellManager", "claude-opus-5-5", Some("claude-haiku-4-5"), (0, 44), 6, true),
+        ("3f9a2c1e-77d4-4c1b-9a0e-5b1f0c2d8e41", None, "umage/ContextCost", "claude-opus-5-5", None, (14, 40), 15, true),
+        ("8b17d0aa-1c52-4e8f-b3a9-2d6e7f001c9b", None, "home/blog", "claude-haiku-4-5", Some("qwen3.8:27b"), (5, 26), 9, false),
+    ];
+    let prices = csm_services::claude_usage::PriceTable::embedded();
+    let mut seed: u64 = 0x5eed_cafe;
+    let mut rnd = move |n: u64| {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % n.max(1)
+    };
+    let today0 = DEMO_NOW_MS.div_euclid(DAY_MS) * DAY_MS;
+    let mut out = Vec::new();
+    for (key, csm, project, model, sub_model, (near, far), per_day, long_cache) in specs {
+        for back in near..=far {
+            // Some days off.
+            if rnd(7) == 0 {
+                continue;
+            }
+            let start = today0 - back * DAY_MS + 8 * 3_600_000 + rnd(4) as i64 * 3_600_000;
+            let n = per_day / 2 + rnd(per_day);
+            let mut context = 20_000 + rnd(10_000);
+            let mut ts = start;
+            for i in 0..n {
+                ts += 2 * 60_000 + rnd(5) as i64 * 60_000;
+                if ts > DEMO_NOW_MS {
+                    break;
+                }
+                // Now and then an idle gap: the cache expired and the context is written again.
+                let miss = i > 0 && rnd(11) == 0;
+                if miss {
+                    ts += (6 + rnd(40)) as i64 * 60_000;
+                }
+                let grow = 1_500 + rnd(6_000);
+                let write = if i == 0 || miss { context } else { grow };
+                let read = if i == 0 || miss { 0 } else { context };
+                context = (context + grow).min(170_000);
+                let tokens = Tokens {
+                    input: 20 + rnd(400),
+                    output: 300 + rnd(3_000),
+                    cache_read: read,
+                    cache_write_5m: if long_cache { 0 } else { write },
+                    cache_write_1h: if long_cache { write } else { 0 },
+                };
+                let (sub, m) = match sub_model {
+                    Some(sm) if rnd(4) == 0 => (Some(format!("a{}", rnd(3))), sm),
+                    _ => (None, model),
+                };
+                let priced = prices.price(m, &tokens, false);
+                out.push(ReportRequest {
+                    req: UsageRequest {
+                        id: format!("{key}-{back}-{i}"),
+                        claude_sid: key.to_owned(),
+                        agent_id: sub,
+                        ts_ms: Some(ts),
+                        model: m.to_owned(),
+                        price_key: priced.as_ref().map(|p| p.key.clone()),
+                        fast: false,
+                        tokens,
+                        cost_usd: priced.map(|p| p.cost_usd),
+                    },
+                    csm_session: csm.map(str::to_owned),
+                    project: Some(project.to_owned()),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The demo's answer to `usage_report`: the same report the engine builds, over
+/// [`demo_requests`] and UTC days (the demo has no time zone of its own).
+pub fn demo_report(params: &Value, names: &BTreeMap<String, String>) -> Option<ReportView> {
+    use csm_core::usage_report::{Filter, GroupBy, ReportQuery, build, utc_days};
+    let today0 = DEMO_NOW_MS.div_euclid(DAY_MS) * DAY_MS;
+    let day_ms = |s: &str| csm_core::time::Timestamp::from_text(format!("{s}T00:00:00Z")).epoch_ms();
+    let from = match params["from"].as_str().unwrap_or("7d") {
+        "today" => Some(today0),
+        "7d" | "week" => Some(today0 - 6 * DAY_MS),
+        "30d" | "month" => Some(today0 - 29 * DAY_MS),
+        "all" => None,
+        d => Some(day_ms(d)?),
+    };
+    let to = match params["to"].as_str() {
+        None => None,
+        Some("today") => Some(today0 + DAY_MS),
+        Some(d) => Some(day_ms(d)? + DAY_MS),
+    };
+    let rows = demo_requests();
+    let first = rows.iter().filter_map(|r| r.req.ts_ms).min().unwrap_or(today0);
+    let group_by: GroupBy = serde_json::from_value(params["group_by"].clone()).unwrap_or_default();
+    let s = |k: &str| params[k].as_str().map(str::to_owned);
+    let q = ReportQuery {
+        from_ms: from,
+        to_ms: to,
+        days: utc_days(from.unwrap_or(first), to.unwrap_or(today0 + DAY_MS)),
+        group_by,
+        filter: Filter { session: s("session"), model: s("model"), project: s("project") },
+    };
+    let prices = csm_services::claude_usage::PriceTable::embedded();
+    let mut report = build(&rows, &q, &|r| prices.rate_card(&r.model, &r.tokens, r.fast));
+    for row in &mut report.rows {
+        if group_by == GroupBy::Session {
+            row.label = match row.csm_session.as_ref().and_then(|c| names.get(c)) {
+                Some(n) => n.clone(),
+                None => format!("{} · {}", row.projects.first().map_or("", String::as_str), row.key.chars().take(8).collect::<String>()),
+            };
+        }
+    }
+    let message = format!("{} API-equivalent across {} sessions.", csm_core::claude_usage::format_usd(report.total.cost_usd), report.sessions);
+    Some(ReportView { params: params.clone(), report, message, history_scanned: true, history_pending: 0, price_version: prices.version.clone() })
 }
 
 #[cfg(test)]
@@ -302,5 +467,45 @@ mod tests {
         assert!(d.sessions.contains_key("web"));
         assert!(!d.live);
         assert!(d.chips.values().any(|c| c.context.as_ref().is_some_and(|x| x.level == csm_core::claude_usage::FillLevel::Critical)));
+    }
+
+    #[test]
+    fn a_report_reply_is_kept_with_its_params_and_errors_are_kept() {
+        let mut d = UsageDetails::default();
+        let params = json!({"from": "7d", "group_by": "model"});
+        let out = ToolOutput::new(
+            "x",
+            json!({"group_by": "model", "total": {"requests": 2, "cost_usd": 1.5, "cache_hit_rate": 0.5}, "rows": [{"key": "claude-opus-5-5", "label": "claude-opus-5-5"}],
+                   "history": {"scanned": true, "files": 9, "pending": 3}, "price_version": "2026-11-15"}),
+        );
+        d.on_reply(&call("usage_report", params.clone()), &Ok(out));
+        let v = d.report.as_ref().unwrap();
+        assert_eq!(v.params, params);
+        assert_eq!((v.report.total.requests, v.report.rows.len(), v.history_pending), (2, 1, 3));
+        assert_eq!(v.report.group_by, csm_core::usage_report::GroupBy::Model);
+        assert_eq!(v.price_version.as_deref(), Some("2026-11-15"));
+        d.on_reply(&call("usage_report", params.clone()), &Err(ToolError::Refused("no index".into())));
+        assert_eq!(d.report_error.as_deref(), Some("no index"));
+        assert!(d.report.is_some(), "the last report stays");
+        d.on_reply(&call("usage_report", params), &Ok(ToolOutput::new("", json!({"rows": 5}))));
+        assert!(d.report_error.is_some(), "a reply that is not a report says so");
+    }
+
+    #[test]
+    fn the_demo_report_answers_ranges_groups_and_drill_downs() {
+        let names: BTreeMap<String, String> = [("rs".to_owned(), "CodeShellManager-rs".to_owned())].into_iter().collect();
+        let week = demo_report(&json!({"from": "7d"}), &names).unwrap().report;
+        assert_eq!(week.days.len(), 7);
+        assert!(week.total.cost_usd > 0.0 && week.total.miss_events > 0);
+        assert!(week.rows.iter().any(|r| r.label == "CodeShellManager-rs"));
+        assert!(week.rows.iter().any(|r| r.label.starts_with("umage/ContextCost ·") || r.label.starts_with("home/blog ·")), "conversations CSM didn't run");
+        assert!(week.misses.iter().all(|m| m.idle_gap_ms.is_some_and(|g| g >= 60_000)), "a miss follows a gap");
+        let month = demo_report(&json!({"from": "30d"}), &names).unwrap().report;
+        assert!(month.total.cost_usd > week.total.cost_usd);
+        let rs = demo_report(&json!({"from": "30d", "group_by": "model", "session": "rs"}), &names).unwrap().report;
+        assert_eq!(rs.rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["claude-opus-5-5", "claude-sonnet-5-5"]);
+        assert_eq!(demo_report(&json!({"from": "2026-11-20", "to": "2026-11-21"}), &names).unwrap().report.days.len(), 2);
+        assert!(demo_report(&json!({"from": "soon"}), &names).is_none());
+        assert_eq!(demo_requests(), demo_requests(), "deterministic");
     }
 }

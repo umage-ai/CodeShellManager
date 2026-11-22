@@ -236,6 +236,7 @@ bills); a model without a price is listed as unpriced, never counted as $0.
 | `usage_session` | session_id | read | context fill of the last main-thread request vs the window (200k; 1M for a `[1m]` model or a prompt over 200k), with `ok`/`warn`/`critical` near auto-compact; cost and tokens total, today (local) and of subagents; cache hit ratio; the last cache miss and the idle gap before it; compactions (count, last pre → post); data quality (unreadable lines) |
 | `usage_context` | | read | fill and cost of every live Claude session (the sidebar chips) |
 | `usage_summary` | from? (today/week/month/all/YYYY-MM-DD, default week), to? (today/YYYY-MM-DD), group_by? (project/session/model) | read | cost and tokens per group, most expensive first, with a total |
+| `usage_report` | from? (today/7d/30d/all/YYYY-MM-DD, default 7d; `week`/`month` too), to? (today/YYYY-MM-DD, inclusive), group_by? (session/project/model/day, default session), session? / model? / project? (a group key: drill down) | read | the Usage dashboard's numbers over every transcript on this machine: `total`, `days` (one per local day of the range, oldest first) and `rows` (per group, costliest first; days newest first; at most 500, `truncated`), each with tokens split into input, output, cache read, 5m and 1h cache writes, `cost_usd` and `cost_by_class`, `cache_hit_rate`, `cache_savings_usd`, `cache_write_premium_usd`, `cache_miss_cost_usd`, `miss_events` and their `miss_event_cost_usd`, unpriced requests and models; session rows name their CSM session (or project and Claude's conversation id), projects, models (costliest first) and first/last request; `misses`: the 25 costliest cache-miss events; `history` (the reader's progress), `price_version`, `definitions` |
 
 - **Which transcript.** A new Claude session starts with `--session-id <uuid>` chosen by CSM and
   stored on the session (`ClaudeSessionId` in `state.json`); a resume passes `--resume <that id>`
@@ -252,13 +253,40 @@ bills); a model without a price is listed as unpriced, never counted as $0.
   `~/.claude-*` profiles, reading only bytes past the stored offset (a shorter file or a different
   head is read again from 0). Requests are de-duplicated by `message.id` keeping the maximum per
   token field; `<synthetic>` is skipped; a missing 5m/1h split counts as 5m writes.
+- **History.** The same thread also reads every other transcript under the roots (ContextCost's
+  import): listed newest first at start and every 60 s, up to 8 changed files per pass between
+  the followed sessions' passes, unchanged ones skipped by size and time. Their rows have no CSM
+  session (a report keys them by Claude's conversation id) until a CSM session follows that
+  transcript, which then takes them over (`claim`). This is what `usage_report` reads.
 - **Storage.** `index.db` schema 3: `claude_requests` (numbers only, never content), `claude_files`
   (offsets, counters), `claude_compactions`, `claude_meta`; in memory under `--clean`.
-- **Prices.** Embedded (`csm-services/src/claude_usage/prices.json`), overridden or extended by
+- **Prices.** Embedded (`csm-services/src/claude_usage/prices.json`, ContextCost's table with a
+  `version`: the date it was checked against the list prices), overridden or extended by
   `usage-prices.json` beside `state.json` (same shape); a changed table reprices every stored row.
+- **Report definitions** (`csm_core::usage_report`, ContextCost's `queries.js`): prompt tokens =
+  input + cache read + cache writes; cache hit rate = cache read / prompt tokens; cache savings =
+  cache read × (input rate − read rate); write premium = 5m writes × (5m rate − input rate) + 1h
+  writes × (1h rate − input rate); cache-miss cost = input × (input rate − read rate) + writes ×
+  (write rate − read rate), what the tokens not read from the cache cost above cache reads; a
+  cache-miss event is a request after the first of its stream (a conversation's main thread or
+  one subagent) writing over 20,000 tokens while reading under half the previous request's
+  prompt, its impact its writes × (write rate − read rate). These use the request's tier
+  (long-context) rates without the fast multiplier, as ContextCost does; `cost_by_class` includes
+  it, so the classes add up to the cost. Days are local. The report runs on the index thread
+  (about 0.2 s for 150,000 requests in a release build).
 - **UI.** Inspector → Usage (the focused session, refreshed every 5 s while shown), a fill chip on
   Claude rows in the sidebar (`usage_context` every 10 s; cost too on wide rows; it gives way on
   narrow ones), Settings → Usage: cost per project today and this week.
+- **Usage dashboard** (`screens/usage_page.rs`, `docs/screens/21-usage*.png`): a page over the
+  work area like Settings, opened from the palette (`usage_report`), the Usage tab's "Usage by
+  model and day" (drilled into that session) and Settings → Usage; Esc closes it. Range (Today, 7
+  days, 30 days, All, Custom from–to), five figures (cost, tokens, cache hit rate, cache-miss cost
+  with the miss events, saved by caching; the whole story on hover), cost or tokens per day as
+  bars stacked by token class (cache read, 5m and 1h writes, input, output; a day's split on
+  hover), a table by session, project, model or day (sortable by any column, locally) whose rows
+  drill down — a session to its models and days, a model to its sessions, a day to that day —
+  with a breadcrumb back, and the costliest cache misses. It asks `usage_report` when what it
+  shows changes and every 30 s while open; the demo answers from a synthetic history.
 
 **Open folder / Open with** (`tools/open.rs`, rules in `csm-services::open_with`). `open_folder`
 (session_id) opens only an existing *directory* (a file would be run); Windows normalises to
@@ -379,7 +407,7 @@ below must match the registry: run `cargo xtask tools` after adding a tool), `se
 
 <!-- xtask:tools:begin (generated by `cargo xtask tools`; do not edit by hand) -->
 
-### Engine registry (140 tools)
+### Engine registry (141 tools)
 
 Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the person's consent.
 
@@ -493,6 +521,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `session_subagents` | app | read | no | The subagents a Claude session has started (Task/Agent calls and dynamic-workflow agents): label, type, model, state (running, idle after 5 minutes without output, done), workflow run and phase, tokens and API-equivalent cost, plus workflow runs with per-phase done/total. Read from Claude Code's own transcript folder (an undocumented layout, parsed leniently); numbers and the agents' short descriptions only. |
 | `usage_context` | app | read | no | For every live Claude session: how full its context is (tokens, window, ratio, ok/warn/critical near auto-compact) and its API-equivalent cost so far. |
 | `usage_summary` | app | read | no | API-equivalent cost and tokens of Claude sessions between from and to (today, week, month, all, or a YYYY-MM-DD local date; default the last 7 days), grouped by project, session or model. Unpriced models are listed, never counted as $0. |
+| `usage_report` | app | read | no | Claude Code's tokens and API-equivalent cost between from and to (today, 7d, 30d, all, or YYYY-MM-DD local dates; default 7d), from every transcript on this machine: totals, one row per local day, and groups (session, project, model or day), each split into input, output, cache writes (5m and 1h) and cache reads, with cost per token class, cache hit rate, cache savings, write premium, cache-miss cost and cache-miss events. Filter by session, model or project to drill down. Numbers only. |
 | `state_snapshots` | app | read | no | The rolling snapshots of state.json (one an hour for a day, one a day for a week), newest first, with their files and the folder. To go back to one, quit the app and copy it over state.json. |
 | `task_list` | tasks | read | no | The Board's tasks: id, project, title, state (backlog, assigned, review, done, cancelled), assignee, progress. An agent sees its own project's; filter by project, state or assignee. Done and cancelled ones only with include_closed. |
 | `task_get` | tasks | read | no | One task in full, with its body. |

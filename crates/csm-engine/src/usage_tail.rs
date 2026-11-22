@@ -69,6 +69,19 @@ pub(crate) struct Shared {
     pub map: HashMap<String, SubagentsReport>,
     /// The last Remote Control line of each followed session's main transcript.
     pub remote: HashMap<String, csm_core::remote_control::RemoteControlMark>,
+    /// Where reading the history (every transcript, not only followed sessions) is.
+    pub history: HistoryStatus,
+}
+
+/// The history reader's progress, for `usage_report`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct HistoryStatus {
+    /// The transcripts were listed at least once.
+    pub scanned: bool,
+    /// Main transcripts found by the last listing.
+    pub files: usize,
+    /// Of those, still to look at in this round.
+    pub pending: usize,
 }
 
 /// The engine's handle to the thread.
@@ -79,6 +92,8 @@ pub(crate) struct UsageTail {
     last: Vec<Link>,
     last_check: Option<Instant>,
     pub prices: Arc<OnceLock<PriceSource>>,
+    /// The price table the reader uses (set once it has loaded it).
+    pub table: Arc<OnceLock<Arc<PriceTable>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -93,6 +108,15 @@ const MISSING_RETRY: Duration = Duration::from_secs(2);
 /// Every project folder is searched for a known conversation not in its own folder's at most
 /// once per this many polls (10 s in production).
 const FULL_SCAN_POLLS: u32 = 5;
+/// Every transcript under the roots is listed again once per this many polls (60 s in
+/// production), to read the history and conversations CSM didn't start.
+const HISTORY_POLLS: u32 = 30;
+/// The most transcripts the history listing takes (newest first).
+const HISTORY_MAX_FILES: usize = 20_000;
+/// History files with new bytes read per pass, between the followed sessions' passes.
+const HISTORY_READS_PER_PASS: usize = 8;
+/// History files merely checked (stat, unchanged) per pass.
+const HISTORY_CHECKS_PER_PASS: usize = 400;
 
 impl UsageTail {
     /// Starts the thread when the run has an index and transcript roots.
@@ -104,16 +128,17 @@ impl UsageTail {
         let roots = roots.clone();
         let override_path = save_path.and_then(Path::parent).map(|d| d.join(cu::OVERRIDE_FILE));
         let prices = Arc::new(OnceLock::new());
-        let cell = prices.clone();
+        let table = Arc::new(OnceLock::new());
+        let cells = Cells { source: prices.clone(), table: table.clone() };
         let shared = Arc::new(Mutex::new(Shared::default()));
         let shared2 = shared.clone();
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("csm-usage".into())
-            .spawn(move || run(rx, index, roots, override_path, poll, cell, shared2))
+            .spawn(move || run(rx, index, roots, override_path, poll, cells, shared2))
             .map_err(|e| log::warn!("usage: could not start the transcript reader: {e}"))
             .ok()?;
-        Some(UsageTail { subagents: shared, seen_gen: 0, tx, last: Vec::new(), last_check: None, prices, handle: Some(handle) })
+        Some(UsageTail { subagents: shared, seen_gen: 0, tx, last: Vec::new(), last_check: None, prices, table, handle: Some(handle) })
     }
 
     pub(crate) fn shutdown(&mut self) {
@@ -203,6 +228,17 @@ struct Tailer {
     /// Parsed subagent meta files and workflow journals.
     cache: sub::Cache,
     shared: Arc<Mutex<Shared>>,
+    /// The history still to look at in this round (newest first), and when it was listed.
+    history: std::collections::VecDeque<PathBuf>,
+    history_at: Option<Instant>,
+    history_every: Duration,
+    history_files: usize,
+}
+
+/// The reader's two cells the engine reads: what the price table is, and the table itself.
+struct Cells {
+    source: Arc<OnceLock<PriceSource>>,
+    table: Arc<OnceLock<Arc<PriceTable>>>,
 }
 
 /// Where a followed session's main transcript was found (or not), and when.
@@ -215,10 +251,11 @@ struct MainLook {
     full_at: Option<Instant>,
 }
 
-fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cell: Arc<OnceLock<PriceSource>>, shared: Arc<Mutex<Shared>>) {
+fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cells: Cells, shared: Arc<Mutex<Shared>>) {
     let (table, source) = load_prices(override_path.as_deref());
-    let _ = cell.set(source);
+    let _ = cells.source.set(source);
     let table = Arc::new(table);
+    let _ = cells.table.set(table.clone());
     // A new price table (an app update or an edited override): price everything again.
     let (sig, t2) = (table.signature(), table.clone());
     index.call(
@@ -239,7 +276,20 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
         },
     );
     let full_every = poll.saturating_mul(FULL_SCAN_POLLS);
-    let mut t = Tailer { index, table, roots: resolve_roots(&roots), files: HashMap::new(), mains: HashMap::new(), full_every, cache: sub::Cache::default(), shared };
+    let mut t = Tailer {
+        index,
+        table,
+        roots: resolve_roots(&roots),
+        files: HashMap::new(),
+        mains: HashMap::new(),
+        full_every,
+        cache: sub::Cache::default(),
+        shared,
+        history: std::collections::VecDeque::new(),
+        history_at: None,
+        history_every: poll.saturating_mul(HISTORY_POLLS),
+        history_files: 0,
+    };
     let mut roots_at = Instant::now();
     let mut links: Vec<Link> = Vec::new();
     let mut more = false;
@@ -267,6 +317,7 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
             more |= t.pass(link);
         }
         t.prune_reports(&links);
+        more |= t.history_pass();
     }
 }
 
@@ -308,14 +359,62 @@ impl Tailer {
     /// One pass over a link's transcripts. True when a file has more to read straight away.
     fn pass(&mut self, link: &Link) -> bool {
         let Some((sid, main)) = self.main_of(link) else { return false };
-        let mut more = self.file(link, &sid, None, &main);
+        let mut more = self.file(Some(link), &sid, None, &main, None).more;
         let project = self.files.get(&main.to_string_lossy().into_owned()).and_then(|f| f.project.clone());
         let found = sub::find(&main);
         for f in &found {
-            more |= self.file_with_project(link, &sid, Some(f.id.clone()), &f.transcript, project.clone());
+            more |= self.file(Some(link), &sid, Some(f.id.clone()), &f.transcript, project.clone()).more;
         }
         self.report(link, &found);
         more
+    }
+
+    /// Reads a little of the history: every transcript under the roots, not only the followed
+    /// sessions' (the usage report's past days and conversations CSM didn't start). A few files
+    /// with new bytes per pass, so the followed sessions never wait long; listed again now and
+    /// then. True while there is more to read.
+    fn history_pass(&mut self) -> bool {
+        if self.history.is_empty() && self.history_at.is_none_or(|t| t.elapsed() >= self.history_every) {
+            if self.history_at.is_none() {
+                // The first listing: every stored read position at once, not one query per file.
+                let known = self.index.call_blocking(|db| db.claude_files_all()).unwrap_or_default();
+                for f in known {
+                    self.files.entry(f.path.clone()).or_insert(f);
+                }
+            }
+            let list = discover::all_transcripts(&self.roots, HISTORY_MAX_FILES);
+            self.history_files = list.len();
+            self.history = list.into_iter().map(|(p, _)| p).collect();
+            self.history_at = Some(Instant::now());
+        }
+        let followed: Vec<PathBuf> = self.mains.values().filter_map(|m| m.path.clone()).collect();
+        let (mut reads, mut checks) = (0, 0);
+        while reads < HISTORY_READS_PER_PASS && checks < HISTORY_CHECKS_PER_PASS {
+            let Some(main) = self.history.pop_front() else { break };
+            checks += 1;
+            // A followed session's files are read by its own pass.
+            if followed.iter().any(|f| f == &main) {
+                continue;
+            }
+            let Some(sid) = main.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+            let read = self.file(None, &sid, None, &main, None);
+            let mut more = read.more;
+            reads += usize::from(read.read);
+            let project = self.files.get(&main.to_string_lossy().into_owned()).and_then(|f| f.project.clone());
+            for (agent, path) in discover::subagent_files(&main) {
+                let r = self.file(None, &sid, Some(agent), &path, project.clone());
+                more |= r.more;
+                reads += usize::from(r.read);
+            }
+            if more {
+                // Mid-way through a big file: on with it next pass.
+                self.history.push_front(main);
+            }
+        }
+        let status = HistoryStatus { scanned: true, files: self.history_files, pending: self.history.len() };
+        let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        sh.history = status;
+        !self.history.is_empty()
     }
 
     /// The link's subagents: what the disk and the index say, published for the engine when it
@@ -373,25 +472,31 @@ impl Tailer {
         }
     }
 
-    fn file(&mut self, link: &Link, sid: &str, agent: Option<String>, path: &Path) -> bool {
-        self.file_with_project(link, sid, agent, path, None)
-    }
-
-    fn file_with_project(&mut self, link: &Link, sid: &str, agent: Option<String>, path: &Path, project: Option<String>) -> bool {
+    /// Reads what is new in one transcript and stores it. `link`: the followed session it
+    /// belongs to; `None` for the history, which keeps whatever session the file was stored
+    /// with. `project`: a subagent's (its main transcript's).
+    fn file(&mut self, link: Option<&Link>, sid: &str, agent: Option<String>, path: &Path, project: Option<String>) -> FileRead {
         let key = path.to_string_lossy().into_owned();
-        let Ok((size, mtime, head)) = tail::stat(path) else { return false };
-        let cur = match self.files.get(&key) {
-            Some(c) => c.clone(),
-            None => {
+        let Ok((size, mtime, head)) = tail::stat(path) else { return FileRead::default() };
+        let cur = match (self.files.get(&key), link) {
+            (Some(c), _) => c.clone(),
+            // The history's first listing loaded every stored position.
+            (None, None) => ClaudeFile::default(),
+            (None, Some(_)) => {
                 let k = key.clone();
                 self.index.call_blocking(move |db| db.claude_file(&k)).ok().flatten().unwrap_or_default()
             }
         };
-        let same_link = cur.csm_session.as_deref() == Some(link.csm_session.as_str());
-        if cur.size == size && cur.mtime_ms == mtime && same_link && !cur.path.is_empty() {
+        let session = match link {
+            Some(l) => Some(l.csm_session.clone()),
+            None => cur.csm_session.clone(),
+        };
+        if cur.size == size && cur.mtime_ms == mtime && cur.csm_session == session && !cur.path.is_empty() {
             self.files.insert(key, cur);
-            return false;
+            return FileRead::default();
         }
+        // Read from history before a CSM session followed it: its rows take the session now.
+        let claim = link.is_some() && !cur.path.is_empty() && cur.csm_session.is_none();
         let reset = cur.offset > 0 && tail::was_rewritten(size, &head, cur.offset, &cur.head);
         let (offset, lines, bad, unknown) = if reset { (0, 0, 0, 0) } else { (cur.offset, cur.lines, cur.bad_lines, cur.unknown_lines) };
         let mut batch = Batch::after(lines);
@@ -399,13 +504,17 @@ impl Tailer {
             Ok(p) => p,
             Err(e) => {
                 log::debug!("usage: could not read {key}: {e}");
-                return false;
+                return FileRead::default();
             }
         };
+        let folder = link.map_or("", |l| l.folder.as_str());
+        // A transcript without a `cwd`: the project directory's name stands in.
+        let dir_name = || path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let project = project
             .or_else(|| if reset { None } else { cur.project.clone() })
-            .or_else(|| batch.cwd.as_deref().map(|c| project_name(c, &link.folder)))
-            .or_else(|| (!link.folder.is_empty()).then(|| project_name(&link.folder, "")));
+            .or_else(|| batch.cwd.as_deref().map(|c| project_name(c, folder)))
+            .or_else(|| (!folder.is_empty()).then(|| project_name(folder, "")))
+            .or_else(|| link.is_none().then(dir_name).filter(|d| !d.is_empty()));
         let requests: Vec<UsageRequest> = batch
             .requests
             .iter()
@@ -436,6 +545,7 @@ impl Tailer {
             .collect();
         // Remote Control is the conversation's: only its main transcript says.
         if agent.is_none()
+            && let Some(link) = link
             && let Some(mark) = batch.remote_control.take()
         {
             let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
@@ -448,7 +558,7 @@ impl Tailer {
             path: key.clone(),
             claude_sid: sid.to_owned(),
             agent_id: agent,
-            csm_session: Some(link.csm_session.clone()),
+            csm_session: session,
             project,
             // Mid-way through a big file the size seen is not done yet: the next pass reads on.
             size: if pass.more { 0 } else { size },
@@ -460,7 +570,7 @@ impl Tailer {
             unknown_lines: unknown + batch.unknown_lines,
         };
         self.files.insert(key, file.clone());
-        let ingest = ClaudeIngest { file, reset, requests, compactions };
+        let ingest = ClaudeIngest { file, reset, claim, requests, compactions };
         let table = self.table.clone();
         self.index.call(
             move |db| db.claude_ingest(&ingest, &|r| price_of(&table, r)),
@@ -470,8 +580,17 @@ impl Tailer {
                 }
             },
         );
-        pass.more
+        FileRead { more: pass.more, read: true }
     }
+}
+
+/// What [`Tailer::file`] did.
+#[derive(Debug, Clone, Copy, Default)]
+struct FileRead {
+    /// The file has more to read straight away (the byte budget ran out).
+    more: bool,
+    /// It was read (it changed, or changed hands).
+    read: bool,
 }
 
 impl Drop for UsageTail {

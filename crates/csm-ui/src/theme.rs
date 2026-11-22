@@ -487,6 +487,22 @@ pub mod size {
     pub const USAGE_COST_MIN_ROW_W: f32 = 300.0;
     /// The Usage tab's context gauge.
     pub const GAUGE_H: f32 = 10.0;
+    /// The Usage dashboard: its widest column, a figure tile, the daily chart's plot height,
+    /// the room left of the plot for the axis labels and under it for the dates, a table row
+    /// (two lines), a number column, and the share of a day's slot a bar fills.
+    pub const USAGE_PAGE_MAX_W: f32 = 1180.0;
+    pub const USAGE_KPI_H: f32 = 74.0;
+    pub const USAGE_KPI_MIN_W: f32 = 150.0;
+    pub const USAGE_CHART_H: f32 = 190.0;
+    pub const USAGE_AXIS_W: f32 = 52.0;
+    pub const USAGE_AXIS_H: f32 = 18.0;
+    pub const USAGE_ROW_H: f32 = 40.0;
+    pub const USAGE_NUM_W: f32 = 92.0;
+    pub const USAGE_BAR_FILL: f32 = 0.72;
+    /// A legend swatch.
+    pub const SWATCH: f32 = 10.0;
+    /// A date field of the custom range.
+    pub const DATE_FIELD_W: f32 = 110.0;
     pub const PANE_NAME_MIN_W: f32 = 72.0;
     pub const TEAR_OFF: [f32; 2] = [960.0, 560.0];
     pub const WINDOW: [f32; 2] = [1280.0, 800.0];
@@ -524,6 +540,8 @@ pub mod alpha {
     pub const PICKED: f32 = 0.2;
     /// The warning bands behind the Usage tab's context gauge.
     pub const GAUGE_BAND: f32 = 0.28;
+    /// The Usage dashboard's bar under a row's cost (its share of the costliest row).
+    pub const SHARE_BAR: f32 = 0.56;
     /// The empty half of a side-by-side row.
     pub const CODE_FILLER: f32 = 0.35;
     /// A gutter count's tint.

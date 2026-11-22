@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use csm_core::claude_usage::Tokens;
+use csm_core::usage_report::RateCard;
 
 /// The table shipped with the app (USD per million tokens).
 pub const DEFAULT_PRICES_JSON: &str = include_str!("prices.json");
@@ -57,6 +58,10 @@ pub struct Rates {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceTable {
+    /// The date the embedded table was checked against the list prices (`YYYY-MM-DD`). Bump it
+    /// with every price change; the reports name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default = "one")]
@@ -155,6 +160,9 @@ impl PriceTable {
         if o.source.is_some() {
             self.source = o.source;
         }
+        if o.version.is_some() {
+            self.version = o.version;
+        }
         (self, OverrideStatus::Applied(n))
     }
 
@@ -182,20 +190,41 @@ impl PriceTable {
 
     /// The API-equivalent cost of one request, or `None` when its model has no price.
     pub fn price(&self, model: &str, tokens: &Tokens, fast: bool) -> Option<Priced> {
-        let key = self.resolve_key(model)?;
-        let rates = self.models.get(&key)?;
-        let r = match rates.long_context {
-            Some(lc) if tokens.prompt() > lc.threshold => lc.rates,
-            _ => rates.base,
-        };
+        let (key, r, mul) = self.tier(model, tokens, fast)?;
         let c = (tokens.input as f64 * r.input
             + tokens.output as f64 * r.output
             + tokens.cache_read as f64 * r.cache_read
             + tokens.cache_write_5m as f64 * r.cache_write5m
             + tokens.cache_write_1h as f64 * r.cache_write1h)
             / 1e6;
-        let c = if fast && self.fast_models.contains(&key) { c * self.fast_multiplier } else { c };
-        Some(Priced { key, cost_usd: c })
+        Some(Priced { key, cost_usd: c * mul })
+    }
+
+    /// The rates one request is priced with (its tier chosen, the fast multiplier beside them),
+    /// for the report's per-class and cache numbers. `None` when unpriced.
+    pub fn rate_card(&self, model: &str, tokens: &Tokens, fast: bool) -> Option<RateCard> {
+        let (_, r, multiplier) = self.tier(model, tokens, fast)?;
+        Some(RateCard {
+            input: r.input,
+            output: r.output,
+            cache_read: r.cache_read,
+            cache_write_5m: r.cache_write5m,
+            cache_write_1h: r.cache_write1h,
+            multiplier,
+        })
+    }
+
+    /// `(price key, tier rates, fast multiplier)`: the long-context tier when the whole prompt is
+    /// over its threshold; the multiplier only for a fast request on a fast model.
+    fn tier(&self, model: &str, tokens: &Tokens, fast: bool) -> Option<(String, TierRates, f64)> {
+        let key = self.resolve_key(model)?;
+        let rates = self.models.get(&key)?;
+        let r = match rates.long_context {
+            Some(lc) if tokens.prompt() > lc.threshold => lc.rates,
+            _ => rates.base,
+        };
+        let mul = if fast && self.fast_models.contains(&key) { self.fast_multiplier } else { 1.0 };
+        Some((key, r, mul))
     }
 
     /// A fingerprint: when it changes, stored costs are recomputed.
@@ -293,6 +322,49 @@ mod tests {
         assert!(matches!(st, OverrideStatus::Ignored(_)));
         let (_, st) = t().with_override(None);
         assert_eq!(st, OverrideStatus::None);
+    }
+
+    #[test]
+    fn the_embedded_table_is_versioned_and_matches_contextcost() {
+        let t = t();
+        // The table is ContextCost's `config/prices.json` with a version: bump both together.
+        assert_eq!(t.version.as_deref(), Some("2026-11-15"));
+        assert!(t.source.as_deref().is_some_and(|s| s.contains("checked 2026-11-15")), "the source names the same date");
+        let r = |k: &str| t.models[k].base;
+        let opus = r("claude-opus-5-5");
+        assert_eq!((opus.input, opus.output, opus.cache_read, opus.cache_write5m, opus.cache_write1h), (4.0, 20.0, 0.2, 5.0, 8.0));
+        let sonnet = r("claude-sonnet-5-5");
+        assert_eq!((sonnet.input, sonnet.output, sonnet.cache_read, sonnet.cache_write5m, sonnet.cache_write1h), (2.0, 10.0, 0.1, 2.5, 4.0));
+        let haiku45 = r("claude-haiku-4-5");
+        assert_eq!((haiku45.input, haiku45.cache_write1h), (1.0, 2.0));
+        assert_eq!(t.models["claude-haiku-5-5"].long_context.map(|l| l.threshold), Some(100_000));
+        // Every entry: a 1h write costs more than a 5m write, which costs more than input, which
+        // costs more than a cache read (what the cache numbers assume).
+        for (k, v) in &t.models {
+            for b in std::iter::once(v.base).chain(v.long_context.map(|l| l.rates)) {
+                assert!(b.cache_write1h > b.cache_write5m && b.cache_write5m > b.input && b.input > b.cache_read, "{k}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_rate_card_is_the_tier_the_cost_used() {
+        let t = t();
+        let small = tok(1000, 0, 1000, 0, 0);
+        let rc = t.rate_card("claude-haiku-5-5", &small, false).unwrap();
+        assert_eq!((rc.input, rc.cache_read, rc.multiplier), (0.1, 0.01, 1.0));
+        let big = tok(1000, 0, 200_000, 0, 0);
+        let rc = t.rate_card("claude-haiku-5-5", &big, false).unwrap();
+        assert_eq!((rc.input, rc.cache_write_1h), (0.5, 1.0), "long-context tier");
+        let rc = t.rate_card("claude-opus-5-5", &small, true).unwrap();
+        assert_eq!(rc.multiplier, 2.0);
+        assert_eq!(t.rate_card("claude-sonnet-5-5", &small, true).unwrap().multiplier, 1.0, "not a fast model");
+        assert_eq!(t.rate_card("qwen3.8:27b", &small, false), None);
+        // The classes priced with the card add up to the cost.
+        let all = tok(123, 456, 789, 1011, 1213);
+        let rc = t.rate_card("claude-opus-5-5", &all, true).unwrap();
+        let by_class = (123.0 * rc.input + 456.0 * rc.output + 789.0 * rc.cache_read + 1011.0 * rc.cache_write_5m + 1213.0 * rc.cache_write_1h) / 1e6 * rc.multiplier;
+        assert!((by_class - t.price("claude-opus-5-5", &all, true).unwrap().cost_usd).abs() < 1e-12);
     }
 
     #[test]

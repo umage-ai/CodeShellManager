@@ -95,6 +95,38 @@ pub fn find_in_folder(roots: &[PathBuf], sid: &str, folder: &str) -> Option<Path
     roots.iter().find_map(|root| names.iter().map(|n| root.join("projects").join(n).join(&file)).find(|p| p.is_file()))
 }
 
+/// Every main transcript under `roots` (`<root>/projects/<folder>/<id>.jsonl`, the id a safe
+/// one), newest first: `(path, modification time in epoch ms)`. The history reader's list; at
+/// most `limit` files.
+pub fn all_transcripts(roots: &[PathBuf], limit: usize) -> Vec<(PathBuf, i64)> {
+    let mut out: Vec<(PathBuf, i64)> = Vec::new();
+    for root in roots {
+        let Ok(dirs) = fs::read_dir(root.join("projects")) else { continue };
+        for d in dirs.filter_map(Result::ok) {
+            if !d.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(d.path()) else { continue };
+            for f in files.filter_map(Result::ok) {
+                let p = f.path();
+                let safe = p.extension().is_some_and(|e| e == "jsonl") && p.file_stem().and_then(|s| s.to_str()).is_some_and(is_safe_session_id);
+                let Ok(meta) = f.metadata() else { continue };
+                if safe && meta.is_file() {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+                        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+                    out.push((p, mtime));
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.truncate(limit);
+    out
+}
+
 /// The subagent transcripts of a main transcript: `(agent id, path)`, sorted by path.
 pub fn subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
     let Some(stem) = main.file_stem() else { return Vec::new() };
@@ -242,6 +274,26 @@ mod tests {
         let subs: Vec<String> = subagent_files(&main).into_iter().map(|(a, _)| a).collect();
         assert_eq!(subs, ["a1", "a2"]);
         assert_eq!(transcript_cwd(&main).as_deref(), Some(r"C:\src\x"));
+    }
+
+    #[test]
+    fn all_transcripts_lists_main_threads_only_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("projects").join("C--src-x");
+        fs::create_dir_all(dir.join("abc-1").join("subagents")).unwrap();
+        fs::write(dir.join("abc-1.jsonl"), "").unwrap();
+        fs::write(dir.join("abc-1").join("subagents").join("agent-a1.jsonl"), "").unwrap();
+        fs::write(dir.join("notes.txt"), "").unwrap();
+        fs::write(dir.join("bad id.jsonl"), "").unwrap();
+        let other = root.path().join("projects").join("C--src-y");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("def-2.jsonl"), "").unwrap();
+        fs::write(root.path().join("projects").join("stray.jsonl"), "").unwrap();
+        let roots = vec![root.path().to_path_buf(), root.path().join("missing")];
+        let mut got: Vec<PathBuf> = all_transcripts(&roots, 100).into_iter().map(|(p, _)| p).collect();
+        got.sort();
+        assert_eq!(got, [dir.join("abc-1.jsonl"), other.join("def-2.jsonl")]);
+        assert_eq!(all_transcripts(&roots, 1).len(), 1);
     }
 
     #[test]
