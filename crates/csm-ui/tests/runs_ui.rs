@@ -96,3 +96,61 @@ fn the_open_with_editor_saves_through_open_with_set() {
     assert_eq!(p["entries"].as_array().unwrap().len(), 3);
     assert!(!csm_ui::screens::open_with::is_open(&h.ctx));
 }
+
+/// The demo with `n` run commands on `web` (`cmd0` … , `cmd{n-1}` the default).
+fn with_many_runs(n: usize) -> Harness<'static, csm_ui::CsmApp> {
+    let mut b = backend(ThemeKind::Mocha);
+    let web = b.model_mut().sessions.iter_mut().find(|s| s.id == "web").expect("the demo's web session");
+    web.runs = (0..n)
+        .map(|i| csm_ui::model::RunView {
+            id: format!("cmd{i}"),
+            label: format!("pkg{i}:build"),
+            command_line: format!("pnpm run pkg{i}:build"),
+            is_default: i + 1 == n,
+            mode: "process".into(),
+            ..Default::default()
+        })
+        .collect();
+    b.publish();
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    act(&mut h, Action::Tool("inspector_show", json!({"tab": "runs"})));
+    h
+}
+
+#[test]
+fn fifty_run_commands_scroll_and_the_output_stays_in_view() {
+    let mut h = with_many_runs(50);
+    let screen = h.ctx.content_rect();
+    assert!(h.query_by_label("Run command: pkg0:build").is_some());
+    // The list scrolls inside the tab: the output's buttons are still on screen.
+    let copy = h.get_by_label("Copy").rect();
+    assert!(copy.max.y <= screen.max.y, "the output section is pushed off screen: {copy:?}");
+    // Scroll to one near the end (clipped until then) and start it.
+    h.get_by_label("Run pkg48:build").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Run pkg48:build").click();
+    settle(&mut h);
+    assert_eq!(last_call(&h), ("run_start".to_string(), json!({"session_id": "web", "run_id": "cmd48"})));
+    // The editor shows all fifty rows (scrolling) and still saves them all.
+    act(&mut h, Action::EditRuns("web".into()));
+    h.get_by_label("Save").click();
+    settle(&mut h);
+    let (id, p) = last_call(&h);
+    assert_eq!(id, "run_edit");
+    assert_eq!(p["runs"].as_array().unwrap().len(), 50);
+}
+
+#[test]
+fn import_from_project_saves_the_edits_then_submits_run_edit_import() {
+    let mut h = h();
+    act(&mut h, Action::EditRuns("web".into()));
+    let before = h.state().submitted().len();
+    h.get_by_label("Import from project").click();
+    settle(&mut h);
+    let calls: Vec<(String, serde_json::Value)> = h.state().submitted().iter().skip(before).map(|c| (c.id.clone(), c.params.clone())).collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0].0, "run_edit");
+    assert_eq!(calls[0].1["runs"].as_array().unwrap().len(), 3, "the edits are saved first");
+    assert_eq!(calls[1], ("run_edit".to_string(), json!({"session_id": "web", "import": true})));
+}

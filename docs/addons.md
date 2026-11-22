@@ -132,7 +132,7 @@ A profile is an agent launch profile. `addon-id.name` is its id.
 ## Run templates
 
 `addon-id.name` in `addon_list` and in the Runs panel. `addon_run_apply` (app only, refused for MCP
-clients like `run_edit`) appends the template to a session's run commands with fresh ids. The first
+clients; they can use `run_set`, which asks) appends the template to a session's run commands with fresh ids. The first
 one becomes the default when the list is empty. A template with a `cwd` other than `{folder}` is
 refused: run commands have no working-folder field yet.
 
@@ -305,7 +305,7 @@ calls = ["session_list", "session_wake"]
 - Only the add-on's own `csm/call`s use it. An MCP client, the CLI or another add-on calling the
   same tool is treated as before. A tool **not** in the list asks as before.
 - A name that is not a tool, an add-on's tool, a tool that turns on extensions (`addon_enable`),
-  `addon_*`/`plugin_*` management, `consent_*`, `settings_set`, `state_import`, `run_edit`,
+  `addon_*`/`plugin_*` management, `consent_*`, `settings_set`, `state_import`, `run_edit`, `run_set`, `run_remove`,
   `open_with_set` or `app_quit` is reported as a problem and **not** granted. Listing a tool never
   lifts a tool's own refusals: a tool that refuses add-on callers still does. At most 64 tools.
 - `addon_list` shows the tools in force as `process_calls` (`tool`, `title`, `effects`, `asks`).

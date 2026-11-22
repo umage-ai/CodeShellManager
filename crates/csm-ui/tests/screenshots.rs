@@ -91,6 +91,27 @@ fn screens() {
         |_| {},
     );
     shoot("06-inspector-runs", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Runs), |_| {});
+    shoot(
+        "06b-inspector-runs-many",
+        ThemeKind::Mocha,
+        |b| {
+            let m = b.model_mut();
+            m.inspector = Some(InspectorTab::Runs);
+            if let Some(web) = m.sessions.iter_mut().find(|s| s.id == "web") {
+                web.runs = (0..50)
+                    .map(|i| csm_ui::model::RunView {
+                        id: format!("cmd{i}"),
+                        label: format!("pkg{i}:build"),
+                        command_line: format!("pnpm run pkg{i}:build"),
+                        is_default: i == 0,
+                        mode: "process".into(),
+                        ..Default::default()
+                    })
+                    .collect();
+            }
+        },
+        |_| {},
+    );
     shoot("06-inspector-git", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Git), |_| {});
     shoot("06-inspector-session", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Session), |_| {});
     shoot("06-inspector-notes", ThemeKind::Latte, |b| b.model_mut().inspector = Some(InspectorTab::Notes), |_| {});

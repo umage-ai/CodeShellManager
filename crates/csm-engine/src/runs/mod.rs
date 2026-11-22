@@ -12,13 +12,16 @@
 //!   parse MSVCRT quoting); `PowerShell` mode is `-EncodedCommand` (no quoting at all). The
 //!   command line is the user's own: a shell is the point, and no app value is put in it.
 //! - Output is ANSI-stripped and capped at 1 MB ([`output`]). Not persisted.
-//! - `PostRunUrl` opens in the browser only after exit code 0, and only an absolute `http(s)` URL
-//!   ([`launchable_url`]): a whole state file can be imported, and ShellExecute would happily run
-//!   a program, a script or any protocol handler.
+//! - `PostRunUrl` opens in the browser once per run, on whichever comes first: a loopback URL
+//!   starts accepting connections while the run is alive ([`ready`]; a dev server never exits), or
+//!   the run exits 0 (one-shot commands; the only rule for remote URLs and SSH parents). Only an
+//!   absolute `http(s)` URL is ever opened ([`launchable_url`]): a whole state file can be
+//!   imported, and ShellExecute would happily run a program, a script or any protocol handler.
 //!
 //! Spawning happens on a worker; the engine thread only records state ([`start`], [`stop`]).
 
 pub mod output;
+pub mod ready;
 pub mod templates;
 
 use std::collections::HashMap;
@@ -84,10 +87,17 @@ pub(crate) struct RunInstance {
     pub pty: Option<Arc<dyn Pty>>,
     /// Set when stopped: a spawn still in flight kills what it started.
     pub closed: Arc<AtomicBool>,
+    /// The loopback address to watch for "the server is listening" ([`ready`]), if any.
+    pub ready_target: Option<ready::Target>,
+    /// Set when the run ends or is stopped: the readiness watcher gives up.
+    pub ready_stop: Arc<AtomicBool>,
+    /// The URL was opened for this run (it opens at most once).
+    pub url_opened: bool,
 }
 
 impl RunInstance {
     fn kill(&mut self) {
+        self.ready_stop.store(true, Ordering::Release);
         self.closed.store(true, Ordering::Release);
         if let Some(p) = &self.pty {
             p.kill();
@@ -283,6 +293,8 @@ pub(crate) fn start(ctx: &mut Ctx<'_>, s: &ShellSession, item: &RunCommandItem) 
     }
     let output = RunOutput::new();
     let closed = Arc::new(AtomicBool::new(false));
+    // An SSH run's server listens on the remote machine's loopback, which no local probe sees.
+    let ready_target = if s.kind == SessionKind::Ssh { None } else { item.post_run_url.as_deref().and_then(ready::loopback_target) };
     list.push(RunInstance {
         item_id: item.id.clone(),
         label: item.label.clone(),
@@ -295,6 +307,9 @@ pub(crate) fn start(ctx: &mut Ctx<'_>, s: &ShellSession, item: &RunCommandItem) 
         output: output.clone(),
         pty: None,
         closed: closed.clone(),
+        ready_target,
+        ready_stop: Arc::new(AtomicBool::new(false)),
+        url_opened: false,
     });
     ctx.state.touch();
 
@@ -371,6 +386,9 @@ pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, sid: &str, _iid: &str, seq: u64, res
             if r.closed.load(Ordering::Acquire) {
                 pty.kill();
             }
+            if let Some(target) = r.ready_target.clone() {
+                watch_ready(&engine, sid, seq, target, r.ready_stop.clone());
+            }
             let (sid, engine2) = (sid.to_owned(), engine.clone());
             pty.on_exit(Box::new(move |code| {
                 engine2.post(Box::new(move |ctx| on_exited(ctx, &sid, seq, code)));
@@ -387,21 +405,51 @@ pub(crate) fn on_spawned(ctx: &mut Ctx<'_>, sid: &str, _iid: &str, seq: u64, res
     ctx.state.touch();
 }
 
+/// Watches a running run's loopback URL on a worker; the first accepted connection opens it
+/// (on the engine thread, if the same invocation is still running and has not opened it yet).
+fn watch_ready(engine: &crate::engine::Engine, sid: &str, seq: u64, target: ready::Target, stop: Arc<AtomicBool>) {
+    let (engine, sid) = (engine.clone(), sid.to_owned());
+    let spawned = std::thread::Builder::new().name("csm-run-ready".into()).spawn(move || {
+        if ready::wait_until_listening(&target, ready::POLL_INTERVAL, ready::READY_TIMEOUT, &stop) {
+            engine.post(Box::new(move |ctx| {
+                if find(ctx.state, &sid, seq).is_some_and(|r| r.phase == RunPhase::Running) {
+                    open_url_once(ctx.state, &sid, seq);
+                }
+            }));
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("run URL watcher: {e}");
+    }
+}
+
+/// Opens the run's URL unless this invocation already did. Only a launchable URL is opened.
+fn open_url_once(state: &mut State, sid: &str, seq: u64) {
+    let Some(r) = find(state, sid, seq) else { return };
+    if r.url_opened {
+        return;
+    }
+    let Some(u) = r.post_run_url.clone().filter(|u| !u.trim().is_empty()) else { return };
+    r.url_opened = true;
+    match launchable_url(&u) {
+        Some(safe) => (state.options.url_opener)(safe),
+        None => log::warn!("run '{}': PostRunUrl '{u}' rejected — only http and https URLs are opened", r.label),
+    }
+}
+
 pub(crate) fn on_exited(ctx: &mut Ctx<'_>, sid: &str, seq: u64, code: Option<i32>) {
     let Some(r) = find(ctx.state, sid, seq) else { return };
+    r.ready_stop.store(true, Ordering::Release);
     if r.phase != RunPhase::Stopped {
         r.phase = if code == Some(0) { RunPhase::Ok } else { RunPhase::Failed };
         r.exit_code = code;
     }
     r.ended_ms.get_or_insert_with(now_ms);
-    let url = (r.phase == RunPhase::Ok).then(|| r.post_run_url.clone()).flatten().filter(|u| !u.trim().is_empty());
-    let label = r.label.clone();
+    let ok = r.phase == RunPhase::Ok;
     ctx.state.touch();
-    if let Some(u) = url {
-        match launchable_url(&u) {
-            Some(safe) => crate::tools::open::open_url_detached(safe),
-            None => log::warn!("run '{label}': PostRunUrl '{u}' rejected — only http and https URLs are opened"),
-        }
+    // A one-shot command opens its URL when it succeeds (a server's opened when it listened).
+    if ok {
+        open_url_once(ctx.state, sid, seq);
     }
 }
 
@@ -445,13 +493,13 @@ pub(crate) fn seed_async(ctx: &mut Ctx<'_>, sid: &str) {
     }
     let (folder, engine, sid) = (s.working_folder.clone(), ctx.engine.clone(), sid.to_owned());
     let _ = std::thread::Builder::new().name("csm-run-seed".into()).spawn(move || {
-        if let Some((kind, items)) = templates::seed_for_folder(&folder) {
+        if let Some(seed) = templates::seed_for_folder(&folder) {
             engine.post(Box::new(move |ctx| {
                 if let Some(s) = ctx.state.app.sessions.iter_mut().find(|s| s.id == sid)
                     && s.run_commands.is_empty()
                 {
-                    log::info!("run commands: seeded {kind} template for {sid}");
-                    s.run_commands = items;
+                    log::info!("run commands: seeded {} template for {sid} ({} left out)", seed.kind, seed.left_out);
+                    s.run_commands = seed.items;
                     ctx.state.persist();
                 }
             }));

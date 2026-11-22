@@ -196,7 +196,8 @@ pub fn never_for_addons(tool: &str) -> Option<&'static str> {
     }
     match tool {
         "settings_set" => Some("settings are changed by the person"),
-        "state_import" | "run_edit" | "open_with_set" => Some("it decides what runs, so it is refused for every caller but the person"),
+        "state_import" | "open_with_set" => Some("it decides what runs, so it is refused for every caller but the person"),
+        "run_edit" | "run_set" | "run_remove" => Some("it decides what F5 runs, so it always asks the person"),
         "app_quit" => Some("quitting is for the person"),
         _ if tool.contains('.') => Some("another add-on's tools are not callable from a manifest list"),
         _ => None,

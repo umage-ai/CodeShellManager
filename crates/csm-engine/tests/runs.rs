@@ -26,6 +26,11 @@ fn item(id: &str, label: &str, cmd: &str, default: bool) -> RunCommandItem {
 
 /// An engine with one live session `s` (two run commands, `test` the default), recording spawns.
 fn rig() -> (H, Seen) {
+    rig_with(|_| {})
+}
+
+/// [`rig`], with more option tweaks.
+fn rig_with(tweak: impl FnOnce(&mut csm_engine::StateOptions)) -> (H, Seen) {
     let dir = tempfile::tempdir().unwrap();
     let mut app = test_app();
     app.sessions.push(session(
@@ -41,6 +46,7 @@ fn rig() -> (H, Seen) {
             s2.lock().unwrap().push(opts.clone());
             inner(opts)
         });
+        tweak(o);
     });
     h.wait_until("the session is live", |v| v.session("s").is_some_and(|s| s.live));
     // A restart is refused while the start-up restore runs (by design: two loops starting Claude
@@ -229,10 +235,6 @@ fn edit_validates_keeps_one_default_and_stops_removed_runs() {
         let e = h.ui("run_edit", json!({"session_id": "s", "runs": bad.clone()})).unwrap_err();
         assert!(matches!(e, ToolError::InvalidParams(_)), "{bad}: {e:?}");
     }
-    // MCP clients may not decide what F5 runs.
-    let ext = Caller::External { client: "c".into(), session_id: None };
-    let e = h.engine.call(ext, "run_edit", json!({"session_id": "s", "runs": []})).unwrap_err();
-    assert!(matches!(e, ToolError::Refused(_)), "{e:?}");
     // The CLI is the person.
     assert!(h.engine.call(Caller::Cli, "run_edit", json!({"session_id": "s", "runs": []})).is_ok());
     let e = h.ui("run_start", json!({"session_id": "s"})).unwrap_err();
@@ -327,4 +329,223 @@ fn killed_within(flag: &std::sync::atomic::AtomicBool, limit: Duration) -> bool 
         std::thread::sleep(Duration::from_millis(10));
     }
     true
+}
+
+/// Waits for the next consent request (any other event is skipped).
+fn next_consent(events: &std::sync::mpsc::Receiver<csm_engine::Event>) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            Ok(csm_engine::Event::ConsentRequested { request }) => return request,
+            Ok(_) if Instant::now() < deadline => continue,
+            other => panic!("expected a consent request, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn mcp_clients_are_asked_before_editing_run_commands_and_the_app_is_not() {
+    let (h, _) = rig();
+    let ext = || Caller::External { client: "agent".into(), session_id: Some("s".into()) };
+    let events = h.engine.subscribe();
+    let params =
+        json!({"session_id": "s", "label": "Dev", "command_line": "npm run dev", "is_default": true, "post_run_url": "http://localhost:5173"});
+    let rx = h.engine.submit(ext(), "run_set", params.clone());
+    let request = next_consent(&events);
+    assert_eq!(request["tool"], "run_set");
+    assert_eq!(request["params"]["command_line"], "npm run dev", "the card shows what will be set");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(rx.try_recv().is_err(), "waits for the person");
+    assert_eq!(h.engine.view().session("s").unwrap().runs.len(), 2, "nothing changed yet");
+    h.ok("consent_answer", json!({"request_id": request["request_id"], "answer": "allow_once"}));
+    let out = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    assert_eq!(out.data["added"], true);
+    let v = h.engine.view();
+    let runs = &v.session("s").unwrap().runs;
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs.iter().filter(|r| r.is_default).map(|r| r.label.as_str()).collect::<Vec<_>>(), ["Dev"]);
+
+    // A denied edit changes nothing; run_edit and run_remove ask too.
+    for (tool, p) in [
+        ("run_edit", json!({"session_id": "s", "runs": [{"label": "X", "command_line": "calc"}]})),
+        ("run_remove", json!({"session_id": "s", "run_id": "Dev"})),
+        ("run_edit", json!({"session_id": "s", "import": true})),
+    ] {
+        let rx = h.engine.submit(ext(), tool, p);
+        let request = next_consent(&events);
+        assert_eq!(request["tool"], tool);
+        h.ok("consent_answer", json!({"request_id": request["request_id"], "answer": "deny"}));
+        assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap().is_err(), "{tool} denied");
+    }
+    assert_eq!(h.engine.view().session("s").unwrap().runs.len(), 3);
+
+    // The app and the CLI are never asked.
+    h.ok("run_set", json!({"session_id": "s", "id": "Dev", "command_line": "npm run dev -- --port 5174"}));
+    assert!(h.engine.call(Caller::Cli, "run_remove", json!({"session_id": "s", "run_id": "build"})).is_ok());
+    h.engine.shutdown();
+}
+
+#[test]
+fn run_set_adds_or_updates_one_and_run_remove_removes_one() {
+    let (h, _) = rig();
+    // Update by label, keeping the rest of the list.
+    let o = h.ok("run_set", json!({"session_id": "s", "label": "build", "command_line": "cargo build --release", "mode": "powershell"}));
+    assert_eq!(o.data["added"], false);
+    let list = h.ok("run_list", json!({"session_id": "s"})).data;
+    assert_eq!(list[0]["id"], "build");
+    assert_eq!(list[0]["command_line"], "cargo build --release");
+    assert_eq!(list[0]["mode"], "powershell");
+    assert_eq!(list[1]["is_default"], true, "the default is untouched");
+    // Update by id: only the given fields change; "" clears the URL.
+    h.ok("run_set", json!({"session_id": "s", "id": "test", "post_run_url": "https://example.com/report"}));
+    h.ok("run_set", json!({"session_id": "s", "id": "build", "is_default": true}));
+    let list = h.ok("run_list", json!({"session_id": "s"})).data;
+    assert_eq!(list[1]["post_run_url"], "https://example.com/report");
+    assert_eq!((list[0]["is_default"].clone(), list[1]["is_default"].clone()), (json!(true), json!(false)));
+    h.ok("run_set", json!({"session_id": "s", "id": "test", "post_run_url": ""}));
+    assert!(h.ok("run_list", json!({"session_id": "s"})).data[1]["post_run_url"].is_null());
+
+    // Same validation as run_edit.
+    for bad in [
+        json!({"session_id": "s", "label": "New"}),
+        json!({"session_id": "s", "command_line": "x"}),
+        json!({"session_id": "s", "label": "A", "command_line": "a\nb"}),
+        json!({"session_id": "s", "label": "A", "command_line": "echo a\recho b"}),
+        json!({"session_id": "s", "label": "A", "command_line": "x", "post_run_url": "file:///C:/Windows/System32/calc.exe"}),
+        json!({"session_id": "s", "id": "build", "command_line": " "}),
+        json!({"session_id": "s", "label": "A", "command_line": "x", "mode": "bash"}),
+        json!({"session_id": "s", "label": "A", "command_line": "x", "extra": 1}),
+    ] {
+        let e = h.ui("run_set", bad.clone()).unwrap_err();
+        assert!(matches!(e, ToolError::InvalidParams(_)), "{bad}: {e:?}");
+    }
+    let e = h.ui("run_set", json!({"session_id": "s", "id": "nope", "command_line": "x"})).unwrap_err();
+    assert!(matches!(e, ToolError::NotFound(_)), "{e:?}");
+    // At most 50.
+    for n in 0..48 {
+        h.ok("run_set", json!({"session_id": "s", "label": format!("c{n}"), "command_line": format!("echo {n}")}));
+    }
+    let e = h.ui("run_set", json!({"session_id": "s", "label": "one too many", "command_line": "x"})).unwrap_err();
+    assert!(matches!(e, ToolError::InvalidParams(_)), "{e:?}");
+    // Removing the default (a running one) stops its run and promotes the first remaining one.
+    h.ok("run_set", json!({"session_id": "s", "id": "build", "mode": "process"}));
+    h.ok("run_start", json!({"session_id": "s", "run_id": "build"}));
+    let p = run_pty(&h, 0);
+    wait_phase(&h, "build", RunPhase::Running);
+    let o = h.ok("run_remove", json!({"session_id": "s", "run_id": "BUILD"}));
+    assert_eq!(o.data["id"], "build");
+    assert!(p.killed.load(std::sync::atomic::Ordering::SeqCst), "its run is stopped");
+    let list = h.ok("run_list", json!({"session_id": "s"})).data;
+    assert_eq!(list.as_array().unwrap().len(), 49);
+    assert_eq!(list[0]["id"], "test");
+    assert_eq!(list[0]["is_default"], true);
+    assert!(matches!(h.ui("run_remove", json!({"session_id": "s", "run_id": "build"})).unwrap_err(), ToolError::NotFound(_)));
+    h.engine.shutdown();
+}
+
+#[test]
+fn import_adds_a_big_package_json_without_touching_existing_commands() {
+    let (h, _) = rig();
+    let folder = h.engine.view().session("s").unwrap().folder.clone();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(std::path::Path::new(&folder).join("package.json"), csm_engine::runs::templates::monorepo_package_json()).unwrap();
+    std::fs::write(std::path::Path::new(&folder).join("pnpm-lock.yaml"), "").unwrap();
+    // `pnpm run build` is already there (as the person's own label).
+    h.ok("run_set", json!({"session_id": "s", "label": "Build all", "command_line": "pnpm run build"}));
+    let e = h.ui("run_edit", json!({"session_id": "s", "import": true, "detect": true})).unwrap_err();
+    assert!(matches!(e, ToolError::InvalidParams(_)), "{e:?}");
+    let e = h.ui("run_edit", json!({"session_id": "s", "import": true, "runs": []})).unwrap_err();
+    assert!(matches!(e, ToolError::InvalidParams(_)), "{e:?}");
+    let o = h.ok("run_edit", json!({"session_id": "s", "import": true}));
+    assert_eq!(o.data["template"], "node");
+    assert_eq!(o.data["added"], 47, "3 existing + 47 = the cap");
+    // 41 cut by the template's cap, plus the 49 fresh ones that did not fit beyond 47.
+    assert_eq!(o.data["left_out"], 41 + 2);
+    assert!(o.message.contains("Added 47 node run commands.") && o.message.contains("43 left out"), "{}", o.message);
+    let v = h.engine.view();
+    let runs = &v.session("s").unwrap().runs;
+    assert_eq!(runs.len(), 50);
+    assert_eq!(runs.iter().map(|r| r.label.as_str()).take(4).collect::<Vec<_>>(), ["Build", "Test", "Build all", "build:web"]);
+    assert_eq!(runs.iter().filter(|r| r.is_default).map(|r| r.id.as_str()).collect::<Vec<_>>(), ["test"], "the default is kept");
+    assert_eq!(runs.iter().filter(|r| r.command_line == "pnpm run build").count(), 1, "no duplicate of an existing command line");
+    // Nothing more fits.
+    let o = h.ok("run_edit", json!({"session_id": "s", "import": true}));
+    assert_eq!(o.data["added"], 0);
+    assert!(o.message.starts_with("Nothing to add"), "{}", o.message);
+    // detect replaces the list with the capped template, `dev` (after the cap) the default.
+    let o = h.ok("run_edit", json!({"session_id": "s", "detect": true}));
+    assert_eq!((o.data["added"].clone(), o.data["left_out"].clone()), (json!(50), json!(41)));
+    let v = h.engine.view();
+    let runs = &v.session("s").unwrap().runs;
+    assert_eq!(runs.iter().filter(|r| r.is_default).map(|r| r.command_line.as_str()).collect::<Vec<_>>(), ["pnpm run dev"]);
+    h.engine.shutdown();
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+type Urls = Arc<Mutex<Vec<String>>>;
+
+fn rig_urls() -> (H, Urls) {
+    let urls: Urls = Arc::new(Mutex::new(Vec::new()));
+    let u2 = urls.clone();
+    let (h, _) = rig_with(move |o| o.url_opener = Arc::new(move |u| u2.lock().unwrap().push(u)));
+    (h, urls)
+}
+
+fn wait_urls(urls: &Urls, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while urls.lock().unwrap().len() < n {
+        assert!(Instant::now() < deadline, "expected {n} opened URLs, got {:?}", urls.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_dev_servers_url_opens_once_it_listens_and_not_again_on_exit() {
+    let (h, urls) = rig_urls();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
+    h.ok("run_set", json!({"session_id": "s", "id": "test", "post_run_url": url}));
+    h.ok("run_start", json!({"session_id": "s"}));
+    let p = run_pty(&h, 0);
+    wait_urls(&urls, 1);
+    assert_eq!(*urls.lock().unwrap(), std::slice::from_ref(&url));
+    assert_eq!(phase(&h, "test"), RunPhase::Running, "opened while the server runs");
+    p.exit(Some(0));
+    wait_phase(&h, "test", RunPhase::Ok);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(urls.lock().unwrap().len(), 1, "once per run");
+    // A restart is a new run: it opens again.
+    h.ok("run_start", json!({"session_id": "s"}));
+    run_pty(&h, 1);
+    wait_urls(&urls, 2);
+    drop(listener);
+    h.engine.shutdown();
+}
+
+#[test]
+fn a_one_shot_command_opens_its_url_after_exit_0_only() {
+    let (h, urls) = rig_urls();
+    // Nothing listens on this port, and a remote URL is never probed.
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    h.ok("run_set", json!({"session_id": "s", "id": "test", "post_run_url": format!("http://localhost:{port}")}));
+    h.ok("run_set", json!({"session_id": "s", "id": "build", "post_run_url": "https://example.com/deployed"}));
+    h.ok("run_start", json!({"session_id": "s", "run_id": "build"}));
+    let p = run_pty(&h, 0);
+    wait_phase(&h, "build", RunPhase::Running);
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(urls.lock().unwrap().is_empty(), "a remote URL waits for the exit");
+    p.exit(Some(0));
+    wait_urls(&urls, 1);
+    assert_eq!(urls.lock().unwrap()[0], "https://example.com/deployed");
+    // A failed run opens nothing; a stopped one neither.
+    h.ok("run_start", json!({"session_id": "s", "run_id": "test"}));
+    run_pty(&h, 1).exit(Some(1));
+    wait_phase(&h, "test", RunPhase::Failed);
+    h.ok("run_start", json!({"session_id": "s", "run_id": "test"}));
+    run_pty(&h, 2);
+    wait_phase(&h, "test", RunPhase::Running);
+    h.ok("run_stop", json!({"session_id": "s", "run_id": "test"}));
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(urls.lock().unwrap().len(), 1);
+    h.engine.shutdown();
 }
