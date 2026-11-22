@@ -184,6 +184,8 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("ClaudeUsageHistory").or_insert(json!(s.claude_usage_history));
         m.entry("StartMinimized").or_insert(json!(s.start_minimized));
         m.entry("StartMinimizedToTray").or_insert(json!(s.start_minimized_to_tray));
+        m.entry("ThemeDark").or_insert(json!(s.theme_dark));
+        m.entry("ThemeLight").or_insert(json!(s.theme_light));
     }
     Ok(v)
 }

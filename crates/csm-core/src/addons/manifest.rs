@@ -231,6 +231,8 @@ pub struct ParsedAddon {
     pub slash: Vec<SlashSpec>,
     pub commands: Vec<CommandSpec>,
     pub process: Option<ProcessSpec>,
+    /// `[[theme]]` colour palettes (`super::theme`).
+    pub themes: Vec<crate::addons::theme::ThemeSpec>,
     /// Entries that were skipped, in file order.
     pub problems: Vec<Problem>,
 }
@@ -271,6 +273,7 @@ pub fn parse(text: &str, folder: &str) -> Result<ParsedAddon, AddonError> {
     let run_templates = entries(&table, "run_template", &mut problems, parse_run_template);
     let slash = entries(&table, "slash", &mut problems, parse_slash);
     let commands = entries(&table, "command", &mut problems, parse_command);
+    let themes = themes(&table, &mut problems);
     let process = match meta.kind {
         AddonKind::Process => match table.get("process") {
             Some(Value::Table(t)) => match parse_process(t, &mut problems) {
@@ -297,11 +300,11 @@ pub fn parse(text: &str, folder: &str) -> Result<ParsedAddon, AddonError> {
         }
     };
     for key in table.keys() {
-        if !matches!(key.as_str(), "addon" | "profile" | "run_template" | "slash" | "command" | "process") {
+        if !matches!(key.as_str(), "addon" | "profile" | "run_template" | "slash" | "command" | "process" | "theme") {
             problems.push(Problem { scope: format!("`{key}`"), message: "unknown table; ignored".into() });
         }
     }
-    Ok(ParsedAddon { meta, profiles, run_templates, slash, commands, process, problems })
+    Ok(ParsedAddon { meta, profiles, run_templates, slash, commands, process, themes, problems })
 }
 
 fn parse_meta(t: &Table, folder: &str) -> Result<AddonMeta, AddonError> {
@@ -378,6 +381,21 @@ fn entries<T>(t: &Table, key: &str, problems: &mut Vec<Problem>, parse_one: fn(&
         match parse_one(table) {
             Ok(v) => out.push(v),
             Err(m) => problems.push(Problem { scope: label, message: m }),
+        }
+    }
+    out
+}
+
+/// `[[theme]]`: each entry through [`entries`], its non-fatal problems kept in file order. A repeated
+/// theme id is reported and the later one ignored.
+fn themes(t: &Table, problems: &mut Vec<Problem>) -> Vec<crate::addons::theme::ThemeSpec> {
+    let mut out: Vec<crate::addons::theme::ThemeSpec> = Vec::new();
+    for (spec, found) in entries(t, "theme", problems, crate::addons::theme::parse_theme) {
+        problems.extend(found);
+        if out.iter().any(|x| x.id == spec.id) {
+            problems.push(Problem { scope: format!("theme `{}`", spec.id), message: "a theme with this id comes earlier; ignored".into() });
+        } else {
+            out.push(spec);
         }
     }
     out
@@ -949,6 +967,122 @@ tool = "Rm -rf"
     fn unknown_top_level_tables_are_reported() {
         let p = ok("[surprise]\nx = 1\n");
         assert!(p.problems.iter().any(|x| x.scope.contains("surprise")));
+    }
+
+    #[test]
+    fn a_full_theme_parses_and_normalises_its_colours() {
+        let p = ok(r##"
+[[theme]]
+id = "night"
+name = "Night"
+base = "dark"
+description = "A test"
+[theme.colors]
+base = "#0A0B0C"
+text = "#f0f0f0"
+blue = "#11223380"
+[theme.terminal]
+foreground = "#eeeeee"
+bright_red = "#ff0000"
+"##);
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        let t = &p.themes[0];
+        assert_eq!((t.id.as_str(), t.name.as_str(), t.base, t.description.as_str()), ("night", "Night", crate::addons::ThemeBase::Dark, "A test"));
+        assert_eq!(t.colors.get("base").map(String::as_str), Some("#0a0b0c"));
+        assert_eq!(t.colors.get("blue").map(String::as_str), Some("#11223380"));
+        assert_eq!(t.terminal.get("bright_red").map(String::as_str), Some("#ff0000"));
+    }
+
+    #[test]
+    fn a_partial_theme_falls_back_to_its_base_for_missing_keys() {
+        let p = ok("[[theme]]\nid = \"warm\"\nname = \"Warm\"\nbase = \"light\"\n[theme.colors]\nbase = \"#fff8f0\"\n");
+        let t = &p.themes[0];
+        assert_eq!(t.color("base"), Some([0xff, 0xf8, 0xf0, 255]));
+        assert_eq!(t.color("text"), Some(crate::addons::theme::rgba(crate::addons::theme::LATTE[14])), "text is Latte's");
+        assert_eq!(t.color("nope"), None);
+        let dark = ok("[[theme]]\nid = \"d\"\nname = \"D\"\nbase = \"dark\"\n");
+        assert_eq!(dark.themes[0].resolved().to_vec(), crate::addons::theme::MOCHA.map(crate::addons::theme::rgba).to_vec());
+    }
+
+    #[test]
+    fn bad_and_unknown_colour_keys_are_skipped_and_reported_the_theme_still_loads() {
+        let p = ok(r##"
+[[theme]]
+id = "odd"
+name = "Odd"
+base = "dark"
+shade = 3
+[theme.colors]
+base = "#12345"
+text = "white"
+surface9 = "#000000"
+blue = 7
+mauve = "#cba6f7"
+[theme.terminal]
+purple = "#ff00ff"
+"##);
+        assert_eq!(p.themes.len(), 1);
+        let t = &p.themes[0];
+        assert_eq!(t.colors.keys().collect::<Vec<_>>(), vec!["mauve"]);
+        let msgs: Vec<String> = p.problems.iter().map(|x| format!("{}: {}", x.scope, x.message)).collect();
+        for want in ["unknown key `shade`", "`colors.base` is `#12345`", "`colors.text` is `white`", "`colors.surface9` is not a colour key", "`colors.blue` is a non-string value", "`terminal.purple` is not a colour key"] {
+            assert!(msgs.iter().any(|m| m.contains(want)), "{want} in {msgs:?}");
+        }
+        assert!(msgs.iter().all(|m| m.starts_with("theme `odd`")), "{msgs:?}");
+    }
+
+    #[test]
+    fn a_theme_without_id_name_or_base_is_skipped() {
+        let p = ok(r#"
+[[theme]]
+name = "No id"
+base = "dark"
+[[theme]]
+id = "Bad Id"
+name = "x"
+base = "dark"
+[[theme]]
+id = "nameless"
+base = "dark"
+[[theme]]
+id = "sepia"
+name = "Sepia"
+base = "sepia"
+[[theme]]
+id = "ok"
+name = "Ok"
+base = "light"
+[[theme]]
+id = "ok"
+name = "Again"
+base = "light"
+"#);
+        assert_eq!(p.themes.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["ok"]);
+        assert_eq!(p.problems.len(), 5, "{:?}", p.problems);
+        assert!(p.problems.iter().any(|x| x.message.contains("base `sepia` is not")));
+        assert!(p.problems.iter().any(|x| x.message.contains("comes earlier")));
+    }
+
+    #[test]
+    fn too_many_themes_are_cut_at_the_entry_limit() {
+        let mut extra = String::new();
+        for i in 0..MAX_ENTRIES + 3 {
+            extra.push_str(&format!("[[theme]]\nid = \"t{i}\"\nname = \"T{i}\"\nbase = \"dark\"\n"));
+        }
+        let p = ok(&extra);
+        assert_eq!(p.themes.len(), MAX_ENTRIES);
+        assert_eq!(p.problems.iter().filter(|x| x.message.contains("more than")).count(), 3);
+    }
+
+    #[test]
+    fn low_contrast_is_a_warning_not_a_rejection() {
+        let p = ok("[[theme]]\nid = \"murky\"\nname = \"Murky\"\nbase = \"dark\"\n[theme.colors]\ntext = \"#3a3a4a\"\n[theme.terminal]\nbackground = \"#303040\"\n");
+        assert_eq!(p.themes.len(), 1, "it still loads");
+        let warn: Vec<&str> = p.problems.iter().map(|x| x.message.as_str()).filter(|m| m.starts_with("warning:")).collect();
+        assert!(warn.iter().any(|m| m.contains("text on base")), "{warn:?}");
+        assert!(warn.iter().any(|m| m.contains("text on surface0")), "{warn:?}");
+        assert!(warn.iter().any(|m| m.contains("terminal.foreground on terminal.background")), "{warn:?}");
+        assert!(!warn.iter().any(|m| m.contains("overlay2")), "untouched pairs keep Mocha's contrast: {warn:?}");
     }
 
     #[test]

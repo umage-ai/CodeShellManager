@@ -70,3 +70,19 @@ fn the_review_manifest_declares_what_it_does_and_the_calls_it_needs() {
     }
     assert!(proc.calls.iter().all(|c| !c.starts_with("session_send") && !c.starts_with("addon_")), "{:?}", proc.calls);
 }
+
+#[test]
+fn the_themes_pack_has_three_dark_themes_with_full_palettes_and_no_warnings() {
+    let p = pack("themes", include_str!("../../../samples/addons/themes/addon.toml"));
+    assert!(p.profiles.is_empty() && p.commands.is_empty() && p.slash.is_empty(), "colours only");
+    let ids: Vec<&str> = p.themes.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["frappe", "macchiato", "high-contrast"]);
+    for t in &p.themes {
+        assert_eq!(t.base, csm_core::addons::ThemeBase::Dark);
+        assert_eq!(t.colors.len(), 26, "{}: every palette slot", t.id);
+    }
+    // Spot checks against catppuccin/palette.
+    assert_eq!(p.themes[0].colors["base"], "#303446");
+    assert_eq!(p.themes[1].colors["base"], "#24273a");
+    assert_eq!(p.themes[2].terminal["background"], "#000000");
+}

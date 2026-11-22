@@ -480,6 +480,17 @@ impl DemoBackend {
         ShutdownBoard { rows, budget_used_s: t.min(30.0), budget_s: 30.0 }
     }
 
+    /// The theme mode setting (`dark`, `light`, `system`; `mocha` and `latte` too).
+    fn set_theme_mode(&mut self, v: &str) {
+        self.model.theme = ThemeKind::from_id(v).unwrap_or_else(|| crate::engine_backend::theme_from_setting(v));
+        // Transcripts carry theme colours in their bytes: redraw them. Live terminals
+        // recolour by themselves (the view draws with the theme's palette).
+        let ids: Vec<SessionId> = self.static_ids.iter().cloned().collect();
+        for id in ids {
+            self.make_terminal(&id);
+        }
+    }
+
     fn make_terminal(&mut self, id: &str) {
         let Some(s) = self.model.session(id).cloned() else { return };
         let live_shell = self.opts.live && !s.is_claude() && s.kind == Kind::Local;
@@ -1297,14 +1308,13 @@ impl DemoBackend {
                     && p.key.eq_ignore_ascii_case("theme")
                     && let Some(v) = p.value.as_str()
                 {
-                    let k = ThemeKind::from_id(v).unwrap_or_else(|| crate::engine_backend::theme_from_setting(v));
-                    self.model.theme = k;
-                    // Transcripts carry theme colours in their bytes: redraw them. Live terminals
-                    // recolour by themselves (the view draws with the theme's palette).
-                    let ids: Vec<SessionId> = self.static_ids.iter().cloned().collect();
-                    for id in ids {
-                        self.make_terminal(&id);
-                    }
+                    self.set_theme_mode(v);
+                }
+                vec![]
+            }
+            "theme_set" => {
+                if let Some(v) = call.params.get("mode").and_then(Value::as_str) {
+                    self.set_theme_mode(v);
                 }
                 vec![]
             }

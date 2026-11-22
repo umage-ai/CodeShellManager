@@ -336,15 +336,31 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     section(ui, "Theme");
     let cur = app.ui.settings.str("Theme").unwrap_or("dark").to_ascii_lowercase();
-    let options = ["Dark (Mocha)", "Light (Latte)", "System"];
+    let options = ["Dark", "Light", "System"];
     let ids = ["dark", "light", "system"];
     let sel = ids.iter().position(|i| *i == cur || (cur == "mocha" && *i == "dark") || (cur == "latte" && *i == "light"));
     if let Some(i) = widgets::segmented(ui, "Theme", &options, sel)
         && let Some(id) = ids.get(i)
     {
-        actions.push(set("Theme", json!(id)));
+        actions.push(Action::Tool("theme_set", json!({"mode": id})));
     }
-    caption(ui, "System follows the light or dark setting of your desktop.");
+    caption(ui, "System follows the light or dark setting of your desktop. Dark mode draws the dark theme below, light mode the light one.");
+    let themes = theme::registry(&app.model.addons);
+    for (kind, title, key) in [(theme::ThemeKind::Mocha, "Dark theme", "dark"), (theme::ThemeKind::Latte, "Light theme", "light")] {
+        section(ui, title);
+        let chosen = if kind == theme::ThemeKind::Mocha { app.prefs.theme_dark.clone() } else { app.prefs.theme_light.clone() };
+        let (_, fallback) = app.theme_palette(kind);
+        let drawn = if fallback.is_some() { kind.base().builtin_id().to_owned() } else { chosen };
+        for entry in themes.iter().filter(|e| e.palette.kind == kind) {
+            if theme_row(ui, entry, title, entry.id == drawn) {
+                actions.push(Action::Tool("theme_set", json!({key: entry.id})));
+            }
+        }
+        if let Some(why) = fallback {
+            caption(ui, &why);
+        }
+    }
+    caption(ui, "Add-on packs can add themes (docs/addons.md, Themes). The Themes sample in Settings › Add-ons has Catppuccin Frappé and Macchiato and a high-contrast dark theme.");
     section(ui, "Interface");
     let zoom = csm_core::models::UI_ZOOM_RANGE;
     number_setting(ui, app, "UiZoomPercent", "Interface size", i64::from(*zoom.start())..=i64::from(*zoom.end()), "%", actions);
@@ -381,6 +397,37 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui,
         "Read from Windows Terminal's settings (Stable, Preview or unpackaged). A session keeps its look if the profile changes later. Font face, weight, ligatures, blink, transparency and the retro effect are kept with the session but not drawn.",
     );
+}
+
+/// One theme to pick: its swatches, its name and where it comes from; a check when it is the one
+/// drawn in that mode. True when clicked.
+fn theme_row(ui: &mut Ui, entry: &theme::ThemeEntry, slot: &str, selected: bool) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::click());
+    if selected || resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), if selected { t.row_sel } else { t.row_hover });
+    }
+    let mut x = rect.min.x + space::ROW_X;
+    let side = size::BADGE;
+    for c in entry.palette.swatches() {
+        let r = Rect::from_min_size(pos2(x, rect.center().y - side / 2.0), Vec2::splat(side));
+        ui.painter().rect_filled(r, CornerRadius::same(radius::SM), c);
+        ui.painter().rect_stroke(r, CornerRadius::same(radius::SM), Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
+        x += side + space::XXS;
+    }
+    x += space::SM;
+    ui.painter().text(pos2(x, rect.center().y), Align2::LEFT_CENTER, &entry.name, theme::medium(text::BODY), t.fg);
+    let mut right = rect.max.x - space::ROW_X;
+    if selected {
+        let ir = Rect::from_min_size(pos2(right - icon::MD, rect.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
+        icons::paint(ui, ir, "check", icon::MD, t.blue);
+    }
+    right -= icon::MD + space::SM;
+    let source = entry.source.as_deref().unwrap_or("built in");
+    ui.painter().text(pos2(right, rect.center().y), Align2::RIGHT_CENTER, source, theme::regular(text::CAPTION), t.muted);
+    let label = format!("{slot}: {}", entry.name);
+    resp.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, label.clone()));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 /// The primary terminal face's name.

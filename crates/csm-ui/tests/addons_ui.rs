@@ -35,6 +35,7 @@ fn addon(id: &str, state: AddonState, command_title: &str) -> AddonSummary {
         process_command_line: None,
         process_calls: vec![],
         process: None,
+        themes: vec![],
         problems: vec![],
     }
 }

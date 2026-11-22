@@ -42,6 +42,22 @@ impl ThemeKind {
     pub fn from_id(s: &str) -> Option<ThemeKind> {
         ThemeKind::ALL.into_iter().find(|t| t.id() == s)
     }
+
+    /// Dark (Mocha) or light (Latte): the base an add-on theme is drawn over. `Tokens::kind` is
+    /// the base of whatever theme is drawn, so `Mocha` there means "a dark theme".
+    pub fn base(self) -> csm_core::addons::ThemeBase {
+        match self {
+            ThemeKind::Mocha => csm_core::addons::ThemeBase::Dark,
+            ThemeKind::Latte => csm_core::addons::ThemeBase::Light,
+        }
+    }
+
+    pub fn of_base(base: csm_core::addons::ThemeBase) -> ThemeKind {
+        match base {
+            csm_core::addons::ThemeBase::Dark => ThemeKind::Mocha,
+            csm_core::addons::ThemeBase::Light => ThemeKind::Latte,
+        }
+    }
 }
 
 const fn hex(rgb: u32) -> Color32 {
@@ -105,6 +121,9 @@ pub struct Tokens {
     pub term_bg: Color32,
     pub term_fg: Color32,
     pub term_selection: Color32,
+    /// The terminal's ANSI 0-15 and its cursor.
+    pub term_ansi: [Color32; 16],
+    pub term_cursor: Color32,
     pub scrim: Color32,
     pub shadow: Color32,
     // Code and diff in add-on screens: syntax classes (from `csm_services::highlight`), diff
@@ -177,6 +196,8 @@ impl Tokens {
                 term_bg: hex(0x1e1e2e),
                 term_fg: hex(0xcdd6f4),
                 term_selection: hex(0x585b70),
+                term_ansi: MOCHA_ANSI.map(hex),
+                term_cursor: hex(0xf5e0dc),
                 scrim: Color32::from_rgba_unmultiplied(8, 8, 14, 148),
                 shadow: Color32::from_black_alpha(140),
                 syn_keyword: hex(0xcba6f7),
@@ -245,6 +266,8 @@ impl Tokens {
                 term_bg: hex(0xf8f9fb),
                 term_fg: hex(0x4c4f69),
                 term_selection: hex(0xbcc0cc),
+                term_ansi: LATTE_ANSI.map(hex),
+                term_cursor: hex(0xdc8a78),
                 scrim: Color32::from_rgba_unmultiplied(76, 79, 105, 82),
                 shadow: Color32::from_black_alpha(46),
                 // The Latte accents that are too light for text on this background (green 2.9:1,
@@ -318,19 +341,230 @@ impl Tokens {
         use csm_term::alacritty_terminal::vte::ansi::Rgb;
         let rgb = |c: Color32| Rgb { r: c.r(), g: c.g(), b: c.b() };
         let mut palette = csm_term::Palette::default();
-        if !self.dark() {
-            let ansi = [
-                0x5c5f77, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xacb0be, 0x6c6f85, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5,
-                0xea76cb, 0x179299, 0xbcc0cc,
-            ];
-            for (slot, c) in palette.ansi.iter_mut().zip(ansi) {
-                *slot = rgb(hex(c));
-            }
-            palette.cursor = rgb(hex(0xdc8a78));
+        for (slot, c) in palette.ansi.iter_mut().zip(self.term_ansi) {
+            *slot = rgb(c);
         }
+        palette.cursor = rgb(self.term_cursor);
         palette.foreground = rgb(self.term_fg);
         palette.background = rgb(self.term_bg);
         crate::terminal::TermStyle { palette, selection: self.term_selection }
+    }
+
+    /// The tokens of any palette. Each token keeps the offset it has in the base theme from
+    /// the palette slot it derives from: a token that *is* a slot in Mocha (`bg` is `base`)
+    /// is that slot, and one a shade off a slot (`field` is `base` lifted by 5) stays that shade
+    /// off the new slot. Alpha is kept from the base token. With the base's own palette every
+    /// token is exactly the built-in one (tested). Terminal colours a theme names win over the
+    /// derived ones.
+    pub fn from_palette(p: &Palette) -> Tokens {
+        let r = Tokens::for_kind(p.kind);
+        let b = Palette::builtin(p.kind);
+        let d = |token: Color32, key: &str| shift(token, b.c(key), p.c(key));
+        let mut t = Tokens {
+            kind: p.kind,
+            crust: d(r.crust, "crust"),
+            mantle: d(r.mantle, "mantle"),
+            bg: d(r.bg, "base"),
+            surface0: d(r.surface0, "surface0"),
+            surface1: d(r.surface1, "surface1"),
+            surface2: d(r.surface2, "surface2"),
+            field: d(r.field, "base"),
+            pop: d(r.pop, "base"),
+            row_hover: d(r.row_hover, "base"),
+            row_sel: d(r.row_sel, "surface0"),
+            hover: d(r.hover, "surface1"),
+            fg: d(r.fg, "text"),
+            fg2: d(r.fg2, "subtext1"),
+            muted: d(r.muted, "overlay2"),
+            faint: d(r.faint, "overlay0"),
+            blue: d(r.blue, "blue"),
+            green: d(r.green, "green"),
+            red: d(r.red, "red"),
+            peach: d(r.peach, "peach"),
+            yellow: d(r.yellow, "yellow"),
+            mauve: d(r.mauve, "mauve"),
+            teal: d(r.teal, "teal"),
+            sky: d(r.sky, "sky"),
+            sapphire: d(r.sapphire, "sapphire"),
+            lavender: d(r.lavender, "lavender"),
+            pink: d(r.pink, "pink"),
+            maroon: d(r.maroon, "maroon"),
+            flamingo: d(r.flamingo, "flamingo"),
+            brand: r.brand,
+            on_accent: d(r.on_accent, "crust"),
+            st_working: d(r.st_working, "blue"),
+            st_approval: d(r.st_approval, "peach"),
+            st_question: d(r.st_question, "yellow"),
+            st_done: d(r.st_done, "green"),
+            st_error: d(r.st_error, "red"),
+            st_idle: d(r.st_idle, "overlay1"),
+            st_asleep: d(r.st_asleep, "overlay1"),
+            st_starting: d(r.st_starting, "overlay1"),
+            term_bg: d(r.term_bg, "base"),
+            term_fg: d(r.term_fg, "text"),
+            term_selection: d(r.term_selection, "surface2"),
+            term_ansi: r.term_ansi,
+            term_cursor: d(r.term_cursor, "rosewater"),
+            scrim: r.scrim,
+            shadow: r.shadow,
+            // Windows' own caption-button red, the same in every theme.
+            close_hover: r.close_hover,
+            on_close_hover: r.on_close_hover,
+            syn_keyword: d(r.syn_keyword, "mauve"),
+            syn_string: d(r.syn_string, "green"),
+            syn_comment: d(r.syn_comment, "overlay1"),
+            syn_number: d(r.syn_number, "peach"),
+            syn_type: d(r.syn_type, "yellow"),
+            syn_function: d(r.syn_function, "blue"),
+            syn_constant: d(r.syn_constant, "peach"),
+            syn_macro: d(r.syn_macro, "teal"),
+            syn_operator: d(r.syn_operator, "sky"),
+            syn_punct: d(r.syn_punct, "overlay2"),
+            syn_tag: d(r.syn_tag, "blue"),
+            syn_attribute: d(r.syn_attribute, "flamingo"),
+            diff_add_bg: d(r.diff_add_bg, "green"),
+            diff_del_bg: d(r.diff_del_bg, "red"),
+            diff_hunk_bg: d(r.diff_hunk_bg, "blue"),
+            gutter_fg: d(r.gutter_fg, "overlay1"),
+            range_sel_bg: d(r.range_sel_bg, "blue"),
+            thread_bar: d(r.thread_bar, "mauve"),
+        };
+        let ansi_keys = if p.kind == ThemeKind::Mocha { MOCHA_ANSI_KEYS } else { LATTE_ANSI_KEYS };
+        for ((slot, key), named) in t.term_ansi.iter_mut().zip(ansi_keys).zip(p.term.ansi) {
+            *slot = named.unwrap_or_else(|| d(*slot, key));
+        }
+        t.term_fg = p.term.foreground.unwrap_or(t.term_fg);
+        t.term_bg = p.term.background.unwrap_or(t.term_bg);
+        t.term_cursor = p.term.cursor.unwrap_or(t.term_cursor);
+        t.term_selection = p.term.selection.unwrap_or(t.term_selection);
+        t
+    }
+}
+
+/// Mocha's ANSI 0-15 (the emulator's defaults) and the palette slot each one is.
+const MOCHA_ANSI: [u32; 16] =
+    [0x45475a, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xbac2de, 0x585b70, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xa6adc8];
+const MOCHA_ANSI_KEYS: [&str; 16] =
+    ["surface1", "red", "green", "yellow", "blue", "pink", "teal", "subtext1", "surface2", "red", "green", "yellow", "blue", "pink", "teal", "subtext0"];
+/// Latte's ANSI 0-15 and their slots.
+const LATTE_ANSI: [u32; 16] =
+    [0x5c5f77, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xacb0be, 0x6c6f85, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xbcc0cc];
+const LATTE_ANSI_KEYS: [&str; 16] =
+    ["subtext1", "red", "green", "yellow", "blue", "pink", "teal", "surface2", "subtext0", "red", "green", "yellow", "blue", "pink", "teal", "surface1"];
+
+/// `token` moved by the step from `from` to `to` (each channel, clamped), its alpha scaled by
+/// `to`'s. Unchanged when the slot is unchanged, so a base theme's tokens are exact.
+fn shift(token: Color32, from: Color32, to: Color32) -> Color32 {
+    if from == to {
+        return token;
+    }
+    let [r, g, b, a] = token.to_srgba_unmultiplied();
+    let [fr, fg, fb, _] = from.to_srgba_unmultiplied();
+    let [tr, tg, tb, ta] = to.to_srgba_unmultiplied();
+    let ch = |c: u8, f: u8, t: u8| (i16::from(c) + i16::from(t) - i16::from(f)).clamp(0, 255) as u8;
+    let alpha = (u16::from(a) * u16::from(ta) / 255) as u8;
+    Color32::from_rgba_unmultiplied(ch(r, fr, tr), ch(g, fg, tg), ch(b, fb, tb), alpha)
+}
+
+/// Terminal colours a theme names (`[theme.terminal]`); `None` = derived from the palette.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TermColors {
+    pub ansi: [Option<Color32>; 16],
+    pub foreground: Option<Color32>,
+    pub background: Option<Color32>,
+    pub cursor: Option<Color32>,
+    pub selection: Option<Color32>,
+}
+
+/// A theme's colours: the 26 palette slots (`csm_core::addons::PALETTE_KEYS` order) and the
+/// terminal colours it names, over a base (Mocha's tokens for a dark one, Latte's for a light).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Palette {
+    pub kind: ThemeKind,
+    pub colors: [Color32; 26],
+    pub term: TermColors,
+}
+
+fn color_of(c: [u8; 4]) -> Color32 {
+    let [r, g, b, a] = c;
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+impl Palette {
+    /// Mocha's or Latte's palette.
+    pub fn builtin(kind: ThemeKind) -> Palette {
+        Palette { kind, colors: kind.base().palette().map(hex), term: TermColors::default() }
+    }
+
+    /// An add-on theme's palette: its colours over its base's (the manifest parser already
+    /// dropped the ones that do not parse; any that still don't are the base's).
+    pub fn from_spec(spec: &csm_core::addons::ThemeSpec) -> Palette {
+        let kind = ThemeKind::of_base(spec.base);
+        let colors = spec.resolved().map(color_of);
+        let named = |k: &str| spec.terminal.get(k).and_then(|c| csm_core::addons::theme::parse_hex(c)).map(color_of);
+        let mut term = TermColors {
+            foreground: named("foreground"),
+            background: named("background"),
+            cursor: named("cursor"),
+            selection: named("selection"),
+            ..TermColors::default()
+        };
+        for (slot, (key, _)) in term.ansi.iter_mut().zip(csm_core::look::ANSI_NAMES) {
+            *slot = named(key);
+        }
+        Palette { kind, colors, term }
+    }
+
+    /// One palette slot by name (`base`, `text`, `blue` …); black for a name that is not one.
+    pub fn c(&self, key: &str) -> Color32 {
+        csm_core::addons::PALETTE_KEYS.iter().position(|k| *k == key).and_then(|i| self.colors.get(i).copied()).unwrap_or(Color32::BLACK)
+    }
+
+    /// A few slots that show a theme at a glance (Settings › Appearance).
+    pub fn swatches(&self) -> [Color32; 8] {
+        ["base", "surface0", "text", "blue", "green", "yellow", "red", "mauve"].map(|k| self.c(k))
+    }
+}
+
+/// One theme the person can choose: a built-in or an enabled add-on's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThemeEntry {
+    /// `mocha`, `latte`, or `addon-id.theme-id`.
+    pub id: String,
+    pub name: String,
+    /// The add-on's name; `None` for a built-in.
+    pub source: Option<String>,
+    pub palette: Palette,
+}
+
+/// Every theme to choose from: the built-ins, then each enabled add-on's, in folder order.
+pub fn registry(addons: &[csm_engine::addons::AddonSummary]) -> Vec<ThemeEntry> {
+    let mut out: Vec<ThemeEntry> = csm_core::addons::BUILTIN_THEMES
+        .iter()
+        .map(|(id, name, base)| ThemeEntry { id: (*id).to_owned(), name: (*name).to_owned(), source: None, palette: Palette::builtin(ThemeKind::of_base(*base)) })
+        .collect();
+    for a in addons.iter().filter(|a| a.state == csm_engine::addons::AddonState::Loaded) {
+        out.extend(a.themes.iter().map(|t| ThemeEntry { id: format!("{}.{}", a.id, t.id), name: t.name.clone(), source: Some(a.name.clone()), palette: Palette::from_spec(t) }));
+    }
+    out
+}
+
+/// The palette to draw for `kind` when the chosen theme is `id`: that theme, or the built-in
+/// with the reason when it is not available (an add-on turned off or removed, an id that is
+/// not a theme, a light theme chosen for dark mode).
+pub fn resolve(kind: ThemeKind, id: &str, addons: &[csm_engine::addons::AddonSummary]) -> (Palette, Option<String>) {
+    let id = id.trim();
+    let builtin = kind.base().builtin_id();
+    if id.is_empty() || id == builtin {
+        return (Palette::builtin(kind), None);
+    }
+    let found = id.split_once('.').and_then(|(addon, theme)| {
+        addons.iter().find(|a| a.id == addon && a.state == csm_engine::addons::AddonState::Loaded).and_then(|a| a.themes.iter().find(|t| t.id == theme))
+    });
+    match found {
+        Some(t) if ThemeKind::of_base(t.base) == kind => (Palette::from_spec(t), None),
+        Some(t) => (Palette::builtin(kind), Some(format!("“{}” is a {} theme, so {builtin} is drawn instead.", t.name, t.base.id()))),
+        None => (Palette::builtin(kind), Some(format!("The theme `{id}` is not available (its add-on is off or gone), so {builtin} is drawn instead."))),
     }
 }
 
@@ -628,7 +862,15 @@ pub fn install_fonts(ctx: &egui::Context) {
 
 /// Apply a theme: stores the tokens and sets egui's own visuals from them.
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
-    let t = Tokens::for_kind(kind);
+    apply_tokens(ctx, Tokens::for_kind(kind));
+}
+
+/// Apply any theme's palette (a built-in's gives exactly [`apply`]).
+pub fn apply_palette(ctx: &egui::Context, palette: &Palette) {
+    apply_tokens(ctx, Tokens::from_palette(palette));
+}
+
+fn apply_tokens(ctx: &egui::Context, t: Tokens) {
     ctx.data_mut(|d| d.insert_temp(tokens_id(), t));
     ctx.set_theme(if t.dark() { egui::Theme::Dark } else { egui::Theme::Light });
     let mut v = if t.dark() { Visuals::dark() } else { Visuals::light() };
@@ -801,6 +1043,129 @@ mod tests {
         }
         assert!(checked >= 8, "the source scan found only {checked} screen files");
         assert!(found.is_empty(), "use the theme's scale (`space`, `radius`, `text`, `size`, `Tokens`):\n{}", found.join("\n"));
+    }
+
+    /// No visual change for the built-ins: their palettes give today's tokens exactly, the
+    /// terminal colours included (Mocha's ANSI are the emulator's defaults).
+    #[test]
+    fn a_built_in_palette_gives_exactly_the_built_in_tokens() {
+        for kind in ThemeKind::ALL {
+            assert_eq!(Tokens::from_palette(&Palette::builtin(kind)), Tokens::for_kind(kind), "{kind:?}");
+        }
+        let mocha = Tokens::for_kind(ThemeKind::Mocha).terminal_style().palette;
+        let default = csm_term::Palette::default();
+        assert_eq!((mocha.ansi, mocha.cursor), (default.ansi, default.cursor));
+        let latte = Palette::builtin(ThemeKind::Latte);
+        assert_eq!(Tokens::for_kind(ThemeKind::Latte).term_ansi, LATTE_ANSI_KEYS.map(|k| latte.c(k)), "Latte's ANSI are its slots");
+        let mocha_p = Palette::builtin(ThemeKind::Mocha);
+        assert_eq!(Tokens::for_kind(ThemeKind::Mocha).term_ansi, MOCHA_ANSI_KEYS.map(|k| mocha_p.c(k)), "Mocha's ANSI are its slots");
+    }
+
+    fn spec(text: &str) -> csm_core::addons::ThemeSpec {
+        let head = "[addon]\nid = \"t\"\nname = \"T\"\nversion = \"0.1.0\"\napi = 1\nkind = \"pack\"\n";
+        csm_core::addons::parse(&format!("{head}{text}"), "t").unwrap().themes.remove(0)
+    }
+
+    #[test]
+    fn a_palette_moves_the_tokens_derived_from_it_and_keeps_the_rest() {
+        let s = spec("[[theme]]\nid = \"x\"\nname = \"X\"\nbase = \"dark\"\n[theme.colors]\nbase = \"#303446\"\ngreen = \"#a6d189\"\n");
+        let t = Tokens::from_palette(&Palette::from_spec(&s));
+        let m = Tokens::for_kind(ThemeKind::Mocha);
+        assert_eq!(t.bg, hex(0x303446));
+        assert_eq!(t.term_bg, hex(0x303446));
+        // field is Mocha's base lifted by (5, 5, 6): the same lift over the new base.
+        assert_eq!(t.field, hex(0x35394c));
+        assert_eq!(t.green, hex(0xa6d189));
+        // A translucent token is stored premultiplied, so its colour is only as exact as its
+        // alpha allows (38/255 here): within a few steps.
+        let [r, g, b, a] = t.diff_add_bg.to_srgba_unmultiplied();
+        assert_eq!(a, m.diff_add_bg.a(), "the tint keeps its alpha");
+        assert!([(r, 0xa6), (g, 0xd1), (b, 0x89)].iter().all(|(x, y)| x.abs_diff(*y) <= 4), "{r} {g} {b}");
+        assert_eq!((t.fg, t.blue, t.mantle, t.brand), (m.fg, m.blue, m.mantle, m.brand), "slots not given stay Mocha's");
+        assert_eq!(t.term_ansi[2], hex(0xa6d189), "ANSI green follows the palette");
+    }
+
+    #[test]
+    fn terminal_colours_a_theme_names_win() {
+        let s = spec("[[theme]]\nid = \"x\"\nname = \"X\"\nbase = \"light\"\n[theme.terminal]\nbackground = \"#ffffff\"\nbright_black = \"#101010\"\ncursor = \"#ff0000\"\nselection = \"#00ff0080\"\n");
+        let t = Tokens::from_palette(&Palette::from_spec(&s));
+        assert_eq!(t.kind, ThemeKind::Latte);
+        assert_eq!(t.term_bg, hex(0xffffff));
+        assert_eq!(t.term_ansi[8], hex(0x101010));
+        assert_eq!(t.term_cursor, hex(0xff0000));
+        assert_eq!(t.term_selection, Color32::from_rgba_unmultiplied(0, 255, 0, 128));
+        assert_eq!(t.term_fg, Tokens::for_kind(ThemeKind::Latte).term_fg);
+        let style = t.terminal_style();
+        assert_eq!((style.palette.cursor.r, style.palette.background.g), (255, 255));
+    }
+
+    fn summary(state: csm_engine::addons::AddonState, themes: Vec<csm_core::addons::ThemeSpec>) -> csm_engine::addons::AddonSummary {
+        csm_engine::addons::AddonSummary {
+            id: "pack".into(),
+            name: "Pack".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            kind: "pack",
+            author: None,
+            homepage: None,
+            state,
+            message: None,
+            folder: "pack".into(),
+            path: String::new(),
+            digest: None,
+            profiles: vec![],
+            run_templates: vec![],
+            slash: vec![],
+            commands: vec![],
+            process_effects: vec![],
+            process_command_line: None,
+            process_calls: vec![],
+            process: None,
+            themes,
+            problems: vec![],
+        }
+    }
+
+    #[test]
+    fn an_unavailable_theme_falls_back_to_the_built_in_and_says_why() {
+        use csm_engine::addons::AddonState;
+        let dark = spec("[[theme]]\nid = \"night\"\nname = \"Night\"\nbase = \"dark\"\n[theme.colors]\nbase = \"#000000\"\n");
+        let on = vec![summary(AddonState::Loaded, vec![dark.clone()])];
+        let (p, why) = resolve(ThemeKind::Mocha, "pack.night", &on);
+        assert_eq!((p, why), (Palette::from_spec(&dark), None));
+        assert_eq!(registry(&on).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["mocha", "latte", "pack.night"]);
+        // Off, gone, not a theme, or the wrong mode: the built-in, with the reason.
+        let off = vec![summary(AddonState::Disabled, vec![dark])];
+        for (kind, id, addons, says) in [
+            (ThemeKind::Mocha, "pack.night", &off, "not available"),
+            (ThemeKind::Mocha, "pack.gone", &on, "not available"),
+            (ThemeKind::Mocha, "plain", &on, "not available"),
+            (ThemeKind::Latte, "pack.night", &on, "dark theme"),
+            (ThemeKind::Mocha, "latte", &on, "not available"),
+        ] {
+            let (p, why) = resolve(kind, id, addons);
+            assert_eq!(p, Palette::builtin(kind), "{id}");
+            assert!(why.as_deref().is_some_and(|w| w.contains(says)), "{id}: {why:?}");
+        }
+        assert_eq!(registry(&off).len(), 2, "a disabled add-on offers nothing");
+        assert_eq!(resolve(ThemeKind::Latte, "latte", &on), (Palette::builtin(ThemeKind::Latte), None));
+    }
+
+    /// The sample themes keep the app's own contrast rules (the ones the built-ins pass).
+    #[test]
+    fn the_sample_themes_keep_the_contrast_the_built_ins_keep() {
+        let text = include_str!("../../../samples/addons/themes/addon.toml");
+        for s in csm_core::addons::parse(text, "themes").unwrap().themes {
+            let t = Tokens::from_palette(&Palette::from_spec(&s));
+            for surface in [t.bg, t.mantle, t.pop, t.row_sel] {
+                assert!(contrast(t.fg, surface) >= 4.5, "{}: body text {:.2}", s.id, contrast(t.fg, surface));
+                assert!(contrast(t.muted, surface) >= 3.0, "{}: muted text {:.2}", s.id, contrast(t.muted, surface));
+            }
+            for st in [t.st_working, t.st_approval, t.st_question, t.st_done, t.st_error] {
+                assert!(contrast(st, t.mantle) >= 3.0, "{}: status {st:?}", s.id);
+            }
+            assert!(contrast(t.term_fg, t.term_bg) >= 4.5, "{}: terminal text", s.id);
+        }
     }
 
     #[test]

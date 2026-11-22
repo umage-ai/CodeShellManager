@@ -190,6 +190,7 @@ mod tests {
             process_command_line: None,
             process_calls: vec![],
             process: None,
+            themes: vec![],
             problems: vec![],
         };
         let body = consent_body(&a);
@@ -229,6 +230,7 @@ mod tests {
                 asks: true,
             }],
             process: None,
+            themes: vec![],
             problems: vec![],
         };
         let body = consent_body(&a);

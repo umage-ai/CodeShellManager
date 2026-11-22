@@ -270,6 +270,14 @@ impl Backend for EngineBackend {
     fn on_event(&mut self, event: &Event) -> Vec<Notice> {
         match event {
             Event::Toast { message } => vec![Notice::Toast(message.clone())],
+            // The mode changed by `theme_set` or by another client: draw it here too.
+            Event::SettingChanged { key, value } if key == "Theme" => {
+                if let Some(v) = value.as_str() {
+                    self.theme = theme_from_setting(v);
+                    self.refresh(true);
+                }
+                Vec::new()
+            }
             Event::FocusRequested { session_id } => vec![Notice::Focus(session_id.clone())],
             Event::ScreenFocusRequested { instance } => vec![Notice::FocusScreen(instance.clone())],
             Event::ClipboardOffered { .. } => self.engine.take_clipboard().map(Notice::Clipboard).into_iter().collect(),

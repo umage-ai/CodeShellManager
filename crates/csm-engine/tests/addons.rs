@@ -325,3 +325,102 @@ fn install_samples_is_refused_without_bundled_samples() {
     assert!(e.to_string().contains("no bundled samples"), "{e}");
     h.engine.shutdown();
 }
+
+const THEMES: &str = r##"
+[addon]
+id = "tones"
+name = "Tones"
+version = "0.1.0"
+api = 1
+kind = "pack"
+
+[[theme]]
+id = "night"
+name = "Night"
+base = "dark"
+[theme.colors]
+base = "#101010"
+
+[[theme]]
+id = "paper"
+name = "Paper"
+base = "light"
+"##;
+
+fn enable_id(h: &H, id: &str) {
+    let l = list(h);
+    let a = find(&l, id);
+    let (version, digest) = (a["version"].clone(), a["digest"].clone());
+    h.ok("addon_enable", json!({"id": id, "version": version, "digest": digest}));
+}
+
+#[test]
+fn theme_list_and_theme_set_take_the_enabled_add_on_themes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    write_addon(&dir.path().join("addons"), "tones", THEMES);
+    let h = start(&state);
+    h.wait_until("add-ons", |s| s.addons.len() == 1);
+    // Off: only the built-ins, and an add-on id is refused.
+    let ids = |h: &H| -> Vec<String> {
+        h.ok("theme_list", json!({})).data["themes"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect()
+    };
+    assert_eq!(ids(&h), vec!["mocha", "latte"]);
+    assert!(h.ui("theme_set", json!({"dark": "tones.night"})).unwrap_err().to_string().contains("not available"));
+    enable_id(&h, "tones");
+    assert_eq!(ids(&h), vec!["mocha", "latte", "tones.night", "tones.paper"]);
+    let snap = h.engine.view();
+    let tones = snap.addons.iter().find(|a| a.id == "tones").unwrap();
+    assert_eq!(tones.themes.len(), 2, "the palettes reach the UI with the snapshot");
+    // A dark theme only goes in `dark`; a bad mode is refused; nothing changes on a refusal.
+    assert!(h.ui("theme_set", json!({"light": "tones.night"})).unwrap_err().to_string().contains("dark theme"));
+    assert!(h.ui("theme_set", json!({"mode": "sepia"})).is_err());
+    assert!(h.ui("theme_set", json!({})).is_err());
+    let events = h.engine.subscribe();
+    let out = h.ok("theme_set", json!({"mode": "system", "dark": "tones.night", "light": "tones.paper"}));
+    assert_eq!(out.data, json!({"mode": "system", "dark": "tones.night", "light": "tones.paper"}));
+    let get = |k: &str| h.ok("settings_get", json!({"key": k})).data["value"].clone();
+    assert_eq!((get("Theme"), get("ThemeDark"), get("ThemeLight")), (json!("system"), json!("tones.night"), json!("tones.paper")));
+    let changed: Vec<String> = events
+        .try_iter()
+        .filter_map(|e| match e {
+            csm_engine::Event::SettingChanged { key, .. } => Some(key),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, vec!["Theme", "ThemeDark", "ThemeLight"], "the UI follows a change made elsewhere");
+    // Turned off: the choice stays, and theme_list says what is drawn instead.
+    h.ok("addon_disable", json!({"id": "tones"}));
+    let l = h.ok("theme_list", json!({})).data;
+    assert_eq!(l["dark"]["id"], "tones.night");
+    assert_eq!(l["dark"]["drawn"], "mocha");
+    assert!(l["dark"]["fallback"].as_str().unwrap().contains("not available"), "{l}");
+    // MCP effects are honest: the view only, so a client is not asked for consent.
+    let spec = h.engine.registry().get("theme_set").map(|t| t.effects).unwrap();
+    assert!(!spec.needs_consent(), "{spec:?}");
+    h.engine.shutdown();
+}
+
+#[test]
+fn an_enabled_theme_reloads_when_its_file_changes_and_stays_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    let root = dir.path().join("addons");
+    write_addon(&root, "tones", THEMES);
+    let h = start(&state);
+    h.wait_until("add-ons", |s| s.addons.len() == 1);
+    enable_id(&h, "tones");
+    let base_of = |s: &csm_engine::Snapshot| s.addons.first().and_then(|a| a.themes.first()).and_then(|t| t.colors.get("base").cloned());
+    h.wait_until("the first palette", |s| base_of(s).as_deref() == Some("#101010"));
+    // Let the watcher take its first look, then edit the theme (only the theme).
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    write_addon(&root, "tones", &THEMES.replace("#101010", "#202020"));
+    h.wait_until("the edited palette", |s| base_of(s).as_deref() == Some("#202020"));
+    let l = list(&h);
+    assert_eq!(find(&l, "tones")["state"], "loaded", "a theme-only edit keeps the approval: {l}");
+    // Anything else in the file still turns the add-on off until it is approved again.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    write_addon(&root, "tones", &format!("{}\n[[slash]]\ncommand = \"/x\"\n", THEMES.replace("#101010", "#202020")));
+    h.wait_until("off again", |s| s.addons.first().is_some_and(|a| a.state == csm_engine::addons::AddonState::Disabled));
+    h.engine.shutdown();
+}
