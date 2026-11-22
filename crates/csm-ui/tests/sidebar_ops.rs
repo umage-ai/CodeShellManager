@@ -194,7 +194,7 @@ fn the_sort_control_sorts_the_tab_once_and_flips_on_a_second_pick() {
     // Picking it again flips the direction; the palette opens the same menu.
     h.state_mut().ui.menu = None;
     let ctx = h.ctx.clone();
-    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_sort"));
+    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_sort".into()));
     settle(&mut h);
     assert!(matches!(h.state().ui.menu, Some(Menu::Sort { .. })));
     h.get_by_label("Name").click();
@@ -262,12 +262,12 @@ fn move_to_group_from_the_palette_opens_the_selection_menu_and_never_ungroups() 
     let ctx = h.ctx.clone();
     let before = h.state().submitted().len();
     // Nothing selected: a hint, no call.
-    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_move_many"));
+    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_move_many".into()));
     settle(&mut h);
     assert!(h.state().ui.menu.is_none());
     click_row(&mut h, "Odulodo", Modifiers::CTRL);
     click_row(&mut h, "search-sort", Modifiers::CTRL);
-    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_move_many"));
+    h.state_mut().run(&ctx, csm_ui::Action::PaletteTool("session_move_many".into()));
     settle(&mut h);
     assert!(calls_since(&h, before, "session_move_many").is_empty(), "nothing moves before a group is picked");
     assert!(matches!(h.state().ui.menu, Some(Menu::Row { .. })));

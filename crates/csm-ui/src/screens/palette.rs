@@ -7,6 +7,7 @@ use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Rect, Sense, Stroke,
 use serde_json::json;
 
 use crate::app::{Action, CsmApp, Menu, Overlay, ProfilePick, PromptKind, QuickOpenState, RemoteKind};
+use crate::backend::{ToolInfo, ToolPort};
 use crate::git_model::{WorktreeRow, folder_key};
 use crate::icons;
 use crate::model::{SessionView, Status, UiModel, fuzzy};
@@ -25,15 +26,16 @@ pub enum PalRow {
     },
     Search(String),
     Tool {
-        id: &'static str,
-        title: &'static str,
+        id: String,
+        title: String,
+        summary: String,
         idx: Vec<usize>,
         hint: Option<&'static str>,
     },
     /// A palette command from an enabled add-on: calls `tool` with its fixed params (`addons.rs`).
     Addon {
         title: String,
-        tool: &'static str,
+        tool: String,
         params: serde_json::Value,
         idx: Vec<usize>,
     },
@@ -98,6 +100,49 @@ const LAYOUT_ROWS: [(&str, &str); 6] = [
     ("layout:free", "Layout: Free"),
 ];
 
+/// The palette's tool rows for a query. Empty query: the suggested tools, and after `>` every
+/// tool. Otherwise the tools whose titles match, best first, with the layout rows. The
+/// `consent_answer` tool is never listed (a consent prompt answers it, not the palette).
+fn tool_rows(port: &dyn ToolPort, query: &str, commands_only: bool) -> Vec<PalRow> {
+    let tools = port.tools();
+    let row = |t: &ToolInfo, idx: Vec<usize>| PalRow::Tool {
+        id: t.id.clone(),
+        title: t.title.clone(),
+        summary: t.summary.clone(),
+        idx,
+        hint: shortcut_for(&t.id),
+    };
+    let mut out = Vec::new();
+    if query.is_empty() {
+        for id in SUGGESTED {
+            if let Some(t) = tools.iter().find(|t| t.id == id) {
+                out.push(row(t, Vec::new()));
+            }
+        }
+        if commands_only {
+            for t in tools.iter() {
+                if !SUGGESTED.contains(&t.id.as_str()) && t.id != "consent_answer" {
+                    out.push(row(t, Vec::new()));
+                }
+            }
+        }
+    } else {
+        let mut hits: Vec<(f32, PalRow)> = tools
+            .iter()
+            .filter(|t| t.id != "consent_answer")
+            .filter_map(|t| fuzzy(query, &t.title).map(|(sc, idx)| (sc, row(t, idx))))
+            .collect();
+        for (id, title) in LAYOUT_ROWS {
+            if let Some((sc, idx)) = fuzzy(query, title) {
+                hits.push((sc, PalRow::Tool { id: id.to_string(), title: title.to_string(), summary: String::new(), idx, hint: None }));
+            }
+        }
+        hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+        out.extend(hits.into_iter().take(if commands_only { 40 } else { 8 }).map(|(_, r)| r));
+    }
+    out
+}
+
 /// The palette's rows for a query: sessions, then output search, then tools.
 pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
     let model = &app.model;
@@ -132,51 +177,26 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
             }
         }
     }
-    let reg = app.dispatch.registry();
-    let addon_cmds: Vec<(&csm_engine::addons::CommandSummary, &'static str)> = app
+    let port = app.dispatch.as_ref();
+    out.extend(tool_rows(port, q, commands_only));
+    // An enabled add-on's commands whose tool the port offers.
+    let addon_cmds: Vec<(&csm_engine::addons::CommandSummary, String)> = app
         .model
         .addons
         .iter()
         .filter(|a| a.state == csm_engine::addons::AddonState::Loaded)
         .flat_map(|a| a.commands.iter())
-        .filter_map(|c| reg.get(&c.tool).map(|s| (c, s.id)))
+        .filter(|c| port.has_tool(&c.tool))
+        .map(|c| (c, c.tool.clone()))
         .collect();
-    if q.is_empty() {
-        for id in SUGGESTED {
-            if let Some(s) = reg.get(id) {
-                out.push(PalRow::Tool { id: s.id, title: s.title, idx: Vec::new(), hint: shortcut_for(s.id) });
-            }
-        }
-        if commands_only {
-            for s in reg.all() {
-                if !SUGGESTED.contains(&s.id) && s.id != "consent_answer" {
-                    out.push(PalRow::Tool { id: s.id, title: s.title, idx: Vec::new(), hint: shortcut_for(s.id) });
-                }
-            }
-        }
-    } else {
-        let mut tools: Vec<(f32, PalRow)> = reg
-            .all()
-            .iter()
-            .filter(|s| s.id != "consent_answer")
-            .filter_map(|s| fuzzy(q, s.title).map(|(sc, idx)| (sc, PalRow::Tool { id: s.id, title: s.title, idx, hint: shortcut_for(s.id) })))
-            .collect();
-        for (id, title) in LAYOUT_ROWS {
-            if let Some((sc, idx)) = fuzzy(q, title) {
-                tools.push((sc, PalRow::Tool { id, title, idx, hint: None }));
-            }
-        }
-        tools.sort_by(|a, b| b.0.total_cmp(&a.0));
-        out.extend(tools.into_iter().take(if commands_only { 40 } else { 8 }).map(|(_, r)| r));
-    }
     // Enabled add-ons' palette commands: all of them after ">", the matching ones when typing.
     for (c, tool) in &addon_cmds {
         if q.is_empty() {
             if commands_only {
-                out.push(PalRow::Addon { title: c.title.clone(), tool, params: c.params.clone(), idx: Vec::new() });
+                out.push(PalRow::Addon { title: c.title.clone(), tool: tool.clone(), params: c.params.clone(), idx: Vec::new() });
             }
         } else if let Some((_, idx)) = fuzzy(q, &c.title) {
-            out.push(PalRow::Addon { title: c.title.clone(), tool, params: c.params.clone(), idx });
+            out.push(PalRow::Addon { title: c.title.clone(), tool: tool.clone(), params: c.params.clone(), idx });
         }
     }
     // Add-on screens: all of them after ">", the matching ones when typing.
@@ -459,8 +479,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         );
                         title.clone()
                     }
-                    PalRow::Tool { id, title, idx, hint } => {
-                        let spec = app.dispatch.registry().get(id).copied();
+                    PalRow::Tool { id, title, summary, idx, hint } => {
                         let ic = tool_icon(id);
                         icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), ic, icon::LG, t.muted);
                         x += icon::LG + space::ROW_X;
@@ -474,18 +493,18 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                             widgets::paint_kbd(ui, Rect::from_center_size(pos2(right - kw / 2.0, cy), vec2(kw, size::KBD)), h);
                             right -= kw + space::SM;
                         }
-                        if let Some(spec) = spec {
+                        if !summary.is_empty() {
                             widgets::paint_text(
                                 ui,
                                 pos2(x + gw + space::ROW_X, cy),
                                 Align2::LEFT_CENTER,
-                                spec.summary,
+                                summary,
                                 theme::regular(text::CAPTION),
                                 t.faint,
                                 (right - x - gw - space::LG).max(0.0),
                             );
                         }
-                        title.to_string()
+                        title.clone()
                     }
                     PalRow::Slash { command, description, idx } => {
                         icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), "send", icon::LG, t.muted);
@@ -586,7 +605,7 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
     match row {
         PalRow::Session { id, .. } => out.push(Action::Tool("session_focus", json!({"session_id": id}))),
         PalRow::Search(q) => out.push(Action::OpenSearch(q.clone())),
-        PalRow::Addon { tool, params, .. } => out.push(Action::Tool(tool, params.clone())),
+        PalRow::Addon { tool, params, .. } => out.push(Action::ToolNamed(tool.clone(), params.clone())),
         PalRow::Remote { addon, remote_id, .. } => out.push(Action::Tool("remote_open", json!({"addon": addon, "remote_id": remote_id}))),
         PalRow::Screen { id, .. } => {
             let context = app.model.active.as_ref().map_or_else(|| json!({}), |a| json!({"session_id": a}));
@@ -603,14 +622,14 @@ fn activate(app: &CsmApp, row: &PalRow) -> Vec<Action> {
             if let Some(mode) = id.strip_prefix("layout:") {
                 let scope = app.model.pane_scope();
                 out.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": mode})));
-            } else if *id == "layout_set" {
+            } else if id == "layout_set" {
                 let scope = app.model.pane_scope();
                 let cur = app.model.layout(&scope).mode;
                 let modes = crate::model::LayoutMode::ALL;
                 let next = modes.iter().position(|m| *m == cur).map_or(modes[0], |i| modes[(i + 1) % modes.len()]);
                 out.push(Action::Tool("layout_set", json!({"group": scope.key(), "mode": next.id()})));
             } else {
-                out.push(Action::PaletteTool(id));
+                out.push(Action::PaletteTool(id.clone()));
             }
         }
     }
@@ -1524,7 +1543,12 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
+
+    use csm_engine::{Effects, Event, Reply, Toolset};
+
     use super::*;
+    use crate::backend::Call;
 
     #[test]
     fn a_picked_add_on_profile_replaces_the_command_and_args() {
@@ -1537,5 +1561,88 @@ mod tests {
         assert!(params.get("command").is_none() && params.get("args").is_none(), "{params}");
         assert_eq!(params["profile"], "demo.agent");
         assert_eq!(params["folder"], "C:/work");
+    }
+
+    /// A port with a fixed tool list that records any submitted call (the palette must not submit).
+    struct FakePort {
+        tools: Arc<[ToolInfo]>,
+        calls: Vec<Call>,
+    }
+
+    impl ToolPort for FakePort {
+        fn submit(&mut self, id: &str, params: serde_json::Value) {
+            self.calls.push(Call { id: id.to_string(), params });
+        }
+        fn poll(&mut self) -> (Vec<(Call, Reply)>, Vec<Event>) {
+            (Vec::new(), Vec::new())
+        }
+        fn busy(&self) -> bool {
+            false
+        }
+        fn submitted(&self) -> &[Call] {
+            &self.calls
+        }
+        fn tools(&self) -> Arc<[ToolInfo]> {
+            self.tools.clone()
+        }
+    }
+
+    fn info(id: &str, title: &str) -> ToolInfo {
+        ToolInfo {
+            id: id.into(),
+            title: title.into(),
+            summary: format!("{title}, summarised"),
+            toolset: Toolset::Core,
+            effects: Effects::READ_ONLY,
+            input_schema: json!({}),
+        }
+    }
+
+    fn fake_port() -> FakePort {
+        let tools = vec![
+            info("session_new", "New session…"),
+            info("session_list", "List sessions"),
+            info("inbox_next", "Next inbox item"),
+            info("consent_answer", "Answer consent"),
+            info("git_status", "Git status"),
+        ];
+        FakePort { tools: Arc::from(tools), calls: Vec::new() }
+    }
+
+    fn tool_ids(rows: &[PalRow]) -> Vec<&str> {
+        rows.iter()
+            .filter_map(|r| match r {
+                PalRow::Tool { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_palette_lists_a_fake_ports_suggested_tools_with_their_summaries() {
+        let port = fake_port();
+        let rows = tool_rows(&port, "", false);
+        // SUGGESTED order, and only the ones the port offers.
+        assert_eq!(tool_ids(&rows), ["inbox_next", "session_new"]);
+        let PalRow::Tool { summary, title, .. } = &rows[1] else { panic!("{rows:?}") };
+        assert_eq!((title.as_str(), summary.as_str()), ("New session…", "New session…, summarised"));
+        assert!(port.calls.is_empty(), "listing never submits a tool");
+    }
+
+    #[test]
+    fn after_a_greater_than_the_palette_lists_every_tool_but_consent() {
+        let port = fake_port();
+        let rows = tool_rows(&port, "", true);
+        assert_eq!(tool_ids(&rows), ["inbox_next", "session_new", "session_list", "git_status"]);
+    }
+
+    #[test]
+    fn a_typed_query_matches_the_fake_ports_titles() {
+        let port = fake_port();
+        let rows = tool_rows(&port, "list", false);
+        let ids = tool_ids(&rows);
+        assert!(ids.contains(&"session_list"), "{ids:?}");
+        assert!(!ids.contains(&"consent_answer"), "consent is never a palette command: {ids:?}");
+        assert!(port.calls.is_empty());
     }
 }

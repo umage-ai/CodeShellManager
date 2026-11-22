@@ -435,7 +435,7 @@ fn mcp(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 ui.painter().hline(r.x_range(), r.min.y, Stroke::new(size::HAIRLINE, t.surface0));
             }
             let cr = ui.painter().text(pos2(r.min.x, r.center().y), Align2::LEFT_CENTER, &client, theme::medium(text::BODY), t.fg);
-            let title = app.dispatch.registry().get(&tool).map_or(tool.clone(), |s| s.title.to_string());
+            let title = app.dispatch.tool(&tool).map_or(tool.clone(), |s| s.title);
             let b = Rect::from_min_max(pos2(r.max.x - size::MENU_W / 2.0 + space::XL, r.min.y + space::XS), pos2(r.max.x, r.max.y - space::XS));
             widgets::paint_text(
                 ui,

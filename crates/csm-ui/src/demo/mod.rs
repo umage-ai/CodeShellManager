@@ -23,7 +23,7 @@ use csm_term::GridSize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::backend::{Backend, Call, Notice};
+use crate::backend::{Backend, Call, Notice, ToolPort};
 use crate::model::*;
 use crate::terminal::{LocalTerminal, Repaint, StaticTerminal, TerminalSource};
 use crate::theme::{ThemeKind, Tokens};
@@ -1318,7 +1318,7 @@ impl Backend for DemoBackend {
         self.terms.get(id).cloned()
     }
 
-    fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice> {
+    fn on_reply(&mut self, call: &Call, reply: &Reply, _port: &dyn ToolPort) -> Vec<Notice> {
         use csm_engine::ToolError;
         // The screen tools change the demo's own screens (the demo engine has no add-ons).
         if call.id.starts_with("screen_") && self.apply_screen_call(call) {

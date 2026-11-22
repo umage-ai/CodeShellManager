@@ -1,8 +1,9 @@
 //! The seam between the screens and whatever owns the state.
 //!
 //! - Screens read a [`UiModel`] snapshot and draw [`TerminalSource`]s. They never mutate the
-//!   model: every action goes through [`Dispatcher::submit`], i.e.
-//!   `engine.submit(Caller::Ui, "<tool_id>", params)`, and the receiver is polled once a frame.
+//!   model: every action goes through [`ToolPort::submit`] (for the engine, [`EnginePort`]:
+//!   `engine.submit(Caller::Ui, "<tool_id>", params)`), and the replies are polled once a frame.
+//!   The port also lists the tools the palette, menus and settings show.
 //! - Widget-level input (keys into the focused pane, scroll, selection, resize) goes straight to
 //!   the session's [`TerminalSource`]; it is not a tool.
 //!
@@ -18,10 +19,11 @@
 //! menus, an in-progress divider drag (the drag's end *is* a tool call: `layout_set` /
 //! `inbox_panel_set`).
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use csm_engine::{Caller, Engine, Event, Registry, Reply};
+use csm_engine::{Caller, Effects, Engine, Event, Registry, Reply, ToolSpec, Toolset};
 use serde_json::Value;
 
 use crate::model::{SessionId, UiModel};
@@ -32,6 +34,65 @@ use crate::terminal::TerminalSource;
 pub struct Call {
     pub id: String,
     pub params: Value,
+}
+
+/// One tool as the UI sees it: everything in a [`ToolSpec`] except the function. Owned, so a port
+/// can hand it out without borrowing from the engine (or from a connection).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolInfo {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub toolset: Toolset,
+    pub effects: Effects,
+    pub input_schema: Value,
+}
+
+impl ToolInfo {
+    /// The owned view of a spec, with the input schema the registry gives it (a dynamic tool's
+    /// own schema, else the spec's).
+    pub fn from_spec(spec: &ToolSpec, input_schema: Value) -> ToolInfo {
+        ToolInfo {
+            id: spec.id.to_string(),
+            title: spec.title.to_string(),
+            summary: spec.summary.to_string(),
+            toolset: spec.toolset,
+            effects: spec.effects,
+            input_schema,
+        }
+    }
+}
+
+/// Where the UI's tool calls go, and where its tool list comes from. The engine is one port
+/// ([`EnginePort`]); a remote client can be another. Nothing here blocks.
+pub trait ToolPort {
+    /// Submits `id` with `params`; the reply is picked up by [`ToolPort::poll`].
+    fn submit(&mut self, id: &str, params: Value);
+    /// Finished calls and new events since the last poll.
+    fn poll(&mut self) -> (Vec<(Call, Reply)>, Vec<Event>);
+    /// Whether replies are still outstanding (the frame loop keeps polling while they are).
+    fn busy(&self) -> bool;
+    /// Calls submitted so far (most recent last), for tests and diagnostics.
+    fn submitted(&self) -> &[Call];
+    /// Every tool the port offers now, in registration order (built-in tools first). Shared, so
+    /// holding it costs an `Arc` clone.
+    fn tools(&self) -> Arc<[ToolInfo]>;
+    /// One tool by id (a copy).
+    fn tool(&self, id: &str) -> Option<ToolInfo> {
+        self.tools().iter().find(|t| t.id == id).cloned()
+    }
+    /// Whether the port offers a tool with this id.
+    fn has_tool(&self, id: &str) -> bool {
+        self.tools().iter().any(|t| t.id == id)
+    }
+    /// The effects a tool declares (`None` when the port does not offer it).
+    fn effects(&self, id: &str) -> Option<Effects> {
+        self.tools().iter().find(|t| t.id == id).map(|t| t.effects)
+    }
+    /// The engine behind the port, for tests and diagnostics. A remote port has none.
+    fn engine(&self) -> Option<Engine> {
+        None
+    }
 }
 
 /// Something the backend wants the UI to show after a reply or an event.
@@ -54,8 +115,9 @@ pub trait Backend {
     fn model(&self) -> Arc<UiModel>;
     /// The terminal a pane shows.
     fn terminal(&self, id: &str) -> Option<Arc<dyn TerminalSource>>;
-    /// A call finished. The demo applies its effect here; the real engine already has.
-    fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice>;
+    /// A call finished. The demo applies its effect here; the real engine already has. `port` is
+    /// the port the call went through, for the tool facts a reply depends on (its effects).
+    fn on_reply(&mut self, call: &Call, reply: &Reply, port: &dyn ToolPort) -> Vec<Notice>;
     /// An engine event.
     fn on_event(&mut self, event: &Event) -> Vec<Notice>;
     /// Once a frame, before drawing (timers, repaint scheduling).
@@ -87,33 +149,34 @@ pub trait Backend {
     }
 }
 
-/// Submits tool calls and polls their replies and the engine's events. Never blocks.
-pub struct Dispatcher {
+/// The engine as a [`ToolPort`]: submits to the engine as `Caller::Ui`, and polls the replies and
+/// the engine's events. Never blocks.
+pub struct EnginePort {
     engine: Engine,
     events: Receiver<Event>,
     pending: Vec<(Call, Receiver<Reply>)>,
     log: Vec<Call>,
+    /// The last tool list and the registry it was built from. Rebuilt only when the engine swaps
+    /// its registry (add-on tools came or went). Only the UI thread reads it.
+    tools: RefCell<ToolCache>,
 }
 
-/// How many submitted calls are remembered for [`Dispatcher::submitted`].
+/// The registry a tool list was built from, and the list.
+type ToolCache = Option<(Arc<Registry>, Arc<[ToolInfo]>)>;
+
+/// How many submitted calls are remembered for [`ToolPort::submitted`].
 const LOG_MAX: usize = 256;
 
-impl Dispatcher {
+impl EnginePort {
     pub fn new(engine: Engine) -> Self {
         let events = engine.subscribe();
-        Self { engine, events, pending: Vec::new(), log: Vec::new() }
+        Self { engine, events, pending: Vec::new(), log: Vec::new(), tools: RefCell::new(None) }
     }
+}
 
-    pub fn engine(&self) -> &Engine {
-        &self.engine
-    }
-
-    pub fn registry(&self) -> std::sync::Arc<Registry> {
-        self.engine.registry()
-    }
-
-    /// `engine.submit(Caller::Ui, id, params)`; the reply is picked up by [`Dispatcher::poll`].
-    pub fn submit(&mut self, id: &str, params: Value) {
+impl ToolPort for EnginePort {
+    /// `engine.submit(Caller::Ui, id, params)`; the reply is picked up by [`ToolPort::poll`].
+    fn submit(&mut self, id: &str, params: Value) {
         log::debug!("ui → {id} {params}");
         let call = Call { id: id.to_string(), params };
         let rx = self.engine.submit(Caller::Ui, &call.id, call.params.clone());
@@ -124,18 +187,7 @@ impl Dispatcher {
         self.pending.push((call, rx));
     }
 
-    /// Calls submitted so far (most recent last), for tests and diagnostics.
-    pub fn submitted(&self) -> &[Call] {
-        &self.log
-    }
-
-    /// Whether replies are still outstanding (the frame loop keeps polling while they are).
-    pub fn busy(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
-    /// Finished calls and new events since the last poll.
-    pub fn poll(&mut self) -> (Vec<(Call, Reply)>, Vec<Event>) {
+    fn poll(&mut self) -> (Vec<(Call, Reply)>, Vec<Event>) {
         let mut done = Vec::new();
         let mut keep = Vec::new();
         for (call, rx) in self.pending.drain(..) {
@@ -153,5 +205,63 @@ impl Dispatcher {
             events.push(e);
         }
         (done, events)
+    }
+
+    fn busy(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    fn submitted(&self) -> &[Call] {
+        &self.log
+    }
+
+    fn engine(&self) -> Option<Engine> {
+        Some(self.engine.clone())
+    }
+
+    fn tools(&self) -> Arc<[ToolInfo]> {
+        let reg = self.engine.registry();
+        let mut cache = self.tools.borrow_mut();
+        if let Some((cached, list)) = cache.as_ref()
+            && Arc::ptr_eq(cached, &reg)
+        {
+            return list.clone();
+        }
+        let list: Arc<[ToolInfo]> = reg.all().iter().map(|s| ToolInfo::from_spec(s, reg.schema(s))).collect();
+        *cache = Some((reg, list.clone()));
+        list
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_engine_port_lists_the_registry_and_round_trips_a_call() {
+        let engine = crate::demo_engine().expect("the demo engine starts");
+        let mut port = EnginePort::new(engine.clone());
+        let listed = port.tools();
+        let reg = engine.registry();
+        assert_eq!(listed.len(), reg.all().len());
+        assert!(listed.iter().zip(reg.all()).all(|(t, s)| t.id == s.id && t.title == s.title));
+        assert!(port.has_tool("session_list") && !port.has_tool("no_such_tool"));
+        assert_eq!(port.effects("session_list"), reg.get("session_list").map(|s| s.effects));
+        assert!(Arc::ptr_eq(&listed, &port.tools()), "an unchanged registry gives the same list");
+
+        port.submit("session_list", serde_json::json!({}));
+        assert!(port.busy());
+        assert_eq!(port.submitted().last().map(|c| c.id.as_str()), Some("session_list"));
+        let mut replies = Vec::new();
+        for _ in 0..500 {
+            replies.extend(port.poll().0);
+            if !replies.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(replies.len(), 1, "the engine answers the call");
+        assert!(!port.busy());
     }
 }

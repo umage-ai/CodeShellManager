@@ -2,6 +2,7 @@
 //! engine with the demo tools, at the mock-up's 1280×800.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub use csm_ui::ToolPort;
 use csm_ui::CsmApp;
 use csm_ui::demo::{DemoBackend, DemoOptions};
 use csm_ui::terminal::TerminalRenderer;
@@ -19,7 +20,7 @@ pub fn backend(theme: ThemeKind) -> DemoBackend {
 
 pub fn app_with(backend: DemoBackend) -> CsmApp {
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
-    CsmApp::new(csm_ui::demo_engine().unwrap(), Box::new(backend), TerminalRenderer::new(fonts))
+    CsmApp::new(Box::new(csm_ui::EnginePort::new(csm_ui::demo_engine().unwrap())), Box::new(backend), TerminalRenderer::new(fonts))
 }
 
 pub fn harness(app: CsmApp) -> Harness<'static, CsmApp> {

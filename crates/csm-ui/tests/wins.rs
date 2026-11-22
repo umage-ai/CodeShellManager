@@ -52,7 +52,7 @@ fn ctrl_equals_minus_and_zero_step_the_interface_size_through_settings_set() {
     assert!((zoom(&h) - 1.0).abs() < 1e-6);
     assert_eq!(h.state().prefs.ui_zoom_percent, 100);
     // The engine has it (persisted with the settings).
-    let saved = h.state().dispatch.engine().call(csm_engine::Caller::Ui, "settings_get", json!({"key": "UiZoomPercent"})).unwrap();
+    let saved = h.state().dispatch.engine().expect("an engine port").call(csm_engine::Caller::Ui, "settings_get", json!({"key": "UiZoomPercent"})).unwrap();
     assert_eq!(saved.data["value"], 100);
 }
 
@@ -72,7 +72,7 @@ fn a_zoom_set_by_the_cli_or_an_mcp_client_applies_live_and_the_settings_page_sho
     let mut h = h();
     // Not through the UI's dispatcher: as `csm settings-set` would (an external caller).
     let ext = csm_engine::Caller::External { client: "csm".into(), session_id: None };
-    h.state().dispatch.engine().call(ext, "settings_set", json!({"key": "UiZoomPercent", "value": 150})).unwrap();
+    h.state().dispatch.engine().expect("an engine port").call(ext, "settings_set", json!({"key": "UiZoomPercent", "value": 150})).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while (zoom(&h) - 1.5).abs() > 1e-6 {
         assert!(std::time::Instant::now() < deadline, "the zoom never followed: {}", zoom(&h));

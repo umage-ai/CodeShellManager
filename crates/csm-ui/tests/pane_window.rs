@@ -401,9 +401,8 @@ fn a_torn_off_pane_shows_dock_and_close_only() {
 #[test]
 fn the_window_bar_tools_are_in_the_palette_and_the_pane_menu() {
     let h = h();
-    let reg = h.state().dispatch.registry();
     for id in ["pane_minimize", "pane_maximize", "pane_restore"] {
-        let spec = reg.get(id).unwrap_or_else(|| panic!("{id} registered"));
+        let spec = h.state().dispatch.tool(id).unwrap_or_else(|| panic!("{id} registered"));
         assert_eq!(spec.effects, csm_engine::Effects::UI, "{id}: UI state only");
     }
     let menu = csm_ui::screens::menus::pane_menu(&h.state().model, "web");
@@ -455,7 +454,7 @@ fn the_palette_finds_each_layout_by_name() {
         csm_ui::screens::palette::PalRow::Tool { id, .. } => Some(id),
         _ => None,
     });
-    assert_eq!(first, Some("layout:board"));
+    assert_eq!(first.as_deref(), Some("layout:board"));
     // Enter would take the first row ("search output for board"), so pick the row itself.
     h.get_by_label("Palette: Layout: Board").click();
     settle(&mut h);

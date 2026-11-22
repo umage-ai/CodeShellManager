@@ -327,16 +327,16 @@ fn claude_commands_are_edited_in_settings() {
 fn export_import_and_usage_from_the_palette_take_the_settings_route() {
     let mut h = h();
     let ctx = h.ctx.clone();
-    h.state_mut().run(&ctx, Action::PaletteTool("state_export"));
+    h.state_mut().run(&ctx, Action::PaletteTool("state_export".into()));
     settle(&mut h);
     assert!(matches!(h.state_mut().take_dialog_request(), Some(DialogRequest::SaveBackup { .. })), "a path is asked for, not a toast");
 
-    h.state_mut().run(&ctx, Action::PaletteTool("state_import"));
+    h.state_mut().run(&ctx, Action::PaletteTool("state_import".into()));
     settle(&mut h);
     assert!(h.state().ui.settings.open, "the review card lives in Settings");
     assert_eq!(h.state_mut().take_dialog_request(), Some(DialogRequest::OpenBackup));
 
-    h.state_mut().run(&ctx, Action::PaletteTool("usage_stats"));
+    h.state_mut().run(&ctx, Action::PaletteTool("usage_stats".into()));
     settle(&mut h);
     settle(&mut h);
     assert_eq!(h.state().ui.settings.section, SettingsSection::Usage);

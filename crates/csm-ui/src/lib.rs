@@ -4,8 +4,8 @@
 //!   spacing / size / type scale. Screens never write a colour or a size as a number.
 //! - [`terminal`]: the terminal widget (renderer, input, sources), moved from the Phase 0 spike.
 //! - [`model`]: the plain-data snapshot the screens draw ([`model::UiModel`]).
-//! - [`backend`]: the seam to whatever owns the state ([`backend::Backend`], [`backend::Dispatcher`]);
-//!   every action is `engine.submit(Caller::Ui, "<tool_id>", params)`.
+//! - [`backend`]: the seam to whatever owns the state ([`backend::Backend`], [`backend::ToolPort`]);
+//!   every action is a tool call on the port (for the engine, `engine.submit(Caller::Ui, ...)`).
 //! - [`engine_backend`]: the real backend over `csm-engine` ([`EngineBackend`]).
 //! - [`demo`]: a backend with the mock-up's data (`codeshell --demo`, screenshots, UI tests).
 //! - [`pane_tools`]: the `pane_*` tools (the Free layout's shape is the UI's).
@@ -34,7 +34,7 @@ pub mod widgets;
 pub mod zoom;
 
 pub use app::{Action, CsmApp};
-pub use backend::{Backend, Call, Dispatcher, Notice};
+pub use backend::{Backend, Call, EnginePort, Notice, ToolInfo, ToolPort};
 
 pub use engine_backend::{EngineBackend, EngineOptions};
 

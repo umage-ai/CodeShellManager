@@ -451,7 +451,7 @@ fn main() {
                     Box::new(b)
                 }
             };
-            let mut app = csm_ui::CsmApp::new(engine, backend, TerminalRenderer::new(fonts));
+            let mut app = csm_ui::CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), backend, TerminalRenderer::new(fonts));
             app.monitors = app_monitors;
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
