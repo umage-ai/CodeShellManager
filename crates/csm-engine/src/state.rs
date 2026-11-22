@@ -121,9 +121,15 @@ impl Default for StateOptions {
     }
 }
 
-/// `samples/addons` beside the running exe (where the installer and the portable zip put it).
+/// `samples/addons` beside the running exe (where the installer, the portable zip and the Linux
+/// packages put it). A macOS app bundle keeps it in `Contents/Resources` instead, because
+/// codesign treats every file in `Contents/MacOS` as code and refuses data files there.
+/// Called once at startup (two `stat`s), never from frame code.
 fn bundled_samples_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok()?.parent().map(|d| d.join("samples").join("addons"))
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let beside = exe_dir.join("samples").join("addons");
+    let bundle = exe_dir.join("..").join("Resources").join("samples").join("addons");
+    if !beside.is_dir() && bundle.is_dir() { Some(bundle) } else { Some(beside) }
 }
 
 impl StateOptions {

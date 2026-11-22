@@ -130,12 +130,25 @@ pub fn spawn_detached(program: &std::path::Path, args: &[String], raw: Option<&s
 /// Starts a process add-on (`plugins.rs`): `argv[0]` with `argv[1..]`, the working folder `dir`,
 /// stdin, stdout and stderr piped, no console window (Windows). No shell is involved. An empty
 /// `argv` is an error, not a panic.
+///
+/// A bare program name (`csm-review`) is looked up in the app's own folder first, where the
+/// packages install the bundled add-on programs, then on PATH. Windows' CreateProcess already
+/// searches the exe's folder first; Unix exec does not (a .app bundle or a tarball is not on PATH).
 pub fn spawn_piped(argv: &[String], dir: &std::path::Path) -> std::io::Result<std::process::Child> {
     let (program, args) = argv.split_first().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "the add-on has no argv"))?;
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(beside_app(program).unwrap_or_else(|| std::path::PathBuf::from(program)));
     cmd.args(args).current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     no_window(&mut cmd);
     cmd.spawn()
+}
+
+/// `<app folder>/<program><EXE_SUFFIX>` when `program` is a bare name and that file exists.
+fn beside_app(program: &str) -> Option<std::path::PathBuf> {
+    if program.is_empty() || program.contains(['/', '\\']) || program == "." || program == ".." {
+        return None;
+    }
+    let path = std::env::current_exe().ok()?.parent()?.join(format!("{program}{}", std::env::consts::EXE_SUFFIX));
+    path.is_file().then_some(path)
 }
 
 #[cfg(test)]
