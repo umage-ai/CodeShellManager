@@ -215,6 +215,10 @@ using the server's own view state.
   the last-activity stamp. Every overlay focus must be forwarded or replayed to the server for them.
 - A UI-only call the overlay does not model (window and add-on screen actions, a session's status)
   is routed as not modelled: the client runs it or forwards it, and never drops it.
+- Ordering for an overlay focus: the local focus is committed first, then `session_wake` is sent
+  when the session is asleep. If the wake fails, the engine has focused nothing, so the client
+  restores the overlay it cloned before the focus. The overlay never keeps a focus the server did
+  not make.
 
 ---
 

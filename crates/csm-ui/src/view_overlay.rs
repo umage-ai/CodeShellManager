@@ -20,6 +20,11 @@
 //! - `inbox_next` and `view_set` with a `rail_tab` are forwarded, because the engine runs a focus
 //!   for them. The engine declares `inbox_next` as `UI` only, which under-states it (a launch
 //!   and a mutation). Fixing the declaration changes MCP consent, so Allan approves it first.
+//!
+//! Ordering for a focus ([`Applied::Focused`] with `wake` set). [`apply`] commits the local focus
+//! at once, before the caller sends `session_wake`. If the wake fails, the engine has focused
+//! nothing, so the caller must put back the overlay it cloned before calling [`apply`]. The
+//! overlay never keeps a focus that the server did not make. (Design section 2.3 says the same.)
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -226,6 +231,7 @@ impl ViewOverlay {
 
     /// The local part of a focus, as the engine's `lifecycle::focus` does it: the focused
     /// session, the group's memory, the layouts' reveal and the rail tab. Waking is the caller's.
+    /// The caller must restore its clone if the wake fails (see the module docs: ordering).
     fn focus(&mut self, fact: &SessionFact) {
         self.focused = Some(fact.id.clone());
         let group = fact.group.as_str();
@@ -479,11 +485,15 @@ struct CollapseParams {
     collapsed: bool,
 }
 
-/// The local `view_set` fields. A `rail_tab` never gets here: [`route`] forwards it.
+/// The local `view_set` fields. A non-null `rail_tab` never gets here: [`route`] forwards it. A
+/// null one is accepted and ignored, as the engine ignores it (no rail tab in the call is no change).
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct ViewSetParams {
     view: Option<GroupView>,
+    /// Always null here. Read by no arm: it is only accepted so `deny_unknown_fields` lets it through.
+    #[allow(dead_code)]
+    rail_tab: Option<Value>,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -626,16 +636,50 @@ mod tests {
         ids
     }
 
-    /// The route each UI-only tool must have, by id (the rules of [`route`], with no params).
-    fn expected_route(id: &str) -> Route {
+    /// The fixed routes of the registry's UI-only tools. Written out here, not taken from the
+    /// module's own lists, so a new UI tool fails the tests until someone decides its route.
+    const FIXED_LOCAL: &[&str] = &[
+        "view_set",
+        "layout_set",
+        "layout_pin",
+        "layout_unpin",
+        "inspector_show",
+        "inbox_panel_set",
+        "window_placement_set",
+        "group_collapse",
+        "group_tear_off",
+        "group_dock",
+    ];
+    const FIXED_FORWARD: &[&str] = &["inbox_next"];
+    const FIXED_NOT_MODELLED: &[&str] = &[
+        "session_status_clear",
+        "window_show",
+        "notification_test",
+        "session_annotate",
+        "screen_open",
+        "screen_close",
+        "screen_pop_out",
+        "screen_dock",
+        "pane_float",
+        "pane_dock",
+        "pane_tear_off",
+        "pane_minimize",
+        "pane_maximize",
+        "pane_restore",
+    ];
+
+    /// The fixed route of a UI-only tool; `None` when the table does not list it.
+    fn fixed_route(id: &str) -> Option<Route> {
         if id == SESSION_FOCUS {
-            Route::Focus
-        } else if FORWARDED_UI.contains(&id) {
-            Route::Forward
-        } else if MODELLED_UI.contains(&id) {
-            Route::Local
+            Some(Route::Focus)
+        } else if FIXED_LOCAL.contains(&id) {
+            Some(Route::Local)
+        } else if FIXED_FORWARD.contains(&id) {
+            Some(Route::Forward)
+        } else if FIXED_NOT_MODELLED.contains(&id) {
+            Some(Route::UiNotModelled)
         } else {
-            Route::UiNotModelled
+            None
         }
     }
 
@@ -696,30 +740,28 @@ mod tests {
             let t =
                 registry_tools().iter().find(|t| t.id == id).cloned().unwrap_or_else(|| panic!("`{id}` is in docs/tools.md but not in the registry"));
             assert!(t.effects.contains(Effects::CHANGES_UI_STATE), "`{id}` changes the UI");
-            assert_eq!(route(&t, &json!({})), expected_route(&id), "`{id}` ({:?})", t.effects);
+            let want = fixed_route(&id).unwrap_or_else(|| panic!("`{id}` is in docs/tools.md with no fixed route"));
+            assert_eq!(route(&t, &json!({})), want, "`{id}` ({:?})", t.effects);
         }
     }
 
     #[test]
-    fn every_registry_tool_routes_by_its_effects() {
+    fn every_registry_tool_routes_by_its_fixed_table() {
         let tools = registry_tools();
         let doc = include_str!("../../../docs/tools.md");
         let catalogue = catalogue_ui_ids();
-        let mut local = 0;
+        let mut seen = BTreeSet::new();
         for t in tools.iter().filter(|t| !t.id.starts_with("demo_")) {
             let r = route(t, &json!({}));
-            if t.id == SESSION_FOCUS {
-                assert_eq!(r, Route::Focus, "`{}` ({:?})", t.id, t.effects);
-                continue;
-            }
-            if !is_ui_only(t.effects) {
+            if t.id != SESSION_FOCUS && !is_ui_only(t.effects) {
                 assert_eq!(r, Route::Forward, "`{}` ({:?})", t.id, t.effects);
+                assert!(fixed_route(&t.id).is_none(), "`{}` is not UI-only, so it has no UI route in the table", t.id);
                 continue;
             }
-            assert_eq!(r, expected_route(&t.id), "`{}` ({:?})", t.id, t.effects);
-            if r == Route::Local {
-                local += 1;
-            }
+            let want = fixed_route(&t.id)
+                .unwrap_or_else(|| panic!("`{}` is UI-only ({:?}) and has no fixed route: decide it in view_overlay's tests", t.id, t.effects));
+            assert_eq!(r, want, "`{}` ({:?})", t.id, t.effects);
+            seen.insert(t.id.clone());
             // A UI-only tool is documented: a catalogue row, or an app-registered `pane_*` tool
             // that the catalogue's prose names.
             if t.id.starts_with("pane_") {
@@ -728,10 +770,14 @@ mod tests {
                 assert!(catalogue.contains(&t.id), "`{}` is UI-only but not a catalogue row in docs/tools.md", t.id);
             }
         }
-        assert!(local >= 10, "the registry has modelled UI tools ({local})");
-        for id in MODELLED_UI.iter().chain(FORWARDED_UI.iter()) {
-            assert!(tools.iter().any(|t| t.id == *id), "`{id}` in the lists is a registry tool");
+        // No stale rows: every id in the fixed table is a UI-only tool of the registry.
+        for id in FIXED_LOCAL.iter().chain(FIXED_FORWARD).chain(FIXED_NOT_MODELLED).chain([&SESSION_FOCUS]) {
+            assert!(seen.contains(*id), "`{id}` is in the fixed table but is not a UI-only registry tool");
         }
+        // The module's lists are the fixed ones.
+        assert_eq!(MODELLED_UI, FIXED_LOCAL, "MODELLED_UI is the fixed table");
+        assert_eq!(FORWARDED_UI, FIXED_FORWARD, "FORWARDED_UI is the fixed table");
+        assert_eq!(FIXED_LOCAL.len(), 10, "ten modelled UI tools");
     }
 
     /// Facts for a small fixed world: groups `work` and `home`; sessions `a` (work, awake), `b`
@@ -807,6 +853,19 @@ mod tests {
         assert_eq!(o.layout_key(), ALL_LAYOUT_KEY);
 
         assert!(matches!(run(&mut o, &facts, "view_set", json!({"view": "rail", "x": 1})), Err(ToolError::InvalidParams(_))));
+        assert_eq!(o.view, GroupView::Headers, "a refused call changes nothing");
+    }
+
+    #[test]
+    fn view_set_accepts_a_null_rail_tab_as_no_change() {
+        let facts = world();
+        let mut o = ViewOverlay { rail_tab: Some("work".into()), ..ViewOverlay::default() };
+        assert_eq!(run(&mut o, &facts, "view_set", json!({"rail_tab": null})).expect("null tab"), Applied::Local);
+        assert_eq!(o.rail_tab.as_deref(), Some("work"), "a null tab changes nothing, as in the engine");
+        assert_eq!(run(&mut o, &facts, "view_set", json!({"view": "headers", "rail_tab": null})).expect("view and null tab"), Applied::Local);
+        assert_eq!(o.view, GroupView::Headers);
+        assert_eq!(o.rail_tab.as_deref(), Some("work"));
+        assert!(matches!(run(&mut o, &facts, "view_set", json!({"rail_tab": null, "x": 1})), Err(ToolError::InvalidParams(_))));
         assert_eq!(o.view, GroupView::Headers, "a refused call changes nothing");
     }
 
@@ -969,7 +1028,7 @@ mod tests {
     #[test]
     fn every_modelled_tool_has_an_arm_in_apply() {
         let facts = world();
-        for id in MODELLED_UI {
+        for id in FIXED_LOCAL {
             let mut o = ViewOverlay::default();
             let got = run(&mut o, &facts, id, json!({}));
             assert!(!matches!(got, Ok(Applied::NotInOverlay)), "`{id}` is modelled but apply does not run it: {got:?}");
@@ -1012,6 +1071,8 @@ mod tests {
             (SESSION_FOCUS, json!({"session_id": "zz"})),
             (SESSION_FOCUS, json!({"session_id": "a", "x": 1})),
             ("view_set", json!({"view": "headers"})),
+            ("view_set", json!({"view": "headers", "rail_tab": null})),
+            ("view_set", json!({"rail_tab": null})),
             (SESSION_FOCUS, json!({"session_id": "d"})),
             ("view_set", json!({"view": "rail"})),
             (SESSION_FOCUS, json!({"session_id": "a"})),
