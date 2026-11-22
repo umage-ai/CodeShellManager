@@ -7,6 +7,11 @@
 //!   Claude's own transcripts (a port of ContextCost), read by `crate::usage_tail` into the
 //!   index. Costs are **API-equivalent** (what the tokens would cost at API list prices), not
 //!   what a subscription bills. Numbers only; nothing leaves the machine.
+//! - The Claude numbers belong to the built-in **Claude usage** add-on (`crate::addons::CLAUDE_USAGE_ID`,
+//!   off by default). While it is off, `usage_session`, `usage_summary` and `usage_report` are
+//!   refused (they stay listed, so a caller learns why), `usage_context` answers the context fill
+//!   from the reader's light tail without cost, and `session_subagents` lists subagents without
+//!   cost. `usage_forget_history` deletes the imported history either way.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,7 +45,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "usage_session",
             title: "Claude usage of a session",
-            summary: "A Claude session's context fill (last main-thread request vs the model's window), API-equivalent cost and tokens (total and today), cache hit ratio, the last cache miss with the idle gap before it, compactions, and subagent cost. Read from Claude's transcripts; numbers only.",
+            summary: "A Claude session's context fill (last main-thread request vs the model's window), API-equivalent cost and tokens (total and today), cache hit ratio, the last cache miss with the idle gap before it, compactions, and subagent cost. Read from Claude's transcripts; numbers only. Needs the built-in Claude usage add-on (off by default).",
             toolset: Toolset::App,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<SessionParams>,
@@ -58,7 +63,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "usage_context",
             title: "Claude context fill",
-            summary: "For every live Claude session: how full its context is (tokens, window, ratio, ok/warn/critical near auto-compact) and its API-equivalent cost so far.",
+            summary: "For every live Claude session: how full its context is (tokens, window, ratio, ok/warn/critical near auto-compact) and its API-equivalent cost so far. With the Claude usage add-on off: the context fill only, cost null.",
             toolset: Toolset::App,
             effects: Effects::READ_ONLY,
             input_schema: empty_schema,
@@ -67,7 +72,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "usage_summary",
             title: "Claude cost summary",
-            summary: "API-equivalent cost and tokens of Claude sessions between from and to (today, week, month, all, or a YYYY-MM-DD local date; default the last 7 days), grouped by project, session or model. Unpriced models are listed, never counted as $0.",
+            summary: "API-equivalent cost and tokens of Claude sessions between from and to (today, week, month, all, or a YYYY-MM-DD local date; default the last 7 days), grouped by project, session or model. Unpriced models are listed, never counted as $0. Needs the built-in Claude usage add-on (off by default).",
             toolset: Toolset::App,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<SummaryParams>,
@@ -76,11 +81,20 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "usage_report",
             title: "Claude usage report",
-            summary: "Claude Code's tokens and API-equivalent cost between from and to (today, 7d, 30d, all, or YYYY-MM-DD local dates; default 7d), from every transcript on this machine: totals, one row per local day, and groups (session, project, model or day), each split into input, output, cache writes (5m and 1h) and cache reads, with cost per token class, cache hit rate, cache savings, write premium, cache-miss cost and cache-miss events. Filter by session, model or project to drill down. Numbers only.",
+            summary: "Claude Code's tokens and API-equivalent cost between from and to (today, 7d, 30d, all, or YYYY-MM-DD local dates; default 7d), from every transcript on this machine: totals, one row per local day, and groups (session, project, model or day), each split into input, output, cache writes (5m and 1h) and cache reads, with cost per token class, cache hit rate, cache savings, write premium, cache-miss cost and cache-miss events. Filter by session, model or project to drill down. Numbers only. Needs the built-in Claude usage add-on (off by default); past transcripts are read only with ClaudeUsageHistory on and never under --clean.",
             toolset: Toolset::App,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<ReportParams>,
             run: usage_report,
+        },
+        ToolSpec {
+            id: "usage_forget_history",
+            title: "Forget imported Claude history",
+            summary: "Delete the Claude usage imported from past transcripts that no CSM session ran (the history import). What the sessions CSM ran recorded stays. Refused while \"Read past Claude history\" (setting ClaudeUsageHistory) is on, since it would be read again.",
+            toolset: Toolset::App,
+            effects: Effects::MUTATES_STATE.union(Effects::MAY_DISCARD_DATA),
+            input_schema: empty_schema,
+            run: usage_forget_history,
         },
     ]
 }
@@ -116,6 +130,7 @@ const REPORT_DEFINITIONS: &str = "cache_hit_rate = cache_read / (input + cache_r
 
 fn usage_report(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: ReportParams = parse_params(params)?;
+    require_on(ctx)?;
     let ix = index_of(ctx)?;
     let today = today();
     let first = start_day(p.from.as_deref().unwrap_or("7d"), today)?;
@@ -138,6 +153,8 @@ fn usage_report(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let price_version = table.version.clone();
     let following = ctx.state.rt.usage.is_some();
     let history = ctx.state.rt.usage.as_ref().and_then(|u| u.subagents.try_lock().ok().map(|s| s.history));
+    let history_on = ctx.state.rt.usage.as_ref().is_some_and(|u| u.mode.history);
+    let history_allowed = crate::usage_tail::history_allowed(&ctx.state.options);
     let names: HashMap<String, String> = ctx.state.app.sessions.iter().map(|s| (s.id.clone(), display_name(s))).collect();
     let reply = ctx.park().ok_or_else(|| ToolError::Failed("this tool cannot run outside a call".into()))?;
     ix.call(
@@ -172,6 +189,8 @@ fn usage_report(ctx: &mut Ctx<'_>, params: Value) -> Reply {
                     let mut data = serde_json::to_value(&rep).unwrap_or(Value::Null);
                     data["following"] = json!(following);
                     data["history"] = json!(history);
+                    data["history_on"] = json!(history_on);
+                    data["history_allowed"] = json!(history_allowed);
                     data["prices"] = prices;
                     data["price_version"] = json!(price_version);
                     data["definitions"] = json!(REPORT_DEFINITIONS);
@@ -257,6 +276,15 @@ enum GroupBy {
 }
 
 const API_NOTE: &str = "API-equivalent: what these tokens would cost at Anthropic API list prices, not what a subscription bills.";
+
+/// Refuses while the built-in Claude usage add-on is off.
+fn require_on(ctx: &Ctx<'_>) -> Result<(), ToolError> {
+    if crate::addons::claude_usage_on(&ctx.state.app.settings) {
+        Ok(())
+    } else {
+        Err(ToolError::Refused(crate::addons::CLAUDE_USAGE_OFF.into()))
+    }
+}
 
 fn index_of(ctx: &Ctx<'_>) -> Result<csm_index::Index, ToolError> {
     ctx.state.rt.index.clone().ok_or_else(|| ToolError::Refused("Claude usage is not kept in this run (there is no index).".into()))
@@ -351,6 +379,7 @@ fn fill_json(c: &ContextFill) -> Value {
 
 fn usage_session(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: SessionParams = parse_params(params)?;
+    require_on(ctx)?;
     let i = super::find(ctx.state, &p.session_id)?;
     let s = ctx.state.app.sessions.get(i).cloned().ok_or_else(|| ToolError::NotFound("gone".into()))?;
     if !crate::launch::is_claude_command(&s.command) {
@@ -411,7 +440,6 @@ fn usage_context(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if params.as_object().is_some_and(|o| !o.is_empty()) {
         return Err(ToolError::InvalidParams("this tool takes no params".into()));
     }
-    let ix = index_of(ctx)?;
     let live: Vec<(String, String, String)> = ctx
         .state
         .app
@@ -420,6 +448,24 @@ fn usage_context(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         .filter(|s| crate::launch::is_claude_command(&s.command) && ctx.state.rt.sessions.contains_key(&s.id))
         .map(|s| (s.id.clone(), display_name(s), s.args.clone()))
         .collect();
+    if !crate::addons::claude_usage_on(&ctx.state.app.settings) {
+        // The add-on is off: the context fill from the reader's light tail, and no cost.
+        let sessions: Vec<Value> = live
+            .iter()
+            .map(|(id, name, args)| {
+                let fill = ctx.state.rt.live_context.get(id).and_then(|c| {
+                    let last = c.last_main.as_ref()?;
+                    let window = cu::context_window(&last.model, args, c.largest_main_prompt);
+                    Some(ContextFill::new(last.tokens.prompt(), window, last.model.clone(), last.ts_ms))
+                });
+                json!({"session_id": id, "name": name, "context": fill.as_ref().map(fill_json), "requests": null, "cost_usd": null, "unpriced_requests": null})
+            })
+            .collect();
+        let with = sessions.iter().filter(|s| !s["context"].is_null()).count();
+        let msg = format!("{} live Claude sessions, {with} with a context fill (Claude usage is off: no cost).", sessions.len());
+        return Ok(ToolOutput::new(msg, json!({"sessions": sessions, "usage": false})));
+    }
+    let ix = index_of(ctx)?;
     let reply = ctx.park().ok_or_else(|| ToolError::Failed("this tool cannot run outside a call".into()))?;
     let ids: Vec<String> = live.iter().map(|(id, ..)| id.clone()).collect();
     ix.call(
@@ -460,6 +506,7 @@ fn usage_context(ctx: &mut Ctx<'_>, params: Value) -> Reply {
 
 fn usage_summary(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: SummaryParams = parse_params(params)?;
+    require_on(ctx)?;
     let ix = index_of(ctx)?;
     let today = today();
     let from = period_start(p.from.as_deref().unwrap_or("week"), today)?;
@@ -534,25 +581,45 @@ fn session_subagents(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let name = display_name(s);
     let following = ctx.state.rt.usage.is_some();
     let report = ctx.state.rt.subagents.get(&p.session_id).map(|r| (**r).clone()).unwrap_or_default();
+    let usage = crate::addons::claude_usage_on(&ctx.state.app.settings);
     let message = if !following {
         "Claude transcripts are not followed in this run.".to_string()
     } else if report.total() == 0 {
         format!("{name} has no subagents.")
     } else {
-        format!(
-            "{name}: {} subagents ({} running, {} idle, {} done); {} API-equivalent.",
-            report.total(),
-            report.running,
-            report.stale,
-            report.done,
-            format_usd(report.total_cost_usd)
-        )
+        let cost = if usage { format!("{} API-equivalent", format_usd(report.total_cost_usd)) } else { "cost not counted (Claude usage is off)".to_owned() };
+        format!("{name}: {} subagents ({} running, {} idle, {} done); {cost}.", report.total(), report.running, report.stale, report.done)
     };
     let mut data = serde_json::to_value(&report).unwrap_or(Value::Null);
     data["session_id"] = json!(p.session_id);
     data["following"] = json!(following);
+    data["usage"] = json!(usage);
     data["note"] = json!(API_NOTE);
     Ok(ToolOutput::new(message, data))
+}
+
+/// Deletes the history imported from transcripts CSM didn't run (the sessions CSM ran stay).
+/// Refused while the history is being read, which would read it all again.
+fn usage_forget_history(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    if ctx.state.rt.usage.as_ref().is_some_and(|u| u.mode.history) {
+        return Err(ToolError::Refused("\"Read past Claude history\" is on, so it would be read again: turn it off first (Settings › Usage)".into()));
+    }
+    let ix = index_of(ctx)?;
+    let reply = ctx.park().ok_or_else(|| ToolError::Failed("this tool cannot run outside a call".into()))?;
+    ix.call(
+        |db| db.claude_forget_history(),
+        move |r| {
+            reply.send(match r {
+                Ok(n) => Ok(ToolOutput::new(format!("Forgot {n} imported requests from past Claude history."), json!({"requests": n}))),
+                Err(e) => Err(ToolError::Failed(e.to_string())),
+            });
+        },
+    );
+    // Queued after the delete: the reader's positions are dropped and loaded again from the index.
+    if let Some(u) = ctx.state.rt.usage.as_ref() {
+        u.forget();
+    }
+    Ok(ToolOutput::message(""))
 }
 
 #[cfg(test)]

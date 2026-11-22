@@ -168,7 +168,12 @@ fn a_changed_file_is_off_until_enabled_again_and_disable_forgets_it() {
     h.ok("addon_disable", json!({"id": "demo"}));
     let l = list(&h);
     assert_eq!(find(&l, "demo")["message"], "not enabled yet");
-    assert!(!fs::read_to_string(&state).unwrap_or_default().contains("demo"));
+    // The save is debounced: wait for it (a fixed read raced it on a busy machine).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while fs::read_to_string(&state).unwrap_or_default().contains("demo") {
+        assert!(std::time::Instant::now() < deadline, "the approval was not forgotten on disk");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     h.engine.shutdown();
 }
 

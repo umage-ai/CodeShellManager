@@ -35,9 +35,16 @@ fn asst(id: &str, ts: i64, model: &str, usage: Value, extra: Value) -> String {
     v.to_string() + "\n"
 }
 
+/// Settings with the built-in Claude usage add-on on (it is off by default).
+fn usage_app() -> csm_core::models::AppState {
+    let mut app = test_app();
+    app.settings.addon_approvals.insert(csm_engine::addons::CLAUDE_USAGE_ID.into(), csm_engine::addons::BUILTIN_DIGEST.into());
+    app
+}
+
 fn usage_harness(root: &Path) -> H {
     let roots = vec![root.to_path_buf()];
-    H::start(test_app(), move |o| {
+    H::start(usage_app(), move |o| {
         o.index = IndexSetting::Handle(Index::start(IndexOptions::memory()).unwrap());
         o.claude_roots = ClaudeRoots::Dirs(roots);
         o.usage_poll = Duration::from_millis(40);

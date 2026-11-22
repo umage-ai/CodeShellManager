@@ -194,6 +194,11 @@ pub struct AppSettings {
     /// line, and a Claude CLI too old to know `--name` would refuse to start.
     #[serde(skip_serializing_if = "is_false")]
     pub pass_session_name_to_claude: bool,
+    /// With the Claude usage add-on on: also read every past Claude transcript on this machine
+    /// (the dashboard's history), not only the sessions CSM runs. On by default; written only
+    /// when turned off. Never read under `--clean` or an isolated run.
+    #[serde(skip_serializing_if = "is_true")]
+    pub claude_usage_history: bool,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -267,6 +272,7 @@ impl Default for AppSettings {
             ui_zoom_percent: UI_ZOOM_DEFAULT,
             close_to_tray: false,
             pass_session_name_to_claude: false,
+            claude_usage_history: t(),
         }
     }
 }

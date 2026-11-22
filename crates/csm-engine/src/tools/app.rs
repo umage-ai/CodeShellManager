@@ -180,6 +180,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("UiZoomPercent").or_insert(json!(s.ui_zoom_percent));
         m.entry("CloseToTray").or_insert(json!(s.close_to_tray));
         m.entry("PassSessionNameToClaude").or_insert(json!(s.pass_session_name_to_claude));
+        m.entry("ClaudeUsageHistory").or_insert(json!(s.claude_usage_history));
     }
     Ok(v)
 }

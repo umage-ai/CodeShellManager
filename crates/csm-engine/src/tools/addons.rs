@@ -168,9 +168,10 @@ struct ApplyRunParams {
 fn addon_list(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
     let cat = &ctx.state.rt.addons;
     let list = addons::summaries(cat);
+    let builtin = addons::builtin_summaries(&ctx.state.app.settings);
     let enabled = list.iter().filter(|a| a.state == AddonState::Loaded).count();
     let msg = if cat.root.is_none() {
-        "Add-ons are off in this run (--clean or an isolated run has no add-ons folder).".to_owned()
+        "Add-ons are off in this run (--clean or an isolated run has no add-ons folder); the built-in ones are listed under `builtin`.".to_owned()
     } else {
         format!("{} add-on(s) found, {enabled} enabled.", list.len())
     };
@@ -181,6 +182,7 @@ fn addon_list(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
             "scanning": cat.scanning,
             "scan_error": cat.scan_error,
             "addons": list,
+            "builtin": builtin,
         }),
     ))
 }
@@ -195,6 +197,9 @@ fn addon_reload(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
 
 fn addon_enable(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: EnableParams = parse_params(params)?;
+    if addons::is_builtin(&p.id) {
+        return builtin_switch(ctx, &p.id, Some((&p.version, &p.digest)));
+    }
     let e = addons::entry(&ctx.state.rt.addons, &p.id).ok_or_else(|| ToolError::NotFound(format!("no add-on `{}`; `addon_list` shows them", p.id)))?;
     let parsed = e.parsed.clone().ok_or_else(|| ToolError::Refused(format!("`{}` did not load: {}", p.id, e.message.clone().unwrap_or_default())))?;
     let digest = e.digest.clone().unwrap_or_default();
@@ -216,6 +221,9 @@ fn addon_enable(ctx: &mut Ctx<'_>, params: Value) -> Reply {
 
 fn addon_disable(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: IdParams = parse_params(params)?;
+    if addons::is_builtin(&p.id) {
+        return builtin_switch(ctx, &p.id, None);
+    }
     if addons::entry(&ctx.state.rt.addons, &p.id).is_none() {
         return Err(ToolError::NotFound(format!("no add-on `{}`; `addon_list` shows them", p.id)));
     }
@@ -309,6 +317,37 @@ fn addon_run_apply(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     csm_core::models::RunCommandItem::ensure_single_default(&mut s.run_commands);
     ctx.state.persist();
     Ok(ToolOutput::new(format!("Added {label} to the session's runs."), json!({"session_id": p.session_id, "template": qualified})))
+}
+
+/// `addon_enable` (`shown`: the version and digest the person was shown) or `addon_disable` of a
+/// built-in add-on. Its approval is kept with the others; turning it on or off takes effect at
+/// once (the usage reader follows the settings on the engine's next tick), no restart.
+fn builtin_switch(ctx: &mut Ctx<'_>, id: &str, shown: Option<(&str, &str)>) -> Reply {
+    let on = shown.is_some();
+    if let Some((version, digest)) = shown
+        && (version != addons::BUILTIN_VERSION || digest != addons::BUILTIN_DIGEST)
+    {
+        return Err(ToolError::Refused(format!(
+            "`{id}` is built in: its version is `{}` and its digest `{}` (addon_list shows them)",
+            addons::BUILTIN_VERSION,
+            addons::BUILTIN_DIGEST
+        )));
+    }
+    let was = addons::claude_usage_on(&ctx.state.app.settings);
+    if on {
+        ctx.state.app.settings.addon_approvals.insert(id.to_owned(), addons::BUILTIN_DIGEST.to_owned());
+    } else {
+        ctx.state.app.settings.addon_approvals.remove(id);
+    }
+    ctx.state.persist();
+    crate::usage_tail::configure(ctx.state);
+    let msg = match (was, on) {
+        (false, true) => "Enabled Claude usage.".to_owned(),
+        (true, false) => "Disabled Claude usage. What it stored is kept; enabling it again carries on from there.".to_owned(),
+        (true, true) => "Claude usage was already on.".to_owned(),
+        (false, false) => "Claude usage was not enabled.".to_owned(),
+    };
+    Ok(ToolOutput::new(msg, json!({"id": id, "enabled": on})))
 }
 
 #[cfg(test)]

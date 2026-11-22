@@ -406,9 +406,63 @@ pub(crate) fn screen_status(rules: &[StatusRule], screen: &str) -> Option<Profil
     core::match_status(rules, screen)
 }
 
-/// Everything the UI and `addon_list` show, in folder order.
+/// Everything the UI and `addon_list` show for the add-on folders, in folder order.
 pub(crate) fn summaries(cat: &Catalogue) -> Vec<AddonSummary> {
     cat.entries.iter().map(|e| summary(e, cat.runtime.get(&e.folder))).collect()
+}
+
+/// The built-in add-ons (`addon_list`'s `builtin`, the snapshot's `builtin_addons`).
+pub fn builtin_summaries(settings: &csm_core::models::AppSettings) -> Vec<AddonSummary> {
+    vec![claude_usage_summary(settings)]
+}
+
+/// The built-in Claude usage add-on's id. Built-in ids have a `builtin:` prefix, which no add-on
+/// folder can have (`:` is not allowed in an add-on id), so they never collide.
+pub const CLAUDE_USAGE_ID: &str = "builtin:claude-usage";
+/// What `addon_enable` takes as a built-in's version and digest (`addon_list` shows them), and
+/// what its approval stores in `AppSettings::addon_approvals`.
+pub const BUILTIN_VERSION: &str = "built-in";
+pub const BUILTIN_DIGEST: &str = "builtin";
+/// What a usage tool says while the add-on is off.
+pub const CLAUDE_USAGE_OFF: &str = "Claude usage is off — enable it in Settings › Add-ons";
+
+/// Whether a built-in add-on is known by this id.
+pub(crate) fn is_builtin(id: &str) -> bool {
+    id == CLAUDE_USAGE_ID
+}
+
+/// Whether the built-in Claude usage add-on is on. Off until the person enables it (existing
+/// installs included); its index data is kept either way.
+pub fn claude_usage_on(settings: &csm_core::models::AppSettings) -> bool {
+    settings.addon_approvals.get(CLAUDE_USAGE_ID).is_some_and(|d| d == BUILTIN_DIGEST)
+}
+
+/// The built-in Claude usage add-on as `addon_list` and the snapshot show it.
+pub fn claude_usage_summary(settings: &csm_core::models::AppSettings) -> AddonSummary {
+    let on = claude_usage_on(settings);
+    AddonSummary {
+        id: CLAUDE_USAGE_ID.to_owned(),
+        name: "Claude usage".to_owned(),
+        version: BUILTIN_VERSION.to_owned(),
+        description: "Built in. Reads Claude Code's own transcripts on this machine for tokens and API-equivalent cost: the inspector's Usage tab, the usage dashboard, cost on the sidebar chips, Settings › Usage and the usage tools. With \"Read past Claude history\" on (Settings › Usage) it also imports every past transcript, not only the sessions CSM runs. Numbers only; nothing leaves the machine. Context fill, subagents and Remote Control work without it.".to_owned(),
+        kind: "builtin",
+        author: None,
+        homepage: None,
+        state: if on { AddonState::Loaded } else { AddonState::Disabled },
+        message: (!on).then(|| "built in; off until you enable it".to_owned()),
+        folder: String::new(),
+        path: String::new(),
+        digest: Some(BUILTIN_DIGEST.to_owned()),
+        profiles: Vec::new(),
+        run_templates: Vec::new(),
+        slash: Vec::new(),
+        commands: Vec::new(),
+        process_effects: Vec::new(),
+        process_command_line: None,
+        process_calls: Vec::new(),
+        process: None,
+        problems: Vec::new(),
+    }
 }
 
 fn summary(e: &Entry, runtime: Option<&PluginRuntime>) -> AddonSummary {
