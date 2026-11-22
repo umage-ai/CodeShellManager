@@ -1,6 +1,6 @@
 # Add-ons
 
-Status: phase 2 (declarative packs, and process add-ons over stdio). Signing and a registry are not built yet.
+Status: declarative packs and process add-ons (over stdio, with screens) are built. Signing and a registry are not built yet.
 Spec for the manifest format, the enable rules and the tools. The code is `csm-core::addons`
 (parsing, pure), `csm-services::addons` (the folder), `csm-engine::addons` and `tools/addons.rs`
 (state and tools), and `csm-ui/src/screens/addons.rs` (Settings > Add-ons).
@@ -176,7 +176,7 @@ For MCP clients `addon_enable` declares `ENABLES_EXTENSION` (a new effect, part 
 so the client gets a consent card like any other tool that would run something the person has not
 seen. Disabling does not ask.
 
-Phase 2 will add signing and a registry. The approval is per digest, so a signature can later sit
+Signing and a registry may come later. The approval is per digest, so a signature can later sit
 beside it without changing what is stored.
 
 ## Tools (toolset `addons`)
@@ -543,7 +543,7 @@ contents); `crates/csm-ui/tests/review_screen_ui.rs` draws the plugin's real vie
 (`apps/csm-review/tests/fixture.rs` keeps `crates/csm-ui/tests/fixtures/review_screen.json` equal to
 it; regenerate with `CSM_REGEN_FIXTURE=1`).
 
-### Not in this phase
+### Not built yet
 
 Screens as panes in the layouts, blobs for large code and diffs, signed add-ons, a registry, a version check or update for a process add-on,
 and a process add-on's own profiles or palette commands. Protocol `api` 1 is the only version.
