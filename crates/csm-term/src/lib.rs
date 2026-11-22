@@ -18,6 +18,7 @@ pub mod colors;
 pub mod input;
 pub mod links;
 pub mod probe;
+pub mod replay;
 pub mod tap;
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -107,6 +108,9 @@ struct Shared {
     /// Colour slots with overrides applied, for answering OSC colour queries without the term.
     colors: Mutex<Vec<vte::ansi::Rgb>>,
     window: Mutex<WindowSize>,
+    /// The title as last set (OSC 0/2, or empty after a reset). `alacritty_terminal` keeps it
+    /// private, so the serializer reads it from here.
+    title: Mutex<String>,
 }
 
 impl Shared {
@@ -135,8 +139,14 @@ impl EventListener for Listener {
                 let size = *shared.window.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 shared.replies.send(format(size).as_bytes());
             }
-            Event::Title(t) => shared.push(TermEvent::Title(t)),
-            Event::ResetTitle => shared.push(TermEvent::Title(String::new())),
+            Event::Title(t) => {
+                *shared.title.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = t.clone();
+                shared.push(TermEvent::Title(t));
+            }
+            Event::ResetTitle => {
+                shared.title.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+                shared.push(TermEvent::Title(String::new()));
+            }
             Event::Bell => shared.push(TermEvent::Bell),
             Event::ClipboardStore(_, text) if text.len() <= MAX_CLIPBOARD_STORE_BYTES => shared.push(TermEvent::ClipboardStore(text)),
             Event::ClipboardStore(_, text) => log::warn!("an OSC 52 copy of {} bytes was dropped (over the cap)", text.len()),
@@ -163,8 +173,13 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(size: GridSize, config: TermConfig, replies: Arc<dyn ReplySink>) -> Self {
-        let shared =
-            Arc::new(Shared { replies, events: Mutex::new(Vec::new()), colors: Mutex::new(Vec::new()), window: Mutex::new(window_size(size)) });
+        let shared = Arc::new(Shared {
+            replies,
+            events: Mutex::new(Vec::new()),
+            colors: Mutex::new(Vec::new()),
+            window: Mutex::new(window_size(size)),
+            title: Mutex::new(String::new()),
+        });
         let term_config = Config { scrolling_history: config.scrollback, ..Config::default() };
         let term = Term::new(term_config, &size, Listener(shared.clone()));
         let mut t = Self {
@@ -363,6 +378,11 @@ impl Terminal {
             self.term.scroll_display(Scroll::Bottom);
             self.touch();
         }
+    }
+
+    /// The window title as the program last set it (empty when unset or reset).
+    pub fn title(&self) -> String {
+        self.shared.title.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     pub fn take_events(&mut self) -> Vec<TermEvent> {

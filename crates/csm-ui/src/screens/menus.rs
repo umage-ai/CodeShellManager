@@ -606,7 +606,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         return;
     };
     let model = app.model.clone();
-    let demo = app.dispatch.registry().get("demo_set_status").is_some();
+    let demo = app.dispatch.has_tool("demo_set_status");
     if let Menu::Pane { session, .. } | Menu::Row { session, .. } = &menu {
         ask_worktrees(ctx, app, &menu, session);
     }

@@ -24,6 +24,7 @@ use csm_term::input::{self, AppAuthored, Untrusted};
 use csm_term::{GridSize, ReplySink, TermConfig, TermEvent, Terminal};
 
 use crate::engine::{Ctx, Engine};
+use crate::output_tap::OutputTap;
 
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)).unwrap_or(0)
@@ -181,6 +182,8 @@ pub(crate) struct SessionIo {
     engine: Engine,
     /// Where this session's output is indexed for search, when the run has an index.
     index: Option<csm_index::Index>,
+    /// The session's output ring for subscribers and the byte-rate counters.
+    pub output: Arc<OutputTap>,
 }
 
 impl SessionIo {
@@ -204,6 +207,7 @@ impl SessionIo {
             interacted: AtomicBool::new(false),
             engine,
             index,
+            output: Arc::new(OutputTap::new()),
         })
     }
 
@@ -265,6 +269,8 @@ impl SessionIo {
                 // Non-blocking: queues the raw bytes for the index thread (drops and counts on overflow).
                 ix.feed(&io.id, bytes);
             }
+            // Non-blocking too: the ring drops its oldest bytes, and no subscriber is waited for.
+            io.output.feed(bytes);
             let events = {
                 let mut t = io.lock_terminal();
                 t.advance(bytes);

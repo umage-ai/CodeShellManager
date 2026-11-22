@@ -4,11 +4,13 @@
 //!   spacing / size / type scale. Screens never write a colour or a size as a number.
 //! - [`terminal`]: the terminal widget (renderer, input, sources), moved from the Phase 0 spike.
 //! - [`model`]: the plain-data snapshot the screens draw ([`model::UiModel`]).
-//! - [`backend`]: the seam to whatever owns the state ([`backend::Backend`], [`backend::Dispatcher`]);
-//!   every action is `engine.submit(Caller::Ui, "<tool_id>", params)`.
+//! - [`backend`]: the seam to whatever owns the state ([`backend::Backend`], [`backend::ToolPort`]);
+//!   every action is a tool call on the port (for the engine, `engine.submit(Caller::Ui, ...)`).
 //! - [`engine_backend`]: the real backend over `csm-engine` ([`EngineBackend`]).
 //! - [`demo`]: a backend with the mock-up's data (`codeshell --demo`, screenshots, UI tests).
 //! - [`pane_tools`]: the `pane_*` tools (the Free layout's shape is the UI's).
+//! - [`view_overlay`]: the per-client copy of the view state, and the UI-only calls applied to it
+//!   (not wired into the app yet).
 //! - [`app`] and [`screens`]: the window.
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -31,11 +33,12 @@ pub mod start_window;
 pub mod terminal;
 pub mod theme;
 pub mod usage_model;
+pub mod view_overlay;
 pub mod widgets;
 pub mod zoom;
 
 pub use app::{Action, CsmApp};
-pub use backend::{Backend, Call, Dispatcher, Notice};
+pub use backend::{Backend, Call, EnginePort, Notice, ToolInfo, ToolPort};
 
 pub use engine_backend::{EngineBackend, EngineOptions};
 
@@ -113,6 +116,11 @@ const DEMO_WT_SETTINGS: &str = r##"{
 /// factory that refuses, so nothing the demo submits ever starts a process. The demo's sessions
 /// live in [`demo::DemoBackend`], not in this engine.
 pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
+    demo_engine_with(csm_core::models::AppState::default())
+}
+
+/// [`demo_engine`] over a given app state (the view overlay's tests need groups and sessions).
+fn demo_engine_with(app: csm_core::models::AppState) -> Result<csm_engine::Engine, csm_engine::ToolError> {
     let pty: csm_engine::PtyFactory = std::sync::Arc::new(|_| Err(std::io::Error::other("the demo starts no processes")));
     let options = csm_engine::StateOptions {
         pty,
@@ -121,7 +129,7 @@ pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
         terminal_profiles: csm_engine::TerminalProfiles::Texts(vec![("Stable".into(), DEMO_WT_SETTINGS.into())]),
         ..csm_engine::StateOptions::default()
     };
-    let state = csm_engine::State::new(csm_core::models::AppState::default(), options);
+    let state = csm_engine::State::new(app, options);
     let mut tools = demo::tools::stand_ins(demo::tools::StandIn::Echo);
     tools.extend(demo::tools::demo_only());
     tools.extend(pane_tools::tools());

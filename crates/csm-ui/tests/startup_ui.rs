@@ -49,7 +49,7 @@ fn start_at_sign_in_reads_the_os_entry_and_the_switch_calls_the_tool() {
 fn a_change_by_another_caller_is_followed() {
     let mut h = h();
     open_settings(&mut h);
-    let engine = h.state().dispatch.engine().clone();
+    let engine = h.state().dispatch.engine().expect("an engine port");
     let cli = engine.call(csm_engine::Caller::Cli, "app_autostart_set", json!({"enabled": true})).unwrap();
     assert_eq!(cli.data["enabled"], true);
     settle(&mut h);
@@ -70,7 +70,7 @@ fn start_minimized_and_the_tray_choice_are_settings() {
     h.get_by_label_contains("Start in the tray").click_accesskit();
     settle(&mut h);
     assert_eq!(calls(&h, "settings_set").last().unwrap(), &json!({"key": "StartMinimizedToTray", "value": true}));
-    let saved = h.state().dispatch.engine().call(csm_engine::Caller::Ui, "settings_get", json!({"key": "StartMinimizedToTray"})).unwrap();
+    let saved = h.state().dispatch.engine().expect("an engine port").call(csm_engine::Caller::Ui, "settings_get", json!({"key": "StartMinimizedToTray"})).unwrap();
     assert_eq!(saved.data["value"], true);
 }
 

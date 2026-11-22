@@ -141,7 +141,7 @@ fn rig_with(exit_on_close: bool, shutdown_budget: Duration) -> Rig {
     };
     let backend = EngineBackend::new(engine.clone(), opts);
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
-    let app = CsmApp::new(engine.clone(), Box::new(backend), TerminalRenderer::new(fonts));
+    let app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
     let h = Harness::builder().with_size(vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app);
     Rig { h, engine, ptys, folder }
 }

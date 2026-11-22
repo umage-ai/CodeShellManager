@@ -154,6 +154,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: session_read_output,
         },
         ToolSpec {
+            id: "session_output_stats",
+            title: "Output rate",
+            summary: "A session's output stream: bytes per second (average over the last minute and the busiest second), total bytes, bytes dropped while the output tap was busy, and the output ring's size, offsets, evictions and resyncs. Numbers only; no output text.",
+            toolset: Toolset::Core,
+            effects: Effects::READ_ONLY,
+            input_schema: schema_of::<IdParams>,
+            run: session_output_stats,
+        },
+        ToolSpec {
             id: "session_wait",
             title: "Wait for session",
             summary: "Wait until a session is idle, done, needs you, has exited, or changes status at all (until), up to timeout_s (default 60, max 600).",
@@ -934,6 +943,33 @@ fn session_read_output(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         return Err(ToolError::InvalidParams(format!("at most {} lines", crate::screen::MAX_OUTPUT_LINES)));
     }
     read_on_worker(ctx, &p.session_id, move |t| crate::screen::tail(t, n))
+}
+
+/// The output rate of a session. A sleeping session has no output stream, so it reports `live:
+/// false` and zeros rather than an error.
+fn session_output_stats(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: IdParams = parse_params(params)?;
+    find(ctx.state, &p.session_id)?;
+    let Some(io) = ctx.state.rt.sessions.get(&p.session_id).map(|rt| rt.io.clone()) else {
+        return Ok(ToolOutput::new("asleep: no output stream", json!({"session_id": p.session_id, "live": false})));
+    };
+    let s = io.output.stats();
+    Ok(ToolOutput::new(
+        format!("{} bytes/s over the last minute, busiest second {} bytes/s", s.bytes_per_sec_last_minute, s.peak_bytes_per_sec),
+        json!({
+            "session_id": p.session_id,
+            "live": true,
+            "bytes_per_sec_last_minute": s.bytes_per_sec_last_minute,
+            "peak_bytes_per_sec": s.peak_bytes_per_sec,
+            "total_bytes": s.total_bytes,
+            "ring_bytes": s.ring_bytes,
+            "oldest_offset": s.oldest_offset,
+            "end_offset": s.end_offset,
+            "evicted_bytes": s.evicted_bytes,
+            "dropped_bytes": s.dropped_bytes,
+            "resyncs": s.resyncs,
+        }),
+    ))
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

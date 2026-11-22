@@ -28,7 +28,7 @@ use csm_term::alacritty_terminal::term::TermMode;
 use csm_term::input::AppAuthored;
 use csm_term::{GridSize, Terminal};
 
-use crate::backend::{Backend, Call, Notice};
+use crate::backend::{Backend, Call, Notice, ToolPort};
 use crate::model::*;
 use crate::terminal::{SourceState, TerminalSource, lock};
 use crate::theme::ThemeKind;
@@ -217,7 +217,7 @@ impl Backend for EngineBackend {
 
     /// The engine already applied the effect. Errors are shown; so are the result sentences of
     /// calls that start, stop or import something (UI-state calls stay quiet).
-    fn on_reply(&mut self, call: &Call, reply: &Reply) -> Vec<Notice> {
+    fn on_reply(&mut self, call: &Call, reply: &Reply, port: &dyn ToolPort) -> Vec<Notice> {
         if let Some(notices) = self.git.on_reply(call, reply) {
             self.refresh(true);
             return notices;
@@ -258,7 +258,7 @@ impl Backend for EngineBackend {
                     self.refresh(true);
                 }
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
-                let effects = self.engine.registry().get(&call.id).map(|s| s.effects);
+                let effects = port.effects(&call.id);
                 // A broadcast says how many sessions got the text and how many were skipped.
                 let said = ["state_import_wpf", "session_send_text_many"].contains(&call.id.as_str());
                 let say = said || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));

@@ -171,13 +171,13 @@ fn palette_lists_every_registered_tool() {
     let listed: Vec<&str> = rows
         .iter()
         .filter_map(|r| match r {
-            csm_ui::screens::palette::PalRow::Tool { id, .. } => Some(*id),
+            csm_ui::screens::palette::PalRow::Tool { id, .. } => Some(id.as_str()),
             _ => None,
         })
         .collect();
-    for spec in app.dispatch.registry().all() {
+    for spec in app.dispatch.tools().iter() {
         if spec.id != "consent_answer" {
-            assert!(listed.contains(&spec.id), "{} missing from the palette", spec.id);
+            assert!(listed.contains(&spec.id.as_str()), "{} missing from the palette", spec.id);
         }
     }
     // Typing filters by title, fuzzily, and shows sessions first.
@@ -234,7 +234,7 @@ fn buttons_submit_their_tool() {
 fn consent_request_shows_a_card_and_the_answer_is_a_tool_call() {
     let mut h = h();
     // An MCP client asks to type into a session: the engine parks it and asks the person.
-    let engine = h.state().dispatch.engine().clone();
+    let engine = h.state().dispatch.engine().expect("an engine port");
     let caller = csm_engine::Caller::External { client: "claude-code".into(), session_id: Some("rs".into()) };
     let reply = engine.submit(caller, "session_send_text", serde_json::json!({"session_id": "web", "text": "hi"}));
     for _ in 0..50 {
@@ -761,7 +761,7 @@ fn settings_round_trip_through_the_engine() {
     settle(&mut h);
     assert!(h.state().ui.settings.open);
     assert!(has(&h, "Restore sessions on start"));
-    let engine = h.state().dispatch.engine().clone();
+    let engine = h.state().dispatch.engine().expect("an engine port");
     let get = |k: &str| engine.call(csm_engine::Caller::Ui, "settings_get", serde_json::json!({"key": k})).unwrap().data["value"].clone();
     assert_eq!(get("AutoRestoreSessions"), true);
     h.get_by_label("Restore sessions on start").click();
@@ -861,7 +861,7 @@ fn notification_toggles_decide_what_reaches_the_os() {
     use csm_ui::model::Status;
     let mut h = h();
     let ctx = h.ctx.clone();
-    let engine = h.state().dispatch.engine().clone();
+    let engine = h.state().dispatch.engine().expect("an engine port");
     let get = |k: &str| engine.call(csm_engine::Caller::Ui, "settings_get", serde_json::json!({"key": k})).unwrap().data["value"].clone();
     // Quiet sessions that are not the one in front.
     let quiet: Vec<String> = {

@@ -64,7 +64,7 @@ fn the_profile_row_shows_when_import_is_on_and_stamps_the_profile_on_a_new_sessi
     settle(&mut h);
     h.get_by_label("Offer Windows Terminal profiles").click();
     settle(&mut h);
-    let engine = h.state().dispatch.engine().clone();
+    let engine = h.state().dispatch.engine().expect("an engine port");
     let on = engine.call(csm_engine::Caller::Ui, "settings_get", json!({"key": "ImportWindowsTerminalProfiles"})).unwrap();
     assert_eq!(on.data["value"], true);
     h.state_mut().run(&ctx, Action::CloseSettings);
@@ -165,7 +165,7 @@ fn the_palette_sends_session_look_set_to_the_edit_panel() {
     settle(&mut h);
     let ctx = h.ctx.clone();
     let active = h.state().model.active.clone().expect("an active session");
-    h.state_mut().run(&ctx, Action::PaletteTool("session_look_set"));
+    h.state_mut().run(&ctx, Action::PaletteTool("session_look_set".into()));
     settle(&mut h);
     assert_eq!(h.state().ui.quick.edit.as_deref(), Some(active.as_str()), "the Profile row lives in Edit session");
     assert!(calls(&h, "session_look_set").is_empty(), "no call without a look");

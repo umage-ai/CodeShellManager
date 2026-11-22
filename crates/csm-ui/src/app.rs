@@ -5,11 +5,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use csm_engine::Engine;
 use egui::{Key, Modifiers, Rect, Ui, UiBuilder, ViewportId, pos2};
 use serde_json::{Value, json};
 
-use crate::backend::{Backend, Call, Dispatcher, Notice};
+use crate::backend::{Backend, Call, Notice, ToolPort};
 use crate::model::{GroupId, Scope, SessionId, Status, UiModel};
 use crate::screens;
 use crate::terminal::{TerminalRenderer, TerminalView, lock};
@@ -18,8 +17,10 @@ use crate::theme::{self, ThemeKind, size};
 /// Something the person did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// `engine.submit(Caller::Ui, id, params)`.
+    /// A tool call on the port (`engine.submit(Caller::Ui, id, params)` for the engine).
     Tool(&'static str, Value),
+    /// [`Action::Tool`] for an id that is only known at run time (an add-on's, from the tool list).
+    ToolNamed(String, Value),
     /// Ask the person to enable an add-on: a confirm dialog lists what it contributes, then
     /// `addon_enable` with the version shown.
     AddonConsent(String),
@@ -51,7 +52,7 @@ pub enum Action {
     /// The Open with editor (`open_with_set`, `open_with_detect`).
     OpenWithEditor,
     /// Run a registered tool from the palette, filling params from context.
-    PaletteTool(&'static str),
+    PaletteTool(String),
     /// Keyboard focus into a pane's terminal.
     FocusTerminal(SessionId),
     /// The busy-close dialog (closing the app).
@@ -545,7 +546,8 @@ impl PaneHost {
 
 pub struct CsmApp {
     pub backend: Box<dyn Backend>,
-    pub dispatch: Dispatcher,
+    /// Where tool calls go and the tool list comes from (the engine, or a remote port).
+    pub dispatch: Box<dyn ToolPort>,
     pub host: Arc<Mutex<PaneHost>>,
     pub ui: UiState,
     pub model: Arc<UiModel>,
@@ -572,11 +574,11 @@ pub struct CsmApp {
 }
 
 impl CsmApp {
-    pub fn new(engine: Engine, backend: Box<dyn Backend>, renderer: TerminalRenderer) -> Self {
+    pub fn new(port: Box<dyn ToolPort>, backend: Box<dyn Backend>, renderer: TerminalRenderer) -> Self {
         let model = backend.model();
         let mut app = Self {
             backend,
-            dispatch: Dispatcher::new(engine),
+            dispatch: port,
             host: Arc::new(Mutex::new(PaneHost {
                 base_font_size: renderer.fonts.size_pt,
                 renderer,
@@ -890,7 +892,7 @@ impl CsmApp {
             self.on_tool_reply(&call, &reply);
             screens::backup::on_reply(self, ctx, &call, &reply);
             screens::startup::on_reply(self, &call, &reply);
-            let n = self.backend.on_reply(&call, &reply);
+            let n = self.backend.on_reply(&call, &reply, self.dispatch.as_ref());
             self.notices(ctx, n);
         }
         for e in events {
@@ -1006,19 +1008,8 @@ impl CsmApp {
                     ctx.request_repaint();
                 }
             }
-            Action::Tool(id, params) => {
-                // Opening a menu item closes the menu.
-                self.ui.menu = None;
-                self.ui.submenu = None;
-                if id == "session_sort" {
-                    // The sort menu shows the field sorted last, which flips when picked again.
-                    let field = params["by"].as_str().and_then(csm_core::session_sort::SortField::from_id);
-                    let desc = params["descending"].as_bool().or_else(|| field.map(|f| f.default_descending()));
-                    self.ui.sort = field.zip(desc);
-                }
-                self.dispatch.submit(id, params);
-                ctx.request_repaint();
-            }
+            Action::Tool(id, params) => self.tool_action(ctx, id, params),
+            Action::ToolNamed(id, params) => self.tool_action(ctx, &id, params),
             Action::OpenPalette => {
                 self.ui.menu = None;
                 self.ui.overlay = Overlay::Palette;
@@ -1143,7 +1134,7 @@ impl CsmApp {
                 self.run(ctx, Action::RunSearch);
             }
             Action::RunSearch => self.submit_search(ctx),
-            Action::PaletteTool(id) => self.palette_tool(ctx, id),
+            Action::PaletteTool(id) => self.palette_tool(ctx, &id),
             Action::FocusTerminal(id) => self.ui.focus_terminal = Some(id),
             Action::CloseSession(id) => {
                 self.ui.menu = None;
@@ -1364,7 +1355,7 @@ impl CsmApp {
 
     /// A tool picked in the palette: params are filled from context (the active session, the
     /// group the panes show); tools that need typed input open their own panel.
-    fn palette_tool(&mut self, ctx: &egui::Context, id: &'static str) {
+    fn palette_tool(&mut self, ctx: &egui::Context, id: &str) {
         self.ui.overlay = Overlay::None;
         let active = self.model.active.clone();
         let group = match self.scope() {
@@ -1432,9 +1423,8 @@ impl CsmApp {
             }
             _ => {}
         }
-        let reg = self.dispatch.registry();
-        let Some(spec) = reg.get(id).copied() else { return };
-        let schema = reg.schema(&spec);
+        let Some(spec) = self.dispatch.tool(id) else { return };
+        let schema = spec.input_schema.clone();
         let required: Vec<String> =
             schema["required"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
         let mut params = serde_json::Map::new();
@@ -1467,7 +1457,22 @@ impl CsmApp {
         }
         // Programmatic confirmations: the palette asks nothing more for bulk tools; they keep
         // their own guards (busy sessions are refused without `force`).
-        self.run(ctx, Action::Tool(spec.id, Value::Object(params)));
+        self.tool_action(ctx, id, Value::Object(params));
+    }
+
+    /// A tool call from a menu, a button or the palette: it closes the menu, then goes to the port.
+    fn tool_action(&mut self, ctx: &egui::Context, id: &str, params: Value) {
+        // Opening a menu item closes the menu.
+        self.ui.menu = None;
+        self.ui.submenu = None;
+        if id == "session_sort" {
+            // The sort menu shows the field sorted last, which flips when picked again.
+            let field = params["by"].as_str().and_then(csm_core::session_sort::SortField::from_id);
+            let desc = params["descending"].as_bool().or_else(|| field.map(|f| f.default_descending()));
+            self.ui.sort = field.zip(desc);
+        }
+        self.dispatch.submit(id, params);
+        ctx.request_repaint();
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {

@@ -13,6 +13,7 @@ use crate::Findings;
 pub const LAYERS: &[(&str, u8)] = &[
     ("csm-core", 0),
     ("csm-remote-proto", 0), // phone remote wire protocol: pure, no csm-core dependency
+    ("csm-peer-proto", 0),   // peer protocol: owned wire DTOs of the read model and events; pure
     ("csm-pty", 1),
     ("csm-term", 1),
     ("csm-services", 2),

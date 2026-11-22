@@ -33,8 +33,8 @@ fn run(h: &mut Harness<'static, csm_ui::CsmApp>, a: Action) {
 }
 
 fn palette_has_dashboard(h: &Harness<'static, csm_ui::CsmApp>) -> bool {
-    rows(h.state(), ">").iter().any(|r| matches!(r, PalRow::Tool { id: "usage_report", .. }))
-        || rows(h.state(), "usage report").iter().any(|r| matches!(r, PalRow::Tool { id: "usage_report", .. }))
+    rows(h.state(), ">").iter().any(|r| matches!(r, PalRow::Tool { id, .. } if id == "usage_report"))
+        || rows(h.state(), "usage report").iter().any(|r| matches!(r, PalRow::Tool { id, .. } if id == "usage_report"))
 }
 
 fn set_usage(h: &mut Harness<'static, csm_ui::CsmApp>, on: bool) {

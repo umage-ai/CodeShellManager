@@ -453,7 +453,7 @@ fn theme_screens() {
 /// Chooses the dark theme the way another client would (`settings_set`; the demo engine has no
 /// add-ons, so `theme_set` would refuse an add-on id): the app follows the change event.
 fn dark_theme(h: &mut egui_kittest::Harness<'static, csm_ui::CsmApp>, id: &str) {
-    let engine = h.state().dispatch.engine().clone();
+    let engine = h.state().dispatch.engine().expect("an engine port");
     engine.call(csm_engine::Caller::Ui, "settings_set", serde_json::json!({"key": "ThemeDark", "value": id})).unwrap();
     for _ in 0..5 {
         h.step();

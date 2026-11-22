@@ -49,7 +49,7 @@ fn set(h: &mut H, key: &str, value: serde_json::Value) {
 }
 
 fn saved(h: &H, key: &str) -> serde_json::Value {
-    h.state().dispatch.engine().call(csm_engine::Caller::Ui, "settings_get", json!({"key": key})).unwrap().data["value"].clone()
+    h.state().dispatch.engine().expect("an engine port").call(csm_engine::Caller::Ui, "settings_get", json!({"key": key})).unwrap().data["value"].clone()
 }
 
 // ── The window's own buttons ────────────────────────────────────────────────────────────────

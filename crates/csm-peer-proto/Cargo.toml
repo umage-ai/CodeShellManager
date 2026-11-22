@@ -1,0 +1,15 @@
+[package]
+name = "csm-peer-proto"
+description = "Owned wire DTOs of CodeShellManager's peer protocol: the snapshot, session views and events a client UI consumes. Pure: no engine, no egui."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
