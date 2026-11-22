@@ -35,7 +35,7 @@ pub struct PaneOpts {
     /// Overview mini-terminal: a preview, click focuses.
     pub mini: bool,
     pub floating: bool,
-    /// Shown because it is active but not pinned (Side by side).
+    /// Shown because it is active but not pinned while others are (Side by side: "Not pinned").
     pub preview: bool,
     /// In its own OS window.
     pub torn: bool,
@@ -76,6 +76,9 @@ pub fn grid_cells(area: Rect, cols: usize, rows: usize, gap: f32) -> Vec<Rect> {
         .collect()
 }
 
+/// Side by side with nothing pinned shows at most this many live sessions.
+pub const SIDE_UNPINNED_MAX: usize = 4;
+
 /// Which sessions a layout shows, and where.
 pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<(SessionId, Rect, PaneOpts)> {
     let gap = space::PANE_GAP;
@@ -103,7 +106,18 @@ pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<
         LayoutMode::Side => {
             let mut ids: Vec<SessionId> = layout.pinned.iter().filter(|p| is_live(p)).cloned().collect();
             let mut preview = None;
-            if let Some(a) = &active
+            if ids.is_empty() {
+                // Nothing pinned: the live sessions themselves, in sidebar order (so clicking
+                // between them doesn't shuffle the panes), at most SIDE_UNPINNED_MAX, always
+                // including the active one. Pinning switches to "pinned + the active one".
+                ids = live.iter().take(SIDE_UNPINNED_MAX).map(|s| s.id.clone()).collect();
+                if let Some(a) = &active
+                    && !ids.contains(a)
+                {
+                    ids.pop();
+                    ids.push(a.clone());
+                }
+            } else if let Some(a) = &active
                 && !ids.contains(a)
             {
                 preview = Some(a.clone());
@@ -1162,7 +1176,7 @@ pub fn pane(
     let nr = widgets::paint_text(ui, pos2(lx, cy), Align2::LEFT_CENTER, &s.name, semibold(text::BODY), t.fg, name_max);
     lx = nr.max.x + space::SM;
     if o.preview {
-        let pr = p.text(pos2(lx, cy), Align2::LEFT_CENTER, "Preview", theme::regular(text::CAPTION), t.muted);
+        let pr = p.text(pos2(lx, cy), Align2::LEFT_CENTER, "Not pinned", theme::regular(text::CAPTION), t.muted);
         lx = pr.max.x + space::SM;
     }
     if o.mini {
@@ -1527,6 +1541,36 @@ mod tests {
         assert_eq!(side_tiling(3), (2, 2, true));
         assert_eq!(side_tiling(5), (3, 2, true));
         assert_eq!(side_tiling(9), (3, 3, false));
+    }
+
+    #[test]
+    fn side_by_side_without_pins_shows_the_live_sessions() {
+        let mut model = crate::demo::demo_model(10_000_000_000, crate::theme::ThemeKind::default());
+        let scope = Scope::All;
+        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 900.0));
+        let live: Vec<SessionId> = model.scope_sessions(&scope).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
+        assert!(live.len() > SIDE_UNPINNED_MAX, "the demo has more live sessions than the cap");
+        let ids = |m: &UiModel, l: &Layout| plan(m, &scope, l, area).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
+
+        // Nothing pinned: the first live sessions in sidebar order, none marked "Not pinned".
+        let none = Layout { mode: LayoutMode::Side, ..Layout::default() };
+        model.active = Some(live[1].clone());
+        let shown = ids(&model, &none);
+        assert_eq!(shown.iter().map(|(i, _)| i.clone()).collect::<Vec<_>>(), live[..SIDE_UNPINNED_MAX].to_vec());
+        assert!(shown.iter().all(|(_, p)| !p));
+        // Clicking another shown session doesn't reorder the panes.
+        model.active = Some(live[0].clone());
+        assert_eq!(ids(&model, &none), shown);
+        // An active session past the cap takes the last slot.
+        let far = live[SIDE_UNPINNED_MAX].clone();
+        model.active = Some(far.clone());
+        let shown = ids(&model, &none);
+        assert_eq!(shown.len(), SIDE_UNPINNED_MAX);
+        assert_eq!(shown.last().map(|(i, _)| i.clone()), Some(far.clone()));
+
+        // One pinned: the pin plus the active one, marked "Not pinned".
+        let one = Layout { mode: LayoutMode::Side, pinned: vec![live[0].clone()], ..Layout::default() };
+        assert_eq!(ids(&model, &one), vec![(live[0].clone(), false), (far, true)]);
     }
 
     #[test]
