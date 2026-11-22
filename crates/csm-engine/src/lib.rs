@@ -45,7 +45,7 @@ pub use registry::{DynamicTool, Registry};
 pub use runs::{RunOutputHandle, RunPhase, RunView};
 pub use session::TerminalHandle;
 pub use snapshot::{ClosedView, GroupInfo, GroupView, SessionView, Snapshot};
-pub use state::{LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, UrlOpener, real_pty_factory, real_url_opener};
+pub use state::{Autostart, LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, UrlOpener, real_pty_factory, real_url_opener};
 pub use status::{Status, WaitUntil};
 pub use tool::{Caller, Effects, ToolError, ToolFn, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 pub use tools::open::{OpenWithTarget, OpenWithView};

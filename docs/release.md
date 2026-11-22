@@ -141,7 +141,8 @@ the previous one of the same channel, and the final replace an rc.
    upgrade is tested before the final. Alternative: rc on the beta channel, and test the stable
    MSI only through a `channel=stable` dry run.
 3. **Stable removes CodeShellManager 2 Beta.** Implemented, because both use
-   `%APPDATA%\CodeShellManager2` and the apps have no single-instance guard. Recommendation:
+   `%APPDATA%\CodeShellManager2` and a second launch only finds a running app through its IPC record (no lock on the state
+   file). Recommendation:
    keep. After 2.0.0, a new beta tag would again install beside the stable app and share its
    state folder; if betas continue after 2.0, give them their own data folder first.
 4. **Which WPF data is imported.** Implemented: sessions, groups, notes, once, automatically on

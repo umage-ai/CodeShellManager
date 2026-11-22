@@ -11,6 +11,7 @@
 //! * [`git`]: git command lines, `status --porcelain=v2` parsing, wording, worktree rules.
 //! * [`open_with`]: "Open with..." templates, validation and sanitising.
 //! * [`wt_profiles`]: Windows Terminal `settings.json` profiles (parsing is pure; [`wt_profiles::load_profiles`] reads files).
+//! * [`autostart`]: the OS's start-at-sign-in entry (Run key, LaunchAgent, XDG autostart; does I/O).
 //! * [`project_docs`]: the README/CLAUDE/AGENTS docs of a folder (reads files; call from a worker).
 //! * [`claude_usage`]: Claude Code token and cost analytics (parsing and pricing are pure;
 //!   `discover` and `tail` read transcripts and run on workers).
@@ -24,6 +25,7 @@
 
 pub mod addons;
 pub mod argv;
+pub mod autostart;
 pub mod claude_usage;
 pub mod git;
 pub mod highlight;

@@ -81,6 +81,52 @@ pub struct StateOptions {
     /// Where process add-ons keep their secrets. Default (tests): memory. Production: the OS
     /// keychain.
     pub secrets: Arc<dyn csm_services::secrets::SecretStore>,
+    /// Starting the app at sign-in (`app_autostart_get` / `app_autostart_set`). Default (tests, the
+    /// demo): an entry in memory, so nothing real changes. Production: the current user's own.
+    pub autostart: Autostart,
+}
+
+/// Where the start-at-sign-in entry lives and the program it should start.
+#[derive(Clone)]
+pub struct Autostart {
+    /// `None`: this platform has no entry the app can manage.
+    pub backend: Option<Arc<dyn csm_services::autostart::Backend>>,
+    /// The program the entry starts (this exe; an AppImage's own file). `None`: unknown.
+    pub program: Option<PathBuf>,
+}
+
+impl Default for Autostart {
+    fn default() -> Self {
+        Autostart { backend: Some(Arc::new(csm_services::autostart::MemoryBackend::default())), program: std::env::current_exe().ok() }
+    }
+}
+
+impl Autostart {
+    /// The real entry: the current user's Run key, LaunchAgent or XDG autostart file.
+    pub fn system() -> Self {
+        Autostart { backend: csm_services::autostart::system().map(Arc::from), program: csm_services::autostart::current_program() }
+    }
+
+    /// The start-up fix-up (`csm_services::autostart::refresh`): an entry naming another exe is
+    /// pointed at this one. What happened, for the log; `None` when nothing changed.
+    pub fn refresh(&self, only_if_missing: bool) -> Option<String> {
+        let (b, exe) = (self.backend.as_ref()?, self.program.as_ref()?);
+        match csm_services::autostart::refresh(b.as_ref(), exe, only_if_missing) {
+            Ok(Some(old)) => Some(format!("the sign-in entry now starts {} (it started {})", exe.display(), old.display())),
+            Ok(None) => None,
+            Err(e) => Some(format!("could not update the sign-in entry at {}: {e}", b.location())),
+        }
+    }
+
+    /// The uninstaller's clean-up (`csm_services::autostart::remove_if_ours`), for the log.
+    pub fn remove_if_ours(&self) -> Option<String> {
+        let (b, exe) = (self.backend.as_ref()?, self.program.as_ref()?);
+        match csm_services::autostart::remove_if_ours(b.as_ref(), exe) {
+            Ok(true) => Some(format!("removed the sign-in entry at {}", b.location())),
+            Ok(false) => None,
+            Err(e) => Some(format!("could not remove the sign-in entry at {}: {e}", b.location())),
+        }
+    }
 }
 
 /// The Windows Terminal settings the profile tools read.
@@ -116,6 +162,7 @@ impl Default for StateOptions {
             usage_poll: Duration::from_secs(2),
             samples_dir: None,
             secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
+            autostart: Autostart::default(),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
         }
     }
@@ -144,6 +191,7 @@ impl StateOptions {
             url_opener: real_url_opener(),
             samples_dir: bundled_samples_dir(),
             secrets: Arc::new(csm_services::secrets::KeyringStore),
+            autostart: Autostart::system(),
             ..Self::default()
         }
     }

@@ -27,6 +27,7 @@ pub mod notify;
 pub mod pane_tools;
 pub mod placement;
 pub mod screens;
+pub mod start_window;
 pub mod terminal;
 pub mod theme;
 pub mod usage_model;

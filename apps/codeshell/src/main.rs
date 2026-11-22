@@ -9,8 +9,9 @@
 //! `--demo` runs the mock-up's data instead (screenshots, design review): see `csm_ui::demo`.
 //!
 //! ```text
-//! codeshell [--clean] [--config-dir DIR] [--latte] [--font PATH] [--font-size PT] [--inbox]
+//! codeshell [--clean] [--config-dir DIR] [--autostart] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! codeshell --demo [--static] [--restore] [--latte] [--font PATH] [--font-size PT] [--inbox]
+//! codeshell --autostart-refresh | --autostart-remove     (the installer's hooks; exit at once)
 //! ```
 // A GUI program on Windows, so no console window opens with it. Release builds only: a debug
 // build (`cargo run`) keeps its console for the log. The `csm` CLI stays a console program.
@@ -35,6 +36,7 @@ use csm_engine::{Engine, State, StateOptions, persist};
 use csm_ui::app::DialogRequest;
 use csm_ui::demo::{DemoBackend, DemoOptions};
 use csm_ui::placement::Monitors;
+use csm_ui::start_window::{StartUp, StartWindow};
 use csm_ui::terminal::TerminalRenderer;
 use csm_ui::terminal::fonts::{FontSet, default_paths, embedded_mono, load_face};
 use csm_ui::theme::{self, ThemeKind};
@@ -43,18 +45,21 @@ use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
 
-const USAGE: &str = "codeshell [--clean] [--config-dir DIR] [--latte] [--font PATH] [--font-size PT] [--inbox]
+const USAGE: &str = "codeshell [--clean] [--config-dir DIR] [--autostart] [--latte] [--font PATH] [--font-size PT] [--inbox]
 codeshell --demo [--static] [--restore] [...]
 
   --clean           start without sessions and never write the state file (safe testing)
   --config-dir DIR  keep state.json in DIR (default: CSM_CONFIG_DIR, else the user data folder)
+  --autostart       started by the OS at sign-in (the window opens as Start minimized says)
   --demo            the mock-up's sessions instead of yours (screenshots, review)
   --static          (demo) no live shells: every session is a static transcript
   --restore         (demo) play the restore rail on start
   --latte           start in the light theme (Catppuccin Latte)
   --font PATH       terminal font (default: embedded JetBrains Mono)
   --font-size PT    terminal font size (default 12)
-  --inbox           prefer the inbox ConPTY over the bundled one";
+  --inbox           prefer the inbox ConPTY over the bundled one
+  --autostart-refresh  (installer) point the sign-in entry, if any, at this exe; then exit
+  --autostart-remove   (installer) remove the sign-in entry if it starts this exe; then exit";
 
 #[derive(Default)]
 struct Args {
@@ -66,6 +71,18 @@ struct Args {
     latte: bool,
     font: Option<PathBuf>,
     font_size: Option<f32>,
+    /// Started by the OS's sign-in entry (logged; the window follows `StartMinimized` either way).
+    autostart: bool,
+    /// An installer hook: do it and exit.
+    installer: Option<InstallerHook>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallerHook {
+    /// After an install or upgrade: an existing sign-in entry starts this exe from now on.
+    Refresh,
+    /// On uninstall: the sign-in entry goes, if it starts this exe (or nothing that exists).
+    Remove,
 }
 
 fn parse_args() -> Args {
@@ -90,6 +107,9 @@ fn parse_args() -> Args {
             "--font" => a.font = Some(PathBuf::from(value("--font"))),
             "--font-size" => a.font_size = value("--font-size").to_string_lossy().parse().ok(),
             "--inbox" => csm_pty::set_prefer_bundled(false),
+            "--autostart" => a.autostart = true,
+            "--autostart-refresh" => a.installer = Some(InstallerHook::Refresh),
+            "--autostart-remove" => a.installer = Some(InstallerHook::Remove),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -336,6 +356,36 @@ fn main() {
     if std::env::var_os("RUST_LOG").is_none() {
         log::set_max_level(log::LevelFilter::Info);
     }
+    if let Some(hook) = args.installer {
+        // Run by the MSI as the installing user (`installer/CodeShellManager2.wxs`): no window.
+        let a = csm_engine::Autostart::system();
+        let what = match hook {
+            InstallerHook::Refresh => a.refresh(false),
+            InstallerHook::Remove => a.remove_if_ours(),
+        };
+        if let Some(w) = what {
+            log::info!("installer: {w}");
+        }
+        return;
+    }
+    if args.autostart {
+        log::info!("started at sign-in (--autostart)");
+    }
+    // One app per state file: launched again (the Start menu, a second sign-in entry), ask the
+    // running one to show its window and leave. Not for `--clean`, which never shares a state.
+    if !args.demo
+        && !args.clean
+        && let Some(path) = persist::state_path(args.config_dir.as_deref())
+    {
+        match csm_mcp::activate_running(csm_mcp::RemoteOptions::default(), &path) {
+            Ok(true) => {
+                log::info!("CodeShellManager already runs on {}: showed its window", path.display());
+                return;
+            }
+            Ok(false) => {}
+            Err(e) => log::warn!("could not reach a running CodeShellManager ({e}); starting another"),
+        }
+    }
 
     // Everything that touches the disk happens here, before the UI exists.
     let size = args.font_size.unwrap_or(theme::text::TERMINAL);
@@ -348,7 +398,7 @@ fn main() {
     let fallbacks = fallback_paths.iter().filter_map(|(p, i)| load_face(p, *i).ok()).collect();
     let fonts = FontSet::new(primary, fallbacks, size, true);
 
-    let (engine, mode, theme_kind) = if args.demo {
+    let (engine, mode, theme_kind, start) = if args.demo {
         let shell: Vec<OsString> = match find_on_path("pwsh.exe").or_else(|| find_on_path("pwsh")) {
             Some(_) => vec!["pwsh".into(), "-NoLogo".into()],
             None if cfg!(windows) => vec!["cmd".into()],
@@ -356,7 +406,7 @@ fn main() {
         };
         let engine = csm_ui::demo_engine().unwrap_or_else(|e| start_failed(e));
         let theme_kind = if args.latte { ThemeKind::Latte } else { ThemeKind::Mocha };
-        (engine, Mode::Demo { live: args.live, restore: args.restore, shell }, theme_kind)
+        (engine, Mode::Demo { live: args.live, restore: args.restore, shell }, theme_kind, StartWindow::Normal)
     } else {
         // The data folder was renamed for v2 (CodeShellManager-rs -> CodeShellManager2): move it
         // once, before anything reads it. Start-up, before the UI exists, so the disk is fine here.
@@ -366,8 +416,19 @@ fn main() {
             }
         }
         let options = StateOptions { save_path: persist::state_path(args.config_dir.as_deref()), clean: args.clean, ..StateOptions::production() };
+        let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
+        // The sign-in entry follows the app when it moved (an upgrade into a new folder). Not for a
+        // test run (`--clean`, another config folder: the entry starts neither), and a development
+        // build only takes over an entry whose program is gone.
+        if !args.clean
+            && args.config_dir.is_none()
+            && std::env::var_os("CSM_CONFIG_DIR").is_none()
+            && let Some(line) = options_autostart.refresh(cfg!(debug_assertions))
+        {
+            log::info!("autostart: {line}");
+        }
         match (&report.path, args.clean) {
             (_, true) => log::info!("state: --clean, starting empty and saving nothing"),
             (Some(p), _) => log::info!("state: {} ({:?})", p.display(), report.source),
@@ -379,12 +440,15 @@ fn main() {
         let folders = [home(), std::env::current_dir().ok()].into_iter().flatten().map(|p| p.display().to_string()).collect();
         let opts =
             EngineOptions { theme: theme_kind, launch_commands: settings.launch_commands.clone(), folders, wpf_import, shutdown_budget_s: budget };
+        // Minimized or in the tray on every start (`--autostart` alone changes nothing): see
+        // `csm_ui::start_window`. A tray only where the tray module makes one.
+        let start = StartWindow::choose(settings.start_minimized, settings.start_minimized_to_tray, tray::POSSIBLE);
         let first_run_import = persist::first_run_wpf_import(args.config_dir.as_deref(), args.clean, report.source);
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
         if let Some(path) = first_run_import {
             import_wpf_on_first_run(&engine, path);
         }
-        (engine, Mode::Real { opts }, theme_kind)
+        (engine, Mode::Real { opts }, theme_kind, start)
     };
 
     // The IPC bridge (`csm`, `csm mcp`): the real app only; the demo's sessions aren't real.
@@ -409,14 +473,12 @@ fn main() {
         Mode::Demo { .. } => None,
     };
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("CodeShellManager")
-            .with_inner_size(theme::size::WINDOW)
-            .with_min_inner_size(theme::size::WINDOW_MIN)
-            .with_icon(std::sync::Arc::new(csm_ui::app::app_icon(64))),
-        ..Default::default()
-    };
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("CodeShellManager")
+        .with_inner_size(theme::size::WINDOW)
+        .with_min_inner_size(theme::size::WINDOW_MIN)
+        .with_icon(std::sync::Arc::new(csm_ui::app::app_icon(64)));
+    let options = eframe::NativeOptions { viewport: start.viewport(viewport, start.offscreen()), ..Default::default() };
     let shutdown = engine.clone();
     // The window opens where it was: the app's first frame restores the saved bounds against
     // these monitors (`csm_ui::placement`), which the event loop below keeps current.
@@ -466,6 +528,9 @@ fn main() {
             };
             // Close to tray needs a tray icon to come back from.
             app.background.tray_available = tray.is_some();
+            // A start in the tray needs one too: without it, minimized instead.
+            let mode = if tray.is_some() { start } else { start.without_tray() };
+            app.start = StartUp::new(mode, start.offscreen());
             Ok(Box::new(App { app, dialogs, tray, notifier, clicked }))
         }),
         &event_loop,

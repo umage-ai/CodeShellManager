@@ -1333,6 +1333,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "two-face",
+ "winreg",
 ]
 
 [[package]]

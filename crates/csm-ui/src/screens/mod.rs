@@ -21,6 +21,7 @@ pub mod recent;
 pub mod runs;
 pub mod search;
 pub mod settings;
+pub mod startup;
 pub mod sidebar;
 pub mod titlebar;
 pub mod usage;

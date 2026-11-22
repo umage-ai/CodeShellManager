@@ -253,9 +253,10 @@ the repository root. Two small ones are fixed on this branch: marked *fixed*.
 9. **Runtime dir mismatch.** `vendor/craft-ipc/src/discovery/dir.rs:122-128` uses
    `$XDG_RUNTIME_DIR`/`$TMPDIR`. A `csm` started without that variable (sudo, cron, some ssh
    sessions) looks in `/tmp/craft-<euid>` and reports "not running". Probe both locations.
-10. **No single-instance guard.** A second launch on Linux opens a second window writing the same
-    `state.json`. macOS LaunchServices prevents this for a .app. Take the IPC lock at startup,
-    and if another instance holds it, ask that instance to activate.
+10. **Single-instance guard** *(fixed)*. A second launch asks a running app on the same state
+    file (found through its IPC record and `app_info`, `--clean` excluded) to show its window
+    (`app.activate`) and exits (`csm_mcp::activate_running`). Two launches at the very same
+    moment can still both start; nothing locks the state file.
 11. **PowerShell run mode on Unix.** `crates/csm-engine/src/runs/mod.rs:239-243` and `:339` spawn
     `pwsh`. Hide the mode, or fall back to `$SHELL -lc`.
 12. **Wayland: no app id.** `apps/codeshell/src/main.rs:383-388` sets no `with_app_id`, and the

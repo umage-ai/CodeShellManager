@@ -294,3 +294,35 @@ fn the_socket_transport_works_for_short_messages() {
     assert!(raw_ok);
     handle.shutdown().unwrap();
 }
+
+#[test]
+fn a_second_launch_raises_the_running_app_only_when_it_keeps_the_same_state() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = || RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let opts = || RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() };
+    let state = dir.path().join("state.json");
+    assert!(!csm_mcp::activate_running(opts(), &state).unwrap(), "nothing running: start normally");
+
+    let options = csm_engine::StateOptions { save_path: Some(state.clone()), ..csm_engine::StateOptions::default() };
+    let engine = Engine::start(csm_engine::State::new(Default::default(), options), vec![]).unwrap();
+    let raised = Arc::new(AtomicUsize::new(0));
+    let count = raised.clone();
+    let on_activate: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    });
+    let handle =
+        serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), on_activate: Some(on_activate), ..IpcOptions::default() }).unwrap();
+    assert!(!csm_mcp::activate_running(opts(), &dir.path().join("other").join("state.json")).unwrap(), "another state file: its own app");
+    assert_eq!(raised.load(Ordering::SeqCst), 0);
+    assert!(csm_mcp::activate_running(opts(), &state).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while raised.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the running app was not asked to show its window");
+        thread::sleep(Duration::from_millis(5));
+    }
+    handle.shutdown().unwrap();
+    drop(engine);
+}

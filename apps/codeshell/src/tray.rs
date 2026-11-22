@@ -9,6 +9,10 @@
 
 use std::sync::mpsc::Receiver;
 
+/// Whether this platform can have a tray icon at all (whether the OS gives one is known only once
+/// [`TrayHost::start`] has tried).
+pub const POSSIBLE: bool = cfg!(any(windows, target_os = "macos"));
+
 /// What the person picked on the tray.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
