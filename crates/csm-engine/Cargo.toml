@@ -16,6 +16,7 @@ csm-pty = { path = "../csm-pty" }
 csm-term = { path = "../csm-term" }
 csm-services = { path = "../csm-services" }
 csm-index = { path = "../csm-index" }
+csm-peer-proto = { path = "../csm-peer-proto" }
 log = "0.4"
 # POSIX word splitting for Unix shell sessions (launch.rs).
 shlex = "1.3"

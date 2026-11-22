@@ -1224,6 +1224,7 @@ dependencies = [
  "bitflags 2.13.2",
  "csm-core",
  "csm-index",
+ "csm-peer-proto",
  "csm-pty",
  "csm-services",
  "csm-term",
@@ -1262,6 +1263,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "csm-peer-proto"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1372,6 +1381,7 @@ version = "0.0.1"
 dependencies = [
  "csm-core",
  "csm-engine",
+ "csm-peer-proto",
  "csm-pty",
  "csm-services",
  "csm-term",
