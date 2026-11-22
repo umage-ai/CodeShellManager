@@ -74,7 +74,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "addon_run_apply",
             title: "Add a pack's run command",
-            summary: "Add one of an enabled add-on's run templates (`addon-id.name`, from addon_list) to a session's Runs. Refused for MCP clients, like run_edit: run commands decide what F5 runs.",
+            summary: "Add one of an enabled add-on's run templates (`addon-id.name`, from addon_list) to a session's Runs. Refused for MCP clients (run_set adds a run command after asking the person).",
             toolset: Toolset::Addons,
             effects: Effects::MUTATES_STATE,
             input_schema: schema_of::<ApplyRunParams>,

@@ -24,7 +24,8 @@ bitflags! {
         const CHANGES_UI_STATE = 1 << 1;
         /// Changes persisted app state (sessions, groups, settings, notes).
         const MUTATES_STATE = 1 << 2;
-        /// Starts a process (a session, a run command, git, wsl.exe, an editor).
+        /// Starts a process (a session, a run command, git, wsl.exe, an editor), or decides which
+        /// one a later action starts (editing run commands decides what F5 runs).
         const LAUNCHES_PROCESS = 1 << 3;
         /// Writes keystrokes or text into a session. Equivalent to running code as the user.
         const SENDS_INPUT = 1 << 4;

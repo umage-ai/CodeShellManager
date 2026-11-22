@@ -1,7 +1,8 @@
 //! The inspector's Runs tab: the session's run commands with their state, the output of the
 //! selected one (Stop / Copy / Send to Claude), and an inline editor for the list.
 //!
-//! Every change is a tool (`run_start`, `run_stop`, `run_edit`, `session_send_text`); the only
+//! Every change is a tool (`run_start`, `run_stop`, `run_edit` (save, detect, import),
+//! `session_send_text`); the only
 //! local state is which run is selected and the editor's unsaved rows (egui memory, per session).
 //! Output is read through [`crate::Backend::run_output`] only when its generation changes, and
 //! only the tail is shown.
@@ -19,6 +20,8 @@ use crate::widgets::{self, ButtonKind};
 const OUTPUT_TAIL: usize = 64 * 1024;
 /// Most output sent to Claude in one fenced block.
 const SEND_MAX: usize = 32 * 1024;
+/// The URL field's tooltip.
+const URL_HELP: &str = "Opened in the browser once, when a local server (localhost, 127.0.0.1, [::1]) starts listening there while the command runs, or after the command finishes successfully. Remote URLs and SSH sessions: after a successful finish only. http:// or https:// only.";
 
 /// One row of the editor (unsaved).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -186,12 +189,19 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Ac
         .filter(|id| s.runs.iter().any(|r| &r.id == id))
         .or_else(|| s.runs.iter().find(|r| r.state == RunState::Running).map(|r| r.id.clone()))
         .or_else(|| s.default_run().map(|r| r.id.clone()));
-    for r in &s.runs {
-        let on = selected.as_deref() == Some(r.id.as_str());
-        if run_row(ui, &t, s, r, on, actions) {
-            ui.ctx().data_mut(|d| d.insert_temp(sel_key, r.id.clone()));
-        }
-    }
+    // A long list (a big package.json) scrolls in the top half, so the output stays in view.
+    egui::ScrollArea::vertical()
+        .id_salt(("runs-list-scroll", s.id.clone()))
+        .max_height((ui.available_height() / 2.0).max(size::CONTROL_LG * 3.0))
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for r in &s.runs {
+                let on = selected.as_deref() == Some(r.id.as_str());
+                if run_row(ui, &t, s, r, on, actions) {
+                    ui.ctx().data_mut(|d| d.insert_temp(sel_key, r.id.clone()));
+                }
+            }
+        });
     let Some(r) = selected.as_deref().and_then(|id| s.runs.iter().find(|x| x.id == id)) else { return };
     output(ui, app, &t, s, r, actions);
 }
@@ -388,10 +398,11 @@ fn editor(ui: &mut Ui, s: &SessionView, mut rows: Vec<EditRow>, actions: &mut Ve
                             });
                         ui.add(
                             egui::TextEdit::singleline(&mut r.post_run_url)
-                                .hint_text("Open after success: http://localhost:5173")
+                                .hint_text("URL, opened once the server listens (or after success): http://localhost:5173")
                                 .desired_width(f32::INFINITY)
                                 .id(Id::new(("run-url", s.id.clone(), i))),
-                        );
+                        )
+                        .on_hover_text(URL_HELP);
                     });
                 });
             }
@@ -425,6 +436,20 @@ fn editor(ui: &mut Ui, s: &SessionView, mut rows: Vec<EditRow>, actions: &mut Ve
                 .clicked()
         {
             actions.push(Action::Tool("run_edit", json!({"session_id": s.id, "detect": true})));
+            close = true;
+        }
+        if s.kind != crate::model::Kind::Ssh
+            && widgets::button(ui, ButtonKind::Ghost, Some("download"), "Import from project", None)
+                .on_hover_text(
+                    "Add the project's commands that aren't in the list yet (a Node project: its package.json scripts), keeping yours and the default. Saves your edits first.",
+                )
+                .clicked()
+        {
+            // The import merges into the SAVED list, so valid edits are saved first (calls run in order).
+            if problem.is_none() {
+                actions.push(Action::Tool("run_edit", edit_params(&s.id, &rows)));
+            }
+            actions.push(Action::Tool("run_edit", json!({"session_id": s.id, "import": true})));
             close = true;
         }
     });

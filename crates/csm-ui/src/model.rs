@@ -134,7 +134,8 @@ pub struct RunView {
     pub output: String,
     /// `process` (cmd /c, the login shell elsewhere) or `powershell`.
     pub mode: String,
-    /// Opened in the browser after the run exits 0 (absolute http/https only).
+    /// Opened in the browser once a local server listens there, or after the run exits 0
+    /// (absolute http/https only).
     pub post_run_url: Option<String>,
     pub exit_code: Option<i32>,
 }
