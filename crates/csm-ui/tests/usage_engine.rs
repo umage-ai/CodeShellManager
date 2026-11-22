@@ -92,6 +92,8 @@ fn the_usage_tab_and_the_sidebar_chip_follow_a_real_transcript() {
     let mut app = csm_core::models::AppState::default();
     app.settings.claude_launch_stagger_ms = 0;
     app.settings.auto_resume_claude = false;
+    // The built-in Claude usage add-on is off by default.
+    app.settings.addon_approvals.insert(csm_engine::addons::CLAUDE_USAGE_ID.into(), csm_engine::addons::BUILTIN_DIGEST.into());
     let engine = Engine::start(State::new(app, options), csm_ui::app_tools()).unwrap();
     let out = engine.call(Caller::Ui, "session_new", json!({"folder": folder.path().to_string_lossy(), "command": "claude"})).unwrap();
     let id = out.data["id"].as_str().unwrap().to_owned();

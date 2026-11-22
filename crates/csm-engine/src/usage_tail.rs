@@ -1,5 +1,19 @@
-//! Follows the Claude transcripts of live Claude sessions on a background thread (`csm-usage`)
-//! and stores their per-request numbers in the index (`claude_*` tables).
+//! Follows the Claude transcripts of live Claude sessions on a background thread (`csm-usage`).
+//!
+//! What it does depends on the built-in Claude usage add-on ([`Mode`], from the settings):
+//!
+//! - **Off** (the default): a light tail of each live local Claude session's main transcript,
+//!   kept in memory only: its context fill (the last main-thread request), its Remote Control
+//!   line and its subagents (without their cost). Nothing is stored in the index, no subagent
+//!   transcript is read, and the history is not touched.
+//! - **On**: as well, every request of the followed sessions (main thread and subagents) is
+//!   stored in the index (`claude_*` tables) and priced.
+//! - **On, with "Read past Claude history"**: as well, every transcript under the roots is
+//!   imported, a little per pass. Never under `--clean` or an isolated run ([`history_allowed`]).
+//!
+//! Turning the add-on off drops what the reader holds in memory; what the index holds stays
+//! (`usage_forget_history` forgets the imported history). Turning it on carries on from the
+//! stored read positions.
 //!
 //! - The engine tells the thread which sessions to follow ([`Link`]: CSM session, its Claude
 //!   conversation id, its folder) from its tick; nothing here touches the engine's state.
@@ -48,7 +62,41 @@ pub(crate) struct Link {
 
 enum Msg {
     Links(Vec<Link>),
+    Mode(Mode),
+    /// The imported history was deleted from the index: forget the read positions held.
+    Forget,
     Shutdown,
+}
+
+/// What the reader does ([module docs](self)).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Mode {
+    /// The Claude usage add-on is on: requests are stored and priced.
+    pub usage: bool,
+    /// And every past transcript is imported.
+    pub history: bool,
+}
+
+/// The reader's mode for these settings in this run.
+pub(crate) fn mode_of(settings: &csm_core::models::AppSettings, options: &crate::state::StateOptions) -> Mode {
+    let usage = crate::addons::claude_usage_on(settings);
+    Mode { usage, history: usage && settings.claude_usage_history && history_allowed(options) }
+}
+
+/// Whether this run may read past Claude history at all: never under `--clean` or an isolated
+/// run (an index of its own with no state file), which start fresh and count only the sessions
+/// they start. The add-on's stored on/off state is left as it is.
+pub(crate) fn history_allowed(options: &crate::state::StateOptions) -> bool {
+    !options.clean && !(matches!(options.index, crate::index::IndexSetting::Auto) && options.save_path.is_none())
+}
+
+/// A followed session's context, from the light tail (the add-on off).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct LiveContext {
+    /// Its newest main-thread request (unpriced).
+    pub last_main: Option<UsageRequest>,
+    /// The largest main-thread prompt seen (a 1M window tell).
+    pub largest_main_prompt: u64,
 }
 
 /// What the price table is, for the tools to report.
@@ -71,6 +119,9 @@ pub(crate) struct Shared {
     pub remote: HashMap<String, csm_core::remote_control::RemoteControlMark>,
     /// Where reading the history (every transcript, not only followed sessions) is.
     pub history: HistoryStatus,
+    /// Each followed session's context while the add-on is off (empty while it is on: the index
+    /// answers then).
+    pub context: HashMap<String, LiveContext>,
 }
 
 /// The history reader's progress, for `usage_report`.
@@ -95,6 +146,8 @@ pub(crate) struct UsageTail {
     /// The price table the reader uses (set once it has loaded it).
     pub table: Arc<OnceLock<Arc<PriceTable>>>,
     handle: Option<thread::JoinHandle<()>>,
+    /// The mode last sent to the thread.
+    pub mode: Mode,
 }
 
 /// Bytes read from one file per pass; the rest is read on the next one (straight away).
@@ -120,7 +173,7 @@ const HISTORY_CHECKS_PER_PASS: usize = 400;
 
 impl UsageTail {
     /// Starts the thread when the run has an index and transcript roots.
-    pub(crate) fn start(index: Option<&Index>, roots: &ClaudeRoots, save_path: Option<&Path>, poll: Duration) -> Option<UsageTail> {
+    pub(crate) fn start(index: Option<&Index>, roots: &ClaudeRoots, save_path: Option<&Path>, poll: Duration, mode: Mode) -> Option<UsageTail> {
         let index = index?.clone();
         if matches!(roots, ClaudeRoots::None) {
             return None;
@@ -135,10 +188,15 @@ impl UsageTail {
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("csm-usage".into())
-            .spawn(move || run(rx, index, roots, override_path, poll, cells, shared2))
+            .spawn(move || run(rx, index, roots, override_path, poll, cells, shared2, mode))
             .map_err(|e| log::warn!("usage: could not start the transcript reader: {e}"))
             .ok()?;
-        Some(UsageTail { subagents: shared, seen_gen: 0, tx, last: Vec::new(), last_check: None, prices, table, handle: Some(handle) })
+        Some(UsageTail { subagents: shared, seen_gen: 0, tx, last: Vec::new(), last_check: None, prices, table, handle: Some(handle), mode })
+    }
+
+    /// The imported history was deleted from the index: the thread drops its read positions.
+    pub(crate) fn forget(&self) {
+        let _ = self.tx.send(Msg::Forget);
     }
 
     pub(crate) fn shutdown(&mut self) {
@@ -168,6 +226,7 @@ pub(crate) fn links(state: &State) -> Vec<Link> {
 /// From the engine's tick: tells the thread when the followed sessions changed. Cheap.
 pub(crate) fn tick(state: &mut State) {
     take_subagents(state);
+    configure(state);
     let due = match state.rt.usage.as_ref() {
         Some(u) => u.last_check.is_none_or(|t| t.elapsed() >= LINK_CHECK),
         None => false,
@@ -182,6 +241,19 @@ pub(crate) fn tick(state: &mut State) {
             u.last = now.clone();
             let _ = u.tx.send(Msg::Links(now));
         }
+    }
+}
+
+/// Tells the thread when the add-on or its history setting changed (from the tick, and at once
+/// from `addon_enable` / `addon_disable`). Cheap: a map lookup and two booleans.
+pub(crate) fn configure(state: &mut State) {
+    let mode = mode_of(&state.app.settings, &state.options);
+    if let Some(u) = state.rt.usage.as_mut()
+        && u.mode != mode
+    {
+        u.mode = mode;
+        let _ = u.tx.send(Msg::Mode(mode));
+        state.rt.dirty = true;
     }
 }
 
@@ -233,6 +305,8 @@ struct Tailer {
     history_at: Option<Instant>,
     history_every: Duration,
     history_files: usize,
+    /// The light tail's positions (the add-on off), by path.
+    light: HashMap<String, LightFile>,
 }
 
 /// The reader's two cells the engine reads: what the price table is, and the table itself.
@@ -251,7 +325,8 @@ struct MainLook {
     full_at: Option<Instant>,
 }
 
-fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cells: Cells, shared: Arc<Mutex<Shared>>) {
+#[allow(clippy::too_many_arguments)]
+fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Option<PathBuf>, poll: Duration, cells: Cells, shared: Arc<Mutex<Shared>>, mode: Mode) {
     let (table, source) = load_prices(override_path.as_deref());
     let _ = cells.source.set(source);
     let table = Arc::new(table);
@@ -289,22 +364,36 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
         history_at: None,
         history_every: poll.saturating_mul(HISTORY_POLLS),
         history_files: 0,
+        light: HashMap::new(),
     };
     let mut roots_at = Instant::now();
     let mut links: Vec<Link> = Vec::new();
     let mut more = false;
+    let mut mode = mode;
     loop {
         let wait = if more { Duration::ZERO } else { poll };
+        let mut msgs = Vec::new();
         match rx.recv_timeout(wait) {
-            Ok(Msg::Links(l)) => links = l,
             Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
+            Ok(m) => msgs.push(m),
             Err(RecvTimeoutError::Timeout) => {}
         }
         loop {
             match rx.try_recv() {
-                Ok(Msg::Links(l)) => links = l,
                 Ok(Msg::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => return,
+                Ok(m) => msgs.push(m),
                 Err(mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        for m in msgs {
+            match m {
+                Msg::Links(l) => links = l,
+                Msg::Mode(m) => {
+                    t.switch(mode, m);
+                    mode = m;
+                }
+                Msg::Forget => t.forget(),
+                Msg::Shutdown => return,
             }
         }
         if roots_at.elapsed() >= Duration::from_secs(60) {
@@ -312,16 +401,130 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
             roots_at = Instant::now();
         }
         t.mains.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
+        t.light.retain(|_, f| links.iter().any(|l| l.csm_session == f.session));
         more = false;
         for link in &links {
-            more |= t.pass(link);
+            more |= if mode.usage { t.pass(link) } else { t.light_pass(link) };
         }
         t.prune_reports(&links);
-        more |= t.history_pass();
+        if mode.history {
+            more |= t.history_pass();
+        }
     }
 }
 
+/// Where the light tail (the add-on off) is in one main transcript. Memory only.
+#[derive(Debug, Clone, Default)]
+struct LightFile {
+    seen: bool,
+    session: String,
+    size: u64,
+    mtime_ms: i64,
+    offset: u64,
+    head: Vec<u8>,
+    lines: u64,
+    context: LiveContext,
+}
+
 impl Tailer {
+    /// The add-on or its history setting changed: drop what the old mode held.
+    fn switch(&mut self, from: Mode, to: Mode) {
+        if from.usage != to.usage {
+            // Off: the stored positions and the history go (the index keeps its rows); on: the
+            // light tail goes and the index answers again, carrying on from its positions.
+            self.files.clear();
+            self.files.shrink_to_fit();
+            self.light.clear();
+            self.light.shrink_to_fit();
+            let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            sh.context.clear();
+            sh.generation += 1;
+        }
+        if from.history && !to.history || from.usage != to.usage {
+            self.history.clear();
+            self.history.shrink_to_fit();
+            self.history_at = None;
+            self.history_files = 0;
+            let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            sh.history = HistoryStatus::default();
+        }
+    }
+
+    /// The imported history was deleted from the index: every position held may be stale.
+    fn forget(&mut self) {
+        self.files.clear();
+        self.history.clear();
+        self.history_at = None;
+        self.history_files = 0;
+    }
+
+    /// The light tail of a link (the add-on off): its main transcript only, in memory.
+    fn light_pass(&mut self, link: &Link) -> bool {
+        let Some((_, main)) = self.main_of(link) else { return false };
+        let more = self.light_file(link, &main);
+        let found = sub::find(&main);
+        self.report(link, &found, false);
+        more
+    }
+
+    /// Reads what is new in a followed session's main transcript for its context fill and its
+    /// Remote Control line; stores nothing.
+    fn light_file(&mut self, link: &Link, path: &Path) -> bool {
+        let key = path.to_string_lossy().into_owned();
+        let Ok((size, mtime, head)) = tail::stat(path) else { return false };
+        let cur = self.light.get(&key).cloned().unwrap_or_default();
+        let known = cur.seen && cur.session == link.csm_session;
+        if known && cur.size == size && cur.mtime_ms == mtime {
+            return false;
+        }
+        let reset = !known || (cur.offset > 0 && tail::was_rewritten(size, &head, cur.offset, &cur.head));
+        let (offset, lines, mut context) = if reset { (0, 0, LiveContext::default()) } else { (cur.offset, cur.lines, cur.context) };
+        let mut batch = Batch::after(lines);
+        let pass = match tail::read_lines(path, offset, BUDGET, |l| batch.push(l)) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!("usage: could not read {key}: {e}");
+                return false;
+            }
+        };
+        for r in batch.requests.iter().filter(|r| r.agent_id.is_none()) {
+            context.largest_main_prompt = context.largest_main_prompt.max(r.tokens.prompt());
+            context.last_main = Some(UsageRequest {
+                id: r.id.clone(),
+                claude_sid: String::new(),
+                agent_id: None,
+                ts_ms: r.ts_ms,
+                model: r.model.clone(),
+                price_key: None,
+                fast: r.fast,
+                tokens: r.tokens,
+                cost_usd: None,
+            });
+        }
+        if let Some(mark) = batch.remote_control.take() {
+            self.publish_remote(link, mark);
+        }
+        {
+            let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            if sh.context.get(&link.csm_session) != Some(&context) {
+                sh.context.insert(link.csm_session.clone(), context.clone());
+                sh.generation += 1;
+            }
+        }
+        let size_seen = if pass.more { 0 } else { size };
+        self.light.insert(key, LightFile { seen: true, session: link.csm_session.clone(), size: size_seen, mtime_ms: mtime, offset: pass.end, head, lines: batch.lines + pass.oversized, context });
+        pass.more
+    }
+
+    /// A followed session's last Remote Control line, for the engine.
+    fn publish_remote(&self, link: &Link, mark: csm_core::remote_control::RemoteControlMark) {
+        let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        if sh.remote.get(&link.csm_session) != Some(&mark) {
+            sh.remote.insert(link.csm_session.clone(), mark);
+            sh.generation += 1;
+        }
+    }
+
     /// The main transcript of a link: by its id, else by the folder guess (cached a while).
     fn main_of(&mut self, link: &Link) -> Option<(String, PathBuf)> {
         let prev = self.mains.get(&link.csm_session).filter(|m| m.sid == link.claude_sid);
@@ -365,7 +568,7 @@ impl Tailer {
         for f in &found {
             more |= self.file(Some(link), &sid, Some(f.id.clone()), &f.transcript, project.clone()).more;
         }
-        self.report(link, &found);
+        self.report(link, &found, true);
         more
     }
 
@@ -419,14 +622,18 @@ impl Tailer {
 
     /// The link's subagents: what the disk and the index say, published for the engine when it
     /// changed. Reads only small files, each again only when it changed.
-    fn report(&mut self, link: &Link, found: &[sub::Found]) {
+    fn report(&mut self, link: &Link, found: &[sub::Found], usage: bool) {
         self.cache.retain(found);
         let report = if found.is_empty() {
             None
         } else {
             let sid = link.csm_session.clone();
-            let mut usage: HashMap<String, csm_core::subagents::AgentUsage> =
-                self.index.call_blocking(move |db| db.claude_agents_for(&sid)).unwrap_or_default().into_iter().collect();
+            // Their tokens and cost only while the add-on is on (the index has them then).
+            let mut usage: HashMap<String, csm_core::subagents::AgentUsage> = if usage {
+                self.index.call_blocking(move |db| db.claude_agents_for(&sid)).unwrap_or_default().into_iter().collect()
+            } else {
+                HashMap::new()
+            };
             let mut runs: Vec<RunInput> = Vec::new();
             let mut agents: Vec<AgentInput> = Vec::new();
             for f in found {
@@ -464,10 +671,11 @@ impl Tailer {
     /// Drops the reports of sessions no longer followed.
     fn prune_reports(&mut self, links: &[Link]) {
         let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = sh.map.len() + sh.remote.len();
+        let before = sh.map.len() + sh.remote.len() + sh.context.len();
         sh.map.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
         sh.remote.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
-        if sh.map.len() + sh.remote.len() != before {
+        sh.context.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
+        if sh.map.len() + sh.remote.len() + sh.context.len() != before {
             sh.generation += 1;
         }
     }
@@ -548,11 +756,7 @@ impl Tailer {
             && let Some(link) = link
             && let Some(mark) = batch.remote_control.take()
         {
-            let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-            if sh.remote.get(&link.csm_session) != Some(&mark) {
-                sh.remote.insert(link.csm_session.clone(), mark);
-                sh.generation += 1;
-            }
+            self.publish_remote(link, mark);
         }
         let file = ClaudeFile {
             path: key.clone(),
@@ -611,8 +815,10 @@ fn take_subagents(state: &mut State) {
     u.seen_gen = sh.generation;
     let map: HashMap<String, Arc<SubagentsReport>> = sh.map.iter().map(|(k, v)| (k.clone(), Arc::new(v.clone()))).collect();
     let remote = sh.remote.clone();
+    let context = sh.context.clone();
     drop(sh);
     state.rt.subagents = map;
+    state.rt.live_context = context;
     apply_remote_control(state, &remote);
     state.rt.dirty = true;
 }

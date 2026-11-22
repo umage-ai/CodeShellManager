@@ -227,6 +227,9 @@ pub(crate) struct Runtime {
     /// Each followed Claude session's subagents, as the reader last published them (shared, so
     /// the snapshot clones only a pointer).
     pub subagents: std::collections::HashMap<String, std::sync::Arc<csm_core::subagents::SubagentsReport>>,
+    /// Each followed Claude session's context fill from the light tail, while the Claude usage
+    /// add-on is off (`usage_context` answers from it then).
+    pub(crate) live_context: HashMap<String, crate::usage_tail::LiveContext>,
     /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,
@@ -274,7 +277,8 @@ impl State {
         app.ui.group_focus.retain(|g, s| groups.iter().any(|x| &x.id == g) && sessions.iter().any(|x| &x.id == s && &x.group_id == g));
         let focused = app.ui.focused_session.clone().filter(|f| app.sessions.iter().any(|s| &s.id == f));
         let mut rt = Runtime { focused, dirty: true, index: crate::index::open(&options), ..Runtime::default() };
-        rt.usage = crate::usage_tail::UsageTail::start(rt.index.as_ref(), &options.claude_roots, options.save_path.as_deref(), options.usage_poll);
+        let mode = crate::usage_tail::mode_of(&app.settings, &options);
+        rt.usage = crate::usage_tail::UsageTail::start(rt.index.as_ref(), &options.claude_roots, options.save_path.as_deref(), options.usage_poll, mode);
         if options.saves()
             && let Some(path) = &options.save_path
         {

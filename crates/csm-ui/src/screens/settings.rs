@@ -134,7 +134,7 @@ fn text_setting(ui: &mut Ui, app: &mut CsmApp, key: &str, label: &str, hint: &st
     }
 }
 
-fn bool_setting(ui: &mut Ui, app: &CsmApp, key: &str, label: &str, hint: &str, actions: &mut Vec<Action>) {
+pub(crate) fn bool_setting(ui: &mut Ui, app: &CsmApp, key: &str, label: &str, hint: &str, actions: &mut Vec<Action>) {
     let on = app.ui.settings.bool(key).unwrap_or(false);
     if widgets::toggle(ui, on, label, Some(hint)).clicked() {
         actions.push(set(key, Value::Bool(!on)));

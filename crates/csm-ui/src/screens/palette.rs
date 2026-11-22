@@ -133,6 +133,9 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
         }
     }
     let reg = app.dispatch.registry();
+    // The Claude usage tools (the dashboard among them) are hidden while the add-on is off.
+    let usage_on = app.model.claude_usage_on();
+    let hidden = |id: &str| !usage_on && USAGE_ADDON_TOOLS.contains(&id);
     let addon_cmds: Vec<(&csm_engine::addons::CommandSummary, &'static str)> = app
         .model
         .addons
@@ -143,13 +146,13 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
         .collect();
     if q.is_empty() {
         for id in SUGGESTED {
-            if let Some(s) = reg.get(id) {
+            if let Some(s) = reg.get(id).filter(|s| !hidden(s.id)) {
                 out.push(PalRow::Tool { id: s.id, title: s.title, idx: Vec::new(), hint: shortcut_for(s.id) });
             }
         }
         if commands_only {
             for s in reg.all() {
-                if !SUGGESTED.contains(&s.id) && s.id != "consent_answer" {
+                if !SUGGESTED.contains(&s.id) && s.id != "consent_answer" && !hidden(s.id) {
                     out.push(PalRow::Tool { id: s.id, title: s.title, idx: Vec::new(), hint: shortcut_for(s.id) });
                 }
             }
@@ -158,7 +161,7 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
         let mut tools: Vec<(f32, PalRow)> = reg
             .all()
             .iter()
-            .filter(|s| s.id != "consent_answer")
+            .filter(|s| s.id != "consent_answer" && !hidden(s.id))
             .filter_map(|s| fuzzy(q, s.title).map(|(sc, idx)| (sc, PalRow::Tool { id: s.id, title: s.title, idx, hint: shortcut_for(s.id) })))
             .collect();
         for (id, title) in LAYOUT_ROWS {
@@ -297,6 +300,9 @@ pub fn typed_path(query: &str) -> Option<&str> {
 fn typed_path_wins(q: &crate::app::QuickOpenState) -> bool {
     q.edit.is_none() && !q.navigated && typed_path(&q.query).is_some()
 }
+
+/// The tools of the built-in Claude usage add-on that the palette leaves out while it is off.
+pub const USAGE_ADDON_TOOLS: [&str; 3] = ["usage_report", "usage_session", "usage_summary"];
 
 fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     scrim(ctx, "palette-scrim", actions);

@@ -142,8 +142,10 @@ pub struct ClosedView {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
     pub version: u64,
-    /// Add-ons and their state (Settings > Add-ons, the palette, the slash menu).
+    /// Add-on folders and their state (Settings > Add-ons, the palette, the slash menu).
     pub addons: Vec<crate::addons::AddonSummary>,
+    /// The built-in add-ons (Claude usage) and their state; listed first in Settings > Add-ons.
+    pub builtin_addons: Vec<crate::addons::AddonSummary>,
     /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).
     pub remotes: Vec<crate::plugins::RemoteView>,
     /// The slash menu's list: the person's presets, then enabled add-ons' presets.
@@ -391,6 +393,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
     }
     Snapshot {
         addons: crate::addons::summaries(&state.rt.addons),
+        builtin_addons: crate::addons::builtin_summaries(&state.app.settings),
         remotes: crate::plugins::remote_views(&state.rt.addons),
         slash_presets: crate::addons::slash_presets(&state.rt.addons, &state.app.settings.claude_commands),
         version,

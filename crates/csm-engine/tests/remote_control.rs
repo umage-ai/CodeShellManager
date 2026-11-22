@@ -64,10 +64,16 @@ fn marker(ts: i64, id: &str) -> String {
     json!({"type": "assistant", "timestamp": iso(ts), "message": {"id": id, "model": "claude-opus-5-5", "usage": {"input_tokens": 1}}}).to_string() + "\n"
 }
 
-fn read_through(h: &H, id: &str, requests: u64) {
+/// Waits until the reader has read the marker: its context fill (`usage_context` answers it with
+/// the Claude usage add-on off, as here: Remote Control does not need the add-on).
+fn read_through(h: &H, id: &str, fill: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while h.ok("usage_session", json!({"session_id": id})).data["total"]["requests"] != requests {
-        assert!(std::time::Instant::now() < deadline, "the reader did not get to request {requests}");
+    let filled = || {
+        let out = h.ok("usage_context", json!({}));
+        out.data["sessions"].as_array().unwrap().iter().any(|s| s["session_id"] == json!(id) && s["context"]["fill_tokens"] == fill)
+    };
+    while !filled() {
+        assert!(std::time::Instant::now() < deadline, "the reader did not get to a fill of {fill}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }

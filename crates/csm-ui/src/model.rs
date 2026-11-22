@@ -849,6 +849,13 @@ pub struct ClosedSessionView {
 }
 
 impl UiModel {
+    /// Whether the built-in Claude usage add-on is on (Settings › Add-ons). While it is off the
+    /// Usage tab, the dashboard, its palette entry and the Claude part of Settings › Usage are
+    /// hidden; the sidebar's context fill stays.
+    pub fn claude_usage_on(&self) -> bool {
+        self.addons.iter().any(|a| a.id == csm_engine::addons::CLAUDE_USAGE_ID && a.state == csm_engine::addons::AddonState::Loaded)
+    }
+
     pub fn session(&self, id: &str) -> Option<&SessionView> {
         self.sessions.iter().find(|s| s.id == id)
     }

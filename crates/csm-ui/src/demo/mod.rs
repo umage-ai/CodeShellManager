@@ -279,7 +279,8 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         "## Odulodo.Web\n- Brand facet: use brand.keyword, the\n  analyzer lowercases brand\n- Ask Allan before touching the CMS\n  listing sort\n- Staging runs on build-01, /srv/odulodo\n\nTODO\n- [ ] snapshot tests for FacetPanel\n- [x] category facet size 20 -> 30".to_string(),
     );
     UiModel {
-        addons: Vec::new(),
+        // The built-in Claude usage add-on is on, so the screenshots show usage.
+        addons: vec![demo_claude_usage(true)],
         remotes: Vec::new(),
         slash_presets: Vec::new(),
         sessions: s,
@@ -712,6 +713,13 @@ impl DemoBackend {
                     }
                     None => self.model.usage.report_error = Some("Not a date: use YYYY-MM-DD.".into()),
                 }
+                vec![]
+            }
+            // The built-in Claude usage add-on, turned on and off as the engine does.
+            "addon_enable" | "addon_disable" if call.params["id"] == csm_engine::addons::CLAUDE_USAGE_ID => {
+                let on = call.id == "addon_enable";
+                self.model.addons.retain(|a| a.id != csm_engine::addons::CLAUDE_USAGE_ID);
+                self.model.addons.insert(0, demo_claude_usage(on));
                 vec![]
             }
             "session_new" => parse::<SessionNewParams>(call).map(|p| self.new_session(p)).unwrap_or_default(),
@@ -1453,4 +1461,13 @@ impl DemoBackend {
         }
         true
     }
+}
+
+/// The built-in Claude usage add-on as the engine lists it, on or off.
+pub fn demo_claude_usage(on: bool) -> csm_engine::addons::AddonSummary {
+    let mut settings = csm_core::models::AppSettings::default();
+    if on {
+        settings.addon_approvals.insert(csm_engine::addons::CLAUDE_USAGE_ID.into(), csm_engine::addons::BUILTIN_DIGEST.into());
+    }
+    csm_engine::addons::claude_usage_summary(&settings)
 }

@@ -157,7 +157,7 @@ with a note.
 
 Add-ons are **off until the person enables them**.
 
-1. Settings > Add-ons lists every folder with its state (enabled, disabled, error), its message
+1. Settings > Add-ons lists the built-in add-ons (see [Built-in add-ons](#built-in-add-ons)) and every folder with its state (enabled, disabled, error), its message
    and its skipped entries.
 2. **Enable…** opens a confirm dialog listing what the add-on contributes: profiles, run
    commands, slash presets, palette commands, and for a process add-on the effects it declares.
@@ -183,7 +183,7 @@ beside it without changing what is stored.
 
 | id | effects | what |
 |---|---|---|
-| `addon_list` | read | every add-on, its state, message, contributions and skipped entries; the folder; scan status |
+| `addon_list` | read | every add-on folder, its state, message, contributions and skipped entries; the folder; scan status; the built-in add-ons under `builtin` |
 | `addon_reload` | state | read the folder again; answers when the read is done |
 | `addon_enable` | state, enables extension (consent for MCP) | `id`, `version` and `digest` (both as shown) |
 | `addon_disable` | state | `id`; forgets the approval |
@@ -814,6 +814,49 @@ refuse the tree: the node draws a notice ("This file is too large to show here (
 with status rules, a run template, a slash preset and a palette command. Copy the folder into
 `<config dir>/addons/`, then enable it in Settings > Add-ons. `crates/csm-core/tests/example_pack.rs`
 parses it with no problems.
+
+## Built-in add-ons
+
+Some features are part of the app but opt-in, so they are switched like add-ons. They are listed
+first in Settings > Add-ons, under `builtin` in `addon_list` (and `builtin_addons` in the snapshot)
+with kind `builtin`, have an id with a `builtin:`
+prefix (no add-on folder can have one: `:` is not an id character), and run no program: the
+toggle gates native code.
+
+- **Enable / disable** are the same tools: `addon_enable` with `version` `built-in` and `digest`
+  `builtin` (as `addon_list` shows them; anything else is refused), `addon_disable` with the id.
+  The approval is stored like any other, `AddonApprovals["builtin:..."] = "builtin"`, so it
+  survives restarts and is off until the person turns it on (existing installs included). The
+  consent dialog shows its description. It works under `--clean` and isolated runs too (nothing is
+  saved there), and they never change the stored state.
+- Turning one on or off takes effect at once, without a restart.
+
+### `builtin:claude-usage` (Claude usage)
+
+Claude Code token and API-equivalent cost accounting from Claude's own transcripts (the reader is
+`csm-engine::usage_tail`, the tools `tools/usage.rs`). **Off by default.**
+
+| | off | on |
+|---|---|---|
+| Live local Claude sessions' main transcripts | read in memory only (a light tail) | read, every request stored in the index and priced |
+| Subagent transcripts | not read (the subagents list still comes from Claude's meta files, without cost) | read and priced |
+| Past transcripts (history import) | never | with `ClaudeUsageHistory` on (default), a few files per pass; never under `--clean` or an isolated run |
+| Context fill on the sidebar chips (`usage_context`) | yes, from the light tail, `cost_usd` null | yes, with cost |
+| Remote Control indicator, subagents, `claude_session_id`, status and titles | unchanged (none of them need the add-on) | unchanged |
+| `usage_session`, `usage_summary`, `usage_report` | refused: "Claude usage is off — enable it in Settings › Add-ons" (still listed, so a caller learns why) | answer |
+| Usage tab, dashboard, its palette entry, Settings > Usage's cost per project | hidden (Settings > Usage points to Add-ons) | shown |
+
+- **Read past Claude history** (`ClaudeUsageHistory`, `settings_set`, default on; Settings > Usage
+  and under the add-on in Settings > Add-ons). Off: only the sessions CSM runs are counted (the
+  reader stops the import at once). Turning it off deletes nothing.
+- **Forget imported history** (`usage_forget_history`, effects state + may discard data) deletes
+  the requests, compactions and read positions of transcripts no CSM session ran; a CSM session's
+  own rows stay. Refused while `ClaudeUsageHistory` is on (it would be read again).
+- Turning the add-on off drops the reader's in-memory positions and the history queue; the index
+  keeps its rows. Turning it on carries on from the stored read positions, so what was written
+  meanwhile is read then.
+- `--clean` and isolated runs (an in-memory index) never import history: only sessions started in
+  that run are counted, and the add-on's stored on/off state is left as it is.
 
 ## Samples that ship with the app
 

@@ -30,6 +30,8 @@ pub struct PollState {
     pub session: Option<(String, f64)>,
     /// Settings → Usage asked for the summaries.
     pub summary_asked: bool,
+    /// "Forget imported history" was clicked once and asks to be sure.
+    pub forget_confirm: bool,
 }
 
 pub const API_NOTE: &str = "API-equivalent cost: what these tokens would cost at Anthropic API list prices, not what a subscription bills.";
@@ -98,6 +100,10 @@ pub fn paint_row_chip(ui: &Ui, s: &SessionView, chip: Option<&UsageChip>, row: R
 pub fn chip_tooltip(chip: &UsageChip) -> String {
     let ctx = chip.context.as_ref().map(|c| format!("Context {:.0}% of {} · ", c.ratio * 100.0, format_tokens(c.window_tokens))).unwrap_or_default();
     let unpriced = if chip.unpriced_requests > 0 { format!(" (+{} unpriced requests)", chip.unpriced_requests) } else { String::new() };
+    if chip.cost_usd <= 0.0 && chip.unpriced_requests == 0 {
+        // No cost (the Claude usage add-on is off, or nothing priced yet): the fill alone.
+        return ctx.trim_end_matches(" · ").to_owned();
+    }
     format!("{ctx}{} API-equivalent{unpriced}", format_usd(chip.cost_usd))
 }
 
@@ -253,6 +259,19 @@ pub fn tab(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
 /// Settings → Usage: API-equivalent cost per project, today and this week (`usage_summary`).
 pub fn settings(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
+    ui.add_space(space::LG);
+    super::settings::section(ui, "Claude usage");
+    if !app.model.claude_usage_on() {
+        super::settings::caption(
+            ui,
+            "Claude usage is off. It is a built-in add-on: enable it in Settings › Add-ons for Claude's tokens and API-equivalent cost (the Usage tab, the dashboard, cost per project). The sidebar's context fill works without it.",
+        );
+        if widgets::button(ui, ButtonKind::Secondary, Some("sliders"), "Go to Add-ons", None).clicked() {
+            app.ui.settings.section = crate::app::SettingsSection::Addons;
+        }
+        return;
+    }
+    history_controls(ui, app, actions);
     let usage = app.model.usage.clone();
     if usage.live && !app.ui.usage.summary_asked {
         app.ui.usage.summary_asked = true;
@@ -282,6 +301,40 @@ pub fn settings(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if widgets::button(ui, ButtonKind::Secondary, Some("gauge"), "Open the usage dashboard", None).clicked() {
         actions.push(Action::OpenUsage(None));
     }
+}
+
+/// "Read past Claude history" (`ClaudeUsageHistory`) and, while it is off, forgetting what it
+/// imported (`usage_forget_history`, asked twice: it deletes data).
+pub fn history_controls(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    super::settings::bool_setting(
+        ui,
+        app,
+        "ClaudeUsageHistory",
+        "Read past Claude history",
+        "Also import every past Claude Code transcript on this machine, so the dashboard has your history. Off: only the sessions CodeShellManager runs are counted. Never read in a --clean run.",
+        actions,
+    );
+    if app.ui.settings.bool("ClaudeUsageHistory").unwrap_or(true) {
+        app.ui.usage.forget_confirm = false;
+        return;
+    }
+    if !app.ui.usage.forget_confirm {
+        if widgets::button(ui, ButtonKind::Secondary, Some("trash"), "Forget imported history…", None).clicked() {
+            app.ui.usage.forget_confirm = true;
+        }
+        return;
+    }
+    super::settings::caption(ui, "Delete the usage imported from past transcripts? What the sessions CodeShellManager ran recorded stays.");
+    ui.horizontal(|ui| {
+        if widgets::button(ui, ButtonKind::Danger, Some("trash"), "Forget imported history", None).clicked() {
+            app.ui.usage.forget_confirm = false;
+            app.ui.usage.summary_asked = false;
+            actions.push(Action::Tool("usage_forget_history", json!({})));
+        }
+        if widgets::button(ui, ButtonKind::Ghost, None, "Cancel", None).clicked() {
+            app.ui.usage.forget_confirm = false;
+        }
+    });
 }
 
 fn summary_table(ui: &mut Ui, today: Option<&SummaryView>, week: &SummaryView) {

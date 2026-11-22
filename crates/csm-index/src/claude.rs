@@ -453,6 +453,17 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Deletes what was imported from history: the requests, compactions and read positions of
+    /// transcripts no CSM session ran. A CSM session's own rows stay. Returns the requests deleted.
+    pub fn claude_forget_history(&mut self) -> Result<usize, IndexError> {
+        let tx = self.conn.transaction()?;
+        let n = tx.execute("DELETE FROM claude_requests WHERE csm_session IS NULL", [])?;
+        tx.execute("DELETE FROM claude_compactions WHERE csm_session IS NULL", [])?;
+        tx.execute("DELETE FROM claude_files WHERE csm_session IS NULL", [])?;
+        tx.commit()?;
+        Ok(n)
+    }
+
     pub fn claude_meta(&self, key: &str) -> Result<Option<String>, IndexError> {
         Ok(self.conn.query_row("SELECT value FROM claude_meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }

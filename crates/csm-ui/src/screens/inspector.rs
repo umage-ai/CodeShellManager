@@ -24,7 +24,13 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "No session selected.", theme::regular(text::BODY), t.muted);
         return;
     };
-    let tab = model.inspector.unwrap_or(InspectorTab::Notes);
+    let usage_on = model.claude_usage_on();
+    // The Usage tab belongs to the built-in Claude usage add-on: gone while it is off.
+    let tab = match model.inspector.unwrap_or(InspectorTab::Notes) {
+        InspectorTab::Usage if !usage_on => InspectorTab::Notes,
+        t => t,
+    };
+    let shown: Vec<InspectorTab> = InspectorTab::ALL.into_iter().filter(|t| usage_on || *t != InspectorTab::Usage).collect();
 
     // Header: who, status, close.
     let head = Rect::from_min_size(rect.min + vec2(0.0, space::SM), vec2(rect.width(), size::CONTROL));
@@ -55,9 +61,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let mut x = tabs.min.x + space::SM;
     let full_w = |tb: InspectorTab| icon::MD + space::XS + space::XXS + widgets::text_width(ui, tb.label(), theme::medium(text::BODY)) + space::LG;
     // Too narrow for every label: the other tabs show their icon only (the name is the tooltip).
-    let all: f32 = InspectorTab::ALL.iter().map(|tb| full_w(*tb) + space::XXS).sum();
+    let all: f32 = shown.iter().map(|tb| full_w(*tb) + space::XXS).sum();
     let compact = all > tabs.width() - space::SM * 2.0;
-    for tb in InspectorTab::ALL {
+    for tb in shown {
         let labelled = !compact || tb == tab;
         let w = if labelled { full_w(tb) } else { icon::MD + space::LG };
         let r = Rect::from_min_size(pos2(x, tabs.min.y), vec2(w, tabs.height()));
