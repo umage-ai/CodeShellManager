@@ -46,6 +46,12 @@ fn embed_icon() {
     println!("cargo:rerun-if-changed={ico}");
     let mut res = winresource::WindowsResource::new();
     res.set_icon(ico);
+    // The names Task Manager, the file's Properties and the firewall prompt show (the default
+    // would be the crate name "codeshell"). The version fields come from the workspace version,
+    // which the release workflow stamps.
+    res.set("ProductName", "CodeShellManager");
+    res.set("FileDescription", "CodeShellManager");
+    res.set("CompanyName", "umage.ai");
     if let Err(e) = res.compile() {
         println!("cargo:warning=the exe icon was not embedded ({e}); install the Windows SDK for rc.exe");
     }

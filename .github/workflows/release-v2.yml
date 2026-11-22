@@ -1,29 +1,48 @@
-name: Release (v2 beta)
+name: Release (Windows)
 
-# CodeShellManager 2: build, sign and package the Rust app.
+# CodeShellManager (version 2, the Rust app): build, sign and package the Windows release.
+# Linux and macOS packages are built by their own workflow file; this one is Windows only.
+# docs/release.md is the checklist and explains every identity the installer carries.
 #
-#   - A `v2.*` tag (e.g. v2.0.0-beta.1) on the v2 branch: signed exes, a signed MSI and a
-#     portable zip, published as a GitHub PRE-release. Tags are created by hand, and only when
-#     Allan says so (see CLAUDE.md, "Releases").
-#   - workflow_dispatch: a dry run. Same build and packaging, unsigned, uploaded as a workflow
-#     artifact; no release is created. Use it to check the packaging before tagging.
+# Two install channels (installer/CodeShellManager2.wxs):
 #
-# The WPF app's CI / Release (build.yml on main) also matches `v*.*.*` tags, but a tag runs the
-# workflow files of the commit it points at, and the v2 branch has no build.yml.
+#   - stable: THE CodeShellManager. The MSI carries the WPF app's UpgradeCode, name and folder,
+#     so it major-upgrades an installed WPF CodeShellManager (0.x) in place, and removes a
+#     CodeShellManager 2 Beta install. Release candidates and final releases use it.
+#   - beta:   "CodeShellManager 2 Beta", installed BESIDE the WPF app (its own UpgradeCode,
+#     folder and app id). `-beta.N` tags use it.
 #
-# Betas go to GitHub only: nothing here submits to winget or Chocolatey.
+# Triggers:
+#   - A tag `vMAJOR.MINOR.PATCH[-beta.N|-rc.N]` with MAJOR >= 2 (v2.0.0-beta.4, v2.0.0-rc.1,
+#     v2.0.0): signed exes, a signed MSI and a portable zip, published as a GitHub release: a
+#     PRE-release for -beta/-rc, otherwise a normal release marked "latest" (what the WPF app's
+#     update check reads, and what winget.yml / chocolatey.yml publish). Tags are created by
+#     hand, and only when Allan says so (see CLAUDE.md, "Releases").
+#   - workflow_dispatch: a dry run. Same build and packaging for the chosen channel, unsigned,
+#     uploaded as a workflow artifact; no release is created.
 #
-# A copy of this file sits on main (the WPF line) only because GitHub dispatches a workflow
-# only if it exists on the default branch. Run it with `--ref v2`; the job refuses any other ref.
+# A tag runs the workflow files of the commit it points at, so a v2 tag on a v2 commit never
+# runs the WPF app's build.yml (which main keeps until v2 is merged into it).
 #
-# Signing uses the repo's Azure Trusted Signing secrets (same as the WPF release):
+# Until v2 is merged, a copy of this file sits on main (the WPF line) only because GitHub
+# dispatches a workflow only if it exists on the default branch. Run it with `--ref v2`.
+#
+# Signing uses the repo's Azure Trusted Signing secrets (same names as the WPF release):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
 #   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
+# A stable-channel tag refuses to publish unsigned.
 
 on:
   push:
-    tags: ['v2.*']
+    tags: ['v*.*.*']
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Install channel of the dry-run MSI (stable upgrades an installed WPF CodeShellManager)'
+        required: true
+        default: beta
+        type: choice
+        options: [beta, stable]
 
 permissions:
   contents: write   # create the GitHub Release
@@ -33,12 +52,12 @@ env:
 
 jobs:
   release:
-    # Only the v2 branch or a v2.* tag holds the Rust app (main is the WPF app).
-    if: github.ref == 'refs/heads/v2' || startsWith(github.ref, 'refs/tags/v2.')
+    # A tag (the Versions step refuses anything below 2.0.0), or a dry run from v2 or main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     env:
       HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' }}
-      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,24 +68,45 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # ── Versions ────────────────────────────────────────────────────────────
-      # semver (Cargo, file names): 2.0.0-beta.3
-      # MSI ProductVersion must be numeric: 2.0.0.3 (beta.N -> N, rc.N -> 100+N, final -> 1000).
-      # MSI compares only the first three fields, so MajorUpgrade allows same-version upgrades.
+      # ── Versions and channel ────────────────────────────────────────────────
+      # semver (Cargo, file names, winget, Chocolatey): 2.0.0-beta.3, 2.0.0-rc.1, 2.0.0
+      # MSI ProductVersion must be numeric. Pre-releases: 2.0.0.N (beta.N -> N, rc.N -> 100+N,
+      # dev -> 0). A final release is exactly MAJOR.MINOR.PATCH, as the WPF app's MSIs were, so
+      # Add/Remove Programs shows the version winget and Chocolatey publish. MSI compares only
+      # the first three fields, so MajorUpgrade allows same-version upgrades.
+      # Channel: -beta.N -> beta; -rc.N and final -> stable; a dry run -> the chosen input.
       - name: Versions
         id: ver
         shell: pwsh
+        env:
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
         run: |
           if ($env:IS_TAG -eq 'true') { $semver = '${{ github.ref_name }}'.TrimStart('v') }
           else { $semver = "2.0.0-dev.${{ github.run_number }}" }
           if ($semver -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-(beta|rc|dev)\.(\d+))?$') {
             throw "Tag version '$semver' is not MAJOR.MINOR.PATCH[-beta.N|-rc.N]"
           }
+          if ([int]$Matches[1] -lt 2) { throw "Tag version '$semver' is below 2.0.0: the WPF app's tags are not built here" }
           $base = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
-          $n = switch ($Matches[4]) { 'beta' { [int]$Matches[5] } 'rc' { 100 + [int]$Matches[5] } 'dev' { 0 } default { 1000 } }
-          "semver=$semver"      | Out-File $env:GITHUB_OUTPUT -Append
-          "msi=$base.$n"        | Out-File $env:GITHUB_OUTPUT -Append
-          Write-Host "semver $semver, MSI $base.$n"
+          $kind = $Matches[4]
+          $msi = switch ($kind) { 'beta' { "$base.$([int]$Matches[5])" } 'rc' { "$base.$(100 + [int]$Matches[5])" } 'dev' { "$base.0" } default { $base } }
+          $channel = switch ($kind) { 'beta' { 'beta' } 'dev' { $env:DISPATCH_CHANNEL } default { 'stable' } }
+          if ($channel -notin 'beta', 'stable') { throw "unknown channel '$channel'" }
+          $aumid = if ($channel -eq 'stable') { 'UmageAI.CodeShellManager' } else { 'UmageAI.CodeShellManager.Beta' }
+          $prerelease = if ($kind) { 'true' } else { 'false' }
+          "semver=$semver"         | Out-File $env:GITHUB_OUTPUT -Append
+          "msi=$msi"               | Out-File $env:GITHUB_OUTPUT -Append
+          "channel=$channel"       | Out-File $env:GITHUB_OUTPUT -Append
+          "aumid=$aumid"           | Out-File $env:GITHUB_OUTPUT -Append
+          "prerelease=$prerelease" | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "semver $semver, MSI $msi, channel $channel, pre-release $prerelease"
+
+      # A stable build goes to winget and Chocolatey and replaces the signed WPF app on people's
+      # machines: never unsigned.
+      - name: Refuse an unsigned stable release
+        if: env.IS_TAG == 'true' && steps.ver.outputs.channel == 'stable' && env.HAS_SIGNING != 'true'
+        shell: pwsh
+        run: throw 'A stable-channel tag needs the Azure Trusted Signing secrets; none are set.'
 
       # The exe reports the release's version (About, `csm app-info`).
       - name: Stamp the workspace version
@@ -83,6 +123,21 @@ jobs:
 
       - name: Build
         run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary -p csm-review
+
+      # The third-party licence bundle (about.toml / about.hbs), shipped beside the exes in the
+      # MSI and the zip. It fails on a licence about.toml does not accept.
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - name: Third-party licences
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force publish | Out-Null
+          # The command about.toml documents (the whole workspace: a superset of what ships).
+          cargo about generate about.hbs -o publish/THIRD-PARTY-LICENSES.html
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # ── Stage the files the MSI and the zip ship ─────────────────────────────
       - name: Stage
@@ -120,7 +175,7 @@ jobs:
           }
           # Every staged file must be in the installer (a file left out ships only in the zip).
           $wxs = Get-Content installer/CodeShellManager2.wxs -Raw
-          $staged = @('codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'csm-review.exe', 'conpty.dll', 'OpenConsole.exe', 'codeshell.aumid')
+          $staged = @('codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'csm-review.exe', 'conpty.dll', 'OpenConsole.exe', 'codeshell.aumid', 'THIRD-PARTY-LICENSES.html')
           foreach ($s in $samples) { $staged += "samples\addons\$s\addon.toml" }
           foreach ($f in $staged) {
             if ($wxs -notmatch [regex]::Escape("`$(var.PublishDir)\$f")) { throw "installer/CodeShellManager2.wxs does not install $f" }
@@ -162,10 +217,11 @@ jobs:
         shell: pwsh
         run: |
           # Must match AppUserModelId in the .wxs.
-          Set-Content publish/codeshell.aumid 'UmageAI.CodeShellManager.Beta' -NoNewline
+          Set-Content publish/codeshell.aumid '${{ steps.ver.outputs.aumid }}' -NoNewline
           wix build installer/CodeShellManager2.wxs `
             -d Version=${{ steps.ver.outputs.msi }} `
             -d PublishDir=publish `
+            -d Channel=${{ steps.ver.outputs.channel }} `
             -ext WixToolset.UI.wixext `
             -arch x64 `
             -o "dist/CodeShellManager-${{ steps.ver.outputs.semver }}-Setup.msi"
@@ -187,6 +243,19 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      # Our exes and the MSI must carry a valid signature before anything is published.
+      - name: Verify signatures
+        if: env.IS_TAG == 'true' && env.HAS_SIGNING == 'true'
+        shell: pwsh
+        run: |
+          $files = @('codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'csm-review.exe' | ForEach-Object { "publish/$_" })
+          $files += @(Get-ChildItem dist/*.msi | ForEach-Object FullName)
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f
+            if ($sig.Status -ne 'Valid') { throw "$f is not validly signed ($($sig.Status))" }
+            Write-Host "$f signed by $($sig.SignerCertificate.Subject)"
+          }
+
       # ── Publish ─────────────────────────────────────────────────────────────
       - name: Upload packages (dry run)
         if: env.IS_TAG != 'true'
@@ -195,11 +264,14 @@ jobs:
           name: codeshellmanager-${{ steps.ver.outputs.semver }}
           path: dist/*
 
-      - name: Create GitHub pre-release
+      # A final release is a normal release and becomes "latest": the WPF app's update check
+      # (releases/latest) then offers it, and winget.yml / chocolatey.yml take its MSI.
+      - name: Create GitHub release
         if: env.IS_TAG == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: true
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.ver.outputs.prerelease == 'true' && 'false' || 'true' }}
           name: CodeShellManager ${{ steps.ver.outputs.semver }}
           generate_release_notes: true
           files: |

@@ -502,9 +502,9 @@ fn first_run(ui: &mut Ui, model: &UiModel, area: Rect, actions: &mut Vec<Action>
                 actions.push(Action::OpenQuickOpen { group: None });
             }
             if let Some(path) = &model.wpf_import {
-                let import = widgets::button(ui, ButtonKind::Secondary, Some("history"), "Import from CodeShellManager (WPF)", None)
+                let import = widgets::button(ui, ButtonKind::Secondary, Some("history"), "Import from CodeShellManager 0.x", None)
                     .on_hover_text(format!("Sessions and groups from {path}. They arrive asleep; nothing starts until you wake one."));
-                named(&import, WidgetType::Button, "Import from CodeShellManager (WPF)");
+                named(&import, WidgetType::Button, "Import from CodeShellManager 0.x");
                 if import.clicked() {
                     actions.push(Action::Tool("state_import_wpf", json!({"path": path})));
                 }

@@ -1,29 +1,73 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- CodeShellManager 2 Beta. Installs BESIDE the WPF app (1.x): its own UpgradeCode, folder,
-     Start-menu entry and app id, so a beta never upgrades or removes the 1.x install.
-     Built by .github/workflows/release-v2.yml with -d Version=<numeric> -d PublishDir=<dir>. -->
+<!-- CodeShellManager (version 2, the Rust app). Built by .github/workflows/release-v2.yml with
+       -d Version=<numeric> -d PublishDir=<dir> -d Channel=stable|beta
+     See docs/release.md for every identity below and why it has the value it has.
+
+     Channel=stable (rc and final releases): THE CodeShellManager. It carries the WPF app's
+       (0.x) UpgradeCode, product name, folder, shortcut names and registry key, so it
+       major-upgrades an installed WPF CodeShellManager in place (MSI, winget and Chocolatey
+       upgrades all go through this), and it also removes a "CodeShellManager 2 Beta" install.
+     Channel=beta: "CodeShellManager 2 Beta", installed BESIDE the WPF app with its own
+       UpgradeCode, folder, Start-menu entry and app id, so a beta never upgrades or removes it. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
-  <?define ProductName = "CodeShellManager 2 Beta" ?>
-  <!-- Must match the codeshell.aumid file the workflow writes into PublishDir. -->
-  <?define AppUserModelId = "UmageAI.CodeShellManager.Beta" ?>
+  <?ifndef Channel ?>
+    <?define Channel = "beta" ?>
+  <?endif?>
 
+  <!-- The beta's own UpgradeCode. The stable channel removes an install of it (below). -->
+  <?define BetaUpgradeCode = "8B16A8B3-05F0-4048-B8DD-40B3AC84FF55" ?>
+
+  <?if $(var.Channel) = "stable" ?>
+    <?define ProductName = "CodeShellManager" ?>
+    <!-- The WPF app's UpgradeCode (installer/CodeShellManager.wxs on main). Never change it:
+         it is what lets this MSI, `winget upgrade` and `choco upgrade` replace the WPF app. -->
+    <?define UpgradeCode = "3F7A9B1C-2D5E-4F8A-B0C3-6E1D9A4F2B7E" ?>
+    <?define FolderName = "CodeShellManager" ?>
+    <?define RegistryKey = "Software\umage\CodeShellManager" ?>
+    <!-- Must match the codeshell.aumid file the workflow writes into PublishDir. -->
+    <?define AppUserModelId = "UmageAI.CodeShellManager" ?>
+  <?elseif $(var.Channel) = "beta" ?>
+    <?define ProductName = "CodeShellManager 2 Beta" ?>
+    <?define UpgradeCode = "$(var.BetaUpgradeCode)" ?>
+    <?define FolderName = "CodeShellManager 2 Beta" ?>
+    <?define RegistryKey = "Software\umage\CodeShellManager2Beta" ?>
+    <?define AppUserModelId = "UmageAI.CodeShellManager.Beta" ?>
+  <?else?>
+    <?error Channel must be "stable" or "beta" ?>
+  <?endif?>
+
+  <!-- perMachine, as the WPF app's MSI: an MSI major upgrade only finds products of its own
+       scope, so changing this would install a second copy instead of upgrading. -->
   <Package Name="$(var.ProductName)"
            Manufacturer="umage.ai"
            Version="$(var.Version)"
-           UpgradeCode="8B16A8B3-05F0-4048-B8DD-40B3AC84FF55"
+           UpgradeCode="$(var.UpgradeCode)"
            Scope="perMachine">
 
-    <!-- Betas share the first three version fields (2.0.0.N) and MSI ignores the fourth, so a
-         same-version upgrade must replace the old beta rather than install a second copy. -->
+    <!-- Pre-releases share the first three version fields (2.0.0.N) and MSI ignores the fourth,
+         so a same-version upgrade must replace the old build rather than install a second copy.
+         The WPF app's versions (0.x) are always lower, so they are always upgraded. The old
+         product is removed before the new one is installed (the default schedule), so the WPF
+         app's files (CodeShellManager.exe, Assets\) leave the folder; its data does not. -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Please uninstall it first." />
+
+    <?if $(var.Channel) = "stable" ?>
+    <!-- A CodeShellManager 2 Beta install is removed too: it keeps its state in the same folder
+         (%AppData%\CodeShellManager2), and two apps writing one state.json lose sessions. The
+         person's data is never touched by an uninstall. -->
+    <Upgrade Id="$(var.BetaUpgradeCode)">
+      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" OnlyDetect="no" Property="CSMBETAFOUND" />
+    </Upgrade>
+    <?endif?>
 
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="AppIcon" SourceFile="apps\codeshell\assets\codeshell.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/umage-ai/CodeShellManager" />
 
     <ui:WixUI Id="WixUI_InstallDir" />
     <WixVariable Id="WixUILicenseRtf"  Value="installer\License.rtf" />
@@ -41,7 +85,7 @@
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="ManufacturerFolder" Name="umage">
-        <Directory Id="INSTALLFOLDER" Name="CodeShellManager 2 Beta">
+        <Directory Id="INSTALLFOLDER" Name="$(var.FolderName)">
           <!-- Sample add-ons. Settings > Add-ons > "Install samples" copies them into the
                person's own add-ons folder; they stay disabled until enabled there. -->
           <Directory Id="SamplesFolder" Name="samples">
@@ -57,7 +101,7 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="AppMenuFolder" Name="CodeShellManager 2 Beta" />
+      <Directory Id="AppMenuFolder" Name="$(var.ProductName)" />
     </StandardDirectory>
 
     <StandardDirectory Id="DesktopFolder" />
@@ -115,13 +159,19 @@
         <File Source="$(var.PublishDir)\samples\addons\session-summary\addon.toml" KeyPath="yes" />
       </Component>
 
+      <!-- Third-party licences (cargo-about, generated by the release workflow). -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\THIRD-PARTY-LICENSES.html" KeyPath="yes" />
+      </Component>
+
       <!-- Tells the app which AppUserModelID its toasts go out under (apps/codeshell/src/os_notify.rs). -->
       <Component Directory="INSTALLFOLDER" Guid="*">
         <File Source="$(var.PublishDir)\codeshell.aumid" KeyPath="yes" />
       </Component>
 
       <!-- Start Menu shortcut. It carries the AppUserModelID: Windows shows a toast only for an
-           id some Start-menu shortcut carries. -->
+           id some Start-menu shortcut carries. On the stable channel its name and folder are the
+           WPF app's, so the upgrade replaces the old shortcut rather than adding a second. -->
       <Component Directory="AppMenuFolder" Guid="*">
         <Shortcut Id="StartMenuShortcut"
                   Name="$(var.ProductName)"
@@ -137,7 +187,7 @@
                   Arguments="/x [ProductCode]" />
         <RemoveFolder Id="AppMenuFolder" On="uninstall" />
         <RegistryValue Root="HKCU"
-                       Key="Software\umage\CodeShellManager2Beta"
+                       Key="$(var.RegistryKey)"
                        Name="StartMenu"
                        Type="integer" Value="1" KeyPath="yes" />
       </Component>
@@ -150,7 +200,7 @@
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon" />
         <RegistryValue Root="HKCU"
-                       Key="Software\umage\CodeShellManager2Beta"
+                       Key="$(var.RegistryKey)"
                        Name="Desktop"
                        Type="integer" Value="1" KeyPath="yes" />
       </Component>

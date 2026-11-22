@@ -218,9 +218,9 @@ fn first_run_shows_the_empty_screen_with_new_session_and_wpf_import() {
     let mut r = rig(true);
     r.until("the first frames", |r| r.has("No sessions yet"));
     assert!(r.empty_screen_new_session().rect().center().x > 400.0, "in the work area");
-    assert!(r.has("Import from CodeShellManager (WPF)"));
+    assert!(r.has("Import from CodeShellManager 0.x"));
     // The import is a real engine tool: a missing file is reported, not faked.
-    r.h.get_by_label("Import from CodeShellManager (WPF)").click();
+    r.h.get_by_label("Import from CodeShellManager 0.x").click();
     r.until("the engine's error, shown as a toast", |r| r.toast_contains("could not read"));
     assert_eq!(r.h.state().submitted().last().map(|c| c.id.as_str()), Some("state_import_wpf"));
 }
