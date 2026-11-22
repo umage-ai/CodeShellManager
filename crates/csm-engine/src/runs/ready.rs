@@ -173,7 +173,9 @@ mod tests {
 
     #[test]
     fn the_watcher_gives_up_on_stop_or_timeout() {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        // Port 0 never accepts a connection, unlike a freed ephemeral port that a parallel test
+        // may bind again (this test was flaky with one).
+        let port = 0;
         let target = Target { host: "127.0.0.1".into(), port };
         let stop = AtomicBool::new(false);
         assert!(!wait_until_listening(&target, Duration::from_millis(50), Duration::from_millis(300), &stop));

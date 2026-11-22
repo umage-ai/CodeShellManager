@@ -525,8 +525,9 @@ fn a_dev_servers_url_opens_once_it_listens_and_not_again_on_exit() {
 #[test]
 fn a_one_shot_command_opens_its_url_after_exit_0_only() {
     let (h, urls) = rig_urls();
-    // Nothing listens on this port, and a remote URL is never probed.
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // Nothing listens on port 1 (a freed ephemeral port could be bound again by a parallel
+    // test), and a remote URL is never probed.
+    let port = 1;
     h.ok("run_set", json!({"session_id": "s", "id": "test", "post_run_url": format!("http://localhost:{port}")}));
     h.ok("run_set", json!({"session_id": "s", "id": "build", "post_run_url": "https://example.com/deployed"}));
     h.ok("run_start", json!({"session_id": "s", "run_id": "build"}));
