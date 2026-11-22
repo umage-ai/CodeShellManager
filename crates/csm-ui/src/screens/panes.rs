@@ -79,8 +79,9 @@ pub fn grid_cells(area: Rect, cols: usize, rows: usize, gap: f32) -> Vec<Rect> {
 /// Side by side with nothing pinned shows at most this many live sessions.
 pub const SIDE_UNPINNED_MAX: usize = 4;
 
-/// Which sessions a layout shows, and where.
-pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<(SessionId, Rect, PaneOpts)> {
+/// Which sessions a layout shows, and where. `companion` is the unpinned session used last in
+/// this scope (Side by side keeps it beside the pins while a pinned one is active).
+pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect, companion: Option<&str>) -> Vec<(SessionId, Rect, PaneOpts)> {
     let gap = space::PANE_GAP;
     // Minimized panes are in the strip under the canvas, not on it.
     let live: Vec<&SessionView> = model
@@ -117,11 +118,17 @@ pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect) -> Vec<
                     ids.pop();
                     ids.push(a.clone());
                 }
-            } else if let Some(a) = &active
-                && !ids.contains(a)
-            {
-                preview = Some(a.clone());
-                ids.push(a.clone());
+            } else {
+                // Pins plus one unpinned session: the active one, or (while a pinned one is
+                // active) the unpinned one used last, so clicking a pin doesn't hide it.
+                let extra = active
+                    .clone()
+                    .filter(|a| !ids.contains(a))
+                    .or_else(|| companion.filter(|c| is_live(c) && !ids.iter().any(|p| p == c)).map(str::to_owned));
+                if let Some(a) = extra {
+                    preview = Some(a.clone());
+                    ids.push(a);
+                }
             }
             let (cols, rows, span) = side_tiling(ids.len());
             let cells = grid_cells(area, cols, rows, gap);
@@ -324,7 +331,17 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         minimized_strip(ui, strip, &minimized, &scope, actions);
         Rect::from_min_max(inner.min, pos2(inner.max.x, strip.min.y - space::PANE_GAP))
     };
-    let planned = plan(&model, &scope, &layout, inner);
+    // Side by side remembers the unpinned session used last (UI-only state, per scope).
+    let companion_id = Id::new(("side-companion", scope.key()));
+    if let Some(a) = model.active.as_deref()
+        && !layout.pinned.iter().any(|p| p == a)
+        && model.scope_sessions(&scope).iter().any(|s| s.id == a)
+    {
+        let a = a.to_owned();
+        ui.ctx().data_mut(|d| d.insert_temp(companion_id, a));
+    }
+    let companion: Option<String> = ui.ctx().data(|d| d.get_temp(companion_id));
+    let planned = plan(&model, &scope, &layout, inner, companion.as_deref());
     let maxed = planned.iter().any(|(_, _, o)| o.maximized);
     if planned.is_empty() {
         let msg = if model.scope_sessions(&scope).is_empty() {
@@ -783,7 +800,9 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             })
             .collect()
     };
-    let total = |ws: &[f32]| ws.iter().sum::<f32>() + space::XXS * (ws.len() as f32 + 1.0);
+    // Focus and Side by side (session views) are set apart from the canvas layouts by a divider.
+    let split_gap = space::SM + size::HAIRLINE;
+    let total = |ws: &[f32]| ws.iter().sum::<f32>() + space::XXS * (ws.len() as f32 + 1.0) + split_gap;
     let right_reserve = if model.inspector.is_none() {
         widgets::text_width(ui, "Inspector", theme::medium(text::BODY)) + icon::LG + space::ROW_X * 2.0 + space::XS + space::XXS + space::SM
     } else {
@@ -814,6 +833,11 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     for (m, w) in LayoutMode::ALL.into_iter().zip(widths) {
         let b = Rect::from_min_size(pos2(x, cy - size::SEG_BUTTON / 2.0), vec2(w, size::SEG_BUTTON));
         x += w + space::XXS;
+        if m == LayoutMode::Side {
+            let dx = x + split_gap / 2.0 - space::XXS / 2.0;
+            ui.painter().vline(dx, (cy - icon::MD / 2.0)..=(cy + icon::MD / 2.0), Stroke::new(size::HAIRLINE, t.surface1));
+            x += split_gap;
+        }
         let resp = ui.interact(b, Id::new(("layout-mode", m.id())), Sense::click());
         let on = layout.mode == m;
         if on {
@@ -1550,7 +1574,7 @@ mod tests {
         let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 900.0));
         let live: Vec<SessionId> = model.scope_sessions(&scope).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         assert!(live.len() > SIDE_UNPINNED_MAX, "the demo has more live sessions than the cap");
-        let ids = |m: &UiModel, l: &Layout| plan(m, &scope, l, area).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
+        let ids = |m: &UiModel, l: &Layout| plan(m, &scope, l, area, None).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
 
         // Nothing pinned: the first live sessions in sidebar order, none marked "Not pinned".
         let none = Layout { mode: LayoutMode::Side, ..Layout::default() };
@@ -1570,7 +1594,15 @@ mod tests {
 
         // One pinned: the pin plus the active one, marked "Not pinned".
         let one = Layout { mode: LayoutMode::Side, pinned: vec![live[0].clone()], ..Layout::default() };
-        assert_eq!(ids(&model, &one), vec![(live[0].clone(), false), (far, true)]);
+        assert_eq!(ids(&model, &one), vec![(live[0].clone(), false), (far.clone(), true)]);
+        // Clicking the pinned one keeps the unpinned one used last beside it.
+        model.active = Some(live[0].clone());
+        assert_eq!(ids(&model, &one), vec![(live[0].clone(), false)], "without a companion only the pin");
+        let with = plan(&model, &scope, &one, area, Some(&far)).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
+        assert_eq!(with, vec![(live[0].clone(), false), (far.clone(), true)]);
+        // A companion that is itself pinned adds nothing.
+        let both = Layout { mode: LayoutMode::Side, pinned: vec![live[0].clone(), far.clone()], ..Layout::default() };
+        assert_eq!(plan(&model, &scope, &both, area, Some(&far)).len(), 2);
     }
 
     #[test]

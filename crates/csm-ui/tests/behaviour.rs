@@ -207,6 +207,10 @@ fn buttons_submit_their_tool() {
     assert_eq!(last_call(&h).0, "inbox_next");
     assert_eq!(h.state().model.active.as_deref(), Some("odulodo"), "oldest Needs-you first");
 
+    // Focus gives the pane room for its Run button (Side by side now also keeps the unpinned
+    // session used last, CodeShellManager-rs, so five narrow panes share the canvas).
+    h.get_by_label("Layout: Focus").click();
+    settle(&mut h);
     h.get_by_label("Run build · Odulodo").click();
     settle(&mut h);
     assert_eq!(last_call(&h), ("run_start".to_string(), serde_json::json!({"session_id": "odulodo"})));
@@ -962,4 +966,19 @@ fn about_promotes_umage_ai_and_its_links_open_through_the_open_tool() {
         let c = h.state().submitted().last().cloned().expect("a call was submitted");
         assert_eq!((c.id.as_str(), c.params["url"].as_str()), ("open_url", Some(url)), "{label}");
     }
+}
+
+#[test]
+fn side_by_side_keeps_the_unpinned_pane_when_a_pin_is_clicked() {
+    let mut h = h();
+    // The demo's Odulodo group pins three sessions; search-sort is not pinned.
+    assert_eq!(layout(&h).mode, LayoutMode::Side);
+    h.get_by_label("Session: search-sort").click();
+    settle(&mut h);
+    assert!(has(&h, "Pane: search-sort"), "the active unpinned session joins the pins");
+    h.get_by_label("Session: Odulodo").click();
+    settle(&mut h);
+    assert_eq!(h.state().model.active.as_deref(), Some("odulodo"));
+    assert!(has(&h, "Pane: search-sort"), "clicking a pinned session keeps the unpinned one beside it");
+    assert!(has(&h, "Pane: Odulodo.Web"), "the pins stay");
 }
