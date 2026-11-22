@@ -220,6 +220,7 @@ second (modified time and size, on a worker). A change reloads the add-ons, and 
 the new colours. An edit that only touches `[[theme]]` tables keeps the add-on enabled (colours run
 nothing); any other change turns it off until it is enabled again, as for every add-on. A process
 add-on's themes are ignored, like its other declarative entries.
+The theme-only exception is a deliberate policy decision (Allan, 2026-11-22).
 
 ## Enabling: the consent point
 
