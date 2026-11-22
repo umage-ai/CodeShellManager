@@ -16,6 +16,13 @@
 
 - [ ] 
 
+## Checklist
+
+- [ ] `cargo +1.97 test --workspace --no-fail-fast` passes
+- [ ] `cargo +1.97 clippy --workspace --all-targets -- -D warnings` passes
+- [ ] `cargo +1.97 xtask ci` passes (run `cargo xtask tools` if you added or changed a tool)
+- [ ] A new user-visible action is a tool, with honest effects (see `docs/tools.md`)
+
 ## Screenshots
 
 <!-- Optional: before/after for UI changes. -->

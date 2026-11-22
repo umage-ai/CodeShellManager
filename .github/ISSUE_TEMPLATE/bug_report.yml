@@ -41,44 +41,37 @@ body:
     id: version
     attributes:
       label: CodeShellManager version
-      description: From the title bar / About dialog, or the installer file name (e.g. `v0.4.2`).
-      placeholder: v0.4.2
+      description: From Settings → About, or the installer file name (e.g. `2.0.0`).
+      placeholder: 2.0.0
     validations:
       required: true
 
   - type: input
-    id: windows
+    id: os
     attributes:
-      label: Windows version
-      description: Run `winver` and paste the version (e.g. `Windows 11 24H2 build 26200`).
+      label: Operating system
+      description: On Windows, run `winver` and paste the version (e.g. `Windows 11 24H2 build 26200`).
     validations:
       required: true
-
-  - type: input
-    id: dotnet
-    attributes:
-      label: .NET runtime
-      description: Output of `dotnet --version` (or skip if you're running a packaged release and don't have the SDK installed).
-      placeholder: 10.0.100
 
   - type: input
     id: cli
     attributes:
       label: CLI tool and version
       description: If the bug involves a specific CLI hosted in a session (claude, codex, pwsh, ssh, etc.), give the tool name and version.
-      placeholder: claude 1.0.65
+      placeholder: claude 2.1.0
 
   - type: textarea
-    id: log
+    id: doctor
     attributes:
-      label: crash.log excerpt
+      label: csm doctor output
       description: |
-        If there's anything in `%AppData%\CodeShellManager\crash.log` around the time of the bug, paste the relevant lines here.
-        For terminal freezes, enabling **Settings -> Diagnostics -> Trace terminal input/output timing to crash.log** before reproducing the bug captures `[DEBUG-tt]` timing lines that are very useful.
+        Run `csm doctor` in a terminal and paste the output. It checks the install, the bundled ConPTY and the MCP server.
+        The Diagnostics section of Settings → About (ConPTY in use, sessions) helps too.
       render: text
 
   - type: textarea
     id: extra
     attributes:
       label: Anything else
-      description: Screenshots, screen recordings, sample state.json (sanitised) — whatever helps.
+      description: Screenshots, screen recordings, a sanitised `state.json` or `.csm` export, whatever helps.
