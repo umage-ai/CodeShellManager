@@ -1,7 +1,13 @@
 //! The title bar (`.tb`): brand, the Ctrl+K search field (or the restore pill while restoring),
 //! and the right-hand buttons.
+//!
+//! On Windows the main window has no OS title bar (`CsmApp::window_controls`): this row is the
+//! window's only one. It then also carries minimize, maximize/restore and close at its right end,
+//! and [`resize_edges`] lets the window's edges resize it. Its empty space drags the window and a
+//! double-click maximizes on every platform. Torn-off pane and group windows keep the OS frame.
 
-use egui::{Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::viewport::ResizeDirection;
+use egui::{Align2, Color32, CornerRadius, CursorIcon, Id, Order, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, ViewportCommand, pos2, vec2};
 use serde_json::json;
 
 use crate::app::{Action, CsmApp};
@@ -72,8 +78,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
     }
 
-    // Right: recent, inspector, theme, settings, quit.
-    let mut x = rect.max.x - space::SM;
+    // Right: the window's own buttons (frameless only), then recent, inspector, theme, settings,
+    // quit, set apart from them.
+    let mut x = if app.window_controls { window_controls(ui, rect) - space::MD } else { rect.max.x - space::SM };
     let side = size::CONTROL;
     let mut btn = |ui: &mut Ui, name: &str, on: bool, tip: &str| {
         x -= side;
@@ -116,4 +123,131 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR), pos2(button.max.x, rect.max.y + space::XS));
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR).with("button"), button);
     });
+}
+
+/// Minimize, maximize/restore and close at the bar's right end, Windows-sized; returns their left
+/// edge. Close is the OS close request ([`ViewportCommand::Close`]), so it does what the OS
+/// button did: `CloseAction` decides (see [`crate::background`]).
+fn window_controls(ui: &mut Ui, bar: Rect) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+    let w = size::CAPTION_BUTTON_W;
+    let (max_icon, max_label) = if maximized { ("unmax", "Restore") } else { ("max", "Maximize") };
+    let buttons = [
+        ("x", "Close", ViewportCommand::Close),
+        (max_icon, max_label, ViewportCommand::Maximized(!maximized)),
+        ("min", "Minimize", ViewportCommand::Minimized(true)),
+    ];
+    let mut x = bar.max.x;
+    for (icon_name, label, command) in buttons {
+        x -= w;
+        // Above the bar's hairline, so the line runs on under the buttons.
+        let r = Rect::from_min_max(pos2(x, bar.min.y), pos2(x + w, bar.max.y - size::HAIRLINE));
+        let resp = ui.interact(r, ui.id().with(("caption", label)), Sense::click());
+        let close = label == "Close";
+        let (bg, fg) = match (close, resp.hovered(), resp.is_pointer_button_down_on()) {
+            (true, true, _) => (t.close_hover, t.on_close_hover),
+            (false, _, true) => (t.hover, t.fg),
+            (false, true, false) => (t.row_sel, t.fg),
+            _ => (Color32::TRANSPARENT, t.fg2),
+        };
+        ui.painter().rect_filled(r, 0.0, bg);
+        icons::paint(ui, r, icon_name, icon::SM, fg);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        if resp.on_hover_text(label).clicked() {
+            ui.ctx().send_viewport_cmd(command);
+        }
+    }
+    x
+}
+
+/// The frameless window's resize zones: a thin band along each edge, diagonal near the corners.
+/// A press there hands the resize to the OS ([`ViewportCommand::BeginResize`]), which also snaps.
+/// Drawn last and kept on top, so the panes and dialogs under the edges never take those presses.
+/// None while maximized or full screen.
+pub fn resize_edges(ctx: &egui::Context) {
+    let (maximized, fullscreen) = ctx.input(|i| (i.viewport().maximized.unwrap_or(false), i.viewport().fullscreen.unwrap_or(false)));
+    if maximized || fullscreen {
+        return;
+    }
+    let full = ctx.content_rect();
+    let e = size::WINDOW_RESIZE_EDGE;
+    let strips = [
+        ("n", Rect::from_min_max(full.min, pos2(full.max.x, full.min.y + e))),
+        ("s", Rect::from_min_max(pos2(full.min.x, full.max.y - e), full.max)),
+        ("w", Rect::from_min_max(pos2(full.min.x, full.min.y + e), pos2(full.min.x + e, full.max.y - e))),
+        ("e", Rect::from_min_max(pos2(full.max.x - e, full.min.y + e), pos2(full.max.x, full.max.y - e))),
+    ];
+    for (name, strip) in strips {
+        let area =
+            egui::Area::new(Id::new(("resize-edge", name))).order(Order::Foreground).fixed_pos(strip.min).movable(false).constrain(false).show(
+                ctx,
+                |ui| {
+                    let (r, resp) = ui.allocate_exact_size(strip.size(), Sense::click_and_drag());
+                    let Some(p) = resp.hover_pos() else { return };
+                    let dir = resize_direction(full, r, p);
+                    resp.on_hover_cursor(resize_cursor(dir));
+                    if ui.input(|i| i.pointer.primary_pressed()) {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::BeginResize(dir));
+                    }
+                },
+            );
+        ctx.move_to_top(area.response.layer_id);
+    }
+}
+
+/// Which way a press at `p` in an edge band resizes: the band's own edge, or a corner's diagonal
+/// within [`size::WINDOW_RESIZE_CORNER`] of one.
+fn resize_direction(full: Rect, band: Rect, p: egui::Pos2) -> ResizeDirection {
+    let c = size::WINDOW_RESIZE_CORNER;
+    let north = p.y < full.min.y + c;
+    let south = p.y > full.max.y - c;
+    let west = p.x < full.min.x + c;
+    let east = p.x > full.max.x - c;
+    let top = band.min.y <= full.min.y;
+    let bottom = band.max.y >= full.max.y;
+    let left = !top && !bottom && band.min.x <= full.min.x;
+    match () {
+        () if north && west => ResizeDirection::NorthWest,
+        () if north && east => ResizeDirection::NorthEast,
+        () if south && west => ResizeDirection::SouthWest,
+        () if south && east => ResizeDirection::SouthEast,
+        () if top => ResizeDirection::North,
+        () if bottom => ResizeDirection::South,
+        () if left => ResizeDirection::West,
+        () => ResizeDirection::East,
+    }
+}
+
+fn resize_cursor(dir: ResizeDirection) -> CursorIcon {
+    match dir {
+        ResizeDirection::North | ResizeDirection::South => CursorIcon::ResizeVertical,
+        ResizeDirection::East | ResizeDirection::West => CursorIcon::ResizeHorizontal,
+        ResizeDirection::NorthWest | ResizeDirection::SouthEast => CursorIcon::ResizeNwSe,
+        ResizeDirection::NorthEast | ResizeDirection::SouthWest => CursorIcon::ResizeNeSw,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edges_resize_their_own_way_and_corners_diagonally() {
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
+        let e = size::WINDOW_RESIZE_EDGE;
+        let top = Rect::from_min_max(full.min, pos2(800.0, e));
+        let bottom = Rect::from_min_max(pos2(0.0, 600.0 - e), full.max);
+        let left = Rect::from_min_max(pos2(0.0, e), pos2(e, 600.0 - e));
+        let right = Rect::from_min_max(pos2(800.0 - e, e), pos2(800.0, 600.0 - e));
+        assert_eq!(resize_direction(full, top, pos2(400.0, 1.0)), ResizeDirection::North);
+        assert_eq!(resize_direction(full, top, pos2(2.0, 1.0)), ResizeDirection::NorthWest);
+        assert_eq!(resize_direction(full, top, pos2(798.0, 1.0)), ResizeDirection::NorthEast);
+        assert_eq!(resize_direction(full, bottom, pos2(400.0, 599.0)), ResizeDirection::South);
+        assert_eq!(resize_direction(full, bottom, pos2(798.0, 599.0)), ResizeDirection::SouthEast);
+        assert_eq!(resize_direction(full, left, pos2(1.0, 300.0)), ResizeDirection::West);
+        assert_eq!(resize_direction(full, left, pos2(1.0, 595.0)), ResizeDirection::SouthWest, "the corner reaches up the side");
+        assert_eq!(resize_direction(full, right, pos2(799.0, 300.0)), ResizeDirection::East);
+        assert_eq!(resize_direction(full, right, pos2(799.0, 8.0)), ResizeDirection::NorthEast);
+    }
 }

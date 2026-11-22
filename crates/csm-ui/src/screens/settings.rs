@@ -267,14 +267,7 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         "Claude starts with --name and the session's name, so its /resume list and terminal title show it. Needs a Claude Code that knows --name; applies from the next start.",
         actions,
     );
-    bool_setting(
-        ui,
-        app,
-        "CloseToTray",
-        "Keep running in the tray when the window closes",
-        "Closing the window hides it and sessions keep working; the tray icon shows it again, and its menu has Quit. Windows and macOS.",
-        actions,
-    );
+    close_action(ui, app, actions);
     bool_setting(
         ui,
         app,
@@ -288,6 +281,34 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     crate::screens::claude_commands::show(ui, app, actions);
     crate::screens::backup::general(ui, app, actions);
     notifications(ui, app, actions);
+}
+
+/// "When I close the window": Ask, Keep running in the tray, Quit (`CloseAction`). Only where
+/// there is a tray icon: without one, closing always quits.
+fn close_action(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
+    if !app.background.tray_available {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("When I close the window").font(theme::regular(text::BODY)).color(t.fg));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            use csm_core::models::CloseAction;
+            let choices = [
+                (CloseAction::Ask, "Ask", "Ask every time"),
+                (CloseAction::Tray, "Tray", "Keep running in the tray"),
+                (CloseAction::Quit, "Quit", "Quit"),
+            ];
+            let labels = choices.map(|(_, _, l)| l);
+            let sel = choices.iter().position(|(a, _, _)| *a == app.prefs.close_action);
+            if let Some(i) = widgets::segmented(ui, "When I close the window", &labels, sel)
+                && let Some((_, id, _)) = choices.get(i)
+            {
+                actions.push(set("CloseAction", json!(id)));
+            }
+        });
+    });
+    caption(ui, "In the tray, sessions keep working; the tray icon opens the window again, and its menu has Quit.");
 }
 
 fn notifications(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {

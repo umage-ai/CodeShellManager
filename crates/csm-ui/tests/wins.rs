@@ -103,30 +103,35 @@ fn set(h: &mut Harness<'static, csm_ui::CsmApp>, key: &str, value: serde_json::V
 }
 
 #[test]
-fn closing_quits_by_default_and_hides_to_the_tray_with_the_setting() {
+fn closing_asks_by_default_and_hides_to_the_tray_with_the_setting() {
     let mut h = h();
     h.state_mut().background.tray_available = true;
-    // Off (the default): closing asks to quit (the demo has busy sessions: the busy warning).
+    // Ask (the default): closing asks to keep running or quit (see `close_action.rs`).
     request_close(&mut h);
     settle(&mut h);
     assert!(!h.state().background.hidden);
-    assert_eq!(h.state().ui.overlay, Overlay::Busy);
+    assert_eq!(h.state().ui.overlay, Overlay::CloseAsk);
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::CloseOverlays);
 
-    set(&mut h, "CloseToTray", json!(true));
-    assert!(h.state().prefs.close_to_tray);
+    set(&mut h, "CloseAction", json!("Tray"));
+    assert_eq!(h.state().prefs.close_action, csm_core::models::CloseAction::Tray);
     let quits = calls(&h, "app_quit").len();
     request_close(&mut h);
     settle(&mut h);
     assert!(h.state().background.hidden, "hidden to the tray");
     assert_ne!(h.state().ui.overlay, Overlay::Busy, "no quit question");
     assert_eq!(calls(&h, "app_quit").len(), quits);
-    // Once per run, a notification says where the app went.
+    // Once ever, a notification says where the app went; the engine keeps that it was said.
     let said = h.state_mut().take_notifications();
     assert_eq!(said.len(), 1);
-    assert!(said[0].title.contains("still running"), "{:?}", said[0].title);
+    assert_eq!(said[0].title, "CodeShellManager is still running");
+    assert_eq!(said[0].body, "Click the tray icon to open it.");
     assert!(said[0].session_id.is_empty());
+    settle(&mut h);
+    let saved = h.state().dispatch.engine().call(csm_engine::Caller::Ui, "settings_get", json!({"key": "TrayNoticeShown"})).unwrap();
+    assert_eq!(saved.data["value"], true);
+    assert!(h.state().prefs.tray_notice_shown);
 
     // The tray's Show window (`window_show`) brings it back.
     let ctx = h.ctx.clone();
@@ -143,7 +148,7 @@ fn closing_quits_by_default_and_hides_to_the_tray_with_the_setting() {
 #[test]
 fn without_a_tray_closing_always_quits() {
     let mut h = h();
-    set(&mut h, "CloseToTray", json!(true));
+    set(&mut h, "CloseAction", json!("Tray"));
     // `tray_available` is false: Linux, or the OS refused the icon.
     request_close(&mut h);
     settle(&mut h);
@@ -155,7 +160,7 @@ fn without_a_tray_closing_always_quits() {
 fn hidden_the_logic_keeps_polling_and_a_close_request_quits_without_asking() {
     let mut h = h();
     h.state_mut().background.tray_available = true;
-    set(&mut h, "CloseToTray", json!(true));
+    set(&mut h, "CloseAction", json!("Tray"));
     request_close(&mut h);
     settle(&mut h);
     assert!(h.state().background.hidden);
@@ -235,6 +240,7 @@ fn the_broadcast_count_leaves_out_sleeping_starting_and_working_sessions() {
 #[test]
 fn settings_offers_naming_claude_conversations_and_close_to_tray() {
     let mut h = h();
+    h.state_mut().background.tray_available = true;
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::OpenSettings);
     settle(&mut h);
@@ -242,7 +248,7 @@ fn settings_offers_naming_claude_conversations_and_close_to_tray() {
     h.get_by_label_contains("Name Claude conversations after the session").click();
     settle(&mut h);
     assert_eq!(calls(&h, "settings_set")[before], json!({"key": "PassSessionNameToClaude", "value": true}));
-    h.get_by_label_contains("Keep running in the tray when the window closes").click();
+    h.get_by_label("When I close the window: Keep running in the tray").click();
     settle(&mut h);
-    assert_eq!(calls(&h, "settings_set")[before + 1], json!({"key": "CloseToTray", "value": true}));
+    assert_eq!(calls(&h, "settings_set")[before + 1], json!({"key": "CloseAction", "value": "Tray"}));
 }

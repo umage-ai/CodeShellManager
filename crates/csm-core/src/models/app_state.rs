@@ -25,6 +25,20 @@ numeric_enum! {
 }
 
 numeric_enum! {
+    /// What closing the main window does (`CloseAction`). Only where there is a tray icon to come
+    /// back from; without one, closing always quits.
+    pub enum CloseAction {
+        /// Ask each time: keep running in the tray, or quit.
+        Ask = 0,
+        /// Hide to the tray; sessions keep running.
+        Tray = 1,
+        /// Quit (the shutdown board gives sessions time to exit).
+        Quit = 2,
+    }
+    default = Ask;
+}
+
+numeric_enum! {
     /// When to answer the OSC 7501 feature query.
     pub enum ProgramStatusProbeMode {
         /// Answer on the bundled ConPTY (raw reply, in time); not on the inbox one.
@@ -185,10 +199,17 @@ pub struct AppSettings {
     /// font size is its own setting and does not follow it.
     #[serde(skip_serializing_if = "is_default_zoom")]
     pub ui_zoom_percent: i32,
-    /// Closing the main window hides it to the tray instead of quitting; sessions keep running.
-    /// Off by default. Quit (the tray's, the menu's, `app_quit`) still quits.
-    #[serde(skip_serializing_if = "is_false")]
+    /// What closing the main window does where there is a tray: ask (the default), hide to the
+    /// tray, or quit. Quit (the tray's, the title bar's, `app_quit`) always quits.
+    #[serde(skip_serializing_if = "is_default_close")]
+    pub close_action: CloseAction,
+    /// The legacy `CloseToTray` switch (beta 1): read once and folded into `close_action` by
+    /// [`AppSettings::migrate_legacy_fields`]; never written.
+    #[serde(skip_serializing)]
     pub close_to_tray: bool,
+    /// "Still running in the tray" was said once; it is not said again.
+    #[serde(skip_serializing_if = "is_false")]
+    pub tray_notice_shown: bool,
     /// Launch local Claude sessions with `--name <session name>`, so the conversation carries the
     /// session's name in Claude's own `/resume` list. Opt-in: it changes the `claude` command
     /// line, and a Claude CLI too old to know `--name` would refuse to start.
@@ -215,6 +236,18 @@ fn is_default_padding(n: &i32) -> bool {
 }
 fn is_default_zoom(n: &i32) -> bool {
     *n == UI_ZOOM_DEFAULT
+}
+fn is_default_close(a: &CloseAction) -> bool {
+    *a == CloseAction::default()
+}
+
+impl AppSettings {
+    /// The beta-1 `CloseToTray: true` becomes `CloseAction: Tray` (unless a choice was made since).
+    pub fn migrate_legacy_fields(&mut self) {
+        if std::mem::take(&mut self.close_to_tray) && self.close_action == CloseAction::Ask {
+            self.close_action = CloseAction::Tray;
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -265,7 +298,9 @@ impl Default for AppSettings {
             addon_approvals: Default::default(),
             allow_osc52_clipboard: t(),
             ui_zoom_percent: UI_ZOOM_DEFAULT,
+            close_action: CloseAction::Ask,
             close_to_tray: false,
+            tray_notice_shown: false,
             pass_session_name_to_claude: false,
         }
     }

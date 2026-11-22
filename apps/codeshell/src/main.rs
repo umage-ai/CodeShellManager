@@ -2,9 +2,13 @@
 //!
 //! By default it is the real app: the state is loaded (honouring `--config-dir`, then
 //! `CSM_CONFIG_DIR`, and `--clean`), the engine starts with it, `csm` / `csm mcp` reach it over
-//! the IPC bridge, and the window draws the engine's snapshot. Closing the window quits through
-//! `app_quit` (the shutdown board) and the window closes on `QuitReady`; with `CloseToTray` on it
-//! hides to the tray instead (`csm_ui::background`), and the tray's Quit quits.
+//! the IPC bridge, and the window draws the engine's snapshot. Closing the window follows
+//! `CloseAction` (`csm_ui::background`): ask, hide to the tray, or quit through `app_quit` (the
+//! shutdown board), after which the window closes on `QuitReady`; the tray's Quit quits. Without
+//! a tray it always quits.
+//!
+//! On Windows the main window has no OS title bar: CSM's own title bar is the only one, with
+//! minimize, maximize and close (`csm_ui::screens::titlebar`). macOS and Linux keep the OS frame.
 //!
 //! `--demo` runs the mock-up's data instead (screenshots, design review): see `csm_ui::demo`.
 //!
@@ -409,14 +413,17 @@ fn main() {
         Mode::Demo { .. } => None,
     };
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("CodeShellManager")
-            .with_inner_size(theme::size::WINDOW)
-            .with_min_inner_size(theme::size::WINDOW_MIN)
-            .with_icon(std::sync::Arc::new(csm_ui::app::app_icon(64))),
-        ..Default::default()
-    };
+    // The title stays set without the OS title bar: the taskbar and Alt+Tab show it.
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("CodeShellManager")
+        .with_inner_size(theme::size::WINDOW)
+        .with_min_inner_size(theme::size::WINDOW_MIN)
+        .with_icon(std::sync::Arc::new(csm_ui::app::app_icon(64)));
+    // Windows: one title bar, CSM's own (winit keeps the snap styles and the drop shadow; the
+    // title bar draws the caption buttons and the edges resize). Elsewhere the OS frame stays.
+    #[cfg(windows)]
+    let viewport = viewport.with_decorations(false);
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     let shutdown = engine.clone();
     // The window opens where it was: the app's first frame restores the saved bounds against
     // these monitors (`csm_ui::placement`), which the event loop below keeps current.
@@ -453,6 +460,7 @@ fn main() {
             };
             let mut app = csm_ui::CsmApp::new(engine, backend, TerminalRenderer::new(fonts));
             app.monitors = app_monitors;
+            app.window_controls = cfg!(windows);
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
             // On the main thread, with the event loop running: where the tray must be made.
