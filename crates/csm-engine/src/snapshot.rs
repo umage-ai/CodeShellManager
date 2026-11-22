@@ -172,6 +172,9 @@ pub struct Snapshot {
     pub quit: Option<Progress>,
     /// The Open with list (the editor in Settings).
     pub open_with: Vec<crate::tools::open::OpenWithView>,
+    /// Open with entries from CodeShellManager 0.x waiting for the person's answer (the consent
+    /// card; `open_with_pending_answer`). Empty: nothing to ask.
+    pub pending_open_with: Vec<crate::tools::open::OpenWithView>,
     /// Saved window bounds (`window_placement_set`): `main` (the state file's `LastPlacement` and
     /// `WindowMaximized`), `group:<id>` and `pane:<session id>` for torn-off windows.
     pub windows: BTreeMap<String, WindowSlot>,
@@ -406,6 +409,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         restart: state.rt.restart,
         quit: state.rt.quit,
         open_with: crate::tools::open::list_view(&state.app.settings.open_with),
+        pending_open_with: crate::tools::open::list_view(&state.app.pending_open_with),
         windows,
         recently_closed: state
             .app

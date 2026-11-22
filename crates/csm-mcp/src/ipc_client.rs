@@ -48,6 +48,15 @@ fn not_running(extra: &str) -> BridgeError {
     ))
 }
 
+/// The app installed beside this `csm` (the MSI and the zip put them in one folder). Preferred
+/// over the PATH lookup: with a stable and a beta install both on PATH, the first one found could
+/// be the other channel's app, which never publishes the record this `csm` waits for.
+fn sibling_app() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let bin = dir.join(format!("{}{}", wire::APP_BIN, std::env::consts::EXE_SUFFIX));
+    bin.is_file().then_some(bin)
+}
+
 fn unreachable(context: &str, e: &LinkError) -> BridgeError {
     match e {
         LinkError::Auth => BridgeError::Unreachable(
@@ -88,7 +97,7 @@ impl RemoteBackend {
             Some(p) => p.clone(),
             None => match std::env::var_os(APP_ENV) {
                 Some(p) if !p.is_empty() => PathBuf::from(p),
-                _ => craft_ipc::launch::resolve(APP_ID).map_err(|e| {
+                _ => sibling_app().map_or_else(|| craft_ipc::launch::resolve(wire::APP_BIN), Ok).map_err(|e| {
                     BridgeError::Unreachable(format!(
                         "cannot find the CodeShellManager app to start ({e}). Set {APP_ENV} or pass --app with its full path."
                     ))

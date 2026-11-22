@@ -20,8 +20,14 @@
 use csm_engine::{Caller, ToolError, ToolOutput};
 use serde_json::{Value, json};
 
-/// The app's name in craft-ipc discovery (`^[a-z][a-z0-9-]{1,31}$`).
-pub const APP_ID: &str = "codeshell";
+/// The app's name in craft-ipc discovery (`^[a-z][a-z0-9-]{1,31}$`), by release channel
+/// (`csm_core::channel`): `codeshell` for stable builds, `codeshell-beta` for beta builds. The
+/// discovery records and the Windows pipe (`craft-<user>-<app id>-<pid>`) carry it, so a beta
+/// `csm` only finds a beta app and a stable `csm` only a stable one.
+pub const APP_ID: &str = csm_engine::channel::CURRENT.ipc_app_id();
+
+/// The app's executable name (without `.exe`), the same on every channel.
+pub const APP_BIN: &str = "codeshell";
 
 pub const METHOD_PING: &str = "csm.ping";
 pub const METHOD_TOOLS: &str = "csm.tools";

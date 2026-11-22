@@ -828,6 +828,9 @@ pub struct UiModel {
     pub folder_worktrees: BTreeMap<String, Vec<crate::git_model::WorktreeRow>>,
     /// The Open with list (the editor).
     pub open_with: Vec<OpenWithEntryView>,
+    /// Open with entries from CodeShellManager 0.x waiting for the person's answer: the consent
+    /// card (`open_with_pending_answer`). Empty: no card.
+    pub pending_open_with: Vec<OpenWithEntryView>,
     /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
     /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).
     pub windows: BTreeMap<String, csm_core::models::WindowSlot>,

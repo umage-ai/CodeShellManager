@@ -33,6 +33,7 @@ pub(crate) mod tools;
 pub mod which;
 pub mod wsl_probe;
 
+pub use csm_core::channel;
 pub use csm_index;
 /// Re-exported so the UI can build sizes and input without depending on csm-term directly.
 pub use csm_term::{GridSize, input};

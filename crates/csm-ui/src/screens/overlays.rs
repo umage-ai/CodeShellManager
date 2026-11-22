@@ -23,7 +23,8 @@ pub fn restore_rail(ui: &Ui, rect: Rect, r: &RestoreProgress) {
 
 pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     toasts(ctx, app);
-    consent_cards(ctx, app, actions);
+    let above = open_with_offer(ctx, app, actions);
+    consent_cards(ctx, app, actions, above);
     if app.ui.overlay == Overlay::Busy {
         busy_dialog(ctx, app, actions);
     }
@@ -182,13 +183,77 @@ fn toasts(ctx: &egui::Context, app: &mut CsmApp) {
     }
 }
 
-fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
+/// The one-time question after a CodeShellManager 0.x import: its Open with list runs programs,
+/// so it is never adopted without a yes (`open_with_pending_answer`). Bottom right, like the
+/// consent cards, which stack above it. Returns the top of the card (or the screen's bottom
+/// margin when there is no card).
+fn open_with_offer(ctx: &egui::Context, app: &CsmApp, actions: &mut Vec<Action>) -> f32 {
+    let screen = ctx.content_rect();
+    let bottom = screen.max.y - space::LG;
+    let pending = &app.model.pending_open_with;
+    if pending.is_empty() {
+        return bottom;
+    }
+    let t = Tokens::get(ctx);
+    let resp = egui::Area::new(Id::new("open-with-offer"))
+        .order(Order::Foreground)
+        .pivot(Align2::RIGHT_BOTTOM)
+        .fixed_pos(pos2(screen.max.x - space::LG, bottom))
+        .show(ctx, |ui| {
+            widgets::pop_frame(&t).inner_margin(egui::Margin::same(space::LG as i8)).show(ui, |ui| {
+                ui.set_width(size::CONSENT_W);
+                ui.horizontal(|ui| {
+                    icons::status(ui, Status::Approval, icon::XL);
+                    ui.label(egui::RichText::new(OPEN_WITH_OFFER_TITLE).font(semibold(text::BODY)).color(t.fg));
+                });
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Your Open with list from CodeShellManager 0.x. Each one runs the program shown when you open a folder with it.")
+                            .font(theme::regular(text::CAPTION))
+                            .color(t.muted),
+                    )
+                    .wrap(),
+                );
+                egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::same(space::SM as i8)).show(
+                    ui,
+                    |ui| {
+                        ui.set_width(ui.available_width());
+                        for e in pending {
+                            let name = if e.is_default { format!("{} (default)", e.label) } else { e.label.clone() };
+                            ui.label(egui::RichText::new(name).font(theme::medium(text::BODY)).color(t.fg));
+                            for (kind, args) in [("local", &e.local_args), ("WSL", &e.wsl_args), ("SSH", &e.ssh_args)] {
+                                if let Some(a) = args {
+                                    let line = format!("{kind}: {} {a}", e.executable);
+                                    ui.add(egui::Label::new(egui::RichText::new(line).font(theme::mono(text::MONO_SM)).color(t.fg2)).wrap());
+                                }
+                            }
+                        }
+                    },
+                );
+                ui.add_space(space::XS);
+                ui.horizontal(|ui| {
+                    if widgets::button(ui, ButtonKind::Primary, None, "Allow", None).clicked() {
+                        actions.push(Action::Tool("open_with_pending_answer", json!({"adopt_open_with": true})));
+                    }
+                    if widgets::button(ui, ButtonKind::Ghost, None, "Don't allow", None).clicked() {
+                        actions.push(Action::Tool("open_with_pending_answer", json!({"adopt_open_with": false})));
+                    }
+                });
+            });
+        });
+    resp.response.rect.min.y - space::SM
+}
+
+/// The offer card's title (tests find the card by it).
+pub const OPEN_WITH_OFFER_TITLE: &str = "Use these editors from CodeShellManager 0.x?";
+
+fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>, start_y: f32) {
     if app.ui.consents.is_empty() {
         return;
     }
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    let mut y = screen.max.y - space::LG;
+    let mut y = start_y;
     let model = app.model.clone();
     for req in app.ui.consents.clone().iter().rev() {
         let id = req["request_id"].as_u64().unwrap_or(0);

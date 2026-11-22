@@ -339,6 +339,12 @@ pub struct AppState {
     #[serde(deserialize_with = "nd", skip_serializing_if = "Vec::is_empty")]
     pub mcp_grants: Vec<McpGrant>,
 
+    /// Open with entries imported from CodeShellManager 0.x, waiting for the person's yes or no
+    /// (`open_with_pending` / `open_with_pending_answer`): they are programs to run, so they are
+    /// never adopted silently. Absent in WPF files; read leniently (a bad entry is dropped).
+    #[serde(deserialize_with = "lenient_entries", skip_serializing_if = "Vec::is_empty")]
+    pub pending_open_with: Vec<OpenWithEntry>,
+
     /// The Rust app's own UI memory (rail tab, layouts per group, panels). Absent in WPF files;
     /// read leniently so a bad value never costs the sessions.
     #[serde(deserialize_with = "lenient", skip_serializing_if = "UiState::is_default")]
@@ -348,6 +354,11 @@ pub struct AppState {
     /// stamps it on every save.
     #[serde(rename = "CsmRsVersion", skip_serializing_if = "Option::is_none")]
     pub csm_rs_version: Option<u32>,
+}
+
+fn lenient_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<OpenWithEntry>, D::Error> {
+    let serde_json::Value::Array(items) = serde_json::Value::deserialize(d)? else { return Ok(Vec::new()) };
+    Ok(items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
 }
 
 fn nd_settings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<AppSettings, D::Error> {
@@ -368,6 +379,7 @@ impl Default for AppState {
             last_placement: None,
             window_maximized: false,
             mcp_grants: Vec::new(),
+            pending_open_with: Vec::new(),
             ui: UiState::default(),
             csm_rs_version: None,
         }

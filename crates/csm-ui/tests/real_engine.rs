@@ -552,3 +552,60 @@ fn an_osc52_copy_from_a_session_sets_the_clipboard_unless_turned_off() {
     assert!(!copied(&mut r, "secret", Duration::from_millis(500)));
     assert_eq!(r.engine.take_clipboard(), None);
 }
+
+/// A 0.x state.json with a theme, launch commands and an Open with list of one real program.
+fn wpf_state_file(dir: &tempfile::TempDir) -> String {
+    let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+    let state = json!({
+        "Sessions": [{"Id": "w1", "Name": "from-0x", "Command": "claude", "WorkingFolder": std::env::temp_dir().display().to_string()}],
+        "Settings": {
+            "Theme": "light",
+            "LaunchCommands": ["codex", "claude"],
+            "OpenWithSeeded": true,
+            "OpenWith": [{"Id": "ed", "Label": "Old editor", "Executable": exe, "LocalArgs": "{folder}", "IsDefault": true}]
+        }
+    });
+    let path = dir.path().join("state.json");
+    std::fs::write(&path, state.to_string()).unwrap();
+    path.display().to_string()
+}
+
+/// The first-run import runs outside the UI's dispatch (a worker calls the engine): the UI
+/// still follows its settings, and the 0.x editors wait on a card until the person answers.
+fn import_like_first_run(r: &mut Rig, dir: &tempfile::TempDir) {
+    let path = wpf_state_file(dir);
+    let out = r.engine.call(Caller::Ui, "state_import_wpf", json!({"path": path})).unwrap();
+    assert_eq!(out.data["open_with_pending"], 1, "{}", out.data);
+    r.until("the editors card", |r| r.has(csm_ui::screens::overlays::OPEN_WITH_OFFER_TITLE));
+}
+
+#[test]
+fn a_0x_import_offers_its_editors_on_a_card_and_allow_adds_them() {
+    let mut r = rig(true);
+    let dir = tempfile::tempdir().unwrap();
+    r.until("the first frames", |r| r.has("No sessions yet"));
+    import_like_first_run(&mut r, &dir);
+    assert!(r.has_contains("Old editor"), "the card names the editor");
+    assert!(r.engine.view().open_with.is_empty(), "nothing is adopted before the answer");
+    // The 0.x settings reached the UI through events.
+    r.until("the light theme", |r| r.h.state().model.theme == csm_ui::theme::ThemeKind::Latte);
+    assert_eq!(r.h.state().model.launch_commands, ["codex", "claude"]);
+
+    r.h.get_by_label("Allow").click();
+    r.until("the editor in the list", |r| r.engine.view().open_with.iter().any(|e| e.label == "Old editor"));
+    let call = r.h.state().submitted().iter().rev().find(|c| c.id == "open_with_pending_answer").cloned().unwrap();
+    assert_eq!(call.params, json!({"adopt_open_with": true}));
+    r.until("the card gone", |r| !r.has(csm_ui::screens::overlays::OPEN_WITH_OFFER_TITLE));
+}
+
+#[test]
+fn dont_allow_discards_the_0x_editors() {
+    let mut r = rig(true);
+    let dir = tempfile::tempdir().unwrap();
+    r.until("the first frames", |r| r.has("No sessions yet"));
+    import_like_first_run(&mut r, &dir);
+    r.h.get_by_label("Don't allow").click();
+    r.until("the card gone", |r| !r.has(csm_ui::screens::overlays::OPEN_WITH_OFFER_TITLE));
+    assert!(r.engine.view().open_with.is_empty());
+    assert!(r.engine.view().pending_open_with.is_empty(), "asked once");
+}

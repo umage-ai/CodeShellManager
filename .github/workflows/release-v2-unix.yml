@@ -1,6 +1,6 @@
 name: Release (v2 beta, Linux and macOS)
 
-# CodeShellManager 2 for Linux and macOS: release builds and packages, uploaded as WORKFLOW
+# CodeShellManager (version 2) for Linux and macOS: release builds and packages, uploaded as WORKFLOW
 # ARTIFACTS only. Nothing here creates a GitHub Release, pushes to a package repository or tap,
 # or publishes anywhere: docs/distribution.md is the plan for that.
 #

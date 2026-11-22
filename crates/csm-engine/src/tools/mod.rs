@@ -62,7 +62,7 @@ pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, state: &State)
     {
         return Some(ToolError::Refused("a session cannot send input to itself; that would be an agent typing into its own prompt".into()));
     }
-    if let Some(e) = backup::precheck(id, caller) {
+    if let Some(e) = backup::precheck(id, caller).or_else(|| app::precheck(id, caller)).or_else(|| open::precheck(id, caller)) {
         return Some(e);
     }
     if id.starts_with("task_")

@@ -16,6 +16,7 @@ pub mod addons;
 pub mod alert_detector;
 pub mod bulk_restart;
 pub mod busy_rules;
+pub mod channel;
 pub mod claude_usage;
 pub mod color;
 pub mod diff;
@@ -42,5 +43,6 @@ pub mod tasks;
 pub mod time;
 pub mod usage_report;
 pub mod window_placement;
+pub mod wpf_settings;
 
 mod text;

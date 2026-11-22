@@ -27,7 +27,7 @@ cargo xtask ci --skip-cargo                      # layers, source policy, tool c
   `.github/workflows/release-v2.yml` (Windows): signed exes, a signed MSI and a portable zip.
   Never create a tag without Allan's say-so. Versions start at 2.0.0 (the WPF app is 0.x).
 - Two MSI channels from `installer/CodeShellManager2.wxs`: `-beta.N` installs as
-  **CodeShellManager 2 Beta** beside the WPF app (own UpgradeCode, folder, Start-menu entry);
+  **CodeShellManager Beta** beside the WPF app (own UpgradeCode, folder, Start-menu entry);
   `-rc.N` and final install as **CodeShellManager** with the WPF app's UpgradeCode, so they
   replace it in place (and remove a beta). Never change either UpgradeCode.
 - Betas and rcs are GitHub pre-releases only (Allan, 2026-11-20). A final release is "latest"
@@ -36,8 +36,17 @@ cargo xtask ci --skip-cargo                      # layers, source policy, tool c
 - A dry run (unsigned MSI and zip as a workflow artifact, no release):
   `gh workflow run release-v2.yml --ref v2 -f channel=beta|stable`.
 - MSI versions are numeric: `2.0.0-beta.N` -> `2.0.0.N`, `-rc.N` -> `2.0.0.(100+N)`, final -> `2.0.0`.
-- First start with no state of its own imports the WPF app's sessions, groups and notes
-  (`persist::first_run_wpf_import`); the WPF data folder is only read, never changed.
+- The channel is compiled in: `CSM_CHANNEL=beta` (set by `release-v2.yml` for beta builds;
+  unset = stable, also for every local build) gives a beta its own data folders
+  (`%APPDATA%\CodeShellManager2-Beta`, `%LOCALAPPDATA%\CodeShellManager2-Beta`) and IPC app id
+  and pipe (`codeshell-beta`, so a beta `csm` talks only to a beta app); see `csm_core::channel`.
+  A beta's first start copies the stable folders once (`persist::seed_beta_in`), never the other
+  way. User-facing names say "CodeShellManager" / "CodeShellManager Beta", never "2".
+- First start with no state of its own imports the WPF app's sessions, groups, notes and the
+  settings that map onto ours (`persist::first_run_wpf_import`, `csm_core::wpf_settings`; the
+  table is in docs/release.md). Its Open with list runs programs, so it only waits as
+  `PendingOpenWith` for a yes on a one-time card (`open_with_pending_answer`). The WPF data folder
+  is only read, never changed. `--clean` does none of this, and writes nothing.
 
 ## Rules (mandatory)
 
