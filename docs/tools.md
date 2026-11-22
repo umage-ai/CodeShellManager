@@ -78,7 +78,7 @@ Status: ✅ built · 🚧 in progress · ⬜ planned. Params in brief; the schem
 | `session_send_command` ✅ | session_id, command, force? | input | types a configured Claude slash command (`ClaudeCommands`) and Enter; refuses self and mid-turn |
 | `session_read_screen` ✅ | session_id | read content | the visible screen as text |
 | `session_read_output` ✅ | session_id, lines? (≤2000) | read content | tail of scrollback, ANSI-stripped |
-| `session_output_stats` ✅ | session_id | read | the output stream's rate: bytes per second over the last minute, the busiest second, total bytes, and the 1 MiB output ring's size, offsets, evictions and resyncs. Numbers only; no text. An asleep session reports `live: false` |
+| `session_output_stats` ✅ | session_id | read | the output stream's rate: bytes per second over the last minute, the busiest second, total bytes, bytes dropped while the output tap was busy, and the 1 MiB output ring's size, offsets, evictions and resyncs. Numbers only; no text. An asleep session reports `live: false` |
 | `session_wait` ✅ | session_id, until (idle/done/needs_you/exit/any_change), timeout_s (≤600) | read | completes when the status reaches it; for orchestration |
 | `inbox_list` ✅ | | read | sessions that need you, oldest first, plus unseen done/error |
 | `inbox_next` ✅ | | ui | focus the next one (Ctrl+J) |
@@ -431,7 +431,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `session_send_text` | core | input | asks | Paste text into a session (bracketed paste, never typed); submit: true presses Enter after it. Refused into the caller's own session, and while the session is working unless force is true. |
 | `session_read_screen` | core | content | asks | The session's visible screen as plain text. |
 | `session_read_output` | core | content | asks | The last lines (default 200, at most 2000) of a session's scrollback and screen, as plain text. |
-| `session_output_stats` | core | read | no | A session's output stream: bytes per second (average over the last minute and the busiest second), total bytes, and the output ring's size, offsets, evictions and resyncs. Numbers only; no output text. |
+| `session_output_stats` | core | read | no | A session's output stream: bytes per second (average over the last minute and the busiest second), total bytes, bytes dropped while the output tap was busy, and the output ring's size, offsets, evictions and resyncs. Numbers only; no output text. |
 | `session_wait` | core | read | no | Wait until a session is idle, done, needs you, has exited, or changes status at all (until), up to timeout_s (default 60, max 600). |
 | `session_status_clear` | core | ui | no | Forget a session's reported status (for a status stuck after a program died mid-turn); the screen heuristic takes over again. |
 | `session_accent_reset` | core | state | no | Forget the accent colour a program pushed with OSC 9001; the session goes back to its folder's colour. |

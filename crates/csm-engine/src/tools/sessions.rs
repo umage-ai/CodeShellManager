@@ -156,7 +156,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "session_output_stats",
             title: "Output rate",
-            summary: "A session's output stream: bytes per second (average over the last minute and the busiest second), total bytes, and the output ring's size, offsets, evictions and resyncs. Numbers only; no output text.",
+            summary: "A session's output stream: bytes per second (average over the last minute and the busiest second), total bytes, bytes dropped while the output tap was busy, and the output ring's size, offsets, evictions and resyncs. Numbers only; no output text.",
             toolset: Toolset::Core,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<IdParams>,
@@ -966,6 +966,7 @@ fn session_output_stats(ctx: &mut Ctx<'_>, params: Value) -> Reply {
             "oldest_offset": s.oldest_offset,
             "end_offset": s.end_offset,
             "evicted_bytes": s.evicted_bytes,
+            "dropped_bytes": s.dropped_bytes,
             "resyncs": s.resyncs,
         }),
     ))

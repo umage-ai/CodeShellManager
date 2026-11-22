@@ -1,20 +1,23 @@
 //! The output tap: a bounded ring of one session's PTY output, addressed by absolute byte
 //! offsets, with subscribers that read it at their own pace and byte-rate counters.
 //!
-//! Feeding ([`OutputTap::feed`], called from the PTY reader thread) never waits for a subscriber.
-//! The ring keeps the newest [`RING_BYTES`] and counts what it evicts. Each subscriber is only
-//! nudged through a one-slot channel, and a nudge that finds the slot full is simply skipped
-//! (the subscriber already has one pending). A subscriber reads from its own offset whenever it
-//! likes; one that falls behind the ring's oldest byte is told to resync, and the feed never
-//! waits for it. The feed does take the tap's lock, which subscribers hold only while copying at
-//! most [`READ_CHUNK_BYTES`].
+//! Feeding ([`OutputTap::feed`], called from the PTY reader thread) never waits. It takes the
+//! tap's lock only with `try_lock`: when a subscriber or a stats call holds the lock (for at most
+//! [`READ_CHUNK_BYTES`] of copying), the feed drops its bytes and counts them in
+//! [`OutputStats::dropped_bytes`], as the index feed does. The ring keeps the newest
+//! [`RING_BYTES`] and counts what it evicts. Each subscriber is only nudged through a one-slot
+//! channel, and a nudge that finds the slot full is simply skipped (the subscriber already has
+//! one pending). A subscriber reads from its own offset whenever it likes; one that falls behind
+//! the ring's oldest byte, or behind bytes the feed dropped, is told to resync.
 //!
-//! Offsets are absolute: the first byte a session ever printed is offset 0, and an offset keeps
-//! meaning the same byte after the ring has wrapped, so a subscriber can say "I have up to here".
+//! Offsets are absolute: the first byte a session ever printed is offset 0. Every byte fed takes
+//! an offset, dropped ones included, so an offset keeps meaning the same byte after the ring has
+//! wrapped, and a subscriber can say "I have up to here".
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 /// Bytes of output one session keeps for subscribers (the ring size).
@@ -28,12 +31,19 @@ pub const RATE_WINDOW_SECS: u64 = 60;
 pub struct OutputTap {
     inner: Mutex<Inner>,
     origin: Instant,
+    /// Every byte fed so far. Only the feeder advances it, so its value is the absolute offset
+    /// of the next feed, and it is read without the lock.
+    fed: AtomicU64,
+    /// Bytes a feed could not take in because the tap was busy. They never reached the ring.
+    dropped_bytes: AtomicU64,
+    /// Dropped bytes the rate meter has not counted yet; the next feed that gets in adds them.
+    unmetered: AtomicU64,
 }
 
 struct Inner {
     ring: Ring,
     /// One wake slot per live subscription; a subscription that is dropped is removed on the
-    /// next feed.
+    /// next feed that gets in.
     subscribers: Vec<SyncSender<()>>,
     rate: RateMeter,
     evicted_bytes: u64,
@@ -45,8 +55,9 @@ struct Inner {
 pub enum Read {
     /// The bytes from `from` on, up to the chunk limit. Empty when the subscriber is caught up.
     Bytes { from: u64, data: Vec<u8> },
-    /// The offset the subscriber asked for is no longer in the ring (or is past its end). The
-    /// subscriber must take a fresh snapshot of the screen; reading then continues from `end`.
+    /// The offset the subscriber asked for is no longer in the ring (it was evicted, dropped by a
+    /// busy feed, or lies past the end). The subscriber must take a fresh snapshot of the screen;
+    /// reading then continues from `end`.
     Resync { oldest: u64, end: u64 },
 }
 
@@ -60,9 +71,11 @@ pub struct Subscription {
 /// The tap's counters, as of one moment. Rates are bytes per second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OutputStats {
-    /// Every byte fed since the tap started.
+    /// Every byte fed since the tap started, dropped bytes included.
     pub total_bytes: u64,
-    /// Bytes fed in the last [`RATE_WINDOW_SECS`] seconds, divided by the window.
+    /// Bytes fed in the last [`RATE_WINDOW_SECS`] seconds, divided by the seconds the window
+    /// covers: 60, or the seconds since the tap started (counting the first one) while it is
+    /// younger than that. A young session therefore reads its true rate, not a twelfth of it.
     pub bytes_per_sec_last_minute: u64,
     /// The busiest single second so far.
     pub peak_bytes_per_sec: u64,
@@ -70,10 +83,13 @@ pub struct OutputStats {
     pub ring_bytes: u64,
     /// The offset of the oldest byte still in the ring.
     pub oldest_offset: u64,
-    /// The offset just past the newest byte.
+    /// The offset just past the newest byte the ring holds.
     pub end_offset: u64,
-    /// Bytes pushed out of the ring before a subscriber read them (or before anyone did).
+    /// Bytes the ring has pushed out of its front to stay within capacity.
     pub evicted_bytes: u64,
+    /// Bytes fed while the tap was busy with a subscriber or a stats call. They never reached the
+    /// ring, so subscribers behind them resync.
+    pub dropped_bytes: u64,
     /// Times a subscription was told to resync.
     pub resyncs: u64,
 }
@@ -95,14 +111,27 @@ impl OutputTap {
                 resyncs: 0,
             }),
             origin: Instant::now(),
+            fed: AtomicU64::new(0),
+            dropped_bytes: AtomicU64::new(0),
+            unmetered: AtomicU64::new(0),
         }
     }
 
+    /// The lock for subscribers and stats, which may wait for one another's short copies.
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Appends PTY output. Never waits for a subscriber.
+    /// The lock for the feed, which never waits: `None` when the lock is held right now.
+    fn try_lock(&self) -> Option<MutexGuard<'_, Inner>> {
+        match self.inner.try_lock() {
+            Ok(g) => Some(g),
+            Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// Appends PTY output. Never waits: if the tap is busy the bytes are dropped and counted.
     pub fn feed(&self, data: &[u8]) {
         self.feed_at(data, Instant::now());
     }
@@ -111,11 +140,22 @@ impl OutputTap {
         if data.is_empty() {
             return;
         }
-        let mut g = self.lock();
-        let evicted = g.ring.push(data);
-        g.evicted_bytes = g.evicted_bytes.saturating_add(evicted);
         let n = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        g.rate.record(n, now.saturating_duration_since(self.origin));
+        let start = self.fed.fetch_add(n, Ordering::AcqRel);
+        let Some(mut g) = self.try_lock() else {
+            self.dropped_bytes.fetch_add(n, Ordering::Relaxed);
+            self.unmetered.fetch_add(n, Ordering::Relaxed);
+            return;
+        };
+        let folded = self.unmetered.swap(0, Ordering::Relaxed);
+        match g.ring.push(start, data) {
+            Ok(evicted) => g.evicted_bytes = g.evicted_bytes.saturating_add(evicted),
+            // A feed that lost a race to a later one: its bytes are behind the ring already.
+            Err(Stale) => {
+                self.dropped_bytes.fetch_add(n, Ordering::Relaxed);
+            }
+        }
+        g.rate.record(n.saturating_add(folded), now.saturating_duration_since(self.origin));
         g.subscribers.retain(|tx| !matches!(tx.try_send(()), Err(TrySendError::Disconnected(()))));
     }
 
@@ -139,13 +179,14 @@ impl OutputTap {
         let g = self.lock();
         let since = now.saturating_duration_since(self.origin);
         OutputStats {
-            total_bytes: g.rate.total,
+            total_bytes: self.fed.load(Ordering::Acquire),
             bytes_per_sec_last_minute: g.rate.last_minute_average(since),
             peak_bytes_per_sec: g.rate.peak,
             ring_bytes: u64::try_from(g.ring.capacity).unwrap_or(u64::MAX),
             oldest_offset: g.ring.oldest,
             end_offset: g.ring.end(),
             evicted_bytes: g.evicted_bytes,
+            dropped_bytes: self.dropped_bytes.load(Ordering::Relaxed),
             resyncs: g.resyncs,
         }
     }
@@ -178,8 +219,9 @@ impl Subscription {
         self.next
     }
 
-    /// Waits up to `timeout` for new output. Returns true when some was fed since the last wait
-    /// (or one is pending); a false return only means nothing new came in time.
+    /// Waits up to `timeout` for a nudge. Returns true when one is pending. A feed that found the
+    /// tap busy does not nudge (it only counts its bytes), so a false return does not prove that
+    /// nothing was fed: callers bound the wait and read regardless.
     pub fn wait(&self, timeout: Duration) -> bool {
         self.wake.recv_timeout(timeout).is_ok()
     }
@@ -193,23 +235,40 @@ struct Ring {
     oldest: u64,
 }
 
+/// A push whose bytes lie behind the ring's end.
+struct Stale;
+
 impl Ring {
     fn end(&self) -> u64 {
         self.oldest.saturating_add(u64::try_from(self.bytes.len()).unwrap_or(u64::MAX))
     }
 
-    /// Appends `data`; returns how many bytes left the front (evicted), including any prefix of
-    /// `data` that could never fit.
-    fn push(&mut self, data: &[u8]) -> u64 {
+    /// Appends `data`, which starts at absolute offset `start`. Returns how many bytes left the
+    /// ring (evicted), counting a prefix of `data` that could never fit.
+    ///
+    /// A `start` past the end means bytes were dropped in between: the ring starts afresh at
+    /// `start` and its old contents go, so a subscriber behind them resyncs. A `start` before the
+    /// end is stale and changes nothing.
+    fn push(&mut self, start: u64, data: &[u8]) -> Result<u64, Stale> {
+        let end = self.end();
+        if start < end {
+            return Err(Stale);
+        }
+        let mut evicted = 0u64;
+        if start > end {
+            evicted = u64::try_from(self.bytes.len()).unwrap_or(u64::MAX);
+            self.bytes.clear();
+        }
         let keep = data.len().min(self.capacity);
         let skipped = data.len() - keep;
         let kept = data.get(skipped..).unwrap_or_default();
-        let over = (self.bytes.len() + kept.len()).saturating_sub(self.capacity);
+        let over = (self.bytes.len() + kept.len()).saturating_sub(self.capacity).min(self.bytes.len());
         self.bytes.drain(..over);
         self.bytes.extend(kept.iter().copied());
-        let evicted = u64::try_from(over + skipped).unwrap_or(u64::MAX);
-        self.oldest = self.oldest.saturating_add(evicted);
-        evicted
+        evicted = evicted.saturating_add(u64::try_from(over.saturating_add(skipped)).unwrap_or(u64::MAX));
+        let new_end = start.saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
+        self.oldest = new_end.saturating_sub(u64::try_from(self.bytes.len()).unwrap_or(u64::MAX));
+        Ok(evicted)
     }
 
     /// Up to `max` bytes from absolute offset `from`; `None` when `from` is outside the ring.
@@ -227,13 +286,12 @@ impl Ring {
 struct RateMeter {
     /// `(second since the tap's origin, bytes in that second)`, indexed by second modulo the window.
     slots: [(u64, u64); RATE_WINDOW_SECS as usize],
-    total: u64,
     peak: u64,
 }
 
 impl RateMeter {
     fn new() -> Self {
-        Self { slots: [(0, 0); RATE_WINDOW_SECS as usize], total: 0, peak: 0 }
+        Self { slots: [(0, 0); RATE_WINDOW_SECS as usize], peak: 0 }
     }
 
     fn record(&mut self, n: u64, since_origin: Duration) {
@@ -246,14 +304,14 @@ impl RateMeter {
             slot.1 = slot.1.saturating_add(n);
             self.peak = self.peak.max(slot.1);
         }
-        self.total = self.total.saturating_add(n);
     }
 
-    /// Bytes in the window ending at `since_origin`, divided by the window length.
+    /// Bytes in the window ending at `since_origin`, divided by the seconds the window covers.
     fn last_minute_average(&self, since_origin: Duration) -> u64 {
         let sec = since_origin.as_secs();
         let sum = self.slots.iter().filter(|(s, _)| sec.saturating_sub(*s) < RATE_WINDOW_SECS).fold(0u64, |acc, (_, b)| acc.saturating_add(*b));
-        sum / RATE_WINDOW_SECS
+        let window = sec.saturating_add(1).min(RATE_WINDOW_SECS);
+        sum / window
     }
 }
 
@@ -320,6 +378,7 @@ mod tests {
         t.feed(b"0123456789");
         let s = t.stats();
         assert_eq!((s.oldest_offset, s.end_offset), (8, 12));
+        assert_eq!(s.evicted_bytes, 8, "two bytes pushed out, six that never fit");
         let mut sub = t.subscribe(Some(8));
         assert_eq!(bytes(sub.read(100)), (8, b"6789".to_vec()));
     }
@@ -398,6 +457,71 @@ mod tests {
         assert_eq!(s.total_bytes, 5_000 * 4096);
         assert_eq!(s.end_offset, 5_000 * 4096);
         assert_eq!(s.oldest_offset, s.end_offset - 1024 * 1024, "the ring kept only its window");
+        assert_eq!(s.dropped_bytes, 0, "nothing held the lock, so nothing was dropped");
+    }
+
+    #[test]
+    fn a_feed_does_not_wait_for_a_read_or_stats_held_on_another_thread() {
+        let t = tap(1024);
+        t.feed(b"abc");
+        let holder_tap = Arc::clone(&t);
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        // Stands in for a subscriber's read (or a stats call) paused mid-copy under the lock.
+        let holder = std::thread::spawn(move || {
+            let g = holder_tap.lock();
+            let _ = locked_tx.send(());
+            let _ = release_rx.recv();
+            drop(g);
+        });
+        locked_rx.recv_timeout(Duration::from_secs(5)).expect("the holder took the lock");
+
+        let feeder = Arc::clone(&t);
+        let (done_tx, done_rx) = mpsc::channel();
+        let feeding = std::thread::spawn(move || {
+            feeder.feed(b"defg");
+            feeder.feed(b"hi");
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("the feed returned while the lock was held elsewhere");
+        feeding.join().expect("feeder thread");
+        release_tx.send(()).expect("release the holder");
+        holder.join().expect("holder thread");
+
+        let s = t.stats();
+        assert_eq!(s.dropped_bytes, 6, "both feeds were dropped and counted");
+        assert_eq!(s.total_bytes, 9, "dropped bytes still take offsets");
+        assert_eq!(s.end_offset, 3, "the ring holds only what it accepted");
+    }
+
+    #[test]
+    fn a_subscriber_behind_a_dropped_feed_resyncs_and_the_stream_goes_on() {
+        let t = tap(1024);
+        let mut sub = t.subscribe(None);
+        t.feed(b"abc");
+        assert_eq!(bytes(sub.read(100)), (0, b"abc".to_vec()));
+
+        let holder_tap = Arc::clone(&t);
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let g = holder_tap.lock();
+            let _ = locked_tx.send(());
+            let _ = release_rx.recv();
+            drop(g);
+        });
+        locked_rx.recv_timeout(Duration::from_secs(5)).expect("lock held");
+        t.feed(b"XXXX");
+        release_tx.send(()).expect("release");
+        holder.join().expect("holder");
+
+        t.feed(b"yz");
+        assert_eq!(sub.read(100), Read::Resync { oldest: 7, end: 9 }, "bytes 3..7 are gone for good");
+        assert_eq!(sub.offset(), 9);
+        t.feed(b"!");
+        assert_eq!(bytes(sub.read(100)), (9, b"!".to_vec()));
+        let s = t.stats();
+        assert_eq!((s.dropped_bytes, s.evicted_bytes, s.resyncs), (4, 3, 1));
     }
 
     #[test]
@@ -426,13 +550,13 @@ mod tests {
         let s = t.stats_at(at(1.9));
         assert_eq!(s.total_bytes, 450);
         assert_eq!(s.peak_bytes_per_sec, 300, "the busiest second");
-        assert_eq!(s.bytes_per_sec_last_minute, 450 / 60);
+        assert_eq!(s.bytes_per_sec_last_minute, 450 / 2, "a 1.9 s old tap divides by the 2 seconds it has");
 
         t.feed_at(&[b'd'; 6000], at(30.0));
         let s = t.stats_at(at(30.5));
         assert_eq!(s.total_bytes, 6450);
         assert_eq!(s.peak_bytes_per_sec, 6000);
-        assert_eq!(s.bytes_per_sec_last_minute, (450 + 6000) / 60, "the first seconds are still in the window");
+        assert_eq!(s.bytes_per_sec_last_minute, (450 + 6000) / 31, "the first seconds are still in the window");
 
         let s = t.stats_at(at(61.0));
         assert_eq!(s.bytes_per_sec_last_minute, 6000 / 60, "second 0 has left the window; second 30 is still in");
