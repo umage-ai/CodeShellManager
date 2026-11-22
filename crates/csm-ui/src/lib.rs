@@ -9,6 +9,8 @@
 //! - [`engine_backend`]: the real backend over `csm-engine` ([`EngineBackend`]).
 //! - [`demo`]: a backend with the mock-up's data (`codeshell --demo`, screenshots, UI tests).
 //! - [`pane_tools`]: the `pane_*` tools (the Free layout's shape is the UI's).
+//! - [`view_overlay`]: the per-client copy of the view state, and the UI-only calls applied to it
+//!   (not wired into the app yet).
 //! - [`app`] and [`screens`]: the window.
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -30,6 +32,7 @@ pub mod screens;
 pub mod terminal;
 pub mod theme;
 pub mod usage_model;
+pub mod view_overlay;
 pub mod widgets;
 pub mod zoom;
 
