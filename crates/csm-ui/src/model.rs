@@ -812,6 +812,9 @@ pub struct UiModel {
     pub addons: Vec<csm_engine::addons::AddonSummary>,
     /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).
     pub remotes: Vec<csm_engine::RemoteView>,
+    /// The New session forms enabled process add-ons offer (`new_session_*` tools), for the New
+    /// session dialog.
+    pub new_sessions: Vec<csm_engine::NewSessionView>,
     /// The slash menu's list: the person's presets, then enabled add-ons' presets.
     pub slash_presets: Vec<csm_core::models::SlashCommand>,
     pub sessions: Vec<SessionView>,

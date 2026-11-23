@@ -599,6 +599,8 @@ pub(crate) fn clear_contributions(ctx: &mut Ctx<'_>, addon: &str, generation: u6
         return;
     }
     let had_remotes = ctx.state.rt.addons.remotes.remove(addon).is_some();
+    let prefix = format!("{addon}/");
+    ctx.state.rt.new_sessions.retain(|k, _| !k.starts_with(&prefix));
     let before = ctx.state.rt.plugin_marks.len();
     ctx.state.rt.plugin_marks.retain(|_, m| !(m.addon == addon && m.generation <= generation));
     if had_remotes || ctx.state.rt.plugin_marks.len() != before {

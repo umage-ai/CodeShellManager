@@ -618,6 +618,45 @@ Screens as panes in the layouts, blobs for large code and diffs, signed add-ons,
 and a process add-on's own profiles or palette commands. Protocol `api` 1 is the only version.
 
 
+## New session forms
+
+A process add-on may add a short form to the New session dialog (`[[new_session]]`, up to 4 per
+add-on). Nothing in it is specific to one add-on: the form names two of the add-on's own tools and
+the fields the dialog draws.
+
+```toml
+[[new_session]]
+id = "agent"                     # 1 to 64 characters, unique in the add-on
+title = "New NEXUS agent"        # the dialog's chip and heading (64 characters)
+submit = "Create agent"          # optional, default "Create" (32 characters)
+choices_tool = "nexus.projects"  # the add-on's own tool; answers data.choices
+choice_title = "Project"         # optional, default "Choose" (the picker's heading)
+choice_param = "project"         # the parameter that receives the chosen id
+tool = "nexus.agent_launch"      # the add-on's own tool, run on submit
+[new_session.params]             # optional fixed parameters: strings (256 bytes), booleans, integers
+open = true
+```
+
+- **Choices.** `choices_tool` answers `data = {"choices": [{"id", "label"?, "detail"?}]}`. An id is
+  up to 200 characters, a label 120 (the id when missing), a detail 200. At most 200 choices; entries
+  without an id and repeated ids are dropped. A missing or non-list `choices` is an error the dialog shows.
+- **Submit.** `tool` runs with the fixed `params` and `choice_param` set to the chosen id. Its
+  `message` is shown when it is done, and its failure is shown with the dialog kept open. A successful
+  submit closes the dialog. The add-on opens any session itself (`nexus.agent_launch` does with
+  `open = true`); CodeShellManager does not open one for it.
+- **Where it shows.** Only while the add-on is enabled and its process is running. Stopping the
+  process clears the form's state (loaded choices, the last submit).
+- **Tools** (toolset `addons`): `new_session_sources` (read, lists the forms and their state),
+  `new_session_load` (`addon`, `source`: asks the choices tool; launches a process and may reach the
+  network, so MCP clients are asked first) and `new_session_submit` (`addon`, `source`, `choice`: the
+  choice must be one of the loaded ones, so load first; the same consent). The dialog calls the same
+  two tools, so a form is never a path around them.
+- **Rules.** Each tool must be `<add-on id>.<name>`; any other name drops the form and is reported.
+  A pack may not declare one. A bad entry is reported and skipped; the rest of the add-on loads.
+- **Versions.** This is an optional addition to manifest `api = 1`, not a new API: an older
+  CodeShellManager reads `[[new_session]]` as an unknown table, reports it and loads the add-on without
+  the form. A changed `addon.toml` (the form is part of it) needs re-approval as for any change.
+
 ## Screens
 
 A process add-on can show **its own screens** inside CSM. It declares them in its `initialize`

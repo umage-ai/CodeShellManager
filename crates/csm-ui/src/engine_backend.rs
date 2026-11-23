@@ -626,6 +626,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         // The built-in add-ons first, then the folders: Settings › Add-ons lists them together.
         addons: view.builtin_addons.iter().chain(view.addons.iter()).cloned().collect(),
         remotes: view.remotes.clone(),
+        new_sessions: view.new_sessions.clone(),
         slash_presets: view.slash_presets.clone(),
         group_mode: match view.view {
             EngineGroupView::Rail => GroupMode::Rail,

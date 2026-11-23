@@ -989,6 +989,114 @@ fn remote_row(ui: &mut Ui, remotes: &[csm_engine::RemoteView], picked: &mut Opti
     });
 }
 
+/// Whether a New session form can be submitted now: its choices are loaded, no submit is running
+/// and the picked choice is one of them. Pure, so the dialog and its tests share the rule.
+pub(crate) fn form_can_submit(f: &csm_engine::NewSessionView, choice: Option<&str>) -> bool {
+    f.load == "ready" && f.submit != "running" && choice.is_some_and(|c| f.choices.iter().any(|x| x.id == c))
+}
+
+/// The New session row: one chip per form an enabled process add-on offers ("New NEXUS agent").
+/// A chip opens the form under the row: its choices are asked (`new_session_load`), then the
+/// picker and the submit (`new_session_submit`). The add-on's own tools do the work.
+fn new_session_row(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpenState, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
+    ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric((space::MD + space::XXS) as i8, space::SM as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("New session").font(theme::regular(text::CAPTION)).color(t.muted));
+            for f in forms.iter().take(8) {
+                let open = q.new_form.as_ref().is_some_and(|(a, s)| *a == f.addon && *s == f.source);
+                let kind = if open { ButtonKind::Primary } else { ButtonKind::Ghost };
+                let resp = widgets::button(ui, kind, Some("server"), &f.title, None).on_hover_text(format!("{} · opens the form below", f.addon_name));
+                let l = format!("New session form: {}", f.title);
+                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
+                if resp.clicked() {
+                    if open {
+                        q.new_form = None;
+                    } else {
+                        q.new_form = Some((f.addon.clone(), f.source.clone()));
+                        q.new_choice = None;
+                        q.new_pending = false;
+                        actions.push(Action::Tool("new_session_load", json!({"addon": f.addon, "source": f.source})));
+                    }
+                }
+            }
+        });
+        if let Some(f) = q.new_form.clone().and_then(|(a, s)| forms.iter().find(|f| f.addon == a && f.source == s)) {
+            new_session_panel(ui, f, q, actions);
+        }
+    });
+}
+
+/// The open form: the picker (loading, the reason it failed, empty, or the choices) and the submit
+/// with its progress and outcome. A successful submit closes the dialog: the add-on has opened
+/// (or listed) its session by then.
+fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickOpenState, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    if q.new_pending && f.submit == "done" {
+        q.new_pending = false;
+        actions.push(Action::CloseOverlays);
+        return;
+    }
+    let ident = json!({"addon": f.addon, "source": f.source});
+    ui.add_space(space::XS);
+    match f.load {
+        "ready" if f.choices.is_empty() => {
+            ui.label(egui::RichText::new("Nothing to choose from yet.").font(theme::regular(text::BODY)).color(t.muted));
+        }
+        "ready" => {
+            ui.label(egui::RichText::new(&f.choice_title).font(theme::regular(text::CAPTION)).color(t.muted));
+            ui.horizontal_wrapped(|ui| {
+                for c in f.choices.iter().take(60) {
+                    let on = q.new_choice.as_deref() == Some(c.id.as_str());
+                    let kind = if on { ButtonKind::Primary } else { ButtonKind::Ghost };
+                    let tip = if c.detail.is_empty() { c.id.clone() } else { format!("{} · {}", c.id, c.detail) };
+                    let resp = widgets::button(ui, kind, None, &c.label, None).on_hover_text(tip);
+                    let l = format!("{}: {}", f.choice_title, c.label);
+                    resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, on, l.clone()));
+                    if resp.clicked() {
+                        q.new_choice = Some(c.id.clone());
+                    }
+                }
+            });
+        }
+        "failed" => {
+            let msg = f.load_error.clone().unwrap_or_else(|| "The add-on did not answer.".to_owned());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(msg).font(theme::regular(text::BODY)).color(t.red));
+                if widgets::button(ui, ButtonKind::Secondary, None, "Try again", None).clicked() {
+                    actions.push(Action::Tool("new_session_load", ident.clone()));
+                }
+            });
+        }
+        _ => {
+            ui.label(egui::RichText::new("Loading…").font(theme::regular(text::BODY)).color(t.muted));
+        }
+    }
+    let can = form_can_submit(f, q.new_choice.as_deref());
+    let running = f.submit == "running";
+    let label = if running { "Starting…" } else { f.submit_label.as_str() };
+    ui.horizontal(|ui| {
+        let resp = ui.add_enabled_ui(can, |ui| widgets::button(ui, ButtonKind::Primary, None, label, None)).inner;
+        if resp.clicked() && can {
+            let choice = q.new_choice.clone().unwrap_or_default();
+            q.new_pending = true;
+            actions.push(Action::Tool("new_session_submit", json!({"addon": f.addon, "source": f.source, "choice": choice})));
+        }
+        match (f.submit, f.submit_text.as_deref()) {
+            ("running", _) => {
+                ui.label(egui::RichText::new("Starting. A launch can take up to 25 seconds; the session opens when it is ready.").font(theme::regular(text::CAPTION)).color(t.muted));
+            }
+            ("failed", Some(why)) => {
+                ui.label(egui::RichText::new(why).font(theme::regular(text::CAPTION)).color(t.red));
+            }
+            _ => {}
+        }
+    });
+}
+
 /// The Profile row: none / keep / each Windows Terminal profile, one click each, then the enabled
 /// add-ons' launch profiles (`addon_profiles`: id, name, command line; new sessions only).
 fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: bool, launch: &[String], addon_profiles: &[(String, String, String)]) {
@@ -1145,6 +1253,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         .collect();
     let remotes = model.remotes.clone();
     let mut picked_remote: Option<(String, String)> = None;
+    let new_forms = model.new_sessions.clone();
+    let mut form_actions: Vec<Action> = Vec::new();
     card(ctx, "quick-open", size::PALETTE_W, |ui| {
         let t = Tokens::get(ui.ctx());
         if let Some(id) = &q.edit {
@@ -1347,6 +1457,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         if q.edit.is_none() && !remotes.is_empty() {
             remote_row(ui, &remotes, &mut picked_remote);
         }
+        if q.edit.is_none() && !new_forms.is_empty() {
+            new_session_row(ui, &new_forms, &mut q, &mut form_actions);
+        }
         if q.remote {
             let picker = q.rkind == RemoteKind::Wsl && q.distros.as_ref().is_some_and(|d| !d.is_empty());
             let extra = if picker { size::CONTROL + space::SM } else { 0.0 };
@@ -1471,6 +1584,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             .unwrap_or_default();
         app.ui.dialog_request = Some(crate::app::DialogRequest::Folder { start });
     }
+    actions.extend(form_actions);
     if let Some((addon, remote_id)) = picked_remote {
         app.ui.quick = q;
         actions.push(Action::CloseOverlays);
@@ -1669,5 +1783,46 @@ mod tests {
         assert!(ids.contains(&"session_list"), "{ids:?}");
         assert!(!ids.contains(&"consent_answer"), "consent is never a palette command: {ids:?}");
         assert!(port.calls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod new_session_form_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::form_can_submit;
+    use csm_engine::{Choice, NewSessionView};
+
+    fn form(load: &'static str, submit: &'static str, choices: &[&str]) -> NewSessionView {
+        NewSessionView {
+            addon: "nexus".into(),
+            addon_name: "NEXUS".into(),
+            source: "agent".into(),
+            title: "New NEXUS agent".into(),
+            submit_label: "Create".into(),
+            choice_title: "Project".into(),
+            load,
+            choices: choices.iter().map(|c| Choice { id: (*c).into(), label: (*c).into(), detail: String::new() }).collect(),
+            load_error: None,
+            submit,
+            submit_text: None,
+        }
+    }
+
+    #[test]
+    fn a_form_submits_only_with_a_loaded_choice_and_no_submit_running() {
+        let ready = form("ready", "idle", &["uog", "demo"]);
+        assert!(form_can_submit(&ready, Some("uog")));
+        assert!(!form_can_submit(&ready, None), "no choice picked");
+        assert!(!form_can_submit(&ready, Some("other")), "a choice that is not offered");
+        assert!(!form_can_submit(&form("loading", "idle", &[]), Some("uog")), "still loading");
+        assert!(!form_can_submit(&form("failed", "idle", &[]), Some("uog")), "the load failed");
+        assert!(!form_can_submit(&form("ready", "running", &["uog"]), Some("uog")), "a launch is running");
+        assert!(form_can_submit(&form("ready", "failed", &["uog"]), Some("uog")), "a failed launch can be tried again");
+        assert!(form_can_submit(&form("ready", "done", &["uog"]), Some("uog")));
+    }
+
+    #[test]
+    fn an_empty_picker_offers_no_submit() {
+        assert!(!form_can_submit(&form("ready", "idle", &[]), Some("")));
     }
 }

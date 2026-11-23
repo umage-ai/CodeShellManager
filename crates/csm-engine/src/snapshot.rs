@@ -148,6 +148,8 @@ pub struct Snapshot {
     pub builtin_addons: Vec<crate::addons::AddonSummary>,
     /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).
     pub remotes: Vec<crate::plugins::RemoteView>,
+    /// The New session forms enabled process add-ons offer, with their loaded choices and submit state.
+    pub new_sessions: Vec<crate::tools::new_session::NewSessionView>,
     /// The slash menu's list: the person's presets, then enabled add-ons' presets.
     pub slash_presets: Vec<csm_core::models::SlashCommand>,
     /// In sidebar order (the persisted order), live and asleep.
@@ -406,6 +408,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         addons: crate::addons::summaries(&state.rt.addons),
         builtin_addons: crate::addons::builtin_summaries(&state.app.settings),
         remotes: crate::plugins::remote_views(&state.rt.addons),
+        new_sessions: crate::tools::new_session::views(&state.rt.addons, &state.rt.new_sessions),
         slash_presets: crate::addons::slash_presets(&state.rt.addons, &state.app.settings.claude_commands),
         version,
         sessions,

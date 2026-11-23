@@ -438,6 +438,12 @@ pub struct QuickOpenState {
     pub profiles: Option<Vec<Value>>,
     /// The Profile picker's choice.
     pub profile: ProfilePick,
+    /// The New session form open in the dialog, by (add-on id, form id), and its picked choice.
+    /// A form whose choices were asked waits for the answer in the model, never here.
+    pub new_form: Option<(String, String)>,
+    pub new_choice: Option<String>,
+    /// The form was submitted from this dialog: close it when the submit is done.
+    pub new_pending: bool,
     /// An enabled add-on's launch profile (`addon-id.name`) the new session starts with; the
     /// engine takes the command from it (`session_new` `profile`).
     pub addon_profile: Option<String>,

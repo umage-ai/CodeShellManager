@@ -105,6 +105,8 @@ fn main() {
                     json!({"id": "echo-test.csm", "title": "Csm", "summary": "Runs a CSM tool through csm/call", "effects": []}),
                     json!({"id": "echo-test.offer", "title": "Offer", "summary": "Sends csm/remotes_changed", "effects": []}),
                     json!({"id": "echo-test.open_agent", "title": "Open agent", "summary": "Says which session to open", "effects": []}),
+                    json!({"id": "echo-test.form_choices", "title": "Form choices", "summary": "The choices of a New session form", "effects": []}),
+                    json!({"id": "echo-test.form_launch", "title": "Form launch", "summary": "Runs a New session form", "effects": []}),
                 ];
                 if mode == "undeclared" {
                     tools.push(json!({"id": "echo-test.sneaky", "title": "Sneaky", "effects": ["sends_input"]}));
@@ -214,6 +216,19 @@ fn main() {
                         let name = args["name"].as_str().unwrap_or("agent").to_owned();
                         let session = json!({"name": name, "ssh": {"host": "agent-alias", "config_file": "cfg/ssh_config", "remote_argv": ["tmux", "new-session", "-A", "-s", "main"]}, "resume": "rerun"});
                         send(&mut out, &reply(&id, json!({"message": "open this", "data": {"session": session}})));
+                    }
+                    "echo-test.form_choices" => match mode.as_str() {
+                        "formempty" => send(&mut out, &reply(&id, json!({"message": "none", "data": {"choices": []}}))),
+                        "formerror" => send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the host is asleep"}})),
+                        "formjunk" => send(&mut out, &reply(&id, json!({"message": "junk", "data": {"choices": "nope"}}))),
+                        _ => send(&mut out, &reply(&id, json!({"message": "two", "data": {"choices": [{"id": "alpha", "label": "Alpha", "detail": "repo a"}, {"id": "beta"}, {"label": "no id"}]}}))),
+                    },
+                    "echo-test.form_launch" => {
+                        if mode == "formfail" {
+                            send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the host refused the launch"}}));
+                        } else {
+                            send(&mut out, &reply(&id, json!({"message": "Launched the agent.", "data": {"remote_id": "agent-x", "args": args, "open": {"opened": true}}})));
+                        }
                     }
                     "echo-test.callback" => {
                         next_csm_id += 1;
