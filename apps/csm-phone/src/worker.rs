@@ -38,6 +38,9 @@ pub struct Job {
     pub cfg: Config,
     pub devices: Vec<Device>,
     pub track: bool,
+    /// The `remote_control` wait this job belongs to (its launch, or the `/remote-control` it sends):
+    /// the host's token for the wait. Copied to the answer, so the host knows which wait it answers.
+    pub wait: Option<u64>,
 }
 
 /// The answer to one job: the response (for a request) or the session list (for a tracker read),
@@ -49,6 +52,7 @@ pub struct Done {
     pub sessions: Option<Result<Vec<csm_remote_proto::msg::SessionInfo>, String>>,
     pub devices: Vec<Device>,
     pub devices_changed: bool,
+    pub wait: Option<u64>,
 }
 
 /// The host's side of the worker: submit jobs, read answers. Dropping it stops the thread once the
@@ -102,13 +106,13 @@ impl Worker {
 
 fn run(mut engine: Engine, jobs: Receiver<Job>, done: Sender<Done>) {
     while let Ok(job) = jobs.recv() {
-        let Job { ch, device_id, req, now, cfg, mut devices, track } = job;
+        let Job { ch, device_id, req, now, cfg, mut devices, track, wait } = job;
         let finished = if track {
             let sessions = engine.track();
-            Done { ch, device_id, response: None, sessions: Some(sessions), devices, devices_changed: false }
+            Done { ch, device_id, response: None, sessions: Some(sessions), devices, devices_changed: false, wait }
         } else {
             let out = engine.handle(&cfg, &mut devices, &device_id, &req, now);
-            Done { ch, device_id, response: Some(out.response), sessions: None, devices, devices_changed: out.devices_changed }
+            Done { ch, device_id, response: Some(out.response), sessions: None, devices, devices_changed: out.devices_changed, wait }
         };
         if done.send(finished).is_err() {
             // The host is gone: nobody will read the answers.
@@ -158,7 +162,7 @@ mod tests {
     #[test]
     fn a_job_is_answered_on_the_worker_and_the_answer_comes_back() {
         let w = Worker::start(Engine::new(Box::new(Slow(Duration::from_millis(0))))).unwrap();
-        w.submit(Job { ch: 7, device_id: "d1".into(), req: ping(3), now: 50, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)], track: false }).unwrap();
+        w.submit(Job { ch: 7, device_id: "d1".into(), req: ping(3), now: 50, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)], track: false, wait: None }).unwrap();
         let started = Instant::now();
         let done = loop {
             if let Some(d) = w.try_done() {
@@ -180,7 +184,7 @@ mod tests {
         for i in 0..(QUEUE as u64 * 3) {
             // session.list calls CSM, so the worker is busy for the whole test; ping would not.
             let req = Request { id: i, op: Op::SessionList };
-            let job = Job { ch: 1, device_id: "d1".into(), req, now: 1, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)], track: false };
+            let job = Job { ch: 1, device_id: "d1".into(), req, now: 1, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)], track: false, wait: None };
             if w.submit(job) == Err(Refused::Full) {
                 refused += 1;
             }

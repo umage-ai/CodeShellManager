@@ -582,3 +582,260 @@ fn the_host_reconnects_after_a_relay_restart_and_paired_phones_connect_again() {
     assert!(r.ok, "the paired phone works again after the restart: {r:?}");
     relay2.stop();
 }
+
+// ---- the screens, driven through their events ----------------------------------------------------
+//
+// The shell's side of the screens, without stdio: what the host reports is absorbed into `Live`, a
+// screen event is turned into commands by `screens::event`, and the commands go to the host, as
+// the shell does. So these tests press the same buttons the person presses, against the real relay.
+
+use csm_phone::config as cfg_file;
+use csm_phone::relay_client::now_secs;
+use csm_phone::screens::{self, Live, Ui, View};
+
+/// A screen (one of the add-on's three) on a running host.
+struct ScreenRig<'a> {
+    host: &'a HostRig,
+    live: Live,
+    ui: Ui,
+}
+
+impl<'a> ScreenRig<'a> {
+    fn new(host: &'a HostRig) -> Self {
+        Self { host, live: Live { enabled: true, ..Live::default() }, ui: Ui::default() }
+    }
+
+    /// Takes what the host has reported so far, and a fresh view of its config and devices.
+    fn pump(&mut self) {
+        while let Ok(out) = self.host.outs.try_recv() {
+            self.live.absorb(&out);
+        }
+        let (tx, rx) = mpsc::channel();
+        self.host.cmd.send(Command::View(tx)).unwrap();
+        if let Ok(view) = rx.recv_timeout(WAIT) {
+            self.live.host = Some(view);
+        }
+    }
+
+    /// Pumps until `done` holds, or fails after the usual wait.
+    fn wait_for(&mut self, what: &str, done: impl Fn(&Live) -> bool) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            self.pump();
+            if done(&self.live) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}: {:?}", self.live.notice);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// One press of a control: the screen's state changes, and its commands go to the host.
+    fn event(&mut self, screen: &str, key: &str, kind: &str, value: Value) {
+        let view = View { live: &self.live, now: now_secs(), problem: None };
+        let commands = screens::event(screen, &view, &mut self.ui, key, kind, &value);
+        for c in commands {
+            self.host.cmd.send(c).unwrap();
+        }
+    }
+
+    fn tree(&self, screen: &str) -> String {
+        let view = View { live: &self.live, now: now_secs(), problem: None };
+        screens::tree(screen, &view, &self.ui).expect("a declared screen").to_string()
+    }
+}
+
+/// A host that reads `config.json` the way the add-on's shell does at start.
+fn start_host_reading_config(port: u16, dir: &Path) -> HostRig {
+    let cfg = match std::fs::read_to_string(dir.join(store::CONFIG_FILE)) {
+        Ok(text) => cfg_file::parse(&text),
+        Err(_) => Config::default(),
+    };
+    let opened = store::open(dir).unwrap();
+    let mut host = Host::new(dir.to_path_buf(), opened, cfg, &SECRET, Box::new(FakeCsm)).unwrap();
+    host.pairing_window = 600;
+    let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
+    let (out_tx, out_rx) = mpsc::channel::<Out>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let url = format!("ws://127.0.0.1:{port}");
+    std::thread::spawn(move || {
+        relay_client::run(&mut host, &url, &SECRET, &thread_stop, &cmd_rx, &mut |o| {
+            let _ = out_tx.send(o.clone());
+        });
+    });
+    HostRig { cmd: cmd_tx, outs: out_rx, stop }
+}
+
+/// Reads the saved `config.json` as the add-on reads it at start.
+fn saved_config(dir: &Path) -> Config {
+    cfg_file::parse(&std::fs::read_to_string(dir.join(store::CONFIG_FILE)).expect("config.json is written"))
+}
+
+#[test]
+fn the_pairing_screen_pairs_a_phone_through_its_buttons() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(relay.port(), dir.path());
+    let mut screen = ScreenRig::new(&host);
+    screen.wait_for("the host's view", |l| l.host.is_some());
+    assert!(screen.tree(screens::PAIR).contains("Start pairing"));
+
+    screen.event(screens::PAIR, "start", "click", Value::Null);
+    screen.wait_for("the offer", |l| l.offer.is_some());
+    assert!(screen.tree(screens::PAIR).contains("\"type\":\"qr\""), "the code is on the screen");
+    let offer = parse_offer(screen.live.offer.as_deref().unwrap());
+    let phone = Phone::new();
+    let psk = offer.psk().unwrap();
+    let mut ws = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
+    let (mut t, phone_check) = pairing_exchange(&mut ws, &phone, &offer, &psk, "Pixel 9");
+
+    screen.wait_for("the waiting phone", |l| l.pending.is_some());
+    let (check, name) = screen.live.pending.clone().unwrap();
+    assert_eq!(check, phone_check, "the screen shows the code the phone computed");
+    assert_eq!(name, "Pixel 9");
+    assert!(screen.tree(screens::PAIR).contains(&check), "the check code is drawn");
+
+    screen.event(screens::PAIR, "level", "select", json!({"value": "operator"}));
+    screen.event(screens::PAIR, "allow", "click", Value::Null);
+    let accept = read_binary(&mut ws).expect("the accept arrives");
+    let PairMsg::Accept { level, .. } = serde_json::from_slice(&open(&mut t, &accept)).unwrap() else {
+        panic!("expected Accept")
+    };
+    assert_eq!(level, Level::Operator, "the level chosen on the screen is the one granted");
+
+    screen.wait_for("the end of the pairing", |l| l.offer.is_none() && l.pending.is_none());
+    screen.wait_for("the link is up", |l| matches!(l.link, Some(csm_phone::host::Link::Up)));
+    assert_eq!(host.devices().len(), 1);
+    let status = screens::status_line(&View { live: &screen.live, now: now_secs(), problem: None });
+    assert_eq!(status, ("Connected to relay, 1 phone".to_owned(), "ok"), "the indicator counts the paired phone");
+    relay.stop();
+}
+
+#[test]
+fn the_pairing_screen_denies_a_phone_and_saves_nothing() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(relay.port(), dir.path());
+    let mut screen = ScreenRig::new(&host);
+    screen.event(screens::PAIR, "start", "click", Value::Null);
+    screen.wait_for("the offer", |l| l.offer.is_some());
+    let offer = parse_offer(screen.live.offer.as_deref().unwrap());
+    let phone = Phone::new();
+    let psk = offer.psk().unwrap();
+    let mut ws = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
+    let _ = pairing_exchange(&mut ws, &phone, &offer, &psk, "Stranger");
+    screen.wait_for("the waiting phone", |l| l.pending.is_some());
+
+    screen.event(screens::PAIR, "deny", "click", Value::Null);
+    screen.wait_for("the pairing to end", |l| l.offer.is_none());
+    assert_eq!(screen.live.notice.as_deref(), Some("Pairing stopped."));
+    assert!(host.devices().is_empty(), "a denied phone is not saved");
+    relay.stop();
+}
+
+#[test]
+fn an_expired_pairing_offer_ends_on_the_screen_with_its_reason() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host_with_window(relay.port(), dir.path(), Some(2));
+    let mut screen = ScreenRig::new(&host);
+    screen.event(screens::PAIR, "start", "click", Value::Null);
+    screen.wait_for("the offer", |l| l.offer.is_some());
+    screen.wait_for("the offer to expire", |l| l.offer.is_none());
+    assert!(screen.live.notice.as_deref().is_some_and(|n| n.contains("expired")), "{:?}", screen.live.notice);
+    relay.stop();
+}
+
+#[test]
+fn revoke_on_the_phones_screen_cuts_the_live_channel_at_once() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(relay.port(), dir.path());
+    let phone = Phone::new();
+    let paired = pair_allowed(&host, &relay, &phone, "Pixel 9", Level::Operator);
+    let (mut ws, mut t) = connect_device(&relay, &host_id(), &paired.host_pub, &phone, &paired.token).expect("connects before the revoke");
+
+    let mut screen = ScreenRig::new(&host);
+    screen.wait_for("the phone in the list", |l| !l.devices().is_empty());
+    screen.event(screens::DEVICES, "devices", "select", json!({"key": paired.device_id}));
+    screen.event(screens::DEVICES, "revoke", "click", Value::Null);
+    assert!(screen.tree(screens::DEVICES).contains("Yes, revoke"), "the first press only asks");
+    assert_eq!(host.devices().len(), 1, "nothing is revoked by the first press");
+    screen.event(screens::DEVICES, "revoke_yes", "click", Value::Null);
+
+    // The host closes the channel itself: the phone gets Bye and then the close.
+    let reason = loop {
+        let bye = read_binary(&mut ws).expect("the host says bye on the live channel");
+        match ServerMsg::parse(&open(&mut t, &bye)).expect("a server message") {
+            ServerMsg::Event(Event::Bye { reason }) => break reason,
+            ServerMsg::Event(_) => {}
+            ServerMsg::Response(_) => panic!("expected Bye"),
+        }
+    };
+    assert_eq!(reason, ByeReason::Revoked);
+    assert!(read_binary(&mut ws).is_none(), "the channel closes");
+    screen.wait_for("the phone gone from the list", |l| l.devices().is_empty());
+    relay.stop();
+}
+
+#[test]
+fn settings_round_trip_through_the_screen_and_the_file() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host_reading_config(relay.port(), dir.path());
+    let folder = tempfile::tempdir().unwrap();
+    let folder_path = folder.path().to_string_lossy().to_string();
+    let mut screen = ScreenRig::new(&host);
+    screen.wait_for("the host's view", |l| l.host.is_some());
+
+    screen.event(screens::SETTINGS, "relay", "submit", json!({"value": "wss://relay.example/"}));
+    screen.wait_for("the relay saved", |l| l.notice.as_deref().is_some_and(|n| n.starts_with("Saved")));
+    assert!(screen.live.notice.as_deref().is_some_and(|n| n.contains("restart")), "a relay change needs a restart");
+    screen.event(screens::SETTINGS, "folder_add", "submit", json!({"value": folder_path}));
+    screen.wait_for("the folder saved", |l| l.host.as_ref().is_some_and(|h| !h.cfg.folders.is_empty()));
+    screen.event(screens::SETTINGS, "push", "toggle", json!({"checked": true}));
+    screen.event(screens::SETTINGS, "max_sessions", "select", json!({"value": "9"}));
+    screen.event(screens::SETTINGS, "origin", "submit", json!({"value": "https://phone.example"}));
+    screen.wait_for("the last change saved", |l| l.host.as_ref().is_some_and(|h| h.cfg.max_phone_sessions == 9));
+
+    // The file is what the next start reads: every value comes back.
+    let saved = saved_config(dir.path());
+    assert_eq!(saved.relay, "wss://relay.example/");
+    assert_eq!(saved.folders.len(), 1);
+    assert!(saved.push);
+    assert_eq!(saved.max_phone_sessions, 9);
+    assert_eq!(saved.app_origin, "https://phone.example");
+
+    // A refused value is refused on the screen and the file keeps the good one.
+    screen.event(screens::SETTINGS, "relay", "submit", json!({"value": "ws://relay.example/"}));
+    screen.wait_for("the refusal", |l| l.notice.as_deref().is_some_and(|n| n.contains("relay must be wss")));
+    assert_eq!(saved_config(dir.path()).relay, "wss://relay.example/");
+    relay.stop();
+}
+
+#[test]
+fn a_damaged_config_is_kept_when_the_settings_are_first_written() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let damaged = "{ this is not json";
+    std::fs::write(dir.path().join(store::CONFIG_FILE), damaged).unwrap();
+    let host = start_host_reading_config(relay.port(), dir.path());
+    let mut screen = ScreenRig::new(&host);
+    screen.wait_for("the host's view", |l| l.host.is_some());
+    assert!(screen.tree(screens::SETTINGS).contains("config.json is damaged"), "the screen says so");
+    assert_eq!(std::fs::read_to_string(dir.path().join(store::CONFIG_FILE)).unwrap(), damaged, "nothing is written at start");
+
+    screen.event(screens::SETTINGS, "push", "toggle", json!({"checked": true}));
+    screen.wait_for("the first change saved", |l| l.notice.as_deref().is_some_and(|n| n.starts_with("Saved")));
+
+    let kept: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("config.json.damaged-"))
+        .collect();
+    assert_eq!(kept.len(), 1, "the damaged file is kept under its own name");
+    assert_eq!(std::fs::read_to_string(kept[0].path()).unwrap(), damaged, "its bytes are untouched");
+    assert!(saved_config(dir.path()).push, "the new file holds the change");
+    relay.stop();
+}

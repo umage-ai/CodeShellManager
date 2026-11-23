@@ -57,6 +57,10 @@ pub struct Config {
     /// Problems found when the file loaded or validated (not written back).
     #[serde(skip)]
     pub problems: Vec<String>,
+    /// The file on disk did not parse, so the defaults are in use. The first settings write keeps
+    /// the damaged file as `config.json.damaged-<time>` before it writes the new one.
+    #[serde(skip)]
+    pub damaged: bool,
 }
 
 impl Default for Config {
@@ -73,6 +77,7 @@ impl Default for Config {
             max_phone_sessions: DEFAULT_MAX_PHONE_SESSIONS,
             host_name: String::new(),
             problems: Vec::new(),
+            damaged: false,
         }
     }
 }
@@ -84,6 +89,7 @@ pub fn parse(text: &str) -> Config {
         Err(e) => {
             let mut d = Config::default();
             d.problems.push(format!("config.json does not parse ({:?}); the defaults are in use", e.classify()));
+            d.damaged = true;
             return d;
         }
     };

@@ -188,3 +188,78 @@ fn every_tool_effect_is_declared_by_the_process_and_every_tool_is_in_the_addon_n
         assert!(t.id.starts_with("phone-remote."));
     }
 }
+
+/// The first object under `v` with this `key` (a node's key in a screen tree).
+fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    match v {
+        Value::Object(map) => {
+            if map.get("key").and_then(Value::as_str) == Some(key) {
+                return Some(v);
+            }
+            map.values().find_map(|c| find_key(c, key))
+        }
+        Value::Array(items) => items.iter().find_map(|c| find_key(c, key)),
+        _ => None,
+    }
+}
+
+impl Program {
+    /// The next message with this method (other messages are skipped), within the usual wait.
+    fn next_method(&mut self, method: &str) -> Value {
+        loop {
+            let v = self.lines.recv_timeout(Duration::from_secs(10)).expect("a message in time");
+            if v.get("method").and_then(Value::as_str) == Some(method) {
+                return v;
+            }
+        }
+    }
+}
+
+#[test]
+fn the_screens_open_render_and_take_their_events_and_the_status_is_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = Program::start();
+    // CSM says it draws screens, so the add-on declares its three.
+    p.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"api": 1, "csm_version": "test", "capabilities": {"caller": 1, "data_dir": 1, "screens": 1}, "data_dir": dir.path().to_string_lossy()}}));
+    let init = p.answer(1);
+    let screen_ids: Vec<&str> = init["result"]["screens"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+    assert_eq!(screen_ids, vec!["phone-remote.pair", "phone-remote.devices", "phone-remote.settings"]);
+
+    // The status line comes without anyone asking: the add-on is off until connect is on.
+    let status = p.next_method("csm/status");
+    assert_eq!(status["params"]["text"], "Phone remote is off");
+    assert_eq!(status["params"]["tone"], "idle");
+
+    p.send(&json!({"jsonrpc": "2.0", "id": 30, "method": "screen/open", "params": {"screen": "phone-remote.settings", "instance": "i1", "theme": "dark"}}));
+    let opened = p.answer(30);
+    assert_eq!(opened["result"]["rev"], 1);
+    assert!(find_key(&opened["result"]["root"], "push").is_some(), "the settings screen has its push switch");
+
+    p.send(&json!({"jsonrpc": "2.0", "id": 31, "method": "screen/open", "params": {"screen": "phone-remote.nope", "instance": "i2"}}));
+    assert_eq!(p.answer(31)["error"]["code"], -32602, "an undeclared screen is refused");
+
+    // A press of the push switch: the add-on saves the setting and renders the screen again.
+    p.send(&json!({"jsonrpc": "2.0", "method": "screen/event", "params": {"instance": "i1", "rev": 1, "key": "push", "kind": "toggle", "value": {"checked": true}}}));
+    // The host applies the change on its own thread, so the first render may still show the old
+    // value: the render that shows the new one is the one to check.
+    let render = loop {
+        let r = p.next_method("screen/render");
+        if find_key(&r["params"]["root"], "push").is_some_and(|n| n["checked"] == true) {
+            break r;
+        }
+    };
+    assert_eq!(render["params"]["instance"], "i1");
+    assert!(render["params"]["rev"].as_u64().unwrap() > 1, "a newer revision");
+    let saved: Value = {
+        let text = std::fs::read_to_string(dir.path().join("config.json")).expect("the setting is written");
+        serde_json::from_str(&text).expect("config.json is JSON")
+    };
+    assert_eq!(saved["push"], true);
+
+    // A closed screen is forgotten: the add-on no longer renders it.
+    p.send(&json!({"jsonrpc": "2.0", "method": "screen/closed", "params": {"instance": "i1"}}));
+    p.send(&json!({"jsonrpc": "2.0", "method": "screen/event", "params": {"instance": "i1", "rev": 2, "key": "push", "kind": "toggle", "value": {"checked": false}}}));
+    p.send(&json!({"jsonrpc": "2.0", "id": 32, "method": "tools/call", "params": {"name": "phone-remote.status", "arguments": {}, "caller": {"kind": "ui", "client": "test"}}}));
+    let after = p.answer(32);
+    assert_eq!(after["result"]["data"]["enabled"], false);
+}

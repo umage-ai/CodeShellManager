@@ -218,6 +218,8 @@ fn messages_vectors() {
         serde_json::to_value(Event::Delta { seq: 2, upserts: vec![session("s1", PhoneStatus::Working)], removed: vec!["s9".into()] }).unwrap(),
         serde_json::to_value(Event::Inbox { seq: 3, unread: 0 }).unwrap(),
         serde_json::to_value(Event::Bye { reason: ByeReason::Revoked }).unwrap(),
+        serde_json::to_value(Event::RemoteControl { session: "s1".into(), ok: true, code: None, message: None }).unwrap(),
+        serde_json::to_value(Event::RemoteControl { session: "s1".into(), ok: false, code: Some(ErrorCode::Busy), message: Some("busy".into()) }).unwrap(),
     ];
     let data = json!({
         "inbox_item": serde_json::to_value(InboxItem { id: "i1".into(), title: "api needs you".into(), session_id: Some("s1".into()), ts: 1_760_000_100 }).unwrap(),

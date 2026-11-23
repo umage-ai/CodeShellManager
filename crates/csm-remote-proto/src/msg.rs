@@ -432,11 +432,26 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unread: Option<u32>,
     },
-    /// Changes since `seq - 1`. A gap in `seq` means: ask for a snapshot.
+    /// Changes since `seq - 1`. A gap in `seq` means: ask for a snapshot. A change too large for one
+    /// message is split into several deltas with consecutive seqs, each one a step on its own: the
+    /// first says "changes since seq - 1", the next "changes since the one before it", and so on.
     Delta { seq: u64, upserts: Vec<SessionInfo>, removed: Vec<String> },
+    /// The inbox changed. It shares the channel's seq counter (a missed message is a gap).
     Inbox { seq: u64, unread: u32 },
     /// The host is about to close the channel.
     Bye { reason: ByeReason },
+    /// The result of `session.new` with `remote_control`: the answer said `pending`, and this comes when
+    /// the wait ends. `ok` with no `code` is success; a failure carries `code` and `message`. The
+    /// session itself stays either way. Not sent if the channel has closed (the phone reads the setting
+    /// on its next `session.get`).
+    RemoteControl {
+        session: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ErrorCode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

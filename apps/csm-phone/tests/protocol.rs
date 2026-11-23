@@ -965,3 +965,117 @@ fn a_push_result_that_is_not_gone_keeps_the_subscription() {
     host.on_relay(&RelayToHost::PushResult { id: pushes[0].id, ok: false, status: Some(500), code: None });
     assert!(host.devices[0].push.is_some(), "only 404 and 410 drop a subscription");
 }
+
+// ---- remote control waits (section 4) ------------------------------------------------------------
+
+fn set_all_sessions(calls: &Calls, status: &str) {
+    for s in calls.sessions.lock().unwrap().iter_mut() {
+        s["status"] = json!(status);
+    }
+}
+
+/// A tick at `now` and the worker's answers, kept in `seen`: every output reaches the phone in order,
+/// so the phone's transport counts the same messages the host sealed.
+fn advance(host: &mut Host, seen: &mut Vec<Out>, now: u64) {
+    let outs = host.tick(now);
+    seen.extend(outs);
+    let more = host.wait_idle();
+    seen.extend(more);
+}
+
+/// The events on a channel, in order. Every data message is opened, so the phone's transport stays in
+/// step with what the host sealed.
+fn events_on(outs: &[Out], ch: u32, t: &mut TransportState) -> Vec<msg::Event> {
+    data_on(outs, ch)
+        .iter()
+        .filter_map(|c| open_msg(t, c))
+        .filter_map(|plain| match ServerMsg::parse(&plain) {
+            Some(ServerMsg::Event(e)) => Some(e),
+            _ => None,
+        })
+        .collect()
+}
+
+fn launch_with_remote_control(host: &mut Host, t: &mut TransportState, id: u64) -> Response {
+    request(host, 2, t, id, Op::SessionNew { folder: "/work/app".into(), profile: "claude".into(), name: None, remote_control: true }).unwrap()
+}
+
+#[test]
+fn remote_control_is_pending_at_once_and_the_command_is_sent_when_the_session_is_idle() {
+    let mut cfg = config();
+    cfg.max_phone_sessions = 20;
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Operator, cfg);
+    let mut t = connect_device(&mut host, &phone, &token, 2).unwrap();
+    let r = launch_with_remote_control(&mut host, &mut t, 1);
+    assert!(r.ok, "{r:?}");
+    let data = r.data.clone().unwrap();
+    assert_eq!(data["remote_control"], "pending", "the answer does not wait for the idle session");
+    let session = data["id"].as_str().unwrap().to_owned();
+
+    let mut seen = Vec::new();
+    set_all_sessions(&calls, "working");
+    advance(&mut host, &mut seen, NOW);
+    advance(&mut host, &mut seen, NOW + 3);
+    advance(&mut host, &mut seen, NOW + 6);
+    assert_eq!(count(&calls, "session_send_command"), 0, "nothing is typed into a busy session");
+
+    set_all_sessions(&calls, "idle");
+    advance(&mut host, &mut seen, NOW + 9);
+    // The read that shows the idle session comes first; the command goes out on the tick after it.
+    advance(&mut host, &mut seen, NOW + 12);
+    let events = events_on(&seen, 2, &mut t);
+    assert!(
+        events.iter().any(|e| matches!(e, msg::Event::RemoteControl { session: s, ok: true, code: None, .. } if *s == session)),
+        "the result comes as an event: {events:?}"
+    );
+    assert_eq!(count(&calls, "session_send_command"), 1, "the command is typed once");
+    let sent = calls.log.lock().unwrap().iter().rev().find(|(tool, _)| tool == "session_send_command").map(|(_, p)| p.clone()).unwrap();
+    assert_eq!(sent["command"], "/remote-control");
+}
+
+#[test]
+fn a_remote_control_wait_that_never_sees_idle_ends_with_a_failure_event_and_sends_nothing() {
+    let mut cfg = config();
+    cfg.max_phone_sessions = 20;
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Operator, cfg);
+    let mut t = connect_device(&mut host, &phone, &token, 2).unwrap();
+    assert_eq!(launch_with_remote_control(&mut host, &mut t, 1).data.unwrap()["remote_control"], "pending");
+    let mut seen = Vec::new();
+    set_all_sessions(&calls, "working");
+    advance(&mut host, &mut seen, NOW);
+    advance(&mut host, &mut seen, NOW + 3);
+    advance(&mut host, &mut seen, NOW + csm_phone::host::REMOTE_WAIT_SECS + 1);
+    let events = events_on(&seen, 2, &mut t);
+    assert!(
+        matches!(events.last(), Some(msg::Event::RemoteControl { ok: false, code: Some(msg::ErrorCode::Failed), .. })),
+        "a failure event after two minutes: {events:?}"
+    );
+    assert_eq!(count(&calls, "session_send_command"), 0);
+}
+
+#[test]
+fn a_third_remote_control_launch_for_one_phone_is_refused_before_session_new() {
+    let mut cfg = config();
+    cfg.max_phone_sessions = 20;
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Operator, cfg);
+    let mut t = connect_device(&mut host, &phone, &token, 2).unwrap();
+    for id in [1, 2] {
+        assert_eq!(launch_with_remote_control(&mut host, &mut t, id).data.unwrap()["remote_control"], "pending");
+    }
+    let refused = launch_with_remote_control(&mut host, &mut t, 3);
+    assert_eq!(refused.error.unwrap().code, msg::ErrorCode::RateLimited);
+    assert_eq!(count(&calls, "session_new"), 2, "the refused launch never reaches session_new");
+}
+
+#[test]
+fn a_launch_without_remote_control_takes_no_wait() {
+    let mut cfg = config();
+    cfg.max_phone_sessions = 20;
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Operator, cfg);
+    let mut t = connect_device(&mut host, &phone, &token, 2).unwrap();
+    for id in 1..=3 {
+        let r = request(&mut host, 2, &mut t, id, Op::SessionNew { folder: "/work/app".into(), profile: "claude".into(), name: None, remote_control: false }).unwrap();
+        assert_eq!(r.data.unwrap()["remote_control"], "off");
+    }
+    assert_eq!(count(&calls, "session_new"), 3, "no waits are counted against the phone");
+}

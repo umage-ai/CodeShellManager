@@ -3,21 +3,24 @@
 //! Threads:
 //! - a reader thread takes every line from stdin: requests and notifications go to the main
 //!   thread's queue, answers to our own `csm/call`s go to the caller waiting for them;
-//! - the main thread answers `initialize` and `tools/call`, and never calls CSM itself;
+//! - the main thread answers `initialize`, `tools/call` and the screen protocol, sends the screens'
+//!   renders and the `csm/status` line, and never calls CSM itself;
 //! - the host thread owns the [`Host`] (pairing, devices, the relay connection). It makes the CSM
 //!   calls its ops need (through [`StdioCsm`]) and receives the person's commands over a channel.
 //!
 //! The person-only tools (pairing, decisions, devices) refuse every caller whose `kind` is not `ui`
-//! or `cli`, so an agent or another add-on cannot pair a phone or revoke one.
+//! or `cli`, so an agent or another add-on cannot pair a phone or revoke one. The screens are the
+//! person's own: their events come from the person's clicks, and each one is checked in
+//! [`crate::screens`] before it becomes a command.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use csm_remote_proto::msg::Level;
 use serde_json::{Value, json};
@@ -26,7 +29,8 @@ use crate::config::{self, Config};
 use crate::csm::{Csm, CsmError, classify};
 use crate::host::{Host, Out};
 use crate::policy::cut;
-use crate::relay_client::{self, Command};
+use crate::relay_client::{self, Command, now_secs};
+use crate::screens::{self, Live, SCREEN_IDS, Ui, View};
 use crate::store;
 
 /// The add-on protocol version this program speaks (`PROTOCOL_API` in CSM).
@@ -36,6 +40,14 @@ pub const ADD_ON_NAME: &str = "Phone remote";
 const CALL_TIMEOUT: Duration = Duration::from_secs(35);
 /// How long a tool waits for the host thread to answer a command.
 const ASK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the main loop waits for the host's view before it carries on without it.
+const VIEW_TIMEOUT: Duration = Duration::from_millis(300);
+/// The main loop wakes this often to publish renders and the status line.
+const LOOP_TICK: Duration = Duration::from_millis(200);
+/// How often the main loop asks the host for a fresh view of the config, devices and offer.
+const VIEW_EVERY: Duration = Duration::from_millis(500);
+/// Open screens per add-on (`docs/addons.md`, "Limits").
+const MAX_INSTANCES: usize = 8;
 /// CSM never sends a message over 1 MiB; a longer line is dropped.
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
@@ -66,7 +78,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     let spec = |id, title, summary, schema, effects| ToolSpec { id, title, summary, schema, effects };
     vec![
         spec(TOOL_STATUS, "Status", "Whether the phone remote runs, its relay, the paired phones and any phone waiting for an answer.", json!({"type": "object"}), vec![]),
-        spec(TOOL_PAIR_START, "Pair a phone", "Open a pairing: returns the link for the phone (the pairing screen shows it as a QR code). Person only.", json!({"type": "object"}), vec!["accesses_network"]),
+        spec(TOOL_PAIR_START, "Pair a phone", "Open a pairing. The pairing screen shows the code for the phone. Person only.", json!({"type": "object"}), vec!["accesses_network"]),
         spec(TOOL_PAIR_STOP, "Stop pairing", "Close the pairing; a waiting phone is denied. Person only.", json!({"type": "object"}), vec!["accesses_network"]),
         spec(
             TOOL_PAIR_DECIDE,
@@ -93,22 +105,25 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// What the host thread shares with the main thread: the decision a phone is waiting for.
-#[derive(Default)]
-struct Shared {
-    pending: Option<(String, String)>,
+/// The screens this add-on declares in `initialize` (`docs/addons.md`, "Declaring and opening").
+pub fn screen_specs() -> Vec<Value> {
+    vec![
+        json!({"id": screens::PAIR, "title": "Pair a phone", "icon": "phone", "scope": "global", "summary": "Pair a phone with this PC"}),
+        json!({"id": screens::DEVICES, "title": "Phones", "icon": "devices", "scope": "global", "summary": "Paired phones and their levels"}),
+        json!({"id": screens::SETTINGS, "title": "Phone remote settings", "icon": "list", "scope": "global", "summary": "Relay, folders, profiles, commands and push"}),
+    ]
 }
 
 /// Everything written to stdout goes through here, one line at a time.
 struct Io {
     out: Mutex<io::Stdout>,
-    waiting: Mutex<HashMap<u64, Sender<Value>>>,
+    waiting: Mutex<BTreeMap<u64, Sender<Value>>>,
     next_id: AtomicU64,
 }
 
 impl Io {
     fn new() -> Self {
-        Self { out: Mutex::new(io::stdout()), waiting: Mutex::new(HashMap::new()), next_id: AtomicU64::new(1_000_000) }
+        Self { out: Mutex::new(io::stdout()), waiting: Mutex::new(BTreeMap::new()), next_id: AtomicU64::new(1_000_000) }
     }
 
     /// One message out. A failed write means CSM is gone; the caller just carries on.
@@ -185,12 +200,13 @@ struct Session {
     enabled: bool,
     relay_set: bool,
     commands: Option<Sender<Command>>,
-    shared: Arc<Mutex<Shared>>,
+    /// What the host last reported, for the screens and the indicator.
+    shared: Arc<Mutex<Live>>,
 }
 
 impl Session {
     fn idle(problem: Option<String>) -> Self {
-        Self { problem, enabled: false, relay_set: false, commands: None, shared: Arc::new(Mutex::new(Shared::default())) }
+        Self { problem, enabled: false, relay_set: false, commands: None, shared: Arc::new(Mutex::new(Live::default())) }
     }
 }
 
@@ -225,6 +241,7 @@ fn start(io: &Arc<Io>, dir: PathBuf) -> Session {
     };
     session.relay_set = !cfg.relay.is_empty();
     session.enabled = cfg.connect && cfg.relay_allowed();
+    set_live(&session, |live| live.enabled = session.enabled);
     let url = cfg.relay.clone();
     let enabled = session.enabled;
     let mut host = match Host::new(dir, opened, cfg, &secret, Box::new(StdioCsm { io: Arc::clone(io) })) {
@@ -254,23 +271,29 @@ fn start(io: &Arc<Io>, dir: PathBuf) -> Session {
     session
 }
 
-/// What the host reports while it runs: problems go to the log, a waiting phone to the shared
-/// state the status tool reads.
-fn on_host_out(io: &Io, shared: &Mutex<Shared>, out: &Out) {
-    match out {
-        Out::Problem(p) => io.log(p),
-        Out::Pending { check, name } => {
-            if let Ok(mut s) = shared.lock() {
-                s.pending = Some((check.clone(), name.clone()));
-            }
-        }
-        Out::PairingEnded => {
-            if let Ok(mut s) = shared.lock() {
-                s.pending = None;
-            }
-        }
-        Out::Frame(_) | Out::Control(_) | Out::PairingUrl(_) | Out::DevicesChanged => {}
+/// Locks the shared state. A poisoned lock still holds the state, so it is used as it is.
+fn lock(shared: &Mutex<Live>) -> MutexGuard<'_, Live> {
+    shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn set_live(session: &Session, f: impl FnOnce(&mut Live)) {
+    f(&mut lock(&session.shared));
+}
+
+/// What the host reports while it runs: problems go to the log, everything else to the shared
+/// state the screens and the indicator read.
+fn on_host_out(io: &Io, shared: &Mutex<Live>, out: &Out) {
+    if let Out::Problem(p) = out {
+        io.log(p);
     }
+    lock(shared).absorb(out);
+}
+
+/// Runs `f` on a copy of what the host last reported, with the time and the store problem.
+fn with_view<T>(session: &Session, f: impl FnOnce(&View) -> T) -> T {
+    let live = lock(&session.shared).clone();
+    let view = View { live: &live, now: now_secs(), problem: session.problem.as_deref() };
+    f(&view)
 }
 
 /// The tool result, or the refusal the caller sees.
@@ -315,7 +338,7 @@ fn devices_count(session: &Session) -> Result<usize, (i64, String)> {
 fn tool(session: &Session, name: &str, params: &Value) -> ToolResult {
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     if name == TOOL_STATUS {
-        let pending = session.shared.lock().ok().and_then(|s| s.pending.clone());
+        let pending = lock(&session.shared).pending.clone();
         let pending = pending.map(|(check, who)| json!({"check": check, "name": who}));
         let devices = if session.commands.is_some() { devices_count(session)? } else { 0 };
         return Ok(("Phone remote status.".into(), json!({"enabled": session.enabled, "relay_set": session.relay_set, "devices": devices, "pending": pending, "problem": session.problem})));
@@ -325,9 +348,10 @@ fn tool(session: &Session, name: &str, params: &Value) -> ToolResult {
     }
     match name {
         TOOL_PAIR_START => {
-            let version = env!("CARGO_PKG_VERSION").to_owned();
-            let url = ask(session, |reply| Command::StartPairing { app_version: version, reply })?.map_err(|why| (-32000, why))?;
-            Ok(("Pairing open. Scan the code with the phone.".into(), json!({"url": url})))
+            // The link (it carries the key for the phone) goes only to the pairing screen, never into
+            // a tool result: the answer says where the person finds it.
+            ask(session, |reply| Command::StartPairing { app_version: env!("CARGO_PKG_VERSION").to_owned(), reply })?.map_err(|why| (-32000, why))?;
+            Ok(("Pairing open. The pairing screen shows the code for the phone.".into(), json!({})))
         }
         TOOL_PAIR_STOP => {
             send(session, Command::StopPairing)?;
@@ -362,6 +386,145 @@ fn tool(session: &Session, name: &str, params: &Value) -> ToolResult {
     }
 }
 
+// ---- the screens -----------------------------------------------------------------------------
+
+/// One open screen: which screen, its revision, the tree last sent and the screen's own state.
+struct Instance {
+    screen: String,
+    rev: u64,
+    tree: Value,
+    ui: Ui,
+}
+
+/// `screen/open` (a request): the first tree, as revision 1.
+fn open_screen(session: &Session, open: &mut BTreeMap<String, Instance>, params: &Value) -> Result<Value, (i64, String)> {
+    let screen = params.get("screen").and_then(Value::as_str).unwrap_or_default();
+    let instance = params.get("instance").and_then(Value::as_str).unwrap_or_default();
+    if !SCREEN_IDS.contains(&screen) {
+        return Err((-32602, "no such screen in this add-on".into()));
+    }
+    if instance.is_empty() || instance.len() > 64 || instance.chars().any(char::is_control) {
+        return Err((-32602, "the instance name is missing or bad".into()));
+    }
+    if !open.contains_key(instance) && open.len() >= MAX_INSTANCES {
+        return Err((-32000, "too many of this add-on's screens are open".into()));
+    }
+    let ui = Ui::default();
+    let root = with_view(session, |view| screens::tree(screen, view, &ui)).ok_or((-32602, "no such screen in this add-on".to_owned()))?;
+    open.insert(instance.to_owned(), Instance { screen: screen.to_owned(), rev: 1, tree: root.clone(), ui });
+    Ok(json!({"rev": 1, "root": root}))
+}
+
+/// `screen/event` (a notification): the screen's own state changes, and the host gets the commands.
+fn screen_event(session: &Session, open: &mut BTreeMap<String, Instance>, params: &Value) {
+    let instance = params.get("instance").and_then(Value::as_str).unwrap_or_default();
+    let key = params.get("key").and_then(Value::as_str).unwrap_or_default();
+    let kind = params.get("kind").and_then(Value::as_str).unwrap_or_default();
+    let value = params.get("value").cloned().unwrap_or(Value::Null);
+    let Some(inst) = open.get_mut(instance) else { return };
+    // The answer to the last press is shown until the next one; a new press clears it.
+    set_live(session, |live| live.notice = None);
+    let commands = with_view(session, |view| screens::event(&inst.screen, view, &mut inst.ui, key, kind, &value));
+    for command in commands {
+        if let Err((_, why)) = send(session, command) {
+            set_live(session, |live| live.notice = Some(cut(&why, 200)));
+        }
+    }
+}
+
+/// Publishes a render for every open screen whose tree changed since it was last sent.
+fn render_open(io: &Io, session: &Session, open: &mut BTreeMap<String, Instance>) {
+    if open.is_empty() {
+        return;
+    }
+    let live = lock(&session.shared).clone();
+    let view = View { live: &live, now: now_secs(), problem: session.problem.as_deref() };
+    for (instance, inst) in open.iter_mut() {
+        let Some(tree) = screens::tree(&inst.screen, &view, &inst.ui) else { continue };
+        if tree != inst.tree {
+            inst.rev = inst.rev.saturating_add(1);
+            inst.tree = tree.clone();
+            io.send(&json!({"jsonrpc": "2.0", "method": "screen/render", "params": {"instance": instance, "rev": inst.rev, "root": tree}}));
+        }
+    }
+}
+
+/// Asks the host for a fresh copy of its config, devices and offer expiry. Waits briefly; a host
+/// that is busy keeps the last copy.
+fn refresh_view(session: &Session) {
+    let Some(commands) = session.commands.as_ref() else { return };
+    let (tx, rx) = mpsc::channel();
+    if commands.send(Command::View(tx)).is_err() {
+        return;
+    }
+    if let Ok(view) = rx.recv_timeout(VIEW_TIMEOUT) {
+        set_live(session, |live| live.host = Some(view));
+    }
+}
+
+/// Sends `csm/status` when the line changed (CSM coalesces the rest).
+fn publish_status(io: &Io, session: &Session, last: &mut Option<(String, &'static str)>) {
+    let (text, tone) = with_view(session, screens::status_line);
+    if last.as_ref().is_some_and(|(t, k)| *t == text && *k == tone) {
+        return;
+    }
+    io.send(&json!({"jsonrpc": "2.0", "method": "csm/status", "params": {"text": text, "tone": tone}}));
+    *last = Some((text, tone));
+}
+
+// ---- the main loop ---------------------------------------------------------------------------
+
+/// One message from CSM: a request answered here, or a notification.
+fn handle(io: &Arc<Io>, session: &mut Session, open: &mut BTreeMap<String, Instance>, msg: Value, started: &mut bool) {
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let id = msg.get("id").cloned();
+    match (method.as_str(), id.as_ref()) {
+        ("initialize", Some(id)) => {
+            let data_dir = params.get("data_dir").and_then(Value::as_str).map(PathBuf::from);
+            *session = match data_dir {
+                Some(dir) => start(io, dir),
+                None => Session::idle(Some("no data folder: CSM is running with --clean or in an isolated run, so nothing is kept".into())),
+            };
+            *started = true;
+            let tools: Vec<Value> = tool_specs()
+                .into_iter()
+                .map(|t| json!({"id": t.id, "title": t.title, "summary": t.summary, "input_schema": t.schema, "effects": t.effects}))
+                .collect();
+            // Screens only when CSM says it draws them (`capabilities.screens`, docs/addons.md).
+            let screens_ok = params.pointer("/capabilities/screens").and_then(Value::as_u64).is_some_and(|v| v >= 1);
+            let screens = if screens_ok { screen_specs() } else { Vec::new() };
+            io.reply(id, json!({"api": API, "name": ADD_ON_NAME, "tools": tools, "subscriptions": [], "screens": screens}));
+        }
+        ("tools/call", Some(id)) => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            match tool(session, &name, &params) {
+                Ok((message, data)) => io.reply(id, json!({"message": message, "data": data})),
+                Err((code, message)) => io.reply_err(id, code, &message),
+            }
+        }
+        ("screen/open", Some(id)) => match open_screen(session, open, &params) {
+            Ok(answer) => io.reply(id, answer),
+            Err((code, message)) => io.reply_err(id, code, &message),
+        },
+        ("screen/event", None) => screen_event(session, open, &params),
+        // A refresh asks for a full render: an empty tree never matches, so the next publish sends one.
+        ("screen/refresh", None) => {
+            if let Some(inst) = params.get("instance").and_then(Value::as_str).and_then(|i| open.get_mut(i)) {
+                inst.tree = Value::Null;
+            }
+        }
+        ("screen/closed", None) => {
+            if let Some(instance) = params.get("instance").and_then(Value::as_str) {
+                open.remove(instance);
+            }
+        }
+        (_, Some(id)) => io.reply_err(id, -32601, "method not found"),
+        // Other notifications are not used by this add-on.
+        (_, None) => {}
+    }
+}
+
 /// The program's main loop: runs until CSM closes stdin.
 pub fn run() {
     let io = Arc::new(Io::new());
@@ -372,32 +535,23 @@ pub fn run() {
         return;
     }
     let mut session = Session::idle(Some("the add-on has not been initialised".into()));
-    while let Ok(msg) = inbox_rx.recv() {
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_owned();
-        let params = msg.get("params").cloned().unwrap_or(Value::Null);
-        match (method.as_str(), msg.get("id")) {
-            ("initialize", Some(id)) => {
-                let data_dir = params.get("data_dir").and_then(Value::as_str).map(PathBuf::from);
-                session = match data_dir {
-                    Some(dir) => start(&io, dir),
-                    None => Session::idle(Some("no data folder: CSM is running with --clean or in an isolated run, so nothing is kept".into())),
-                };
-                let tools: Vec<Value> = tool_specs()
-                    .into_iter()
-                    .map(|t| json!({"id": t.id, "title": t.title, "summary": t.summary, "input_schema": t.schema, "effects": t.effects}))
-                    .collect();
-                io.reply(id, json!({"api": API, "name": ADD_ON_NAME, "tools": tools, "subscriptions": []}));
+    let mut open: BTreeMap<String, Instance> = BTreeMap::new();
+    let mut started = false;
+    let mut last_status: Option<(String, &'static str)> = None;
+    let mut last_view: Option<Instant> = None;
+    loop {
+        match inbox_rx.recv_timeout(LOOP_TICK) {
+            Ok(msg) => handle(&io, &mut session, &mut open, msg, &mut started),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if started {
+            if last_view.is_none_or(|t| t.elapsed() >= VIEW_EVERY) {
+                refresh_view(&session);
+                last_view = Some(Instant::now());
             }
-            ("tools/call", Some(id)) => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-                match tool(&session, &name, &params) {
-                    Ok((message, data)) => io.reply(id, json!({"message": message, "data": data})),
-                    Err((code, message)) => io.reply_err(id, code, &message),
-                }
-            }
-            (_, Some(id)) => io.reply_err(id, -32601, "method not found"),
-            // Notifications (events) are not used by this add-on.
-            (_, None) => {}
+            publish_status(&io, &session, &mut last_status);
+            render_open(&io, &session, &mut open);
         }
     }
 }
@@ -464,5 +618,48 @@ mod tests {
         let params = json!({"caller": {"kind": "ui"}, "arguments": {"allow": false}});
         let err = tool(&session, TOOL_PAIR_DECIDE, &params).expect_err("no host");
         assert!(err.1.contains("not running") || err.1.contains("no data folder") || err.1.contains("initialised"), "{}", err.1);
+    }
+
+    #[test]
+    fn a_screen_opens_only_when_the_add_on_declares_it() {
+        let session = Session::idle(Some("no data folder".into()));
+        let mut open = BTreeMap::new();
+        let ok = open_screen(&session, &mut open, &json!({"screen": screens::PAIR, "instance": "i1"})).unwrap();
+        assert_eq!(ok["rev"], 1);
+        assert!(ok["root"].is_object(), "a tree even without a host: it says why");
+        let refused = open_screen(&session, &mut open, &json!({"screen": "phone-remote.nope", "instance": "i2"})).expect_err("not declared");
+        assert_eq!(refused.0, -32602);
+        let bad = open_screen(&session, &mut open, &json!({"screen": screens::DEVICES, "instance": ""})).expect_err("no instance");
+        assert_eq!(bad.0, -32602);
+    }
+
+    #[test]
+    fn at_most_eight_screens_are_open() {
+        let session = Session::idle(None);
+        let mut open = BTreeMap::new();
+        for i in 0..MAX_INSTANCES {
+            open_screen(&session, &mut open, &json!({"screen": screens::SETTINGS, "instance": format!("i{i}")})).unwrap();
+        }
+        assert!(open_screen(&session, &mut open, &json!({"screen": screens::SETTINGS, "instance": "one-more"})).is_err());
+    }
+
+    #[test]
+    fn the_declared_screens_are_the_three_of_the_design_note() {
+        let specs = screen_specs();
+        assert_eq!(specs.len(), 3);
+        for s in specs {
+            let id = s["id"].as_str().unwrap();
+            assert!(SCREEN_IDS.contains(&id));
+            assert!(s["title"].as_str().is_some_and(|t| !t.is_empty() && t.chars().count() <= 64));
+        }
+    }
+
+    #[test]
+    fn the_pairing_tool_never_returns_the_offer() {
+        // The tool's answer is built from the message and data only; the data has no link in it.
+        let source = include_str!("shell.rs");
+        let pair_arm = source.split("TOOL_PAIR_START => {").nth(1).unwrap_or_default();
+        let arm = pair_arm.split("TOOL_PAIR_STOP").next().unwrap_or_default();
+        assert!(!arm.contains("\"url\""), "the link never leaves the screen");
     }
 }

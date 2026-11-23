@@ -1,6 +1,6 @@
 # Phone remote: design note
 
-Status: **step 1 partly built** (branch `phone/addon`, fix round 5). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, and Web Push with RFC 8291 encryption, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). The add-on's own screens (pairing, devices, settings) are **not built yet**. Section 18 lists what is not built and where the code deviates from this plan.
+Status: **step 1 built on the host side** (branch `phone/addon`, fix round 6). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, Web Push with RFC 8291 encryption, the three screens (pairing, phones, settings), the `csm/status` line, and the `remote_control` wait for `session.new`, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). Section 18.6 says what the screens do. Section 18.1 lists what is not built (the web app, step 2, and the end-to-end task, step 3) and section 18.2 where the code deviates from this plan.
 Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
 facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
@@ -1159,7 +1159,7 @@ brief requires.
 
 ---
 
-## 18. Build status (step 1, partial; fix round 5)
+## 18. Build status (step 1, host side; fix round 6)
 
 Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `DENY_ROOTS`), the manifest
 `samples/addons/phone-remote/addon.toml`, and the integration tests in `apps/csm-phone-it/` (test-only, layer 7; see
@@ -1229,18 +1229,19 @@ Tests (all pass with `cargo +1.97 test`):
 
 ### 18.1 Not built (step 1 still open)
 
-- **The pairing, devices and settings screens of the add-on are not built.** The CSM-side parts they need are built
-  (18.5): the `qr` node, the `csm/status` indicator, and the `phone` and `devices` icons. Until the three screens exist the
-  add-on is not usable by a person without the tools: pairing is reached only through the tools, which return the link
-  text. The pairing-screen requirements in section 8 stand as the spec. Owner: confirm whether these ship in step 1 or
-  are moved to a later step.
-- **`remote_control`:** `session.new` answers `"not_built"` (section 4's wait and `Event::RemoteControl` are not built).
+- **The enrolment token has no field and no transport.** The relay connection sends no access token (`Hello.access` is
+  `None`), and the settings screen says so. The `addon_secret_*` tools are still not used (18.2). Decision 2 is
+  applied: the "Use the umage relay" button is not drawn until the owner gives the URL.
+- **The phone's side of `Event::RemoteControl`** (the web app, step 2) and the web app itself (`phone/`, step 2).
+- **The end-to-end task and the docs** (step 3): `cargo xtask phone-e2e`, the `docs/addons.md` section, the dev setup in
+  `relay/README.md`, the `xtask ci` check for `phone/`.
+- **The `copy` button** (section 8.4) is not built; the design makes it optional.
 - **The OS keychain: not built; a decision for the owner (section 13, decision 4).** The host secret is a file, protected by
   the Windows access list and the Unix mode (18.2). The `addon_secret_*` tools are not used: their answer shape is not
   verified. Until the owner decides, the file is what ships.
 - **Rekeying** is tested: `the_channel_rekeys_on_both_ends_at_the_same_count` lowers the interval to 3 (`Host::rekey_every`)
   and runs ten requests in each direction, the snapshot included. The product count is `REKEY_INTERVAL` (10 000).
-- The web app `phone/` (step 2) and the end-to-end task (step 3): not started.
+- The web app `phone/` (step 2) and the end-to-end task (step 3): not started (see the first bullets above for what is left).
 
 ### 18.2 Deviations from this plan, with the reason
 
@@ -1282,7 +1283,20 @@ Tests (all pass with `cargo +1.97 test`):
   (`host::public_of`), so the file does not need to hold it.
 - Phone device ids are `d_` plus 16 hex characters from the OS random source (`getrandom`).
 - `devices.json` entries do not carry the routing token, only its hash (as section 5 already says).
-- `session.new` returns `remote_control: "not_built"` rather than `"pending"` (see 18.1): the answer says what is true.
+- `session.new` answers `remote_control: "pending"` when the wait is asked for, and `"off"` when not (fix round 6; it was
+  `"not_built"`). The wait itself is built (18.6).
+- **Command checkboxes list the add-on's own allow list, not the PC's list.** The PC's list is a CSM call, and the settings
+  screen is drawn from state the main thread holds, with no CSM call on it. `command.list` still intersects with the PC's
+  list, so a command the PC does not list is never sent. Reason: section 4's rule that the screen never waits on CSM.
+- **Relay and connect changes apply at the next start.** The relay client dials once per run (`relay_client::run`), so the
+  settings screen says "apply when the add-on restarts" (`restart_needed`). Push, hide names, folders, profiles, commands
+  and the launch limit apply at once.
+- **`phone-remote.pair_start` no longer returns the link** in its answer (section 4.1: the offer never leaves the screen).
+  The pairing screen shows the link and the code while a slot is open; the tool says where to look.
+- **The relay link is "up" once the hello and the allow list are sent.** The relay sends no separate acknowledgement in
+  this protocol, so the indicator cannot say more than that.
+- **The device view carries `notify`, `hide_names` and `push`** (whether a subscription exists), for the phones screen and
+  `device_list`. It still carries no keys and no token hashes.
 - Requests in flight: section 4 counts only CSM-bound ops against the cap of 8. The worker queue counts every parsed
   request (including `ping`, `hello` and `settings.set`), because all of them now cross to the worker. The cap is the
   stricter of the two, so no request the spec would allow to run alone is refused on the worker's account.
@@ -1290,8 +1304,8 @@ Tests (all pass with `cargo +1.97 test`):
   host core. The relay's own expiry and the host's expiry are both checked.
 - **`screen_open` is not in `calls`.** Section 3 lists it there so the pairing tool can open the screen. The loader
   refuses an add-on tool in `[process] calls` (`csm-core` `parse_calls`: "is an add-on tool; ignored"), so the list would
-  show a problem on the sample. It is removed from the manifest and from `csm::CALLS`. The pairing screen, when built,
-  opens through the screen tools the add-on declares itself, not through a standing grant.
+  show a problem on the sample. It is removed from the manifest and from `csm::CALLS`. The pairing screen is opened by the
+  person (the palette, or Settings > Add-ons); no tool or standing grant opens it.
 - **The manifest's effects are the section 3 list.** The sample had two of the six, so the enable dialog understated what
   the add-on does. `stores_secrets` is declared because the add-on holds the relay secret; that secret is a file here,
   not a keychain entry (18.1).
@@ -1345,5 +1359,42 @@ a unit test copies the real shapes:
   echo plugin sends the statuses), `csm-ui/tests/addon_qr_ui.rs` (worst tone shown, click opens Settings on Add-ons, no dot
   when idle or unset), `csm-ui` `screens::addons::dot_tests`.
 - **Icons** `phone` and `devices` in `crates/csm-ui/src/icon_data.rs` (stroke paths in the 24-unit grid of the set).
-- **Not built here:** the add-on's own screens (18.1), the settings screen's `copy` button (8.4), the status bar. The
+- **Not built here:** the settings screen's `copy` button (8.4), the status bar. The
   Latte quiet zone is light but the same tone as the panel behind it (the lightest token): it scans, but it has no edge.
+
+### 18.6 The screens, the status line and `remote_control` (fix round 6)
+
+- **Screens** (`apps/csm-phone/src/screens.rs`, pure: a tree from the host's last report, the time and the screen's own
+  state). **Pairing:** "Start pairing"; while a slot is open, the `qr` node with the offer, the expiry, and the check code
+  once a phone waits, with the level choice and Allow and Deny (Allow and Deny do nothing without a waiting phone).
+  **Phones:** the list (level, last seen, a "needs push" badge), and for the selected phone the level, "notify me", "hide
+  session names", and Revoke, which needs its own second press ("Yes, revoke"). **Settings:** section 10.6 as 18.2 says.
+  Every control sends an event, and `event()` maps it to a command. Every tree is checked for unique, short keys in every
+  state the tests build. The offer appears in the pairing tree only while a slot is open.
+- **Settings writes** (`settings.rs`, `Host::apply_settings`). A change is applied to a copy, written out and read back
+  through `config::parse`; only a copy with no problems is written. A damaged `config.json` is renamed to
+  `config.json.damaged-<time>` before the first write, and the screen says so before that happens.
+- **The shell** (`shell.rs`). `initialize` declares the three screens when CSM's `capabilities.screens` is 1 or more.
+  `screen/open` is a request (a tree as revision 1, or a refusal for an undeclared screen, or more than 8 open).
+  `screen/event`, `screen/refresh` and `screen/closed` are notifications. A render goes out when a screen's tree changes;
+  the main loop looks every 200 ms and asks the host for a view every 500 ms. `csm/status` goes out when its line
+  changes: "Connected to relay, N phones" (ok; "one waiting for you" when a phone waits, warn), "No relay set" (warn),
+  "Connecting to the relay" (warn), "Relay unreachable, trying again: ..." (warn), "Phone remote is off" (idle), "Phone
+  remote stopped: ..." (error).
+- **Host outputs for the person.** `Out::Link` (connecting, up, down with the reason) comes from the relay loop; `Out::Notice`
+  carries the answers to the person's actions ("Pairing stopped.", "... is paired as an operator.", "Saved.", "The
+  pairing code expired..."). Notices are shown on the screen, not logged.
+- **`remote_control` (section 4).** A launch with the flag takes a wait before `session_new` is called: 2 per phone and 8
+  in all, and a refused launch is `rate_limited` with CSM not called. The launch answers `pending`. A pending wait is
+  checked on each tracker read: a session that is idle gets `/remote-control` once, as one `session_send_command`
+  holding one slot of the in-flight cap. Its answer is `Event::RemoteControl` (ok, or the CSM code and message), not a
+  response. A wait with no idle session after 120 s ends with a failure event. A launch that is refused or fails ends its
+  wait. A revoked phone's waits are dropped with no event. The event's vector lines are in `messages.json`.
+- **Tests.** `screens` unit tests (keys, the offer's place, Allow only with a check code, the second press for revoke, the
+  validated settings changes, the status line, the age text); `settings` unit tests (every rule, a refused change writes
+  nothing); `apps/csm-phone/tests/shell.rs` (the real binary: the screens declared, a screen opened, a press rendered and
+  saved, a closed screen not rendered, the status line); `apps/csm-phone-it/tests/relay_it.rs` (the real relay: pairing
+  through the screen's buttons with a check code and an operator level, deny, expiry with its reason, revoke on the phones
+  screen cutting the channel with `Bye`, the settings round trip through the screen and the file, a refused value kept
+  out, a damaged `config.json` kept under its name); `apps/csm-phone/tests/protocol.rs` (the `remote_control` wait: pending
+  at once, the command when idle, the failure at 120 s, a third launch refused before `session_new`, no wait without the flag).

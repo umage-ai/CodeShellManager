@@ -26,7 +26,9 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Connector, Message, WebSocket};
 
 use crate::config::is_loopback_ws_relay;
-use crate::host::{DeviceView, Host, Out};
+use crate::host::{DeviceFlag, DeviceView, Host, HostView, Link, Out};
+use crate::policy::cut;
+use crate::settings::SettingsChange;
 
 pub const BACKOFF_SECS: [u64; 5] = [1, 2, 5, 10, 30];
 pub const PING_SECS: u64 = 30;
@@ -52,6 +54,12 @@ pub enum Command {
     SetLevel(String, Level),
     /// The paired devices, for the devices screen and `phone-remote.status`.
     Devices(Sender<Vec<DeviceView>>),
+    /// A settings change from the settings screen (validated and saved by the host).
+    Settings(SettingsChange),
+    /// The notify or hide-names flag of one phone (`None`: every phone, for hide names).
+    SetDeviceFlag(Option<String>, DeviceFlag),
+    /// A copy of what the screens show (the config, the devices, the offer's expiry).
+    View(Sender<HostView>),
 }
 
 /// Unix seconds now.
@@ -71,9 +79,13 @@ pub fn run(host: &mut Host, url: &str, secret: &[u8; 32], stop: &AtomicBool, com
     let mut attempt = 0usize;
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
+        on_out(&Out::Link(Link::Connecting));
         match session(host, &socket_url, secret, stop, commands, on_out) {
             Ended::Stopped => return,
-            Ended::Lost(why) => on_out(&Out::Problem(why)),
+            Ended::Lost(why) => {
+                on_out(&Out::Link(Link::Down(cut(&why, 120))));
+                on_out(&Out::Problem(why));
+            }
         }
         if started.elapsed() >= Duration::from_secs(HEALTHY_SECS) {
             attempt = 0;
@@ -189,6 +201,7 @@ fn session(host: &mut Host, url: &str, secret: &[u8; 32], stop: &AtomicBool, com
     if let Err(e) = send_all(&mut ws, pending, on_out) {
         return Ended::Lost(e);
     }
+    on_out(&Out::Link(Link::Up));
     let mut last_ping = Instant::now();
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -248,6 +261,7 @@ fn apply(host: &mut Host, cmd: &Command, now: u64, on_out: &mut dyn FnMut(&Out))
                 outs
             }
             Err(why) => {
+                on_out(&Out::Notice(why.clone()));
                 let _ = reply.send(Err(why));
                 Vec::new()
             }
@@ -258,6 +272,12 @@ fn apply(host: &mut Host, cmd: &Command, now: u64, on_out: &mut dyn FnMut(&Out))
         Command::SetLevel(device_id, level) => host.set_level(device_id, *level),
         Command::Devices(reply) => {
             let _ = reply.send(host.devices_view());
+            Vec::new()
+        }
+        Command::Settings(change) => host.apply_settings(change, now),
+        Command::SetDeviceFlag(device_id, flag) => host.set_device_flag(device_id.as_deref(), *flag),
+        Command::View(reply) => {
+            let _ = reply.send(host.view(now));
             Vec::new()
         }
     }

@@ -136,7 +136,7 @@ impl Engine {
                 self.csm_call("session_restart", json!({ "session_id": session_id }))
             }
             Op::SessionClose { session_id, force } => self.csm_call("session_close", json!({ "session_id": session_id, "force": force })),
-            Op::SessionNew { folder, profile, name, remote_control: _ } => {
+            Op::SessionNew { folder, profile, name, remote_control } => {
                 let f = cfg.folder_for(folder).ok_or((ErrorCode::FolderNotAllowed, "that folder is not on the allow list".to_owned()))?;
                 let p = cfg.profiles.iter().find(|p| p.name == *profile).ok_or((ErrorCode::UnknownProfile, "no such profile".to_owned()))?;
                 self.launch(devices, idx, now)?;
@@ -155,7 +155,9 @@ impl Engine {
                 let v = self.csm_call("session_new", params)?;
                 let id = v.get("id").and_then(Value::as_str).map(|s| cut(s, MAX_ID)).ok_or((ErrorCode::Failed, "CSM did not return a session".to_owned()))?;
                 self.created.insert(id.clone());
-                Ok(json!({ "id": id, "remote_control": "not_built" }))
+                // With Remote Control asked for, the host keeps a wait for the session (host.rs, `finish_wait`)
+                // and sends `/remote-control` once it is idle; the answer here does not wait for that.
+                Ok(json!({ "id": id, "remote_control": if *remote_control { "pending" } else { "off" } }))
             }
             Op::SessionCommand { session_id, command, force } => {
                 let pc = self.pc_commands()?;

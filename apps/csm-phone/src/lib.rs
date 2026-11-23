@@ -20,6 +20,8 @@ pub mod pairing;
 pub mod policy;
 pub mod push;
 pub mod relay_client;
+pub mod screens;
+pub mod settings;
 pub mod shell;
 pub mod store;
 pub mod tracker;

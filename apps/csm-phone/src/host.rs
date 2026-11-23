@@ -29,6 +29,7 @@ use crate::config::Config;
 use crate::csm::Csm;
 use crate::ops::{Engine, push_host_allowed};
 use crate::pairing::{Refusal, Slot};
+use crate::settings::{self, SettingsChange};
 use crate::push;
 use crate::store::{self, Device, Opened};
 use crate::tracker::{self, REFRESH_SECS, Tracker};
@@ -48,6 +49,33 @@ pub const MAX_REQUESTS_IN_FLIGHT: usize = 8;
 
 /// Seconds a channel may take to finish its handshake before the host closes it.
 pub const HANDSHAKE_SECS: u64 = 20;
+/// Seconds a `remote_control` wait may last before it ends with a failure (section 4).
+pub const REMOTE_WAIT_SECS: u64 = 120;
+/// Waits one phone may have at once, and in all: a further `session.new` with `remote_control` is
+/// refused before `session_new` is called (section 4).
+pub const MAX_WAITS_PER_DEVICE: usize = 2;
+pub const MAX_WAITS: usize = 8;
+
+/// Where one `remote_control` wait is: launching (the `session.new` is with the worker), pending
+/// (the session exists and the wait for it to be idle runs), or sending (the `/remote-control` is
+/// with the worker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RcState {
+    Launching,
+    Pending,
+    Sending,
+}
+
+/// One `remote_control` wait. It holds no request id and no reply: its answer is the event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RcWait {
+    pub token: u64,
+    pub ch: u32,
+    pub device_id: String,
+    pub session: Option<String>,
+    pub state: RcState,
+    pub since: u64,
+}
 /// The longest device name a pairing may carry (the same limit as a saved device).
 const MAX_PAIR_NAME_CHARS: usize = 64;
 
@@ -69,6 +97,37 @@ pub enum Out {
     DevicesChanged,
     /// Something the person should see, in plain words (never a secret).
     Problem(String),
+    /// A plain answer for the person's last action ("Saved.", "Pairing denied."). Shown on the
+    /// screen, not logged.
+    Notice(String),
+    /// The relay connection changed (connecting, connected, or lost with the reason).
+    Link(Link),
+}
+
+/// A per-phone flag the devices screen sets: "notify me" or "hide session names".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceFlag {
+    Notify(bool),
+    HideNames(bool),
+}
+
+/// The relay connection, as the screens and the indicator show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Link {
+    Connecting,
+    Up,
+    Down(String),
+}
+
+/// What the screens need from the host, copied on request (`Command::View`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostView {
+    pub cfg: Config,
+    pub devices: Vec<DeviceView>,
+    /// When the open pairing offer expires (Unix seconds), if one is open.
+    pub slot_expires: Option<u64>,
+    /// The relay or the connect switch differs from what this run started with: a restart applies it.
+    pub restart_needed: bool,
 }
 
 /// One paired device, as shown to the person.
@@ -79,6 +138,12 @@ pub struct DeviceView {
     pub level: Level,
     pub paired_at: u64,
     pub last_seen: u64,
+    /// "Notify me about sessions that need me".
+    pub notify: bool,
+    /// Session names are left out of this phone's notifications.
+    pub hide_names: bool,
+    /// The phone has a push subscription (so a push can reach it).
+    pub push: bool,
 }
 
 /// Where one channel is in its life.
@@ -144,6 +209,13 @@ pub struct Host {
     /// The time of the last call into the host (`tick` or `on_frame`), for answers from the worker.
     clock: u64,
     pushes: PushState,
+    /// The relay and the connect switch this run started with (the relay client dials with these).
+    start_relay: String,
+    start_connect: bool,
+    /// The `remote_control` waits (section 4), in the order they started.
+    waits: Vec<RcWait>,
+    /// The next wait's token (a job for a wait carries it, so its answer finds the wait).
+    next_token: u64,
 }
 
 /// Random bytes from the OS.
@@ -171,8 +243,14 @@ impl Host {
     pub fn new(dir: PathBuf, opened: Opened, cfg: Config, host_secret: &[u8; 32], csm: Box<dyn Csm>) -> Result<Self, String> {
         let host_pub = public_of(&opened.host_key).ok_or("the host key is not usable")?;
         let worker = Worker::start(Engine::new(csm))?;
+        let start_relay = cfg.relay.clone();
+        let start_connect = cfg.connect;
         Ok(Self {
             dir,
+            start_relay,
+            start_connect,
+            waits: Vec::new(),
+            next_token: 1,
             cfg,
             devices: opened.devices,
             host_priv: opened.host_key,
@@ -195,7 +273,77 @@ impl Host {
 
     /// The paired devices as the screen and the tools show them: no keys and no token hashes.
     pub fn devices_view(&self) -> Vec<DeviceView> {
-        self.devices.iter().map(|d| DeviceView { device_id: d.device_id.clone(), name: d.name.clone(), level: d.level, paired_at: d.paired_at, last_seen: d.last_seen }).collect()
+        self.devices
+            .iter()
+            .map(|d| DeviceView {
+                device_id: d.device_id.clone(),
+                name: d.name.clone(),
+                level: d.level,
+                paired_at: d.paired_at,
+                last_seen: d.last_seen,
+                notify: d.notify,
+                hide_names: d.hide_names,
+                push: d.push.is_some(),
+            })
+            .collect()
+    }
+
+    /// What the screens need: the config, the devices, when an open offer expires, and whether a
+    /// restart applies the relay or connect switch.
+    pub fn view(&self, now: u64) -> HostView {
+        HostView {
+            cfg: self.cfg.clone(),
+            devices: self.devices_view(),
+            slot_expires: self.slot.as_ref().filter(|s| !s.expired(now)).map(|s| now + u64::from(s.seconds_left(now))),
+            restart_needed: self.restart_pending(),
+        }
+    }
+
+    /// The relay or the connect switch differs from what this run started with.
+    fn restart_pending(&self) -> bool {
+        self.cfg.relay != self.start_relay || self.cfg.connect != self.start_connect
+    }
+
+    /// Applies a settings change. The result is checked first ([`settings::apply`]); a refused change
+    /// writes nothing. Otherwise the new config is written (a damaged file is kept as
+    /// `config.json.damaged-<time>` first) and becomes the live config.
+    pub fn apply_settings(&mut self, change: &SettingsChange, now: u64) -> Vec<Out> {
+        let next = match settings::apply(&self.cfg, change) {
+            Ok(n) => n,
+            Err(why) => return vec![Out::Notice(why)],
+        };
+        let text = match serde_json::to_string_pretty(&next) {
+            Ok(t) => t,
+            Err(e) => return vec![Out::Notice(format!("The settings were not saved: {e}"))],
+        };
+        if let Err(e) = store::save_config(&self.dir, &text, self.cfg.damaged, now) {
+            return vec![Out::Notice(format!("The settings were not saved: {e}"))];
+        }
+        self.cfg = next;
+        let restart = self.restart_pending();
+        vec![Out::Notice(if restart { "Saved. The relay and connect changes apply when the add-on restarts.".into() } else { "Saved.".into() })]
+    }
+
+    /// Sets the notify or hide-names flag of one phone, or of every phone when `device_id` is `None`,
+    /// and saves the device list. Only the flag changes: no channel is closed.
+    pub fn set_device_flag(&mut self, device_id: Option<&str>, flag: DeviceFlag) -> Vec<Out> {
+        let mut next = self.devices.clone();
+        let mut hit = false;
+        for d in next.iter_mut().filter(|d| device_id.is_none_or(|id| d.device_id == id)) {
+            match flag {
+                DeviceFlag::Notify(on) => d.notify = on,
+                DeviceFlag::HideNames(on) => d.hide_names = on,
+            }
+            hit = true;
+        }
+        if !hit {
+            return vec![Out::Notice("No such phone.".into())];
+        }
+        if let Err(e) = store::save_devices(&self.dir, &next) {
+            return vec![Out::Notice(format!("The change was not saved: {e}"))];
+        }
+        self.devices = next;
+        vec![Out::DevicesChanged]
     }
 
     /// The allow list the relay gets: the hash of each device's routing token.
@@ -245,6 +393,11 @@ impl Host {
         if self.slot.take().is_some() {
             outs.push(Out::Control(HostToRelay::PairingClose));
             outs.push(Out::PairingEnded);
+            let notice = match deny {
+                Some(DenyReason::Expired) => "The pairing code expired. Start pairing again for a new code.",
+                _ => "Pairing stopped.",
+            };
+            outs.push(Out::Notice(notice.into()));
         }
         outs
     }
@@ -253,7 +406,7 @@ impl Host {
     /// denies it. Allow saves the device before the phone is told.
     pub fn decide(&mut self, now: u64, allow: Option<Level>) -> Vec<Out> {
         let Some(ch) = self.waiting_channel() else {
-            return vec![Out::Problem("no phone is waiting for an answer".into())];
+            return vec![Out::Notice("No phone is waiting for an answer.".into())];
         };
         let Some(level) = allow else {
             return self.end_pairing(now, Some(DenyReason::Denied));
@@ -304,6 +457,9 @@ impl Host {
         outs.push(self.allow_out());
         outs.push(Out::DevicesChanged);
         outs.push(Out::PairingEnded);
+        let who = crate::policy::clean_name(&name, 64);
+        let as_level = if level == Level::Operator { "an operator" } else { "a viewer" };
+        outs.push(Out::Notice(format!("{who} is paired as {as_level}.")));
         outs
     }
 
@@ -324,6 +480,7 @@ impl Host {
                 cfg: self.cfg.clone(),
                 devices: self.devices.clone(),
                 track: true,
+                wait: None,
             };
             if self.worker.submit(job).is_ok() {
                 self.track_inflight = true;
@@ -331,6 +488,7 @@ impl Host {
             }
         }
         outs.extend(self.send_held(now));
+        outs.extend(self.wait_tick(now));
         if self.slot.as_ref().is_some_and(|s| s.expired(now)) {
             outs.extend(self.end_pairing(now, Some(DenyReason::Expired)));
         }
@@ -380,6 +538,10 @@ impl Host {
             return vec![Out::Problem(format!("the change was not saved: {e}"))];
         }
         self.devices = next;
+        if level.is_none() {
+            // A removed phone's waits end with it: no event is sent to a device that is gone.
+            self.waits.retain(|w| w.device_id != device_id);
+        }
         let reason = if level.is_some() { ByeReason::LevelChanged } else { ByeReason::Revoked };
         let victims: Vec<u32> = self.chans.iter().filter(|(_, c)| matches!(&c.state, ChanState::Session { device_id: d, .. } if d.as_str() == device_id)).map(|(k, _)| *k).collect();
         let mut outs = Vec::new();
@@ -608,15 +770,135 @@ impl Host {
         if on_channel >= MAX_REQUESTS_IN_FLIGHT || total >= MAX_REQUESTS_IN_FLIGHT {
             return Err(Response::err(id, ErrorCode::RateLimited, "too many requests are running; ask again in a moment"));
         }
-        let job = Job { ch, device_id: device_id.to_owned(), req, now, cfg: self.cfg.clone(), devices: self.devices.clone(), track: false };
+        // A launch with Remote Control takes one of the waits, before session_new is called.
+        let waits_launch = matches!(req.op, Op::SessionNew { remote_control: true, .. });
+        if waits_launch {
+            let (mine, all) = self.wait_counts(device_id);
+            if mine >= MAX_WAITS_PER_DEVICE || all >= MAX_WAITS {
+                return Err(Response::err(id, ErrorCode::RateLimited, "too many Remote Control waits are running; ask again in a moment"));
+            }
+        }
+        let token = self.next_token;
+        let wait = waits_launch.then_some(token);
+        let job = Job { ch, device_id: device_id.to_owned(), req, now, cfg: self.cfg.clone(), devices: self.devices.clone(), track: false, wait };
         match self.worker.submit(job) {
             Ok(()) => {
                 *self.inflight.entry(ch).or_insert(0) += 1;
+                if waits_launch {
+                    self.next_token = self.next_token.wrapping_add(1);
+                    self.waits.push(RcWait { token, ch, device_id: device_id.to_owned(), session: None, state: RcState::Launching, since: now });
+                }
                 Ok(())
             }
             Err(Refused::Full) => Err(Response::err(id, ErrorCode::RateLimited, "too many requests are running; ask again in a moment")),
             Err(Refused::Gone) => Err(Response::err(id, ErrorCode::Unavailable, "the phone remote stopped its worker; restart CSM")),
         }
+    }
+
+    /// The waits on a device, and all of them.
+    fn wait_counts(&self, device_id: &str) -> (usize, usize) {
+        (self.waits.iter().filter(|w| w.device_id == device_id).count(), self.waits.len())
+    }
+
+    /// A worker answer for a `remote_control` wait (`done.wait`). A launch that answered `pending` makes
+    /// the wait pending; any other launch answer ends it, and its response goes to the phone as usual.
+    /// The `/remote-control` answer ends the wait and is sent as an event, never as a response.
+    /// Returns the outputs and whether the normal response is still to be sent.
+    fn finish_wait(&mut self, token: u64, response: Option<&Response>, ch: u32, device_id: &str) -> (Vec<Out>, bool) {
+        let Some(state) = self.waits.iter().find(|w| w.token == token).map(|w| w.state) else { return (Vec::new(), true) };
+        match state {
+            RcState::Launching => {
+                let session = response
+                    .filter(|r| r.ok)
+                    .and_then(|r| r.data.as_ref())
+                    .filter(|d| d["remote_control"] == "pending")
+                    .and_then(|d| d["id"].as_str())
+                    .map(str::to_owned);
+                match session {
+                    Some(session) => {
+                        let now = self.clock;
+                        if let Some(w) = self.waits.iter_mut().find(|w| w.token == token) {
+                            w.session = Some(session);
+                            w.state = RcState::Pending;
+                            w.since = now;
+                        }
+                    }
+                    None => self.waits.retain(|w| w.token != token),
+                }
+                (Vec::new(), true)
+            }
+            // A pending wait has no job in the worker, so no answer can name it; kept as it is.
+            RcState::Pending => (Vec::new(), true),
+            RcState::Sending => {
+                let session = self.waits.iter().find(|w| w.token == token).and_then(|w| w.session.clone()).unwrap_or_default();
+                self.waits.retain(|w| w.token != token);
+                let event = match response {
+                    Some(r) if r.ok => Event::RemoteControl { session, ok: true, code: None, message: None },
+                    Some(r) => {
+                        let (code, message) = r.error.as_ref().map_or((ErrorCode::Failed, String::new()), |e| (e.code, e.message.clone()));
+                        Event::RemoteControl { session, ok: false, code: Some(code), message: Some(crate::policy::cut(&message, 200)).filter(|m| !m.is_empty()) }
+                    }
+                    None => Event::RemoteControl { session, ok: false, code: Some(ErrorCode::Unavailable), message: Some("the command did not run".into()) },
+                };
+                (self.event_out(ch, device_id, &event), false)
+            }
+        }
+    }
+
+    /// The waits' time-driven work. A wait pending for two minutes ends with a failure event. A pending
+    /// wait whose session is idle sends `/remote-control` once: one CSM call, one slot of the in-flight cap.
+    fn wait_tick(&mut self, now: u64) -> Vec<Out> {
+        let mut outs = Vec::new();
+        let expired: Vec<u64> = self.waits.iter().filter(|w| w.state == RcState::Pending && now.saturating_sub(w.since) >= REMOTE_WAIT_SECS).map(|w| w.token).collect();
+        for token in expired {
+            let Some(w) = self.waits.iter().find(|w| w.token == token).cloned() else { continue };
+            self.waits.retain(|x| x.token != token);
+            let event = Event::RemoteControl {
+                session: w.session.unwrap_or_default(),
+                ok: false,
+                code: Some(ErrorCode::Failed),
+                message: Some("Remote Control did not start within two minutes. The session is as it was.".into()),
+            };
+            outs.extend(self.event_out(w.ch, &w.device_id, &event));
+        }
+        let list = self.tracker.last().map(<[SessionInfo]>::to_vec).unwrap_or_default();
+        let ready: Vec<(u64, u32, String, String)> = self
+            .waits
+            .iter()
+            .filter(|w| w.state == RcState::Pending)
+            .filter_map(|w| {
+                let session = w.session.clone()?;
+                let idle = list.iter().any(|s| s.id == session && s.status == csm_remote_proto::msg::PhoneStatus::Idle);
+                idle.then(|| (w.token, w.ch, w.device_id.clone(), session))
+            })
+            .collect();
+        for (token, ch, device_id, session) in ready {
+            let total: usize = self.inflight.values().sum();
+            if total >= MAX_REQUESTS_IN_FLIGHT {
+                break;
+            }
+            let op = Op::SessionCommand { session_id: session, command: "/remote-control".into(), force: false };
+            let job = Job { ch, device_id, req: Request { id: 0, op }, now, cfg: self.cfg.clone(), devices: self.devices.clone(), track: false, wait: Some(token) };
+            if self.worker.submit(job).is_ok() {
+                *self.inflight.entry(ch).or_insert(0) += 1;
+                if let Some(w) = self.waits.iter_mut().find(|w| w.token == token) {
+                    w.state = RcState::Sending;
+                }
+            }
+        }
+        outs
+    }
+
+    /// One event on a phone's channel, if that channel is still open with that device.
+    fn event_out(&mut self, ch: u32, device_id: &str, event: &Event) -> Vec<Out> {
+        let every = self.rekey_every;
+        let Ok(plain) = msg::encode(event) else { return Vec::new() };
+        let Some(chan) = self.chans.get_mut(&ch) else { return Vec::new() };
+        let ChanState::Session { transport, device_id: owner, sent, .. } = &mut chan.state else { return Vec::new() };
+        if owner.as_str() != device_id {
+            return Vec::new();
+        }
+        send_msg(ch, transport, sent, &plain, every).into_iter().collect()
     }
 
     /// One answer from the worker: the device fields it may have changed are merged, and the
@@ -636,6 +918,13 @@ impl Host {
             outs.push(Out::Problem(problem));
         }
         let every = self.rekey_every;
+        if let Some(token) = done.wait {
+            let (events, answer) = self.finish_wait(token, done.response.as_ref(), done.ch, &done.device_id);
+            outs.extend(events);
+            if !answer {
+                return outs;
+            }
+        }
         let Some(response) = done.response else { return outs };
         let Some(chan) = self.chans.get_mut(&done.ch) else { return outs };
         let ChanState::Session { transport, device_id, sent, .. } = &mut chan.state else { return outs };
