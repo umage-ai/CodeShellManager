@@ -481,7 +481,8 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `view_get` | layout | read | no | The group view (rail, headers, flat), the rail tab, the focused session, the inspector and the inbox panel. |
 | `view_set` | layout | ui | no | Switch the group view (rail, headers, flat) and/or the rail tab (a group id, or "all"). |
 | `layout_get` | layout | read | no | A group's layout (default: the one shown now): mode, grid size, pinned sessions. |
-| `layout_set` | layout | ui | no | Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 2x2, 3x2, 3x3, or cols x rows), free, or board (sessions as cards by status, beside the tasks). |
+| `layout_set` | layout | ui | no | Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 4x1, 6x1, 2x2, 3x2, 6x2, 3x3, or cols x rows; a custom size is remembered for the Grid menu, newest first, at most 6), free, or board (sessions as cards by status, beside the tasks). |
+| `grid_preset_forget` | layout | ui | no | Remove a remembered custom grid size (cols x rows) from the Grid menu. |
 | `layout_pin` | layout | ui | no | Pin a session into the side-by-side layout. |
 | `layout_unpin` | layout | ui | no | Remove a session from the side-by-side layout. |
 | `inspector_show` | layout | ui | no | Show the inspector on a tab (notes, docs, runs, git, session, usage) or hide it. |
@@ -503,7 +504,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `toolset_disable` | core | read | no | Stop offering a toolset's tools to this MCP client. |
 | `app_autostart_get` | app | read | no | Whether the OS starts CodeShellManager when you sign in, read from the OS itself (the Windows Run key, a macOS LaunchAgent, an XDG autostart entry): enabled, whether Task Manager or the desktop turned it off, and the program it starts. |
 | `app_autostart_set` | app | launch, files | asks | Start CodeShellManager when you sign in (enabled: true) or not (false). Writes or removes the current user's OS entry for this copy of the app, started with --autostart; turning it on also clears a Task Manager disable. |
-| `git_status` | git | launch | asks | A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, and which repo it is a worktree of. |
+| `git_status` | git | launch | asks | A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, which repo it is a worktree of, and its GitHub pages when `origin` (else the tracked remote) is on github.com. |
 | `git_fetch` | git | launch, network | asks | git fetch in the session's repository (never prompts for a password; sign in from a terminal once if it fails). |
 | `git_pull` | git | launch, files, network | asks | git pull --ff-only --no-rebase: moves the branch only when that loses nothing; a diverged branch or a conflicting local edit is refused with git's reason. |
 | `git_switch_branch` | git | launch, files | asks | git switch --no-guess to a local branch. A branch checked out in another worktree is refused (open that worktree instead; `git_branches` says which). |

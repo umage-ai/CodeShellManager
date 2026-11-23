@@ -39,7 +39,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "git_status",
             title: "Git status",
-            summary: "A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, and which repo it is a worktree of.",
+            summary: "A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, which repo it is a worktree of, and its GitHub pages when `origin` (else the tracked remote) is on github.com.",
             toolset: Toolset::Git,
             effects: read,
             input_schema: schema_of::<SidParams>,
@@ -397,6 +397,12 @@ fn git_status(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         data["worktree_of"] = json!(worktree_of);
         data["summary"] = json!(summary);
         data["changes"] = st.changes.iter().map(|c| json!({"code": c.code, "path": c.path})).collect();
+        // "Open on GitHub": `origin`, else the tracked remote, when it is a github.com URL.
+        let branch = st.branch.as_deref().filter(|_| !st.is_detached);
+        data["github"] = run::github_repo(&t.folder, branch).map_or(
+            Value::Null,
+            |r| json!({"owner": r.owner, "repo": r.repo, "url": r.url(), "branch_url": r.branch_url(branch), "pulls_url": r.pulls_url()}),
+        );
         engine.post(Box::new(move |ctx| {
             rt::store_status(ctx.state, &t.id, &t.folder, root.as_deref(), Some(st));
             reply.send(Ok(ToolOutput::new(summary, data)));

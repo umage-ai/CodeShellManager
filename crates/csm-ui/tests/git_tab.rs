@@ -161,3 +161,99 @@ fn on_the_real_engine_the_chip_and_tab_follow_the_repository() {
     let _ = id;
     engine.shutdown();
 }
+
+// ── Open on GitHub ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn open_on_github_opens_the_branch_and_the_pull_requests_through_open_url() {
+    let mut h = harness(app_with(backend(ThemeKind::Mocha)));
+    settle(&mut h);
+    h.get_all_by_label("Git: feat/brand-facet").next().unwrap().click();
+    settle(&mut h);
+    h.get_by_label("Open on GitHub").click();
+    settle(&mut h);
+    let c = h.state().submitted().last().cloned().unwrap();
+    assert_eq!((c.id.as_str(), c.params), ("open_url", json!({"url": "https://github.com/odulodo/odulodo-web/tree/feat/brand-facet"})));
+
+    // ▾: the same page, and the pull requests.
+    h.get_by_label("More GitHub links").click();
+    settle(&mut h);
+    assert!(h.query_by_label("Open branch on GitHub").is_some());
+    h.get_by_label("Open pull requests").click();
+    settle(&mut h);
+    let c = h.state().submitted().last().cloned().unwrap();
+    assert_eq!((c.id.as_str(), c.params), ("open_url", json!({"url": "https://github.com/odulodo/odulodo-web/pulls"})));
+}
+
+#[test]
+fn open_on_github_is_hidden_without_a_github_remote() {
+    let mut b = backend(ThemeKind::Mocha);
+    if let Some(d) = b.model_mut().git.get_mut("web") {
+        d.github = None;
+    }
+    b.publish();
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    h.get_all_by_label("Git: feat/brand-facet").next().unwrap().click();
+    settle(&mut h);
+    assert!(h.query_by_label("Fetch").is_some(), "the tab is showing");
+    assert!(h.query_by_label("Open on GitHub").is_none());
+    assert!(h.query_by_label("More GitHub links").is_none());
+}
+
+/// A real engine on `repo` with its Git tab showing; the URLs it opens land in the vector.
+fn real_git_tab(repo: &Path) -> (Harness<'static, CsmApp>, Engine, Arc<Mutex<Vec<String>>>) {
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let sink = opened.clone();
+    let options = StateOptions {
+        pty: Arc::new(|_: SpawnOptions| Ok(Arc::new(FakePty { exited: AtomicBool::new(false), callbacks: Mutex::new(Vec::new()) }) as Arc<dyn Pty>)),
+        first_size_timeout: Duration::from_millis(50),
+        restore_on_start: false,
+        exit_wait: Duration::from_millis(300),
+        url_opener: Arc::new(move |u| sink.lock().unwrap().push(u)),
+        ..StateOptions::default()
+    };
+    let engine: Engine = Engine::start(State::new(csm_core::models::AppState::default(), options), csm_ui::app_tools()).unwrap();
+    engine.call(Caller::Ui, "session_new", json!({"folder": repo.display().to_string(), "command": "pwsh"})).unwrap();
+    engine.call(Caller::Ui, "inspector_show", json!({"tab": "git"})).unwrap();
+    let backend = EngineBackend::new(engine.clone(), EngineOptions::default());
+    let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
+    let app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    let h = Harness::builder().with_size(vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app);
+    (h, engine, opened)
+}
+
+fn repo_with_remote(tmp: &Path, branch: &str, remote: &str) -> std::path::PathBuf {
+    let repo = tmp.join("proj");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-b", branch]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "one"]);
+    git(&repo, &["remote", "add", "origin", remote]);
+    repo
+}
+
+#[test]
+fn on_the_real_engine_a_github_origin_opens_its_branch_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = repo_with_remote(tmp.path(), "feat/brand#1", "git@github.com:umage-ai/csm-test.git");
+    let (mut h, engine, opened) = real_git_tab(&repo);
+    until(&mut h, "the GitHub link", |h| h.query_by_label("Open on GitHub").is_some());
+    h.get_by_label("Open on GitHub").click();
+    until(&mut h, "the page opened", |_| !opened.lock().unwrap().is_empty());
+    assert_eq!(opened.lock().unwrap().clone(), vec!["https://github.com/umage-ai/csm-test/tree/feat/brand%231".to_string()]);
+    engine.shutdown();
+}
+
+#[test]
+fn on_the_real_engine_a_non_github_origin_shows_no_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = repo_with_remote(tmp.path(), "main", "https://gitlab.com/umage-ai/csm-test.git");
+    let (mut h, engine, _) = real_git_tab(&repo);
+    // The git_status reply has landed (its summary is in the tab), and it found no GitHub remote.
+    until(&mut h, "the git_status reply", |h| h.state().model.git.values().any(|d| d.summary.is_some()));
+    assert!(h.query_by_label("Fetch").is_some());
+    assert!(h.query_by_label("Open on GitHub").is_none());
+    engine.shutdown();
+}

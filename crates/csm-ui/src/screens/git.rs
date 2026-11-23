@@ -153,7 +153,7 @@ pub fn tab(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
             return;
         }
         header(ui, &t, s, &detail);
-        actions_row(ui, s, &mut mem, actions);
+        actions_row(ui, s, &detail, &mut mem, actions);
         failure(ui, &t, &detail, &mut mem, actions);
         if mem.switch_open {
             branches(ui, &t, s, &detail, actions);
@@ -215,7 +215,7 @@ fn header(ui: &mut Ui, t: &Tokens, s: &SessionView, d: &GitDetail) {
     });
 }
 
-fn actions_row(ui: &mut Ui, s: &SessionView, mem: &mut TabMem, actions: &mut Vec<Action>) {
+fn actions_row(ui: &mut Ui, s: &SessionView, d: &GitDetail, mem: &mut TabMem, actions: &mut Vec<Action>) {
     ui.horizontal_wrapped(|ui| {
         let sid = json!({"session_id": s.id});
         if widgets::button(ui, ButtonKind::Secondary, Some("fetch"), "Fetch", None)
@@ -236,6 +236,17 @@ fn actions_row(ui: &mut Ui, s: &SessionView, mem: &mut TabMem, actions: &mut Vec
             if mem.switch_open {
                 // The list is loaded when it opens.
                 actions.push(Action::Tool("git_branches", sid.clone()));
+            }
+        }
+        // A github.com remote: its branch page (▾: the pull requests too), through `open_url`.
+        if let Some(gh) = &d.github {
+            if widgets::button(ui, ButtonKind::Secondary, None, "Open on GitHub", None).on_hover_text(gh.branch_url.as_str()).clicked() {
+                actions.push(Action::Tool("open_url", json!({"url": gh.branch_url})));
+            }
+            let more = widgets::icon_button(ui, "chevD", size::CONTROL, false, "More GitHub links");
+            if more.clicked() {
+                let at = pos2(more.rect.max.x, more.rect.max.y + space::XS);
+                actions.push(Action::OpenMenu(crate::app::Menu::GitHub { session: s.id.clone(), at }));
             }
         }
     });

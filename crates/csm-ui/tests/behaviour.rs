@@ -144,6 +144,59 @@ fn layout_modes_and_grid_presets() {
 }
 
 #[test]
+fn the_grid_menu_lists_the_presets_and_remembers_a_custom_until_forgotten() {
+    let mut h = h();
+    h.get_by_label("Layout: Grid").click();
+    settle(&mut h);
+    for p in ["1", "2", "4×1", "6×1", "2×2", "3×2", "6×2", "3×3", "Custom…"] {
+        assert!(has(&h, &format!("Grid {p}")), "Grid {p} is offered");
+    }
+    assert_eq!(h.query_all_by_label_contains("Forget grid").count(), 0, "nothing remembered yet");
+    // The new presets apply like the old ones and are not remembered as customs.
+    h.get_by_label("Grid 6×2").click();
+    settle(&mut h);
+    assert_eq!(layout(&h).grid, GridPreset::new(6, 2));
+    assert!(h.state().model.custom_grids.is_empty());
+
+    // Custom… 5×1, Apply.
+    h.get_by_label("Layout: Grid").click();
+    settle(&mut h);
+    h.get_by_label("Grid Custom…").click();
+    settle(&mut h);
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("custom-grid-size"), (5u8, 1u8)));
+    h.get_by_label("Apply").click();
+    settle(&mut h);
+    assert_eq!(layout(&h).grid, GridPreset::new(5, 1));
+    assert!(!has(&h, "Grid 5×1"), "the menu closed");
+
+    // Reopened: the custom is offered under the presets, and picking it applies it.
+    h.get_by_label("Layout: Grid").click();
+    settle(&mut h);
+    assert!(has(&h, "Grid 5×1"));
+    assert!(has(&h, "Forget grid 5×1"));
+    h.get_by_label("Grid 2×2").click();
+    settle(&mut h);
+    h.get_by_label("Layout: Grid").click();
+    settle(&mut h);
+    h.get_by_label("Grid 5×1").click();
+    settle(&mut h);
+    assert_eq!(layout(&h).grid, GridPreset::new(5, 1));
+
+    // Its × forgets it (a tool call), and the menu stays open without it.
+    h.get_by_label("Layout: Grid").click();
+    settle(&mut h);
+    h.get_by_label("Forget grid 5×1").hover();
+    settle(&mut h);
+    h.get_by_label("Forget grid 5×1").click();
+    settle(&mut h);
+    assert_eq!(last_call(&h), ("grid_preset_forget".to_string(), serde_json::json!({"cols": 5, "rows": 1})));
+    assert!(h.state().model.custom_grids.is_empty());
+    assert!(has(&h, "Grid 2×2"), "the menu is still open");
+    assert!(!has(&h, "Grid 5×1"));
+    assert_eq!(layout(&h).grid, GridPreset::new(5, 1), "forgetting a size leaves the layout as it is");
+}
+
+#[test]
 fn free_mode_divider_drag_persists_the_ratio() {
     let mut h = h();
     h.get_by_label("Layout: Free").click();

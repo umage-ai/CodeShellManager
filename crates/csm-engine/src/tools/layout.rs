@@ -1,7 +1,9 @@
 //! `layout` tools: group view and rail tab, a layout per group, pins, the inspector and the
 //! inbox panel. All UI state (persisted so the app reopens as it was).
 
-use csm_core::models::{ALL_LAYOUT_KEY, GroupDisplayMode, GroupLayout, InspectorTab, LayoutMode, WindowPlacementState, WindowSlot};
+use csm_core::models::{
+    ALL_LAYOUT_KEY, GroupDisplayMode, GroupLayout, InspectorTab, LayoutMode, MAX_GRID_SIDE, WindowPlacementState, WindowSlot, parse_grid_preset,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -40,10 +42,18 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "layout_set",
             "Change layout…",
-            "Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 2x2, 3x2, 3x3, or cols x rows), free, or board (sessions as cards by status, beside the tasks).",
+            "Set a group's layout: mode focus, side (pinned side by side), overview, grid (preset 1, 2, 4x1, 6x1, 2x2, 3x2, 6x2, 3x3, or cols x rows; a custom size is remembered for the Grid menu, newest first, at most 6), free, or board (sessions as cards by status, beside the tasks).",
             Effects::UI,
             schema_of::<LayoutSetParams>,
             layout_set,
+        ),
+        t(
+            "grid_preset_forget",
+            "Forget custom grid",
+            "Remove a remembered custom grid size (cols x rows) from the Grid menu.",
+            Effects::UI.union(Effects::IDEMPOTENT),
+            schema_of::<GridForgetParams>,
+            grid_preset_forget,
         ),
         t("layout_pin", "Pin side by side", "Pin a session into the side-by-side layout.", Effects::UI, schema_of::<PinParams>, layout_pin),
         t("layout_unpin", "Unpin", "Remove a session from the side-by-side layout.", Effects::UI, schema_of::<PinParams>, layout_unpin),
@@ -103,9 +113,9 @@ struct LayoutSetParams {
     /// Group id, or `all`. Default: the layout shown now.
     group: Option<String>,
     mode: Option<ModeParam>,
-    /// Grid preset: `1`, `2`, `2x2`, `3x2`, `3x3`. Implies mode grid.
+    /// Grid preset: `1`, `2`, `4x1`, `6x1`, `2x2`, `3x2`, `6x2`, `3x3`. Implies mode grid.
     preset: Option<String>,
-    /// Custom grid columns (1-8). Implies mode grid.
+    /// Custom grid columns (1-8). Implies mode grid; a size that is not a preset is remembered.
     cols: Option<u8>,
     /// Custom grid rows (1-8). Implies mode grid.
     rows: Option<u8>,
@@ -278,18 +288,10 @@ fn layout_get(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: LayoutGetParams = parse_params(params)?;
     let key = key_of(ctx, p.group.as_deref())?;
     let l = ctx.state.app.ui.layouts.get(&key).cloned().unwrap_or_default();
-    Ok(ToolOutput::new(format!("{:?} layout", l.mode).to_lowercase(), json!({"key": key, "layout": l})))
-}
-
-fn parse_preset(p: &str) -> Option<(u8, u8)> {
-    Some(match p.trim().to_ascii_lowercase().replace('×', "x").as_str() {
-        "1" | "1x1" => (1, 1),
-        "2" | "2x1" => (2, 1),
-        "2x2" | "4" => (2, 2),
-        "3x2" | "6" => (3, 2),
-        "3x3" | "9" => (3, 3),
-        _ => return None,
-    })
+    Ok(ToolOutput::new(
+        format!("{:?} layout", l.mode).to_lowercase(),
+        json!({"key": key, "layout": l, "custom_grids": ctx.state.app.ui.custom_grids}),
+    ))
 }
 
 fn layout_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
@@ -300,15 +302,16 @@ fn layout_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         l.mode = m.into();
     }
     if let Some(preset) = &p.preset {
-        let (c, r) = parse_preset(preset).ok_or_else(|| ToolError::InvalidParams(format!("no grid preset `{preset}` (1, 2, 2x2, 3x2, 3x3)")))?;
+        let (c, r) = parse_grid_preset(preset)
+            .ok_or_else(|| ToolError::InvalidParams(format!("no grid preset `{preset}` (1, 2, 4x1, 6x1, 2x2, 3x2, 6x2, 3x3)")))?;
         l.grid_cols = c;
         l.grid_rows = r;
         l.mode = LayoutMode::Grid;
     }
     for (name, v) in [("cols", p.cols), ("rows", p.rows)] {
         if let Some(n) = v {
-            if !(1..=8).contains(&n) {
-                return Err(ToolError::InvalidParams(format!("`{name}` must be 1-8")));
+            if !(1..=MAX_GRID_SIDE).contains(&n) {
+                return Err(ToolError::InvalidParams(format!("`{name}` must be 1-{MAX_GRID_SIDE}")));
             }
             if name == "cols" {
                 l.grid_cols = n;
@@ -327,9 +330,14 @@ fn layout_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         }
         l.free_tree = Some(free);
     }
+    // A custom size (cols/rows, not a preset) is remembered for the Grid menu, newest first.
+    if p.cols.is_some() || p.rows.is_some() {
+        ctx.state.app.ui.remember_custom_grid(l.grid_cols, l.grid_rows);
+    }
     ctx.state.app.ui.layouts.insert(key.clone(), l.clone());
     ctx.state.persist();
-    Ok(ToolOutput::new("Layout changed.", json!({"key": key, "layout": l})))
+    let custom = ctx.state.app.ui.custom_grids.clone();
+    Ok(ToolOutput::new("Layout changed.", json!({"key": key, "layout": l, "custom_grids": custom})))
 }
 
 fn layout_pin(ctx: &mut Ctx<'_>, params: Value) -> Reply {
@@ -441,4 +449,21 @@ fn window_placement_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     ctx.state.persist();
     Ok(ToolOutput::new("Window placement saved.", json!({"window": p.window, "placement": placement, "maximized": p.maximized})))
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GridForgetParams {
+    cols: u8,
+    rows: u8,
+}
+
+fn grid_preset_forget(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: GridForgetParams = parse_params(params)?;
+    let forgot = ctx.state.app.ui.forget_custom_grid(p.cols, p.rows);
+    if forgot {
+        ctx.state.persist();
+    }
+    let msg = if forgot { format!("Forgot the {}x{} grid.", p.cols, p.rows) } else { format!("{}x{} was not a remembered grid.", p.cols, p.rows) };
+    Ok(ToolOutput::new(msg, json!({"forgot": forgot, "custom_grids": ctx.state.app.ui.custom_grids})))
 }

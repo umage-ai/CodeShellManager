@@ -288,6 +288,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         group_mode: GroupMode::Rail,
         rail: Scope::Group("odulodo".into()),
         layouts,
+        custom_grids: Vec::new(),
         active: Some("web".into()),
         inspector: None,
         inbox_panel: InboxPanel::default(),
@@ -1138,14 +1139,12 @@ impl DemoBackend {
             "layout_set" => {
                 let Some(p) = parse::<LayoutSetParams>(call) else { return vec![] };
                 let key = p.group.clone().unwrap_or_else(|| self.scope_key());
+                let mut remember = None;
                 let l = self.layout_mut(&key);
                 if let Some(m) = p.mode {
                     l.mode = m.into();
                 }
-                let preset = p.preset.as_deref().and_then(|x| {
-                    let (c, r) = x.split_once(['x', '×']).unwrap_or((x, "1"));
-                    Some(GridPreset::new(c.trim().parse().ok()?, r.trim().parse().ok()?))
-                });
+                let preset = p.preset.as_deref().and_then(csm_core::models::parse_grid_preset).map(|(c, r)| GridPreset::new(c, r));
                 if let Some(g) = preset {
                     l.grid = g;
                     l.mode = LayoutMode::Grid;
@@ -1153,10 +1152,22 @@ impl DemoBackend {
                 if p.cols.is_some() || p.rows.is_some() {
                     l.grid = GridPreset::new(p.cols.unwrap_or(l.grid.cols), p.rows.unwrap_or(l.grid.rows));
                     l.mode = LayoutMode::Grid;
+                    remember = Some(l.grid);
                 }
                 if let Some(f) = &p.free {
                     l.set_free(FreeLayout::from_value(Some(f)));
                 }
+                // As the engine: a custom size is remembered for the Grid menu, newest first.
+                if let Some(g) = remember.filter(|g| !g.is_preset()) {
+                    self.model.custom_grids.retain(|x| *x != g);
+                    self.model.custom_grids.insert(0, g);
+                    self.model.custom_grids.truncate(csm_core::models::MAX_CUSTOM_GRIDS);
+                }
+                vec![]
+            }
+            "grid_preset_forget" => {
+                let Some(p) = parse::<GridParam>(call) else { return vec![] };
+                self.model.custom_grids.retain(|g| (g.cols, g.rows) != (p.cols, p.rows));
                 vec![]
             }
             "layout_pin" | "layout_unpin" => {

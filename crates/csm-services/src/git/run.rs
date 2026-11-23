@@ -353,6 +353,17 @@ pub fn worktree_list(folder: &str) -> Vec<WorktreeInfo> {
     list
 }
 
+/// The GitHub repository of the checkout at `folder` (`origin`, else the remote `branch`
+/// tracks; see [`super::github::pick`]). `None` when no such remote is a GitHub URL, or git failed.
+#[must_use]
+pub fn github_repo(folder: &str, branch: Option<&str>) -> Option<super::github::GithubRepo> {
+    if !folder_usable(folder) {
+        return None;
+    }
+    let r = run_git(folder, &super::github::remote_config_args(), QUERY_TIMEOUT, true);
+    r.ok().then(|| super::github::pick(&r.stdout, branch)).flatten()
+}
+
 /// Local branch names.
 pub fn branches(folder: &str) -> Result<Vec<String>, String> {
     let r = run_git(folder, &args::list_branches_args(), QUERY_TIMEOUT, true);
