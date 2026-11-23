@@ -151,6 +151,11 @@ pub trait Backend {
     fn remote(&self) -> Option<crate::remote_window::RemoteStatus> {
         None
     }
+    /// The panes this frame drew (every session with a visible pane, floating or torn off), and
+    /// the session that has focus (`driver`: the pane that types, for a remote host's PTY size).
+    /// Called once a frame, after the panes are drawn. A remote window subscribes the terminals
+    /// shown here and drops the others; the engine has nothing to do.
+    fn show_panes(&mut self, _visible: &[String], _driver: Option<&str>) {}
 }
 
 /// The engine as a [`ToolPort`]: submits to the engine as `Caller::Ui`, and polls the replies and

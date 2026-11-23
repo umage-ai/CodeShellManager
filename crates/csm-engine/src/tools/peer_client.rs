@@ -17,6 +17,11 @@ use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, emp
 /// The tools only the person at the app's window may call.
 pub const UI_ONLY: [&str; 3] = ["peer_client_pair", "peer_connect_open", "remote_window_open"];
 
+/// Refused for a paired device (`Caller::Peer`) too: the pairing in progress (its check code, its
+/// cancel), the office list and its removal are this app's own business, not a device's. An agent
+/// or the CLI may still use them (the person's own tools; forgetting an office asks first).
+pub const PEER_REFUSED: [&str; 4] = ["peer_client_pair_status", "peer_client_pair_cancel", "peer_hosts_list", "peer_host_forget"];
+
 pub(super) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
@@ -88,6 +93,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 /// Refused before any consent card: pairing is started by the person in the app, never by an agent,
 /// a CLI call or a paired device.
 pub(super) fn precheck(id: &str, caller: &Caller) -> Option<ToolError> {
+    if matches!(caller, Caller::Peer { .. }) && PEER_REFUSED.contains(&id) {
+        return Some(ToolError::Refused("a paired device cannot read or change this app's pairings or its list of offices".into()));
+    }
     if !UI_ONLY.contains(&id) || *caller == Caller::Ui {
         return None;
     }

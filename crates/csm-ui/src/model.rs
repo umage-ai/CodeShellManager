@@ -805,6 +805,9 @@ pub struct UiModel {
     /// This window shows a paired host (a remote window): what runs on this laptop is not offered,
     /// and a pasted image or a dropped file is refused (`remote_window`).
     pub remote: bool,
+    /// The host is out of reach (a remote window reconnecting): what is shown is the last snapshot,
+    /// marked stale (the canvas is veiled until the link is back).
+    pub stale: bool,
     /// Add-ons and their state (Settings > Add-ons, the palette, the slash menu).
     pub addons: Vec<csm_engine::addons::AddonSummary>,
     /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).

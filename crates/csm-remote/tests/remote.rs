@@ -244,3 +244,92 @@ fn a_window_shares_one_connection_between_its_port_and_its_view() {
     assert_eq!(port.submitted().last().map(|c| c.id.as_str()), Some("session_rename"));
     assert_eq!(handle.overlay().theme, None, "a fresh window has no theme of its own yet");
 }
+
+/// What a frame does, through the UI's own trait: `show_panes` with the panes it drew and the
+/// focused one, then the pane's terminal is drawn from `Backend::terminal`. This is the path the
+/// real remote window takes (no test calls `show_terminals` by hand).
+#[test]
+fn a_pane_the_ui_draws_gets_the_offices_grid_through_the_backend_trait() {
+    let office = Office::new();
+    let (id, pty, handle) = office.session();
+    let (b, _me) = connect(&office, None, "Laptop");
+    let (mut port, mut view, _handle) = csm_remote::shared(b);
+    wait_for("the session list", || {
+        let _ = port.poll();
+        view.model().sessions.iter().any(|s| s.id == id).then_some(())
+    });
+    // Nothing is drawn yet: no terminal is subscribed.
+    assert!(view.terminal(&id).is_none(), "a session with no pane has no terminal");
+
+    // The frame showed this pane, and it has the focus (so it types and drives the PTY size).
+    view.show_panes(std::slice::from_ref(&id), Some(&id));
+    wait_for("the pane's first screen", || {
+        let _ = port.poll();
+        view.terminal(&id).is_some_and(|t| t.state() == SourceState::Running).then_some(())
+    });
+    pty.emit(b"drawn through the trait\r\n");
+    wait_for("the pane to draw the office's grid", || {
+        let _ = port.poll();
+        let t = view.terminal(&id)?;
+        (screen_of_pane(t.as_ref()) == office.screen_of(&handle)).then_some(())
+    });
+    let shown = screen_of_pane(view.terminal(&id).unwrap().as_ref());
+    assert!(text_of(&shown).contains("drawn through the trait"));
+
+    // The focused pane is the driver: its resize reaches the PTY.
+    view.terminal(&id).unwrap().set_grid(GridSize::new(100, 30));
+    wait_for("the PTY to take the focused pane's size", || {
+        let _ = port.poll();
+        (pty.size() == (100, 30)).then_some(())
+    });
+
+    // A frame that no longer shows the pane unsubscribes it.
+    view.show_panes(&[], None);
+    assert!(view.terminal(&id).is_none(), "a hidden pane is unsubscribed");
+}
+
+/// A host that is out of reach keeps its last snapshot on screen, marked stale; the mark goes when
+/// the link is back.
+#[test]
+fn an_office_out_of_reach_keeps_its_last_snapshot_marked_stale() {
+    let office = Office::new();
+    let (id, _pty, _handle) = office.session();
+    let proxy = Proxy::start(office.server.local_addr().unwrap());
+    let (mut b, _me) = connect(&office, Some(proxy.port()), "Laptop");
+    settle(&mut b, "the connection", live);
+    settle(&mut b, "the session list", |b| b.model().sessions.iter().any(|s| s.id == id));
+    assert!(!b.model().stale, "a live window is not stale");
+
+    proxy.cut();
+    settle(&mut b, "the snapshot marked stale", |b| b.model().stale);
+    assert!(b.model().sessions.iter().any(|s| s.id == id), "the last snapshot is still shown");
+    assert!(b.remote().is_some_and(|s| matches!(s.link, csm_ui::remote_window::RemoteLink::Offline)));
+
+    settle(&mut b, "the laptop to reconnect", live);
+    settle(&mut b, "the stale mark to go", |b| !b.model().stale);
+}
+
+/// Quitting a remote window stops its link: the window's worker ends and does not come back, and the
+/// office is not told to quit (its session keeps running and a laptop can connect again).
+#[test]
+fn stopping_the_window_ends_the_link_and_leaves_the_office_running() {
+    let office = Office::new();
+    let (id, _pty, _handle) = office.session();
+    let (b, _me) = connect(&office, None, "Laptop");
+    let (mut port, view, handle) = csm_remote::shared(b);
+    wait_for("the link", || {
+        let _ = port.poll();
+        (view.remote()?.link == csm_ui::remote_window::RemoteLink::Connected).then_some(())
+    });
+    handle.stop();
+    // Longer than the longest first retry: a link that was not stopped would be back by now.
+    let until = Instant::now() + Duration::from_millis(2500);
+    while Instant::now() < until {
+        let _ = port.poll();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(view.remote().map(|s| s.link), Some(csm_ui::remote_window::RemoteLink::Connected), "the window stays stopped");
+    assert!(office.engine.view().sessions.iter().any(|s| s.id == id), "the office keeps its session");
+    let (mut again, _me2) = connect(&office, None, "Second laptop");
+    settle(&mut again, "the second laptop to connect", live);
+}

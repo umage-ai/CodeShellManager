@@ -14,6 +14,8 @@
 //! - [`ConnectDialog`]: the state of "Connect to another CodeShellManager…" (the link, the device
 //!   name, the check code, the paired offices), read from the engine's `peer_client_*` tools.
 
+use std::net::{Ipv4Addr, Ipv6Addr};
+
 use serde_json::Value;
 
 /// How the window's link to its host stands.
@@ -106,7 +108,11 @@ pub fn check_link(url: &str) -> Option<LinkTarget> {
     if is_loopback(&ok) { Some(LinkTarget::Localhost(ok)) } else { Some(LinkTarget::Public(ok)) }
 }
 
-/// Whether an http(s) URL's host is `localhost`, `127.0.0.1`, `::1` or `*.localhost`.
+/// Whether an http(s) URL's host is this machine: `localhost` or `*.localhost`, an address in
+/// 127.0.0.0/8 or 0.0.0.0/8 (the latter reaches the local machine on Windows), `::1` or `::`, or an
+/// IPv4 address in IPv6 form (`::ffff:127.0.0.1`, `::7f00:1`). The IPv4 spellings a browser accepts
+/// count too (`127.1`, `0x7f000001`, `2130706433`, `0177.0.0.1`). A host that is not an address and
+/// not `localhost` is not loopback.
 pub fn is_loopback(url: &str) -> bool {
     let Some((_, rest)) = url.split_once("://") else { return false };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -116,8 +122,70 @@ pub fn is_loopback(url: &str) -> bool {
         Some(v6) => v6.split(']').next().unwrap_or(""),
         None => hostport.split(':').next().unwrap_or(""),
     };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    host == "localhost" || host == "127.0.0.1" || host == "::1" || host.ends_with(".localhost")
+    is_loopback_host(&host.trim_end_matches('.').to_ascii_lowercase())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(v6) = host.parse::<Ipv6Addr>() {
+        let [a, b, c, d, e, f, g, h] = v6.segments();
+        // IPv4-mapped (`::ffff:a.b.c.d`) and the old IPv4-compatible form (`::a.b.c.d`).
+        if a == 0 && b == 0 && c == 0 && d == 0 && e == 0 && (f == 0xffff || f == 0) {
+            let [g1, g2] = g.to_be_bytes();
+            let [h1, h2] = h.to_be_bytes();
+            return is_local_v4(Ipv4Addr::new(g1, g2, h1, h2));
+        }
+        return v6.is_loopback() || v6.is_unspecified();
+    }
+    parse_ipv4_loose(host).is_some_and(is_local_v4)
+}
+
+fn is_local_v4(v4: Ipv4Addr) -> bool {
+    let [first, ..] = v4.octets();
+    first == 127 || first == 0
+}
+
+/// An IPv4 address the way a browser reads a host: one to four parts, each decimal, octal (a
+/// leading `0`) or hex (`0x`), the last part filling the remaining bytes. `None` for anything else.
+fn parse_ipv4_loose(host: &str) -> Option<Ipv4Addr> {
+    let mut parts: Vec<&str> = host.split('.').collect();
+    if parts.len() > 1 && parts.last() == Some(&"") {
+        parts.pop();
+    }
+    let n = parts.len();
+    if n == 0 || n > 4 {
+        return None;
+    }
+    let nums: Vec<u64> = parts.iter().map(|p| parse_ipv4_part(p)).collect::<Option<_>>()?;
+    let (last, head) = nums.split_last()?;
+    let last_bits = 8 * (5 - n) as u32;
+    if *last >= 1u64 << last_bits {
+        return None;
+    }
+    let mut value: u64 = 0;
+    for part in head {
+        if *part > 255 {
+            return None;
+        }
+        value = (value << 8) | part;
+    }
+    let value = (value << last_bits) | last;
+    u32::try_from(value).ok().map(Ipv4Addr::from)
+}
+
+fn parse_ipv4_part(p: &str) -> Option<u64> {
+    if let Some(hex) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+        return if hex.is_empty() { Some(0) } else { u64::from_str_radix(hex, 16).ok() };
+    }
+    if p.len() > 1 && p.starts_with('0') {
+        return u64::from_str_radix(p.get(1..)?, 8).ok();
+    }
+    if p.is_empty() {
+        return None;
+    }
+    p.parse::<u64>().ok()
 }
 
 /// The warning shown before a loopback link opens: it is the office's machine, not the laptop's.
@@ -222,6 +290,57 @@ impl ConnectDialog {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_spelling_of_this_machine_is_loopback() {
+        for url in [
+            "http://localhost:8080/",
+            "http://LOCALHOST./x",
+            "https://app.localhost/",
+            "http://127.0.0.1/",
+            "http://127.255.0.9:3000/",
+            "http://127.1/",
+            "http://127.0.1/",
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://0177.0.0.1/",
+            "http://0.0.0.0:8000/",
+            "http://0/",
+            "http://[::1]:9/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:7f00:1]/",
+            "http://[::127.0.0.1]/",
+            "http://user@127.0.0.1/",
+        ] {
+            assert!(is_loopback(url), "{url} points to the office's own machine");
+        }
+    }
+
+    #[test]
+    fn other_hosts_are_not_loopback() {
+        for url in [
+            "https://example.com/",
+            "http://10.8.0.2:47300/",
+            "http://192.168.1.10/",
+            "http://127.evil.example/",
+            "http://localhost.example.com/",
+            "http://[2001:db8::1]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://256.0.0.1/",
+            "http://0x100000000/",
+            "http://example/",
+        ] {
+            assert!(!is_loopback(url), "{url} is not the office's own machine");
+        }
+    }
+
+    #[test]
+    fn a_checked_link_says_which_kind_it_is() {
+        assert!(matches!(check_link("http://127.1:80/"), Some(LinkTarget::Localhost(_))));
+        assert!(matches!(check_link("https://example.com/"), Some(LinkTarget::Public(_))));
+        assert_eq!(check_link("file:///etc/passwd"), None);
+    }
 
     fn status(link: RemoteLink) -> RemoteStatus {
         RemoteStatus { host_name: "OFFICE".into(), address: "10.8.0.2:47300".into(), link }

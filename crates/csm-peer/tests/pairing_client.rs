@@ -306,10 +306,17 @@ fn only_the_apps_own_window_may_start_a_pairing() {
     // Refused before anything happens: no state, no key, no folder.
     assert_eq!(rig.client_status()["state"], "idle");
     assert!(!rig.client_dir.exists(), "a refused pairing leaves nothing behind");
-    // Reading and cancelling are for everyone.
+    // Reading and cancelling are for the person and their agents, not for a paired device.
     let s = rig.engine.call(Caller::Cli, "peer_client_pair_status", json!({})).unwrap();
     assert_eq!(s.data["state"], "idle");
     assert!(rig.engine.call(Caller::Cli, "peer_client_pair_cancel", json!({})).is_ok());
+    let peer = Caller::Peer { device_id: "abcdefghijklmnopqrstuvwxyz".into(), name: "Phone".into(), level: Level::Full };
+    for id in ["peer_client_pair_status", "peer_client_pair_cancel", "peer_hosts_list", "peer_host_forget"] {
+        let r = rig.engine.call(peer.clone(), id, json!({"host_id": "x"}));
+        assert!(matches!(r, Err(ToolError::Refused(_))), "{id} for a paired device: {r:?}");
+    }
+    // A refused read changes nothing and lists nothing.
+    assert!(rig.hosts().is_empty());
 }
 
 #[test]

@@ -65,6 +65,8 @@ command line, from an agent or from another paired device.
   (on either machine) wins, and the card closes everywhere.
 - **Quit** in a remote window disconnects. It never quits the office. To quit the office, use
   **Quit CodeShellManager on OFFICE…**; it asks first.
+- Closing a remote window (its ✕ or Alt+F4) disconnects the same way. A window that has lost its host shows its last
+  picture greyed out, with the strip saying it is reconnecting.
 - Some things stay on the office or are refused in a remote window, because they would act on the
   laptop's machine: opening a folder or a file in an editor, the native folder picker, backup export
   and import, dropping files onto a pane (you get a toast) and pasting an image (you get a toast).

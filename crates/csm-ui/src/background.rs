@@ -100,7 +100,8 @@ impl CsmApp {
         let now = self.background.now_s(ctx);
         self.watch_attention(ctx, now);
         // Here rather than in the frame, so a close that arrives while hidden is seen too.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
+        // Not once a remote window has disconnected: its close is already on its way (no CancelClose).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready && !self.disconnect {
             self.close_requested(ctx);
         }
         if self.background.hidden {
@@ -128,6 +129,13 @@ impl CsmApp {
     /// ask, or quit, as `CloseAction` says. A close that arrives while hidden (logoff, another
     /// program's `WM_CLOSE`) quits at once.
     fn close_requested(&mut self, ctx: &egui::Context) {
+        if self.remote.is_some() {
+            // A remote window's close is its disconnect, never `app_quit` on the office. The close is
+            // not cancelled: a CancelClose here would be re-queued by the event loop every pass, and the
+            // window would never go. The host (`apps/codeshell`) closes the window once `disconnect` is set.
+            self.disconnect = true;
+            return;
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         if self.background.hidden {
             self.flush_placements(ctx);

@@ -280,7 +280,10 @@ pub fn seed_overlay(snap: &WireSnapshot, overlay: &mut ViewOverlay) {
 }
 
 /// A host event as the engine's event type (the UI's `on_event` takes that). `None` for an event
-/// this client does not show.
+/// this client does not show, or one that belongs to the host alone: a window show, the host's
+/// test notification, its quit (`QuitReady`: a remote window disconnects, it does not quit), its
+/// clipboard (OSC 52 is not routed to a laptop yet) and its settings (each client keeps its own
+/// preferences, so a host's `SettingChanged` would rewrite this laptop's window).
 pub fn event(e: &WireEvent) -> Option<Event> {
     Some(match e {
         WireEvent::SessionChanged { session_id } => Event::SessionChanged { session_id: session_id.clone() },
@@ -293,13 +296,8 @@ pub fn event(e: &WireEvent) -> Option<Event> {
         WireEvent::ConsentResolved { request_id } => Event::ConsentResolved { request_id: *request_id },
         WireEvent::Error { message } => Event::Error { message: message.clone() },
         WireEvent::QuitProgress { session_id, phase, elapsed_ms } => Event::QuitProgress { session_id: session_id.clone(), phase: phase.clone(), elapsed_ms: *elapsed_ms },
-        WireEvent::QuitReady => Event::QuitReady,
-        WireEvent::WindowShowRequested => Event::WindowShowRequested,
-        WireEvent::NotificationTestRequested => Event::NotificationTestRequested,
-        WireEvent::ClipboardOffered { session_id } => Event::ClipboardOffered { session_id: session_id.clone() },
         WireEvent::ScreenChanged { instance } => Event::ScreenChanged { instance: instance.clone() },
         WireEvent::ScreenFocusRequested { instance } => Event::ScreenFocusRequested { instance: instance.clone() },
-        WireEvent::SettingChanged { key, value } => Event::SettingChanged { key: key.clone(), value: value.clone() },
         _ => return None,
     })
 }
@@ -473,5 +471,21 @@ mod tests {
         assert_eq!(e, Some(Event::Toast { message: "hi".into() }));
         assert_eq!(event(&WireEvent::FocusRequested { session_id: "s".into() }), Some(Event::FocusRequested { session_id: "s".into() }));
         assert_eq!(event(&WireEvent::ConsentResolved { request_id: 7 }), Some(Event::ConsentResolved { request_id: 7 }));
+    }
+
+    /// The office's own window, quit and settings events never reach the laptop's window: a window
+    /// show, the test notification, the quit (a remote window disconnects), the clipboard and a
+    /// setting would rewrite this laptop's own state.
+    #[test]
+    fn the_office_cannot_show_test_or_change_this_laptops_window() {
+        for e in [
+            WireEvent::WindowShowRequested,
+            WireEvent::NotificationTestRequested,
+            WireEvent::QuitReady,
+            WireEvent::ClipboardOffered { session_id: "s".into() },
+            WireEvent::SettingChanged { key: "ZoomPercent".into(), value: serde_json::json!(150) },
+        ] {
+            assert_eq!(event(&e), None, "{e:?} is not applied to a remote window");
+        }
     }
 }

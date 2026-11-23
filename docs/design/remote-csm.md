@@ -943,7 +943,7 @@ Base sha for this step: `5faf218bf4795a12a0ca6e66de0450eff616b47e`.
   when another device resizes the session the console redraws at that size (it does not resize back). The
   tray tooltip and icon badge are not done (step 4). Still open from P1, all listed above: OSC 52 routing to the
   driver, run-output streaming, add-on screen proxying, the typing indicator, compression, the window's own reconnect
-  error screen, and the step 6 fix round items (no stale marking while reconnecting, no coalescing of `Up::Snapshot`,
+  error screen, and the step 6 fix round items (no coalescing of `Up::Snapshot`,
   the bad-delta path through the real link).
 - **Fix round 1 (review of step 8).** The resize ping-pong between two consoles of different sizes is fixed (above,
   tested). Office-supplied names, ids, statuses and the office's name print through `printable`, where control
@@ -961,3 +961,35 @@ Base sha for this step: `5faf218bf4795a12a0ca6e66de0450eff616b47e`.
 - **User docs:** `docs/remote-access.md` (office: Settings › Remote access; laptop: Connect to another CodeShellManager;
   `csm attach`), linked from `docs/README.md`. `docs/tools.md` notes that `csm attach` is not a tool; its catalogue
   is unchanged (no tool was added or changed in this step).
+
+## P1 client review: fix round (`csm-remote`, `csm-ui`, `apps/codeshell`, `csm-engine`)
+
+Base sha for this round: `9c20e082108f5e854b04421d93c70c89ec0a83f6` (the review was of the client side, steps 5-8, at `4fb7458`).
+
+- **Blocker: terminals were never subscribed in the real remote window.** `Backend::show_panes(visible, driver)` (a
+  new default no-op on the trait) is called at the end of each frame with the sessions whose panes the frame drew
+  (planned panes, floats, torn-off panes; live sessions only) and the focused session. `RemoteBackend::show_panes`
+  subscribes the shown panes, drops the rest, and marks the focused pane as the driver. `RemoteTerminal::set_driver`
+  sends only a change, so the per-frame call costs nothing. Tests: `csm-remote/tests/remote.rs` drives a pane through the
+  `Backend` trait only (`shown` then the office's grid, the focused pane's resize reaching the PTY, hidden unsubscribed);
+  `csm-ui/tests/remote_window_ui.rs` checks that the frame reports its panes and the focused one, and that the board shows none.
+- **Blocker: a remote window could not close.** `background::close_requested` in a remote window sets `disconnect` and
+  sends no `CancelClose` (a cancel was re-queued by the event loop every pass). `logic` does not treat the close as
+  pending once `disconnect` is set. `apps/codeshell` stops the link once (`RemoteHandle::stop`, after saving the view
+  state) and then sends `Close`. Tests: `remote_window_ui.rs` (a close, repeated closes, and Quit followed by a close:
+  never `CancelClose`, never `app_quit`). The real window close is still to be checked by hand.
+- **Office events on the laptop.** `map::event` no longer applies `WindowShowRequested`, `NotificationTestRequested`,
+  `QuitReady`, `ClipboardOffered` or `SettingChanged`. Settings stay per client: a host's setting is not followed (the
+  laptop's own preferences are its own). Test in `map.rs`.
+- **Stale snapshot.** With a snapshot in hand, `Reconnecting` and `Stopped` mark the model `stale`; the canvas is veiled
+  (`theme::alpha::STALE`) and the strip keeps saying why. Calls made while the link is down still fail at once. Tests in
+  `csm-remote` and `csm-ui`. The veil does not reach floating panes or torn-off windows (they draw in their own layers).
+- **Paired devices and the pairing tools.** `peer_client_pair_status`, `peer_client_pair_cancel`, `peer_hosts_list` and
+  `peer_host_forget` are refused for `Caller::Peer` (`PEER_REFUSED`). The CLI and MCP callers keep them (cancel and forget
+  for MCP still ask first). Test in `pairing_client.rs`.
+- **Loopback links.** `is_loopback` parses the host: `localhost` and `*.localhost`, IPv4 in 127/8 and 0/8 in every spelling a
+  browser accepts (`127.1`, `0x7f000001`, `2130706433`, `0177.0.0.1`), IPv6 `::1` and `::`, and IPv4 in IPv6 form
+  (`::ffff:127.0.0.1`, `::127.0.0.1`). Unit tests in `remote_window.rs`.
+- **Not done in this round.** Board previews in a remote window are blank (the board would subscribe every session; the
+  host allows 16 streams per device). Remote terminals are not veiled inside floating panes. Still open from step 8: the
+  manual WireGuard checks.

@@ -264,3 +264,65 @@ fn an_opened_remote_window_needs_a_host_to_open() {
     assert!(h.state().hooks.open_window.is_none());
     h.step();
 }
+
+// ── Close, the panes the frame draws, and the stale mark ─────────────────────────────────────
+
+/// The viewport commands of the last frame.
+fn viewport_commands(h: &H) -> Vec<egui::ViewportCommand> {
+    h.output().viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+}
+
+/// What eframe delivers for a close (the title bar's ✕, Alt+F4), and again while it is pending.
+fn deliver_close(h: &mut H) {
+    h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    h.step();
+}
+
+#[test]
+fn a_remote_windows_close_disconnects_and_is_never_cancelled() {
+    let mut h = remote(RemoteLink::Connected);
+    deliver_close(&mut h);
+    assert!(h.state().disconnect, "the close disconnects the window");
+    // A CancelClose would be re-queued by the event loop every pass, and the window would never go.
+    assert!(!viewport_commands(&h).contains(&egui::ViewportCommand::CancelClose), "{:?}", viewport_commands(&h));
+    for _ in 0..3 {
+        deliver_close(&mut h);
+    }
+    assert!(!viewport_commands(&h).contains(&egui::ViewportCommand::CancelClose), "{:?}", viewport_commands(&h));
+    assert!(!submitted_ids(&h).iter().any(|id| id == "app_quit"), "a close never quits the office");
+}
+
+#[test]
+fn a_remote_windows_quit_disconnects_and_the_close_after_it_is_not_cancelled() {
+    let mut h = remote(RemoteLink::Connected);
+    run(&mut h, Action::AskQuit);
+    assert!(h.state().disconnect, "Quit disconnects");
+    deliver_close(&mut h);
+    assert!(!viewport_commands(&h).contains(&egui::ViewportCommand::CancelClose), "{:?}", viewport_commands(&h));
+    assert!(!submitted_ids(&h).iter().any(|id| id == "app_quit"), "Quit never quits the office");
+}
+
+#[test]
+fn every_frame_reports_the_panes_it_drew_and_the_focused_one() {
+    let b = backend(ThemeKind::Mocha);
+    let log = b.panes_log();
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    let (shown, driver) = log.lock().unwrap().clone().expect("a frame reported its panes");
+    assert!(!shown.is_empty(), "the workspace shows panes");
+    assert_eq!(driver.as_deref(), h.state().model.active.as_deref(), "the focused pane is the driver");
+    for id in &shown {
+        assert!(h.state().model.session(id).is_some_and(|s| s.status.is_live()), "only live sessions are subscribed: {id}");
+    }
+    // The board draws cards, not panes: a remote window subscribes nothing.
+    run(&mut h, Action::Tool("layout_set", json!({"mode": "board"})));
+    let (shown, _) = log.lock().unwrap().clone().expect("the board frame reported");
+    assert!(shown.is_empty(), "the board shows no panes: {shown:?}");
+}
+
+#[test]
+fn an_office_out_of_reach_marks_its_snapshot_stale() {
+    assert!(remote(RemoteLink::Offline).state().model.stale, "reconnecting is stale");
+    assert!(!remote(RemoteLink::Connected).state().model.stale, "a live window is not");
+    assert!(!remote(RemoteLink::Connecting).state().model.stale, "nothing to be stale yet");
+}

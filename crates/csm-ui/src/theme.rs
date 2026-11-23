@@ -806,6 +806,8 @@ pub mod alpha {
     /// A closed thread's badge, and under the pointer.
     pub const THREAD_BADGE: f32 = 0.25;
     pub const THREAD_BADGE_HOVER: f32 = 0.4;
+    /// The veil over a remote window's last snapshot while its host is out of reach.
+    pub const STALE: f32 = 0.55;
 }
 
 /// How long a toast stays, and the status glyph animation rate.

@@ -167,14 +167,23 @@ struct RemoteWindow {
     view_file: Option<PathBuf>,
     saved: Option<csm_ui::view_overlay::ViewOverlay>,
     checked_at: Option<Instant>,
+    /// The link has been stopped for a disconnect (it is stopped once).
+    stopped: bool,
 }
 
 impl RemoteWindow {
     /// Once a frame: keeps the event loop ticking (the link's state arrives on the worker thread,
     /// not as an event), saves the view state when it changed, and closes the window on a disconnect.
+    /// A disconnect stops the link and sends the close; the close is never cancelled (see
+    /// `csm_ui::background`), so the window goes.
     fn step(&mut self, ctx: &egui::Context, disconnect: bool) {
         ctx.request_repaint_after(REMOTE_TICK);
         if disconnect {
+            if !self.stopped {
+                self.stopped = true;
+                self.save_view();
+                self.handle.stop();
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -183,6 +192,11 @@ impl RemoteWindow {
             return;
         }
         self.checked_at = Some(now);
+        self.save_view();
+    }
+
+    /// Writes the view state on a worker thread, when it differs from what was last written.
+    fn save_view(&mut self) {
         let Some(path) = self.view_file.clone() else { return };
         let current = self.handle.overlay();
         if self.saved.as_ref() == Some(&current) {
@@ -504,7 +518,7 @@ fn run_remote_window(args: &Args, host_id: String, fonts: FontSet) {
             app.window_controls = cfg!(windows);
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
-            let remote = RemoteWindow { handle, view_file, saved, checked_at: None };
+            let remote = RemoteWindow { handle, view_file, saved, checked_at: None, stopped: false };
             Ok(Box::new(App { app, dialogs, tray: None, notifier: None, clicked: None, remote: Some(remote) }))
         }),
         &event_loop,

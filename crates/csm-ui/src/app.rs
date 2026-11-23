@@ -515,6 +515,8 @@ pub struct UiState {
     pub notes_cache: NotesCache,
     pub search: SearchState,
     pub focus_terminal: Option<SessionId>,
+    /// The sessions whose panes this frame draws (`Backend::show_panes` gets them at the frame's end).
+    pub shown_panes: Vec<SessionId>,
     /// The last active session seen, to move keyboard focus when it changes.
     pub last_active: Option<SessionId>,
     pub settings: SettingsState,
@@ -2156,9 +2158,17 @@ impl CsmApp {
             let peek = Rect::from_min_max(pos2(side.min.x, body.min.y), pos2(side.min.x + size::SIDEBAR, body.max.y));
             screens::sidebar::peek(&ctx, self, peek, &mut actions);
         }
+        // A remote window whose host is out of reach shows its last snapshot, veiled (the strip says why).
+        if self.model.stale {
+            ui.painter().rect_filled(body, 0.0, theme::Tokens::tint(t.bg, theme::alpha::STALE));
+        }
         self.inline_fallback();
         screens::panes::torn_windows(&ctx, self);
         screens::addon_screen::pop_windows(&ctx, self);
+        // The panes drawn this frame, and the one with focus, for a backend that subscribes terminals.
+        let shown = std::mem::take(&mut self.ui.shown_panes);
+        let active = self.model.active.clone();
+        self.backend.show_panes(&shown, active.as_deref());
 
         // Overlays, top-most last.
         screens::open_with::show(&ctx, self, &mut actions);

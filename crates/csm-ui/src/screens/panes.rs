@@ -412,6 +412,8 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     };
     let planned = plan(&model, &scope, &layout, inner, companion.as_deref(), slots.as_deref());
     let maxed = planned.iter().any(|(_, _, o)| o.maximized);
+    // The panes drawn this frame, for the backend (a remote window subscribes their terminals).
+    app.ui.shown_panes.extend(planned.iter().filter(|(id, _, o)| !o.mini && model.session(id).is_some_and(|s| s.status.is_live())).map(|(id, _, _)| id.clone()));
     if planned.is_empty() {
         let msg = if model.scope_sessions(&scope).is_empty() {
             "No sessions here yet. Ctrl+T starts one."
@@ -488,6 +490,7 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     continue;
                 }
                 let r = Rect::from_min_size(inner.min + vec2(f.rect[0], f.rect[1]), vec2(f.rect[2], f.rect[3]));
+                app.ui.shown_panes.push(f.session.clone());
                 let src = app.backend.terminal(&f.session);
                 let o = PaneOpts {
                     mode: Some(LayoutMode::Free),
@@ -1539,6 +1542,7 @@ pub fn torn_windows(ctx: &egui::Context, app: &mut CsmApp) {
             }
         }
     }
+    app.ui.shown_panes.extend(panes.iter().map(|(id, _)| id.clone()));
     let groups: Vec<String> = model.groups.iter().filter(|g| g.torn_off).map(|g| g.id.clone()).collect();
     let state = torn_state(ctx);
     {

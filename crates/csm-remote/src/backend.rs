@@ -174,6 +174,21 @@ impl RemoteBackend {
         }
     }
 
+    /// What the UI drew this frame (`Backend::show_panes`): subscribes the shown panes' terminals,
+    /// drops the others, and marks `driver` (the focused pane) as the one that types. Every other
+    /// pane is marked not driving; a mark that does not change sends nothing.
+    pub fn show_panes(&mut self, visible: &[String], driver: Option<&str>) {
+        self.show_terminals(visible);
+        for (id, t) in &self.terms {
+            t.set_driver(driver == Some(id.as_str()));
+        }
+    }
+
+    /// Ends the connection (a remote window's Quit): the worker closes the link and stops.
+    pub fn stop(&self) {
+        let _ = self.cmds.send(Cmd::Stop);
+    }
+
     /// Recomputes the model from the mirror and the overlay.
     fn rebuild(&mut self) {
         let mut m = match &self.mirror {
@@ -181,6 +196,8 @@ impl RemoteBackend {
             None => UiModel { theme: self.theme, ..UiModel::default() },
         };
         m.remote = true;
+        // The last snapshot is kept on screen while the host is out of reach, marked stale.
+        m.stale = self.mirror.is_some() && matches!(self.link, LinkState::Reconnecting { .. } | LinkState::Stopped);
         m.git = self.git.map.clone();
         m.folder_worktrees = self.git.folders.clone();
         m.usage = self.usage.clone();
@@ -235,6 +252,8 @@ impl RemoteBackend {
                     self.fail_awaiting(replies);
                 }
                 self.link = s;
+                // The model's stale mark follows the link.
+                self.dirty = true;
             }
             Up::Tools(list) => {
                 self.tools = Arc::from(list);
@@ -374,6 +393,10 @@ impl Backend for RemoteBackend {
 
     fn terminal(&self, id: &str) -> Option<Arc<dyn TerminalSource>> {
         self.terms.get(id).map(|t| t.clone() as Arc<dyn TerminalSource>)
+    }
+
+    fn show_panes(&mut self, visible: &[String], driver: Option<&str>) {
+        RemoteBackend::show_panes(self, visible, driver);
     }
 
     /// The host applied the effect. Errors are shown; so are the results of calls that start or

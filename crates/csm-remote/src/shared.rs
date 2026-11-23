@@ -45,6 +45,11 @@ impl RemoteHandle {
     pub fn overlay(&self) -> ViewOverlay {
         self.inner.borrow().overlay().clone()
     }
+
+    /// Ends the connection: the window is closing (a Quit or the close button disconnects).
+    pub fn stop(&self) {
+        self.inner.borrow().stop();
+    }
 }
 
 /// Splits one backend into the faces a window needs.
@@ -86,6 +91,10 @@ impl Backend for RemoteView {
 
     fn terminal(&self, id: &str) -> Option<Arc<dyn TerminalSource>> {
         self.inner.borrow().terminal(id)
+    }
+
+    fn show_panes(&mut self, visible: &[String], driver: Option<&str>) {
+        self.inner.borrow_mut().show_panes(visible, driver);
     }
 
     fn on_reply(&mut self, call: &Call, reply: &Reply, port: &dyn ToolPort) -> Vec<Notice> {

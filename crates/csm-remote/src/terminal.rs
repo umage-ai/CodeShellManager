@@ -73,9 +73,11 @@ impl RemoteTerminal {
     }
 
     /// Whether this pane is the one typing: the host then sizes the PTY to it. Sent again with the
-    /// last requested size when it changes.
+    /// last requested size when it changes. Called every frame by the UI: an unchanged mark sends nothing.
     pub fn set_driver(&self, driver: bool) {
-        self.driver.store(driver, Ordering::Release);
+        if self.driver.swap(driver, Ordering::AcqRel) == driver {
+            return;
+        }
         if let Some((cols, rows)) = *lock(&self.requested) {
             self.send(Cmd::Resize { stream: self.stream, cols, rows, driver });
         }
@@ -148,5 +150,45 @@ impl TerminalSource for RemoteTerminal {
             ENDED => SourceState::Exited(None),
             _ => SourceState::Starting,
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    fn resizes(rx: &mpsc::Receiver<Cmd>) -> Vec<bool> {
+        rx.try_iter()
+            .filter_map(|c| match c {
+                Cmd::Resize { driver, .. } => Some(driver),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The driver mark is set every frame by the UI: only a change reaches the host, and a change
+    /// re-sends the size the pane last asked for, with the new mark.
+    #[test]
+    fn an_unchanged_driver_mark_sends_nothing() {
+        let (tx, rx) = mpsc::channel();
+        let t = RemoteTerminal::new("s1", 1, tx);
+        t.set_grid(GridSize::new(90, 20));
+        assert_eq!(resizes(&rx), vec![false], "the first size is sent, not driving");
+
+        t.set_driver(false);
+        assert!(resizes(&rx).is_empty(), "the same mark again sends nothing");
+
+        t.set_driver(true);
+        assert_eq!(resizes(&rx), vec![true], "taking the driver role re-sends the size");
+        for _ in 0..10 {
+            t.set_driver(true);
+        }
+        assert!(resizes(&rx).is_empty(), "a frame that keeps the mark sends nothing");
+
+        t.set_grid(GridSize::new(90, 20));
+        assert!(resizes(&rx).is_empty(), "an unchanged size sends nothing");
     }
 }

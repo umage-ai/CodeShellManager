@@ -622,6 +622,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
     let folders = folders(&sessions, &opts.folders);
     UiModel {
         remote: false,
+        stale: false,
         // The built-in add-ons first, then the folders: Settings › Add-ons lists them together.
         addons: view.builtin_addons.iter().chain(view.addons.iter()).cloned().collect(),
         remotes: view.remotes.clone(),
