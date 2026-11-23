@@ -664,6 +664,17 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         folder_worktrees: Default::default(),
         usage: Default::default(),
         docs: Default::default(),
+        port_forwards: view
+            .port_forwards
+            .iter()
+            .map(|f| crate::model::PortForwardRow {
+                session_id: f.session_id.clone(),
+                destination: f.destination.clone(),
+                remote_port: f.remote_port,
+                local_port: f.local_port,
+                url: f.url.clone(),
+            })
+            .collect(),
         open_with: view.open_with.iter().map(open_with_view).collect(),
         pending_open_with: view.pending_open_with.iter().map(open_with_view).collect(),
         update: view.update.as_ref().map(|u| crate::model::UpdateBadge { version: u.version.clone(), url: u.url.clone() }),

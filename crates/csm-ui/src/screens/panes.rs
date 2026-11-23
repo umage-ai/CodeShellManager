@@ -992,6 +992,7 @@ pub fn close_action(s: &SessionView, quiet: bool) -> Action {
     let busy = matches!(s.status, Status::Working | Status::Approval | Status::Question);
     if busy && !quiet {
         Action::Confirm(crate::app::ConfirmState {
+        also: None,
             title: format!("Close {}?", s.name),
             body: format!(
                 "{} is busy ({}). Closing it ends the process and cuts that off; the session moves to recently closed.",
@@ -1068,7 +1069,7 @@ pub fn pane(
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;
         if let Some(url) = vr.open_link {
-            actions.push(Action::Tool("open_url", json!({"url": url})));
+            actions.push(Action::Tool("open_url", json!({"url": url, "session_id": s.id})));
         }
         if vr.copy_reply {
             actions.push(Action::CopyClaude("claude_reply_get", json!({"session_id": s.id})));

@@ -362,5 +362,6 @@ fn ctrl_click_on_a_link_opens_it_and_a_plain_click_does_not() {
     h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::COMMAND });
     settle(&mut h);
     let opens: Vec<_> = calls_since(&h, before).into_iter().filter(|(id, _)| id == "open_url").collect();
-    assert_eq!(opens, vec![("open_url".to_string(), json!({"url": "http://localhost:5173/"}))]);
+    // The pane passes its session, so an SSH session's loopback link can go through a forward.
+    assert_eq!(opens, vec![("open_url".to_string(), json!({"url": "http://localhost:5173/", "session_id": "webps"}))]);
 }

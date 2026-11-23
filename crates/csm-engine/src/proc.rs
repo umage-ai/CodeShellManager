@@ -41,6 +41,13 @@ impl Captured {
     }
 }
 
+/// [`run_capture`] for `program` with the argv `args` (no shell).
+pub fn capture_program(program: &str, args: &[String], timeout: Duration) -> Option<Captured> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    run_capture(&mut cmd, timeout)
+}
+
 /// Runs `cmd` (no stdin, stderr discarded) and returns its stdout and exit status, or `None` when
 /// it could not start or did not finish within `timeout` (it is then killed).
 pub fn run_capture(cmd: &mut Command, timeout: Duration) -> Option<Captured> {
@@ -125,6 +132,16 @@ pub fn spawn_detached(program: &std::path::Path, args: &[String], raw: Option<&s
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// Starts `program` with `args` (argv, no shell) for a long-lived helper the caller stops itself
+/// (an ssh port forward, `port_forward.rs`): stdin and stdout are null, stderr is discarded, no
+/// console window (Windows).
+pub fn spawn_child(program: &str, args: &[String]) -> std::io::Result<std::process::Child> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    no_window(&mut cmd);
+    cmd.spawn()
 }
 
 /// Starts a process add-on (`plugins.rs`): `argv[0]` with `argv[1..]`, the working folder `dir`,

@@ -69,6 +69,9 @@ pub struct StateOptions {
     /// What `open_url` calls. Default: nothing opens (logged), so tests and headless engines
     /// never start a browser; production uses [`real_url_opener`].
     pub url_opener: UrlOpener,
+    /// The ssh that SSH port forwards and remote loopback links run (`port_forward.rs`). Default
+    /// (tests): none; production: the `ssh` on the PATH.
+    pub ssh: crate::port_forward::SshHandle,
     /// Where `profile_list` and `session_look_set` find Windows Terminal profiles. Production
     /// reads the install locations; the default (tests) has none.
     pub terminal_profiles: TerminalProfiles,
@@ -169,6 +172,7 @@ impl Default for StateOptions {
             secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
             autostart: Autostart::default(),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
+            ssh: Arc::new(crate::port_forward::NoSsh),
             update: crate::tools::update::UpdateOptions::default(),
         }
     }
@@ -195,6 +199,7 @@ impl StateOptions {
             terminal_profiles: TerminalProfiles::Installed,
             claude_roots: crate::usage_tail::ClaudeRoots::Auto,
             url_opener: real_url_opener(),
+            ssh: crate::port_forward::system_ssh(),
             samples_dir: bundled_samples_dir(),
             secrets: Arc::new(csm_services::secrets::KeyringStore),
             autostart: Autostart::system(),
@@ -238,6 +243,8 @@ pub(crate) struct Wait {
 /// Runtime-only state: never persisted.
 #[derive(Default)]
 pub(crate) struct Runtime {
+    /// SSH port forwards (`port_forward.rs`): runtime only, never persisted or restored.
+    pub(crate) forwards: Vec<crate::port_forward::Forward>,
     /// Add-ons found on disk and their state (`addons.rs`).
     pub(crate) addons: crate::addons::Catalogue,
     pub sessions: HashMap<String, SessionRt>,

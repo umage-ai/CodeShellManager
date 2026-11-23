@@ -196,6 +196,7 @@ pub fn assign_confirm(model: &UiModel, t: &Task, s: &SessionView) -> Action {
         body.push_str("\n\nIt is working mid-turn: the text lands in the middle of its work.");
     }
     Action::Confirm(ConfirmState {
+        also: None,
         title: format!("Assign {} to {}?", t.id, s.name),
         body,
         yes_label: "Assign and send".into(),
@@ -503,6 +504,7 @@ fn task_card(ui: &mut Ui, w: f32, model: &UiModel, task: &Task, c: Column, actio
         }
         if widgets::menu_item(ui, "trash", "Delete task…", None, true).clicked() {
             actions.push(Action::Confirm(ConfirmState {
+        also: None,
                 title: format!("Delete {id}?"),
                 body: format!("“{title}” is deleted for good."),
                 yes_label: "Delete".into(),

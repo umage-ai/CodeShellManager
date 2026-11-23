@@ -264,4 +264,35 @@ fn session(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
             .font(theme::regular(text::CAPTION))
             .color(t.muted),
     );
+    if s.kind == Kind::Ssh {
+        ports(ui, app, s, actions);
+    }
+}
+
+/// The SSH session's port forwards (`session_port_forwards`): each address opens here, Stop ends
+/// the forward (`session_port_unforward`). A link to a port on the host opens through one of them.
+fn ports(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let rows: Vec<_> = app.model.port_forwards.iter().filter(|f| f.session_id == s.id).cloned().collect();
+    widgets::caps(ui, "Ports");
+    if rows.is_empty() {
+        ui.label(
+            egui::RichText::new("No port forwards. A link to a port on this host opens through one; session_port_forward starts one.")
+                .font(theme::regular(text::CAPTION))
+                .color(t.muted),
+        );
+    }
+    for f in rows {
+        ui.horizontal(|ui| {
+            if ui.link(egui::RichText::new(&f.url).font(theme::mono(text::MONO))).on_hover_text("Open this address on this computer").clicked() {
+                actions.push(Action::Tool("open_url", json!({"url": f.url})));
+            }
+            ui.label(egui::RichText::new(format!("→ port {} on {}", f.remote_port, f.destination)).font(theme::regular(text::CAPTION)).color(t.muted));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::button(ui, ButtonKind::Ghost, None, "Stop", None).clicked() {
+                    actions.push(Action::Tool("session_port_unforward", json!({"session_id": s.id, "local_port": f.local_port})));
+                }
+            });
+        });
+    }
 }

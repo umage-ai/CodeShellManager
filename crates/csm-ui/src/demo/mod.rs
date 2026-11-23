@@ -279,6 +279,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         "## Odulodo.Web\n- Brand facet: use brand.keyword, the\n  analyzer lowercases brand\n- Ask Allan before touching the CMS\n  listing sort\n- Staging runs on build-01, /srv/odulodo\n\nTODO\n- [ ] snapshot tests for FacetPanel\n- [x] category facet size 20 -> 30".to_string(),
     );
     UiModel {
+        port_forwards: Vec::new(),
         // The built-in Claude usage add-on is on, so the screenshots show usage.
         addons: vec![demo_claude_usage(true)],
         remotes: Vec::new(),

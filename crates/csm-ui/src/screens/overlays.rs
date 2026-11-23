@@ -69,6 +69,12 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
                 if widgets::button(ui, ButtonKind::Primary, None, &c.yes_label, Some("Enter")).clicked() {
                     yes(actions);
                 }
+                if let Some((label, act)) = &c.also
+                    && widgets::button(ui, ButtonKind::Secondary, None, label, None).clicked()
+                {
+                    actions.push(Action::CloseOverlays);
+                    actions.push((**act).clone());
+                }
                 if widgets::button(ui, ButtonKind::Ghost, None, &c.no_label, Some("Esc")).clicked() {
                     actions.push(Action::CloseOverlays);
                 }

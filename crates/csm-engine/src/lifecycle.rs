@@ -357,6 +357,7 @@ pub(crate) fn save_now(state: &mut State) {
 /// The engine thread is ending: kill what is left and write the state one last time.
 pub(crate) fn on_exit(state: &mut State) {
     crate::runs::kill_everything(state);
+    crate::port_forward::stop_all(&mut state.rt.forwards);
     // Usage stats: what still runs ends now (queued before the index's shutdown, so written).
     let index = state.rt.index.clone();
     for rt in state.rt.sessions.values_mut() {
@@ -869,6 +870,8 @@ pub(crate) fn user_interacted(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
 pub(crate) fn teardown(ctx: &mut Ctx<'_>, id: &str) -> Option<Arc<dyn Pty>> {
     // A session's run commands go with it (close, sleep, restart, quit), whole trees.
     crate::runs::stop_all(ctx.state, id);
+    // Its SSH port forwards go too (close, sleep, restart, quit).
+    crate::port_forward::teardown_session(ctx, id);
     let mut rt = ctx.state.rt.sessions.remove(id)?;
     rt.end_usage(ctx.state.rt.index.as_ref());
     rt.io.closed.store(true, Ordering::Release);
