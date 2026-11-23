@@ -442,6 +442,9 @@ pub struct QuickOpenState {
     /// A form whose choices were asked waits for the answer in the model, never here.
     pub new_form: Option<(String, String)>,
     pub new_choice: Option<String>,
+    /// The typed name of the open form (its name field, when the form has one). Sent with the
+    /// submit only when it is not blank.
+    pub new_name: String,
     /// The form was submitted from this dialog: close it when the submit is done.
     pub new_pending: bool,
     /// An enabled add-on's launch profile (`addon-id.name`) the new session starts with; the

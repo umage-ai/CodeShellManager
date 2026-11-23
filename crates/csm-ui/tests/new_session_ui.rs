@@ -24,6 +24,7 @@ fn form(load: &'static str, choices: &[(&str, &str)], submit: &'static str, load
         title: "New NEXUS agent".into(),
         submit_label: "Create agent".into(),
         choice_title: "Project".into(),
+        name_title: None,
         load,
         choices: choices.iter().map(|(id, label)| Choice { id: (*id).into(), label: (*label).into(), detail: "repo".into() }).collect(),
         load_error: load_error.map(str::to_owned),
@@ -154,4 +155,71 @@ fn a_launch_whose_session_did_not_open_keeps_the_dialog_and_says_so() {
     assert!(has(&h, CHIP), "the dialog stays open");
     assert!(h.query_by_label_contains("did not open").is_some(), "the reason is shown");
     assert!(h.state().ui.toasts.is_empty(), "no success toast for a launch whose session did not open");
+}
+
+#[test]
+fn a_name_field_is_drawn_only_for_a_form_that_has_one_and_a_blank_name_is_not_sent() {
+    let mut named = form("ready", &[("alpha", "Alpha")], "idle", None, None);
+    named.name_title = Some("Agent name".into());
+    let mut h = with_form(named);
+    open_dialog(&mut h);
+    h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    settle(&mut h);
+    assert!(has(&h, "Agent name (optional)"), "the form's name field is drawn");
+
+    h.state_mut().ui.quick.new_choice = Some("alpha".into());
+    h.state_mut().ui.quick.new_name = "   ".into();
+    settle(&mut h);
+    h.get_by_label("Create agent").click();
+    settle(&mut h);
+    assert_eq!(call_of(&h, "new_session_submit"), Some(json!({"addon": "nexus", "source": "agent", "choice": "alpha"})), "a blank name is no name");
+
+    h.state_mut().ui.quick.new_name = "  Gamma agent  ".into();
+    settle(&mut h);
+    h.get_by_label("Create agent").click();
+    settle(&mut h);
+    assert_eq!(call_of(&h, "new_session_submit"), Some(json!({"addon": "nexus", "source": "agent", "choice": "alpha", "name": "Gamma agent"})), "the trimmed name is sent");
+
+    // A form without the field draws none, and its submit never carries a name.
+    let mut h = with_form(form("ready", &[("alpha", "Alpha")], "idle", None, None));
+    open_dialog(&mut h);
+    h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    h.state_mut().ui.quick.new_choice = Some("alpha".into());
+    h.state_mut().ui.quick.new_name = "leftover".into();
+    settle(&mut h);
+    assert!(!has(&h, "Agent name"), "no name field without name_param");
+    h.get_by_label("Create agent").click();
+    settle(&mut h);
+    assert_eq!(call_of(&h, "new_session_submit"), Some(json!({"addon": "nexus", "source": "agent", "choice": "alpha"})));
+}
+
+#[test]
+fn every_choice_the_engine_kept_is_drawn_not_only_the_first_sixty() {
+    let ids: Vec<(String, String)> = (0..80).map(|i| (format!("p{i}"), format!("Project {i:02}"))).collect();
+    let refs: Vec<(&str, &str)> = ids.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut h = with_form(form("ready", &refs, "idle", None, None));
+    open_dialog(&mut h);
+    h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    settle(&mut h);
+    assert!(has(&h, "Project: Project 00"), "the first choice is drawn");
+    assert!(has(&h, "Project: Project 79"), "the 80th choice is drawn (the picker used to stop at 60)");
+}
+
+#[test]
+fn a_form_submit_asks_with_the_add_on_tool_it_runs_and_offers_no_always_allow() {
+    let mut h = with_form(form("ready", &[("alpha", "Alpha")], "idle", None, None));
+    h.state_mut().ui.consents = vec![json!({
+        "request_id": 7,
+        "client": "test-mcp",
+        "title": "Submit a New session form",
+        "summary": "Run a form",
+        "tool": "new_session_submit",
+        "effects": [],
+        "params": {"addon": "nexus", "source": "agent", "choice": "alpha"},
+        "target": {"addon": "nexus", "tool": "nexus.agent_launch", "effects": "starts programs, uses the network"},
+    })];
+    settle(&mut h);
+    assert!(has(&h, "runs nexus.agent_launch (starts programs, uses the network)"), "the card names the tool the form runs and its effects");
+    assert!(has(&h, "Allow once"), "a one-time allow is offered");
+    assert!(!has(&h, "Always for this client"), "no always-allow for a form: the grant would not be kept");
 }

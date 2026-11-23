@@ -15,12 +15,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use csm_core::addons::manifest::clean_text;
+use csm_core::addons::manifest::{MAX_NEW_SESSION_NAME, clean_text};
 use csm_core::addons::{AddonKind, NewSessionSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::addons::{AddonState, Catalogue};
+use crate::addons::{AddonState, Catalogue, effects_words};
 use crate::engine::{Ctx, Engine, Reply};
 use crate::plugins::{self, RunState};
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
@@ -97,6 +97,9 @@ pub struct NewSessionView {
     pub title: String,
     pub submit_label: String,
     pub choice_title: String,
+    /// The name field's heading when the form has one (`name_param`); the dialog draws the field
+    /// only then.
+    pub name_title: Option<String>,
     /// `idle`, `loading`, `ready` or `failed`.
     pub load: &'static str,
     pub choices: Vec<Choice>,
@@ -154,6 +157,7 @@ pub(crate) fn views(cat: &Catalogue, runs: &BTreeMap<String, FormRun>) -> Vec<Ne
                 title: s.title.clone(),
                 submit_label: s.submit.clone(),
                 choice_title: s.choice_title.clone(),
+                name_title: s.name_param.as_ref().map(|_| s.name_title.clone()),
                 load,
                 choices,
                 load_error,
@@ -187,7 +191,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "new_session_submit",
             title: "Submit a New session form",
-            summary: "Run one of an add-on's New session forms with a choice from its loaded list (for example create an agent in the chosen project). The add-on's tool does the work and may open a session. Starts processes and may reach the network, so MCP clients are asked first.",
+            summary: "Run one of an add-on's New session forms with a choice from its loaded list (for example create an agent in the chosen project), and the name typed in its name field when it has one. The add-on's tool does the work. Its remote opens only for the person in the app; any other caller is told which remote to open. Starts processes and may reach the network, so MCP clients are asked first, and the consent card names the add-on tool the form runs.",
             toolset: Toolset::Addons,
             effects: Effects::MUTATES_STATE | Effects::LAUNCHES_PROCESS | Effects::ACCESSES_NETWORK | Effects::WRITES_FILESYSTEM,
             input_schema: schema_of::<SubmitParams>,
@@ -219,6 +223,11 @@ struct SubmitParams {
     source: String,
     /// One of the choices the form has loaded (its `id`).
     choice: String,
+    /// The typed name, for a form with a name field. Empty means no name. At most
+    /// [`MAX_NEW_SESSION_NAME`] characters, with no control or bidi-control characters: anything
+    /// else is refused, not cut.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 /// The offered form `addon/source`, with the add-on's name, or why there is none.
@@ -228,6 +237,45 @@ fn find(ctx: &Ctx<'_>, addon: &str, source: &str) -> Result<NewSessionSpec, Tool
         .find(|(a, _, s)| a == addon && s.id == source)
         .map(|(_, _, s)| s.clone())
         .ok_or_else(|| ToolError::NotFound(format!("no New session form `{source}` from add-on `{addon}`; `new_session_sources` shows what is offered")))
+}
+
+/// The typed name a submit carries: `None` when it is absent or blank, the trimmed name otherwise.
+/// A name longer than [`MAX_NEW_SESSION_NAME`] characters, or with a control or bidi-control
+/// character, is refused (the add-on never sees a name it would have to clean up).
+pub(crate) fn typed_name(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(name) = raw.map(str::trim).filter(|s| !s.is_empty()) else { return Ok(None) };
+    if name.chars().count() > MAX_NEW_SESSION_NAME || clean_text(name, usize::MAX) != name {
+        return Err(format!("the name is longer than {MAX_NEW_SESSION_NAME} characters or has control characters"));
+    }
+    Ok(Some(name.to_owned()))
+}
+
+/// For a form tool (`new_session_load`, `new_session_submit`) run by a caller other than the
+/// person, the add-on tool the form runs and that tool's declared effects. The consent card shows
+/// them: a form's own effects are only the form's, so the grant is never reused for the add-on tool
+/// (see `engine.rs`). `None` for every other tool.
+pub(crate) fn consent_target(cat: &Catalogue, tool: &str, params: &Value, effects_of: impl Fn(&str) -> Option<Effects>) -> Option<Value> {
+    if tool != "new_session_load" && tool != "new_session_submit" {
+        return None;
+    }
+    let addon = params.get("addon").and_then(Value::as_str).unwrap_or_default();
+    let source = params.get("source").and_then(Value::as_str).unwrap_or_default();
+    let form = offered(cat).into_iter().find(|(a, _, s)| a == addon && s.id == source).map(|(_, _, s)| s.clone());
+    let (target, effects) = match form {
+        Some(s) => {
+            let target = if tool == "new_session_load" { s.choices_tool } else { s.tool };
+            let effects = effects_of(&target);
+            (target, effects)
+        }
+        None => (String::new(), None),
+    };
+    // The effects as the consent dialog words them ("starts programs, writes files"); "not running"
+    // when the add-on's tool is not in the registry (the call will fail for that reason).
+    Some(json!({
+        "addon": addon,
+        "tool": target,
+        "effects": effects.map_or_else(|| "not running".to_owned(), effects_words),
+    }))
 }
 
 fn set_run(ctx: &mut Ctx<'_>, k: &str, f: impl FnOnce(&mut FormRun)) {
@@ -406,6 +454,10 @@ fn drive(engine: &Engine, mut job: Ask, mut rx: mpsc::Receiver<Reply>, deadline:
 fn submit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: SubmitParams = parse_params(params)?;
     let spec = find(ctx, &p.addon, &p.source)?;
+    let name = typed_name(p.name.as_deref()).map_err(ToolError::InvalidParams)?;
+    if name.is_some() && spec.name_param.is_none() {
+        return Err(ToolError::InvalidParams(format!("the form `{}` has no name field; leave `name` out", p.source)));
+    }
     let k = key(&p.addon, &p.source);
     let run = ctx.state.rt.new_sessions.get(&k).cloned().unwrap_or_default();
     let LoadState::Ready(choices) = &run.load else {
@@ -423,6 +475,12 @@ fn submit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let Some(parked) = ctx.park() else { return Err(ToolError::Failed("cannot wait for the add-on here".into())) };
     let mut args = spec.params.as_object().cloned().unwrap_or_else(Map::new);
     args.insert(spec.choice_param.clone(), Value::String(p.choice.clone()));
+    if let (Some(name), Some(param)) = (name, &spec.name_param) {
+        args.insert(param.clone(), Value::String(name));
+    }
+    // Only the person's own submit opens the remote it names. Any other caller gets the answer with
+    // the remote named, so it can ask for the session itself (remote_open, under its own consent).
+    let opens = matches!(ctx.caller, Caller::Ui);
     let token = next_token();
     set_run(ctx, &k, |r| {
         r.submit = SubmitState::Running(String::new());
@@ -437,12 +495,21 @@ fn submit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         let answer = drive(&engine, job, rx, deadline, &k, token);
         // A launch that names the remote to open (`open_remote`) opens it now, as the person's own
         // action: the form was submitted by them, and remote_open only opens this add-on's remotes.
-        let open_err = match &answer {
-            Ok(out) => open_remote_of(&out.data).and_then(|remote| {
+        // Another caller's submit is not the person's, so nothing opens; its answer names the remote.
+        let remote = answer.as_ref().ok().and_then(|out| open_remote_of(&out.data));
+        let open_err = match (&remote, opens) {
+            (Some(remote), true) => {
                 let params = json!({"addon": addon, "remote_id": remote});
                 engine.call(Caller::Ui, "remote_open", params).err().map(|e| e.to_string())
-            }),
-            Err(_) => None,
+            }
+            _ => None,
+        };
+        let answer = match (answer, &remote) {
+            (Ok(mut out), Some(remote)) if !opens => {
+                out.message = format!("{} Not opened: call remote_open with addon `{addon}` and remote_id `{remote}` to open it.", out.message.trim());
+                Ok(out)
+            }
+            (answer, _) => answer,
         };
         engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
             let (state, reply) = match (answer, open_err) {
@@ -530,5 +597,17 @@ mod tests {
         run.submit_token = 10;
         assert!(!current(&run), "a newer submit makes the older answer stale");
         assert_ne!(next_token(), next_token(), "tokens are unique for the life of the process");
+    }
+
+    #[test]
+    fn a_typed_name_is_trimmed_blank_means_none_and_hostile_or_long_is_refused() {
+        assert_eq!(typed_name(None), Ok(None));
+        assert_eq!(typed_name(Some("   ")), Ok(None), "blank is no name");
+        assert_eq!(typed_name(Some(" Gamma ")), Ok(Some("Gamma".into())));
+        assert!(typed_name(Some("a\u{202E}b")).is_err(), "a bidi control is refused, not dropped");
+        assert!(typed_name(Some("a\tb")).is_err(), "a control character is refused");
+        assert!(typed_name(Some(&"x".repeat(MAX_NEW_SESSION_NAME))).is_ok());
+        assert!(typed_name(Some(&"x".repeat(MAX_NEW_SESSION_NAME + 1))).is_err());
+        assert!(typed_name(Some(&"é".repeat(MAX_NEW_SESSION_NAME))).is_ok(), "the cap counts characters, not bytes");
     }
 }

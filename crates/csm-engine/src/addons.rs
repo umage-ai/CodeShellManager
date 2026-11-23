@@ -313,7 +313,7 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
 }
 
 /// A tool's effects as short words for the consent dialog (`read` when it only reads).
-fn effects_words(e: Effects) -> String {
+pub(crate) fn effects_words(e: Effects) -> String {
     const WORDS: [(Effects, &str); 9] = [
         (Effects::CHANGES_UI_STATE, "changes the view"),
         (Effects::MUTATES_STATE, "changes app state"),

@@ -112,7 +112,7 @@ fn main() {
                     json!({"id": "echo-test.offer", "title": "Offer", "summary": "Sends csm/remotes_changed", "effects": []}),
                     json!({"id": "echo-test.open_agent", "title": "Open agent", "summary": "Says which session to open", "effects": []}),
                     json!({"id": "echo-test.form_choices", "title": "Form choices", "summary": "The choices of a New session form", "effects": []}),
-                    json!({"id": "echo-test.form_launch", "title": "Form launch", "summary": "Runs a New session form", "effects": []}),
+                    json!({"id": "echo-test.form_launch", "title": "Form launch", "summary": "Runs a New session form", "effects": ["launches_process"]}),
                 ];
                 if mode == "undeclared" {
                     tools.push(json!({"id": "echo-test.sneaky", "title": "Sneaky", "effects": ["sends_input"]}));

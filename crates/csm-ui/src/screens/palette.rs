@@ -1018,6 +1018,7 @@ fn new_session_row(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut Qu
                     } else {
                         q.new_form = Some((f.addon.clone(), f.source.clone()));
                         q.new_choice = None;
+                        q.new_name.clear();
                         q.new_pending = false;
                         actions.push(Action::Tool("new_session_load", json!({"addon": f.addon, "source": f.source})));
                     }
@@ -1052,18 +1053,21 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
         }
         "ready" => {
             ui.label(egui::RichText::new(&f.choice_title).font(theme::regular(text::CAPTION)).color(t.muted));
-            ui.horizontal_wrapped(|ui| {
-                for c in f.choices.iter().take(60) {
-                    let on = q.new_choice.as_deref() == Some(c.id.as_str());
-                    let kind = if on { ButtonKind::Primary } else { ButtonKind::Ghost };
-                    let tip = if c.detail.is_empty() { c.id.clone() } else { format!("{} · {}", c.id, c.detail) };
-                    let resp = widgets::button(ui, kind, None, &c.label, None).on_hover_text(tip);
-                    let l = format!("{}: {}", f.choice_title, c.label);
-                    resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, on, l.clone()));
-                    if resp.clicked() {
-                        q.new_choice = Some(c.id.clone());
+            // Every choice the engine kept (up to its cap), in a scroll area: none is cut off.
+            egui::ScrollArea::vertical().id_salt(("new_session_choices", f.addon.as_str(), f.source.as_str())).max_height(size::NEW_SESSION_CHOICES_H).auto_shrink([false, true]).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for c in &f.choices {
+                        let on = q.new_choice.as_deref() == Some(c.id.as_str());
+                        let kind = if on { ButtonKind::Primary } else { ButtonKind::Ghost };
+                        let tip = if c.detail.is_empty() { c.id.clone() } else { format!("{} · {}", c.id, c.detail) };
+                        let resp = widgets::button(ui, kind, None, &c.label, None).on_hover_text(tip);
+                        let l = format!("{}: {}", f.choice_title, c.label);
+                        resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, on, l.clone()));
+                        if resp.clicked() {
+                            q.new_choice = Some(c.id.clone());
+                        }
                     }
-                }
+                });
             });
         }
         "failed" => {
@@ -1079,6 +1083,19 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
             ui.label(egui::RichText::new("Loading…").font(theme::regular(text::BODY)).color(t.muted));
         }
     }
+    if let Some(title) = f.name_title.as_deref() {
+        // The name field: optional, sent with the submit only when it is not blank (the engine
+        // refuses a name with control characters or more than the cap, and says so on the form).
+        ui.label(egui::RichText::new(title).font(theme::regular(text::CAPTION)).color(t.muted));
+        let edit = egui::TextEdit::singleline(&mut q.new_name)
+            .id(Id::new(("new_session_name", f.addon.as_str(), f.source.as_str())))
+            .font(theme::regular(text::INPUT))
+            .char_limit(csm_core::addons::manifest::MAX_NEW_SESSION_NAME)
+            .desired_width(ui.available_width());
+        let resp = ui.add(edit);
+        let l = format!("{title} (optional)");
+        resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
+    }
     let can = form_can_submit(f, q.new_choice.as_deref());
     let running = f.submit == "running";
     let label = if running { "Starting…" } else { f.submit_label.as_str() };
@@ -1086,8 +1103,13 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
         let resp = ui.add_enabled_ui(can, |ui| widgets::button(ui, ButtonKind::Primary, None, label, None)).inner;
         if resp.clicked() && can {
             let choice = q.new_choice.clone().unwrap_or_default();
+            let mut args = json!({"addon": f.addon, "source": f.source, "choice": choice});
+            let name = q.new_name.trim();
+            if f.name_title.is_some() && !name.is_empty() {
+                args["name"] = json!(name);
+            }
             q.new_pending = true;
-            actions.push(Action::Tool("new_session_submit", json!({"addon": f.addon, "source": f.source, "choice": choice})));
+            actions.push(Action::Tool("new_session_submit", args));
         }
         match (f.submit, f.submit_text.as_deref()) {
             ("running", progress) => {
@@ -1806,6 +1828,7 @@ mod new_session_form_tests {
             title: "New NEXUS agent".into(),
             submit_label: "Create".into(),
             choice_title: "Project".into(),
+            name_title: None,
             load,
             choices: choices.iter().map(|c| Choice { id: (*c).into(), label: (*c).into(), detail: String::new() }).collect(),
             load_error: None,

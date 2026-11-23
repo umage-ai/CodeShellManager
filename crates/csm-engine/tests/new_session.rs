@@ -11,14 +11,20 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use common::{H, test_app};
+use csm_engine::{Caller, Event};
 use serde_json::json;
 
 const EXE: &str = env!("CARGO_BIN_EXE_csm-echo-plugin");
 
-/// The test add-on: a process add-on with one New session form whose tools are its own.
-fn manifest(mode: &str) -> String {
+/// The form's name field, as the manifest declares it (`name_param` is the parameter it fills).
+const NAME_FIELD: &str = "name_param = \"name\"\nname_title = \"Agent name\"\n";
+
+/// The test add-on: a process add-on with one New session form whose tools are its own. `name_lines`
+/// are the form's name-field lines (empty for a form without one).
+fn manifest(mode: &str, name_lines: &str) -> String {
     let exe = serde_json::to_string(EXE).unwrap();
     format!(
         r#"
@@ -42,17 +48,21 @@ choices_tool = "echo-test.form_choices"
 choice_title = "Project"
 choice_param = "project"
 tool = "echo-test.form_launch"
-[new_session.params]
+{name_lines}[new_session.params]
 open = true
 "#
     )
 }
 
 fn fixture(dir: &Path, mode: &str) -> PathBuf {
+    fixture_with(dir, mode, NAME_FIELD)
+}
+
+fn fixture_with(dir: &Path, mode: &str, name_lines: &str) -> PathBuf {
     let state = dir.join("state.json");
     let folder = dir.join("addons").join("echo-test");
     fs::create_dir_all(&folder).unwrap();
-    fs::write(folder.join("addon.toml"), manifest(mode)).unwrap();
+    fs::write(folder.join("addon.toml"), manifest(mode, name_lines)).unwrap();
     state
 }
 
@@ -190,13 +200,14 @@ fn a_pending_launch_is_polled_by_its_request_id_and_its_session_opens_before_the
     let h = start(&fixture(dir.path(), "formpend"));
     ready_form(&h);
     // The first ask is answered pending with a request_id; the poll (the same tool, with that id)
-    // is answered final, and the add-on's own csm/call remote_open has opened the session by then.
+    // is answered final, naming the remote in `open_remote`. CodeShellManager, not the add-on, opens
+    // that remote as the person's submit; the session exists once the submit is done.
     let out = h.ok("new_session_submit", submit_beta());
     assert_eq!(out.data["request_id"], "req-echo-0001", "the poll carried the request_id");
     let s = h.wait_until("the submit to finish", |s| s.new_sessions[0].submit == "done");
     assert_eq!(s.new_sessions[0].submit_text.as_deref(), Some("Launched the agent."));
     let opened = h.engine.view().sessions.iter().any(|v| v.owner_addon.as_deref() == Some("echo-test") && v.name == "Agent X");
-    assert!(opened, "the add-on's remote_open made the session during the form's tool");
+    assert!(opened, "CodeShellManager opened the remote named in open_remote, for the person's submit");
 }
 
 #[test]
@@ -286,4 +297,84 @@ fn addon_list_says_which_forms_an_add_on_declares_for_the_consent_card() {
     assert_eq!(form["submit"], "Create agent");
     assert_eq!(form["choices_tool"], "echo-test.form_choices");
     assert_eq!(form["tool"], "echo-test.form_launch");
+}
+
+/// The next consent card the engine asks (within 5 seconds).
+fn next_consent(events: &std::sync::mpsc::Receiver<Event>) -> serde_json::Value {
+    loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            Ok(Event::ConsentRequested { request }) => return request,
+            Ok(_) => continue,
+            Err(e) => panic!("no consent card: {e:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_typed_name_reaches_the_tool_trimmed_and_a_blank_one_is_no_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    ready_form(&h);
+    assert_eq!(h.engine.view().new_sessions[0].name_title.as_deref(), Some("Agent name"), "the form has a name field");
+    let named = h.ok("new_session_submit", json!({"addon": "echo-test", "source": "agent", "choice": "beta", "name": "  Gamma agent  "}));
+    assert_eq!(named.data["args"]["name"], "Gamma agent", "trimmed, and it reaches the tool under name_param");
+    h.wait_until("the first submit", |s| s.new_sessions[0].submit == "done");
+    let blank = h.ok("new_session_submit", json!({"addon": "echo-test", "source": "agent", "choice": "beta", "name": "   "}));
+    assert!(blank.data["args"].get("name").is_none(), "a blank name is no name: {}", blank.data);
+}
+
+#[test]
+fn a_hostile_or_long_name_is_refused_and_nothing_is_submitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    ready_form(&h);
+    let long = "x".repeat(65);
+    for bad in ["a\u{202E}b", "line\nbreak", long.as_str()] {
+        let r = h.ui("new_session_submit", json!({"addon": "echo-test", "source": "agent", "choice": "beta", "name": bad}));
+        assert!(r.is_err(), "{bad:?} was accepted");
+        assert_eq!(h.engine.view().new_sessions[0].submit, "idle", "a refused name starts nothing");
+    }
+    let edge = "x".repeat(64);
+    let out = h.ok("new_session_submit", json!({"addon": "echo-test", "source": "agent", "choice": "beta", "name": edge}));
+    assert_eq!(out.data["args"]["name"].as_str().map(str::len), Some(64), "64 characters is the most");
+}
+
+#[test]
+fn a_form_without_a_name_field_refuses_a_name_and_draws_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture_with(dir.path(), "ok", ""));
+    ready_form(&h);
+    assert_eq!(h.engine.view().new_sessions[0].name_title, None, "no name field is offered");
+    let r = h.ui("new_session_submit", json!({"addon": "echo-test", "source": "agent", "choice": "beta", "name": "Gamma"}));
+    assert!(r.is_err(), "a name for a form without the field is refused");
+    let out = h.ok("new_session_submit", json!({"addon": "echo-test", "source": "agent", "choice": "beta"}));
+    assert!(out.data["args"].get("name").is_none());
+}
+
+#[test]
+fn an_agent_submit_asks_for_the_add_on_tool_each_time_and_a_grant_never_covers_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    ready_form(&h);
+    let caller = Caller::External { client: "test-mcp".into(), session_id: None };
+    let events = h.engine.subscribe();
+
+    // The card names the add-on tool the form runs, with its effects, not only the form's own tool.
+    let rx = h.engine.submit(caller.clone(), "new_session_submit", submit_beta());
+    let card = next_consent(&events);
+    assert_eq!(card["tool"], "new_session_submit");
+    assert_eq!(card["target"]["tool"], "echo-test.form_launch", "{card}");
+    assert_eq!(card["target"]["effects"], "starts programs", "the target's declared effects are on the card: {card}");
+    assert!(rx.try_recv().is_err(), "the submit waits for the person");
+    h.ok("consent_answer", json!({"request_id": card["request_id"], "answer": "allow_always"}));
+    let out = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    assert!(out.message.contains("Not opened") && out.message.contains("agent-x"), "the caller is told which remote to open: {}", out.message);
+    assert!(h.engine.view().sessions.iter().all(|v| v.owner_addon.is_none()), "an agent's submit opens no session");
+
+    // "Always allow" on the form was not kept: the next submit asks again.
+    let rx = h.engine.submit(caller, "new_session_submit", submit_beta());
+    let again = next_consent(&events);
+    assert_eq!(again["target"]["tool"], "echo-test.form_launch", "no grant covers a form's add-on tool");
+    h.ok("consent_answer", json!({"request_id": again["request_id"], "answer": "deny"}));
+    assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap().is_err(), "a denied submit runs nothing");
 }

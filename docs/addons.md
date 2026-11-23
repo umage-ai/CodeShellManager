@@ -632,6 +632,8 @@ submit = "Create agent"          # optional, default "Create" (32 characters)
 choices_tool = "nexus.projects"  # the add-on's own tool; answers data.choices
 choice_title = "Project"         # optional, default "Choose" (the picker's heading)
 choice_param = "project"         # the parameter that receives the chosen id
+name_param = "name"              # optional: the parameter that receives the typed name (no field without it)
+name_title = "Agent name"        # optional, default "Name" (the name field's heading, 32 characters)
 tool = "nexus.agent_launch"      # the add-on's own tool, run on submit
 [new_session.params]             # optional fixed parameters: strings (256 bytes), booleans, integers
 open = true
@@ -640,6 +642,14 @@ open = true
 - **Choices.** `choices_tool` answers `data = {"choices": [{"id", "label"?, "detail"?}]}`. An id is
   up to 200 characters, a label 120 (the id when missing), a detail 200. At most 200 choices; entries
   without an id and repeated ids are dropped. A missing or non-list `choices` is an error the dialog shows.
+  The dialog draws every choice the engine kept, in a scroll area.
+- **Name.** With `name_param`, the dialog draws a name field under the picker. The submit sends
+  `name` (trimmed) only when it is not blank, and the tool receives it as `name_param`. A name longer
+  than 64 characters, or with a control or bidi-control character, is **refused** by
+  `new_session_submit` (the form shows the reason) and never cut. `name_param` must be a parameter name
+  other than `choice_param`, and no fixed param may repeat it; otherwise the form is refused. A form
+  without `name_param` refuses a `name` outright. The add-on decides what a name means: an add-on whose
+  host cannot take a name simply declares no `name_param`.
 - **Submit.** `tool` runs with the fixed `params` and `choice_param` set to the chosen id. Its
   `message` is shown when it is done; a successful submit closes the dialog and its message becomes a
   toast. A failure is shown with the dialog kept open.
@@ -658,6 +668,15 @@ open = true
   open and says so: "... Its session did not open: <reason>". An add-on does not call `remote_open`
   itself: a core tool that opens sessions cannot be a standing call (`[process] calls`), so it would
   ask the person on every call.
+  **Only the person opens it.** A submit by any other caller (an MCP client, the CLI, another add-on,
+  a paired device) runs the same launch but opens nothing: its answer's message gets the note "Not
+  opened: call remote_open with addon `<id>` and remote_id `<remote>` to open it", and that caller asks
+  for the session itself, under its own consent.
+- **Consent for MCP and other callers.** `new_session_submit` and `new_session_load` run an add-on
+  tool whose effects the form itself does not show, so a call by a caller other than the person
+  (an MCP client) always asks, and the consent card names the **add-on tool the form runs** and its
+  declared effects (`target`: `addon`, `tool`, `effects`). "Always allow" is **not kept** for these two
+  tools: each submit asks again. The person's own dialog never asks.
 - **Where it shows.** Only while the add-on is enabled and its process is running. Stopping the
   process clears the form's state (loaded choices, the last submit). A late answer from a stopped
   process is dropped, and a worker that is still asking stops at its next ask.
@@ -672,7 +691,8 @@ open = true
   CodeShellManager reads `[[new_session]]` as an unknown table, reports it and loads the add-on without
   the form. A changed `addon.toml` (the form is part of it) needs re-approval as for any change.
   The pending answer and `open_remote` belong to the same optional addition: an older CodeShellManager
-  shows no form, so the add-on's tools work for it as before. The consent card lists each form's title,
+  shows no form, so the add-on's tools work for it as before. `name_param` belongs to the same addition,
+  so an older one shows no name field either. The form never sends a name to a tool that declared none. The consent card lists each form's title,
   its picker tool and its submit tool (`addon_list` shows the same as `new_sessions`).
 
 ## Screens
