@@ -1145,6 +1145,10 @@ impl PeerHost for PeerServer {
         }
     }
 
+    fn interfaces(&self) -> Vec<csm_engine::NetInterface> {
+        crate::netif::list()
+    }
+
     fn shutdown(&self) {
         self.inner.dead.store(true, Ordering::Release);
         self.inner.stop_all(ByeReason::ServerQuit);

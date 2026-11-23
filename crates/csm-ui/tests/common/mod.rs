@@ -56,3 +56,27 @@ pub fn settle(h: &mut Harness<'static, CsmApp>) {
     }
     panic!("the engine did not answer within 15 s");
 }
+
+/// The app over an engine whose peer host is the given demo host (a stand-in with no socket), so a
+/// test can drive "the other side" of remote access.
+pub fn app_with_peer(backend: DemoBackend, host: &csm_ui::demo::peer::DemoPeerHost) -> CsmApp {
+    let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
+    let engine = csm_ui::demo_engine_with_peer(std::sync::Arc::new(host.clone())).unwrap();
+    CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), Box::new(backend), TerminalRenderer::new(fonts))
+}
+
+/// Steps until `done` holds and the engine is idle, for up to 15 s (the engine answers on its own
+/// thread, and the page polls once a second).
+pub fn wait_for(h: &mut Harness<'static, CsmApp>, what: &str, done: impl Fn(&CsmApp) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        h.step();
+        if done(h.state()) && !h.state().dispatch.busy() {
+            h.step();
+            h.step();
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("timed out waiting for: {what}");
+}

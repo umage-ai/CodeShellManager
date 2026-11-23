@@ -733,3 +733,34 @@ Base sha for this step: `d62400a757bd23fcf198e1411de30d771eeb6ce6`.
 - **Consent** was done in step 2; step 3 adds the combined test (the office UI's card closes when a device answers).
 - **Not done here:** compression, OSC 52 routing to the driver, run-output streaming, add-on screen proxying, the
   "typing" indicator, a `csm attach` CLI.
+
+## P1 step 4: server mode UI on the office machine (`csm-ui`, `csm-peer`, `csm-engine`)
+
+Base sha for this step: `89f07a013b789a40434a9e371b7892ca5bec2854`.
+
+- **Settings > Remote access** (`screens/remote.rs`, a new section after Add-ons). One switch, "Let another CodeShellManager
+  connect to this one", off by default; the page says so and that agents, the CLI and paired devices cannot turn it on.
+  Turning it on opens a walk-through (ephemeral UI state, nothing is sent until the last button): **1** the address, from
+  `peer_interfaces`, the WireGuard adapter marked and pre-selected, no wildcard row, a port (empty = 47300, 1-65535), and
+  under *Advanced* an address that is not in the list and the "every interface" switch with its warning; **2** the firewall
+  rule (a `netsh` line on Windows, a sentence elsewhere, scoped to the adapter's network), as text with a copy button:
+  CodeShellManager adds no rule. "Turn on and pair a device" calls `peer_server_enable`, then `peer_pair_start`.
+- **Pairing panel**: the link as text with Copy, a QR code (`qrcodegen` 1.8, MIT, no dependencies, error level L, drawn in
+  the theme's darkest and lightest tokens), the minutes left, and when a device has handshaken its name and the four-digit
+  check code with **Allow** (sends the code with `peer_pair_answer`) and **Deny**. The link is dropped as soon as the offer
+  is gone or the server is off. A refusal from a tool is shown on the page.
+- **Paired devices**: name, level, paired and last-seen ages, a dot while connected, **Revoke** per device and **Revoke all**
+  (asks first), through `peer_device_revoke`. Listed while the server is off too.
+- **Indicator** in the title bar between the brand and the search field, only while it is on: blue "Remote access on . addr",
+  green "Laptop connected" (or "N devices connected"), yellow "Laptop wants to pair", peach while the chosen address is
+  missing. It shortens, then shrinks to the dot, when the window is narrow; its accessible name is always the whole text. A
+  click opens the page, where the switch (or "Turn off remote access") is the one click that turns it off. The tray tooltip and
+  icon badge are not done.
+- **Polling**: one `peer_status` at start; then `peer_status` and `peer_device_list` once a second only while the server is on
+  or the page is open. Off and closed: no calls (tested).
+- **New tool** `peer_interfaces` (read-only, every caller; `PeerHost::interfaces`, implemented in `csm_peer::netif` over
+  `if-addrs` 0.15, MIT OR BSD-3-Clause: down, link-local, multicast and unspecified addresses are not offered, WireGuard by
+  name `wg*` / `*wireguard*`). `NetInterface::network` (CIDR) is computed on the host side, so the UI needs no `std::net`.
+- **Palette**: the enabling tools open the page instead of running with no parameters; `peer_server_disable` runs as is.
+- **Demo and tests**: `demo::peer::DemoPeerHost` (memory only, off by default, no socket) backs `--demo`, screenshots and the
+  kittests (`tests/remote_access_ui.rs`); `demo_engine_with_peer` lets a test drive "the other side".

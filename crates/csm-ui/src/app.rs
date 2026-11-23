@@ -77,6 +77,8 @@ pub enum Action {
     /// Settings, as a page over the work area (title bar ⚙). Loads with `settings_get`,
     /// `app_info` and `grant_list`.
     OpenSettings,
+    /// Settings on the Remote access section (the title bar's indicator, the palette).
+    OpenRemoteAccess,
     CloseSettings,
     /// The Usage dashboard (a page over the work area, like Settings), on a session when given.
     OpenUsage(Option<crate::screens::usage_page::Drill>),
@@ -194,18 +196,21 @@ pub enum SettingsSection {
     Mcp,
     /// Add-ons: the folder, enable and disable with consent, reload (`screens::addons`).
     Addons,
+    /// Let another CodeShellManager connect to this one (`peer_*`, `screens::remote`).
+    Remote,
     /// Sessions and running time per command (`usage_stats`).
     Usage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] = [
+    pub const ALL: [SettingsSection; 8] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Groups,
         SettingsSection::Mcp,
         SettingsSection::Addons,
+        SettingsSection::Remote,
         SettingsSection::Usage,
         SettingsSection::About,
     ];
@@ -217,6 +222,7 @@ impl SettingsSection {
             SettingsSection::Groups => "Group view",
             SettingsSection::Mcp => "MCP",
             SettingsSection::Addons => "Add-ons",
+            SettingsSection::Remote => "Remote access",
             SettingsSection::Usage => "Usage",
             SettingsSection::About => "About",
         }
@@ -229,6 +235,7 @@ impl SettingsSection {
             SettingsSection::Groups => "layers",
             SettingsSection::Mcp => "server",
             SettingsSection::Addons => "extensions",
+            SettingsSection::Remote => "wifi",
             SettingsSection::Usage => "history",
             SettingsSection::About => "terminal",
         }
@@ -473,6 +480,9 @@ pub struct UiState {
     /// The last active session seen, to move keyboard focus when it changes.
     pub last_active: Option<SessionId>,
     pub settings: SettingsState,
+    /// Remote access (another CodeShellManager connecting to this one): what the `peer_*` tools
+    /// last said, and the enable walk-through.
+    pub remote: screens::remote::RemoteState,
     pub inline: Option<InlineEdit>,
     /// When the usage tools were last asked (the Usage tab, the sidebar chips, Settings → Usage).
     pub usage: crate::screens::usage::PollState,
@@ -600,6 +610,9 @@ impl CsmApp {
         };
         // The settings the screens follow (theme, terminal font size and padding, the busy warning).
         app.dispatch.submit("settings_get", json!({}));
+        // Whether remote access is on (the title bar's indicator). A read; off and unavailable
+        // both answer quietly.
+        app.dispatch.submit("peer_status", json!({}));
         app
     }
 
@@ -892,6 +905,7 @@ impl CsmApp {
             self.on_tool_reply(&call, &reply);
             screens::backup::on_reply(self, ctx, &call, &reply);
             screens::startup::on_reply(self, &call, &reply);
+            screens::remote::on_reply(self, ctx, &call, &reply);
             let n = self.backend.on_reply(&call, &reply, self.dispatch.as_ref());
             self.notices(ctx, n);
         }
@@ -1199,6 +1213,11 @@ impl CsmApp {
                     self.dispatch.submit(id, p);
                 }
             }
+            Action::OpenRemoteAccess => {
+                self.run(ctx, Action::OpenSettings);
+                self.ui.settings.section = SettingsSection::Remote;
+                screens::remote::opened(self, ctx);
+            }
             Action::OpenUsage(drill) => {
                 self.ui.menu = None;
                 self.ui.overlay = Overlay::None;
@@ -1374,6 +1393,11 @@ impl CsmApp {
             }
             "settings_get" | "settings_set" | "app_info" | "grant_list" | "grant_revoke" => return self.run(ctx, Action::OpenSettings),
             "app_autostart_get" | "app_autostart_set" => return self.run(ctx, Action::OpenSettings),
+            // Turning remote access on, pairing and revoking are walked through on their page.
+            // Turning it off is one click and needs nothing else, so it runs as it is.
+            "peer_server_enable" | "peer_pair_start" | "peer_pair_answer" | "peer_device_revoke" | "peer_interfaces" | "peer_status" | "peer_device_list" => {
+                return self.run(ctx, Action::OpenRemoteAccess);
+            }
             "usage_report" => return self.run(ctx, Action::OpenUsage(None)),
             "group_new" => return self.run(ctx, Action::NewGroupPrompt),
             "session_rename" => {
@@ -1671,6 +1695,7 @@ impl CsmApp {
         // the tray): `logic`, which runs while hidden too.
         self.logic_in_frame(&ctx);
         screens::usage::poll(self, &ctx);
+        screens::remote::poll(self, &ctx);
         screens::addon_screen::tick(self);
         let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
         self.main_window_step(&ctx, min);

@@ -26,6 +26,7 @@ pub mod devices;
 pub mod fsperm;
 pub mod identity;
 mod link;
+pub mod netif;
 mod serve;
 mod server;
 

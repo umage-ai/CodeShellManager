@@ -34,10 +34,24 @@ fn shoot_sized(
     setup: impl FnOnce(&mut DemoBackend),
     after: impl FnOnce(&mut egui_kittest::Harness<'static, csm_ui::CsmApp>),
 ) {
+    shoot_host(name, theme, size, None, setup, after);
+}
+
+fn shoot_host(
+    name: &str,
+    theme: ThemeKind,
+    size: egui::Vec2,
+    host: Option<csm_ui::demo::peer::DemoPeerHost>,
+    setup: impl FnOnce(&mut DemoBackend),
+    after: impl FnOnce(&mut egui_kittest::Harness<'static, csm_ui::CsmApp>),
+) {
     let mut b = backend(theme);
     setup(&mut b);
     b.publish();
-    let mut app = app_with(b);
+    let mut app = match &host {
+        Some(host) => app_with_peer(b, host),
+        None => app_with(b),
+    };
     // As on Windows: one title bar, with the window's own minimize, maximize and close.
     app.window_controls = true;
     app.background.tray_available = true;
@@ -458,4 +472,63 @@ fn dark_theme(h: &mut egui_kittest::Harness<'static, csm_ui::CsmApp>, id: &str) 
     for _ in 0..5 {
         h.step();
     }
+}
+
+/// Remote access: Settings on every step, with the title bar indicator in each state it has.
+#[test]
+fn remote_access_screens() {
+    use csm_ui::demo::peer::DemoPeerHost;
+    use csm_ui::screens::remote::TOGGLE_LABEL;
+    use egui_kittest::kittest::Queryable;
+
+    type H = egui_kittest::Harness<'static, csm_ui::CsmApp>;
+    fn page(h: &mut H) {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenRemoteAccess);
+        wait_for(h, "the page", |a| a.ui.remote.status.available && !a.ui.remote.interfaces.is_empty());
+    }
+    fn walk(h: &mut H, to_firewall: bool) {
+        page(h);
+        h.get_by_label(TOGGLE_LABEL).click();
+        settle(h);
+        if to_firewall {
+            h.get_by_label("Next").click();
+            settle(h);
+        }
+    }
+    fn on(h: &mut H) {
+        walk(h, true);
+        h.get_by_label("Turn on and pair a device").click();
+        wait_for(h, "on", |a| a.ui.remote.status.enabled && a.ui.remote.link.is_some());
+    }
+    let size = egui::vec2(1280.0, 800.0);
+    let now = NOW_MS / 1000;
+    let go = |name: &str, theme: ThemeKind, host: DemoPeerHost, after: &dyn Fn(&mut H, &DemoPeerHost)| {
+        let h2 = host.clone();
+        shoot_host(name, theme, size, Some(host), |_| {}, |h| after(h, &h2));
+    };
+
+    go("22-remote-off", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| page(h));
+    go("22-remote-setup-address", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| walk(h, false));
+    go("22-remote-setup-firewall", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| walk(h, true));
+    go("22-remote-pairing", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| on(h));
+    go("22-remote-pairing-latte", ThemeKind::Latte, DemoPeerHost::new(now), &|h, _| on(h));
+    go("22-remote-pending", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, host| {
+        on(h);
+        host.ask_to_pair("Allan's laptop", "4821");
+        wait_for(h, "the question", |a| a.ui.remote.status.pending_pair.is_some());
+    });
+    go("22-remote-connected", ThemeKind::Mocha, DemoPeerHost::new(now).with_device("Allan's laptop", 3 * 86_400).with_device("Tablet", 5 * 3600), &|h, host| {
+        on(h);
+        host.set_connected("Allan's laptop", true);
+        wait_for(h, "connected", |a| a.ui.remote.status.connected == 1 && a.ui.remote.devices.len() == 2);
+    });
+    // The indicator on the main window, from another page.
+    go("22-remote-indicator", ThemeKind::Mocha, DemoPeerHost::new(now).with_device("Allan's laptop", 3 * 86_400), &|h, host| {
+        on(h);
+        host.set_connected("Allan's laptop", true);
+        wait_for(h, "connected", |a| a.ui.remote.status.connected == 1);
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::CloseSettings);
+    });
 }

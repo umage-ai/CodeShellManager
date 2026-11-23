@@ -43,6 +43,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: peer_status,
         },
         ToolSpec {
+            id: "peer_interfaces",
+            title: "Network addresses of this machine",
+            summary: "The addresses of this machine that remote access could listen on: adapter name, IP, prefix length, whether it looks like a WireGuard tunnel. Loopback is listed last.",
+            toolset: Toolset::App,
+            effects: Effects::READ_ONLY,
+            input_schema: empty_schema,
+            run: peer_interfaces,
+        },
+        ToolSpec {
             id: "peer_server_enable",
             title: "Turn on remote access…",
             summary: "Let another CodeShellManager connect to this one, on the one address and port you choose (never all interfaces unless `all_interfaces` is set). A paired device can type into your sessions. Refused for every caller except the app's own window: not the CLI, not MCP, not a paired device.",
@@ -152,6 +161,11 @@ fn peer_status(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
         "Remote access is off.".to_owned()
     };
     Ok(ToolOutput::new(message, to_json(&s)?))
+}
+
+fn peer_interfaces(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    let list = host(ctx).interfaces();
+    Ok(ToolOutput::new(format!("{} addresses", list.len()), to_json(&list)?))
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

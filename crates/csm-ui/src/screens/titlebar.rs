@@ -38,7 +38,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let logo = Rect::from_min_size(pos2(rect.min.x + space::MD, rect.center().y - space::LG / 2.0 - space::XXS), Vec2::splat(space::LG + space::XS));
     p.rect_filled(logo, CornerRadius::same(radius::SM + 1), t.blue);
     icons::paint(ui, logo, "terminal", icon::SM, t.on_accent);
-    p.text(pos2(logo.max.x + space::SM, rect.center().y), Align2::LEFT_CENTER, "CodeShellManager", semibold(text::BODY), t.fg);
+    let brand = p.text(pos2(logo.max.x + space::SM, rect.center().y), Align2::LEFT_CENTER, "CodeShellManager", semibold(text::BODY), t.fg);
 
     // Middle: the search field, or the restore pill.
     let mid_w = size::SEARCH_W.min(rect.width() - 2.0 * (size::SIDEBAR - space::XL));
@@ -77,6 +77,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             actions.push(Action::OpenPalette);
         }
     }
+
+    // Remote access, while it is on: between the brand and the search field.
+    crate::screens::remote::indicator(ui, app, brand.max.x + space::LG, mid.min.x - space::MD, rect.center().y, actions);
 
     // Right: the window's own buttons (frameless only), then recent, inspector, theme, settings,
     // quit, set apart from them.

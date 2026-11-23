@@ -772,6 +772,13 @@ pub mod size {
     pub const DRAG_SLOP: f32 = 4.0;
     /// An on/off switch's track.
     pub const SWITCH: [f32; 2] = [34.0, 18.0];
+    /// The pairing QR code: its side with the quiet zone, and the quiet zone in modules.
+    pub const QR_SIDE: f32 = 208.0;
+    pub const QR_QUIET: i32 = 4;
+    /// The status dot of the remote-access indicator and the device rows.
+    pub const STATUS_DOT: f32 = 8.0;
+    /// The title bar indicator: the room it never takes more than.
+    pub const REMOTE_PILL_MAX_W: f32 = 270.0;
 }
 
 /// Opacities (the mock-up's `opacity` and `color-mix` percentages).

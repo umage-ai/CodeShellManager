@@ -69,6 +69,9 @@ impl PeerHost for Recorder {
     fn audit(&self, event: AuditEvent) {
         self.0.lock().unwrap().audit.push(event);
     }
+    fn interfaces(&self) -> Vec<csm_engine::NetInterface> {
+        vec![csm_engine::NetInterface { name: "wg0".into(), address: "10.8.0.2".into(), network: Some("10.8.0.0/24".into()), wireguard: true, loopback: false }]
+    }
     fn shutdown(&self) {}
 }
 
@@ -301,4 +304,16 @@ fn a_peer_caller_is_treated_like_an_agent_for_the_rules() {
     let c: Caller = serde_json::from_value(json!({"kind": "peer", "device_id": "x", "name": "n", "level": "full"})).unwrap();
     assert!(c.is_external(), "a peer is treated like an agent for the rules that keep decisions with the person");
     assert_eq!(c.describe(), "peer:n (x)");
+}
+
+#[test]
+fn listing_this_machines_addresses_is_a_read_for_every_caller() {
+    let (h, rec) = rig();
+    for caller in [Caller::Ui, Caller::Cli, mcp(), peer(Level::Viewer)] {
+        let out = h.engine.call(caller.clone(), "peer_interfaces", json!({})).unwrap_or_else(|e| panic!("{caller:?}: {e}"));
+        assert_eq!(out.data[0]["address"], "10.8.0.2");
+        assert_eq!(out.data[0]["wireguard"], true);
+        assert_eq!(out.data[0]["network"], "10.8.0.0/24");
+    }
+    assert!(rec.calls().is_empty(), "it only reads");
 }

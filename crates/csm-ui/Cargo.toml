@@ -23,6 +23,8 @@ swash = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
+# The pairing QR code (Nayuki, MIT, pure Rust, no dependencies).
+qrcodegen = "1.8"
 log = "0.4"
 
 [dev-dependencies]

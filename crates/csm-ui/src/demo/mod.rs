@@ -9,6 +9,7 @@
 //! unless the engine rejected the params themselves (`InvalidParams`, `UnknownTool`). The demo
 //! engine's PTY factory refuses, so nothing here starts a process through it.
 
+pub mod peer;
 pub mod tools;
 pub mod transcripts;
 

@@ -116,17 +116,29 @@ const DEMO_WT_SETTINGS: &str = r##"{
 /// factory that refuses, so nothing the demo submits ever starts a process. The demo's sessions
 /// live in [`demo::DemoBackend`], not in this engine.
 pub fn demo_engine() -> Result<csm_engine::Engine, csm_engine::ToolError> {
-    demo_engine_with(csm_core::models::AppState::default())
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    demo_engine_with_peer(std::sync::Arc::new(demo::peer::DemoPeerHost::new(now)))
+}
+
+/// [`demo_engine`] with a given peer host (the UI tests and screenshots drive a [`demo::peer::DemoPeerHost`]).
+pub fn demo_engine_with_peer(host: std::sync::Arc<dyn csm_engine::PeerHost>) -> Result<csm_engine::Engine, csm_engine::ToolError> {
+    demo_engine_inner(csm_core::models::AppState::default(), host)
 }
 
 /// [`demo_engine`] over a given app state (the view overlay's tests need groups and sessions).
+#[cfg(test)]
 fn demo_engine_with(app: csm_core::models::AppState) -> Result<csm_engine::Engine, csm_engine::ToolError> {
+    demo_engine_inner(app, std::sync::Arc::new(csm_engine::NoPeerHost))
+}
+
+fn demo_engine_inner(app: csm_core::models::AppState, peer_host: std::sync::Arc<dyn csm_engine::PeerHost>) -> Result<csm_engine::Engine, csm_engine::ToolError> {
     let pty: csm_engine::PtyFactory = std::sync::Arc::new(|_| Err(std::io::Error::other("the demo starts no processes")));
     let options = csm_engine::StateOptions {
         pty,
         restore_on_start: false,
         index: demo_index(),
         terminal_profiles: csm_engine::TerminalProfiles::Texts(vec![("Stable".into(), DEMO_WT_SETTINGS.into())]),
+        peer_host,
         ..csm_engine::StateOptions::default()
     };
     let state = csm_engine::State::new(app, options);

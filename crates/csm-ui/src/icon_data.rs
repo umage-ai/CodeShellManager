@@ -77,6 +77,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ),
     ("layers", r#"<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>"#),
     ("send", r#"<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>"#),
+    ("wifi", r#"<path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M12 20h.01"/>"#),
     ("server", r#"<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/>"#),
     ("power", r#"<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>"#),
     (

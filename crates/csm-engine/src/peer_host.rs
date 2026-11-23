@@ -71,6 +71,21 @@ pub struct EnableRequest {
     pub allow_all_interfaces: bool,
 }
 
+/// One address of this machine the server could listen on, for the address picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NetInterface {
+    /// The adapter's name as the system shows it ("wg", "Ethernet", "eth0").
+    pub name: String,
+    /// The IP address, without a port.
+    pub address: String,
+    /// The network this address is on, `10.8.0.0/24`; `None` when the adapter has a host route only.
+    pub network: Option<String>,
+    /// Looks like a WireGuard tunnel (by its name): the picker marks it and pre-selects it.
+    pub wireguard: bool,
+    /// Only this machine can reach it.
+    pub loopback: bool,
+}
+
 /// The pairing offer: the link the other CSM is given.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PairingStarted {
@@ -126,6 +141,11 @@ pub trait PeerHost: Send + Sync {
     /// Delete device keys and close their connections at once; how many were revoked.
     fn revoke(&self, target: Revoke, by: &str) -> Result<usize, ToolError>;
     fn audit(&self, event: AuditEvent);
+    /// This machine's addresses the server could listen on (a read-only system query). Empty when
+    /// the host cannot tell.
+    fn interfaces(&self) -> Vec<NetInterface> {
+        Vec::new()
+    }
     /// The app is closing: close everything. Not a person's choice, so the saved choice stays.
     fn shutdown(&self);
 }
