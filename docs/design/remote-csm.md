@@ -1075,17 +1075,36 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
 **Decisions to confirm (Allan).**
 1. The relay's peer endpoints share the operator's access rules (`[access]`), so one token admits phones and offices alike.
    A separate peer allow policy is possible if you want it.
-2. Plain `ws://` is accepted only to loopback (tests, a relay on this PC). Anything else must be `wss://`.
+2. Plain `ws://` is accepted only to `127.0.0.1`, `localhost` or `[::1]` (tests, a relay on this PC), checked by a strict
+   parser (`csm_peer_proto::pairing::relay_url_allowed`): userinfo (`@`), backslashes, fragments, whitespace and control
+   characters are refused, and the host must be exactly one of those literals. Anything else must be `wss://`. The
+   check guards the address in an untrusted pairing link and in `hosts.json`, so a parser that disagrees with it could
+   send plain text to another machine; the unit tests list the bypasses that are refused.
 3. The office's relay identity is its own secret (not the phone add-on's), so the two can be set up independently.
 4. `SnapshotRequest`-style versioning is not needed here: the relay carries the existing peer protocol unchanged.
+
+**Review round 1 (the relay fixes).**
+- *Ordering.* The office's control messages (`PairingOpen`, `PairingClose`, `Allow`) and its frames share one queue, so
+  they reach the relay in the order the server sent them. Two queues let `PairingClose` overtake the pairing answer,
+  and the relay then closed the laptop's channel before the Accept (the relay tests caught it).
+- *Bounded writes.* A channel's writer waits at a gate of 256 queued frames; the pump keeps at most 128 more pending
+  while the pacing holds them. The pump sends each channel's frames no faster than the relay's per-channel caps
+  (`Pacer`, the peer defaults), so a burst waits at the office instead of tripping `rate_limited`.
+- *No stall on inbound.* The relay thread hands inbound data to each channel with a non-blocking send into a queue of
+  1024 frames. A channel whose reader falls that far behind is ended (the relay is told), instead of blocking the thread
+  that serves every channel.
+- *Locks.* The relay is taken out of its mutex before it is dropped (`Inner::relay_stop`), so no join runs under the
+  server's locks. `RelayHost::drop` detaches the thread: it stops at its next step, and a connect or a welcome wait is
+  bounded (10 s each), so the drop never waits on the network.
+- *Epochs.* Each channel opening gets an epoch; a writer still holding an earlier incarnation of the same channel number
+  cannot write into a new one.
 
 **Not done.**
 - The Settings › Remote access form ("Also reachable through a relay") is not in csm-ui yet. The tools are there
   (`peer_relay_set` and `peer_relay_status`, UI-only), so the form is a view over them.
+- The routing token is `sha256(device public key)`, so anyone who knows a device's public key can open relay channels
+  for it (Noise still stops them reading or pairing, but they use the office's slots). A per-device secret mixed into
+  the token would close that; it changes the allow list format, so it is a follow-up.
 - The pairing link's QR carries the relay only through the offer's JSON, which is already what the QR encodes; no QR
   test was added.
-- A blackholed relay holds a connect for the standard TCP connect timeout (no cancellable connect in std); the relay
-  dial has no connect timeout beyond the OS's.
-- A slow terminal on the office side blocks the relay socket's reads (one socket for all channels), so one stalled
-  channel slows the others. A per-channel reader would fix it.
 - Manual checks through a real relay (TLS, a public host) are not done; the tests use `ws://127.0.0.1`.

@@ -1013,7 +1013,7 @@ impl PeerHost for PeerServer {
     fn disable(&self, by: &str) -> PeerStatus {
         let i = &self.inner;
         i.stop_all(ByeReason::ServerOff);
-        *lock_relay(i) = None;
+        i.relay_stop();
         let was = i.lock().choice.take().is_some();
         if was || i.dir.join("server.json").exists() {
             i.save_choice(false, None, false);
@@ -1229,8 +1229,7 @@ impl PeerServer {
     /// direct listener is unchanged. A bad address is refused before anything starts.
     pub fn set_relay(&self, cfg: Option<RelayConfig>) -> Result<(), String> {
         let i = &self.inner;
-        let old = lock_relay(i).take();
-        drop(old);
+        i.relay_stop();
         let Some(cfg) = cfg else { return Ok(()) };
         let route = RelayRoute { url: cfg.url.clone(), host_id: csm_remote_proto::ids::host_id(&cfg.host_secret) };
         if !route.validate() {
@@ -1262,6 +1261,16 @@ fn lock_relay(i: &Inner) -> MutexGuard<'_, Option<RelayState>> {
 }
 
 impl Inner {
+    /// Stops the running relay host, if any. Lock order: the server's state lock may be held while
+    /// the relay lock is taken (briefly, never while waiting on anything), never the reverse. So the
+    /// relay is taken out of its mutex first and dropped after the lock is released: the host thread
+    /// calls back into the state lock (the allow list, incoming channels), and a drop that waited
+    /// for it under the relay lock could deadlock.
+    fn relay_stop(&self) {
+        let old = lock_relay(self).take();
+        drop(old);
+    }
+
     fn relay_route(&self) -> Option<RelayRoute> {
         lock_relay(self).as_ref().map(|r| r.route.clone())
     }
@@ -1339,7 +1348,8 @@ impl PeerServer {
         let url = req.url.trim().to_owned();
         let path = i.dir.join(RELAY_FILE);
         if url.is_empty() {
-            *lock_relay(i) = None;
+            // Taken out first and dropped after the lock is released: see `Inner::relay_stop`.
+            i.relay_stop();
             let _ = std::fs::remove_file(&path);
             let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
             i.audit.record("relay_off", json!({"by": clean(by)}));

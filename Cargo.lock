@@ -1357,6 +1357,7 @@ dependencies = [
  "csm-engine",
  "csm-peer",
  "csm-peer-proto",
+ "csm-pty",
  "csm-remote-proto",
  "futures-util",
  "getrandom 0.3.4",

@@ -139,3 +139,12 @@ frame; the session is the same end-to-end session as on the direct address.
 - **Limits:** a relay channel carries terminal streams, so its per-channel caps are higher than a
   phone's (configurable on the relay: `[limits] peer_*`). A relay run by someone else is that
   operator's to secure; the `Origin` check keeps browsers out of the peer endpoints.
+- **Bursts:** the office paces its writes to the relay's per-channel caps (2000 frames and 8 MiB a second
+  by default), so a large burst such as `cat` of a big file waits at the office instead of tripping the
+  relay's limit and ending the session. A relay configured with lower peer caps than these defaults will
+  still end channels that exceed them, so keep `peer_*` at or above the defaults.
+- **Addresses:** a relay address is refused if it has userinfo (`user@`), a backslash, a fragment or
+  whitespace. `ws://` is accepted only to `127.0.0.1`, `localhost` or `[::1]`; any other host needs `wss://`.
+  The same check guards the address in a pairing link and in `hosts.json`.
+- **Timeouts:** the connect to the relay gives up after 10 s per address, and the WebSocket handshake
+  (TLS included) after 10 s, so an unreachable relay does not stall the app.

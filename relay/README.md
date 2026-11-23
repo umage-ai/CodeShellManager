@@ -198,6 +198,12 @@ A peer host has no push. Its client channels queue 1024 frames (phones: 64), so 
 in the queue instead of closing the channel; a sustained rate over the cap still closes it with
 `rate_limited`. The same access rules (`[access]`) admit an office as they admit a phone host.
 
+The office paces its own writes to the same per-channel caps, so a burst from the terminal waits at
+the office and is not cut off here. The defaults are what the office assumes: a relay that lowers
+`peer_*` below them will close channels the office sends at full speed. A phone can never open a peer
+channel and a peer can never open a phone channel: the namespaces are separate, and the relay tests
+check both directions.
+
 Tests: `relay/tests/relay.rs` (the namespaces, the Origin refusal, the peer limits, revocation) and
 `relay/tests/peer_relay.rs` (a real office and a real laptop through an in-process relay on 127.0.0.1:
 pairing, connecting, revoking, and the direct address winning when it answers).

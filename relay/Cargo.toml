@@ -41,4 +41,5 @@ csm-peer = { path = "../crates/csm-peer" }
 csm-peer-proto = { path = "../crates/csm-peer-proto" }
 csm-engine = { path = "../crates/csm-engine" }
 csm-core = { path = "../crates/csm-core" }
+csm-pty = { path = "../crates/csm-pty" }
 tempfile = "3"
