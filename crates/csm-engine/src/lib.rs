@@ -52,6 +52,7 @@ pub use plugin_screens::{DeclaredScreen, OPEN_TIMEOUT, ScreenInfo, ScreenPhase, 
 pub use peer_client::{ClientPairStatus, HostInfo, NoPeerClient, PairState, PeerClientHost};
 pub use peer_host::{AuditEvent, DeviceInfo, EnableRequest, NetInterface, NoPeerHost, PairAnswer, PairingStarted, PeerHost, PeerStatus, PendingPair, RelayInfo, RelaySetRequest, Revoke};
 pub use plugins::{PluginRuntime, RemoteView, RunState};
+pub use tools::new_session::{Choice, NewSessionView};
 pub use registry::{DynamicTool, Registry};
 pub use runs::{RunOutputHandle, RunPhase, RunView};
 pub use session::{AttachSnapshot, ResizeMark, TerminalHandle};

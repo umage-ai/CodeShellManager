@@ -168,6 +168,47 @@ pub struct CommandSpec {
     pub params: Json,
 }
 
+/// Most `[[new_session]]` entries one add-on may declare.
+pub const MAX_NEW_SESSIONS: usize = 4;
+/// Most fixed parameters one `[[new_session]]` may give.
+pub const MAX_NEW_SESSION_PARAMS: usize = 16;
+/// Longest string parameter value, in bytes.
+pub const MAX_PARAM_VALUE: usize = 256;
+
+/// `[[new_session]]`: a short form the New session dialog shows for one of a process add-on's
+/// tools (docs/addons.md, "New session sources"). The person picks one of `choices_tool`'s
+/// choices, and `tool` runs with `params` plus the choice in `choice_param`. Every tool is one of
+/// the add-on's own (`<addon id>.<name>`); the form adds no code and no argv.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewSessionSpec {
+    /// Unique within the add-on (`valid_id`).
+    pub id: String,
+    /// The dialog's heading and chip text, e.g. "New NEXUS agent".
+    pub title: String,
+    /// The submit button's label.
+    pub submit: String,
+    /// The add-on's own tool that answers `data.choices`: an array of `{id, label, detail?}`.
+    pub choices_tool: String,
+    /// The picker's heading, e.g. "Project".
+    pub choice_title: String,
+    /// The parameter that receives the chosen id when `tool` runs.
+    pub choice_param: String,
+    /// The parameter that receives the typed name, when the form has a name field (`name_param`).
+    /// The dialog sends the name only when it is not empty; `new_session_submit` checks it
+    /// ([`MAX_NEW_SESSION_NAME`]) before the tool runs.
+    pub name_param: Option<String>,
+    /// The name field's heading (`name_title`, "Name" by default).
+    pub name_title: String,
+    /// The add-on's own tool run on submit.
+    pub tool: String,
+    /// Fixed parameters: an object of strings, booleans and integers.
+    pub params: Json,
+}
+
+/// Longest typed name a New session form takes, in characters (`name_param`). A name with a control
+/// or bidi-control character, or longer than this, is refused by `new_session_submit`, not cut.
+pub const MAX_NEW_SESSION_NAME: usize = 64;
+
 /// The `[process]` table of a process add-on (validated, not run yet).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessSpec {
@@ -233,6 +274,8 @@ pub struct ParsedAddon {
     pub process: Option<ProcessSpec>,
     /// `[[theme]]` colour palettes (`super::theme`).
     pub themes: Vec<crate::addons::theme::ThemeSpec>,
+    /// `[[new_session]]` forms (process add-ons only; their tools are the add-on's own).
+    pub new_sessions: Vec<NewSessionSpec>,
     /// Entries that were skipped, in file order.
     pub problems: Vec<Problem>,
 }
@@ -274,6 +317,7 @@ pub fn parse(text: &str, folder: &str) -> Result<ParsedAddon, AddonError> {
     let slash = entries(&table, "slash", &mut problems, parse_slash);
     let commands = entries(&table, "command", &mut problems, parse_command);
     let themes = themes(&table, &mut problems);
+    let new_sessions = new_sessions(&table, &meta, &mut problems);
     let process = match meta.kind {
         AddonKind::Process => match table.get("process") {
             Some(Value::Table(t)) => match parse_process(t, &mut problems) {
@@ -300,11 +344,138 @@ pub fn parse(text: &str, folder: &str) -> Result<ParsedAddon, AddonError> {
         }
     };
     for key in table.keys() {
-        if !matches!(key.as_str(), "addon" | "profile" | "run_template" | "slash" | "command" | "process" | "theme") {
+        if !matches!(key.as_str(), "addon" | "profile" | "run_template" | "slash" | "command" | "process" | "theme" | "new_session") {
             problems.push(Problem { scope: format!("`{key}`"), message: "unknown table; ignored".into() });
         }
     }
-    Ok(ParsedAddon { meta, profiles, run_templates, slash, commands, process, themes, problems })
+    Ok(ParsedAddon { meta, profiles, run_templates, slash, commands, process, themes, new_sessions, problems })
+}
+
+/// `[[new_session]]`: each entry through [`entries`], then checked against the add-on: a pack
+/// may not declare one (its tools would be nothing to call), and every tool it names must be one
+/// of the add-on's own (`<id>.<name>`). A bad entry is reported and dropped; a repeated id is
+/// reported and the later one ignored.
+fn new_sessions(t: &Table, meta: &AddonMeta, problems: &mut Vec<Problem>) -> Vec<NewSessionSpec> {
+    if meta.kind == AddonKind::Pack {
+        if t.contains_key("new_session") {
+            problems.push(Problem { scope: "[[new_session]]".into(), message: "only a `process` add-on may declare a New session form; ignored".into() });
+        }
+        return Vec::new();
+    }
+    let mut out: Vec<NewSessionSpec> = Vec::new();
+    for spec in entries(t, "new_session", problems, parse_new_session) {
+        let scope = format!("new session `{}`", spec.id);
+        let own = |tool: &str| tool_of_addon(tool, &meta.id);
+        if !own(&spec.choices_tool) || !own(&spec.tool) {
+            problems.push(Problem { scope, message: format!("its tools must be this add-on's own (`{}.<name>`); ignored", meta.id) });
+        } else if out.iter().any(|s| s.id == spec.id) {
+            problems.push(Problem { scope, message: "its id is used by an earlier entry; ignored".into() });
+        } else if out.len() >= MAX_NEW_SESSIONS {
+            problems.push(Problem { scope, message: format!("more than {MAX_NEW_SESSIONS} New session forms; ignored") });
+        } else {
+            out.push(spec);
+        }
+    }
+    out
+}
+
+/// Whether `tool` is `<addon>.<name>` with a plain tool name (the same rule `csm/call` and the
+/// tool registry apply to an add-on's tools).
+fn tool_of_addon(tool: &str, addon: &str) -> bool {
+    let Some(name) = tool.strip_prefix(addon).and_then(|r| r.strip_prefix('.')) else { return false };
+    !name.is_empty() && name.len() <= 48 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// A parameter name: lowercase letters, digits and `_`, starting with a letter, up to 32.
+fn param_name(s: &str) -> bool {
+    s.len() <= 32 && s.starts_with(|c: char| c.is_ascii_lowercase()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn parse_new_session(t: &Table) -> Result<NewSessionSpec, String> {
+    let id = t.get("id").and_then(Value::as_str).ok_or("`id` must be a string")?;
+    if !valid_id(id) {
+        return Err(format!("`id` `{}` must be 1 to 64 lowercase letters, digits or -", clean_text(id, 40)));
+    }
+    let title = name_field(t, "title")?;
+    let scope = format!("new session `{id}`");
+    let submit = optional_text(t, "submit", 32, "Create")?;
+    let choice_title = optional_text(t, "choice_title", 32, "Choose")?;
+    let tool_field = |key: &str| -> Result<String, String> {
+        let s = t.get(key).and_then(Value::as_str).ok_or_else(|| format!("`{key}` must be a tool id such as `addon.name`"))?;
+        if s.len() > 96 {
+            return Err(format!("{scope}: `{key}` is too long"));
+        }
+        Ok(s.to_owned())
+    };
+    let choices_tool = tool_field("choices_tool")?;
+    let tool = tool_field("tool")?;
+    let choice_param = t.get("choice_param").and_then(Value::as_str).ok_or("`choice_param` must be a parameter name")?;
+    if !param_name(choice_param) {
+        return Err(format!("{scope}: `choice_param` must be lowercase letters, digits and _, starting with a letter"));
+    }
+    // The optional name field: its parameter is never the choice's, and no fixed param may repeat it.
+    let name_param = match t.get("name_param") {
+        None => None,
+        Some(Value::String(s)) if param_name(s) && s != choice_param => Some(s.clone()),
+        Some(_) => return Err(format!("{scope}: `name_param` must be a parameter name, other than `choice_param`")),
+    };
+    let name_title = optional_text(t, "name_title", 32, "Name")?;
+    let mut reserved = vec![choice_param];
+    reserved.extend(name_param.as_deref());
+    let params = match t.get("params") {
+        None => Json::Object(Map::new()),
+        Some(Value::Table(p)) => fixed_params(p, &reserved, &scope)?,
+        Some(_) => return Err(format!("{scope}: `params` must be a table")),
+    };
+    Ok(NewSessionSpec {
+        id: id.to_owned(),
+        title,
+        submit,
+        choices_tool,
+        choice_param: choice_param.to_owned(),
+        choice_title,
+        name_param,
+        name_title,
+        tool,
+        params,
+    })
+}
+
+/// An optional short text field, control characters dropped; `default` when absent or empty.
+fn optional_text(t: &Table, key: &str, cap: usize, default: &str) -> Result<String, String> {
+    match t.get(key) {
+        None => Ok(default.to_owned()),
+        Some(Value::String(s)) => {
+            let c = clean_text(s, cap);
+            Ok(if c.is_empty() { default.to_owned() } else { c })
+        }
+        Some(_) => Err(format!("`{key}` must be a string")),
+    }
+}
+
+/// The fixed `params` of a form: at most [`MAX_NEW_SESSION_PARAMS`] entries, each a parameter
+/// name bound to a string (at most [`MAX_PARAM_VALUE`] bytes, no control characters), a boolean
+/// or an integer. Never a reserved name: the choice parameter and the name parameter, which the
+/// dialog fills.
+fn fixed_params(p: &Table, reserved: &[&str], scope: &str) -> Result<Json, String> {
+    if p.len() > MAX_NEW_SESSION_PARAMS {
+        return Err(format!("{scope}: more than {MAX_NEW_SESSION_PARAMS} fixed params"));
+    }
+    let mut out = Map::new();
+    for (k, v) in p {
+        if !param_name(k) || reserved.contains(&k.as_str()) {
+            return Err(format!("{scope}: param `{}` is not a usable name here", clean_text(k, 40)));
+        }
+        let value = match v {
+            Value::String(s) if s.len() <= MAX_PARAM_VALUE && !s.chars().any(char::is_control) => Json::String(s.clone()),
+            Value::String(_) => return Err(format!("{scope}: param `{k}` is too long or has control characters")),
+            Value::Boolean(b) => Json::Bool(*b),
+            Value::Integer(n) => Json::from(*n),
+            _ => return Err(format!("{scope}: param `{k}` must be a string, boolean or integer")),
+        };
+        out.insert(k.clone(), value);
+    }
+    Ok(Json::Object(out))
 }
 
 fn parse_meta(t: &Table, folder: &str) -> Result<AddonMeta, AddonError> {
@@ -1108,5 +1279,152 @@ base = "light"
     fn clean_text_drops_control_and_bidi_characters() {
         assert_eq!(clean_text("a\u{202E}b\tc\n", 10), "abc");
         assert_eq!(clean_text("abcdef", 3), "abc");
+    }
+}
+
+#[cfg(test)]
+mod new_session_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn head(kind: &str) -> String {
+        format!("[addon]\nid = \"demo\"\nname = \"Demo\"\nversion = \"1.0.0\"\napi = 1\nkind = \"{kind}\"\n")
+    }
+
+    const GOOD: &str = "[[new_session]]\nid = \"agent\"\ntitle = \"New demo agent\"\nsubmit = \"Start\"\nchoices_tool = \"demo.projects\"\nchoice_title = \"Project\"\nchoice_param = \"project\"\ntool = \"demo.launch\"\n[new_session.params]\nopen = true\nharness = \"claude\"\nretries = 2\n";
+
+    fn process_addon(extra: &str) -> ParsedAddon {
+        parse(&format!("{}{}\n[process]\nargv = [\"demo-helper\"]\n", head("process"), extra), "demo").unwrap()
+    }
+
+    #[test]
+    fn a_good_form_is_read_with_its_fixed_params() {
+        let p = process_addon(GOOD);
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        let s = &p.new_sessions[0];
+        assert_eq!((s.id.as_str(), s.title.as_str(), s.submit.as_str()), ("agent", "New demo agent", "Start"));
+        assert_eq!((s.choices_tool.as_str(), s.tool.as_str(), s.choice_param.as_str()), ("demo.projects", "demo.launch", "project"));
+        assert_eq!(s.params, serde_json::json!({"open": true, "harness": "claude", "retries": 2}));
+    }
+
+    #[test]
+    fn defaults_apply_when_the_optional_texts_are_missing_or_empty() {
+        let p = process_addon("[[new_session]]\nid = \"a\"\ntitle = \"T\"\nsubmit = \"  \"\nchoices_tool = \"demo.c\"\nchoice_param = \"x\"\ntool = \"demo.t\"\n");
+        assert_eq!(p.new_sessions[0].submit, "Create");
+        assert_eq!(p.new_sessions[0].choice_title, "Choose");
+        assert_eq!(p.new_sessions[0].params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn tools_outside_the_add_on_are_refused_and_reported() {
+        for bad in ["other.launch", "demo.Launch", "demo.", "demodemo.x", "demo.a-b", "demo.../x", "DEMO.launch"] {
+            let p = process_addon(&GOOD.replace("tool = \"demo.launch\"", &format!("tool = \"{bad}\"")));
+            assert!(p.new_sessions.is_empty(), "{bad} was accepted");
+            assert!(p.problems.iter().any(|x| x.scope.contains("agent")), "{bad} was not reported");
+        }
+        let p = process_addon(&GOOD.replace("choices_tool = \"demo.projects\"", "choices_tool = \"session_list\""));
+        assert!(p.new_sessions.is_empty());
+    }
+
+    #[test]
+    fn hostile_fields_are_refused_not_panicked_on() {
+        let base = "[[new_session]]\nid = \"agent\"\ntitle = \"T\"\nchoices_tool = \"demo.projects\"\nchoice_param = \"project\"\ntool = \"demo.launch\"\n";
+        let long = format!("[new_session.params]\nlong = \"{}\"\n", "x".repeat(300));
+        let cases: Vec<(String, &str)> = vec![
+            (base.replace("id = \"agent\"", "id = \"Bad Id\""), "bad id"),
+            (base.replace("title = \"T\"", "title = \"\""), "empty title"),
+            (base.replace("title = \"T\"", "title = 3"), "non-string title"),
+            (base.replace("choice_param = \"project\"", "choice_param = \"Project\""), "upper-case param"),
+            (base.replace("choice_param = \"project\"", "choice_param = \"1x\""), "digit first"),
+            (base.replace("choice_param = \"project\"", "choice_param = 3"), "non-string choice param"),
+            (format!("{base}[new_session.params]\nproject = \"x\"\n"), "param equal to the choice param"),
+            (format!("{base}[new_session.params]\n\"a b\" = \"x\"\n"), "param with a space"),
+            (format!("{base}[new_session.params]\nnested = {{ a = 1 }}\n"), "nested table value"),
+            (format!("{base}[new_session.params]\nlist = [\"a\"]\n"), "array value"),
+            (format!("{base}[new_session.params]\nctl = \"a\\u0007b\"\n"), "control character"),
+            (format!("{base}{long}"), "too long value"),
+            (format!("{base}params = \"x\"\n"), "params not a table"),
+            (base.replace("tool = \"demo.launch\"", "tool = 7"), "non-string tool"),
+        ];
+        for (text, why) in cases {
+            let p = process_addon(&text);
+            assert!(p.new_sessions.is_empty(), "{why}: accepted");
+            assert!(!p.problems.is_empty(), "{why}: no problem reported");
+        }
+    }
+
+    #[test]
+    fn a_pack_may_not_declare_a_form() {
+        let p = parse(&format!("{}{}", head("pack"), GOOD), "demo").unwrap();
+        assert!(p.new_sessions.is_empty());
+        assert!(p.problems.iter().any(|x| x.message.contains("process")));
+    }
+
+    #[test]
+    fn repeated_ids_and_too_many_forms_are_dropped_with_a_note() {
+        let twice = format!("{GOOD}{GOOD}");
+        let p = process_addon(&twice);
+        assert_eq!(p.new_sessions.len(), 1);
+        assert!(p.problems.iter().any(|x| x.message.contains("used by an earlier")));
+        let many: String = (0..6).map(|i| format!("[[new_session]]\nid = \"f{i}\"\ntitle = \"T\"\nchoices_tool = \"demo.c\"\nchoice_param = \"x\"\ntool = \"demo.t\"\n")).collect();
+        let p = process_addon(&many);
+        assert_eq!(p.new_sessions.len(), MAX_NEW_SESSIONS);
+        assert!(p.problems.iter().any(|x| x.message.contains("more than 4")));
+    }
+
+    #[test]
+    fn a_non_table_form_is_reported_and_the_add_on_still_loads() {
+        // A top-level key must come before the first table header.
+        let p = parse(&format!("new_session = \"nope\"\n{}\n[process]\nargv = [\"demo-helper\"]\n", head("process")), "demo").unwrap();
+        assert!(p.new_sessions.is_empty());
+        assert_eq!(p.problems.len(), 1);
+    }
+
+    /// `GOOD` with the name field lines added after `tool` (they must sit before `[new_session.params]`).
+    fn with_name(lines: &str) -> String {
+        GOOD.replace("[new_session.params]", &format!("{lines}[new_session.params]"))
+    }
+
+    #[test]
+    fn a_name_field_is_read_with_its_heading_and_defaults_to_name() {
+        let p = process_addon(&with_name("name_param = \"name\"\nname_title = \"Agent name\"\n"));
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        assert_eq!(p.new_sessions[0].name_param.as_deref(), Some("name"));
+        assert_eq!(p.new_sessions[0].name_title, "Agent name");
+
+        let p = process_addon(&with_name("name_param = \"name\"\n"));
+        assert_eq!(p.new_sessions[0].name_title, "Name", "the heading defaults to Name");
+
+        let p = process_addon(GOOD);
+        assert_eq!(p.new_sessions[0].name_param, None, "a form without the field has none");
+    }
+
+    #[test]
+    fn a_bad_name_param_refuses_the_form_and_a_fixed_param_may_not_repeat_it() {
+        for (lines, why) in [
+            ("name_param = \"Name\"\n", "upper-case"),
+            ("name_param = \"1name\"\n", "digit first"),
+            ("name_param = \"a b\"\n", "space"),
+            ("name_param = \"project\"\n", "the choice parameter"),
+            ("name_param = 3\n", "not a string"),
+        ] {
+            let p = process_addon(&with_name(lines));
+            assert!(p.new_sessions.is_empty(), "{why}: accepted");
+            assert!(!p.problems.is_empty(), "{why}: not reported");
+        }
+        let text = with_name("name_param = \"name\"\n").replace("retries = 2", "retries = 2\nname = \"fixed\"");
+        let p = process_addon(&text);
+        assert!(p.new_sessions.is_empty(), "a fixed param named like the name field was accepted");
+    }
+
+    #[test]
+    fn a_long_or_hostile_name_title_is_cut_or_cleaned_not_refused() {
+        let title = format!("Agent\u{202E}{}", "x".repeat(60));
+        let p = process_addon(&with_name(&format!("name_param = \"name\"\nname_title = \"{title}\"\n")));
+        assert_eq!(p.new_sessions.len(), 1);
+        let t = &p.new_sessions[0].name_title;
+        assert!(t.chars().count() <= 32 && !t.contains('\u{202E}'), "{t:?}");
+        let p = process_addon(&with_name("name_param = \"name\"\nname_title = \"  \"\n"));
+        assert_eq!(p.new_sessions[0].name_title, "Name", "a blank heading is the default");
     }
 }

@@ -3,7 +3,7 @@
 //!
 //! Plain data plus handles; behaviour lives in tools and in [`crate::lifecycle`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -329,6 +329,9 @@ pub(crate) struct Runtime {
     /// A process add-on's status override and annotation on sessions it opened, by session id.
     /// Runtime only: cleared when its add-on stops or is disabled.
     pub(crate) plugin_marks: HashMap<String, crate::plugins::PluginMark>,
+    /// The state of each New session form an enabled process add-on offers, by `addon/source`
+    /// (`tools::new_session`). Runtime only: cleared when its add-on stops.
+    pub(crate) new_sessions: BTreeMap<String, crate::tools::new_session::FormRun>,
     /// The update check: the last result, the schedule, a dismissed notice.
     pub(crate) update: crate::tools::update::UpdateRt,
 }

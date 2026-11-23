@@ -293,6 +293,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         // The built-in Claude usage add-on is on, so the screenshots show usage.
         addons: vec![demo_claude_usage(true)],
         remotes: Vec::new(),
+        new_sessions: Vec::new(),
         slash_presets: Vec::new(),
         sessions: s,
         groups,

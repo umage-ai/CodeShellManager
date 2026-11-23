@@ -321,6 +321,7 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
             Value::Null => String::new(),
             v => serde_json::to_string_pretty(v).unwrap_or_default(),
         };
+        let target = Some(&req["target"]).filter(|t| !t.is_null()).cloned();
         let who = match &from {
             Some(f) => format!("{client} in {f}"),
             None => client.clone(),
@@ -338,6 +339,11 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
                     });
                     ui.label(egui::RichText::new(summary).font(theme::regular(text::CAPTION)).color(t.muted));
                     ui.label(egui::RichText::new(&tool).font(theme::mono(text::MONO_SM)).color(t.fg2));
+                    // A New session form runs an add-on tool: the card names it and its effects.
+                    if let Some(target) = target.as_ref() {
+                        let line = format!("runs {} ({})", target["tool"].as_str().unwrap_or("?"), target["effects"].as_str().unwrap_or("unknown effects"));
+                        ui.label(egui::RichText::new(line).font(theme::regular(text::CAPTION)).color(t.muted));
+                    }
                     if !params.is_empty() {
                         egui::Frame::new()
                             .fill(t.crust)
@@ -353,7 +359,8 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
                         if widgets::button(ui, ButtonKind::Primary, None, "Allow once", None).clicked() {
                             actions.push(Action::Consent { request_id: id, answer: "allow_once" });
                         }
-                        if widgets::button(ui, ButtonKind::Secondary, None, "Always for this client", None).clicked() {
+                        // Never offered for a form's add-on tool: the engine does not keep such a grant.
+                        if target.is_none() && widgets::button(ui, ButtonKind::Secondary, None, "Always for this client", None).clicked() {
                             actions.push(Action::Consent { request_id: id, answer: "allow_always" });
                         }
                         if widgets::button(ui, ButtonKind::Ghost, None, "Don't allow", None).clicked() {

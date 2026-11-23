@@ -109,6 +109,9 @@ struct Pending {
     params: Value,
     reply: Sender<Reply>,
     asked_at: Instant,
+    /// For a New session form run by a non-person caller: the add-on tool it runs and that tool's
+    /// effects (`tools::new_session::consent_target`). Shown on the card; never saved as a grant.
+    target: Option<Value>,
 }
 
 /// A remembered "always allow": this client may call this tool without asking. Kept in the
@@ -420,12 +423,17 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                 // Every non-read call of a paired device is logged, whatever its outcome.
                 crate::tools::peer::audit_peer_call(state.options.peer_host.as_ref(), &caller, &spec, &params);
                 if let Caller::External { client, .. } = &caller {
-                    let granted = state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id)
-                        || plugins::standing_call(&state.rt.addons, &caller, spec.id);
+                    // A New session form runs an add-on tool whose effects the form's own do not
+                    // show, so each such call asks, with that tool on the card, and a grant never
+                    // covers it: "always allow" on a form means "allow once".
+                    let registry = engine.registry();
+                    let target = crate::tools::new_session::consent_target(&state.rt.addons, spec.id, &params, |t| registry.get(t).map(|s| s.effects));
+                    let granted = target.is_none()
+                        && (state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id) || plugins::standing_call(&state.rt.addons, &caller, spec.id));
                     if spec.effects.needs_consent() && !granted {
                         let key = *next_id;
                         *next_id = next_id.saturating_add(1);
-                        let p = Pending { caller: caller.clone(), spec, params, reply, asked_at: Instant::now() };
+                        let p = Pending { caller: caller.clone(), spec, params, reply, asked_at: Instant::now(), target };
                         engine.events.emit(Event::ConsentRequested { request: pending_json(key, &p) });
                         pending.insert(key, p);
                         return true;
@@ -474,7 +482,7 @@ fn pending_json(key: u64, p: &Pending) -> Value {
         Caller::External { client, session_id } => (client.clone(), session_id.clone()),
         _ => (String::new(), None),
     };
-    json!({
+    let mut card = json!({
         "request_id": key,
         "client": client,
         "from_session_id": session_id,
@@ -483,7 +491,11 @@ fn pending_json(key: u64, p: &Pending) -> Value {
         "summary": p.spec.summary,
         "effects": p.spec.effects,
         "params": p.params,
-    })
+    });
+    if let Some(target) = &p.target {
+        card["target"] = target.clone();
+    }
+    card
 }
 
 fn expire(pending: &mut HashMap<u64, Pending>, events: &Events) {
@@ -542,7 +554,9 @@ fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, s
             let _ = req.reply.send(Err(ToolError::Declined(format!("`{}` was not allowed", req.spec.id))));
         }
         choice => {
+            // A form's add-on tool is never granted for good (see the consent check in `handle`).
             if choice == ConsentChoice::AllowAlways
+                && req.target.is_none()
                 && let Caller::External { client, .. } = &req.caller
             {
                 let g = Grant { client: client.clone(), tool: req.spec.id.to_string() };

@@ -23,6 +23,12 @@
 //! (key `code`, a range action, one open and one closed thread) and a `diff` node (key `diff`);
 //! from then on every event on that instance re-renders that view with the event in `status`.
 //! The key `bigcode` answers with a code node whose text is over the 512 KiB cap.
+//!
+//! **New session forms.** `echo-test.form_choices` answers the picker (the mode picks its answer:
+//! `formempty`, `formerror`, `formjunk`). `echo-test.form_launch` is the submit: `formfail` errors;
+//! `formpend` answers pending with a request_id and final on the poll (with `open_remote` naming
+//! `agent-x` when `open` is set); `formpendfail` answers pending, then errors on the poll;
+//! `formpendnoid` says pending with no request_id; `formpendforever` never finishes.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
@@ -105,6 +111,8 @@ fn main() {
                     json!({"id": "echo-test.csm", "title": "Csm", "summary": "Runs a CSM tool through csm/call", "effects": []}),
                     json!({"id": "echo-test.offer", "title": "Offer", "summary": "Sends csm/remotes_changed", "effects": []}),
                     json!({"id": "echo-test.open_agent", "title": "Open agent", "summary": "Says which session to open", "effects": []}),
+                    json!({"id": "echo-test.form_choices", "title": "Form choices", "summary": "The choices of a New session form", "effects": []}),
+                    json!({"id": "echo-test.form_launch", "title": "Form launch", "summary": "Runs a New session form", "effects": ["launches_process"]}),
                 ];
                 if mode == "undeclared" {
                     tools.push(json!({"id": "echo-test.sneaky", "title": "Sneaky", "effects": ["sends_input"]}));
@@ -214,6 +222,32 @@ fn main() {
                         let name = args["name"].as_str().unwrap_or("agent").to_owned();
                         let session = json!({"name": name, "ssh": {"host": "agent-alias", "config_file": "cfg/ssh_config", "remote_argv": ["tmux", "new-session", "-A", "-s", "main"]}, "resume": "rerun"});
                         send(&mut out, &reply(&id, json!({"message": "open this", "data": {"session": session}})));
+                    }
+                    "echo-test.form_choices" => match mode.as_str() {
+                        "formempty" => send(&mut out, &reply(&id, json!({"message": "none", "data": {"choices": []}}))),
+                        "formerror" => send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the host is asleep"}})),
+                        "formjunk" => send(&mut out, &reply(&id, json!({"message": "junk", "data": {"choices": "nope"}}))),
+                        _ => send(&mut out, &reply(&id, json!({"message": "two", "data": {"choices": [{"id": "alpha", "label": "Alpha", "detail": "repo a"}, {"id": "beta"}, {"label": "no id"}]}}))),
+                    },
+                    "echo-test.form_launch" => {
+                        // The pending modes answer the first ask pending, with a request_id that the
+                        // second ask (the same args plus that id) takes. `formpendnoid` says pending
+                        // with no id; `formpendforever` never finishes.
+                        let request_id = args.get("request_id").and_then(Value::as_str).map(str::to_owned);
+                        let progress = "The launch is still running on the host.";
+                        match (mode.as_str(), request_id.as_deref()) {
+                            ("formfail", _) => send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the host refused the launch"}})),
+                            ("formpend" | "formpendfail", None) => send(&mut out, &reply(&id, json!({"message": progress, "data": {"pending": true, "request_id": "req-echo-0001"}}))),
+                            ("formpendnoid", None) => send(&mut out, &reply(&id, json!({"message": progress, "data": {"pending": true}}))),
+                            ("formpendforever", _) => send(&mut out, &reply(&id, json!({"message": progress, "data": {"pending": true, "request_id": "req-echo-0002"}}))),
+                            ("formpendfail", Some(_)) => send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the host refused the launch after waiting"}})),
+                            _ => {
+                                // `open = true` names the new agent's remote in `open_remote`: CodeShellManager
+                                // opens it (the answer does not open anything itself).
+                                let open_remote = if args.get("open").and_then(Value::as_bool) == Some(true) { json!("agent-x") } else { Value::Null };
+                                send(&mut out, &reply(&id, json!({"message": "Launched the agent.", "data": {"remote_id": "agent-x", "args": args, "request_id": request_id, "open_remote": open_remote}})));
+                            }
+                        }
                     }
                     "echo-test.callback" => {
                         next_csm_id += 1;

@@ -21,6 +21,7 @@ mod runs;
 mod screens;
 mod search;
 mod remotes;
+pub(crate) mod new_session;
 mod sessions;
 mod slash;
 mod snapshots;
@@ -49,6 +50,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(autostart::specs());
     v.extend(git::specs());
     v.extend(runs::specs());
+    v.extend(new_session::specs());
     v.extend(open::specs());
     v.extend(ports::specs());
     v.extend(platform::specs());

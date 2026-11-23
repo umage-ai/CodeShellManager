@@ -678,6 +678,8 @@ pub mod size {
     pub const PALETTE_INPUT: f32 = 48.0;
     pub const PALETTE_ROW: f32 = 34.0;
     pub const PALETTE_LIST_H: f32 = 420.0;
+    /// The New session form's choices: a scroll area this tall at most (the rest scrolls).
+    pub const NEW_SESSION_CHOICES_H: f32 = 180.0;
     pub const MENU_W: f32 = 236.0;
     pub const MENU_ROW: f32 = 30.0;
     /// The Recent menu (name, folder, status, age and key per row).
@@ -1132,6 +1134,7 @@ mod tests {
             commands: vec![],
             process_effects: vec![],
             process_command_line: None,
+            new_sessions: Vec::new(),
             process_calls: vec![],
             process: None,
             themes,
