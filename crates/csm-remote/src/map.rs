@@ -49,7 +49,7 @@ fn millis(t: Option<i64>) -> Option<u64> {
 
 /// How long, in words ("12 s", "4 min", "2 h").
 fn took(ms: i64) -> String {
-    let s = (ms.max(0) + 500) / 1000;
+    let s = ms.max(0).saturating_add(500) / 1000;
     match s {
         0..60 => format!("{s} s"),
         60..3600 => format!("{} min", s / 60),
@@ -59,8 +59,10 @@ fn took(ms: i64) -> String {
 
 fn run(r: &WireRun, now_ms: i64) -> RunView {
     let dur = match (r.started_ms, r.ended_ms) {
-        (Some(a), Some(b)) => Some(took(b - a)),
-        (Some(a), None) => Some(took(now_ms - a)),
+        // Host-supplied times: saturate, never overflow (a hostile host
+        // can send i64::MIN / i64::MAX).
+        (Some(a), Some(b)) => Some(took(b.saturating_sub(a))),
+        (Some(a), None) => Some(took(now_ms.saturating_sub(a))),
         _ => None,
     };
     let with = |s: &str| dur.as_ref().map_or_else(|| s.to_string(), |d| format!("{s} · {d}"));
@@ -400,6 +402,44 @@ mod tests {
         assert_eq!(ok.message, "done");
         assert_eq!(ok.data, json!({"a": 1}));
         assert!(lost("gone").is_err());
+    }
+
+    fn wire_run(phase: RunPhase, started_ms: Option<i64>, ended_ms: Option<i64>) -> WireRun {
+        WireRun {
+            id: "r".into(),
+            label: "test".into(),
+            command_line: "cargo test".into(),
+            is_default: false,
+            mode: "process".into(),
+            post_run_url: None,
+            phase,
+            exit_code: None,
+            started_ms,
+            ended_ms,
+        }
+    }
+
+    #[test]
+    fn extreme_host_times_never_overflow_the_duration() {
+        // A hostile office can send any i64 for started_ms / ended_ms. None of
+        // these may panic (debug) or wrap into garbage (release).
+        let extremes = [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX];
+        for a in extremes {
+            for b in extremes {
+                let view = run(&wire_run(RunPhase::Ok, Some(a), Some(b)), 0);
+                assert!(view.detail.starts_with("passed"), "{a} .. {b}: {}", view.detail);
+                let view = run(&wire_run(RunPhase::Running, Some(a), None), b);
+                assert!(view.detail.starts_with("running"), "{a} .. now {b}: {}", view.detail);
+            }
+        }
+        // A run that ended before it started shows no negative time.
+        let backwards = wire_run(RunPhase::Ok, Some(100_000), Some(0));
+        assert_eq!(run(&backwards, 0).detail, "passed · exit 0 · 0 s");
+        // The largest possible span is shown in hours, not wrapped.
+        let huge = run(&wire_run(RunPhase::Ok, Some(i64::MIN), Some(i64::MAX)), 0);
+        assert!(huge.detail.ends_with(" h"), "{}", huge.detail);
+        assert_eq!(took(i64::MAX), format!("{} h", (i64::MAX / 1000) / 3600));
+        assert_eq!(took(i64::MIN), "0 s");
     }
 
     #[test]

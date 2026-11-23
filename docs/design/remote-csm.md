@@ -841,3 +841,10 @@ Base sha for this step: `76d93e45674fe1456e663a2ffa96711e2006f868`.
   run-output streaming, add-on screen proxying, theme events from the host (the theme is the laptop's own), the
   typing indicator and compression. Every snapshot update sends the full mirror to the UI thread (no coalescing
   beyond the host's). Terminal cell pixel sizes are the default (only columns and rows are replicated).
+
+**Fix round 1 (base `76d93e4`, the step's own commit `397b44e`).** Review found host-supplied times in
+`csm-remote::map` doing unchecked i64 arithmetic: a hostile office could panic a debug build inside `rebuild`.
+Now `took` and `run` saturate (`saturating_sub`, `saturating_add`) and a test runs every extreme pair of
+`started_ms` / `ended_ms` (`i64::MIN`, `i64::MAX`, negatives) through the run view. A run that ends before it
+starts shows `0 s`. Not changed in this round: terminals are not marked stale while reconnecting, `Up::Snapshot`
+sends are not coalesced, and the bad-delta-forces-a-fresh-snapshot path has no test through the real link.
