@@ -26,6 +26,7 @@ pub mod devices;
 pub mod fsperm;
 pub mod identity;
 mod link;
+mod serve;
 mod server;
 
 pub use link::LinkError;

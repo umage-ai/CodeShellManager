@@ -24,3 +24,5 @@ getrandom = "0.3"
 [dev-dependencies]
 tempfile = "3"
 csm-core = { path = "../csm-core" }
+csm-term = { path = "../csm-term" }
+csm-pty = { path = "../csm-pty" }

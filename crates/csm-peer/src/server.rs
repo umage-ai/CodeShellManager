@@ -33,7 +33,7 @@ use csm_engine::{
 use csm_peer_proto::addr::{PeerAddr, check_bind};
 use csm_peer_proto::codec::{CodecError, Frame};
 use csm_peer_proto::ids::{PAIRING_ID_LEN, PSK_LEN};
-use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, TermClosedReason, check_term_versions, valid_name};
+use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, check_term_versions, valid_name};
 use csm_peer_proto::noise::{MAX_PAIR_ATTEMPTS, Route, check_code, route};
 use csm_peer_proto::pairing::{DenyReason, PairMsg, PeerOffer, SLOT_SECS};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ use crate::devices::{Device, DeviceStore, level_name};
 use crate::fsperm;
 use crate::identity::Identity;
 use crate::link::{Established, Io, Link, LinkError, Reader, respond};
+use crate::serve::{Drivers, Knobs, Serving, Who};
 use crate::{TERM_VERSION, unix_secs};
 
 /// Knobs a test turns (short lifetimes); the defaults are the design's.
@@ -65,6 +66,14 @@ pub struct ServerConfig {
     pub max_in_flight_calls: usize,
     pub ping_every: Duration,
     pub dead_after: Duration,
+    /// A terminal stream this many bytes behind sends a fresh screen instead of the backlog.
+    pub stream_backlog_bytes: usize,
+    /// Scrollback lines an attach carries (the screen always comes whole).
+    pub attach_history_lines: usize,
+    /// Terminal streams one device may have open.
+    pub max_streams: usize,
+    /// How often the snapshot publisher looks for a new version.
+    pub snapshot_every: Duration,
 }
 
 impl Default for ServerConfig {
@@ -82,6 +91,10 @@ impl Default for ServerConfig {
             max_in_flight_calls: 16,
             ping_every: Duration::from_secs(15),
             dead_after: Duration::from_secs(45),
+            stream_backlog_bytes: 256 * 1024,
+            attach_history_lines: 1000,
+            max_streams: 16,
+            snapshot_every: Duration::from_millis(50),
         }
     }
 }
@@ -162,7 +175,8 @@ struct Inner {
     cfg: ServerConfig,
     st: Mutex<St>,
     engine: OnceLock<Engine>,
-    audit: Audit,
+    audit: Arc<Audit>,
+    drivers: Drivers,
     dead: AtomicBool,
     next_conn: AtomicU64,
     unauth: AtomicUsize,
@@ -185,7 +199,7 @@ impl PeerServer {
     }
 
     pub fn with_config(dir: PathBuf, cfg: ServerConfig) -> Self {
-        let audit = Audit::new(dir.join("remote-access.log"));
+        let audit = Arc::new(Audit::new(dir.join("remote-access.log")));
         let st = St {
             prepared: false,
             restricted: false,
@@ -207,6 +221,7 @@ impl PeerServer {
                 st: Mutex::new(st),
                 engine: OnceLock::new(),
                 audit,
+                drivers: Drivers::default(),
                 dead: AtomicBool::new(false),
                 next_conn: AtomicU64::new(1),
                 unauth: AtomicUsize::new(0),
@@ -658,7 +673,26 @@ impl Inner {
         }
         self.audit.record("connected", json!({"device_id": device.id, "device": clean(&device.name), "client": clean(&client), "from": peer.to_string()}));
         self.send_waiting_cards(&device, &link);
-        let reason = self.session_loop(&mut reader, &link, &device);
+        let serving = self.engine.get().map(|engine| {
+            let knobs = Knobs {
+                backlog: self.cfg.stream_backlog_bytes,
+                history: self.cfg.attach_history_lines,
+                max_streams: self.cfg.max_streams,
+                snapshot_every: self.cfg.snapshot_every,
+            };
+            Serving::new(engine.clone(), link.clone(), Who { conn_id, device_id: device.id.clone(), level: device.level }, knobs, self.drivers.clone(), self.audit.clone())
+        });
+        if let Some(s) = &serving
+            && s.start().is_err()
+        {
+            s.stop();
+            self.drop_conn(conn_id);
+            return Err(LinkError::Closed);
+        }
+        let reason = self.session_loop(&mut reader, &link, &device, serving.as_ref());
+        if let Some(s) = &serving {
+            s.stop();
+        }
         link.close();
         self.drop_conn(conn_id);
         self.audit.record("disconnected", json!({"device_id": device.id, "device": clean(&device.name), "reason": reason}));
@@ -670,7 +704,7 @@ impl Inner {
     }
 
     /// Reads frames until the connection ends. The reason is for the log.
-    fn session_loop(&self, reader: &mut Reader, link: &Arc<Link>, device: &Device) -> &'static str {
+    fn session_loop(&self, reader: &mut Reader, link: &Arc<Link>, device: &Device, serving: Option<&Arc<Serving>>) -> &'static str {
         let mut last_rx = Instant::now();
         let mut last_ping = Instant::now();
         let mut ping_n: u64 = 0;
@@ -682,7 +716,7 @@ impl Inner {
             match reader.recv(tick) {
                 Ok(Some(frame)) => {
                     last_rx = Instant::now();
-                    if let Some(why) = self.handle_frame(frame, link, device) {
+                    if let Some(why) = self.handle_frame(frame, link, device, serving) {
                         return why;
                     }
                 }
@@ -709,7 +743,12 @@ impl Inner {
     }
 
     /// `Some(reason)` ends the connection.
-    fn handle_frame(&self, frame: Frame, link: &Arc<Link>, device: &Device) -> Option<&'static str> {
+    fn handle_frame(&self, frame: Frame, link: &Arc<Link>, device: &Device, serving: Option<&Arc<Serving>>) -> Option<&'static str> {
+        if let Some(s) = serving
+            && s.on_frame(&frame)
+        {
+            return None;
+        }
         match frame {
             Frame::Control(Msg::Ping { n }) => {
                 let _ = link.send_msg(Msg::Pong { n });
@@ -717,9 +756,9 @@ impl Inner {
             Frame::Control(Msg::Bye { .. }) => return Some("client left"),
             Frame::Control(Msg::Call { id, tool, params }) => self.spawn_call(link, device, id, tool, params),
             Frame::Control(Msg::ConsentAnswer { request_id, allow }) => self.spawn_consent(link, device, request_id, allow),
-            // Terminal streams and snapshots are the next steps: say no instead of staying silent.
+            // Terminal messages reach here only when no engine is attached: say no, not nothing.
             Frame::Control(Msg::TermSubscribe { stream, .. }) => {
-                let _ = link.send_msg(Msg::TermClosed { stream, reason: TermClosedReason::Forbidden });
+                let _ = link.send_msg(Msg::TermClosed { stream, reason: csm_peer_proto::msg::TermClosedReason::Forbidden });
             }
             _ => {}
         }
@@ -891,6 +930,11 @@ fn forward_events(inner: &Arc<Inner>, rx: &Receiver<csm_engine::Event>) {
             Ok(Event::ConsentRequested { request }) => inner.broadcast(Level::Full, &Msg::ConsentCard { request }),
             Ok(ev @ Event::ConsentResolved { .. }) => {
                 inner.broadcast(Level::Full, &Msg::Event { event: Some(csm_peer_proto::Event::from(&ev)) });
+            }
+            // What a screen shows without asking: toasts, errors and add-on screens. The snapshot
+            // carries sessions, groups and the inbox; the rest of the events are the office's own.
+            Ok(ev @ (Event::Toast { .. } | Event::Error { .. } | Event::ScreenChanged { .. })) => {
+                inner.broadcast(Level::Viewer, &Msg::Event { event: Some(csm_peer_proto::Event::from(&ev)) });
             }
             Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
                 if inner.dead.load(Ordering::Acquire) {

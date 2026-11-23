@@ -699,3 +699,37 @@ Base sha for this step: `9581982f0ae26fbd1a0e7a3ecce8c2025219978d`.
   wire). Who answered is audited. Over the wire this is tested with two devices.
 - **Not done here (later steps):** the Settings panel, indicator pill and QR code (the tools return the link as
   text), the pairing UX on the client side, snapshots and terminal streaming, the firewall step, `RemoteBackend`.
+
+## P1 step 3: serving sessions to a device (`csm-peer`, `csm-engine`)
+
+Base sha for this step: `d62400a757bd23fcf198e1411de30d771eeb6ce6`.
+
+- **Snapshot and deltas.** After `Welcome` the device gets `Msg::Snapshot`; a publisher thread per connection compares the
+  engine's `version` every 50 ms and sends `diff(last_sent, now)`. A burst coalesces, a slow link skips versions, a
+  version where nothing the wire carries changed is not sent, and a delta above one control message falls back to a full
+  snapshot. Events forwarded besides consent: `Toast`, `Error`, `ScreenChanged` (the rest are the office's own, or are in
+  the snapshot).
+- **Terminal streams** (`serve.rs`): one thread per `TermSubscribe`, at most 16 per device, reading the P0 output ring at
+  its own pace (nothing queues). *Attach* = `TerminalHandle::attach_snapshot` (the serializer under the terminal lock, with
+  the offset the emulator has consumed, taken in the same critical section as `Terminal::advance`, so grid and offset are
+  one moment) then live bytes from that offset. *Resume* when the device names `(instance, offset)`, the ring holds the
+  offset, the resize log still has every change after it and it is not further behind than `stream_backlog_bytes`.
+  *Backpressure*: a stream whose unsent consumed bytes exceed the backlog (default 256 KiB), or whose offset the ring
+  evicted or dropped, sends a fresh attach instead. Only bytes the server's emulator has consumed are sent, and
+  `TermResized` is sent exactly at the offset the resize took effect (a per-session resize log), so the client's emulator
+  is in lockstep (tested by comparing `replay::snapshot` of both emulators).
+- **Known edge.** An attach flushes an open synchronized update (DEC 2026) first: the grid would otherwise lack bytes the
+  offset already counts. The office pane may show that frame a moment early.
+- **Input** goes to `TerminalHandle::send_key / send_mouse / paste / focus_changed` (paste is bracketed and stripped of
+  ESC by the handle). Operator level or above; audited as a byte count per session per minute (and at disconnect), never
+  content.
+- **Size.** The device that last typed, focused (`Focus(true)`) or sent `TermResize { driver: true }` drives the PTY size
+  (`TerminalHandle::resize_cells`, which keeps the cell pixel size). A device that does not drive only records the size
+  it wants and gets it when it starts driving. The office window's own pane still resizes the PTY when it changes (it is
+  not a "device"): nothing fights back, last change wins, as in the design.
+- **Client helpers** (`csm_peer::client`): `Connection::subscribe/unsubscribe/resync/resize/input` and `TermFollower`, a pure
+  tracker that joins attach chunks, checks data continues exactly where the last byte ended (`TermUpdate::Gap` = send
+  `resync`) and gives the `(instance, offset)` to resume with. The next step's `RemoteTerminal` is built on it.
+- **Consent** was done in step 2; step 3 adds the combined test (the office UI's card closes when a device answers).
+- **Not done here:** compression, OSC 52 routing to the driver, run-output streaming, add-on screen proxying, the
+  "typing" indicator, a `csm attach` CLI.

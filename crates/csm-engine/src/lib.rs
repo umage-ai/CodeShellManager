@@ -50,7 +50,7 @@ pub use peer_host::{AuditEvent, DeviceInfo, EnableRequest, NoPeerHost, PairAnswe
 pub use plugins::{PluginRuntime, RemoteView, RunState};
 pub use registry::{DynamicTool, Registry};
 pub use runs::{RunOutputHandle, RunPhase, RunView};
-pub use session::TerminalHandle;
+pub use session::{AttachSnapshot, ResizeMark, TerminalHandle};
 pub use snapshot::{ClosedView, GroupInfo, GroupView, SessionView, Snapshot};
 pub use state::{Autostart, LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, UrlOpener, real_pty_factory, real_url_opener};
 pub use status::{Status, WaitUntil};

@@ -337,3 +337,122 @@ impl Drop for Connection {
         self.link.close();
     }
 }
+
+// ---- terminal streams -------------------------------------------------------------------------
+
+impl Connection {
+    /// Asks for a session's terminal on `stream` (any id the client picks). With `resume` =
+    /// `(instance, offset)` of what this client already has, the host continues from there when it
+    /// still can; otherwise it sends a fresh attach.
+    pub fn subscribe(&self, stream: u32, session: &str, resume: Option<(u64, u64)>) -> Result<(), CallError> {
+        self.send(Msg::TermSubscribe { stream, session: session.to_owned(), instance: resume.map(|r| r.0), from_offset: resume.map(|r| r.1) })
+    }
+
+    /// The pane is hidden.
+    pub fn unsubscribe(&self, stream: u32) -> Result<(), CallError> {
+        self.send(Msg::TermUnsubscribe { stream })
+    }
+
+    /// Asks for a fresh attach (after [`TermUpdate::Gap`]).
+    pub fn resync(&self, stream: u32) -> Result<(), CallError> {
+        self.send(Msg::TermResync { stream })
+    }
+
+    /// This pane's size. `driver` says this client is the one typing: the PTY follows it.
+    pub fn resize(&self, stream: u32, cols: u16, rows: u16, driver: bool) -> Result<(), CallError> {
+        self.send(Msg::TermResize { stream, cols, rows, driver })
+    }
+
+    /// Typed input for the session on `stream`.
+    pub fn input(&self, stream: u32, input: csm_peer_proto::codec::Input) -> Result<(), CallError> {
+        self.link.send_frame(&Frame::TermInput { stream, input }).map_err(|_| CallError::Closed)
+    }
+}
+
+/// What one frame meant for a followed terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TermUpdate {
+    /// A whole new screen: replace the emulator with a fresh one of this size and feed it `vt`.
+    Attached(csm_peer_proto::codec::Attach),
+    /// Bytes for the emulator, in order.
+    Data(Vec<u8>),
+    /// The PTY changed size at this point of the stream: resize the emulator.
+    Resized { cols: u16, rows: u16 },
+    /// The stream ended.
+    Closed(csm_peer_proto::msg::TermClosedReason),
+    /// Bytes arrived that do not follow on from what the client has: it must `resync`. Further
+    /// data is ignored until the attach arrives.
+    Gap,
+    /// Not for this stream, or a part of an attach not complete yet, or stale data.
+    Ignored,
+}
+
+/// Follows one terminal stream's frames: joins attach chunks, checks that data continues exactly
+/// where the last byte ended, and remembers `(instance, offset)` for a resume after a reconnect.
+/// Pure: the emulator is the caller's.
+#[derive(Debug)]
+pub struct TermFollower {
+    stream: u32,
+    attach: csm_peer_proto::codec::AttachAssembler,
+    instance: Option<u64>,
+    /// The offset of the next byte expected.
+    offset: Option<u64>,
+    /// A gap was reported: ignore data until an attach arrives.
+    lost: bool,
+}
+
+impl TermFollower {
+    pub fn new(stream: u32) -> Self {
+        Self { stream, attach: csm_peer_proto::codec::AttachAssembler::new(), instance: None, offset: None, lost: false }
+    }
+
+    /// A follower for a stream that resumes at `(instance, offset)` (after a reconnect).
+    pub fn resuming(stream: u32, instance: u64, offset: u64) -> Self {
+        Self { instance: Some(instance), offset: Some(offset), ..Self::new(stream) }
+    }
+
+    /// What to pass to `Connection::subscribe` to continue where this left off.
+    pub fn resume_point(&self) -> Option<(u64, u64)> {
+        self.instance.zip(self.offset)
+    }
+
+    pub fn on_frame(&mut self, frame: &Frame) -> Result<TermUpdate, csm_peer_proto::codec::CodecError> {
+        match frame {
+            Frame::TermAttach { stream, .. } if *stream == self.stream => match self.attach.push(frame)? {
+                Some(a) => {
+                    self.instance = Some(a.instance);
+                    self.offset = Some(a.offset);
+                    self.lost = false;
+                    Ok(TermUpdate::Attached(a))
+                }
+                None => Ok(TermUpdate::Ignored),
+            },
+            Frame::TermData { stream, instance, offset, bytes } if *stream == self.stream => {
+                if self.lost {
+                    return Ok(TermUpdate::Ignored);
+                }
+                if self.instance != Some(*instance) || self.offset != Some(*offset) {
+                    self.lost = true;
+                    return Ok(TermUpdate::Gap);
+                }
+                self.offset = Some(offset.saturating_add(bytes.len() as u64));
+                Ok(TermUpdate::Data(bytes.clone()))
+            }
+            Frame::Control(Msg::TermResized { stream, offset, cols, rows }) if *stream == self.stream => {
+                if self.lost {
+                    return Ok(TermUpdate::Ignored);
+                }
+                if self.offset != Some(*offset) {
+                    self.lost = true;
+                    return Ok(TermUpdate::Gap);
+                }
+                Ok(TermUpdate::Resized { cols: *cols, rows: *rows })
+            }
+            Frame::Control(Msg::TermClosed { stream, reason }) if *stream == self.stream => {
+                self.attach.cancel(self.stream);
+                Ok(TermUpdate::Closed(*reason))
+            }
+            _ => Ok(TermUpdate::Ignored),
+        }
+    }
+}

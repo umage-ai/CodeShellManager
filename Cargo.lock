@@ -1273,6 +1273,8 @@ dependencies = [
  "csm-core",
  "csm-engine",
  "csm-peer-proto",
+ "csm-pty",
+ "csm-term",
  "getrandom 0.3.4",
  "log",
  "serde",
