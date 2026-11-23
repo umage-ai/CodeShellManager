@@ -86,9 +86,12 @@ impl Engine {
                 Ok(json!({ "sessions": sessions }))
             }
             Op::SessionGet { session_id } => {
+                // CSM answers `{ session, config, program_status, busy, cwd }`; the view is `session`
+                // and its program message is `status_message`. Nothing else is read.
                 let v = self.csm_call("session_get", json!({ "session_id": session_id }))?;
-                let mut s = session_from(&v).ok_or((ErrorCode::Failed, "CSM sent no session".to_owned()))?;
-                s.message = text(&v, "message", MAX_TEXT);
+                let view = v.get("session").filter(|s| s.is_object()).ok_or((ErrorCode::Failed, "CSM sent no session".to_owned()))?;
+                let mut s = session_from(view).ok_or((ErrorCode::Failed, "CSM sent no session".to_owned()))?;
+                s.message = text(view, "status_message", MAX_TEXT);
                 to_value(&s)
             }
             Op::InboxList => {
@@ -290,27 +293,28 @@ fn session_from(v: &Value) -> Option<SessionInfo> {
         status,
         branch: text(v, "branch", MAX_TEXT),
         message: None,
-        group: text(v, "group", MAX_TEXT),
+        // CSM's session view names its group `group_id` (empty when ungrouped; `text` drops that).
+        group: text(v, "group_id", MAX_TEXT),
         profile: None,
         since: None,
     })
 }
 
+/// An inbox entry is a session view (CSM's `inbox_list` lists the sessions that need the person,
+/// then the unseen results). CSM sends no timestamp for it, so `ts` is 0.
 fn inbox_from(v: &Value) -> Option<InboxItem> {
-    Some(InboxItem {
-        id: text(v, "id", MAX_ID)?,
-        title: text(v, "title", MAX_TEXT).unwrap_or_default(),
-        session_id: text(v, "session_id", MAX_ID),
-        ts: v.get("ts").and_then(Value::as_u64).unwrap_or(0),
-    })
+    let id = text(v, "id", MAX_ID)?;
+    Some(InboxItem { id: id.clone(), title: text(v, "name", MAX_TEXT).unwrap_or_default(), session_id: Some(id), ts: 0 })
 }
 
+/// A task (CSM's `task_list` and `task_get`). Its `assignee` is the session it is given to, when
+/// one is. The body is never copied (design note, section 4: titles and state only).
 fn task_from(v: &Value) -> Option<TaskItem> {
     Some(TaskItem {
         id: text(v, "id", MAX_ID)?,
         title: text(v, "title", MAX_TEXT).unwrap_or_default(),
         state: text(v, "state", MAX_ID).unwrap_or_default(),
-        session_id: text(v, "session_id", MAX_ID),
+        session_id: text(v, "assignee", MAX_ID),
     })
 }
 
@@ -346,5 +350,41 @@ mod tests {
         let s = session_from(&v).unwrap();
         assert_eq!(s.name, "ab");
         assert!(session_from(&json!({"name": "no id"})).is_none());
+    }
+
+    /// The shapes below are CSM's real output (`crates/csm-engine/src/snapshot.rs`, `tools/sessions.rs`,
+    /// `tools/tasks.rs`), copied field for field. A reader that drifts from them answers with nothing.
+    #[test]
+    fn a_csm_session_view_is_read_by_its_real_field_names() {
+        let view = json!({
+            "id": "s1", "name": "Api", "kind": "local", "folder": "/work/api", "folder_short": "api",
+            "command": "claude", "group_id": "g1", "accent": "#ff0000", "status": "needs_you_approval",
+            "status_label": "needs you", "status_message": "Approve the edit?", "live": true, "asleep": false,
+            "branch": "main", "git_dirty": false
+        });
+        let s = session_from(&view).unwrap();
+        assert_eq!((s.id.as_str(), s.name.as_str(), s.folder.as_str()), ("s1", "Api", "/work/api"));
+        assert_eq!(s.status, PhoneStatus::NeedsApproval);
+        assert_eq!(s.group.as_deref(), Some("g1"), "the group is group_id");
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.message, None, "the list carries no program text: session.get does");
+    }
+
+    #[test]
+    fn an_inbox_entry_is_a_session_view_and_its_name_is_the_title() {
+        let view = json!({"id": "s2", "name": "Build", "status": "done_unseen", "folder": "/w"});
+        let item = inbox_from(&view).unwrap();
+        assert_eq!((item.id.as_str(), item.title.as_str()), ("s2", "Build"));
+        assert_eq!(item.session_id.as_deref(), Some("s2"));
+        assert_eq!(item.ts, 0, "CSM sends no time for an inbox entry");
+    }
+
+    #[test]
+    fn a_task_is_read_without_its_body_and_its_assignee_is_the_session() {
+        let task = json!({"id": "t1", "project": "p", "title": "Fix it", "body": "secret body", "state": "assigned", "assignee": "s9", "progress": null});
+        let t = task_from(&task).unwrap();
+        assert_eq!((t.id.as_str(), t.title.as_str(), t.state.as_str()), ("t1", "Fix it", "assigned"));
+        assert_eq!(t.session_id.as_deref(), Some("s9"));
+        assert!(!serde_json::to_string(&t).unwrap().contains("secret body"), "the body never reaches a phone");
     }
 }

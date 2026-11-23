@@ -40,8 +40,15 @@ impl std::fmt::Debug for Slot {
 }
 
 impl Slot {
+    /// A slot open for the spec's full window (`PAIRING_SLOT_MAX_SECS`).
     pub fn open(pairing_id: [u8; 16], psk: [u8; 32], now: u64) -> Self {
-        Self { pairing_id, psk, expires_at: now.saturating_add(u64::from(PAIRING_SLOT_MAX_SECS)), attempts: 0, active: false }
+        Self::open_for(pairing_id, psk, now, u64::from(PAIRING_SLOT_MAX_SECS))
+    }
+
+    /// A slot open for `window` seconds. The host uses the full window; the integration tests use
+    /// a short one to see the expiry through the real relay.
+    pub fn open_for(pairing_id: [u8; 16], psk: [u8; 32], now: u64, window: u64) -> Self {
+        Self { pairing_id, psk, expires_at: now.saturating_add(window), attempts: 0, active: false }
     }
 
     /// Whether a pairing channel that names `id` may open now. On success the attempt is counted

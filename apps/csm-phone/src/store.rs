@@ -250,21 +250,24 @@ fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> Result<(), StoreErr
     file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| StoreError::Io(e.to_string()))?;
     drop(file);
     if private {
-        restrict(&tmp);
+        // Before the rename: the file never appears under its name with a wider access list.
+        restrict(&tmp)?;
     }
     fs::rename(&tmp, path).map_err(|e| StoreError::Io(e.to_string()))
 }
 
-/// Owner-only permissions where the OS has them. On Windows the ACL step (`fsperm.rs` in
-/// `csm-peer`) is not reused yet: see the design note, section 5.
+/// Owner-only access. Unix: mode 0600. Windows: the access list of `acl.rs` (current user only).
+/// A failure is an error, so a secret is never written into a file other users can read.
 #[cfg(unix)]
-fn restrict(path: &Path) {
+fn restrict(path: &Path) -> Result<(), StoreError> {
     use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| StoreError::Io(format!("the file could not be made private: {e}")))
 }
 
 #[cfg(not(unix))]
-fn restrict(_path: &Path) {}
+fn restrict(path: &Path) -> Result<(), StoreError> {
+    crate::acl::restrict_to_current_user(path).map_err(|e| StoreError::Io(format!("the file could not be made private: {e}")))
+}
 
 #[cfg(test)]
 mod tests {
@@ -374,5 +377,34 @@ mod tests {
         save_config(d.path(), "{}", true, 9).unwrap();
         assert!(d.path().join("config.json.damaged-9").exists(), "the damaged file is kept");
         assert_eq!(fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap(), "{}");
+    }
+
+    /// The secrets live only in their own files (`host-key`, `relay-secret`), as raw bytes. No other
+    /// file in the data folder holds either of them, in base64 or as raw bytes, so a copy of the
+    /// device list or the config leaks nothing that would let someone impersonate the PC.
+    #[test]
+    fn no_other_file_in_the_data_folder_holds_the_host_key_or_the_relay_secret() {
+        use csm_remote_proto::ids::b64_encode;
+        let d = dir();
+        let opened = open(d.path()).unwrap();
+        let secret = host_secret(d.path(), false).unwrap();
+        save_devices(d.path(), &[device("d_1", "Pixel 9", 3)]).unwrap();
+        save_config(d.path(), "{}", false, 1).unwrap();
+        let secrets: [(&str, Vec<u8>); 2] = [("host key", opened.host_key.to_vec()), ("relay secret", secret.to_vec())];
+        let b64s: Vec<String> = secrets.iter().map(|(_, s)| b64_encode(s)).collect();
+        for entry in fs::read_dir(d.path()).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !path.is_file() || name == HOST_KEY_FILE || name == SECRET_FILE {
+                continue;
+            }
+            let bytes = fs::read(&path).unwrap();
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            for ((what, raw), b64) in secrets.iter().zip(&b64s) {
+                assert!(!text.contains(b64.as_str()), "{name} holds the {what} in base64");
+                assert!(!bytes.windows(raw.len()).any(|w| w == raw.as_slice()), "{name} holds the {what} as raw bytes");
+            }
+        }
+        assert_eq!(fs::read(d.path().join(SECRET_FILE)).unwrap(), secret.to_vec(), "the secret is in its own file");
     }
 }

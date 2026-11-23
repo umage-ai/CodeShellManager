@@ -22,7 +22,6 @@ pub const CALLS: &[&str] = &[
     "session_close",
     "session_status_clear",
     "session_send_command",
-    "screen_open",
 ];
 
 /// Why a CSM call failed, in the terms the phone's error codes need.

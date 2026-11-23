@@ -27,6 +27,11 @@ use crate::csm::Csm;
 use crate::ops::Engine;
 use crate::pairing::{Refusal, Slot};
 use crate::store::{self, Device, Opened};
+use crate::worker::{Done, Job, Refused, Worker};
+
+/// Requests the host keeps in flight at once, across all channels (and per channel). A request
+/// beyond it is answered `rate_limited` at once; it is not queued.
+pub const MAX_REQUESTS_IN_FLIGHT: usize = 8;
 
 /// Seconds a channel may take to finish its handshake before the host closes it.
 pub const HANDSHAKE_SECS: u64 = 20;
@@ -84,9 +89,15 @@ pub struct Host {
     pub host_priv: [u8; 32],
     pub host_pub: [u8; 32],
     pub host_id: String,
-    pub engine: Engine,
+    /// The ops run on this worker thread, never on the relay loop.
+    pub worker: Worker,
+    /// Requests sent to the worker and not yet answered, per channel.
+    pub inflight: BTreeMap<u32, usize>,
     pub chans: BTreeMap<u32, Chan>,
     pub slot: Option<Slot>,
+    /// Seconds an opened pairing offer stays valid: the spec's ten minutes. Tests set it shorter
+    /// before the host starts, to see the expiry through the real relay.
+    pub pairing_window: u64,
 }
 
 /// Random bytes from the OS.
@@ -113,6 +124,7 @@ impl Host {
     /// the host id the relay knows.
     pub fn new(dir: PathBuf, opened: Opened, cfg: Config, host_secret: &[u8; 32], csm: Box<dyn Csm>) -> Result<Self, String> {
         let host_pub = public_of(&opened.host_key).ok_or("the host key is not usable")?;
+        let worker = Worker::start(Engine::new(csm))?;
         Ok(Self {
             dir,
             cfg,
@@ -120,9 +132,11 @@ impl Host {
             host_priv: opened.host_key,
             host_pub,
             host_id: host_id(host_secret),
-            engine: Engine::new(csm),
+            worker,
+            inflight: BTreeMap::new(),
             chans: BTreeMap::new(),
             slot: None,
+            pairing_window: u64::from(csm_remote_proto::limits::PAIRING_SLOT_MAX_SECS),
         })
     }
 
@@ -153,7 +167,7 @@ impl Host {
         let psk: [u8; 32] = random()?;
         let offer = PairingOffer::new(&self.cfg.relay, &self.host_id, &self.host_pub, &pairing_id, &psk);
         let url = offer.url(&self.cfg.app_origin, app_version);
-        self.slot = Some(Slot::open(pairing_id, psk, now));
+        self.slot = Some(Slot::open_for(pairing_id, psk, now, self.pairing_window));
         let expires_in = self.slot.as_ref().map_or(0, |s| s.seconds_left(now));
         Ok((url, vec![Out::Control(HostToRelay::PairingOpen { pairing_id: b64_encode(&pairing_id), expires_in })]))
     }
@@ -243,6 +257,9 @@ impl Host {
     /// Time-driven work: the pairing slot's expiry and the channels' maximum age.
     pub fn tick(&mut self, now: u64) -> Vec<Out> {
         let mut outs = Vec::new();
+        while let Some(done) = self.worker.try_done() {
+            outs.extend(self.finish(done));
+        }
         if self.slot.as_ref().is_some_and(|s| s.expired(now)) {
             outs.extend(self.end_pairing(now, Some(DenyReason::Expired)));
         }
@@ -448,36 +465,99 @@ impl Host {
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 };
                 received += 1;
-                if received % REKEY_INTERVAL == 0 {
+                if received.is_multiple_of(REKEY_INTERVAL) {
                     transport.rekey_incoming();
                 }
                 let plain = buf.get(..n).unwrap_or_default();
-                let response = if plain.len() > MAX_APP_MESSAGE_BYTES {
-                    Response::err(0, ErrorCode::TooLarge, "the message is too large")
+                let mut sent = sent;
+                // A parsed request goes to the worker and is answered later (`finish`). Only a
+                // refusal, or a message that does not parse, is answered here.
+                let answer_now: Option<Response> = if plain.len() > MAX_APP_MESSAGE_BYTES {
+                    Some(Response::err(0, ErrorCode::TooLarge, "the message is too large"))
                 } else {
                     match Request::parse(plain) {
-                        Ok(req) => {
-                            let out = self.engine.handle(&self.cfg, &mut self.devices, &device_id, &req, now);
-                            if out.devices_changed {
-                                let _ = store::save_devices(&self.dir, &self.devices);
-                            }
-                            out.response
-                        }
-                        Err(e) => Response::err(e.id.unwrap_or(0), e.code, "the request was refused"),
+                        Ok(req) => self.submit(ch, &device_id, req, now).err(),
+                        Err(e) => Some(Response::err(e.id.unwrap_or(0), e.code, "the request was refused")),
                     }
                 };
-                let mut outs = Vec::new();
-                let mut sent = sent;
-                if let Some(bytes) = encode_json_response(&response).and_then(|p| seal(&mut transport, &p)) {
-                    sent += 1;
-                    if sent % REKEY_INTERVAL == 0 {
-                        transport.rekey_outgoing();
-                    }
-                    outs.push(Out::Frame(encode_frame(FrameKind::Data, ch, &bytes)));
-                }
+                let outs: Vec<Out> = answer_now.and_then(|response| send_response(ch, &mut transport, &mut sent, &response)).into_iter().collect();
                 (Some(ChanState::Session { transport, device_id, sent, received }), outs)
             }
         }
+    }
+
+    /// Queues one parsed request for the worker. A refusal is the answer to send now: the caps
+    /// (`rate_limited`), or a worker that has stopped (`unavailable`).
+    fn submit(&mut self, ch: u32, device_id: &str, req: Request, now: u64) -> Result<(), Response> {
+        let id = req.id;
+        let on_channel = self.inflight.get(&ch).copied().unwrap_or(0);
+        let total: usize = self.inflight.values().sum();
+        if on_channel >= MAX_REQUESTS_IN_FLIGHT || total >= MAX_REQUESTS_IN_FLIGHT {
+            return Err(Response::err(id, ErrorCode::RateLimited, "too many requests are running; ask again in a moment"));
+        }
+        let job = Job { ch, device_id: device_id.to_owned(), req, now, cfg: self.cfg.clone(), devices: self.devices.clone() };
+        match self.worker.submit(job) {
+            Ok(()) => {
+                *self.inflight.entry(ch).or_insert(0) += 1;
+                Ok(())
+            }
+            Err(Refused::Full) => Err(Response::err(id, ErrorCode::RateLimited, "too many requests are running; ask again in a moment")),
+            Err(Refused::Gone) => Err(Response::err(id, ErrorCode::Unavailable, "the phone remote stopped its worker; restart CSM")),
+        }
+    }
+
+    /// One answer from the worker: the device fields it may have changed are merged, and the
+    /// response is sealed into its channel if that channel is still open with the same device.
+    fn finish(&mut self, done: Done) -> Vec<Out> {
+        let mut outs = Vec::new();
+        if let Some(n) = self.inflight.get_mut(&done.ch) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.inflight.remove(&done.ch);
+            }
+        }
+        if let Some(problem) = self.merge_devices(&done.devices, done.devices_changed) {
+            outs.push(Out::Problem(problem));
+        }
+        let Some(chan) = self.chans.get_mut(&done.ch) else { return outs };
+        let ChanState::Session { transport, device_id, sent, .. } = &mut chan.state else { return outs };
+        if *device_id != done.device_id {
+            return outs;
+        }
+        outs.extend(send_response(done.ch, transport, sent, &done.response));
+        outs
+    }
+
+    /// Copies back the fields the ops change (`last_seen`, `hide_names`, `notify`, `push`) for each
+    /// device still paired. A device revoked meanwhile is not brought back, and a level change is
+    /// not undone. Saves the list when an op changed a setting. Returns a problem line on failure.
+    fn merge_devices(&mut self, copy: &[Device], changed: bool) -> Option<String> {
+        for mine in self.devices.iter_mut() {
+            let Some(theirs) = copy.iter().find(|d| d.device_id == mine.device_id && d.token_hash == mine.token_hash) else { continue };
+            mine.last_seen = theirs.last_seen;
+            if changed {
+                mine.hide_names = theirs.hide_names;
+                mine.notify = theirs.notify;
+                mine.push = theirs.push.clone();
+            }
+        }
+        if changed {
+            return store::save_devices(&self.dir, &self.devices).err().map(|e| format!("the device list was not saved: {e}"));
+        }
+        None
+    }
+
+    /// Waits until every request sent to the worker has been answered, and returns what to send.
+    /// For tests; the relay loop calls [`Host::tick`], which never waits.
+    pub fn wait_idle(&mut self) -> Vec<Out> {
+        let started = std::time::Instant::now();
+        let mut outs = Vec::new();
+        while !self.inflight.is_empty() && started.elapsed() < std::time::Duration::from_secs(10) {
+            if let Some(done) = self.worker.next_done(std::time::Duration::from_millis(20)) {
+                outs.extend(self.finish(done));
+            }
+        }
+        outs
     }
 
     fn waiting_channel(&self) -> Option<u32> {
@@ -541,6 +621,17 @@ fn build(params: &str, private: &[u8; 32], prologue: &[u8], psk: Option<&[u8; 32
 
 fn encode_json_response(r: &Response) -> Option<Vec<u8>> {
     msg::encode(r).ok()
+}
+
+/// One response, encrypted on the channel's transport and framed. Counts the message for the
+/// rekey schedule (the phone counts the same way).
+fn send_response(ch: u32, transport: &mut snow::TransportState, sent: &mut u64, response: &Response) -> Option<Out> {
+    let bytes = encode_json_response(response).and_then(|p| seal(transport, &p))?;
+    *sent += 1;
+    if sent.is_multiple_of(REKEY_INTERVAL) {
+        transport.rekey_outgoing();
+    }
+    Some(Out::Frame(encode_frame(FrameKind::Data, ch, &bytes)))
 }
 
 /// Encrypts one application message for a transport, or `None` when it does not fit.

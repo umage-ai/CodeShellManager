@@ -32,8 +32,9 @@ pub const PING_SECS: u64 = 30;
 const HEALTHY_SECS: u64 = 60;
 /// The TCP connect and the WebSocket handshake each give up after this long.
 pub const CONNECT_TIMEOUT_SECS: u64 = 5;
-/// Socket read timeout once connected: the loop wakes this often to run time-driven work.
-const POLL_MS: u64 = 1000;
+/// Socket read timeout once connected: the loop wakes this often to run time-driven work and to
+/// send the answers the ops worker has finished.
+const POLL_MS: u64 = 100;
 
 /// What the person asked for, sent from the tool handlers to the thread that owns the host. The
 /// ones that answer carry the sender for the answer.

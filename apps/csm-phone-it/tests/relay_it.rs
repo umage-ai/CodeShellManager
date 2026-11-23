@@ -132,9 +132,17 @@ struct HostRig {
 }
 
 fn start_host(port: u16, dir: &Path) -> HostRig {
+    start_host_with_window(port, dir, None)
+}
+
+/// As [`start_host`], with the pairing window shortened (seconds) when given, to see expiry.
+fn start_host_with_window(port: u16, dir: &Path, window: Option<u64>) -> HostRig {
     let opened = store::open(dir).unwrap();
     let cfg = Config { relay: format!("ws://127.0.0.1:{port}"), app_origin: "http://127.0.0.1:8080".into(), connect: true, ..Config::default() };
     let mut host = Host::new(dir.to_path_buf(), opened, cfg, &SECRET, Box::new(FakeCsm)).unwrap();
+    if let Some(w) = window {
+        host.pairing_window = w;
+    }
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
     let (out_tx, out_rx) = mpsc::channel::<Out>();
     let stop = Arc::new(AtomicBool::new(false));
@@ -326,9 +334,14 @@ struct Paired {
 fn pair_allowed(host: &HostRig, relay: &RelayRig, phone: &Phone, name: &str, level: Level) -> Paired {
     let offer = parse_offer(&host.start_pairing());
     assert_eq!(offer.h, host_id(), "the offer names this host");
+    pair_with_offer(host, relay, &offer, phone, name, level)
+}
+
+/// Pairs through an offer the test already holds (the slot it opened), allowing it at `level`.
+fn pair_with_offer(host: &HostRig, relay: &RelayRig, offer: &PairingOffer, phone: &Phone, name: &str, level: Level) -> Paired {
     let psk = offer.psk().unwrap();
     let mut ws = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
-    let (mut t, phone_check) = pairing_exchange(&mut ws, phone, &offer, &psk, name);
+    let (mut t, phone_check) = pairing_exchange(&mut ws, phone, offer, &psk, name);
     let shown = host.wait_out(|o| matches!(o, Out::Pending { .. }));
     let Out::Pending { check, name: shown_name } = shown else { unreachable!() };
     assert_eq!(check, phone_check, "the PC shows the code the phone computed");
@@ -442,6 +455,51 @@ fn a_wrong_psk_is_refused_by_the_phone_and_a_denied_entry_saves_nothing() {
     host.wait_out(|o| matches!(o, Out::Pending { .. }));
     host.decide(None);
     assert!(host.devices().is_empty(), "a denied entry is not saved");
+    relay.stop();
+}
+
+/// A pairing socket for a code the host did not open (another pairing id) is refused by the relay,
+/// and it does not cost the open slot: the right code still pairs afterwards. The host saves
+/// nothing and shows nothing for the wrong attempt.
+#[test]
+fn a_wrong_pairing_code_is_refused_by_the_relay_and_the_open_slot_still_pairs() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(relay.port(), dir.path());
+    let offer = parse_offer(&host.start_pairing());
+    // The relay learns of the open slot from the host's own connection; give it a moment.
+    std::thread::sleep(Duration::from_millis(300));
+    let mut wrong_id = offer.pairing_id().unwrap();
+    wrong_id[0] ^= 0xFF;
+    let wrong = ClientToRelay::Hello { v: PROTOCOL_VERSION, host_id: offer.h.clone(), token: None, pairing_id: Some(b64_encode(&wrong_id)) };
+    match open_socket(relay.addr, &wrong) {
+        Ok(_) => panic!("a code the host did not open must not reach the host"),
+        Err(code) => assert_eq!(code, RefusalCode::NotAllowed),
+    }
+    assert!(host.devices().is_empty(), "nothing is saved for the wrong attempt");
+    let phone = Phone::new();
+    let paired = pair_with_offer(&host, &relay, &offer, &phone, "Pixel 9", Level::Viewer);
+    assert_eq!(host.devices().len(), 1, "the right code pairs after the wrong one");
+    assert_eq!(paired.device_id, host.devices()[0].device_id);
+    relay.stop();
+}
+
+/// An offer that has run out is refused by the relay (it holds the slot's own expiry), and the
+/// host ends the pairing on its side and saves nothing. Uses a 2 second window.
+#[test]
+fn an_expired_pairing_offer_is_refused_and_the_host_ends_the_pairing() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host_with_window(relay.port(), dir.path(), Some(2));
+    let offer = parse_offer(&host.start_pairing());
+    std::thread::sleep(Duration::from_millis(2500));
+    let hello = ClientToRelay::Hello { v: PROTOCOL_VERSION, host_id: offer.h.clone(), token: None, pairing_id: Some(b64_encode(&offer.pairing_id().unwrap())) };
+    match open_socket(relay.addr, &hello) {
+        Ok(_) => panic!("an expired offer must not open a pairing channel"),
+        Err(code) => assert_eq!(code, RefusalCode::NotAllowed),
+    }
+    host.wait_out(|o| matches!(o, Out::PairingEnded));
+    assert!(host.devices().is_empty(), "an expired offer saves nothing");
     relay.stop();
 }
 

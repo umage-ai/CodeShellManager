@@ -3,7 +3,9 @@
 //! out of [`Host`], and CSM is a fake that records every call.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use csm_phone::config::{Config, FolderEntry, ProfileEntry};
 use csm_phone::csm::{Csm, CsmError};
@@ -29,6 +31,8 @@ struct Calls {
     log: Mutex<Vec<(String, Value)>>,
     sessions: Mutex<Vec<Value>>,
     next_id: Mutex<u32>,
+    /// Milliseconds `session_list` sleeps before it answers (0 = at once). Set after pairing.
+    delay_ms: AtomicU64,
 }
 
 struct Fake(Arc<Calls>);
@@ -36,6 +40,10 @@ struct Fake(Arc<Calls>);
 impl Csm for Fake {
     fn call(&self, tool: &str, params: Value) -> Result<Value, CsmError> {
         self.0.log.lock().unwrap().push((tool.to_owned(), params.clone()));
+        let delay = self.0.delay_ms.load(Ordering::SeqCst);
+        if delay > 0 && tool == "session_list" {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
         match tool {
             "session_list" => Ok(Value::Array(self.0.sessions.lock().unwrap().clone())),
             "session_new" => {
@@ -49,7 +57,14 @@ impl Csm for Fake {
             "task_get" => Ok(json!({"id": params["task_id"], "title": "Fix it", "state": "backlog", "body": "must not leave"})),
             "task_list" => Ok(json!([{"id": "t1", "title": "Fix it", "state": "backlog"}])),
             "inbox_list" => Ok(json!([])),
-            "session_get" => Ok(json!({"id": params["session_id"], "name": "A", "folder": "/work/app", "status": "idle", "message": "Waiting for you"})),
+            // CSM's real shape: the view under `session`, the program's own text in its status_message.
+            "session_get" => Ok(json!({
+                "session": {"id": params["session_id"], "name": "A", "folder": "/work/app", "status": "idle", "status_message": "Waiting for you"},
+                "config": {"command": "claude"},
+                "program_status": {"message": "Waiting for you"},
+                "busy": null,
+                "cwd": "/work/app"
+            })),
             "session_list_hostile" => Ok(json!([])),
             _ => Ok(json!({})),
         }
@@ -215,7 +230,9 @@ fn connect_device(host: &mut Host, phone: &Phone, token: &[u8; 32], ch: u32) -> 
 
 fn request(host: &mut Host, ch: u32, t: &mut TransportState, id: u64, op: Op) -> Option<Response> {
     let plain = serde_json::to_vec(&Request { id, op }).unwrap();
-    let outs = host.on_frame(&data_frame(ch, &seal(t, &plain)), NOW);
+    let mut outs = host.on_frame(&data_frame(ch, &seal(t, &plain)), NOW);
+    // The ops run on the worker: the answer comes when it is done, as the relay loop would send it.
+    outs.extend(host.wait_idle());
     let reply = data_on(&outs, ch).first().cloned()?;
     match ServerMsg::parse(&open_msg(t, &reply)?)? {
         ServerMsg::Response(r) => Some(r),
@@ -579,4 +596,52 @@ fn tick_closes_channels_older_than_the_maximum_age() {
     let _t = connect_device(&mut host, &phone, &token, 2).unwrap();
     let outs = host.tick(NOW + csm_remote_proto::noise::MAX_CHANNEL_SECS);
     assert_eq!(closed_on(&outs, 2), Some(None));
+}
+
+// ---- the ops worker: CSM never holds the relay loop -------------------------------------------
+
+/// A slow CSM must not hold `on_frame`: the request is queued, and the answer comes later from
+/// `tick` (or `wait_idle`). The third request in a row over the per-channel cap of 8 is refused
+/// at once, not queued behind the slow calls.
+#[test]
+fn a_slow_csm_never_holds_the_relay_loop_and_the_cap_answers_at_once() {
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Operator, config());
+    let mut t = connect_device(&mut host, &phone, &token, 2).unwrap();
+    // The worker runs the calls one after another, so eight of these take about 1.6 s in all.
+    calls.delay_ms.store(200, Ordering::SeqCst);
+    let started = Instant::now();
+    let mut refused = 0;
+    for id in 1..=10u64 {
+        let plain = serde_json::to_vec(&Request { id, op: Op::SessionList }).unwrap();
+        let outs = host.on_frame(&data_frame(2, &seal(&mut t, &plain)), NOW);
+        for frame in data_on(&outs, 2) {
+            let ServerMsg::Response(r) = ServerMsg::parse(&open_msg(&mut t, &frame).unwrap()).unwrap() else { panic!("a response") };
+            if r.error.as_ref().map(|e| e.code) == Some(msg::ErrorCode::RateLimited) {
+                refused += 1;
+            }
+        }
+    }
+    let mut answered = data_on(&host.tick(NOW), 2).len();
+    assert!(started.elapsed() < Duration::from_millis(1000), "ten requests and a tick returned while CSM sleeps: {:?}", started.elapsed());
+    assert_eq!(refused, 2, "the 9th and 10th requests are refused at once (cap of 8 per channel)");
+    answered += data_on(&host.wait_idle(), 2).len();
+    assert_eq!(answered, 8, "the eight queued requests are each answered once, when CSM answers");
+}
+
+/// A revoke while a call is running closes the channel itself. The answer that comes back later is
+/// not sent on that channel, and the device is not brought back by the copy the worker returns.
+#[test]
+fn a_revoke_during_a_running_call_closes_the_channel_and_the_answer_is_dropped() {
+    let (dir, mut host, calls, phone, device_id, token) = host_with_device(Level::Operator, config());
+    let mut t = connect_device(&mut host, &phone, &token, 2).unwrap();
+    calls.delay_ms.store(300, Ordering::SeqCst);
+    let plain = serde_json::to_vec(&Request { id: 1, op: Op::SessionList }).unwrap();
+    let outs = host.on_frame(&data_frame(2, &seal(&mut t, &plain)), NOW);
+    assert!(data_on(&outs, 2).is_empty(), "no answer before the worker has one");
+    let revoke_outs = host.revoke(&device_id);
+    assert!(closed_on(&revoke_outs, 2).is_some(), "the revoke closes the channel on the host");
+    let later = host.wait_idle();
+    assert!(data_on(&later, 2).is_empty(), "no answer is sent on a channel the revoke closed");
+    assert!(host.devices.is_empty(), "the answer does not bring the revoked device back");
+    assert!(store::open(dir.path()).unwrap().devices.is_empty(), "nor the saved list");
 }
