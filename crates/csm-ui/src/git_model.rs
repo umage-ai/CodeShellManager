@@ -85,6 +85,24 @@ pub struct GitFailure {
     pub text: String,
 }
 
+/// "Open on GitHub": the pages `git_status` built from the remote (always `https://github.com/…`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GithubLinks {
+    /// The current branch's page, or the repository's default page when detached.
+    pub branch_url: String,
+    pub pulls_url: String,
+}
+
+impl GithubLinks {
+    /// The links from a `git_status` reply's `github` value. `None` unless both are github.com
+    /// pages (the engine builds them so; this is the check at the door).
+    #[must_use]
+    pub fn parse(v: &Value) -> Option<GithubLinks> {
+        let gh = |k: &str| v[k].as_str().filter(|u| u.starts_with("https://github.com/") && !u.chars().any(char::is_control)).map(str::to_string);
+        Some(GithubLinks { branch_url: gh("branch_url")?, pulls_url: gh("pulls_url")? })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GitDetail {
     /// The menu header line as `git_status` last read it.
@@ -96,6 +114,8 @@ pub struct GitDetail {
     pub prunable: usize,
     pub branches: Option<Vec<BranchRow>>,
     pub failure: Option<GitFailure>,
+    /// The repository's GitHub pages, when `git_status` found a github.com remote.
+    pub github: Option<GithubLinks>,
     /// Bumped when an operation finished: the tab reads status and worktrees again.
     pub generation: u64,
 }
@@ -196,6 +216,7 @@ impl GitDetails {
                 let v = &out.data;
                 d.not_repo = false;
                 d.summary = opt_s(&v["summary"]);
+                d.github = GithubLinks::parse(&v["github"]);
                 d.changes = v["changes"]
                     .as_array()
                     .map(|a| a.iter().map(|c| GitChange { code: s(&c["code"]), path: s(&c["path"]) }).collect())
@@ -205,6 +226,7 @@ impl GitDetails {
             ("git_status", Err(csm_engine::ToolError::Refused(_))) => {
                 d.not_repo = true;
                 d.summary = None;
+                d.github = None;
                 d.changes.clear();
                 Some(Vec::new())
             }
@@ -325,6 +347,10 @@ pub fn demo_details() -> BTreeMap<SessionId, GitDetail> {
                 GitChange { code: "A.".into(), path: "src/search/api/brand.ts".into() },
             ],
             worktrees: demo_worktrees(DEMO_REPO),
+            github: Some(GithubLinks {
+                branch_url: "https://github.com/odulodo/odulodo-web/tree/feat/brand-facet".into(),
+                pulls_url: "https://github.com/odulodo/odulodo-web/pulls".into(),
+            }),
             ..GitDetail::default()
         },
     );
@@ -339,6 +365,35 @@ mod tests {
 
     fn call(id: &str) -> Call {
         Call { id: id.into(), params: json!({"session_id": "s1"}) }
+    }
+
+    #[test]
+    fn github_links_come_from_git_status_and_are_github_pages_only() {
+        let mut g = GitDetails::default();
+        let gh = json!({"branch_url": "https://github.com/o/r/tree/main", "pulls_url": "https://github.com/o/r/pulls"});
+        let st = ToolOutput::new("main", json!({"summary": "main", "github": gh}));
+        g.on_reply(&call("git_status"), &Ok(st));
+        let links = g.map["s1"].github.clone().unwrap();
+        assert_eq!(links.branch_url, "https://github.com/o/r/tree/main");
+        assert_eq!(links.pulls_url, "https://github.com/o/r/pulls");
+        // A later read without a GitHub remote clears them; so does "not a repository".
+        g.on_reply(&call("git_status"), &Ok(ToolOutput::new("main", json!({"summary": "main", "github": null}))));
+        assert!(g.map["s1"].github.is_none());
+        g.on_reply(&call("git_status"), &Ok(ToolOutput::new("main", json!({"summary": "main", "github": gh}))));
+        g.on_reply(&call("git_status"), &Err(ToolError::Refused("not a repo".into())));
+        assert!(g.map["s1"].github.is_none());
+        for bad in [
+            json!({"branch_url": "https://evil.com/x", "pulls_url": "https://github.com/o/r/pulls"}),
+            json!({"branch_url": "https://github.com.evil.com/x", "pulls_url": "https://github.com/o/r/pulls"}),
+            json!({"branch_url": "javascript:alert(1)", "pulls_url": "https://github.com/o/r/pulls"}),
+            json!({"branch_url": "https://github.com/o/r\n", "pulls_url": "https://github.com/o/r/pulls"}),
+            json!({"branch_url": 7, "pulls_url": "https://github.com/o/r/pulls"}),
+            json!({"branch_url": "https://github.com/o/r"}),
+            json!("https://github.com/o/r"),
+            json!([]),
+        ] {
+            assert_eq!(GithubLinks::parse(&bad), None, "{bad}");
+        }
     }
 
     #[test]

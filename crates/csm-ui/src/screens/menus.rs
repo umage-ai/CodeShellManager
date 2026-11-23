@@ -466,6 +466,20 @@ fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     v
 }
 
+/// The Git tab's GitHub links: the branch's page and the pull requests, through `open_url`.
+fn github_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+    let Some(gh) = model.git.get(id).and_then(|d| d.github.as_ref()) else { return vec![] };
+    vec![
+        Entry::Head("GitHub".into()),
+        item(
+            "branch",
+            if model.session(id).is_some_and(|s| s.branch.is_some()) { "Open branch on GitHub" } else { "Open repository on GitHub" },
+            tool("open_url", json!({"url": gh.branch_url})),
+        ),
+        item("history", "Open pull requests", tool("open_url", json!({"url": gh.pulls_url}))),
+    ]
+}
+
 /// Draws `entries` in an area at `at`; returns the area's rect.
 #[allow(clippy::too_many_arguments)]
 fn menu_area(
@@ -644,6 +658,9 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
         }
         Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
+        Menu::GitHub { session, at } => {
+            menu_area(ctx, app, Id::new("menu-github"), pos2(at.x - size::MENU_W, at.y), &github_menu(&model, session), 0, false, actions)
+        }
         Menu::Recent { at } => {
             let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
             v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));

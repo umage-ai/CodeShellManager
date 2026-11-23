@@ -503,7 +503,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `toolset_disable` | core | read | no | Stop offering a toolset's tools to this MCP client. |
 | `app_autostart_get` | app | read | no | Whether the OS starts CodeShellManager when you sign in, read from the OS itself (the Windows Run key, a macOS LaunchAgent, an XDG autostart entry): enabled, whether Task Manager or the desktop turned it off, and the program it starts. |
 | `app_autostart_set` | app | launch, files | asks | Start CodeShellManager when you sign in (enabled: true) or not (false). Writes or removes the current user's OS entry for this copy of the app, started with --autostart; turning it on also clears a Task Manager disable. |
-| `git_status` | git | launch | asks | A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, and which repo it is a worktree of. |
+| `git_status` | git | launch | asks | A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, which repo it is a worktree of, and its GitHub pages when `origin` (else the tracked remote) is on github.com. |
 | `git_fetch` | git | launch, network | asks | git fetch in the session's repository (never prompts for a password; sign in from a terminal once if it fails). |
 | `git_pull` | git | launch, files, network | asks | git pull --ff-only --no-rebase: moves the branch only when that loses nothing; a diverged branch or a conflicting local edit is refused with git's reason. |
 | `git_switch_branch` | git | launch, files | asks | git switch --no-guess to a local branch. A branch checked out in another worktree is refused (open that worktree instead; `git_branches` says which). |

@@ -129,6 +129,8 @@ pub enum Menu {
     Grid { at: egui::Pos2 },
     /// The run split-button's list.
     Runs { session: SessionId, at: egui::Pos2 },
+    /// The Git tab's GitHub links (▾ beside Open on GitHub).
+    GitHub { session: SessionId, at: egui::Pos2 },
     /// The quick-open's group picker.
     QuickGroup { at: egui::Pos2 },
     /// The sort control next to the Sessions header.
