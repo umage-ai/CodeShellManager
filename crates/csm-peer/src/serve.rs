@@ -27,7 +27,8 @@
 //!
 //! Input from a device goes to the session as typed input (`TerminalHandle::send_key`,
 //! `send_mouse`, `paste`, `focus_changed`), so "the person answered" and bracketed paste keep
-//! working. It needs the Operator level; a Viewer only watches. Input is audited as byte counts
+//! working. The writes run on a per-connection input thread (a child that does not read cannot stall
+//! pings or Bye). It needs the Operator level; a Viewer only watches. Input is audited as byte counts
 //! per session per minute, never content.
 
 use std::collections::HashMap;
@@ -41,6 +42,7 @@ use csm_engine::{AttachSnapshot, Engine, TerminalHandle};
 use csm_peer_proto::Snapshot;
 use csm_peer_proto::codec::{CodecError, Frame, Input};
 use csm_peer_proto::delta::diff;
+use csm_peer_proto::Event;
 use csm_peer_proto::msg::{Level, Msg, TermClosedReason};
 use serde_json::json;
 
@@ -78,6 +80,19 @@ struct Stream {
     want: Option<(u16, u16)>,
 }
 
+/// The one wire lane of a stream id. Every frame of a stream is sent while holding `send`, by the
+/// thread that is still the current one, so a replaced thread can never interleave with its
+/// successor: a whole attach is always followed by a whole attach.
+struct Chan {
+    send: Mutex<()>,
+    /// A resync was asked for and its attach has not gone out yet (more asks are dropped).
+    pending: AtomicBool,
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+/// How many typed-input writes may wait for the writer thread before more are dropped.
+const INPUT_QUEUE: usize = 512;
+
 struct Meter {
     bytes: HashMap<String, u64>,
     since: Instant,
@@ -94,6 +109,10 @@ pub(crate) struct Serving {
     drivers: Drivers,
     audit: Arc<Audit>,
     streams: Mutex<HashMap<u32, Stream>>,
+    chans: Mutex<HashMap<u32, Arc<Chan>>>,
+    /// Typed input is written by one thread, so a child that does not read cannot stall the
+    /// connection's reader (pings, Bye).
+    writer: Mutex<Option<std::sync::mpsc::SyncSender<Job>>>,
     stop: Arc<AtomicBool>,
     meter: Mutex<Meter>,
 }
@@ -107,6 +126,15 @@ enum Start {
 
 impl Serving {
     pub(crate) fn new(engine: Engine, link: Arc<Link>, who: Who, knobs: Knobs, drivers: Drivers, audit: Arc<Audit>) -> Arc<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(INPUT_QUEUE);
+        let spawned = std::thread::Builder::new().name("csm-peer-input".into()).spawn(move || {
+            while let Ok(job) = rx.recv() {
+                job();
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("remote access: could not start the input writer: {e}");
+        }
         Arc::new(Self {
             engine,
             link,
@@ -117,6 +145,8 @@ impl Serving {
             drivers,
             audit,
             streams: Mutex::new(HashMap::new()),
+            chans: Mutex::new(HashMap::new()),
+            writer: Mutex::new(Some(tx)),
             stop: Arc::new(AtomicBool::new(false)),
             meter: Mutex::new(Meter { bytes: HashMap::new(), since: Instant::now() }),
         })
@@ -128,9 +158,10 @@ impl Serving {
         let first = Snapshot::from(&*view);
         self.link.send_msg(Msg::Snapshot { snapshot: Box::new(first.clone()) })?;
         let (engine, link, stop, every) = (self.engine.clone(), self.link.clone(), self.stop.clone(), self.knobs.snapshot_every);
+        let audit = (self.audit.clone(), self.device_id.clone());
         std::thread::Builder::new()
             .name("csm-peer-snapshot".into())
-            .spawn(move || publish_loop(&engine, &link, &stop, every, first))
+            .spawn(move || publish_loop(&engine, &link, &stop, every, first, &audit))
             .map(|_| ())
             .map_err(|e| LinkError::Io(e.to_string()))
     }
@@ -143,7 +174,28 @@ impl Serving {
             s.stop.store(true, Ordering::Release);
         }
         self.drivers.lock().unwrap_or_else(PoisonError::into_inner).retain(|_, c| *c != self.conn_id);
+        self.writer.lock().unwrap_or_else(PoisonError::into_inner).take();
         self.flush_meter();
+    }
+
+    /// The wire lane of `stream` (shared by every thread that ever served that id).
+    fn chan(&self, stream: u32) -> Arc<Chan> {
+        let mut chans = self.chans.lock().unwrap_or_else(PoisonError::into_inner);
+        if chans.len() >= self.knobs.max_streams.saturating_mul(2).max(16) {
+            // Lanes nobody holds are not serving anything.
+            chans.retain(|_, c| Arc::strong_count(c) > 1);
+        }
+        chans.entry(stream).or_insert_with(|| Arc::new(Chan { send: Mutex::new(()), pending: AtomicBool::new(false) })).clone()
+    }
+
+    /// Queues a write for the input thread; a full queue drops it (a child that reads nothing).
+    fn write_later(&self, job: Job) {
+        let tx = self.writer.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(tx) = tx
+            && tx.try_send(job).is_err()
+        {
+            log::warn!("remote access: typed input dropped, the session is not reading");
+        }
     }
 
     fn lock_streams(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Stream>> {
@@ -164,6 +216,9 @@ impl Serving {
     }
 
     fn closed(&self, stream: u32, reason: TermClosedReason) {
+        // Behind whatever the stream's current thread is sending, never in the middle of it.
+        let chan = self.chan(stream);
+        let _lane = chan.send.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = self.link.send_msg(Msg::TermClosed { stream, reason });
     }
 
@@ -188,6 +243,7 @@ impl Serving {
             }
             _ => Start::Attach,
         };
+        self.chan(stream).pending.store(false, Ordering::Release);
         self.begin(stream, session, handle, start);
     }
 
@@ -211,6 +267,7 @@ impl Serving {
             knobs: self.knobs,
             stop,
             conn_stop: self.stop.clone(),
+            chan: self.chan(stream),
         };
         let spawned = std::thread::Builder::new().name("csm-peer-stream".into()).spawn(move || {
             run.go(start);
@@ -219,6 +276,7 @@ impl Serving {
         if let Err(e) = spawned {
             log::warn!("remote access: could not start a terminal stream: {e}");
             self.lock_streams().remove(&stream);
+            self.chan(stream).pending.store(false, Ordering::Release);
             self.closed(stream, TermClosedReason::Forbidden);
         }
     }
@@ -242,6 +300,10 @@ impl Serving {
     fn resync(&self, stream: u32) {
         let found = self.lock_streams().get(&stream).map(|s| (s.session.clone(), s.handle.clone()));
         if let Some((session, handle)) = found {
+            // One attach in flight per stream: more asks meanwhile change nothing.
+            if self.chan(stream).pending.swap(true, Ordering::AcqRel) {
+                return;
+            }
             self.begin(stream, &session, handle, Start::Attach);
         }
     }
@@ -290,25 +352,32 @@ impl Serving {
         let n = match input {
             Input::Key(b) => {
                 self.drive(stream);
-                handle.send_key(AppAuthored(b.clone()));
-                b.len()
+                let b = b.clone();
+                let n = b.len();
+                self.write_later(Box::new(move || handle.send_key(AppAuthored(b))));
+                n
             }
             Input::Mouse(b) => {
-                handle.send_mouse(AppAuthored(b.clone()));
-                b.len()
+                let b = b.clone();
+                let n = b.len();
+                self.write_later(Box::new(move || handle.send_mouse(AppAuthored(b))));
+                n
             }
             Input::Focus(f) => {
                 if *f {
                     self.drive(stream);
                 }
-                handle.focus_changed(*f);
+                let f = *f;
+                self.write_later(Box::new(move || handle.focus_changed(f)));
                 0
             }
             Input::Paste(t) => {
                 self.drive(stream);
                 // Untrusted text: the terminal handle brackets it when the program asked for that.
-                handle.paste(t);
-                t.len()
+                let t = t.clone();
+                let n = t.len();
+                self.write_later(Box::new(move || handle.paste(&t)));
+                n
             }
         };
         if n > 0 {
@@ -342,7 +411,8 @@ impl Serving {
 
 // ---- the snapshot publisher ------------------------------------------------------------------
 
-fn publish_loop(engine: &Engine, link: &Link, stop: &AtomicBool, every: Duration, mut last: Snapshot) {
+fn publish_loop(engine: &Engine, link: &Link, stop: &AtomicBool, every: Duration, mut last: Snapshot, who: &(Arc<Audit>, String)) {
+    let mut told = false;
     loop {
         std::thread::sleep(every);
         if stop.load(Ordering::Acquire) || link.is_closed() {
@@ -364,8 +434,21 @@ fn publish_loop(engine: &Engine, link: &Link, stop: &AtomicBool, every: Duration
             other => other,
         };
         match sent {
-            Ok(()) => last = next,
-            Err(LinkError::Codec(_)) => {} // too large even whole: skip this version
+            Ok(()) => {
+                last = next;
+                told = false;
+            }
+            Err(LinkError::Codec(_)) => {
+                // Too large even whole: this version is skipped, and the device is told once that
+                // its view is stale instead of silently staying behind.
+                if !told {
+                    told = true;
+                    log::warn!("remote access: the host state is too large to send to a device");
+                    who.0.record("snapshot_too_large", json!({"device_id": who.1, "version": next.version}));
+                    let message = "The host's state is too large to send; this view is out of date.".to_owned();
+                    let _ = link.send_msg(Msg::Event { event: Some(Event::Toast { message }) });
+                }
+            }
             Err(_) => return,
         }
     }
@@ -382,6 +465,7 @@ struct Run {
     knobs: Knobs,
     stop: Arc<AtomicBool>,
     conn_stop: Arc<AtomicBool>,
+    chan: Arc<Chan>,
 }
 
 /// How long an idle stream waits for a nudge before it looks at its clocks.
@@ -392,6 +476,20 @@ const ALIVE_EVERY: Duration = Duration::from_millis(100);
 impl Run {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire) || self.conn_stop.load(Ordering::Acquire) || self.link.is_closed()
+    }
+
+    /// Runs `f` on the wire only while this is still the stream's current thread, and alone on
+    /// the stream's lane. `None` means this thread was replaced or unsubscribed: send nothing.
+    fn on_lane<R>(&self, f: impl FnOnce() -> R) -> Option<R> {
+        let _lane = self.chan.send.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.stop.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(f())
+    }
+
+    fn closed(&self, reason: TermClosedReason) {
+        let _ = self.on_lane(|| self.link.send_msg(Msg::TermClosed { stream: self.stream, reason }));
     }
 
     fn go(&self, start: Start) {
@@ -411,7 +509,7 @@ impl Run {
             if checked.elapsed() >= ALIVE_EVERY {
                 checked = Instant::now();
                 if let Some(reason) = self.gone(instance) {
-                    let _ = self.link.send_msg(Msg::TermClosed { stream: self.stream, reason });
+                    self.closed(reason);
                     return;
                 }
             }
@@ -435,7 +533,7 @@ impl Run {
             for m in self.handle.resizes_after(seen_seq) {
                 if m.offset <= pos {
                     let msg = Msg::TermResized { stream: self.stream, offset: pos, cols: m.cols, rows: m.rows };
-                    if self.link.send_msg(msg).is_err() {
+                    if !matches!(self.on_lane(|| self.link.send_msg(msg)), Some(Ok(()))) {
                         return;
                     }
                     seen_seq = m.seq;
@@ -460,10 +558,9 @@ impl Run {
                         sub.wait(IDLE_WAIT);
                         continue;
                     }
-                    for f in Frame::term_data(self.stream, instance, from, &data) {
-                        if self.link.send_frame(&f).is_err() {
-                            return;
-                        }
+                    let sent = self.on_lane(|| Frame::term_data(self.stream, instance, from, &data).iter().try_for_each(|f| self.link.send_frame(f)));
+                    if !matches!(sent, Some(Ok(()))) {
+                        return;
                     }
                 }
                 Read::Resync { .. } => match self.attach(instance) {
@@ -478,20 +575,26 @@ impl Run {
     /// sequence the attach already includes. `None` ends the stream.
     fn attach(&self, instance: u64) -> Option<(csm_engine::output_tap::Subscription, u64)> {
         if let Some(reason) = self.gone(instance) {
-            let _ = self.link.send_msg(Msg::TermClosed { stream: self.stream, reason });
+            self.closed(reason);
             return None;
         }
-        let a: AttachSnapshot = self.handle.attach_snapshot(self.knobs.history);
-        let sub = self.handle.subscribe_output(Some(a.offset));
-        for f in Frame::attach(self.stream, a.instance, a.cols, a.rows, a.offset, &a.vt) {
-            if self.link.send_frame(&f).is_err() {
-                if !self.link.is_closed() {
-                    let _ = self.link.send_msg(Msg::TermClosed { stream: self.stream, reason: TermClosedReason::Forbidden });
+        // The whole attach goes out under the lane, snapshot taken inside it: a thread that was
+        // replaced meanwhile finishes nothing half-way, and its successor's attach follows whole.
+        let sent = self.on_lane(|| {
+            let a: AttachSnapshot = self.handle.attach_snapshot(self.knobs.history);
+            let sub = self.handle.subscribe_output(Some(a.offset));
+            for f in Frame::attach(self.stream, a.instance, a.cols, a.rows, a.offset, &a.vt) {
+                if self.link.send_frame(&f).is_err() {
+                    if !self.link.is_closed() {
+                        let _ = self.link.send_msg(Msg::TermClosed { stream: self.stream, reason: TermClosedReason::Forbidden });
+                    }
+                    return None;
                 }
-                return None;
             }
-        }
-        Some((sub, a.resize_seq))
+            Some((sub, a.resize_seq))
+        });
+        self.chan.pending.store(false, Ordering::Release);
+        sent.flatten()
     }
 
     /// Why this stream must end, if it must: the session was removed, or restarted (a new run

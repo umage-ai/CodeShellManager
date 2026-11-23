@@ -704,3 +704,100 @@ fn the_follower_reports_a_hole_once_and_waits_for_the_attach() {
     assert_eq!(g.on_frame(&Frame::Control(Msg::TermResized { stream: 5, offset: 50, cols: 90, rows: 25 })).unwrap(), TermUpdate::Resized { cols: 90, rows: 25 });
     assert_eq!(g.on_frame(&Frame::Control(Msg::TermResized { stream: 5, offset: 51, cols: 90, rows: 25 })).unwrap(), TermUpdate::Gap);
 }
+
+// ---- replaced streams, viewers, revoking ------------------------------------------------------
+
+#[test]
+fn replacing_a_stream_during_a_multi_chunk_attach_never_mixes_two_attaches() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (id, pty, handle) = rig.session();
+    // An idle session with far more than one chunk of screen and scrollback.
+    pty.emit(&lines(1500, "hist"));
+    wait_for("the emulator", || (handle.processed_offset() >= handle.output_end()).then_some(()));
+    let mut v = dev.connect();
+    for _ in 0..4 {
+        // Subscribe, unsubscribe and subscribe the same id again, and resync twice, back to back.
+        v.conn.subscribe(STREAM, &id, None).unwrap();
+        v.conn.unsubscribe(STREAM).unwrap();
+        v.conn.subscribe(STREAM, &id, None).unwrap();
+        v.conn.resync(STREAM).unwrap();
+        v.conn.resync(STREAM).unwrap();
+        v.settle(60);
+    }
+    // The follower panics on a malformed attach (the helper unwraps); reaching lockstep with no
+    // gap means every attach on the wire was whole.
+    v.until("lockstep", |v| v.attaches >= 1 && v.in_lockstep(&handle));
+    assert_eq!(v.gaps, 0);
+    assert!(v.text().contains("hist line 1499"));
+    pty.emit(b"after\r\n");
+    v.until("lockstep", |v| v.in_lockstep(&handle));
+    assert!(v.text().contains("after"));
+}
+
+/// A server that lists the one paired device as a viewer, with a session on it.
+fn viewer_rig() -> (Rig, Device) {
+    let first = Rig::new();
+    first.enable();
+    let (me, host) = first.pair("Viewer");
+    first.server.shutdown();
+    let path = first.peer_dir.join("devices.json");
+    let text = std::fs::read_to_string(&path).unwrap().replace("\"full\"", "\"viewer\"");
+    std::fs::write(&path, text).unwrap();
+    let again = Rig::with(quick());
+    std::fs::create_dir_all(&again.peer_dir).unwrap();
+    for f in ["host.key", "devices.json", "server.json"] {
+        std::fs::copy(first.peer_dir.join(f), again.peer_dir.join(f)).unwrap();
+    }
+    again.server.resume();
+    let addr = wait_for("the listener", || again.server.local_addr());
+    let mut host = host;
+    host.address = csm_peer_proto::addr::PeerAddr::parse(&format!("tcp://{addr}")).unwrap();
+    (again, Device { me, host, name: "Viewer".to_owned() })
+}
+
+#[test]
+fn a_viewer_can_watch_but_its_input_size_and_focus_are_ignored() {
+    let (rig, dev) = viewer_rig();
+    let (id, pty, handle) = rig.session();
+    pty.emit(b"hello\r\n");
+    wait_for("the emulator", || (handle.processed_offset() > 0).then_some(()));
+    let before = pty.size();
+    let mut v = dev.connect();
+    assert_eq!(v.conn.welcome.level, csm_peer_proto::msg::Level::Viewer);
+    v.conn.subscribe(STREAM, &id, None).unwrap();
+    v.until("the attach", |v| v.attaches == 1);
+    assert!(v.text().contains("hello"));
+    v.conn.input(STREAM, Input::Key(b"rm\r".to_vec())).unwrap();
+    v.conn.input(STREAM, Input::Paste("pasted".to_owned())).unwrap();
+    v.conn.input(STREAM, Input::Mouse(b"\x1b[<0;1;1M".to_vec())).unwrap();
+    v.conn.input(STREAM, Input::Focus(true)).unwrap();
+    v.conn.resize(STREAM, 91, 37, true).unwrap();
+    v.settle(300);
+    assert!(pty.written().is_empty(), "a viewer typed into the session: {:?}", pty.written());
+    assert_eq!(pty.size(), before, "a viewer resized the PTY");
+    // It still sees live output.
+    pty.emit(b"live\r\n");
+    v.until("lockstep", |v| v.in_lockstep(&handle));
+}
+
+#[test]
+fn revoking_a_device_with_live_streams_stops_them_and_writes_nothing_more() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (id, pty, handle) = rig.session();
+    let mut v = dev.connect();
+    v.conn.subscribe(STREAM, &id, None).unwrap();
+    v.until("the attach", |v| v.attaches == 1);
+    rig.ui("peer_device_revoke", json!({"id": dev.host.device_id})).unwrap();
+    v.until("the goodbye", |v| !v.byes.is_empty());
+    let frames = v.data_frames;
+    let before = handle.output_end();
+    pty.emit(&lines(50, "late"));
+    wait_for("output", || (handle.output_end() > before).then_some(()));
+    v.settle(300);
+    assert_eq!(v.data_frames, frames, "data was written to a revoked device");
+    assert_eq!(rig.status()["connected"], 0);
+}
