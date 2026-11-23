@@ -796,3 +796,48 @@ Base sha for this step: `9c20e082108f5e854b04421d93c70c89ec0a83f6`.
   `peer_client_pair` with no parameters, which is refused as a missing link until the dialog exists). Connecting to a
   stored host from the laptop and `RemoteBackend` (step 6). `last_connected` is stored but nothing sets it yet. The
   laptop's own device name is the computer's name.
+
+## P1 step 6: RemoteBackend and RemoteTerminal (`csm-remote`)
+
+Base sha for this step: `76d93e45674fe1456e663a2ffa96711e2006f868`.
+
+- **Where it lives.** A new crate `csm-remote` at L5. `csm-ui` (L4) cannot depend on `csm-peer` (L4), and
+  `apps/codeshell` (L6) would leave the integration test with no library to import. The crate uses no egui of
+  its own: it implements `csm_ui::Backend` and `csm_ui::ToolPort` (the default `tick` is not overridden).
+  Listed in the layer map and in `DENY_ROOTS` (unwrap, expect, panic, indexing rules).
+- **Worker thread** (`link.rs`). One thread owns the `csm-peer` connection, the mirrored snapshot, every
+  terminal stream's `TermFollower` and the emulator feed. The UI thread sends `Cmd`s and polls `Up`s; it never
+  waits on the network or on an emulator lock (the view only `try_lock`s).
+  - Connect, then `tool_list` (the host's tools with their effects; calls that arrive before it wait in order).
+  - Snapshot, then deltas via `delta::apply`. A delta that does not apply reconnects for a fresh snapshot.
+  - Retries 1, 2, 5, 10, then 30 s. Each terminal resumes from `(instance, offset)`; a gap asks for `term_resync`.
+  - Refusals end the worker with `LinkState::Refused` and a reason: revoked, protocol or terminal mismatch,
+    replaced by another connection, or the host closing silently at the handshake (not on the list).
+  - A call in flight when the link drops is answered "may have run, check the result"; it is never retried.
+- **`RemoteBackend`** (`backend.rs`). Calls go through the view overlay: `Local` (view_set, layout_*, inspector_show,
+  inbox_panel_set, window_placement_set, group_*, theme_set) are answered on the laptop; `Focus` (session_focus)
+  is applied locally and also sent to the host (acknowledgement, wake), and if the host refuses the overlay is put
+  back; everything else, including `UiNotModelled`, is forwarded. The model is rebuilt from the mirror and the
+  overlay after each poll. `show_terminals(visible)` subscribes new panes and unsubscribes hidden ones;
+  `set_pane_driver` marks the typing pane.
+- **`RemoteTerminal`** (`terminal.rs`). A `TerminalSource` over a local `csm-term` emulator (replies discarded). The
+  emulator is replaced on attach and resized only on `term_resized`, in stream order. Keys, mouse, focus and paste go
+  as typed input (paste is bracketed by the host). `set_grid` sends a resize only when the pane's size changes.
+- **Mapping** (`map.rs`, pure). Wire snapshot to `UiModel` (the sessions, git, runs and open-with from the host;
+  groups, rail, focus, inspector, inbox panel and layouts from the overlay), wire events and outcomes to the
+  engine's types, tool rows to `ToolInfo`. Effects are read from their flag names; an unknown flag means "every
+  effect", so the tool is forwarded rather than taken as UI-only.
+- **Consent.** Cards arrive as `Event::ConsentRequested`; the answer is the host's `consent_answer` tool, so the
+  first answer wins on the host as before.
+- **Tests.** `csm-remote` unit tests (mapping, backoff, refusals) and `tests/remote.rs` (in-process, real engine
+  with a fake PTY, real `csm-peer` server on 127.0.0.1, a TCP proxy the test can cut): the session list; a rename
+  as a proxied call with its delta in the mirror; the view calls kept on the laptop and a focus that reaches the
+  office; a terminal that follows the office's grid (lockstep after output and after a resize), types, pastes
+  and resizes the PTY; a dropped link that resumes with the gap filled in; a revoke that ends the window as
+  refused; a consent card shown on the laptop, denied there, and the office's second answer finding nothing.
+- **Not done.** The app wiring (the connect dialog, the indicator, hiding the local-only items, Quit as disconnect,
+  the window's own overlay persistence: the caller supplies it, nothing saves it yet). `tool_list` has no input
+  schemas, so remote tools have `Value::Null` schemas until the protocol carries them. OSC 52 clipboard routing,
+  run-output streaming, add-on screen proxying, theme events from the host (the theme is the laptop's own), the
+  typing indicator and compression. Every snapshot update sends the full mirror to the UI thread (no coalescing
+  beyond the host's). Terminal cell pixel sizes are the default (only columns and rows are replicated).

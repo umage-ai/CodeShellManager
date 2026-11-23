@@ -23,6 +23,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-ui", 4),
     ("csm-peer", 4), // peer link transport: the server (the engine's PeerHost) and the client connection; Noise over TCP
     ("csm-setup", 5),
+    ("csm-remote", 5), // the remote window's client: RemoteBackend over csm-peer and csm-ui (no egui of its own)
     ("codeshell", 6),
     ("csm-cli", 6),
     ("csm-session-summary", 6),

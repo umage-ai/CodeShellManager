@@ -1336,6 +1336,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "csm-remote"
+version = "0.0.1"
+dependencies = [
+ "csm-core",
+ "csm-engine",
+ "csm-peer",
+ "csm-peer-proto",
+ "csm-pty",
+ "csm-term",
+ "csm-ui",
+ "log",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "csm-remote-proto"
 version = "0.0.1"
 dependencies = [

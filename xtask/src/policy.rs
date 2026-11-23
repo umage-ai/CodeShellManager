@@ -39,7 +39,7 @@ const UNSAFE_ALLOWED: &[&str] = &["crates/csm-pty/src/conpty.rs", "crates/csm-pt
 const UI_FRAME: &[&str] =
     &["crates/csm-ui/src/screens/", "crates/csm-ui/src/widgets.rs", "crates/csm-ui/src/terminal/view.rs", "crates/csm-ui/src/terminal/render.rs"];
 /// Crate roots that must carry the clippy denies. Extend as each crate is cleaned up.
-const DENY_ROOTS: &[&str] = &["crates/csm-remote-proto/", "crates/csm-peer-proto/", "crates/csm-peer/", "relay/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "apps/csm-review/", "apps/csm-legacy-launcher/", "crates/csm-pty/", "xtask/"];
+const DENY_ROOTS: &[&str] = &["crates/csm-remote-proto/", "crates/csm-peer-proto/", "crates/csm-peer/", "crates/csm-remote/", "relay/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "apps/csm-review/", "apps/csm-legacy-launcher/", "crates/csm-pty/", "xtask/"];
 const DENY_LINTS: &[&str] = &["unwrap_used", "expect_used", "panic", "unimplemented", "todo", "unreachable"];
 
 pub fn check() -> Result<Findings, String> {
