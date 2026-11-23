@@ -177,6 +177,7 @@ impl From<&Snapshot> for wire::Snapshot {
             focused: s.focused.clone(),
             inbox_open: s.inbox_open,
             inbox_height: s.inbox_height,
+            inspector_width: s.inspector_width,
             recently_closed: s.recently_closed.iter().map(wire::ClosedView::from).collect(),
             open_with: s.open_with.iter().map(wire::OpenWithEntry::from).collect(),
         }

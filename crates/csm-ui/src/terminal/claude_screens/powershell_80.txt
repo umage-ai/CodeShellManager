@@ -1,0 +1,6 @@
+⏺ Here is the command:
+
+  Get-ChildItem -Path C:\work -Recurse -File | Where-Object { $_.Length -gt 1MB
+  } | Sort-Object Length -Descending | Select-Object -First 20 FullName, Length
+
+  Run it from the repository root.

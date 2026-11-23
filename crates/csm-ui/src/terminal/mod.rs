@@ -4,6 +4,7 @@
 
 pub mod atlas;
 pub mod boxdraw;
+pub mod claude_copy;
 pub mod fonts;
 pub mod local;
 pub mod render;

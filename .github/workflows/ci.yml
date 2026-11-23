@@ -28,7 +28,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The same toolchain as the local gate (cargo +1.97, rust-version in Cargo.toml): a newer
       # stable brings new clippy lints that would fail CI but not the gate. Bump both together.
@@ -71,7 +71,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check

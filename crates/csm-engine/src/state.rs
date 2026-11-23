@@ -50,7 +50,9 @@ pub struct StateOptions {
     pub first_size_timeout: Duration,
     /// Size used when no pane reported one. Matches the WPF app's `PseudoTerminal` default.
     pub fallback_size: (u16, u16),
-    /// Total time a quit waits for Claude sessions to exit cleanly (`ClaudeShutdownBudgetMs`).
+    /// How long a quit waits for EACH Claude session to exit cleanly before it is stopped. They
+    /// close one after another, so the whole quit may take this times the number of Claude
+    /// sessions (plus the launch stagger between them); the board shows that total.
     pub shutdown_budget: Duration,
     /// How long a restart (and sleep/close) waits for a Claude process to exit before killing it.
     pub exit_wait: Duration,
@@ -88,6 +90,9 @@ pub struct StateOptions {
     /// that wires nothing (tests, `--clean`, the demo) can never listen. Production wires
     /// `csm-peer`'s host, which is itself off until the person turns it on.
     pub peer_host: Arc<dyn crate::peer_host::PeerHost>,
+    /// The update check (`update_check`). Default (tests, the demo): no network, no schedule.
+    /// Production: GitHub, once a day ([`crate::UpdateOptions::production`]).
+    pub update: crate::tools::update::UpdateOptions,
 }
 
 /// Where the start-at-sign-in entry lives and the program it should start.
@@ -155,7 +160,7 @@ impl Default for StateOptions {
             pty: real_pty_factory(),
             first_size_timeout: Duration::from_millis(1500),
             fallback_size: (220, 50),
-            shutdown_budget: Duration::from_millis(30_000),
+            shutdown_budget: Duration::from_millis(15_000),
             exit_wait: Duration::from_millis(10_000),
             save_debounce: Duration::from_millis(500),
             restore_on_start: true,
@@ -169,6 +174,7 @@ impl Default for StateOptions {
             autostart: Autostart::default(),
             peer_host: Arc::new(crate::peer_host::NoPeerHost),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
+            update: crate::tools::update::UpdateOptions::default(),
         }
     }
 }
@@ -197,6 +203,7 @@ impl StateOptions {
             samples_dir: bundled_samples_dir(),
             secrets: Arc::new(csm_services::secrets::KeyringStore),
             autostart: Autostart::system(),
+            update: crate::tools::update::UpdateOptions::production(),
             ..Self::default()
         }
     }
@@ -253,6 +260,9 @@ pub(crate) struct Runtime {
     pub restart_cancel: bool,
     pub shutting_down: bool,
     pub quit: Option<Progress>,
+    /// The whole quit's wait budget while it runs: the per-session wait times the Claude
+    /// sessions to close, plus the stagger between them.
+    pub quit_budget_ms: Option<u64>,
     /// `app_quit { force: true }` while a quit runs: skip the remaining Claude exit waits.
     pub quit_force: Arc<std::sync::atomic::AtomicBool>,
     pub waits: Vec<Wait>,
@@ -283,6 +293,11 @@ pub(crate) struct Runtime {
     /// Each followed Claude session's context fill from the light tail, while the Claude usage
     /// add-on is off (`usage_context` answers from it then).
     pub(crate) live_context: HashMap<String, crate::usage_tail::LiveContext>,
+    /// Each followed local Claude session's main transcript, as the reader last found it
+    /// (`claude_reply_get` and `claude_code_block_get` read Claude's replies from it).
+    pub(crate) claude_transcripts: HashMap<String, std::path::PathBuf>,
+    /// When the index is pruned next (`tools::storage`); `None` until the first tick.
+    pub(crate) storage_next_prune: Option<Instant>,
     /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,
@@ -295,6 +310,8 @@ pub(crate) struct Runtime {
     /// A process add-on's status override and annotation on sessions it opened, by session id.
     /// Runtime only: cleared when its add-on stops or is disabled.
     pub(crate) plugin_marks: HashMap<String, crate::plugins::PluginMark>,
+    /// The update check: the last result, the schedule, a dismissed notice.
+    pub(crate) update: crate::tools::update::UpdateRt,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].

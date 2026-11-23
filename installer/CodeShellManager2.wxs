@@ -139,6 +139,17 @@
         <File Id="CodeShellExe" Source="$(var.PublishDir)\codeshell.exe" KeyPath="yes" />
       </Component>
 
+      <?if $(var.Channel) = "stable" ?>
+      <!-- CodeShellManager.exe: the WPF app's (0.x) exe name in this same folder, now a tiny
+           launcher (apps/csm-legacy-launcher) that starts codeshell.exe beside it with the same
+           arguments and exits. Taskbar pins, Start tiles, people's own shortcuts and scripts that
+           name the old exe keep working after the upgrade. Our own shortcuts point at
+           codeshell.exe. Stable only: a beta folder never held 0.x. -->
+      <Component Directory="INSTALLFOLDER" Guid="*">
+        <File Id="LegacyLauncherExe" Source="$(var.PublishDir)\CodeShellManager.exe" KeyPath="yes" />
+      </Component>
+      <?endif?>
+
       <!-- The CLI and MCP server (`csm`, `csm mcp`). Its folder goes on the system PATH so
            `csm setup` / an agent's MCP config can name it without a full path. -->
       <Component Directory="INSTALLFOLDER" Guid="*">

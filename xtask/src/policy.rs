@@ -28,15 +28,18 @@ use crate::Findings;
 /// and a whole-tree kill on timeout, since a fetch's real work is in child processes), and
 /// csm-services (L2) can't depend on the engine (L3). Same guarantees as `proc`: no console
 /// window, closed stdin, a deadline, capped capture; blocking, called from workers only.
+///
+/// `apps/csm-legacy-launcher/` is `CodeShellManager.exe`, whose whole job is to start the
+/// `codeshell.exe` beside it (full path, argv passed through, no shell) and exit.
 const PROCESS_ALLOWED: &[&str] =
-    &["crates/csm-engine/src/proc.rs", "crates/csm-pty/", "crates/csm-setup/src/", "crates/csm-services/src/git/run.rs", "xtask/"];
+    &["crates/csm-engine/src/proc.rs", "crates/csm-pty/", "crates/csm-setup/src/", "crates/csm-services/src/git/run.rs", "apps/csm-legacy-launcher/", "xtask/"];
 /// Where `unsafe` may appear.
 const UNSAFE_ALLOWED: &[&str] = &["crates/csm-pty/src/conpty.rs", "crates/csm-pty/src/conpty/"];
 /// UI frame code: nothing here may touch the disk, spawn, or wait.
 const UI_FRAME: &[&str] =
     &["crates/csm-ui/src/screens/", "crates/csm-ui/src/widgets.rs", "crates/csm-ui/src/terminal/view.rs", "crates/csm-ui/src/terminal/render.rs"];
 /// Crate roots that must carry the clippy denies. Extend as each crate is cleaned up.
-const DENY_ROOTS: &[&str] = &["crates/csm-remote-proto/", "crates/csm-peer-proto/", "crates/csm-peer/","relay/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "apps/csm-review/", "crates/csm-pty/", "xtask/"];
+const DENY_ROOTS: &[&str] = &["crates/csm-remote-proto/", "crates/csm-peer-proto/", "crates/csm-peer/", "relay/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "apps/csm-review/", "apps/csm-legacy-launcher/", "crates/csm-pty/", "xtask/"];
 const DENY_LINTS: &[&str] = &["unwrap_used", "expect_used", "panic", "unimplemented", "todo", "unreachable"];
 
 pub fn check() -> Result<Findings, String> {

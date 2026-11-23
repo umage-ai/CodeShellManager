@@ -6,6 +6,7 @@ mod app;
 mod autostart;
 mod backup;
 mod bulk;
+mod claude_replies;
 mod docs;
 pub(crate) mod git;
 mod groups;
@@ -23,6 +24,8 @@ mod slash;
 mod snapshots;
 mod tasks;
 mod themes;
+pub(crate) mod storage;
+pub(crate) mod update;
 mod usage;
 
 use serde_json::Value;
@@ -34,10 +37,13 @@ use crate::tool::{Caller, ToolError, ToolSpec};
 /// Every engine tool, in palette order.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut v = sessions::specs();
+    v.extend(claude_replies::specs());
     v.extend(groups::specs());
     v.extend(bulk::specs());
     v.extend(layout::specs());
     v.extend(app::specs());
+    v.extend(storage::specs());
+    v.extend(update::specs());
     v.extend(autostart::specs());
     v.extend(git::specs());
     v.extend(runs::specs());

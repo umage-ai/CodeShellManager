@@ -44,7 +44,7 @@ pub struct EngineOptions {
     pub folders: Vec<String>,
     /// The WPF app's `state.json`, when it exists: offered on the empty screen.
     pub wpf_import: Option<String>,
-    /// `StateOptions::shutdown_budget`, for the board's budget bar.
+    /// The board's budget before the engine reports one (`Snapshot::quit_budget_ms`).
     pub shutdown_budget_s: f32,
 }
 
@@ -133,14 +133,17 @@ impl EngineBackend {
         }
         self.terms = terms;
         if view.quit.is_some() && self.quit.is_none() {
-            let rows =
-                self.last_live.iter().map(|id| ShutdownRow { session: id.clone(), state: ShutdownRowState::Pending, elapsed_s: 0.0 }).collect();
-            self.quit = Some(Quit { started: Instant::now(), rows });
+            self.quit = Some(Quit { started: Instant::now(), rows: self.pending_rows() });
         }
         if view.quit.is_none() {
             self.last_live = view.sessions.iter().filter(|s| s.live).map(|s| s.id.clone()).collect();
         }
         self.publish(&view);
+    }
+
+    /// A pending row for every session that was live when the quit began.
+    fn pending_rows(&self) -> Vec<ShutdownRow> {
+        self.last_live.iter().map(|id| ShutdownRow { session: id.clone(), state: ShutdownRowState::Pending, elapsed_s: 0.0 }).collect()
     }
 
     fn publish(&mut self, view: &Snapshot) {
@@ -150,8 +153,10 @@ impl EngineBackend {
         m.usage = self.usage.clone();
         m.docs = self.docs.clone();
         if let Some(q) = &self.quit {
-            let used = q.started.elapsed().as_secs_f32().min(self.opts.shutdown_budget_s.max(1.0));
-            m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: self.opts.shutdown_budget_s.max(1.0) });
+            // The engine's budget for this quit (per-session wait times the Claude sessions).
+            let budget = view.quit_budget_ms.map_or(self.opts.shutdown_budget_s, |ms| ms as f32 / 1000.0).max(1.0);
+            let used = q.started.elapsed().as_secs_f32().min(budget);
+            m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: budget });
         }
         self.snap = Arc::new(m);
     }
@@ -260,7 +265,7 @@ impl Backend for EngineBackend {
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
                 let effects = port.effects(&call.id);
                 // A broadcast says how many sessions got the text and how many were skipped.
-                let said = ["state_import_wpf", "session_send_text_many"].contains(&call.id.as_str());
+                let said = ["state_import_wpf", "session_send_text_many", "update_check", "storage_info", "storage_clean"].contains(&call.id.as_str());
                 let say = said || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));
                 if say && !out.message.is_empty() { vec![Notice::Toast(out.message.clone())] } else { vec![] }
             }
@@ -282,8 +287,10 @@ impl Backend for EngineBackend {
             Event::ScreenFocusRequested { instance } => vec![Notice::FocusScreen(instance.clone())],
             Event::ClipboardOffered { .. } => self.engine.take_clipboard().map(Notice::Clipboard).into_iter().collect(),
             Event::QuitProgress { session_id, phase, elapsed_ms } => {
+                // The first event can come before the snapshot that starts the quit: the board still
+                // starts with a row for every session that was live, so its total is right at once.
                 if self.quit.is_none() {
-                    self.quit = Some(Quit { started: Instant::now(), rows: Vec::new() });
+                    self.quit = Some(Quit { started: Instant::now(), rows: self.pending_rows() });
                 }
                 if let Some(q) = &mut self.quit {
                     let state = match phase.as_str() {
@@ -625,6 +632,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         },
         rail: view.rail_tab.clone().map_or(Scope::All, Scope::Group),
         layouts,
+        custom_grids: view.custom_grids.iter().map(|&(cols, rows)| GridPreset { cols, rows }).collect(),
         active: view.focused.clone(),
         inspector: view.inspector.map(|t| match t {
             CoreTab::Notes => InspectorTab::Notes,
@@ -638,6 +646,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
             open: view.inbox_open,
             height: view.inbox_height.filter(|h| h.is_finite()).unwrap_or(crate::theme::size::INBOX_DEFAULT_H),
         },
+        inspector_width: view.inspector_width.filter(|w| w.is_finite()),
         restore: view.restore.map(|p| RestoreProgress {
             done: u32::try_from(p.done).unwrap_or(u32::MAX),
             total: u32::try_from(p.total).unwrap_or(u32::MAX),
@@ -657,6 +666,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         docs: Default::default(),
         open_with: view.open_with.iter().map(open_with_view).collect(),
         pending_open_with: view.pending_open_with.iter().map(open_with_view).collect(),
+        update: view.update.as_ref().map(|u| crate::model::UpdateBadge { version: u.version.clone(), url: u.url.clone() }),
         recently_closed: view
             .recently_closed
             .iter()

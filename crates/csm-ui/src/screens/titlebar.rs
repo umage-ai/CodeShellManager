@@ -126,6 +126,42 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR), pos2(button.max.x, rect.max.y + space::XS));
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR).with("button"), button);
     });
+    update_badge(ui, app, rect, mid, x, actions);
+}
+
+/// The accessible name of the update badge (tests find it by this prefix).
+pub const UPDATE_BADGE_PREFIX: &str = "Update available: ";
+
+/// "Update available: 2.1.0", left of the buttons (`update_check` found a newer release): a click
+/// opens its release page (`open_url`, nothing is downloaded), its × hides it (`update_dismiss`).
+/// Left out while the bar is too narrow to keep it clear of the search field.
+fn update_badge(ui: &mut Ui, app: &CsmApp, bar: Rect, mid: Rect, right: f32, actions: &mut Vec<Action>) {
+    let Some(u) = &app.model.update else { return };
+    let t = Tokens::get(ui.ctx());
+    let label = format!("{UPDATE_BADGE_PREFIX}{}", u.version);
+    let font = theme::medium(text::CAPTION);
+    let close = size::CONTROL_SM;
+    let w = space::ROW_X + icon::SM + space::XS + widgets::text_width(ui, &label, font.clone()) + space::XS + close;
+    let right = right - space::SM;
+    if right - w < mid.max.x + space::SM {
+        return;
+    }
+    let pill = Rect::from_min_max(pos2(right - w, bar.center().y - size::CONTROL_SM / 2.0), pos2(right, bar.center().y + size::CONTROL_SM / 2.0));
+    let body = Rect::from_min_max(pill.min, pos2(pill.max.x - close, pill.max.y));
+    let resp = ui.interact(body, ui.id().with("tb-update"), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(pill, CornerRadius::same(radius::PILL), Tokens::tint(t.green, if resp.hovered() { 0.24 } else { 0.14 }));
+    let g = Rect::from_min_size(pos2(pill.min.x + space::ROW_X, pill.center().y - icon::SM / 2.0), Vec2::splat(icon::SM));
+    icons::paint(ui, g, "arrowUp", icon::SM, t.green);
+    ui.painter().text(pos2(g.max.x + space::XS, pill.center().y), Align2::LEFT_CENTER, &label, font, t.fg);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Open the release page (nothing is downloaded)").clicked() {
+        actions.push(Action::Tool("open_url", json!({"url": u.url})));
+    }
+    let x_rect = Rect::from_center_size(pos2(pill.max.x - close / 2.0, pill.center().y), Vec2::splat(close));
+    if widgets::icon_button_at(ui, x_rect, ui.id().with("tb-update-x"), "x", false, "Dismiss the update notice").clicked() {
+        actions.push(Action::Tool("update_dismiss", json!({"version": u.version})));
+    }
 }
 
 /// Minimize, maximize/restore and close at the bar's right end, Windows-sized; returns their left

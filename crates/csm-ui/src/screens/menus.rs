@@ -79,6 +79,11 @@ pub const SIBLING_WORKTREE: &str = "New session in sibling worktree";
 /// Label of the item that opens the Git tab's New worktree input.
 pub const NEW_WORKTREE: &str = "New worktree from this branch…";
 
+/// A session whose folder is on this machine (local or WSL): Open folder, Open with and a shell there apply.
+fn is_local(s: &crate::model::SessionView) -> bool {
+    s.kind != crate::model::Kind::Ssh
+}
+
 /// A session whose folder git can read (local or WSL, on a branch): the worktree items apply.
 fn in_repo(s: &crate::model::SessionView) -> bool {
     s.branch.is_some() && s.kind != crate::model::Kind::Ssh
@@ -151,6 +156,80 @@ pub fn claude_commands_entry(s: &crate::model::SessionView, presets: &[csm_core:
     Some(Entry::Sub { icon: "send", label: "Claude commands".into(), items })
 }
 
+/// "Copy last reply" and "Copy reply…" on a Claude pane: Claude's replies from its transcript
+/// (`claude_reply_get`, `claude_reply_list`). A WSL or SSH session's answer says it is not
+/// available there.
+fn claude_copy_entries(s: &crate::model::SessionView) -> Vec<Entry> {
+    if !s.is_claude() || !s.status.is_live() {
+        return Vec::new();
+    }
+    vec![
+        hinted("copy", "Copy last reply", "Ctrl Shift C", Action::CopyClaude("claude_reply_get", json!({"session_id": s.id}))),
+        item("copy", "Copy reply…", Action::OpenClaudeReplies(s.id.clone())),
+    ]
+}
+
+/// The longest preview in the reply picker (characters).
+const PICK_PREVIEW: usize = 48;
+
+fn short(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// The "Copy reply…" picker: the recent replies (newest first), each followed by its code blocks
+/// as entries of their own. Each copies through `claude_reply_get` / `claude_code_block_get` by
+/// the reply's id, so a reply written meanwhile doesn't shift what is copied.
+pub fn claude_replies_menu(state: Option<&crate::app::ClaudeReplies>, session: &str) -> Vec<Entry> {
+    let mut v = vec![Entry::Head("Copy Claude's reply".into())];
+    let rows = match state.filter(|r| r.session == session).map(|r| &r.rows) {
+        None | Some(None) => {
+            v.push(Entry::Head("Reading replies…".into()));
+            return v;
+        }
+        Some(Some(Err(e))) => {
+            v.push(Entry::Head(short(e, 60)));
+            return v;
+        }
+        Some(Some(Ok(rows))) => rows,
+    };
+    if rows.is_empty() {
+        v.push(Entry::Head("Claude has not replied yet".into()));
+        return v;
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 {
+            v.push(Entry::Sep);
+        }
+        let id = r["id"].as_str().unwrap_or_default();
+        let lines = r["lines"].as_u64().unwrap_or(0);
+        let lines = if lines == 1 { "1 line".to_string() } else { format!("{lines} lines") };
+        let preview = r["preview"].as_str().unwrap_or_default();
+        let label = if preview.is_empty() { "(no text)".to_string() } else { short(preview, PICK_PREVIEW) };
+        v.push(Entry::Item {
+            icon: "copy",
+            label,
+            hint: Some(if i == 0 { format!("latest · {lines}") } else { lines }),
+            danger: false,
+            action: Action::CopyClaude("claude_reply_get", json!({"session_id": session, "reply_id": id})),
+        });
+        for b in r["code_blocks"].as_array().into_iter().flatten() {
+            let k = b["index"].as_u64().unwrap_or(0);
+            let lang = b["lang"].as_str().map(|l| format!("{l} ")).unwrap_or_default();
+            let preview = b["preview"].as_str().unwrap_or_default();
+            v.push(item(
+                "braces",
+                format!("Copy code block {}: {lang}{}", k + 1, short(preview, PICK_PREVIEW / 2)),
+                Action::CopyClaude("claude_code_block_get", json!({"session_id": session, "reply_id": id, "block_index": k})),
+            ));
+        }
+    }
+    v
+}
+
 const DEMO_STATUS: &str = "Demo: set status";
 
 fn demo_status(session: &str) -> Entry {
@@ -175,11 +254,20 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         hinted("play", "Runs", "F5 runs default", insp("runs")),
         item("branch", "Git", insp("git")),
         Entry::Sep,
-        item("folder", "Open folder", tool("open_folder", sid.clone())),
-        open_with(s),
-        hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
-        item("copy", "Copy path", Action::CopyText(s.folder.clone())),
     ];
+    // An SSH (or NEXUS) session's folder is on another machine: nothing here can open it, so
+    // only its path is offered.
+    if is_local(s) {
+        v.extend([
+            item("folder", "Open folder", tool("open_folder", sid.clone())),
+            open_with(s),
+            hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
+            item("copy", "Copy path", Action::CopyText(s.folder.clone())),
+        ]);
+    } else {
+        v.push(item("copy", "Copy remote path", Action::CopyText(s.folder.clone())));
+    }
+    v.extend(claude_copy_entries(s));
     v.extend(worktree_entries(model, s));
     v.extend([
         Entry::Sep,
@@ -262,10 +350,14 @@ pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
         hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
         item("pencil", "Edit session…", Action::EditSession(id.to_string())),
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
-        item("folder", "Open folder", tool("open_folder", sid.clone())),
-        open_with(s),
         hinted("copy", "Duplicate session", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
     ];
+    if is_local(s) {
+        // After "Move to group", as before; an SSH session's folder is on another machine.
+        let at = v.len() - 1;
+        v.insert(at, open_with(s));
+        v.insert(at, item("folder", "Open folder", tool("open_folder", sid.clone())));
+    }
     v.extend(worktree_entries(model, s));
     v.push(Entry::Sep);
     if s.is_claude() && s.status.is_live() {
@@ -466,6 +558,20 @@ fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     v
 }
 
+/// The Git tab's GitHub links: the branch's page and the pull requests, through `open_url`.
+fn github_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+    let Some(gh) = model.git.get(id).and_then(|d| d.github.as_ref()) else { return vec![] };
+    vec![
+        Entry::Head("GitHub".into()),
+        item(
+            "branch",
+            if model.session(id).is_some_and(|s| s.branch.is_some()) { "Open branch on GitHub" } else { "Open repository on GitHub" },
+            tool("open_url", json!({"url": gh.branch_url})),
+        ),
+        item("history", "Open pull requests", tool("open_url", json!({"url": gh.pulls_url}))),
+    ]
+}
+
 /// Draws `entries` in an area at `at`; returns the area's rect.
 #[allow(clippy::too_many_arguments)]
 fn menu_area(
@@ -517,7 +623,10 @@ fn menu_area(
                         }
                         if r.clicked() {
                             actions.push(action.clone());
-                            actions.push(Action::CloseMenu);
+                            // An item that opens another menu in this one's place keeps it open.
+                            if !matches!(action, Action::OpenClaudeReplies(_)) {
+                                actions.push(Action::CloseMenu);
+                            }
                         }
                     }
                     Entry::ItemTip { icon, label, hint, tip, action } => {
@@ -644,6 +753,13 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
         }
         Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
+        Menu::GitHub { session, at } => {
+            menu_area(ctx, app, Id::new("menu-github"), pos2(at.x - size::MENU_W, at.y), &github_menu(&model, session), 0, false, actions)
+        }
+        Menu::ClaudeReplies { session, at } => {
+            let e = claude_replies_menu(app.ui.claude_replies.as_ref(), session);
+            menu_area(ctx, app, Id::new("menu-claude-replies"), pos2(at.x - size::MENU_W, at.y), &e, 0, false, actions)
+        }
         Menu::Recent { at } => {
             let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
             v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));
@@ -679,74 +795,122 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
 }
 
+/// Tiles per row in the Grid menu: the one-row presets, then the multi-row ones.
+const GRID_MENU_COLUMNS: usize = 4;
+
+/// One Grid menu tile: a preset or remembered custom (`Some`), or Custom… (`None`). With
+/// `forgettable`, an × in its corner (drawn while the tile is hovered) forgets the size; its
+/// response is the second value.
+fn grid_tile(ui: &mut egui::Ui, t: &Tokens, tile: Option<GridPreset>, on: bool, forgettable: bool) -> (egui::Response, Option<egui::Response>) {
+    let (rect, r) = ui.allocate_exact_size(vec2(size::GRID_TILE_W, size::GRID_GLYPH[1] + space::XL + space::SM), Sense::click());
+    // Interacted after the tile, so it sits on top and takes its own clicks.
+    let forget = tile.filter(|_| forgettable).map(|g| {
+        let x = Rect::from_min_size(pos2(rect.max.x - icon::LG - space::XXS, rect.min.y + space::XXS), Vec2::splat(icon::LG));
+        let f = ui.interact(x, ui.id().with(("grid-forget", g.cols, g.rows)), Sense::click());
+        f.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Forget grid {}", g.label())));
+        (x, f)
+    });
+    let hovered = r.hovered() || forget.as_ref().is_some_and(|(_, f)| f.hovered());
+    if hovered {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
+    }
+    if on {
+        ui.painter().rect_stroke(rect, CornerRadius::same(radius::MD), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
+    }
+    let glyph = Rect::from_min_size(
+        pos2(rect.center().x - size::GRID_GLYPH[0] / 2.0, rect.min.y + space::SM),
+        vec2(size::GRID_GLYPH[0], size::GRID_GLYPH[1]),
+    );
+    let label = match tile {
+        Some(g) => {
+            let cells = crate::screens::panes::grid_cells(glyph, usize::from(g.cols), usize::from(g.rows), space::XXS);
+            let fill = if on { Tokens::tint(t.blue, alpha::ASLEEP) } else { t.surface1 };
+            for c in cells {
+                ui.painter().rect_filled(c, CornerRadius::same(radius::SM / 2), fill);
+            }
+            g.label()
+        }
+        None => {
+            ui.painter().extend(egui::Shape::dashed_line(
+                &[glyph.left_top(), glyph.right_top(), glyph.right_bottom(), glyph.left_bottom(), glyph.left_top()],
+                Stroke::new(size::HAIRLINE, t.surface2),
+                space::XS,
+                space::XS - size::HAIRLINE,
+            ));
+            icons::paint(ui, glyph, "plus", icon::MD, t.muted);
+            "Custom…".into()
+        }
+    };
+    ui.painter().text(
+        pos2(rect.center().x, glyph.max.y + space::SM + space::XS),
+        Align2::CENTER_CENTER,
+        &label,
+        theme::regular(text::CAPTION),
+        if on { t.fg } else { t.fg2 },
+    );
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Grid {label}")));
+    let forget = forget.map(|(x, f)| {
+        if hovered {
+            let over = f.hovered();
+            ui.painter().rect_filled(x, CornerRadius::same(radius::SM), if over { t.surface1 } else { t.mantle });
+            icons::paint(ui, x, "x", icon::SM, if over { t.fg } else { t.muted });
+        }
+        f.on_hover_text("Forget this grid")
+    });
+    (r, forget)
+}
+
 fn grid_popover(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut Vec<Action>) -> Rect {
     let t = Tokens::get(ctx);
     let scope = app.model.pane_scope();
     let lay = app.model.layout(&scope);
     let resp = egui::Area::new(Id::new("grid-pop")).order(Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         widgets::pop_frame(&t).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
-            ui.label(egui::RichText::new("Grid presets").font(theme::regular(text::CAPTION)).color(t.muted));
-            ui.add_space(space::XS);
-            let mut tiles: Vec<Option<GridPreset>> = GridPreset::PRESETS.iter().copied().map(Some).collect();
-            tiles.push(None);
-            for chunk in tiles.chunks(3) {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::XS;
-                    for tile in chunk {
-                        let (rect, r) = ui.allocate_exact_size(vec2(size::GRID_TILE_W, size::GRID_GLYPH[1] + space::XL + space::SM), Sense::click());
-                        let on = lay.mode == LayoutMode::Grid && tile.is_some_and(|g| g == lay.grid);
-                        if r.hovered() {
-                            ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
-                        }
-                        if on {
-                            ui.painter().rect_stroke(rect, CornerRadius::same(radius::MD), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
-                        }
-                        let glyph = Rect::from_min_size(
-                            pos2(rect.center().x - size::GRID_GLYPH[0] / 2.0, rect.min.y + space::SM),
-                            vec2(size::GRID_GLYPH[0], size::GRID_GLYPH[1]),
-                        );
-                        let label = match tile {
-                            Some(g) => {
-                                let cells = crate::screens::panes::grid_cells(glyph, usize::from(g.cols), usize::from(g.rows), space::XXS);
-                                let fill = if on { Tokens::tint(t.blue, alpha::ASLEEP) } else { t.surface1 };
-                                for c in cells {
-                                    ui.painter().rect_filled(c, CornerRadius::same(radius::SM / 2), fill);
+            let caption = |ui: &mut egui::Ui, s: &str| {
+                ui.label(egui::RichText::new(s).font(theme::regular(text::CAPTION)).color(t.muted));
+                ui.add_space(space::XS);
+            };
+            caption(ui, "Grid presets");
+            let presets: Vec<Option<GridPreset>> = GridPreset::PRESETS.iter().copied().map(Some).collect();
+            // The presets, then the remembered customs (newest first, each with a forget ×) and
+            // the Custom… tile.
+            let mut customs: Vec<Option<GridPreset>> = app.model.custom_grids.iter().copied().filter(|g| !g.is_preset()).map(Some).collect();
+            customs.push(None);
+            for (section, tiles) in [(None, presets), (Some("Custom"), customs)] {
+                if let Some(s) = section {
+                    ui.add_space(space::XS);
+                    caption(ui, s);
+                }
+                for chunk in tiles.chunks(GRID_MENU_COLUMNS) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
+                        for tile in chunk {
+                            let on = lay.mode == LayoutMode::Grid && tile.is_some_and(|g| g == lay.grid);
+                            let forgettable = section.is_some() && tile.is_some();
+                            let (r, forget) = grid_tile(ui, &t, *tile, on, forgettable);
+                            if let (Some(g), Some(f)) = (tile, forget)
+                                && f.clicked()
+                            {
+                                actions.push(Action::Tool("grid_preset_forget", json!({"cols": g.cols, "rows": g.rows})));
+                                // A tool call closes the menu: open it again, without that size.
+                                actions.push(Action::OpenMenu(Menu::Grid { at }));
+                                continue;
+                            }
+                            if r.clicked() {
+                                match tile {
+                                    Some(g) => {
+                                        actions.push(Action::Tool(
+                                            "layout_set",
+                                            json!({"group": scope.key(), "mode": "grid", "cols": g.cols, "rows": g.rows}),
+                                        ));
+                                        actions.push(Action::CloseMenu);
+                                    }
+                                    None => app.ui.submenu = Some("custom-grid".into()),
                                 }
-                                g.label()
-                            }
-                            None => {
-                                ui.painter().extend(egui::Shape::dashed_line(
-                                    &[glyph.left_top(), glyph.right_top(), glyph.right_bottom(), glyph.left_bottom(), glyph.left_top()],
-                                    Stroke::new(size::HAIRLINE, t.surface2),
-                                    space::XS,
-                                    space::XS - size::HAIRLINE,
-                                ));
-                                icons::paint(ui, glyph, "plus", icon::MD, t.muted);
-                                "Custom…".into()
-                            }
-                        };
-                        ui.painter().text(
-                            pos2(rect.center().x, glyph.max.y + space::SM + space::XS),
-                            Align2::CENTER_CENTER,
-                            &label,
-                            theme::regular(text::CAPTION),
-                            if on { t.fg } else { t.fg2 },
-                        );
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Grid {label}")));
-                        if r.clicked() {
-                            match tile {
-                                Some(g) => {
-                                    actions.push(Action::Tool(
-                                        "layout_set",
-                                        json!({"group": scope.key(), "mode": "grid", "cols": g.cols, "rows": g.rows}),
-                                    ));
-                                    actions.push(Action::CloseMenu);
-                                }
-                                None => app.ui.submenu = Some("custom-grid".into()),
                             }
                         }
-                    }
-                });
+                    });
+                }
             }
             if app.ui.submenu.as_deref() == Some("custom-grid") {
                 ui.add_space(space::XS);

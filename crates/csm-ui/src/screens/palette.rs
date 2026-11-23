@@ -80,6 +80,7 @@ fn shortcut_for(id: &str) -> Option<&'static str> {
         "run_stop" => Some("Shift F5"),
         "session_recent" => Some("Ctrl Shift E"),
         "session_restart" => Some("Ctrl Shift R"),
+        "claude_reply_get" => Some("Ctrl Shift C"),
         "search_output" => Some("Ctrl F"),
         _ => None,
     }

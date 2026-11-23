@@ -97,7 +97,7 @@ jobs:
       # appimagetool, pinned. Its release also fetches the matching type2 runtime at build time.
       APPIMAGETOOL_VERSION: "1.9.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The gate's toolchain (see ci.yml).
       - uses: dtolnay/rust-toolchain@master
@@ -252,7 +252,7 @@ jobs:
         run: cd dist && sha256sum * | tee SHA256SUMS-linux-${ARCH}.txt
 
       - name: Upload packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codeshellmanager-${{ needs.version.outputs.semver }}-linux-${{ matrix.arch }}
           path: dist/*
@@ -271,7 +271,7 @@ jobs:
       # Matches LSMinimumSystemVersion in installer/macos/Info.plist.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -416,7 +416,7 @@ jobs:
         run: cd dist && shasum -a 256 * | tee SHA256SUMS-macos.txt
 
       - name: Upload packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codeshellmanager-${{ needs.version.outputs.semver }}-macos
           path: dist/*

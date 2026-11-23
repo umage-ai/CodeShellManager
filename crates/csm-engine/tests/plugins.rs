@@ -424,7 +424,11 @@ fn a_plugin_sets_a_status_and_note_on_its_own_sessions_only() {
 
     let set = plugin_csm(&h, "session_annotate", json!({"session_id": mine, "status": "working", "annotation": "running remotely"}));
     assert_eq!(set["session_id"], mine.as_str(), "{set}");
-    let snap = h.wait_until("the note", |s| has(s, &mine).is_some_and(|v| v.annotation.is_some()));
+    // The note and the status can land a step apart while the session is still starting (the
+    // status waits for it to leave Starting), so wait for both; under load the gap was seen.
+    let snap = h.wait_until("the note and the status", |s| {
+        has(s, &mine).is_some_and(|v| v.annotation.is_some() && v.status == csm_engine::Status::Working)
+    });
     let v = has(&snap, &mine).unwrap();
     assert_eq!(v.annotation.as_deref(), Some("running remotely"));
     assert_eq!(v.status, csm_engine::Status::Working);

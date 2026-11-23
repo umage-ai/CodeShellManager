@@ -122,6 +122,8 @@ pub(crate) struct Shared {
     /// Each followed session's context while the add-on is off (empty while it is on: the index
     /// answers then).
     pub context: HashMap<String, LiveContext>,
+    /// Each followed session's main transcript, as last found (`claude_reply_get` reads it).
+    pub transcripts: HashMap<String, PathBuf>,
 }
 
 /// The history reader's progress, for `usage_report`.
@@ -460,7 +462,11 @@ impl Tailer {
 
     /// The light tail of a link (the add-on off): its main transcript only, in memory.
     fn light_pass(&mut self, link: &Link) -> bool {
-        let Some((_, main)) = self.main_of(link) else { return false };
+        let Some((_, main)) = self.main_of(link) else {
+            self.publish_transcript(link, None);
+            return false;
+        };
+        self.publish_transcript(link, Some(&main));
         let more = self.light_file(link, &main);
         let found = sub::find(&main);
         self.report(link, &found, false);
@@ -516,6 +522,19 @@ impl Tailer {
         pass.more
     }
 
+    /// Where a followed session's main transcript is (or that none was found), for the engine.
+    fn publish_transcript(&self, link: &Link, path: Option<&PathBuf>) {
+        let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        if sh.transcripts.get(&link.csm_session) == path {
+            return;
+        }
+        match path {
+            Some(p) => sh.transcripts.insert(link.csm_session.clone(), p.clone()),
+            None => sh.transcripts.remove(&link.csm_session),
+        };
+        sh.generation += 1;
+    }
+
     /// A followed session's last Remote Control line, for the engine.
     fn publish_remote(&self, link: &Link, mark: csm_core::remote_control::RemoteControlMark) {
         let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
@@ -561,7 +580,11 @@ impl Tailer {
 
     /// One pass over a link's transcripts. True when a file has more to read straight away.
     fn pass(&mut self, link: &Link) -> bool {
-        let Some((sid, main)) = self.main_of(link) else { return false };
+        let Some((sid, main)) = self.main_of(link) else {
+            self.publish_transcript(link, None);
+            return false;
+        };
+        self.publish_transcript(link, Some(&main));
         let mut more = self.file(Some(link), &sid, None, &main, None).more;
         let project = self.files.get(&main.to_string_lossy().into_owned()).and_then(|f| f.project.clone());
         let found = sub::find(&main);
@@ -671,11 +694,12 @@ impl Tailer {
     /// Drops the reports of sessions no longer followed.
     fn prune_reports(&mut self, links: &[Link]) {
         let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = sh.map.len() + sh.remote.len() + sh.context.len();
+        let before = sh.map.len() + sh.remote.len() + sh.context.len() + sh.transcripts.len();
         sh.map.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
         sh.remote.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
         sh.context.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
-        if sh.map.len() + sh.remote.len() + sh.context.len() != before {
+        sh.transcripts.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
+        if sh.map.len() + sh.remote.len() + sh.context.len() + sh.transcripts.len() != before {
             sh.generation += 1;
         }
     }
@@ -816,9 +840,11 @@ fn take_subagents(state: &mut State) {
     let map: HashMap<String, Arc<SubagentsReport>> = sh.map.iter().map(|(k, v)| (k.clone(), Arc::new(v.clone()))).collect();
     let remote = sh.remote.clone();
     let context = sh.context.clone();
+    let transcripts = sh.transcripts.clone();
     drop(sh);
     state.rt.subagents = map;
     state.rt.live_context = context;
+    state.rt.claude_transcripts = transcripts;
     apply_remote_control(state, &remote);
     state.rt.dirty = true;
 }

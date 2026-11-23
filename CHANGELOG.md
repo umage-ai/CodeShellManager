@@ -23,6 +23,11 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   tick it. A 2.0 export can be read by 0.x's Import.
 - Not carried over: 0.x's search history (`output.db` output). 2.0 starts a new index.
 - No WebView2 runtime or .NET is needed any more.
+- Taskbar pins, shortcuts and scripts that start `CodeShellManager.exe` keep working: the
+  installer keeps a small `CodeShellManager.exe` beside the new `codeshell.exe` that starts it.
+- **Check for updates**, as in 0.x: once a day the app asks GitHub whether a newer release is
+  out and shows "Update available" in the title bar, which opens the release page. Nothing is
+  downloaded. Settings › General › Updates turns it off and has *Check now*.
 
 ### New
 

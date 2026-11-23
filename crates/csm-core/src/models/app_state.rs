@@ -237,6 +237,24 @@ pub struct AppSettings {
     /// The theme drawn in light mode: `latte` or a light add-on theme; falls back to Latte.
     #[serde(skip_serializing_if = "is_latte")]
     pub theme_light: String,
+    /// Ask GitHub once a day whether a newer CodeShellManager is out and show it in the title bar
+    /// (`update_check`; nothing is downloaded). On by default, as in 0.x; written only when turned
+    /// off. Never checked on its own under `--clean` or an isolated run.
+    #[serde(skip_serializing_if = "is_true")]
+    pub check_for_updates: bool,
+    /// The search index keeps the output of all sessions together under this many MB (the oldest
+    /// lines go first). Written only when changed from the default.
+    #[serde(skip_serializing_if = "is_default_index_mb")]
+    pub index_max_mb: i32,
+    /// Claude usage rows older than this many days are removed (0 keeps them all). Written only
+    /// when changed from the default.
+    #[serde(skip_serializing_if = "is_default_usage_days")]
+    pub claude_usage_retention_days: i32,
+    /// A selection copied from a Claude Code pane is cleaned up: Claude's markers, frames and
+    /// indentation go and the lines it wrapped are joined again (Alt while copying gives the raw
+    /// text). On by default; written only when turned off.
+    #[serde(skip_serializing_if = "is_true")]
+    pub clean_claude_copies: bool,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -247,6 +265,23 @@ pub const UI_ZOOM_DEFAULT: i32 = 100;
 fn is_false(b: &bool) -> bool {
     !*b
 }
+/// `IndexMaxMb` by default: the index's output stays under 1 GB.
+pub const DEFAULT_INDEX_MAX_MB: i32 = 1024;
+/// The range `IndexMaxMb` accepts.
+pub const INDEX_MAX_MB_RANGE: std::ops::RangeInclusive<i32> = 100..=102_400;
+/// `ClaudeUsageRetentionDays` by default: about 13 months.
+pub const DEFAULT_USAGE_RETENTION_DAYS: i32 = 400;
+/// The range `ClaudeUsageRetentionDays` accepts (0 keeps everything).
+pub const USAGE_RETENTION_DAYS_RANGE: std::ops::RangeInclusive<i32> = 0..=3650;
+
+fn is_default_index_mb(v: &i32) -> bool {
+    *v == DEFAULT_INDEX_MAX_MB
+}
+
+fn is_default_usage_days(v: &i32) -> bool {
+    *v == DEFAULT_USAGE_RETENTION_DAYS
+}
+
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -333,8 +368,12 @@ impl Default for AppSettings {
             tray_notice_shown: false,
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
+            clean_claude_copies: t(),
             start_minimized: false,
             start_minimized_to_tray: false,
+            check_for_updates: t(),
+            index_max_mb: DEFAULT_INDEX_MAX_MB,
+            claude_usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
         }
     }
 }
@@ -493,6 +532,18 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(r#"{"AnswerProgramStatusProbe": false, "UseBundledConPty": true}"#).unwrap();
         assert_eq!(settings.program_status_probe, ProgramStatusProbeMode::Auto);
         assert!(settings.use_bundled_con_pty);
+    }
+
+    #[test]
+    fn check_for_updates_is_on_by_default_and_written_only_when_off() {
+        let d = AppSettings::default();
+        assert!(d.check_for_updates);
+        assert!(!serde_json::to_string(&d).unwrap().contains("CheckForUpdates"));
+        let off = AppSettings { check_for_updates: false, ..Default::default() };
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(json.contains(r#""CheckForUpdates":false"#), "{json}");
+        assert!(!serde_json::from_str::<AppSettings>(&json).unwrap().check_for_updates);
+        assert!(serde_json::from_str::<AppSettings>("{}").unwrap().check_for_updates);
     }
 
     #[test]

@@ -158,6 +158,8 @@ pub struct Snapshot {
     pub rail_tab: Option<String>,
     /// Layout per group id, plus [`csm_core::models::ALL_LAYOUT_KEY`].
     pub layouts: BTreeMap<String, GroupLayout>,
+    /// Remembered custom grid sizes `(cols, rows)`, newest first (the Grid menu; `grid_preset_forget`).
+    pub custom_grids: Vec<(u8, u8)>,
     /// The layout key the panes use right now (the rail tab, or `__ALL__`).
     pub layout_key: String,
     /// Session ids, needs-you first (oldest first), then unseen results (oldest first).
@@ -165,6 +167,8 @@ pub struct Snapshot {
     pub focused: Option<String>,
     pub inbox_open: bool,
     pub inbox_height: Option<f32>,
+    /// The inspector's width (logical pixels) when dragged; `None` is the default.
+    pub inspector_width: Option<f32>,
     pub inspector: Option<InspectorTab>,
     /// Restore loop progress while it runs.
     pub restore: Option<Progress>,
@@ -172,11 +176,16 @@ pub struct Snapshot {
     pub restart: Option<Progress>,
     /// Quit progress (the shutdown board) while it runs.
     pub quit: Option<Progress>,
+    /// The whole quit's wait budget (the per-session wait times the Claude sessions to close).
+    pub quit_budget_ms: Option<u64>,
     /// The Open with list (the editor in Settings).
     pub open_with: Vec<crate::tools::open::OpenWithView>,
     /// Open with entries from CodeShellManager 0.x waiting for the person's answer (the consent
     /// card; `open_with_pending_answer`). Empty: nothing to ask.
     pub pending_open_with: Vec<crate::tools::open::OpenWithView>,
+    /// A newer release than the running build, not dismissed: the title bar's badge
+    /// (`update_check`, `update_dismiss`). `None`: nothing to show.
+    pub update: Option<crate::tools::update::UpdateView>,
     /// Saved window bounds (`window_placement_set`): `main` (the state file's `LastPlacement` and
     /// `WindowMaximized`), `group:<id>` and `pane:<session id>` for torn-off windows.
     pub windows: BTreeMap<String, WindowSlot>,
@@ -402,17 +411,21 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         view: group_view_of(state),
         rail_tab: ui.rail_tab.clone(),
         layouts,
+        custom_grids: ui.custom_grids.clone(),
         layout_key: layout_key(state),
         inbox,
         focused: state.rt.focused.clone(),
         inbox_open: ui.inbox_open,
         inbox_height: ui.inbox_height,
+        inspector_width: ui.inspector_width,
         inspector: ui.inspector,
         restore: state.rt.restore,
         restart: state.rt.restart,
         quit: state.rt.quit,
+        quit_budget_ms: state.rt.quit_budget_ms,
         open_with: crate::tools::open::list_view(&state.app.settings.open_with),
         pending_open_with: crate::tools::open::list_view(&state.app.pending_open_with),
+        update: crate::tools::update::view(state),
         windows,
         recently_closed: state
             .app

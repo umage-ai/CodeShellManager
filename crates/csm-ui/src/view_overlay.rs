@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use csm_core::models::{ALL_LAYOUT_KEY, GroupLayout, InspectorTab, LayoutMode, WindowPlacementState, WindowSlot};
+use csm_core::models::{ALL_LAYOUT_KEY, GroupLayout, InspectorTab, LayoutMode, MAX_GRID_SIDE, WindowPlacementState, WindowSlot, parse_grid_preset};
 use csm_engine::{Effects, GroupView, Snapshot, ToolError, parse_params};
 use serde::Deserialize;
 use serde_json::Value;
@@ -338,16 +338,16 @@ impl ViewOverlay {
             layout.mode = m.into();
         }
         if let Some(preset) = &p.preset {
-            let (cols, rows) =
-                parse_preset(preset).ok_or_else(|| ToolError::InvalidParams(format!("no grid preset `{preset}` (1, 2, 2x2, 3x2, 3x3)")))?;
+            let (cols, rows) = parse_grid_preset(preset)
+                .ok_or_else(|| ToolError::InvalidParams(format!("no grid preset `{preset}` (1, 2, 4x1, 6x1, 2x2, 3x2, 6x2, 3x3)")))?;
             layout.grid_cols = cols;
             layout.grid_rows = rows;
             layout.mode = LayoutMode::Grid;
         }
         for (name, v) in [("cols", p.cols), ("rows", p.rows)] {
             if let Some(n) = v {
-                if !(1..=8).contains(&n) {
-                    return Err(ToolError::InvalidParams(format!("`{name}` must be 1-8")));
+                if !(1..=MAX_GRID_SIDE).contains(&n) {
+                    return Err(ToolError::InvalidParams(format!("`{name}` must be 1-{MAX_GRID_SIDE}")));
                 }
                 if name == "cols" {
                     layout.grid_cols = n;
@@ -531,18 +531,6 @@ const MAX_THEME_ID: usize = 128;
 
 /// The largest `free` layout accepted, serialized (the engine's limit).
 const MAX_FREE_BYTES: usize = 64 * 1024;
-
-/// `1`, `2`, `2x2`, `3x2`, `3x3` (and `×`), as the engine reads a grid preset.
-fn parse_preset(p: &str) -> Option<(u8, u8)> {
-    Some(match p.trim().to_ascii_lowercase().replace('×', "x").as_str() {
-        "1" | "1x1" => (1, 1),
-        "2" | "2x1" => (2, 1),
-        "2x2" | "4" => (2, 2),
-        "3x2" | "6" => (3, 2),
-        "3x3" | "9" => (3, 3),
-        _ => return None,
-    })
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -748,9 +736,16 @@ mod tests {
     /// UI-effect tools that also launch or mutate, so their declaration forwards them.
     const FIXED_FORWARD: &[&str] = &["inbox_next"];
     const FIXED_NOT_MODELLED: &[&str] = &[
+        // The inspector's width is per-client view state like the inbox height; modelled in P1.
+        "inspector_panel_set",
+        // The remembered custom grids are a stored preference (the engine's `UiState::custom_grids`),
+        // not per-client view state. An overlay `layout_set` does not remember a custom size either.
+        "grid_preset_forget",
         "session_status_clear",
         "window_show",
         "notification_test",
+        // Hides the engine's update badge (runtime state, the same for every client).
+        "update_dismiss",
         "session_annotate",
         "screen_open",
         "screen_close",

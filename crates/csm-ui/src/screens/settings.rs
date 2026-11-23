@@ -283,6 +283,8 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     crate::screens::claude_commands::show(ui, app, actions);
     crate::screens::backup::general(ui, app, actions);
     notifications(ui, app, actions);
+    updates(ui, app, actions);
+    storage(ui, app, actions);
 }
 
 /// "When I close the window": Ask, Keep running in the tray, Quit (`CloseAction`). Only where
@@ -331,6 +333,41 @@ fn notifications(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
     if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send a test notification", None).clicked() {
         actions.push(Action::Tool("notification_test", json!({})));
     }
+}
+
+/// Settings › General › Updates: the daily check (`CheckForUpdates`) and "Check now" (`update_check`).
+fn updates(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
+    section(ui, "Updates");
+    bool_setting(
+        ui,
+        app,
+        "CheckForUpdates",
+        "Check for updates",
+        "Once a day, ask GitHub whether a newer CodeShellManager is released and say so in the title bar. Nothing is downloaded, and nothing about you is sent.",
+        actions,
+    );
+    if widgets::button(ui, ButtonKind::Secondary, Some("restart"), "Check now", None).clicked() {
+        actions.push(Action::Tool("update_check", json!({})));
+    }
+}
+
+/// Settings › General › Storage: the search index's limits (`IndexMaxMb`,
+/// `ClaudeUsageRetentionDays`) and "Clean up now" (`storage_clean`). The engine also cleans up on
+/// its own every hour; `storage_info` reports the sizes (shown as a toast).
+fn storage(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    section(ui, "Storage");
+    number_setting(ui, app, "IndexMaxMb", "Search index size limit", 100..=102_400, "MB", actions);
+    caption(ui, "Terminal output is kept for search up to this size in total; the oldest lines go first. A closed session's output is removed 30 days after it was last seen.");
+    number_setting(ui, app, "ClaudeUsageRetentionDays", "Keep Claude usage for", 0..=3650, "days", actions);
+    caption(ui, "Older Claude usage rows are removed (0 keeps them all).");
+    ui.horizontal(|ui| {
+        if widgets::button(ui, ButtonKind::Secondary, Some("eraser"), "Clean up now", None).clicked() {
+            actions.push(Action::Tool("storage_clean", json!({})));
+        }
+        if widgets::button(ui, ButtonKind::Ghost, Some("gauge"), "Show sizes", None).clicked() {
+            actions.push(Action::Tool("storage_info", json!({})));
+        }
+    });
 }
 
 fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
@@ -383,6 +420,14 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         "AllowOsc52Clipboard",
         "Let programs copy to the clipboard",
         "OSC 52, as tmux, Claude Code's fullscreen mode and remote shells use it (up to 1 MB). Programs can never read the clipboard.",
+        actions,
+    );
+    bool_setting(
+        ui,
+        app,
+        "CleanClaudeCopies",
+        "Clean up copies from Claude",
+        "Copying a selection in a Claude Code pane drops its markers, frames and indentation and joins the lines Claude wrapped at the pane's edge. Ctrl+Alt+C copies a selection as shown.",
         actions,
     );
     section(ui, "Windows Terminal profiles");

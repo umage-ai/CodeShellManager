@@ -64,7 +64,7 @@ for the stable channel.
 | MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `2.0.0.(100+N)`; beta: `2.0.0.N`; dev: `2.0.0.0` | 2.x > 0.x, so every v2 build upgrades the WPF app. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish. |
 | Package version (winget, Chocolatey, tag) | `0.11.0` | `2.0.0` | Decided (Allan): version 2 starts at 2.0.0. Higher than 0.11.x for every package manager. |
 | Install folder | `ProgramFiles64\umage\CodeShellManager` | same | Matches. The WPF app's files (`CodeShellManager.exe`, `Assets\`, `conpty.dll`, `OpenConsole.exe`) are removed by the upgrade's uninstall step. |
-| Main exe | `CodeShellManager.exe` | `codeshell.exe` (GUI) + `csm.exe` (CLI, MCP) + `csm-session-summary.exe`, `csm-review.exe` | Differs. See Decisions. Start-menu and desktop shortcuts are re-created; **taskbar pins and users' own shortcuts or scripts that name `CodeShellManager.exe` break**. |
+| Main exe | `CodeShellManager.exe` | `codeshell.exe` (GUI) + `csm.exe` (CLI, MCP) + `csm-session-summary.exe`, `csm-review.exe` | Differs. See Decisions. Start-menu and desktop shortcuts are re-created (pointing at `codeshell.exe`). Stable also ships `CodeShellManager.exe`, a launcher that starts `codeshell.exe` beside it, so taskbar pins and users' own shortcuts or scripts that name `CodeShellManager.exe` keep working (see "The 0.x exe name"). |
 | `csm` CLI on PATH | none | install folder appended to the system PATH | New. `csm --start` finds `codeshell.exe` beside `csm.exe` (craft-ipc `resolve("codeshell")`), which is one reason not to rename the exe. |
 | Start menu shortcut | `Programs\CodeShellManager\CodeShellManager.lnk` (+ Uninstall) | same names; now carries the AppUserModelID | Matches, so the upgrade replaces it rather than adding a second entry. |
 | Desktop shortcut | `CodeShellManager.lnk` | same | Matches. |
@@ -76,8 +76,8 @@ for the stable channel.
 | Data folder | `%APPDATA%\CodeShellManager\` : `state.json`(+`.bak`), `output.db` (search index and notes), `crash.log`, `update-cache.json`, `webview2\` | `%APPDATA%\CodeShellManager2\` : `state.json`(+`.bak`), `addons\`, `addon-data\`; index in `%LOCALAPPDATA%\CodeShellManager2\` (beta: `CodeShellManager2-Beta`, see Channels) | Deliberately separate: the formats differ and the WPF app's folder stays as it was, so a rollback to 0.x finds its data. |
 | First-run migration | n/a | On a true first run (no v2 `state.json` or `.bak`, default location, not `--clean`), `codeshell` imports the WPF app's sessions and groups (`state_import_wpf`, sessions arrive asleep), the settings that map onto version 2's (table "0.x settings" below), its Open with list **as a pending offer** (a one-time card, see below) and project notes (`notes_import_wpf`), on a background thread | Reads the WPF files only; never writes or deletes them. Not imported: search history (output.db's indexed output) and the settings marked "not carried". The empty screen and the palette still offer the import by hand, which does the same. |
 | Uninstall | removes program files and shortcuts; leaves `%APPDATA%\CodeShellManager` | same; leaves both data folders; removes the PATH entry | OK. |
-| Update check | GitHub `releases/latest` of `umage-ai/CodeShellManager`, compared as `Version` | none in v2 | A v2 final published as "latest" makes every running WPF app say "Update available 2.0.0" (pre-releases do not). |
-| Authenticode signing | Azure Trusted Signing (`azure/trusted-signing-action@v2.0.0`) on `CodeShellManager.exe` and the MSI; secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | same action and secrets, on `codeshell.exe`, `csm.exe`, `csm-session-summary.exe`, `csm-review.exe` and the MSI (never Microsoft's ConPTY files) | Already ported. Added: signatures verified before publishing; a stable tag refuses to publish unsigned. |
+| Update check | GitHub `releases/latest` of `umage-ai/CodeShellManager`, compared as `Version` | the same endpoint (a pre-release build reads the release list), a title-bar badge, `update_check`, setting `CheckForUpdates` (see "Update check") | A v2 final published as "latest" makes every running WPF app say "Update available 2.0.0" (pre-releases do not). 0.x's releases (below 2.0.0) are never offered to version 2. |
+| Authenticode signing | Azure Trusted Signing (`azure/trusted-signing-action@v2.0.0`) on `CodeShellManager.exe` and the MSI; secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | same action and secrets, on `codeshell.exe`, `csm.exe`, `csm-session-summary.exe`, `csm-review.exe`, the stable channel's `CodeShellManager.exe` launcher, and the MSI (never Microsoft's ConPTY files) | Already ported. Added: signatures verified before publishing; a stable tag refuses to publish unsigned. |
 | winget | `UmageAI.CodeShellManager`, MSI, `installers-regex '\.msi$'`, komac via `vedantmgoyal9/winget-releaser@v2`, secret `WINGET_TOKEN` (classic PAT, `public_repo` + `workflow`), fork sync of `umage-ai/winget-pkgs` | same workflow, same id and secret; refuses pre-release and pre-2.0 tags | komac reads ProductCode, UpgradeCode, scope and installer type from the new MSI. Same UpgradeCode keeps `winget upgrade` working. |
 | Chocolatey | `codeshellmanager`, wraps the release MSI (`Install-ChocolateyPackage`, `/qn /norestart`), secret `CHOCO_API_KEY`, WebView2 check | same id, secret and MSI name pattern (`CodeShellManager-<ver>-Setup.msi`); WebView2 check dropped; uninstall matches exactly `CodeShellManager` (not a beta); package files taken from the tag; MSI signature checked | `choco upgrade` runs the new MSI, which major-upgrades the WPF app. |
 | Release assets | `CodeShellManager-<ver>-Setup.msi`, `CodeShellManager-<ver>-win-x64.zip` | same names | Matches (Chocolatey and winget depend on the MSI name/extension). |
@@ -106,6 +106,8 @@ Nothing here runs without Allan's say-so. Tags are created by hand.
      (Allow adds them, Don't allow discards them; it does not come back).
    - `codeshell --clean` on that machine: empty, no import, no card, nothing written.
    - `csm app-info` in a new terminal (PATH), a toast from a session, Start menu and desktop shortcuts.
+   - a taskbar pin to the WPF app's `CodeShellManager.exe` made before the upgrade starts version
+     2 (the launcher), and so does `"C:\Program Files\umage\CodeShellManager\CodeShellManager.exe" --inbox`.
 3. Final: tag `v2.0.0`. The release is a normal release, marked latest.
 4. Dispatch the package workflows with the tag (they never run on their own; see the comments
    in each file for why the `release` trigger does not fire):
@@ -182,6 +184,54 @@ missing value keeps version 2's. Re-running the import takes the 0.x values agai
 | `DebugTerminalTrace`, `LegacyDefaultGroupCleared` | not carried | 0.x diagnostics and a 0.x one-shot migration flag. |
 | Window bounds, `LastLayout`, `GroupLayouts`, `RecentlyClosed` (not settings) | not carried | Version 2 places its window and lays out panes its own way; the import runs after the window is open. |
 
+## The 0.x exe name
+
+The WPF app was `<install folder>\CodeShellManager.exe`; version 2 is `codeshell.exe` (decision
+1). The stable channel (the one that replaces 0.x in its folder) therefore also installs
+`CodeShellManager.exe`: `apps/csm-legacy-launcher`, a small program that
+
+- starts `codeshell.exe` from its **own** folder (the full path; never a PATH lookup), with its
+  own arguments passed on as argv (no shell, nothing interpolated), and exits without waiting;
+- is a Windows GUI program (PE subsystem 2, checked by `release-v2.yml`), so no console window
+  flashes, and carries the app's icon and names, so a pin still looks like the app;
+- when `codeshell.exe` is missing, shows a message box naming the missing file, writes the same
+  text to stderr, and exits with code 2 (1: it did not start; 3: its own folder is unknown).
+
+It is in the stable MSI (`installer/CodeShellManager2.wxs`, `<?if Channel = stable ?>`), the
+stable portable zip (built from the same staged files, so unzipping over a 0.x copy keeps that
+copy's shortcuts working too), and is signed and verified like the other exes. A beta has none:
+its folder never held 0.x. The MSI's own Start menu and desktop shortcuts point at
+`codeshell.exe`, as before.
+
+## Update check
+
+Version 2 ports 0.x's update check (`UpdateService.cs`: `releases/latest`, a 10 s timeout, a
+badge "↑ vX available" in the title bar that opened the release page, a toast, a dismiss ×, a
+24 h cache file; 0.x had no setting to turn it off).
+
+- **Setting** `CheckForUpdates` (Settings › General › Updates, `settings_set`; on by default,
+  written to `state.json` only when off). The same section has **Check now** (`update_check`).
+- **When:** 5 s after start, then every 24 h while the app runs (1 h after a failed check). Never
+  under `--clean` or an isolated run (no state file), and never for a local build (the workspace
+  version `0.0.1`). `update_check` (app, CLI, MCP; effects `network`, no consent card) asks at once
+  whatever the setting or the run says. Nothing is cached on disk.
+- **How:** one HTTPS GET to `api.github.com/repos/umage-ai/CodeShellManager/…` on a worker thread
+  (`csm_services::update::fetch`, ureq over rustls, already in the tree), 10 s deadline, HTTPS
+  only, at most 3 redirects, body capped at 4 MB, the system proxy. The only identifying header is
+  `User-Agent: CodeShellManager/<version>`.
+- **What is offered** (`csm_core::update`): a final build reads `releases/latest` and is offered
+  newer final releases only. A pre-release build reads the release list (`releases/latest` never
+  names a pre-release) and is offered the newest of: newer finals, and newer pre-releases **of its
+  own kind** (a beta sees betas, an rc sees rcs; a beta is never offered an rc, whose stable MSI
+  would replace the beta install). Drafts and anything below 2.0.0 (0.x's releases) are never
+  offered. The payload is untrusted: a bad tag, wrong types or garbage offer nothing; an
+  unparsable answer is an error.
+- **Shown as** a pill "Update available: 2.1.0" at the right of the title bar. A click opens the
+  release page through `open_url` (the link is built from the validated tag, never taken from
+  the payload); its × (`update_dismiss`) hides it for that version until the app restarts.
+  Nothing is downloaded or installed. Unlike 0.x there is no OS toast: the badge stays until
+  dismissed.
+
 ## Decisions for Allan
 
 Decided by Allan on 2026-11-22: 1 (keep `codeshell.exe`), 3 and 8 (a beta data folder), 4
@@ -190,8 +240,9 @@ Decided by Allan on 2026-11-22: 1 (keep `codeshell.exe`), 3 and 8 (a beta data f
 1. **Exe name: decided, keep `codeshell.exe`** (Allan, 2026-11-22). Renaming would have needed
    `csm --start`'s lookup changed on Windows only, and bought one thing: taskbar pins and
    hand-made shortcuts to `CodeShellManager.exe` keep working. The Start-menu and desktop
-   shortcuts, the only ones the WPF installer made, are re-created by the upgrade. Mention
-   "re-pin to the taskbar" in the release notes.
+   shortcuts, the only ones the WPF installer made, are re-created by the upgrade. Since
+   2026-11-23 the stable channel also ships `CodeShellManager.exe` as a small launcher (see "The
+   0.x exe name"), so pins and hand-made shortcuts keep working with `codeshell.exe` unrenamed.
 2. **Release candidates on the stable channel.** Implemented: `-rc.N` builds the stable MSI
    (replaces the WPF app; published only as a GitHub pre-release). Recommendation: keep, so the
    upgrade is tested before the final. Alternative: rc on the beta channel, and test the stable
@@ -230,8 +281,13 @@ Decided by Allan on 2026-11-22: 1 (keep `codeshell.exe`), 3 and 8 (a beta data f
 
 ## Risks for existing WPF users
 
-- **Taskbar pins** to `CodeShellManager.exe` stop working after the upgrade (Windows offers to
-  remove the broken pin). Start menu and desktop shortcuts are fine.
+- **Taskbar pins** to `CodeShellManager.exe`: **fixed** (2026-11-23). Owners found after
+  upgrading that Windows said "The item 'CodeShellManager.exe' that this shortcut refers to has
+  been changed or moved". The stable MSI and zip now ship `CodeShellManager.exe` as a launcher
+  (see "The 0.x exe name" below), so pins, Start tiles, hand-made shortcuts and scripts keep
+  working. Left: a window started from such a pin shows as its own taskbar button next to the pin
+  (the pin names the launcher, the window belongs to `codeshell.exe`); re-pinning the running
+  window merges them. Start menu and desktop shortcuts are re-created and point at `codeshell.exe`.
 - **The WPF app running during the upgrade**: MSI asks to close it (files in use); a silent
   winget/choco upgrade may schedule a reboot (exit 3010) instead. Same as WPF-to-WPF upgrades.
 - **Import is one-shot.** If someone starts version 2 before the WPF app has saved its last

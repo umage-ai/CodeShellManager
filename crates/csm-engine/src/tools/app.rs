@@ -182,10 +182,14 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("TrayNoticeShown").or_insert(json!(s.tray_notice_shown));
         m.entry("PassSessionNameToClaude").or_insert(json!(s.pass_session_name_to_claude));
         m.entry("ClaudeUsageHistory").or_insert(json!(s.claude_usage_history));
+        m.entry("CleanClaudeCopies").or_insert(json!(s.clean_claude_copies));
         m.entry("StartMinimized").or_insert(json!(s.start_minimized));
         m.entry("StartMinimizedToTray").or_insert(json!(s.start_minimized_to_tray));
         m.entry("ThemeDark").or_insert(json!(s.theme_dark));
         m.entry("ThemeLight").or_insert(json!(s.theme_light));
+        m.entry("CheckForUpdates").or_insert(json!(s.check_for_updates));
+        m.entry("IndexMaxMb").or_insert(json!(s.index_max_mb));
+        m.entry("ClaudeUsageRetentionDays").or_insert(json!(s.claude_usage_retention_days));
     }
     Ok(v)
 }
@@ -272,6 +276,12 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     if key == "UiZoomPercent" && !UI_ZOOM_RANGE.contains(&updated.ui_zoom_percent) {
         return Err(ToolError::InvalidParams(format!("UiZoomPercent is a percentage from {} to {}", UI_ZOOM_RANGE.start(), UI_ZOOM_RANGE.end())));
+    }
+    if key == "IndexMaxMb" && !csm_core::models::INDEX_MAX_MB_RANGE.contains(&updated.index_max_mb) {
+        return Err(ToolError::InvalidParams("IndexMaxMb is from 100 to 102400 (MB)".into()));
+    }
+    if key == "ClaudeUsageRetentionDays" && !csm_core::models::USAGE_RETENTION_DAYS_RANGE.contains(&updated.claude_usage_retention_days) {
+        return Err(ToolError::InvalidParams("ClaudeUsageRetentionDays is from 0 (keep all) to 3650".into()));
     }
     ctx.state.app.settings = updated;
     ctx.state.persist();

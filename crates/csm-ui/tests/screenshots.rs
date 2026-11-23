@@ -108,6 +108,25 @@ fn screens() {
         },
         |_| {},
     );
+    shoot(
+        "05b-grid-menu",
+        ThemeKind::Mocha,
+        |b| {
+            let m = b.model_mut();
+            m.custom_grids = vec![csm_ui::model::GridPreset::new(5, 1), csm_ui::model::GridPreset::new(4, 3)];
+            if let Some(l) = m.layouts.get_mut("odulodo") {
+                l.mode = LayoutMode::Grid;
+                l.grid = csm_ui::model::GridPreset::new(5, 1);
+            }
+        },
+        |h| {
+            use egui_kittest::kittest::Queryable;
+            h.get_by_label("Layout: Grid").click();
+            settle(h);
+            // Hovered, a remembered size shows its forget ×.
+            h.get_by_label("Grid 4×3").hover();
+        },
+    );
     shoot("06-inspector-runs", ThemeKind::Mocha, |b| b.model_mut().inspector = Some(InspectorTab::Runs), |_| {});
     shoot(
         "06b-inspector-runs-many",

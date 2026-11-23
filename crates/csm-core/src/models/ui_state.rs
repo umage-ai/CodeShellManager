@@ -115,6 +115,33 @@ impl GroupLayout {
     }
 }
 
+/// The grid presets every Grid menu offers, in menu order: one row (1, 2, 4×1, 6×1), then two
+/// and three rows (2×2, 3×2, 6×2, 3×3). `(cols, rows)`.
+pub const GRID_PRESETS: [(u8, u8); 8] = [(1, 1), (2, 1), (4, 1), (6, 1), (2, 2), (3, 2), (6, 2), (3, 3)];
+
+/// The largest grid side `layout_set` accepts.
+pub const MAX_GRID_SIDE: u8 = 8;
+
+/// How many custom grid sizes are remembered ([`UiState::custom_grids`]).
+pub const MAX_CUSTOM_GRIDS: usize = 6;
+
+/// A grid preset's name: `1`, `2`, `4x1`, `6x1`, `2x2`, `3x2`, `6x2`, `3x3` (`×` for `x`, any
+/// case), plus the cell counts `4`, `6` and `9` for 2×2, 3×2 and 3×3.
+pub fn parse_grid_preset(p: &str) -> Option<(u8, u8)> {
+    let p = p.trim().to_ascii_lowercase().replace('×', "x");
+    match p.as_str() {
+        "1" => return Some((1, 1)),
+        "2" => return Some((2, 1)),
+        "4" => return Some((2, 2)),
+        "6" => return Some((3, 2)),
+        "9" => return Some((3, 3)),
+        _ => {}
+    }
+    let (c, r) = p.split_once('x')?;
+    let g = (c.trim().parse().ok()?, r.trim().parse().ok()?);
+    GRID_PRESETS.contains(&g).then_some(g)
+}
+
 /// The layout key of the rail's "All" tab, and of the single layout in the headers/flat views.
 pub const ALL_LAYOUT_KEY: &str = "__ALL__";
 
@@ -150,6 +177,9 @@ pub struct UiState {
     /// Height of the inbox panel in logical pixels; `None` is the UI's default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inbox_height: Option<f32>,
+    /// Width of the inspector in logical pixels, set by dragging its edge; `None` is the UI's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspector_width: Option<f32>,
     /// The inspector's tab, `None` when it is hidden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inspector: Option<InspectorTab>,
@@ -167,6 +197,11 @@ pub struct UiState {
     /// rail tab focuses it again. Read entry by entry, like `windows`.
     #[serde(deserialize_with = "lenient_group_focus", skip_serializing_if = "BTreeMap::is_empty")]
     pub group_focus: BTreeMap<String, String>,
+    /// Custom grid sizes the person set (`layout_set` with `cols`/`rows`), newest first, at most
+    /// [`MAX_CUSTOM_GRIDS`], none of them a [`GRID_PRESETS`] entry. `(cols, rows)`. Read
+    /// leniently: a bad entry is dropped.
+    #[serde(deserialize_with = "lenient_grids", skip_serializing_if = "Vec::is_empty")]
+    pub custom_grids: Vec<(u8, u8)>,
 }
 
 impl Default for UiState {
@@ -176,11 +211,13 @@ impl Default for UiState {
             layouts: BTreeMap::new(),
             inbox_open: true,
             inbox_height: None,
+            inspector_width: None,
             inspector: None,
             torn_off_groups: Vec::new(),
             focused_session: None,
             windows: BTreeMap::new(),
             group_focus: BTreeMap::new(),
+            custom_grids: Vec::new(),
         }
     }
 }
@@ -191,6 +228,47 @@ impl UiState {
     pub fn is_default(&self) -> bool {
         *self == UiState::default()
     }
+
+    /// Remembers a custom grid size, newest first: moved to the front when already there, and
+    /// the oldest dropped past [`MAX_CUSTOM_GRIDS`]. A preset or an out-of-range size is not
+    /// remembered. Returns whether the list changed.
+    pub fn remember_custom_grid(&mut self, cols: u8, rows: u8) -> bool {
+        let g = (cols, rows);
+        if !custom_grid_ok(g) || self.custom_grids.first() == Some(&g) {
+            return false;
+        }
+        self.custom_grids.retain(|x| *x != g);
+        self.custom_grids.insert(0, g);
+        self.custom_grids.truncate(MAX_CUSTOM_GRIDS);
+        true
+    }
+
+    /// Forgets a remembered custom grid size. Returns whether it was there.
+    pub fn forget_custom_grid(&mut self, cols: u8, rows: u8) -> bool {
+        let before = self.custom_grids.len();
+        self.custom_grids.retain(|x| *x != (cols, rows));
+        self.custom_grids.len() != before
+    }
+}
+
+/// A size worth remembering: each side 1-[`MAX_GRID_SIDE`], and not a preset.
+fn custom_grid_ok(g: (u8, u8)) -> bool {
+    (1..=MAX_GRID_SIDE).contains(&g.0) && (1..=MAX_GRID_SIDE).contains(&g.1) && !GRID_PRESETS.contains(&g)
+}
+
+fn lenient_grids<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<(u8, u8)>, D::Error> {
+    let serde_json::Value::Array(a) = serde_json::Value::deserialize(d)? else { return Ok(Vec::new()) };
+    let mut out: Vec<(u8, u8)> = Vec::new();
+    for v in a {
+        if let Ok(g) = serde_json::from_value::<(u8, u8)>(v)
+            && custom_grid_ok(g)
+            && !out.contains(&g)
+            && out.len() < MAX_CUSTOM_GRIDS
+        {
+            out.push(g);
+        }
+    }
+    Ok(out)
 }
 
 /// Reads a [`UiState`] and falls back to the defaults on `null` or on any shape error.
@@ -254,6 +332,58 @@ mod tests {
         let not_a_map: UiState = serde_json::from_str(r#"{"Windows":[1,2]}"#).unwrap();
         assert!(not_a_map.windows.is_empty());
         assert!(!serde_json::to_string(&UiState::default()).unwrap().contains("Windows"));
+    }
+
+    #[test]
+    fn grid_presets_parse_by_name_and_cell_count() {
+        let named =
+            [("1", (1, 1)), ("2", (2, 1)), ("4x1", (4, 1)), ("6×1", (6, 1)), ("2X2", (2, 2)), ("4", (2, 2)), (" 3x2 ", (3, 2)), ("6", (3, 2))];
+        for (name, g) in named {
+            assert_eq!(parse_grid_preset(name), Some(g), "{name}");
+        }
+        assert_eq!(parse_grid_preset("6x2"), Some((6, 2)));
+        assert_eq!(parse_grid_preset("9"), Some((3, 3)));
+        for bad in ["", "x", "5x5", "7", "2x", "x2", "-1x2", "300x1", "1x1x1"] {
+            assert_eq!(parse_grid_preset(bad), None, "{bad}");
+        }
+        for g in GRID_PRESETS {
+            assert_eq!(parse_grid_preset(&format!("{}x{}", g.0, g.1)), Some(g), "every preset parses as CxR");
+        }
+    }
+
+    #[test]
+    fn custom_grids_are_remembered_newest_first_deduplicated_and_capped() {
+        let mut ui = UiState::default();
+        assert!(!ui.remember_custom_grid(3, 2), "a preset is not remembered");
+        assert!(!ui.remember_custom_grid(9, 1) && !ui.remember_custom_grid(0, 2), "out of range");
+        assert!(ui.remember_custom_grid(5, 1));
+        assert!(ui.remember_custom_grid(4, 2));
+        assert!(!ui.remember_custom_grid(4, 2), "already the newest");
+        assert!(ui.remember_custom_grid(5, 1), "moves to the front");
+        assert_eq!(ui.custom_grids, vec![(5, 1), (4, 2)]);
+        for g in [(1, 2), (1, 3), (2, 3), (4, 4), (5, 5)] {
+            ui.remember_custom_grid(g.0, g.1);
+        }
+        assert_eq!(ui.custom_grids.len(), MAX_CUSTOM_GRIDS);
+        assert_eq!(ui.custom_grids.first(), Some(&(5, 5)));
+        assert!(!ui.custom_grids.contains(&(4, 2)), "the oldest went");
+        assert!(ui.forget_custom_grid(5, 1));
+        assert!(!ui.forget_custom_grid(5, 1), "already gone");
+        assert_eq!(ui.custom_grids.len(), MAX_CUSTOM_GRIDS - 1);
+
+        let json = serde_json::to_string(&ui).unwrap();
+        assert!(json.contains(r#""CustomGrids":[[5,5],"#), "{json}");
+        assert_eq!(serde_json::from_str::<UiState>(&json).unwrap(), ui);
+        assert!(!serde_json::to_string(&UiState::default()).unwrap().contains("CustomGrids"));
+        // Hostile files: bad entries, presets, duplicates and extras are dropped; the rest stays.
+        let back: UiState = serde_json::from_str(
+            r#"{"Inspector":"git","CustomGrids":[[5,1],"x",[3,2],[5,1],[0,1],[1,300],[7,7],[1,2],[1,3],[2,3],[4,4],[5,5],[8,8]]}"#,
+        )
+        .unwrap();
+        assert_eq!(back.inspector, Some(InspectorTab::Git));
+        assert_eq!(back.custom_grids, vec![(5, 1), (7, 7), (1, 2), (1, 3), (2, 3), (4, 4)]);
+        let back: UiState = serde_json::from_str(r#"{"CustomGrids":{"a":1},"Inspector":"git"}"#).unwrap();
+        assert!(back.custom_grids.is_empty() && back.inspector == Some(InspectorTab::Git));
     }
 
     #[test]

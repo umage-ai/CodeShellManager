@@ -81,7 +81,45 @@ pub const SIDE_UNPINNED_MAX: usize = 4;
 
 /// Which sessions a layout shows, and where. `companion` is the unpinned session used last in
 /// this scope (Side by side keeps it beside the pins while a pinned one is active).
-pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect, companion: Option<&str>) -> Vec<(SessionId, Rect, PaneOpts)> {
+/// The unpinned Side by side panes, kept in place from one frame to the next: sessions that are
+/// no longer live leave their pane to the next live one (sidebar order), and an active session
+/// that is not shown takes the pane of the session used longest ago (`last_used`, missing =
+/// never), so the panes being worked in never move.
+pub fn side_slots(prev: &[SessionId], live: &[SessionId], active: Option<&str>, last_used: &HashMap<SessionId, f64>) -> Vec<SessionId> {
+    let cap = SIDE_UNPINNED_MAX.min(live.len());
+    let mut slots: Vec<Option<SessionId>> = prev.iter().take(cap).map(|s| live.contains(s).then(|| s.clone())).collect();
+    // Holes and missing panes take the active session first, then live ones in sidebar order.
+    let mut spare = active.filter(|a| live.iter().any(|l| l == a)).map(str::to_owned).into_iter().chain(live.iter().cloned());
+    let mut next = |slots: &Vec<Option<SessionId>>| spare.find(|c| !slots.iter().flatten().any(|s| s == c));
+    for i in 0..slots.len() {
+        if slots[i].is_none() {
+            slots[i] = next(&slots);
+        }
+    }
+    while slots.len() < cap {
+        match next(&slots) {
+            Some(c) => slots.push(Some(c)),
+            None => break,
+        }
+    }
+    let mut slots: Vec<SessionId> = slots.into_iter().flatten().collect();
+    if let Some(a) = active
+        && live.iter().any(|l| l == a)
+        && !slots.iter().any(|s| s == a)
+    {
+        let used = |s: &SessionId| last_used.get(s).copied().unwrap_or(f64::NEG_INFINITY);
+        let oldest = slots.iter().enumerate().min_by(|x, y| used(x.1).total_cmp(&used(y.1))).map(|(i, _)| i);
+        match oldest {
+            Some(i) => slots[i] = a.to_owned(),
+            None => slots.push(a.to_owned()),
+        }
+    }
+    slots
+}
+
+/// `slots` is the unpinned Side by side panes as kept across frames ([`side_slots`]); `None` takes
+/// the first live sessions in sidebar order.
+pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect, companion: Option<&str>, slots: Option<&[SessionId]>) -> Vec<(SessionId, Rect, PaneOpts)> {
     let gap = space::PANE_GAP;
     // Minimized panes are in the strip under the canvas, not on it.
     let live: Vec<&SessionView> = model
@@ -108,10 +146,14 @@ pub fn plan(model: &UiModel, scope: &Scope, layout: &Layout, area: Rect, compani
             let mut ids: Vec<SessionId> = layout.pinned.iter().filter(|p| is_live(p)).cloned().collect();
             let mut preview = None;
             if ids.is_empty() {
-                // Nothing pinned: the live sessions themselves, in sidebar order (so clicking
-                // between them doesn't shuffle the panes), at most SIDE_UNPINNED_MAX, always
-                // including the active one. Pinning switches to "pinned + the active one".
-                ids = live.iter().take(SIDE_UNPINNED_MAX).map(|s| s.id.clone()).collect();
+                // Nothing pinned: the live sessions themselves, at most SIDE_UNPINNED_MAX, always
+                // including the active one. The panes keep their places across clicks (`slots`);
+                // without them, the first live sessions in sidebar order. Pinning switches to
+                // "pinned + the active one".
+                ids = match slots {
+                    Some(s) => s.iter().filter(|id| is_live(id)).take(SIDE_UNPINNED_MAX).cloned().collect(),
+                    None => live.iter().take(SIDE_UNPINNED_MAX).map(|s| s.id.clone()).collect(),
+                };
                 if let Some(a) = &active
                     && !ids.contains(a)
                 {
@@ -341,7 +383,34 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         ui.ctx().data_mut(|d| d.insert_temp(companion_id, a));
     }
     let companion: Option<String> = ui.ctx().data(|d| d.get_temp(companion_id));
-    let planned = plan(&model, &scope, &layout, inner, companion.as_deref());
+    // Unpinned Side by side keeps its panes in place and puts a newly shown session in the pane
+    // used longest ago (UI-only state, per scope; `side_slots`).
+    let live: Vec<SessionId> = model
+        .scope_sessions(&scope)
+        .into_iter()
+        .filter(|s| s.status.is_live() && !layout.torn.contains(&s.id) && !layout.is_minimized(&s.id))
+        .map(|s| s.id.clone())
+        .collect();
+    let slots = if layout.mode == LayoutMode::Side && !layout.pinned.iter().any(|p| live.contains(p)) {
+        let used_id = Id::new(("side-used", scope.key()));
+        let slots_id = Id::new(("side-slots", scope.key()));
+        let now = ui.ctx().input(|i| i.time);
+        let mut used: HashMap<SessionId, f64> = ui.ctx().data(|d| d.get_temp(used_id)).unwrap_or_default();
+        if let Some(a) = model.active.as_ref() {
+            used.insert(a.clone(), now);
+        }
+        used.retain(|id, _| live.contains(id));
+        let prev: Vec<SessionId> = ui.ctx().data(|d| d.get_temp(slots_id)).unwrap_or_default();
+        let slots = side_slots(&prev, &live, model.active.as_deref(), &used);
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(used_id, used);
+            d.insert_temp(slots_id, slots.clone());
+        });
+        Some(slots)
+    } else {
+        None
+    };
+    let planned = plan(&model, &scope, &layout, inner, companion.as_deref(), slots.as_deref());
     let maxed = planned.iter().any(|(_, _, o)| o.maximized);
     if planned.is_empty() {
         let msg = if model.scope_sessions(&scope).is_empty() {
@@ -989,16 +1058,20 @@ pub fn pane(
         let body_bg = style.background();
         let edges = look.and_then(csm_core::look::Look::padding_edges).map(|e| e.map(f32::from));
         let font_pt = look.and_then(|l| l.font_size).map(|n| n as f32);
-        let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, ..ViewOptions::default() };
+        let claude = s.is_claude();
+        let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, claude, ..ViewOptions::default() };
         let mut child = ui.new_child(UiBuilder::new().max_rect(body));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
-        let PaneHost { renderer, views, padding, .. } = host;
-        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), ..opts };
+        let PaneHost { renderer, views, padding, clean_claude_copies, .. } = host;
+        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), clean_copy: claude && *clean_claude_copies, ..opts };
         let view = views.entry(view_key.clone()).or_insert_with(|| TerminalView::new(Id::new(("csm-pane", view_key.clone()))));
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;
         if let Some(url) = vr.open_link {
             actions.push(Action::Tool("open_url", json!({"url": url})));
+        }
+        if vr.copy_reply {
+            actions.push(Action::CopyClaude("claude_reply_get", json!({"session_id": s.id})));
         }
         let placeholder = if queued { Some(format!("Starting {} in {}…", s.command, s.name)) } else { TerminalView::placeholder(src) };
         if let Some(text_) = placeholder {
@@ -1058,7 +1131,8 @@ pub fn pane(
     let run_label = run.map(|r| r.label.clone()).unwrap_or_default();
     let run_main_w = icon::XS + space::XS + widgets::text_width(ui, &run_label, theme::medium(text::CAPTION)) + space::SM + space::XS + space::XXS;
     let run_caret_w = icon::XS + space::SM;
-    let editor = if o.mini { None } else { s.open_with.iter().find(|e| e.is_default).or(s.open_with.first()) };
+    // No editor for an SSH (or NEXUS) session: its folder is on another machine.
+    let editor = if o.mini || s.kind == Kind::Ssh { None } else { s.open_with.iter().find(|e| e.is_default).or(s.open_with.first()) };
     let free_ctls = !o.mini && !o.maximized && (o.mode == Some(LayoutMode::Free) || o.torn);
     let bar_n = 1 + usize::from(can_max) + usize::from(!o.torn) + usize::from(!o.mini);
     // The name keeps its minimum, and the branch chip its room, before optional controls.
@@ -1606,7 +1680,7 @@ mod tests {
         let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 900.0));
         let live: Vec<SessionId> = model.scope_sessions(&scope).iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         assert!(live.len() > SIDE_UNPINNED_MAX, "the demo has more live sessions than the cap");
-        let ids = |m: &UiModel, l: &Layout| plan(m, &scope, l, area, None).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
+        let ids = |m: &UiModel, l: &Layout| plan(m, &scope, l, area, None, None).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
 
         // Nothing pinned: the first live sessions in sidebar order, none marked "Not pinned".
         let none = Layout { mode: LayoutMode::Side, ..Layout::default() };
@@ -1630,11 +1704,48 @@ mod tests {
         // Clicking the pinned one keeps the unpinned one used last beside it.
         model.active = Some(live[0].clone());
         assert_eq!(ids(&model, &one), vec![(live[0].clone(), false)], "without a companion only the pin");
-        let with = plan(&model, &scope, &one, area, Some(&far)).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
+        let with = plan(&model, &scope, &one, area, Some(&far), None).into_iter().map(|(id, _, o)| (id, o.preview)).collect::<Vec<_>>();
         assert_eq!(with, vec![(live[0].clone(), false), (far.clone(), true)]);
         // A companion that is itself pinned adds nothing.
         let both = Layout { mode: LayoutMode::Side, pinned: vec![live[0].clone(), far.clone()], ..Layout::default() };
-        assert_eq!(plan(&model, &scope, &both, area, Some(&far)).len(), 2);
+        assert_eq!(plan(&model, &scope, &both, area, Some(&far), None).len(), 2);
+    }
+
+    #[test]
+    fn a_new_side_session_takes_the_pane_used_longest_ago() {
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<SessionId>>();
+        let live = ids(&["a", "b", "c", "d", "e", "f"]);
+        let used: HashMap<SessionId, f64> = [("a", 3.0), ("b", 4.0), ("c", 1.0), ("d", 2.0)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        // First frame: the first live sessions in sidebar order.
+        let first = side_slots(&[], &live, Some("a"), &used);
+        assert_eq!(first, ids(&["a", "b", "c", "d"]));
+        // Clicking a shown one moves nothing.
+        assert_eq!(side_slots(&first, &live, Some("d"), &used), first);
+        // Clicking e: c was used longest ago, so e takes c's pane; the others stay put.
+        let mut used2 = used.clone();
+        used2.insert("e".into(), 5.0);
+        let second = side_slots(&first, &live, Some("e"), &used2);
+        assert_eq!(second, ids(&["a", "b", "e", "d"]));
+        // Then f: d is now the oldest of the shown ones.
+        used2.insert("f".into(), 6.0);
+        assert_eq!(side_slots(&second, &live, Some("f"), &used2), ids(&["a", "b", "e", "f"]));
+        // A session that was never used counts as oldest.
+        let never = side_slots(&ids(&["a", "b", "c", "d"]), &live, Some("e"), &HashMap::new());
+        assert_eq!(never.len(), 4);
+        assert!(never.contains(&"e".to_string()));
+    }
+
+    #[test]
+    fn side_slots_fill_holes_and_never_exceed_the_cap() {
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<SessionId>>();
+        let used = HashMap::new();
+        // b went asleep: its pane goes to the active one if it is not shown, else the next live one.
+        assert_eq!(side_slots(&ids(&["a", "b", "c", "d"]), &ids(&["a", "c", "d", "e", "f"]), Some("f"), &used), ids(&["a", "f", "c", "d"]));
+        assert_eq!(side_slots(&ids(&["a", "b", "c", "d"]), &ids(&["a", "c", "d", "e"]), Some("a"), &used), ids(&["a", "e", "c", "d"]));
+        // Fewer live sessions than the cap: all of them, no duplicates.
+        assert_eq!(side_slots(&ids(&["a", "b", "c", "d"]), &ids(&["a", "c"]), Some("c"), &used), ids(&["a", "c"]));
+        // Nothing live.
+        assert!(side_slots(&ids(&["a"]), &[], None, &used).is_empty());
     }
 
     #[test]
