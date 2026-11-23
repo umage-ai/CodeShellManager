@@ -146,8 +146,8 @@ the previous one of the same channel, and the final replace an rc.
   (add/add conflicts; the WPF ones must not survive: the WPF `chocolateyinstall.ps1` matches
   `CodeShellManager*`, which would also match a beta, and its nuspec describes the WPF app).
 - Delete `installer/CodeShellManager.wxs` (the WPF installer); `installer/CodeShellManager2.wxs` is the one.
-- `ci.yml` runs on `v2` only; it needs `main` added to its triggers (not done here: it is not
-  release-owned).
+- `ci.yml` runs only when asked, on a push to a `ci/**` branch (Linux) or `ci-full/**` (all three
+  platforms), to keep Actions minutes down; after the merge, keep it that way (do not add `main`).
 - Until the merge, a `v2.*` tag on a v2 commit runs only v2's workflows (a tag runs the files of
   the commit it points at), so betas are safe to tag now.
 

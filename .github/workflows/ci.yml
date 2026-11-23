@@ -1,12 +1,14 @@
 name: CI
 
-# Pushes to v2 and pull requests into it (the WPF app's CI is build.yml on main). Feature
-# branches are merged locally first; this is the check that the merge is green on all three platforms.
+# Runs only when asked: a push to v2 runs nothing (every v2 commit already passed the local gate
+# on Windows). To check the other platforms, push v2 to a ci branch:
+#   git push -f origin v2:ci/check        Linux only (cheap)
+#   git push -f origin v2:ci-full/check   Windows, macOS and Linux (before a release; macOS
+#                                         minutes cost about 10x Linux)
+# The workflow file is not on main, so "Run workflow" (workflow_dispatch) is not offered.
 on:
   push:
-    branches: [v2]
-  pull_request:
-    branches: [v2]
+    branches: ['ci/**', 'ci-full/**']
 
 permissions:
   contents: read
@@ -26,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        os: ${{ fromJSON(startsWith(github.ref_name, 'ci-full/') && '["windows-latest", "macos-latest", "ubuntu-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v7
 
