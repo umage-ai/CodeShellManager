@@ -1,6 +1,10 @@
 # Phone remote: design note
 
 Status: **design, no code yet** (branch `phone/addon`, base `b16b6c48f57aaa493d627f3e32d4f9cc2d4e1060`).
+Revision 2: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
+tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
+facts).
+
 Read with `docs/addons.md` (the add-on protocol, screens), `relay/README.md` (the relay),
 `crates/csm-remote-proto/` (the wire protocol and its vectors) and `docs/design/remote-csm.md`
 section 4.6 (how this relates to the peer remote).
@@ -11,7 +15,8 @@ public in this repository, **off by default**. It connects **outbound** to a sel
 untrusted. umage hosts a relay for umage's own use only. The phone web app is a static site on a
 umage static domain, **not** served by the relay. Scope is view and operate, with the fixed op set
 (no free text, no terminal reading). Push notifications show the session name, with a "hide names"
-switch.
+switch. A pairing screen in CSM shows a link and a QR code, a check code, Allow or Deny, and a level;
+a device list with revoke; and an indicator.
 
 Where this note says "decision", the owner should confirm before step 1 starts. The list is in
 section 13.
@@ -31,9 +36,12 @@ section 13.
 | Relay (`csm-relay`) with push forwarding and access control | `relay/` (own `Cargo.toml`, `tests/relay.rs`) | built |
 | Process add-on shape (JSON-RPC over stdio, data folder, screens) | `apps/csm-review/` (`host.rs`, `view.rs`), `samples/addons/review/addon.toml` | built |
 | Private file helper for the data folder (`icacls` on Windows, 0700/0600 on Unix) | `crates/csm-peer/src/fsperm.rs` | built; the add-on should reuse the approach, which may mean moving it to a shared crate (step 1 decision) |
-| QR code generation and drawing | `crates/csm-ui/src/screens/remote.rs` (`qr_modules`, `qr`), uses `qrcodegen` | built for the peer pairing screen |
-| Secrets in the OS keychain for add-ons (`addon_secret_*`, effect `stores_secrets`) | `docs/addons.md` "Secrets" | documented as built |
-| Screen widgets | `docs/addons.md` "The widgets" | built; **no image, no QR widget** |
+| QR matrix (`qr_modules`, Low error correction) and drawing (`qr`) | `crates/csm-ui/src/screens/remote.rs` (uses `qrcodegen`) | built for the peer pairing screen |
+| Screen tree parsing and validation (`kind`, `checkbox`, `segmented`, ...) | `crates/csm-core/src/addons/screen/mod.rs` | built; no image, no QR node |
+| Secrets in the OS keychain for add-ons (`addon_secret_*`, effect `stores_secrets`) | `docs/addons.md` "Secrets" | documented as built; the tools are refused for every caller except the add-on that stored the secret |
+| Caller kinds `ui`, `cli`, `external`, `addon`, `peer` | `crates/csm-engine/src/plugins.rs` (`caller_json`) | built |
+| Standing grants (`[process] calls`) for an add-on's `csm/call` | `plugins.rs` (`standing_call`), `engine.rs` (the consent check) | built: a listed tool runs without a consent card whatever its effects |
+| `screen_open` (a `ui` effect tool, runs directly) | `docs/tools.md`, `docs/addons.md` "The tools" | built |
 | Session/inbox/task tools the add-on needs | `docs/tools.md` | built (names below) |
 | Source policy: process spawn only in listed modules; no clippy-denied panics in `DENY_ROOTS` | `xtask/src/policy.rs` | `apps/csm-phone/` must be added to `DENY_ROOTS` |
 
@@ -50,6 +58,7 @@ Relevant crypto already in `Cargo.lock` (no new downloads for the add-on): `snow
 | Relay | `relay/` (existing) | Rust | No change for v1. Dev tests start it on 127.0.0.1. |
 | Phone web app | `phone/` at the repository root | plain ES modules, JSDoc types | Static files only. Its own tests run with Node. Not a Cargo member. |
 | Shared protocol | `crates/csm-remote-proto/` (existing) | Rust | Gets the Noise and pairing vectors the browser must pass. |
+| CSM additions | `csm-core` (`qr` module, the `qr` node), `csm-engine` (`csm/status` handling), `csm-ui` (drawing) | Rust | Listed for review in sections 8.2 and 8.3. |
 
 Why `phone/` and not `apps/`: `apps/*` are Cargo members that `xtask` checks as Rust. The web app is
 JavaScript with its own tooling. Keeping it at the top level stops the Rust gates from reading it,
@@ -68,12 +77,14 @@ or a build of `phone/`; that is a deployment choice, not a code one.
 - Pair a phone with a PC by scanning a QR code (or pasting the link). Check code, Allow or Deny,
   level (viewer or operator).
 - Device list with revoke, and a level change.
+- An indicator in CSM for the add-on's state (section 8.3): the Settings row and the title bar.
 - Session list with status and "needs you" first; session detail.
 - Operate by level: wake, sleep, restart, close (with the busy confirmation), new session from an
   allow-listed folder and profile, the allow-listed slash commands, clear status, and "Turn on Remote
   Control" for a session.
-- Web Push for "needs you" with a "hide names" switch.
+- Web Push for "needs you" with a "hide names" switch, sent whether or not a phone is connected.
 - A PWA: installable, the app shell works offline, no data stored outside the phone's IndexedDB.
+- A settings screen in CSM: relay URL, enrolment token, folders, profiles, command allow list, push.
 
 **Out of scope for v1** (explicit, so they are not built by accident):
 - Free text into a session, the terminal (reading or typing), screen contents, a session's output.
@@ -87,6 +98,7 @@ or a build of `phone/`; that is a deployment choice, not a code one.
 - A relay-side account system. Admission is by host (the relay's own access control).
 - Offline command queues. A command sent while the PC is unreachable fails with `host_offline`.
 - Localisation beyond English.
+- A tab badge on the screen (the tab strip has no badge; section 8).
 
 ---
 
@@ -113,13 +125,14 @@ author = "CodeShellManager"
 
 [process]
 argv = ["csm-phone"]
-effects = ["stores_data", "stores_secrets", "accesses_network", "sends_input", "launches_process"]
+effects = ["stores_data", "stores_secrets", "accesses_network", "sends_input", "launches_process", "reads_session_content"]
 calls = [
   "session_list", "session_get", "session_recent", "inbox_list",
   "task_list", "task_get", "settings_get",
   "session_new", "session_wake", "session_sleep", "session_restart",
   "session_close", "session_status_clear",
   "session_send_command",
+  "screen_open",
 ]
 ```
 
@@ -129,25 +142,44 @@ Effects, honestly:
 |---|---|
 | `stores_data` | device store, host key file, config, push subscriptions, under `addon-data/phone-remote/` |
 | `stores_secrets` | the relay enrolment token and the relay host secret, through `addon_secret_set` |
-| `accesses_network` | the WebSocket to the relay and the push POSTs made by the relay on its behalf |
+| `accesses_network` | the WebSocket to the relay and the push requests the relay makes on its behalf |
 | `sends_input` | `session_send_command` (a slash command from the allow list, typed and Enter) |
 | `launches_process` | `session_new`, `session_wake`, `session_restart` start agent programs |
+| `reads_session_content` | the add-on reads session names, status text and task titles and sends them to paired phones. It does not read terminal text or task bodies. |
 
 `calls` lists what runs without a consent card per call. The enable dialog shows the whole list.
 Those tools change sessions, so this list is a real grant: the person approves it once, at enable.
-Decision 3 in section 13 asks whether the owner accepts that (the alternative is a consent card for
-each phone action, which makes the phone unusable).
+Decision 3 in section 13 asks whether the owner accepts that. The grant is real: a tool listed in
+`calls` runs for the add-on's own `csm/call` without a card (`engine.rs`, the consent check, checks
+`standing_call` first), so `session_send_command` (effect `sends_input`) runs through `calls` too.
+This closes what was decision 9 in review round 1 (section 12).
 
-Add-on tools (toolset `addons`, through the `[process]` tool list in `initialize`):
+`screen_open` is in `calls` because the pairing tool opens the pairing screen through it (section 8).
+`addon_secret_set` and `addon_secret_get` are not in `calls`: they are the add-on's own tools, allowed
+by its `stores_secrets` effect, and refused to every other caller (`docs/addons.md`, "Secrets").
 
-| id | effects | what |
-|---|---|---|
-| `phone-remote.status` | read | the relay state, paired devices (name, level, last seen, kind), the device store state (ok, damaged) |
-| `phone-remote.pair` | ui, state (opens the pairing screen; starts a pairing slot) | the person's pairing screen |
-| `phone-remote.revoke` | state | `device_id`; the same as the Revoke button |
-| `phone-remote.enable_access` | state, accesses_network | `on` (bool): the second switch under the add-on, so enabling the add-on alone does not connect |
+**Add-on tools** (toolset `addons`, declared in `initialize`). An add-on tool may only name the effects
+above. It may not name `ui`: that effect belongs to core UI-only tools and is not in the add-on's
+declared list, so it would be refused (`docs/addons.md`, "Tools"). No add-on tool is routed through
+`crates/csm-ui/src/view_overlay.rs`; that table is for core tools only.
 
-These tools are for CSM and MCP. A phone never calls them.
+| id | effects | callers | what |
+|---|---|---|---|
+| `phone-remote.status` | `[]` | any | relay state, number of paired devices, the device store state (ok, damaged). Device names and levels are returned to the `ui` caller only. No offer, no secret. |
+| `phone-remote.pair` | `[]` | `ui` only; refused for `cli`, `external`, `addon`, `peer` | opens the pairing screen (`screen_open`, through `csm/call`). It opens **no** pairing slot: the person presses "Start pairing" on the screen. It writes nothing, so it declares no effect. |
+| `phone-remote.revoke` | `stores_data` | `ui` only | `device_id`. The same change as the Revoke button on the devices screen. |
+| `phone-remote.enable_access` | `stores_data`, `accesses_network` | `ui` only | `on` (bool): the second switch, so enabling the add-on alone does not connect. |
+
+Why `pair` declares `[]` and not `stores_data`, as review round 1 suggested: the tool writes nothing.
+Declaring a write it does not make would be the dishonest form of the effect. Declaring `[]` still
+runs for `ui` callers and is refused for the others by the add-on's own check, which is the rule that
+matters here.
+
+Why the tools with `stores_data` run without asking: `stores_data` is not a consent effect, and
+`accesses_network` asks no one for an MCP client (`docs/addons.md`, "Effects and consent"). That is
+why the caller check in section 4.1 is the only gate, and why it must hold.
+
+These tools are for CSM's own UI, the palette and the person. A phone never calls them.
 
 ---
 
@@ -162,20 +194,20 @@ is one fixed tool, and no argument from the phone reaches a CSM tool unchecked.
 |---|---|---|---|
 | `hello` | viewer | none | Looks the device up in the store by routing token. Unknown: `bye` with `revoked`. Replies with `HelloData` (`level`, `hide_names`, `notify`, `push_ready`, `remote_control` from `settings_get ClaudeCommands`, `max_message_bytes` 48 KiB). |
 | `ping` | viewer | none | |
-| `snapshot` | viewer | `session_list` (+ `inbox_list` for the count) | Starts a new `seq` (section 7). |
+| `snapshot` | viewer | `session_list` (+ `inbox_list` for the count) | Starts a new `seq` (section 7). Served from the host-wide tracker's last list, when it is fresh (under 1 s old); otherwise a new `session_list`. |
 | `session.list` | viewer | `session_list` | Same data as `snapshot`, one message. |
 | `session.get` | viewer | `session_get` | Returns `SessionInfo` with `message` (the program's own status text). |
 | `inbox.list` | viewer | `inbox_list` | `InboxItem` per entry. |
 | `task.list` | viewer | `task_list` (open tasks, `include_closed` false) | Titles and state only. |
 | `task.get` | viewer | `task_get` | Title, state, session. The body is **not** returned in v1 (section 13, decision 6). |
-| `folder.list` | viewer | `session_recent`, `session_list` (folders), add-on config | Only folders on the add-on's allow list. `pinned` is true for allow-list entries marked pinned in config. |
-| `profile.list` | viewer | none (add-on config) | Profiles are the add-on's own: a name, a label, a command (argv) on the PC. A phone sees name and label, never the argv. |
+| `folder.list` | viewer | `session_recent`, `session_list` (folders), add-on config | Only folders on the add-on's allow list (exact match, section 4.1). `pinned` is true for allow-list entries marked pinned in config. |
+| `profile.list` | viewer | none (add-on config) | Profiles are the add-on's own: a name, a label, a command on the PC. A phone sees name and label, never the command. |
 | `command.list` | viewer | `settings_get` (`ClaudeCommands`), add-on config | The intersection: the PC's configured slash commands and the add-on's allow list. Default allow list: `/remote-control`. |
 | `session.wake` | operator | `session_wake` | |
 | `session.sleep` | operator | `session_sleep` | |
-| `session.restart` | operator | `session_restart` | Slow: it waits for the program to exit. The reply is sent when CSM answers; the channel stays open meanwhile. |
+| `session.restart` | operator | `session_restart` | Slow: it waits for the program to exit. The reply is sent when CSM answers; the channel stays open meanwhile. It holds one global slot (section 4) while it waits. |
 | `session.close` | operator | `session_close` (`force` as sent) | A busy session without `force` gets `busy` back; the phone asks again. |
-| `session.new` | operator | `session_new` | `folder` must be on the allow list; `command` comes from the profile (never from the phone); `kind` local only. With `remote_control`, the add-on waits (at most 2 minutes) for the session to report idle, then calls `session_send_command` with `/remote-control`. |
+| `session.new` | operator | `session_new` | `folder` is replaced by the allow-list entry's own spelling (never the phone's string). `command` comes from the profile (never from the phone). `kind` local only. With `remote_control`, the add-on waits (at most 2 minutes) for the session to report idle, then calls `session_send_command` with `/remote-control`. |
 | `session.command` | operator | `session_send_command` (`command`, `force` as sent) | `command` must be on the `command.list` intersection, else `command_not_allowed`. CSM itself refuses a session mid-turn. |
 | `session.status_clear` | operator | `session_status_clear` | |
 | `push.subscribe` | viewer | none (device store) | The endpoint must be https and on the relay's allow list (`push.allowed_hosts`); checked here too, so a refused one never reaches the relay. |
@@ -185,15 +217,81 @@ is one fixed tool, and no argument from the phone reaches a CSM tool unchecked.
 Error mapping, from CSM's error to the phone's `ErrorCode`:
 `unknown session` to `unknown_session`; a busy refusal to `busy`; a refused command to
 `command_not_allowed`; a folder off the list to `folder_not_allowed`; any other tool failure to
-`failed` with CSM's message (plain text, shown as is); CSM not answering (the 10 s call timeout) to
-`unavailable`. The phone never sees CSM's raw JSON.
+`failed` with CSM's message (plain text, shown as is); CSM not answering (the 30 s `csm/call` timeout,
+`docs/addons.md` "Messages") to `unavailable`. The phone never sees CSM's raw JSON.
 
-**Concurrency.** Every op runs on a worker. The phone channel loop never waits for a CSM call. Per
-channel, at most 8 requests in flight; beyond that the add-on answers `rate_limited`. A `session.restart`
-can take a long time, so it does not hold the other requests of its channel.
+**Concurrency.** Every op runs on a worker. The phone channel loop never waits for a CSM call.
+- Per channel, at most 8 requests in flight; beyond that the add-on answers `rate_limited`.
+- Per add-on, a **global in-flight cap of 8** CSM-bound requests across all channels (the same number
+  CSM allows the add-on in `csm/call`). A request beyond it is answered `rate_limited` at once; it is
+  not queued. Ops that do not call CSM (`hello`, `ping`, `push.*`, `settings.set`, `command.list` from
+  config) are not counted.
+- `MAX_CHANNELS_PER_HOST` (16) bounds the channels. Together, 16 channels times 8 is a bound on
+  queued work per channel, and the global cap bounds the work sent to CSM.
+- A `session.restart` can take a long time: it holds one global slot and does not hold the other
+  requests of its channel.
 
-**Calls from the add-on** use `csm/call` as in `addons.md` ("Process add-ons", "Messages"). Their
-results go back to the request that asked.
+**Calls from the add-on** use `csm/call` as in `docs/addons.md` ("Process add-ons", "Messages"). Their
+results go back to the request that asked. A `csm/call` that is not answered in 30 seconds fails with
+`unavailable`.
+
+### 4.1 Attacker-facing rules
+
+These hold whatever the relay, a phone or the UI does.
+
+- **Caller check on add-on tools.** `phone-remote.pair`, `phone-remote.revoke` and
+  `phone-remote.enable_access` refuse every caller whose `kind` is not `ui`. Refused callers are
+  `cli`, `external` (MCP), `addon` (another add-on or this add-on's own `csm/call`) and `peer` (a
+  paired peer device). The refusal is a plain tool error. Level changes need no tool: they are a
+  screen event, and only the person's clicks on the add-on's own screen send events.
+- **The offer never leaves the screen.** The offer URL (it carries the pre-shared key) and the PSK
+  never appear in a tool result, a `csm/log` line, `plugin_status`, a `csm/status` text or any file
+  except the screen tree sent to CSM for the pairing screen. Step 1 checks that no core tool that
+  reads screen trees is open to MCP callers; if one is, the QR node is hidden from it.
+- **Revoke and level changes close channels on the host.** Revoke removes the device from
+  `devices.json`, sends the new `Allow` to the relay and sends `Bye { revoked }` on each open channel
+  of that device, then closes those channels itself. A level change does the same with
+  `Bye { level_changed }`. The host does not rely on the relay: a hostile relay can ignore `Allow`.
+- **Folder matching is exact on canonical paths.** Each allow-list entry is canonicalised when the
+  config loads (absolute, normalised, the Windows case folded as the OS does). A requested folder is
+  canonicalised the same way and must equal an entry; a prefix never matches, and a path with `..`
+  after canonicalisation is refused. The add-on passes the entry's own spelling to `session_new`.
+- **Session names are cleaned.** `msg.rs` `clean()` does not strip bidi or zero-width characters.
+  Before a session name goes to a phone or a push, and before a name from `session.new` is passed on,
+  the add-on removes every control and format character (Unicode categories Cc and Cf, including
+  U+202A to U+202E, U+2066 to U+2069, U+200B to U+200F, U+2060 and U+FEFF). The same clean function
+  applies to a profile label and to the names in `devices.json` when they are shown.
+- **Pairing limits** (section 8): 5 attempts per slot, one pairing channel at a time, 10 minutes per
+  slot, one use.
+- **Push endpoints**: https and on the allow list (section 4, `push.subscribe`), checked on the add-on
+  side before the relay sees them.
+
+### 4.2 Threat model
+
+Actors and what each can do.
+
+- **A hostile relay.** It sees metadata: the host id, the timing and sizes of frames, the hashes of
+  device routing tokens, the push endpoints it forwards. It cannot read or forge Noise messages, and it
+  cannot make a phone trust a different PC, because the phone pins `host_pub` from the QR. It can drop,
+  delay or replay frames (Noise rejects replays), refuse pushes, or ignore `Allow`. The host closes
+  revoked channels itself (section 4.1). Out of reach: hiding that the PC talks to the relay.
+- **A hostile phone (a paired device).** A viewer can read the list and the detail that the level
+  allows. An operator can operate allow-listed sessions and commands, and nothing else. It cannot read a
+  terminal, a screen, a diff or a task body. It can flood: the per-channel and global caps bound that,
+  and a `rate_limited` answer costs it nothing else.
+- **A person in the office.** Shoulder-surfing or photographing the QR during its 10 minutes can let
+  that person offer a pairing. The Allow step is on the PC, after the check code matches on both
+  screens; a stranger's phone shows a request the person can deny. The slot is one use and expires.
+  Out of reach: a person who photographs the QR and is at the PC when the check code matches.
+- **A same-user shell agent** (an agent or a program running as the person's Windows or Unix user,
+  including an MCP agent with a shell). It can read `host-key`, `devices.json`, `config.json` and the
+  keychain entries the user owns, and it can run `csm-phone` or CSM tools by itself. The owner-only
+  file permissions do not stop code running as the same user. **Out of reach**: nothing in this add-on
+  keeps the device store or the host key from same-user code. The design does not claim otherwise. A
+  copied host key lets that code impersonate the PC to a phone that is already paired, and a copied
+  `devices.json` lets it know the routing-token hashes; it does not, by itself, let it pair a new phone
+  (that needs the Allow on the PC).
+- **A compromised PC** (malware with the person's rights, or an administrator). Out of reach.
 
 ---
 
@@ -202,12 +300,31 @@ results go back to the request that asked.
 Folder: `<state folder>/addon-data/phone-remote/` (the `data_dir` of `initialize`; the folder is
 created by CSM when the process starts, and the add-on creates its files below).
 
+**`data_dir` is `null`** when the run has no state folder, under `--clean`, or in an isolated run
+(`docs/addons.md`, "Start and stop"). Then the add-on **refuses to serve**: it reports "no data folder,
+so the phone remote cannot keep its pairings; start CSM normally" in `plugin_status`, opens no relay
+connection and offers no pairing. Nothing is written in that case.
+
 | File | Contents | Permissions | If damaged |
 |---|---|---|---|
 | `host-key` | the host's X25519 static private key (32 bytes, raw, no text) | owner-only (0600; Windows: one ACE for the current user, as `fsperm.rs`) | **error**: the add-on stops serving and says so. It is never replaced. |
 | `devices.json` | `{"version":1,"devices":[...]}` (see below) | owner-only | **error**, the same. A backup `devices.json.bak` (the last good copy, written before each change) is shown in the error, and the person may restore it. Nothing is restored by itself. |
-| `config.json` | the relay URL, the folder allow list, the profiles, the command allow list, `enabled` (the second switch), push on or off | owner-only | error, the same, but the add-on runs with defaults (no relay, nothing allowed) and says why. |
+| `config.json` | the relay URL, the app origin, the folder allow list, the profiles, the command allow list, `enabled` (the second switch), push on or off | owner-only | error, the same, but the add-on runs with defaults (no relay, nothing allowed) and says why. |
 | `push.json` | not a file: push subscriptions live in the device store per device. | | |
+
+**First run, and the missing-file cases.** Decided by which files exist, in the data folder:
+
+| `host-key` | `devices.json` | Result |
+|---|---|---|
+| absent | absent | **first run**: create `host-key` (new random key, 0600) and an empty `devices.json`. Both are written atomically. |
+| present and valid | present and valid | normal |
+| absent | present | **error**: the key is gone but phones are paired. Nothing is created. The screen offers the explicit recovery (below). |
+| damaged | any | **error** (the file is not touched) |
+| present and valid | absent | **error**: the device list is missing. Nothing is created: a silently empty list would hide that phones are paired. The screen offers the explicit recovery. |
+
+Recovery, for the two error rows: "Start a new device list" keeps the damaged or missing files as
+`<name>.damaged-<time>` where they exist, creates a new key and an empty list, and removes every
+pairing. It needs a confirm. Nothing does it automatically.
 
 `devices.json` entry (kind column, section 4.6 of `remote-csm.md`):
 
@@ -224,11 +341,7 @@ created by CSM when the process starts, and the add-on creates its files below).
 - Only the add-on writes it. A `devices.json` that does not parse, has a wrong `version`, a duplicate
   `device_id` or `token_hash`, or a field out of range is **damaged**. Damaged means error: no phone
   connects, the screen says "the device list is damaged; the file was not changed", and two buttons
-  appear: "Open the folder" and "Start a new device list (keeps the damaged file as `devices.json.damaged-<time>`)".
-  The second one needs a confirm. Nothing does it automatically.
-- `host-key` missing or damaged: the same, and it is **never** regenerated silently. A new key means
-  every paired phone is unknown (the phones pin `host_pub` from the QR). Recovery is the same
-  explicit button, and it removes the pairings.
+  appear: "Open the folder" and "Start a new device list" (above). The second one needs a confirm.
 - A "damaged" file with a name that is not `phone-remote`'s own is never touched.
 
 **Secrets.** The relay enrolment token (when the relay uses one) and the relay host secret (32 bytes,
@@ -236,6 +349,10 @@ base64url; its hash is the host id) go through `addon_secret_set` / `addon_secre
 `relay.enrol_token` and `relay.host_secret`. They never go into `config.json` or `state.json`. The
 host id the relay checks is a hash of the host secret, so losing it changes the host id: the same
 "explicit recovery" rule applies.
+
+The enrolment token goes from the settings screen straight to `addon_secret_set` (section 10.5). The
+add-on never writes it to a file, a log, `plugin_status` or the screen tree: the `text_input` uses
+`submit` (not `change`), and the screen is re-rendered with `reset: true` so the field empties.
 
 The host key is a file, not a secret in the keychain, because the brief asks for the device store and
 host key as files (decision 4 offers the keychain for both).
@@ -252,7 +369,7 @@ phone, a relay message or a config value.
 - Hello: `HostToRelay::Hello { v, host_id, host_secret, access }`. `access` is the enrolment token,
   when set, read from the keychain.
 - Then `Allow { tokens }` with the hashes of every device's routing token (`token_hash`), and
-  `PairingOpen` only while the pairing screen is open (at most 600 s).
+  `PairingOpen` only while the pairing screen has an open slot (at most 600 s).
 - Phone channels are binary `HostFrame`s (`version | kind | channel u32 BE | payload`). The add-on keeps a
   map from channel to device and enforces one Noise session per channel.
 - Reconnect with backoff 1, 2, 5, 10, 30 s (as `relay/README.md`). After every connect the add-on
@@ -260,6 +377,8 @@ phone, a relay message or a config value.
 - Silence: the relay drops a host silent for 90 s. The add-on sends a WebSocket ping every 30 s.
 - Threads, not an async runtime: one reader and one writer thread per socket, bounded channels
   (64 frames per phone channel). A full queue closes that channel with `rate_limited`, not the host.
+- The relay connection exists whenever `enabled` and the second switch are on. It does **not** depend on
+  a phone being connected: the push tracker (section 7.1) uses it.
 
 Noise (the add-on side uses `snow`):
 - Pairing: `Noise_IKpsk2_25519_AESGCM_SHA256`, the add-on is the responder, the prologue
@@ -272,19 +391,48 @@ Noise (the add-on side uses `snow`):
 
 ---
 
-## 7. Session deltas
+## 7. Session deltas and the host-wide tracker
 
-The PC is the source of truth. Each paired phone channel has its own state in the add-on:
-`last_sent: map<session id, SessionInfo>`, `seq`.
+Two parts: one tracker for the whole add-on (it does not depend on any channel), and per-channel
+delta state that only exists while a phone is connected.
 
-1. CSM sends `session_changed` and `inbox_changed` (the subscriptions in `initialize`). They are
-   **coalesced**: at most one refresh per channel every 200 ms, so a burst of status changes is one
-   `session_list`.
-2. The refresh calls `session_list` once (shared by all channels), and each channel diffs its own
-   `last_sent` against it: upserts for new or changed entries, `removed` for ids no longer present.
-   A `SessionInfo` is changed when any of `name`, `folder`, `branch`, `status`, `group`, `profile`,
-   `since` differs. `message` is never sent by a delta: it needs `session_get`, which only a phone that
-   asked for a session's detail does. (So a detail screen shows the message; the list does not.)
+### 7.1 The host-wide tracker
+
+Runs while the add-on is running and the relay connection is on (section 6). It is the only place that
+decides pushes.
+
+1. It subscribes to `session_changed` and `inbox_changed` in `initialize`. An event refreshes the
+   tracker's list. Refreshes are **coalesced** globally: at most one `session_list` per 200 ms, whether
+   or not any phone is connected.
+2. Each refresh calls `session_list` once and stores the result as `last_list` with a time.
+3. It keeps, per session: `last_status`, `since` (below), and the **episode flag** `notified`.
+4. A status change **into** `needs_you_approval` or `needs_you_question` opens a needs-you episode for
+   that session. Its `notified` flag is false, so it produces one push request per device (section 9).
+   The episode closes when the status leaves the needs-you group; a new one later opens a new episode.
+5. **Baseline.** The first refresh after the add-on starts sets every session's `last_status` and
+   `notified` (true for any session already needing you) and sends **no** push. A restart must not
+   push again for a session that was already waiting. This is a rule, not a decision.
+6. Pushes are decided per device here (section 9), so `notify`, `hide_names` and the subscription are
+   read from the device store at decision time.
+
+`since` is stamped by the tracker: when it first sees a session's current status, it records the add-on's
+own clock (Unix seconds). After an add-on restart, `since` is the time of the first refresh, not the
+time the status really changed. The phone shows "since" as that value, and the design does not claim it
+is exact.
+
+### 7.2 Per channel
+
+Each paired phone channel has its own state in the add-on: `last_sent: map<session id, SessionInfo>`,
+`seq`.
+
+1. The tracker tells each open channel that the list changed (a notification inside the add-on, not a
+   CSM call). The channel diffs its own `last_sent` against the tracker's `last_list`: upserts for new or
+   changed entries, `removed` for ids no longer present.
+2. A `SessionInfo` is changed when any of `name` (cleaned, section 4.1), `folder`, `branch`, `status`,
+   `group`, `since` differs. `profile` is **not** compared: `session_list` does not return a profile, so
+   v1 never sends one (the field stays absent, and the phone shows nothing for it). `message` is never
+   sent by a delta: it needs `session_get`, which only a phone that asked for a session's detail does.
+   (So a detail screen shows the message; the list does not.)
 3. The delta gets `seq = last_seq + 1` and is sent. `last_sent` is updated only after the send succeeds
    to the relay; if the channel is gone, the state is dropped and the next connect sends a snapshot.
 4. A snapshot (`hello`, `snapshot`, or any reconnect) starts a new `seq` with
@@ -303,39 +451,57 @@ Larger lists are split. The phone's list virtualises above 500 sessions.
 
 ---
 
-## 8. Pairing: the screens and the QR code
+## 8. Pairing and devices: the screens, the QR code and the indicator
 
-Both screens are add-on screens (`docs/addons.md`, "Screens"). The add-on declares them in
+Three add-on screens (`docs/addons.md`, "Screens": at most 4 per add-on). The add-on declares them in
 `initialize`:
 
 ```json
 "screens":[
-  {"id":"phone-remote.pair","title":"Pair a phone","icon":"smartphone","scope":"global","summary":"Pair a phone with this PC"},
-  {"id":"phone-remote.devices","title":"Phones","icon":"devices","scope":"global","summary":"Paired phones and their levels"}
+  {"id":"phone-remote.pair","title":"Pair a phone","icon":"phone","scope":"global","summary":"Pair a phone with this PC"},
+  {"id":"phone-remote.devices","title":"Phones","icon":"devices","scope":"global","summary":"Paired phones and their levels"},
+  {"id":"phone-remote.settings","title":"Phone remote settings","icon":"list","scope":"global","summary":"Relay, folders, profiles, commands and push"}
 ]
 ```
 
-Icons must exist in CSM's icon set (an unknown one draws none). `smartphone` and `devices` are
-assumed; check the set in step 1.
+Icons must exist in CSM's icon set (`crates/csm-ui/src/icon_data.rs`; an unknown one draws none). That
+set has `monitor`, `list` and others, but **no `phone` or `devices`**. Step 1 adds those two icons to
+`icon_data.rs` (a small CSM-side change, listed with the other additions in section 8.3). The
+settings screen uses an existing icon.
 
-**Pairing screen** (`phone-remote.pair`), while a slot is open:
+**Opening the pairing screen.** The `phone-remote.pair` tool (ui caller only, section 4.1) calls
+`screen_open` through `csm/call`. `screen_open` is a `ui` tool that runs directly (`docs/tools.md`, the
+`screen_open` row). Opening the screen opens **no** pairing slot.
+
+**Pairing screen** (`phone-remote.pair`), before a slot is open:
+
+```
+Pair a phone                                         [Add-on: Phone remote]
+Press "Start pairing", then scan the code with the phone or open the link on it.
+[ Start pairing ]                                    (button, event: true)
+```
+
+While a slot is open:
 
 ```
 Pair a phone                                         [Add-on: Phone remote]
 Scan this code with the phone, or open the link on it.
-[ QR code of the offer URL ]                 (new widget: section 8.2)
+[ QR code of the offer URL ]                 (qr widget, section 8.2)
 https://phone.umage.example/v/0.1.0/#p=...   (text, mono, selectable)
-Expires in 9:42 · the code can be used once
+Expires in 9:42 · the code can be used once  [ Stop pairing ]
 --- after the phone connects ---
 Device: Pixel 9      Check code: 8216
-"Read the same four digits on the phone."
+"Read the same four digits on the phone. If they differ, press Deny."
 Level:  [ Viewer | Operator ]                (segmented, key "level")
 [ Allow ]  [ Deny ]                           (buttons, event: true)
 ```
 
 - The screen is a **tree** the add-on builds and CSM draws; the add-on never draws. Every control sends
-  an event: `click` for Allow and Deny, `select` for the level. The add-on sends `Deny` (`denied`) on
-  Deny, or on expiry (`expired`), and closes the slot with `PairingClose`.
+  an event: `click` for Start, Stop, Allow and Deny, `select` for the level. There is **no CSM confirm**
+  on any of them: `action_policy` runs an add-on's own tools directly, and the buttons send events, not
+  tool calls. Allow is the confirm: it is only enabled once the check code is shown.
+- "Stop pairing", or expiry, sends `Deny` (`denied` or `expired`) and closes the slot with
+  `PairingClose`. Deny does the same.
 - On Allow, the add-on creates the device (random `device_id`, 32-byte `routing_token`, stores
   `token_hash` and the phone's static key), appends it to `devices.json`, sends
   `Allow { tokens }` to the relay, sends `Accept { routing_token, level, device_id }` over the channel
@@ -345,18 +511,27 @@ Level:  [ Viewer | Operator ]                (segmented, key "level")
   A sixth attempt, or a second pairing while one is open, is refused and shown on the screen.
 - The check code is `check_code(handshake_hash)` on both sides. The screen says: "If the digits differ,
   press Deny." That is the whole defence against a swapped QR.
+- The offer URL and PSK go only into the screen tree (section 4.1). They are never in a log or a result.
 
 **Devices screen** (`phone-remote.devices`): a `list` of devices (`title` = name, `subtitle` = level,
 last seen as "5 min ago", `badges` = "needs push" when notify is on but no subscription), and a detail
-area with: level `segmented` (Viewer or Operator, a change re-keys nothing, it sends `Bye { level_changed }`
-and the phone reconnects), `checkbox` "Notify me about sessions that need me", and a `Revoke` `danger`
-button (confirm first, a CSM confirm draws it because the button's action is the add-on's own tool,
-`phone-remote.revoke`). Revoke: the device leaves `devices.json`, the new allow list goes to the
-relay, and the relay closes that device's channel with `revoked`. The phone gets `Bye { revoked }`.
+area with: level `segmented` (Viewer or Operator; the add-on sends `Bye { level_changed }` on the
+channel, closes it, and the phone reconnects), `checkbox` "Notify me about sessions that need me", and a
+`Revoke` `danger` button.
 
-**Indicator.** Two places in v1: the add-on's row in Settings > Add-ons shows the state text from
-`plugin_status` (for example "Connected to relay, 2 phones"), and the screen's tab carries a `badge`
-with the count of connected phones. A status-bar indicator needs a new CSM notification, see 8.3.
+**Revoke confirm is the add-on's own.** CSM draws no confirm for it (`action_policy` runs an add-on's
+own tools with no confirm). So the button is an event: the first press re-renders the detail with
+"Revoke Pixel 9? [Yes, revoke] [Cancel]"; "Yes, revoke" sends a second event; the add-on then does what
+`phone-remote.revoke` does: the device leaves `devices.json`, the new allow list goes to the relay, and
+the add-on closes that device's channels itself (section 4.1). The phone gets `Bye { revoked }`. The
+button does not call the tool, so the ui-only check on the tool does not apply to it, and the event
+itself only comes from the person's click.
+
+**Indicator.** The v1 indicator is a CSM notification the add-on sets, `csm/status` (section 8.3), not a
+custom text in `plugin_status` and not a tab badge: `plugin_status` reports only state (`starting`,
+`running`, `crashed`, `gave_up`, `stopped`), `last_error`, `problems` and the stderr tail, and the tab
+strip has no badge. The indicator shows in Settings > Add-ons on the add-on's row, and in the title bar
+as one dot (section 8.3).
 
 ### 8.1 Whether the screen protocol can show a QR code
 
@@ -364,7 +539,7 @@ with the count of connected phones. A status-bar indicator needs a new CSM notif
 `markdown` shows no images (alt text only). `code`, `diff` and `text` are text. A screen cannot carry a
 picture, so the add-on cannot send a PNG of the QR code, and a data URI would not help either.
 
-### 8.2 The smallest addition: a `qr` widget
+### 8.2 The smallest addition: a `qr` node
 
 A new node, drawn by CSM:
 
@@ -372,16 +547,21 @@ A new node, drawn by CSM:
 {"type":"qr","key":"offer","text":"https://phone.umage.example/v/0.1.0/#p=...","label":"Scan with the phone","size":"md"}
 ```
 
-- `text`: required, 1 to 512 bytes, no control characters. Longer is a bad prop: the node draws a
-  notice and nothing else breaks. (The offer URL is about 330 to 400 bytes in practice, see the check in
-  section 12.)
+- `text`: required, 1 to **1024** bytes, no control characters. Longer, or bad text, is a bad prop: the
+  node draws a notice and nothing else breaks. The cap is 1024 because the worst case is about 615
+  bytes: a 256-byte relay URL (the maximum `PairingOffer::validate` allows) gives 432 bytes of JSON, a
+  576-byte payload and a 615-byte URL with an example origin. 512 would not hold it. Step 1 adds that
+  worst case as a unit test.
 - `size`: `sm`, `md` (default), `lg`, as token-driven pixel sizes in `csm-ui`'s theme. Colours are
   the theme's `text` on `base` (a QR is dark on light in both themes; the quiet zone is drawn).
 - `label`: optional caption under it.
-- Error correction: `M`. The module matrix comes from `qrcodegen` (`qr_modules` in
-  `csm-ui/src/screens/remote.rs`, which already draws the peer's pairing QR). Move `qr_modules` to a
-  place both the peer screen and the engine's screen parser can use (it is pure: a string in, a grid
-  out), for example `csm-core::qr`, behind the existing `qrcodegen` dependency. Only `csm-ui` draws it.
+- Error correction: **at least M**. `qrcodegen`'s `encode_text` raises the level when it fits, so the
+  matrix may carry more than M; it never carries less. The peer screen keeps `Low`. The move makes the
+  level a **parameter**: `qr_modules(text, ecc)`.
+- The pure function moves from `csm-ui/src/screens/remote.rs` to `csm-core::qr`, behind a `qrcodegen`
+  dependency added to `csm-core` (pure: a string in, a grid out). The peer screen calls the moved
+  function with `Low`, so its output does not change. The screen parser in `csm-core/src/addons/screen`
+  uses it. Only `csm-ui` draws it.
 - The matrix is computed **when the tree is parsed** (on the worker that already validates the tree),
   stored in the node, and drawn in the frame. Frame code does no work beyond drawing modules, so the
   UI-thread rule holds.
@@ -394,11 +574,30 @@ A new node, drawn by CSM:
 Why not an image: a `blob` or image node would need a binary channel in the screen protocol (blobs are
 "reserved, not built yet") and an image decoder. A QR widget is one prop and no decoder.
 
-### 8.3 Other small additions to propose (not built here)
+### 8.3 CSM-side additions in scope for step 1 (for review)
 
-- A `csm/indicator` notification: `{text, tone}` per add-on, drawn in the status bar. Needed for the
-  "indicator" the owner asked for. Until it exists, the indicator is the screen badge and the Settings
-  row (section 8).
+These are CSM changes, so each needs its own CSM-side review section. They are in v1 because the owner
+asked for an indicator and a pairing screen with a QR code, and neither works without them.
+
+1. **`csm/status`** (a new process-to-CSM notification, like `csm/log`):
+   `{"method":"csm/status","params":{"text":"Connected to relay, 2 phones","tone":"ok"}}`.
+   - `text`: plain text, 1 to 80 characters after cleaning (section 4.1); `tone`: `ok`, `warn`, `error`
+     or `idle`. Anything else is dropped and listed in `problems`.
+   - Latest wins per add-on. CSM coalesces sends to one per 500 ms per add-on. The text is held in
+     memory only, not in `state.json`, and is cleared when the add-on stops.
+   - Shown in two places: the add-on's row in Settings > Add-ons (text and tone), and the title bar as one
+     dot for the worst tone of all running add-ons, with the add-on's text as a tooltip. Clicking the dot
+     opens Settings > Add-ons. The dot is hidden when every tone is `idle` or no add-on set one.
+   - Review points for CSM: a new `csm/` method (any other method is still answered `-32601`); a
+     capability name `status` in `initialize` so an add-on can check it; the text is drawn as plain text
+     (never as markup); no tool exposes it to MCP callers (it is output, not a tool).
+2. **Two icons**, `phone` and `devices`, in `crates/csm-ui/src/icon_data.rs`. Review: SVG paths in the
+   same style as the existing set.
+3. **The `qr` node** (section 8.2): the parser in `csm-core/src/addons/screen`, the drawing in `csm-ui`,
+   the moved `csm-core::qr`.
+
+### 8.4 Other small additions to propose (not built here)
+
 - `copy` on a `button`: `{"action": {"copy": "text"}}`, a button that copies its text (a link is
   otherwise hard to copy on a phone-less screen). Optional; the selectable text covers v1.
 
@@ -406,29 +605,34 @@ Why not an image: a `blob` or image node would need a binary channel in the scre
 
 ## 9. Push notifications
 
-Chain: CSM status change, add-on decision, RFC 8291 encryption in the add-on, relay POST, push service,
-phone service worker.
+Chain: CSM status change, the host-wide tracker (section 7.1), RFC 8291 encryption in the add-on, relay
+POST, push service, phone service worker.
 
-1. Trigger: a session's status changes **into** `needs_you_approval` or `needs_you_question`
-   (from `session_list` deltas, step 7). Only one push per session per "needs you" episode, and at
-   most one push per device every 30 s (the add-on's coalescing; the relay caps 60 per host and 20 per
-   endpoint per hour as a second line).
-2. Payload (`PushPayload`): `{"t":"needs_you","n":<sessions needing you>,"s":"<name>","sid":"<id>"}`.
+1. **Trigger.** A session's status changes **into** `needs_you_approval` or `needs_you_question` (the
+   tracker's episode, section 7.1). It does not depend on any phone being connected: a phone that is
+   closed or asleep still gets the push. One push request per device per episode. Pushes to one device
+   are coalesced to at most one per 30 seconds: a push held by the window is sent when it opens, with the
+   current count `n` and, if names are not hidden, the newest session's name. The relay caps 60 per host
+   and 20 per endpoint per hour as a second line.
+2. **Per device.** A push goes to a device only if: the device is paired, `notify` is on, it has a
+   push subscription, `push` is on in `config.json`, and the relay connection is up. If the relay is
+   down, the push is dropped and counted in the log (counts only, never names).
+3. **Payload** (`PushPayload`): `{"t":"needs_you","n":<sessions needing you>,"s":"<name>","sid":"<id>"}`.
    With **hide names** on for that device, `s` and `sid` are left out: the notification says
    "2 sessions need you" and no names. `n` is always sent.
-3. Encryption: the add-on encrypts the JSON as an RFC 8291 `aes128gcm` body (ECDH on P-256 with a fresh
+4. **Encryption.** The add-on encrypts the JSON as an RFC 8291 `aes128gcm` body (ECDH on P-256 with a fresh
    ephemeral key, HKDF-SHA256, AES-128-GCM, 4096-byte record size), using the phone's `p256dh` and `auth`
    from `push.subscribe`. `p256`, `hkdf`, `aes-gcm`, `sha2` are already in the lock file. A test vector
    from RFC 8291 section 5 is the unit test.
-4. Send: `HostToRelay::Push(PushRequest { id, endpoint, ttl: 3600, urgency: high, topic: "needs-you", body })`
+5. **Send.** `HostToRelay::Push(PushRequest { id, endpoint, ttl: 3600, urgency: high, topic: "needs-you", body })`
    over the host socket. The relay adds the VAPID header (its own key) and POSTs. It sends back `PushResult`.
    A refused or failed push is logged by counts only, and the device is not removed for it. The relay's
    `PushResult` carries `ok`, the push service's HTTP `status` and a `code` (`push_failed` or `push_refused`).
    On a status of 404 or 410 the add-on drops that endpoint from the device, since the subscription is gone.
-5. The browser decrypts the body (the Push API does, for `aes128gcm`), and the service worker shows
-   `showNotification(...)`. The notification text comes from the payload, nothing else. The tag is `needs-you`,
-   so a newer push replaces the older one instead of stacking.
-6. A tap opens the app at the session list.
+6. **Browser.** The browser decrypts the body (the Push API does, for `aes128gcm`), and the service worker
+   shows `showNotification(...)`. The notification text comes from the payload, nothing else. The tag is
+   `needs-you`, so a newer push replaces the older one instead of stacking.
+7. A tap opens the app at the session list.
 
 The add-on never sends VAPID keys: the relay holds them (`GET /v1/vapid` gives the public half to the
 phone at subscribe time). The owner does not need to generate VAPID keys (section 14).
@@ -473,10 +677,26 @@ no runtime dependency. Why:
 Rejected: React/Svelte/Vue (size, a build, a dependency tree for a 10-screen app); a WASM build of
 `csm-remote-proto` (section 10.3).
 
-No third-party script, font or CDN. The CSP is `default-src 'self'; connect-src 'self' wss://<relay>
-https://<relay>; img-src 'self' data:; style-src 'self'; script-src 'self'`. The relay origin is set at
-build time (one config file, `js/config.js`, generated from the deploy setting, never from a page
-parameter). The QR scanner, if used, is the browser's `BarcodeDetector` when present, else paste.
+**Origins and the CSP.** The app runs on the umage static domain, and it must reach **whatever relay the
+offer names**, because self-hosters point their PC at their own relay and the phone uses the umage app.
+So the CSP cannot pin one relay at build time. The chosen approach (decision 11 in section 13, the
+recommended option):
+
+- The CSP is `default-src 'self'; connect-src 'self' wss: https:; img-src 'self' data:; style-src 'self';
+  script-src 'self'`. No third-party script, font or CDN.
+- The relay comes from the offer. The app accepts a relay URL only if it is `wss://` (or `ws://127.0.0.1`
+  for dev), and it sends no token to a relay before the host's key from the QR is pinned. A relay that is
+  not the PC's own cannot read or forge a Noise session, because `host_pub` comes from the QR.
+- The offer's **app origin** is set by the PC's `config.json` key `app_origin`. Its default is the umage
+  site. It must be `https://` or `http://127.0.0.1:<port>`, validated on the PC, and it is the origin that
+  appears in the QR. A self-hoster who runs their own copy of `phone/` sets it; one who uses the umage app
+  does not.
+
+The alternative (decision 11, not recommended): self-hosters must deploy `phone/` as well, and the CSP
+pins their relay at build time. It is safer against a compromised page and more work for every
+self-hoster.
+
+The QR scanner, if used, is the browser's `BarcodeDetector` when present, else paste.
 
 ### 10.2 Where the phone's keys and data live
 
@@ -568,6 +788,41 @@ Screens use the tokens in `css/app.css` only (no colour literals in the screen c
 
 ---
 
+## 10.6 The PC's settings screen (`phone-remote.settings`)
+
+The CSM-side screen the person uses to set up the add-on. It is the only place the relay URL, the
+enrolment token, the folders, the profiles, the command allow list and push are set. Without it, the
+person would have to hand-edit `config.json`, and the enrolment token would have no path to
+`addon_secret_set`. Every control sends an event to the add-on, which validates it and writes
+`config.json` or the keychain. The screen only draws what the add-on sends.
+
+- **Relay.** A `text_input` for the relay URL (`submit`), a "Use the umage relay" `button` that fills the
+  URL the owner provides (decision 2; until the owner gives one, the button is hidden), and a status line
+  from `csm/status`. The URL must be `wss://`, or `ws://127.0.0.1` for dev.
+- **Enrolment token.** A `text_input` with `submit` and `submit_label` "Save token", `reset: true`, and no
+  `on_change`. On submit the add-on calls `addon_secret_set` (`relay.enrol_token`) and re-renders with the
+  field empty. The token is never echoed, never rendered back, never logged. The screen shows only
+  "A token is saved" or "No token".
+- **Folders.** A `list` of allow-list entries with a remove `button` each, and a `text_input` (`submit`)
+  to add one. The add-on canonicalises the entry and refuses it unless it is an existing directory. A
+  "pinned" `checkbox` per entry (for `folder.list`).
+- **Profiles.** A `list` of profiles (name, label). A form: name (1 to 32 characters, letters, digits and
+  `-`), label (max 64), and command. The command is stored in the form `session_new` takes (one command
+  string, which CSM runs as the program's own command: the WPF rule for a user's own command applies).
+  The phone never sees the command. Remove and add are `button`s.
+- **Commands.** A `checkbox` per slash command from `settings_get ClaudeCommands` (only the ones the PC
+  lists). The default is `/remote-control` checked. The add-on never offers a command the PC does not list,
+  because `command.list` intersects the two lists (section 4).
+- **Push.** A `checkbox` "Send push notifications for sessions that need me" (`push`, default on).
+- **Access.** The second switch: a `checkbox` "Connect to the relay" (`enable_access`, section 3). The
+  add-on's enable is the first switch, made in CSM's Settings > Add-ons; this one connects.
+- **App origin.** A `text_input` (`submit`) for `app_origin` (default: the umage site). The add-on
+  validates it (https, or `http://127.0.0.1:<port>`).
+
+The device list and the pairing screen are the other two screens (section 8).
+
+---
+
 ## 11. Local development and testing (no hosted service)
 
 - **Relay:** `cargo run -p csm-relay -- --config relay/relay.dev.toml` with `bind = "127.0.0.1:8787"` and
@@ -578,7 +833,8 @@ Screens use the tokens in `css/app.css` only (no colour literals in the screen c
   against a fixed fake CSM on its stdin and stdout, with the state folder in a temp dir, the same way
   `csm-review`'s tests drive it.
 - **Web app:** `node phone/tools/serve.mjs` serves `phone/` on `http://127.0.0.1:8080`. WebCrypto and service
-  workers both work on `127.0.0.1` (a secure context). The offer's app origin is `http://127.0.0.1:8080`.
+  workers both work on `127.0.0.1` (a secure context). The offer's app origin is `http://127.0.0.1:8080`,
+  set in the dev `config.json` as `app_origin`.
 - **Phone without a phone:** `phone/test/fake-phone.mjs` (Node 22+) is a second implementation of the phone
   side: it uses the same `noise.js` and `relay.js` against `ws://127.0.0.1:8787`, so it exercises the real
   app code, not a mock. A headless browser (Playwright, already available to the team) can drive the real
@@ -598,28 +854,66 @@ Screens use the tokens in `css/app.css` only (no colour literals in the screen c
 
 ## 12. Checks on facts this design depends on
 
-- The offer URL length: a `PairingOffer` is six short fields (`v`, `r`, `h`, `k`, `i`, `p`), base64url of the
-  JSON. With `r` about 40 bytes, `h` 26, `k` 43, `i` 22, `p` 43, the JSON is about 220 bytes and base64url
-  about 300 bytes; with the app origin and `/v/<version>/#p=` about 380 to 420 bytes. Under the 512-byte QR
-  limit, with room. Step 1 adds a unit test for the worst case (a 256-byte relay URL).
-- `msg.rs` says the relay's `Snapshot` splits and that a `Delta` is "changes since seq-1". Section 7 relies on
-  consecutive seqs for split deltas and on the inbox sharing the seq. Both need a line in `msg.rs` (step 1).
-- `session_list` returns `status` values `working`, `needs_you_approval`, `needs_you_question`, `done_unseen`,
-  `error`, `idle`, `asleep`, `starting`, `exited` (`docs/tools.md`). `PhoneStatus` has seven values. The map:
-  `working` and `starting` to `working`; `needs_you_*` as is; `done_unseen` to `done`; `error` to `idle`
-  with the message (decision 8: or a new `PhoneStatus::Error`, which is a `msg.rs` change); `idle`, `asleep`,
-  `exited` as is.
-- `session_send_command` types only the `ClaudeCommands` list (`docs/tools.md`), so the phone's command
-  allow list can never be wider than the PC's list.
-- `profile_list` is Windows Terminal's profiles, not the phone's `profile` concept. The phone's profiles are
-  the add-on's own (section 4). Decision 5 confirms this.
-- The csm/call rule for input tools (`session_send_command` has effect `input`, i.e. `sends_input`) inside
-  `calls`: `docs/addons.md` says palette commands may never run a `SENDS_INPUT` tool, and says nothing about
-  `csm/call` in `calls`. Step 1 reads the engine code for this and, if `calls` refuses it, the design needs a
-  consent card for `session.command` (decision 9).
-- Browser X25519 support: a claim to verify in step 2 against current compatibility tables, not from memory.
-- `xtask/src/policy.rs` `DENY_ROOTS` lists the crates whose roots deny the clippy lints. `apps/csm-phone` is
-  added there in step 1.
+Each line says what was checked, against which file.
+
+- **Add-on effects.** The add-on's tool effects may only name the effects `[process]` declares
+  (`docs/addons.md`, "Tools"). Section 3 uses only those names. `ui` is not one of them, so no add-on tool
+  can open a screen or be routed through `view_overlay.rs`. (Review round 1 found the old names `ui`,
+  `state` and `read`; they are gone.)
+- **Caller kinds.** `ui`, `cli`, `external`, `addon`, `peer` (`crates/csm-engine/src/plugins.rs`,
+  `caller_json`; `docs/addons.md`, "Who is calling"). Section 4.1 refuses every kind but `ui` for the three
+  tools. Tests cover each refused kind (section 16, step 1).
+- **Standing grants close decision 9.** `crates/csm-engine/src/engine.rs` (the consent check): a call from
+  `Caller::External` whose client is `add-on <id>` skips the consent card when `plugins::standing_call`
+  finds the tool in that add-on's `[process] calls`, whatever the tool's effects. The `calls` list excludes
+  only a fixed set of names (`docs/addons.md`, "Standing consent"), and `session_send_command` is not in
+  it. So `session_send_command` runs through `calls`, and no card is needed. The grant is still the
+  person's: it is in the enable dialog, decision 3. The one thing that still applies: a tool that refuses
+  add-on callers still does (`precheck`, `level_gate`).
+- **Screen opening.** `screen_open` is a `ui` tool that runs directly (`docs/addons.md`, "Tools" and the
+  `screen_open` row under "The tools"). It is in `calls` so the pairing tool can open the screen. Step 1
+  checks that `precheck` does not refuse an add-on caller for it; if it does, the pairing tool must be
+  refused and decision 12 applies.
+- **Screen buttons and tools.** `crates/csm-core/src/addons/screen/mod.rs`, `action_policy`: an add-on's
+  own tools run `Direct`, so a button that runs one has no confirm. The design uses events for every
+  button (sections 8 and 10.6), so no screen button runs a tool.
+- **Screen count and icons.** At most 4 screens (`docs/addons.md`, "Declaring"). The icon set is in
+  `crates/csm-ui/src/icon_data.rs`; `phone` and `devices` are not in it (step 1 adds them).
+- **Relay timeouts.** The add-on's `csm/call` timeout is **30 seconds** (`docs/addons.md`, "Messages"), not
+  10. The screen/open answer timeout is 10 seconds (`docs/addons.md`, "Declaring"), which is separate.
+- **Offer URL length.** A `PairingOffer` is six short fields (`v`, `r`, `h`, `k`, `i`, `p`), base64url of
+  the JSON. The worst case is a 256-byte relay URL (the maximum `PairingOffer::validate` allows): 432 bytes
+  of JSON, a 576-byte payload, a 615-byte URL with an example origin. The `qr` text cap is therefore **1024**
+  (section 8.2), not 512. Step 1 adds this worst case as a unit test on the `qr` node.
+- **QR error correction.** `qr_modules` in `crates/csm-ui/src/screens/remote.rs` uses `QrCodeEcc::Low`. The
+  moved function takes the level as a parameter (section 8.2). The design does not say "M from `qr_modules`".
+- **`msg.rs` delta and inbox lines.** `msg.rs` says the relay's `Snapshot` splits and that a `Delta` is
+  "changes since seq-1". Section 7 relies on consecutive seqs for split deltas and on the inbox sharing the
+  seq. Both need a line in `msg.rs` (step 1).
+- **Session fields.** `session_list` returns `id, name, kind, folder, group, status, branch,
+  remote_control, remote_control_url` (`docs/tools.md`). It returns **no** `since` and **no** `profile`.
+  `since` is stamped by the add-on's tracker (section 7.1). `profile` is not compared and is not sent in v1.
+  `SessionInfo` keeps both fields as optional.
+- **Status values.** `session_list` returns `working`, `needs_you_approval`, `needs_you_question`,
+  `done_unseen`, `error`, `idle`, `asleep`, `starting`, `exited` (`docs/tools.md`). `PhoneStatus` has seven
+  values. The map: `working` and `starting` to `working`; `needs_you_*` as is; `done_unseen` to `done`;
+  `error` to `idle` with the message (decision 8: or a new `PhoneStatus::Error`, which is a `msg.rs` change);
+  `idle`, `asleep`, `exited` as is.
+- **`session_new` takes a command string.** Its parameters are `folder, command?, name?, group?, kind?, ...`
+  (`docs/tools.md`). The profile stores the command as one string; no argv is joined, and the add-on never
+  builds a shell line from the phone's input.
+- **`session_send_command`** types only the `ClaudeCommands` list (`docs/tools.md`), so the phone's
+  command allow list can never be wider than the PC's list.
+- **`profile_list`** is Windows Terminal's profiles, not the phone's `profile` concept. The phone's profiles
+  are the add-on's own (section 4). Decision 5 confirms this.
+- **Secrets.** `addon_secret_set`, `addon_secret_get`, `addon_secret_delete` are refused for every caller
+  except the add-on that stored the secret (`docs/addons.md`, "Secrets"). They need `stores_secrets`
+  declared, not `calls`.
+- **Data folder and `null`.** `data_dir` is `null` under `--clean`, in an isolated run and with no state
+  folder (`docs/addons.md`, "Start and stop"). Section 5 refuses to serve in that case.
+- **`xtask/src/policy.rs` `DENY_ROOTS`** lists the crates whose roots deny the clippy lints. `apps/csm-phone`
+  is added there in step 1.
+- **Browser X25519 support** is a claim to verify in step 2 against current compatibility tables, not from memory.
 
 ---
 
@@ -635,17 +929,27 @@ Screens use the tokens in `css/app.css` only (no colour literals in the screen c
    makes the phone unusable. Recommended: the list, shown in the enable dialog.
 4. **Keychain or file for the host key and relay secret.** The brief says files for the host key. The relay
    host secret and the enrolment token are in the keychain. Alternative: keychain for all three.
-5. **Phone profiles.** The phone's `profile` is an add-on-owned list (name, label, argv on the PC), not
+5. **Phone profiles.** The phone's `profile` is an add-on-owned list (name, label, command on the PC), not
    Windows Terminal's profiles. Confirm.
 6. **Task bodies.** `task.get` returns title and state only in v1. The body (a Markdown string written by
    people or agents) would be untrusted text on a phone; the owner decides whether to send it (and then
    with the bidi and control-character markers).
-7. **Inbox and seq.** Share the channel's seq counter (recommended, section 7) or a separate one.
+7. **Inbox and seq.** Share the channel's seq counter (recommended, section 7.2) or a separate one.
 8. **`error` status.** Map to `idle` with the message (no `msg.rs` change), or add `PhoneStatus::Error`.
-9. **Input tool in `calls`.** If the engine refuses `session_send_command` through `csm/call` without a card,
-   accept a card for `session.command`, or make the engine allow it for this add-on's declared `sends_input`.
+9. **Closed by reading the code.** `session_send_command` runs through `[process] calls` without a consent
+   card (section 12, "Standing grants"). No owner decision is needed beyond decision 3, which approves the
+   list. If the owner wants a card per input anyway, that is a change to `calls` for this one tool.
 10. **Relay admission for umage.** The relay's `access.allowed_hosts_file` or an enrolment token for umage's
     own PCs (section 14).
+11. **Connect-src for the web app.** The recommended option (section 10.1): `connect-src 'self' wss: https:`,
+    with the relay taken from the offer and `app_origin` in `config.json` for self-hosted copies of `phone/`.
+    The alternative pins one relay at build time and makes every self-hoster deploy `phone/`.
+12. **The CSM-side additions.** `csm/status` (the indicator), the `phone` and `devices` icons, and the `qr`
+    node are in v1 (section 8.3). Recommended: yes, each with its CSM-side review. The alternative is no
+    indicator in v1, which the owner's decision does not allow.
+13. **Baseline on start.** The first refresh after start sends no push (section 7.1, rule 5). Recommended:
+    yes. The alternative pushes for every session already waiting when the add-on starts, which repeats
+    pushes after each restart.
 
 ---
 
@@ -655,7 +959,8 @@ Screens use the tokens in `css/app.css` only (no colour literals in the screen c
 |---|---|---|
 | Relay hosting with TLS, a DNS name (`wss://`) | the add-on and phones connect to it | Caddy in `relay/Caddyfile` does certificates; any host that passes WebSocket upgrades works |
 | Relay admission for umage PCs | `access` in `relay.toml` | an allow-list file or one enrolment token (`csm-relay enrol-token`) |
-| A static domain for the web app (HTTPS) | phones open the app and the QR points there | the app is plain files; any static host with the CSP above |
+| A static domain for the web app (HTTPS) | phones open the app and the QR points there | the app is plain files; any static host with the CSP above (section 10.1) |
+| The umage relay URL | the "Use the umage relay" button (decision 2) | until given, the button is hidden |
 | VAPID keys | Web Push | **not needed from the owner**: the relay creates its key pair on first run in `push.vapid_key_file`; the owner sets `push.vapid_subject` to a contact |
 | Enrolment token for a second PC or a team | more hosts than the umage list | created with `csm-relay enrol-token` |
 | Installer change (decision 1) | ship the add-on | a release step, `docs/release.md` |
@@ -666,8 +971,9 @@ Screens use the tokens in `css/app.css` only (no colour literals in the screen c
 ## 15. Out of scope, again (v1)
 
 Free text and terminal access; diffs and review from the phone; task editing; multiple relays per device;
-offline queues; native apps; a relay account system; hosted relays for other people; localisation; a
-status-bar indicator (until the `csm/indicator` addition lands); `copy` buttons; the peer profile.
+offline queues; native apps; a relay account system; hosted relays for other people; localisation; `copy`
+buttons; the peer profile; a tab badge (the tab strip has none); a status indicator beyond `csm/status`
+(the status bar is not built; the title-bar dot is the v1 indicator).
 
 ---
 
@@ -676,21 +982,35 @@ status-bar indicator (until the `csm/indicator` addition lands); `copy` buttons;
 Each step ends with the full gate (`cargo +1.97 test --workspace`, `cargo +1.97 clippy --workspace --all-targets -- -D warnings`,
 `cargo +1.97 xtask ci --skip-cargo`) and a commit on `phone/addon`. Nothing is pushed.
 
-**Step 1: the add-on, host side** (`apps/csm-phone`, `samples/addons/phone-remote/addon.toml`, `docs/design/phone-remote.md` updates, `msg.rs` doc lines, the `qr` widget and its `qr_modules` move).
-- Device store, host key, config, secrets (`addon_secret_*` through a trait, so tests use a fake).
-- Relay client (tungstenite, threads), Noise responder (`snow`), pairing exchange, Allow and Deny.
-- Op dispatch to CSM calls through a trait (`CsmCalls`), with the fixed mapping of section 4 and the level checks.
-- Deltas and snapshots (section 7), coalescing, the split.
-- Push encryption (RFC 8291) and sending through the relay's push request.
-- Screens: pairing and devices (section 8), the `qr` node in `csm-engine` screen parsing and `csm-ui` drawing.
-- Tests (Rust): device store damage and atomic write, the level gate for every op, op validation, a relay fake
-  for the channel, the pairing exchange, deltas (gap, split, coalesce), RFC 8291 vector, the QR worst-case length,
-  the `qr` widget parse (cap, bad text), and `DENY_ROOTS` updated. The `view_overlay.rs` table is checked by its
-  own test if the add-on adds UI-only effect tools (`phone-remote.pair` is `ui`: route it there).
+**Step 1: the add-on, host side** (`apps/csm-phone`, `samples/addons/phone-remote/addon.toml`, `docs/design/phone-remote.md` updates, `msg.rs` doc lines, the CSM-side additions of section 8.3: `csm/status`, the two icons, the `qr` node and the moved `csm-core::qr`, and the settings screen of section 10.6).
+- Device store, host key, config, first-run table (section 5), secrets (`addon_secret_*` through a trait, so tests use a fake).
+- Relay client (tungstenite, threads), Noise responder (`snow`), pairing exchange, Allow, Deny, Stop.
+- Caller checks for `phone-remote.pair`, `revoke`, `enable_access` (section 4.1).
+- Op dispatch to CSM calls through a trait (`CsmCalls`), with the fixed mapping of section 4, the level checks and the global in-flight cap.
+- The host-wide tracker (section 7.1), deltas and snapshots (section 7.2), coalescing, the split.
+- Push encryption (RFC 8291), per-device decisions, sending through the relay's push request (section 9).
+- Screens: pairing, devices and settings (sections 8 and 10.6); the `qr` node in `csm-core/src/addons/screen` and drawing in `csm-ui`.
+- Tests (Rust), each one a real bug it would catch:
+  - device store: damage (each damaged form), atomic write, the `.bak`, the first-run table (all five rows), `data_dir` null refuses to serve;
+  - the level gate for every op; op validation; the fixed mapping of each op to its one tool;
+  - caller refusal for each of `cli`, `external`, `addon`, `peer` on `pair`, `revoke` and `enable_access`, and that `ui` is accepted;
+  - the offer and PSK absent from every tool result, `csm/log` line, `plugin_status` and `csm/status` text;
+  - revoke and level change close the device's channels on the host, with the relay's `Allow` ignored;
+  - exact folder matching (a `..` path, a prefix of an entry, a case variant on Windows) and the passed spelling;
+  - session names stripped of bidi and zero-width characters in deltas and push payloads;
+  - the global in-flight cap answers `rate_limited` and does not queue;
+  - a relay fake for the channel; the pairing exchange; deltas (gap, split, coalesce);
+  - **no channel open, a session goes into `needs_you_approval`, exactly one push request reaches the fake relay**;
+  - a restart does not push for a session already waiting (the baseline rule);
+  - RFC 8291 vector; the QR worst case (256-byte relay URL) at the 1024-byte cap; the `qr` node parse (cap, bad text);
+  - `csm/status` length cap, tone check and coalescing;
+  - `DENY_ROOTS` updated.
+  - `view_overlay.rs`: no change. No add-on tool carries `ui`; the table test still passes unchanged.
 - Commit.
 
 **Step 2: the web app** (`phone/`, its tests in `phone/test`, the browser smoke test).
 - `noise.js` on WebCrypto, passing the vectors (section 10.3), `pairing.js`, `relay.js`, `protocol.js`, `delta.js`.
+- The relay URL check (`wss:`, or `ws://127.0.0.1` for dev) and the `app_origin` rule (section 10.1).
 - IndexedDB store, the non-extractable key, the device record.
 - Screens (section 10.5), PWA files, service worker, push subscribe and show.
 - `tsc --checkJs` clean, `node --test phone/test` passing, a Playwright smoke test against the local relay
@@ -700,8 +1020,7 @@ Each step ends with the full gate (`cargo +1.97 test --workspace`, `cargo +1.97 
 **Step 3: end to end and docs.**
 - `cargo xtask phone-e2e` (section 11): relay, add-on, fake CSM, the Node fake phone, push to a local fake endpoint.
 - `xtask ci` gets the `phone/` check (tsc and node tests) when `phone/` exists.
-- `docs/addons.md` gets a section for the phone add-on and the `qr` widget (the widget table and the screen
-  limits), `relay/README.md` gets the dev setup, `docs/design/phone-remote.md` status is updated to "built".
+- `docs/addons.md` gets a section for the phone add-on, the `csm/status` notification, the `qr` node (the widget table and the screen limits), `relay/README.md` gets the dev setup, `docs/design/phone-remote.md` status is updated to "built".
 - Commit.
 
 Each step is one commit series on `phone/addon`, and each commit message ends with the attribution lines the
@@ -711,9 +1030,19 @@ brief requires.
 
 ## 17. Facts this note corrects or flags
 
-- The screen protocol cannot show an image or a QR code today (section 8.1).
-- `msg.rs` does not define what a delta split means or whether inbox shares the seq (section 7); both need
+- The screen protocol cannot show an image or a QR code today (section 8.1); the `qr` node is the smallest
+  addition (section 8.2).
+- The indicator is not a `plugin_status` text and not a tab badge (neither exists). It is `csm/status`
+  (section 8.3), a CSM change in step 1.
+- Add-on tool effects use only the names `[process]` declares. `ui` is not one of them, so the pairing tool
+  opens its screen through `screen_open` in `calls` (section 3).
+- The caller kinds are `ui`, `cli`, `external`, `addon` and `peer`. The three tools that change or open
+  things refuse every kind but `ui` (section 4.1).
+- Standing `calls` grants skip the consent card whatever the tool's effects. That closes decision 9 (section 12).
+- `msg.rs` does not define what a delta split means or whether inbox shares the seq (section 7.2); both need
   a doc line before the add-on relies on them.
-- The `calls` rule for `SENDS_INPUT` tools via `csm/call` is not stated in `docs/addons.md` (section 12).
+- The `csm/call` timeout is 30 seconds, not 10 (section 12).
+- `session_list` has no `since` and no `profile` (section 12); `since` is stamped by the add-on.
+- The QR text cap is 1024 bytes, and the EC level is a parameter (section 8.2).
 - `xtask`'s `DENY_ROOTS` does not list the add-on yet; it must, when the crate exists.
 - Browser X25519 support is a thing to measure, not to assume (section 10.3).
