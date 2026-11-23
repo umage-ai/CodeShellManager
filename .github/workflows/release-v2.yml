@@ -40,7 +40,7 @@ jobs:
       HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' }}
       IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -165,14 +165,14 @@ jobs:
       # ── Publish ─────────────────────────────────────────────────────────────
       - name: Upload packages (dry run)
         if: env.IS_TAG != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codeshellmanager-${{ steps.ver.outputs.semver }}
           path: dist/*
 
       - name: Create GitHub pre-release
         if: env.IS_TAG == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           prerelease: true
           name: CodeShellManager ${{ steps.ver.outputs.semver }}
