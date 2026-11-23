@@ -10,9 +10,10 @@
 //! the add-on stops.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use csm_core::addons::manifest::clean_text;
 use csm_core::addons::{AddonKind, NewSessionSpec};
@@ -20,12 +21,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::addons::{AddonState, Catalogue};
-use crate::engine::{Ctx, Reply};
+use crate::engine::{Ctx, Engine, Reply};
 use crate::plugins::{self, RunState};
-use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
+use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 
 /// How long a form's tool may take to answer (a little over the add-on call timeout).
 const WAIT: Duration = Duration::from_secs(35);
+/// How long a submit may stay pending (the add-on answers `data.pending` with a `request_id`, and
+/// the same tool is asked again with that id) before CodeShellManager gives up on it. A launch takes
+/// tens of seconds, so this is generous; the add-on's own job may still finish after it.
+pub const SUBMIT_CAP: Duration = Duration::from_secs(15 * 60);
+/// The pause between two asks for a pending submit (an add-on that answers at once must not be spun).
+const POLL_GAP: Duration = Duration::from_secs(1);
+/// Longest `request_id` a pending answer may carry; the characters are letters, digits, `-`, `_`, `.`, `:`.
+const MAX_REQUEST_ID: usize = 200;
 /// Most choices one form keeps.
 pub const MAX_CHOICES: usize = 200;
 /// Longest choice id and label, in characters.
@@ -51,21 +60,31 @@ pub(crate) enum LoadState {
     Failed(String),
 }
 
-/// Where a form's submit stands.
+/// Where a form's submit stands. `Running` carries the add-on's last progress line ("" at first).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum SubmitState {
     #[default]
     Idle,
-    Running,
+    Running(String),
     Done(String),
     Failed(String),
 }
 
-/// The runtime state of one form, keyed by `addon/source` in `State`.
+/// The runtime state of one form, keyed by `addon/source` in `State`. Each answer carries the token
+/// of the request it answers: an answer whose token is no longer the form's (the add-on stopped, or
+/// the form was asked again) is dropped instead of written over the newer state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FormRun {
     pub load: LoadState,
     pub submit: SubmitState,
+    pub load_token: u64,
+    pub submit_token: u64,
+}
+
+/// A token unique for the life of the process (see [`FormRun`]).
+fn next_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// What the dialog shows for one form (`snapshot.new_sessions`).
@@ -124,7 +143,7 @@ pub(crate) fn views(cat: &Catalogue, runs: &BTreeMap<String, FormRun>) -> Vec<Ne
             };
             let (submit, submit_text) = match run.submit {
                 SubmitState::Idle => ("idle", None),
-                SubmitState::Running => ("running", None),
+                SubmitState::Running(progress) => ("running", Some(progress).filter(|p| !p.is_empty())),
                 SubmitState::Done(m) => ("done", Some(m)),
                 SubmitState::Failed(e) => ("failed", Some(e)),
             };
@@ -216,6 +235,18 @@ fn set_run(ctx: &mut Ctx<'_>, k: &str, f: impl FnOnce(&mut FormRun)) {
     ctx.state.touch();
 }
 
+/// Engine thread: applies an answer to the form only if its entry is still there and `current`
+/// says the answer belongs to the form's present request. A worker that finished after its add-on
+/// stopped (the entry is gone) or after the form was asked again writes nothing.
+fn apply_answer(ctx: &mut Ctx<'_>, k: &str, current: impl FnOnce(&FormRun) -> bool, f: impl FnOnce(&mut FormRun)) {
+    let Some(run) = ctx.state.rt.new_sessions.get_mut(k) else { return };
+    if !current(run) {
+        return;
+    }
+    f(run);
+    ctx.state.touch();
+}
+
 fn load(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: FormParams = parse_params(params)?;
     let spec = find(ctx, &p.addon, &p.source)?;
@@ -230,15 +261,16 @@ fn load(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     let Some(parked) = ctx.park() else { return Err(ToolError::Failed("cannot wait for the add-on here".into())) };
     // A submit still running keeps its state; any other finished one starts afresh with the form.
+    let token = next_token();
     set_run(ctx, &k, |r| {
         r.load = LoadState::Loading;
-        if r.submit != SubmitState::Running {
+        r.load_token = token;
+        if !matches!(r.submit, SubmitState::Running(_)) {
             r.submit = SubmitState::Idle;
         }
     });
-    let who = plugins::caller_json(ctx.state, ctx.caller);
-    let (tx, rx) = mpsc::channel::<Reply>();
-    ctx.engine.host.dispatch(p.addon.clone(), spec.choices_tool.clone(), json!({}), who, tx);
+    let job = Ask { addon: p.addon.clone(), tool: spec.choices_tool.clone(), args: json!({}), who: plugins::caller_json(ctx.state, ctx.caller) };
+    let rx = ask(ctx.engine, &job);
     let engine = ctx.engine.clone();
     let tool = spec.choices_tool.clone();
     let spawned = thread::Builder::new().name("csm-new-session".into()).spawn(move || {
@@ -253,7 +285,7 @@ fn load(ctx: &mut Ctx<'_>, params: Value) -> Reply {
                 Ok((n, choices)) => (LoadState::Ready(choices), Ok(ToolOutput::new(format!("{n} choice(s)."), Value::Null))),
                 Err(e) => (LoadState::Failed(e.to_string()), Err(e)),
             };
-            set_run(ctx, &k, |r| r.load = store);
+            apply_answer(ctx, &k, |r| r.load_token == token, |r| r.load = store);
             parked.send(out);
         }));
     });
@@ -285,6 +317,92 @@ pub(crate) fn choices_of(data: &Value) -> Result<Vec<Choice>, String> {
     Ok(out)
 }
 
+/// One ask of an add-on's tool: the tool, the arguments and who asked (the add-on's `caller`).
+struct Ask {
+    addon: String,
+    tool: String,
+    args: Value,
+    who: Value,
+}
+
+/// Sends `job` to the add-on; the answer comes on the returned receiver.
+fn ask(engine: &Engine, job: &Ask) -> mpsc::Receiver<Reply> {
+    let (tx, rx) = mpsc::channel::<Reply>();
+    engine.host.dispatch(job.addon.clone(), job.tool.clone(), job.args.clone(), job.who.clone(), tx);
+    rx
+}
+
+/// Whether a submit's answer is still pending.
+enum Pending {
+    Final,
+    Waiting(String),
+    Malformed,
+}
+
+/// A submit's answer is pending when its `data` says `pending: true`; then `data.request_id` names
+/// the job, and the same tool is asked again with it. `pending` without a usable id is an error.
+fn pending_of(data: &Value) -> Pending {
+    if data.get("pending").and_then(Value::as_bool) != Some(true) {
+        return Pending::Final;
+    }
+    match data.get("request_id").and_then(Value::as_str).map(str::trim) {
+        Some(id) if valid_request_id(id) => Pending::Waiting(id.to_owned()),
+        _ => Pending::Malformed,
+    }
+}
+
+/// Letters, digits and `-_.:`, at most [`MAX_REQUEST_ID`] characters.
+fn valid_request_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().count() <= MAX_REQUEST_ID && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
+/// The remote a submit's final answer asks CodeShellManager to open: `data.open_remote`, one of the
+/// add-on's remote ids (`remote_list`). Anything else is no request.
+fn open_remote_of(data: &Value) -> Option<String> {
+    data.get("open_remote").and_then(Value::as_str).map(str::trim).filter(|id| valid_request_id(id)).map(str::to_owned)
+}
+
+/// Whether the form still belongs to submit `token` (the add-on did not stop, and nothing newer was
+/// submitted), asked on the engine thread. A worker stops polling once it is not.
+fn still_current(engine: &Engine, k: &str, token: u64) -> bool {
+    let (tx, rx) = mpsc::channel::<bool>();
+    let k = k.to_owned();
+    engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
+        let current = ctx.state.rt.new_sessions.get(&k).is_some_and(|r| r.submit_token == token);
+        let _ = tx.send(current);
+    }));
+    rx.recv_timeout(WAIT).unwrap_or(false)
+}
+
+/// The submit's final answer, on the worker thread. A pending answer shows its progress on the form
+/// (while `token` is still the submit's), pauses, and asks the same tool again with the
+/// `request_id`, until the answer is final or [`SUBMIT_CAP`] has passed.
+fn drive(engine: &Engine, mut job: Ask, mut rx: mpsc::Receiver<Reply>, deadline: Instant, k: &str, token: u64) -> Reply {
+    loop {
+        let out = rx.recv_timeout(WAIT).unwrap_or_else(|_| Err(ToolError::TimedOut(format!("`{}` did not answer", job.tool))))?;
+        let request_id = match pending_of(&out.data) {
+            Pending::Final => return Ok(out),
+            Pending::Malformed => return Err(ToolError::Failed(format!("`{}` said it is still running but gave no request_id", job.tool))),
+            Pending::Waiting(id) => id,
+        };
+        if Instant::now() >= deadline {
+            let minutes = SUBMIT_CAP.as_secs() / 60;
+            return Err(ToolError::TimedOut(format!("`{}` is still running after {minutes} minutes; check the add-on's own list before trying again", job.tool)));
+        }
+        if !still_current(engine, k, token) {
+            return Err(ToolError::Refused("the add-on stopped while this was starting; nothing more is asked".into()));
+        }
+        let progress = clean_text(&out.message, 500);
+        let k = k.to_owned();
+        engine.post(Box::new(move |ctx: &mut Ctx<'_>| apply_answer(ctx, &k, |r| r.submit_token == token, |r| r.submit = SubmitState::Running(progress))));
+        thread::sleep(POLL_GAP);
+        if let Some(args) = job.args.as_object_mut() {
+            args.insert("request_id".into(), Value::String(request_id));
+        }
+        rx = ask(engine, &job);
+    }
+}
+
 fn submit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: SubmitParams = parse_params(params)?;
     let spec = find(ctx, &p.addon, &p.source)?;
@@ -296,7 +414,7 @@ fn submit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if !choices.iter().any(|c| c.id == p.choice) {
         return Err(ToolError::InvalidParams(format!("`{}` is not one of the loaded choices", clean_text(&p.choice, 64))));
     }
-    if run.submit == SubmitState::Running {
+    if matches!(run.submit, SubmitState::Running(_)) {
         return Err(ToolError::Refused("this form is already starting something; wait for it".into()));
     }
     if ctx.registry.get(&spec.tool).is_none() {
@@ -305,23 +423,35 @@ fn submit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let Some(parked) = ctx.park() else { return Err(ToolError::Failed("cannot wait for the add-on here".into())) };
     let mut args = spec.params.as_object().cloned().unwrap_or_else(Map::new);
     args.insert(spec.choice_param.clone(), Value::String(p.choice.clone()));
-    set_run(ctx, &k, |r| r.submit = SubmitState::Running);
-    let who = plugins::caller_json(ctx.state, ctx.caller);
-    let (tx, rx) = mpsc::channel::<Reply>();
-    ctx.engine.host.dispatch(p.addon.clone(), spec.tool.clone(), Value::Object(args), who, tx);
+    let token = next_token();
+    set_run(ctx, &k, |r| {
+        r.submit = SubmitState::Running(String::new());
+        r.submit_token = token;
+    });
+    let job = Ask { addon: p.addon.clone(), tool: spec.tool.clone(), args: Value::Object(args), who: plugins::caller_json(ctx.state, ctx.caller) };
+    let rx = ask(ctx.engine, &job);
     let engine = ctx.engine.clone();
-    let tool = spec.tool.clone();
+    let deadline = Instant::now() + SUBMIT_CAP;
+    let addon = p.addon.clone();
     let spawned = thread::Builder::new().name("csm-new-session".into()).spawn(move || {
-        let answer = rx.recv_timeout(WAIT).unwrap_or_else(|_| Err(ToolError::TimedOut(format!("`{tool}` did not answer"))));
+        let answer = drive(&engine, job, rx, deadline, &k, token);
+        // A launch that names the remote to open (`open_remote`) opens it now, as the person's own
+        // action: the form was submitted by them, and remote_open only opens this add-on's remotes.
+        let open_err = match &answer {
+            Ok(out) => open_remote_of(&out.data).and_then(|remote| {
+                let params = json!({"addon": addon, "remote_id": remote});
+                engine.call(Caller::Ui, "remote_open", params).err().map(|e| e.to_string())
+            }),
+            Err(_) => None,
+        };
         engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
-            let (state, reply) = match answer {
-                Ok(out) => {
-                    let message = clean_text(&out.message, 500);
-                    (SubmitState::Done(message), Ok(out))
-                }
-                Err(e) => (SubmitState::Failed(e.to_string()), Err(e)),
+            let (state, reply) = match (answer, open_err) {
+                (Ok(out), None) => (SubmitState::Done(clean_text(&out.message, 500)), Ok(out)),
+                // The launch happened; its session did not open. The form stays open and says so.
+                (Ok(out), Some(why)) => (SubmitState::Failed(format!("{} Its session did not open: {why}", clean_text(&out.message, 500))), Ok(out)),
+                (Err(e), _) => (SubmitState::Failed(e.to_string()), Err(e)),
             };
-            set_run(ctx, &k, |r| r.submit = state);
+            apply_answer(ctx, &k, |r| r.submit_token == token, |r| r.submit = state);
             parked.send(reply);
         }));
     });
@@ -371,5 +501,34 @@ mod tests {
     fn choices_are_capped() {
         let many: Vec<Value> = (0..(MAX_CHOICES + 50)).map(|i| json!({"id": format!("c{i}")})).collect();
         assert_eq!(choices_of(&json!({"choices": many})).unwrap().len(), MAX_CHOICES);
+    }
+
+    #[test]
+    fn a_pending_answer_needs_a_plain_request_id() {
+        let waiting = |data: Value| match pending_of(&data) {
+            Pending::Waiting(id) => Some(id),
+            _ => None,
+        };
+        assert_eq!(waiting(json!({"pending": true, "request_id": "abc-123_x.y:z"})).as_deref(), Some("abc-123_x.y:z"));
+        assert_eq!(waiting(json!({"pending": true, "request_id": "  abcdefgh  "})).as_deref(), Some("abcdefgh"), "surrounding spaces are not part of the id");
+        assert!(matches!(pending_of(&json!({"pending": true})), Pending::Malformed), "pending with no id is an error, not a success");
+        assert!(matches!(pending_of(&json!({"pending": true, "request_id": ""})), Pending::Malformed));
+        assert!(matches!(pending_of(&json!({"pending": true, "request_id": "a b"})), Pending::Malformed), "spaces are refused");
+        assert!(matches!(pending_of(&json!({"pending": true, "request_id": "a\u{7}b"})), Pending::Malformed), "control characters are refused");
+        assert!(matches!(pending_of(&json!({"pending": true, "request_id": "x".repeat(MAX_REQUEST_ID + 1)})), Pending::Malformed));
+        assert!(matches!(pending_of(&json!({"pending": true, "request_id": 7})), Pending::Malformed));
+        assert!(matches!(pending_of(&json!({"pending": false, "request_id": "abcdefgh"})), Pending::Final));
+        assert!(matches!(pending_of(&json!({"pending": "yes", "request_id": "abcdefgh"})), Pending::Final), "only a boolean true is pending");
+        assert!(matches!(pending_of(&Value::Null), Pending::Final));
+    }
+
+    #[test]
+    fn form_answers_are_only_applied_for_the_request_they_belong_to() {
+        let mut run = FormRun { load_token: 7, submit_token: 9, ..FormRun::default() };
+        let current = |r: &FormRun| r.submit_token == 9;
+        assert!(current(&run));
+        run.submit_token = 10;
+        assert!(!current(&run), "a newer submit makes the older answer stale");
+        assert_ne!(next_token(), next_token(), "tokens are unique for the life of the process");
     }
 }

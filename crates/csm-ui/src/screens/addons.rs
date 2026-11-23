@@ -145,6 +145,11 @@ pub fn consent_body(a: &AddonSummary) -> String {
         if a.process_effects.iter().any(|e| e == "stores_data") {
             lines.push("Stores its own data: it keeps files in a folder of its own (addon-data/<id>) and nowhere else. This needs no approval card.".into());
         }
+        if !a.new_sessions.is_empty() {
+            // The New session form: its title and the tools it runs when the person uses it.
+            let forms: Vec<String> = a.new_sessions.iter().map(|f| format!("\"{}\" (picker: {}; submit: {} runs {})", f.title, f.choices_tool, f.submit, f.tool)).collect();
+            lines.push(format!("New session forms: {}. They show in the New session dialog while it runs, and each runs only its own tools when the person uses it.", forms.join("; ")));
+        }
         if !a.process_calls.is_empty() {
             let list: Vec<String> = a.process_calls.iter().map(|c| format!("{} ({})", c.tool, c.effects)).collect();
             lines.push(format!(
@@ -174,7 +179,7 @@ mod tests {
             name: "Demo".into(),
             version: "0.1.0".into(),
             description: "A demo".into(),
-            kind: "pack",
+            kind: "process",
             author: Some("Someone".into()),
             homepage: None,
             state: AddonState::Disabled,
@@ -188,6 +193,7 @@ mod tests {
             commands: vec![CommandSummary { id: "demo.list".into(), title: "List".into(), tool: "session_list".into(), params: json!({}) }],
             process_effects: vec![],
             process_command_line: None,
+            new_sessions: vec![csm_engine::addons::NewSessionSummary { id: "agent".into(), title: "New demo agent".into(), submit: "Start".into(), choices_tool: "demo.projects".into(), tool: "demo.launch".into() }],
             process_calls: vec![],
             process: None,
             themes: vec![],
@@ -196,6 +202,7 @@ mod tests {
         let body = consent_body(&a);
         assert!(body.contains("demo.agent") && body.contains("demo.test") && body.contains("/review"));
         assert!(body.contains("calls session_list"));
+        assert!(body.contains("\"New demo agent\" (picker: demo.projects; submit: Start runs demo.launch)"), "{body}");
         assert!(body.contains("saved"));
         // The exact commands that will run are in the text, not just their names.
         assert!(body.contains("`my-agent --plain`"), "{body}");
@@ -223,6 +230,7 @@ mod tests {
             commands: vec![],
             process_effects: vec!["stores_data".into()],
             process_command_line: Some("phone-helper".into()),
+            new_sessions: Vec::new(),
             process_calls: vec![csm_engine::addons::StandingCall {
                 tool: "session_wake".into(),
                 title: "Wake".into(),

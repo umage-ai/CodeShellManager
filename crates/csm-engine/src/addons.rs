@@ -114,6 +114,8 @@ pub struct AddonSummary {
     /// For a process add-on: the core tools it may call without a consent card once enabled
     /// (`[process] calls`). Approved with the rest of the manifest, and gone if the file changes.
     pub process_calls: Vec<StandingCall>,
+    /// For a process add-on: its `[[new_session]]` forms (the New session dialog offers them while it runs).
+    pub new_sessions: Vec<NewSessionSummary>,
     /// For a process add-on that is enabled: whether it is running, its last error, its tools.
     pub process: Option<PluginRuntime>,
     /// Entries that were skipped, one line each.
@@ -121,6 +123,18 @@ pub struct AddonSummary {
     /// there are `addon-id.theme-id`).
     pub themes: Vec<csm_core::addons::ThemeSpec>,
     pub problems: Vec<String>,
+}
+
+/// A New session form as the consent dialog and `addon_list` show it: its title and the tools it runs
+/// (`choices_tool` for the picker, `tool` on submit).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct NewSessionSummary {
+    /// The form's id within the add-on.
+    pub id: String,
+    pub title: String,
+    pub submit: String,
+    pub choices_tool: String,
+    pub tool: String,
 }
 
 /// A launch profile as the consent dialog and `addon_list` show it: the exact command it runs.
@@ -558,6 +572,7 @@ pub fn claude_usage_summary(settings: &csm_core::models::AppSettings) -> AddonSu
         process_effects: Vec::new(),
         process_command_line: None,
         process_calls: Vec::new(),
+        new_sessions: Vec::new(),
         themes: Vec::new(),
         process: None,
         problems: Vec::new(),
@@ -614,6 +629,7 @@ fn summary(e: &Entry, runtime: Option<&PluginRuntime>) -> AddonSummary {
         // The stderr tail is not in the list (`addon_list` is read-only; `plugin_status` returns it).
         process_command_line: p.and_then(|p| p.process.as_ref()).map(|s| s.argv.join(" ")),
         process_calls: e.standing.clone(),
+        new_sessions: p.map_or_else(Vec::new, |p| p.new_sessions.iter().map(|s| NewSessionSummary { id: s.id.clone(), title: s.title.clone(), submit: s.submit.clone(), choices_tool: s.choices_tool.clone(), tool: s.tool.clone() }).collect()),
         process: runtime.map(|r| PluginRuntime { stderr_tail: String::new(), ..r.clone() }),
         themes: p.map_or_else(Vec::new, |p| p.themes.clone()),
         problems,

@@ -641,11 +641,26 @@ open = true
   up to 200 characters, a label 120 (the id when missing), a detail 200. At most 200 choices; entries
   without an id and repeated ids are dropped. A missing or non-list `choices` is an error the dialog shows.
 - **Submit.** `tool` runs with the fixed `params` and `choice_param` set to the chosen id. Its
-  `message` is shown when it is done, and its failure is shown with the dialog kept open. A successful
-  submit closes the dialog. The add-on opens any session itself (`nexus.agent_launch` does with
-  `open = true`); CodeShellManager does not open one for it.
+  `message` is shown when it is done; a successful submit closes the dialog and its message becomes a
+  toast. A failure is shown with the dialog kept open.
+- **Pending answers (slow work).** A launch takes tens of seconds, longer than one call should wait.
+  A submit's answer may therefore be `data = {"pending": true, "request_id": "..."}`: the work is still
+  running in the add-on, and `message` is its progress line, which the form shows while it runs. The
+  request_id is 1 to 200 letters, digits, `-`, `_`, `.` or `:`. CodeShellManager asks the same tool
+  again, with the same arguments plus `request_id`, about once a second, until the answer is final.
+  The add-on's tool should wait a while for the job, answer pending again if it is still running, and
+  answer final once it is done (`nexus.agent_launch` does this). After 15 minutes the form fails with
+  "still running" and stops asking; the add-on's own job may still finish. `pending` without a usable
+  request_id is a failure, not a success.
+- **Opening a session.** A final successful submit may name one of the add-on's remotes in
+  `data.open_remote` (its id, as `remote_list` shows it). CodeShellManager then opens that remote as
+  the person's own action, which they took by submitting the form. If it does not open, the form stays
+  open and says so: "... Its session did not open: <reason>". An add-on does not call `remote_open`
+  itself: a core tool that opens sessions cannot be a standing call (`[process] calls`), so it would
+  ask the person on every call.
 - **Where it shows.** Only while the add-on is enabled and its process is running. Stopping the
-  process clears the form's state (loaded choices, the last submit).
+  process clears the form's state (loaded choices, the last submit). A late answer from a stopped
+  process is dropped, and a worker that is still asking stops at its next ask.
 - **Tools** (toolset `addons`): `new_session_sources` (read, lists the forms and their state),
   `new_session_load` (`addon`, `source`: asks the choices tool; launches a process and may reach the
   network, so MCP clients are asked first) and `new_session_submit` (`addon`, `source`, `choice`: the
@@ -656,6 +671,9 @@ open = true
 - **Versions.** This is an optional addition to manifest `api = 1`, not a new API: an older
   CodeShellManager reads `[[new_session]]` as an unknown table, reports it and loads the add-on without
   the form. A changed `addon.toml` (the form is part of it) needs re-approval as for any change.
+  The pending answer and `open_remote` belong to the same optional addition: an older CodeShellManager
+  shows no form, so the add-on's tools work for it as before. The consent card lists each form's title,
+  its picker tool and its submit tool (`addon_list` shows the same as `new_sessions`).
 
 ## Screens
 

@@ -1132,6 +1132,7 @@ mod tests {
             commands: vec![],
             process_effects: vec![],
             process_command_line: None,
+            new_sessions: Vec::new(),
             process_calls: vec![],
             process: None,
             themes,

@@ -1037,6 +1037,10 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
     let t = Tokens::get(ui.ctx());
     if q.new_pending && f.submit == "done" {
         q.new_pending = false;
+        // The add-on's line (for example "Launched agent-x") outlives the dialog as a toast.
+        if let Some(line) = f.submit_text.clone() {
+            actions.push(Action::Toast(line));
+        }
         actions.push(Action::CloseOverlays);
         return;
     }
@@ -1086,8 +1090,10 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
             actions.push(Action::Tool("new_session_submit", json!({"addon": f.addon, "source": f.source, "choice": choice})));
         }
         match (f.submit, f.submit_text.as_deref()) {
-            ("running", _) => {
-                ui.label(egui::RichText::new("Starting. A launch can take up to 25 seconds; the session opens when it is ready.").font(theme::regular(text::CAPTION)).color(t.muted));
+            ("running", progress) => {
+                // The add-on's own progress line while it works; the dialog closes when it is done.
+                let line = progress.unwrap_or("Starting. The session opens when the agent is ready.");
+                ui.label(egui::RichText::new(line).font(theme::regular(text::CAPTION)).color(t.muted));
             }
             ("failed", Some(why)) => {
                 ui.label(egui::RichText::new(why).font(theme::regular(text::CAPTION)).color(t.red));

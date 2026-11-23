@@ -118,6 +118,7 @@ fn a_finished_submit_closes_the_dialog() {
     settle(&mut h);
     assert!(!has(&h, CHIP), "the dialog closed");
     assert!(!h.state().ui.quick.new_pending);
+    assert!(h.state().ui.toasts.iter().any(|t| t.text == "Launched the agent."), "the add-on's line outlives the dialog as a toast");
 }
 
 #[test]
@@ -129,4 +130,28 @@ fn a_failed_submit_stays_open_and_says_why() {
     settle(&mut h);
     assert!(has(&h, CHIP), "the dialog stays open");
     assert!(h.query_by_label_contains("the host refused the launch").is_some());
+}
+
+#[test]
+fn a_running_submit_shows_the_add_ons_progress_line() {
+    let mut h = with_form(form("ready", &[("alpha", "Alpha")], "running", None, Some("The launch is still running on the host.")));
+    open_dialog(&mut h);
+    h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    h.state_mut().ui.quick.new_pending = true;
+    settle(&mut h);
+    assert!(has(&h, CHIP), "the dialog stays open while the launch runs");
+    assert!(h.query_by_label_contains("The launch is still running on the host.").is_some(), "the progress line is shown");
+    assert!(!has(&h, "Create agent"), "the submit reads Starting while it runs");
+}
+
+#[test]
+fn a_launch_whose_session_did_not_open_keeps_the_dialog_and_says_so() {
+    let mut h = with_form(form("ready", &[("alpha", "Alpha")], "failed", None, Some("Launched agent-x. Its session did not open: not offered")));
+    open_dialog(&mut h);
+    h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    h.state_mut().ui.quick.new_pending = true;
+    settle(&mut h);
+    assert!(has(&h, CHIP), "the dialog stays open");
+    assert!(h.query_by_label_contains("did not open").is_some(), "the reason is shown");
+    assert!(h.state().ui.toasts.is_empty(), "no success toast for a launch whose session did not open");
 }
