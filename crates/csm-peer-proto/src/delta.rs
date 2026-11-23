@@ -23,6 +23,7 @@ pub struct SmallFields {
     pub focused: Option<String>,
     pub inbox_open: bool,
     pub inbox_height: Option<f32>,
+    pub inspector_width: Option<f32>,
     pub recently_closed: Vec<ClosedView>,
     pub open_with: Vec<OpenWithEntry>,
 }
@@ -42,6 +43,7 @@ impl SmallFields {
             focused,
             inbox_open,
             inbox_height,
+            inspector_width,
             recently_closed,
             open_with,
         } = snap;
@@ -54,6 +56,7 @@ impl SmallFields {
             focused: focused.clone(),
             inbox_open: *inbox_open,
             inbox_height: *inbox_height,
+            inspector_width: *inspector_width,
             recently_closed: recently_closed.clone(),
             open_with: open_with.clone(),
         }
@@ -68,6 +71,7 @@ impl SmallFields {
         snap.focused = self.focused;
         snap.inbox_open = self.inbox_open;
         snap.inbox_height = self.inbox_height;
+        snap.inspector_width = self.inspector_width;
         snap.recently_closed = self.recently_closed;
         snap.open_with = self.open_with;
     }
