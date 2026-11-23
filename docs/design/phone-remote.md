@@ -1,9 +1,10 @@
 # Phone remote: design note
 
 Status: **design, no code yet** (branch `phone/addon`, base `b16b6c48f57aaa493d627f3e32d4f9cc2d4e1060`).
-Revision 2: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
+Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
-facts).
+facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
+the push host list, the pairing race, the damaged `config.json` write, the full `HelloData`).
 
 Read with `docs/addons.md` (the add-on protocol, screens), `relay/README.md` (the relay),
 `crates/csm-remote-proto/` (the wire protocol and its vectors) and `docs/design/remote-csm.md`
@@ -192,7 +193,7 @@ is one fixed tool, and no argument from the phone reaches a CSM tool unchecked.
 
 | Op | Level | CSM tool(s) | Notes |
 |---|---|---|---|
-| `hello` | viewer | none | Looks the device up in the store by routing token. Unknown: `bye` with `revoked`. Replies with `HelloData` (`level`, `hide_names`, `notify`, `push_ready`, `remote_control` from `settings_get ClaudeCommands`, `max_message_bytes` 48 KiB). |
+| `hello` | viewer | `settings_get` (`ClaudeCommands`, for `remote_control`) | Looks the device up in the store by routing token. Unknown: `bye` with `revoked`. Replies with `HelloData` (all fields of `msg.rs`): `protocol` (the version the add-on speaks), `level`, `host_name` (the config's `host_name`, or the OS host name when empty, cleaned by the section 4.1 cleaner and capped at `MAX_NAME_CHARS`), `hide_names`, `notify`, `push_ready` (the relay has a VAPID key and this device has a subscription), `remote_control` (from `settings_get ClaudeCommands`), `max_message_bytes` (48 KiB). |
 | `ping` | viewer | none | |
 | `snapshot` | viewer | `session_list` (+ `inbox_list` for the count) | Starts a new `seq` (section 7). Served from the host-wide tracker's last list, when it is fresh (under 1 s old); otherwise a new `session_list`. |
 | `session.list` | viewer | `session_list` | Same data as `snapshot`, one message. |
@@ -205,9 +206,9 @@ is one fixed tool, and no argument from the phone reaches a CSM tool unchecked.
 | `command.list` | viewer | `settings_get` (`ClaudeCommands`), add-on config | The intersection: the PC's configured slash commands and the add-on's allow list. Default allow list: `/remote-control`. |
 | `session.wake` | operator | `session_wake` | |
 | `session.sleep` | operator | `session_sleep` | |
-| `session.restart` | operator | `session_restart` | Slow: it waits for the program to exit. The reply is sent when CSM answers; the channel stays open meanwhile. It holds one global slot (section 4) while it waits. |
+| `session.restart` | operator | `session_restart` | Slow: it waits for the program to exit. The reply is sent when CSM answers; the channel stays open meanwhile. It holds one global slot (section 4) while the `csm/call` is in flight. Counts against the launch limit (section 4.3). |
 | `session.close` | operator | `session_close` (`force` as sent) | A busy session without `force` gets `busy` back; the phone asks again. |
-| `session.new` | operator | `session_new` | `folder` is replaced by the allow-list entry's own spelling (never the phone's string). `command` comes from the profile (never from the phone). `kind` local only. With `remote_control`, the add-on waits (at most 2 minutes) for the session to report idle, then calls `session_send_command` with `/remote-control`. |
+| `session.new` | operator | `session_new` | `folder` is replaced by the allow-list entry's own spelling (never the phone's string). `command` comes from the profile (never from the phone). `kind` local only. Counts against the launch limit and the live-session cap (section 4.3). With `remote_control`, see the wait rule below. |
 | `session.command` | operator | `session_send_command` (`command`, `force` as sent) | `command` must be on the `command.list` intersection, else `command_not_allowed`. CSM itself refuses a session mid-turn. |
 | `session.status_clear` | operator | `session_status_clear` | |
 | `push.subscribe` | viewer | none (device store) | The endpoint must be https and on the relay's allow list (`push.allowed_hosts`); checked here too, so a refused one never reaches the relay. |
@@ -228,8 +229,16 @@ Error mapping, from CSM's error to the phone's `ErrorCode`:
   config) are not counted.
 - `MAX_CHANNELS_PER_HOST` (16) bounds the channels. Together, 16 channels times 8 is a bound on
   queued work per channel, and the global cap bounds the work sent to CSM.
-- A `session.restart` can take a long time: it holds one global slot and does not hold the other
-  requests of its channel.
+- A `session.restart` can take a long time: it holds one global slot while its `csm/call` is in flight and
+  does not hold the other requests of its channel.
+- **The `remote_control` wait holds no slot.** `session.new` with `remote_control` releases the global slot
+  when `session_new` returns. The wait for idle is a timer inside the add-on (a per-session entry in a
+  pending-waits table, checked on each tracker refresh and on a 5 s tick). When the session reports idle, the
+  add-on calls `session_send_command` with `/remote-control`, which takes a slot for that call only. The wait
+  ends at 2 minutes; then the entry is dropped and the phone gets `failed` for the enable step only (the
+  session stays). At most **2 pending waits per device** and **8 in total**; a further `session.new` with
+  `remote_control` is answered `rate_limited` before `session_new` is called. So eight such requests never
+  block the other CSM-bound ops.
 
 **Calls from the add-on** use `csm/call` as in `docs/addons.md` ("Process add-ons", "Messages"). Their
 results go back to the request that asked. A `csm/call` that is not answered in 30 seconds fails with
@@ -263,8 +272,12 @@ These hold whatever the relay, a phone or the UI does.
   applies to a profile label and to the names in `devices.json` when they are shown.
 - **Pairing limits** (section 8): 5 attempts per slot, one pairing channel at a time, 10 minutes per
   slot, one use.
-- **Push endpoints**: https and on the allow list (section 4, `push.subscribe`), checked on the add-on
-  side before the relay sees them.
+- **Push endpoints**: https and on the host list (section 4, `push.subscribe`), checked on the add-on
+  side before the relay sees them. The list is `config.json` `push_hosts`, with a default of the known
+  browser push services (`fcm.googleapis.com`, `updates.push.services.mozilla.com`, `web.push.apple.com`,
+  `*.notify.windows.com`). The relay keeps its own list as the second check; the two may differ, and
+  the stricter one wins.
+- **Launch limits** (section 4.3): the rate and the live-session cap hold whatever a phone asks.
 
 ### 4.2 Threat model
 
@@ -277,12 +290,24 @@ Actors and what each can do.
   revoked channels itself (section 4.1). Out of reach: hiding that the PC talks to the relay.
 - **A hostile phone (a paired device).** A viewer can read the list and the detail that the level
   allows. An operator can operate allow-listed sessions and commands, and nothing else. It cannot read a
-  terminal, a screen, a diff or a task body. It can flood: the per-channel and global caps bound that,
-  and a `rate_limited` answer costs it nothing else.
+  terminal, a screen, a diff or a task body. It can flood reads and other ops: the per-channel and global
+  concurrency caps bound how many run at once, and a `rate_limited` answer costs it nothing else. The
+  concurrency caps do **not** bound rate. A `session.new`, `session.wake` or `session.restart` returns
+  quickly, so concurrency alone would let an operator phone launch agent sessions one after another. The
+  launch bucket (6 a minute, 30 an hour, per device) and the live-session cap of 5 (section 4.3) bound
+  that cost. A stolen operator phone therefore costs at most the bucket's rate and the cap's sessions, and
+  the person can revoke it at the PC.
 - **A person in the office.** Shoulder-surfing or photographing the QR during its 10 minutes can let
   that person offer a pairing. The Allow step is on the PC, after the check code matches on both
   screens; a stranger's phone shows a request the person can deny. The slot is one use and expires.
   Out of reach: a person who photographs the QR and is at the PC when the check code matches.
+  **The race.** A photographed QR lets an attacker's phone open the one pairing channel first. The
+  check code does not help there: the attacker's phone shows the same digits the PC shows. The
+  defence is on the screens (section 8): the owner's phone, refused because a pairing is in progress,
+  shows "another phone is pairing; press Deny on the PC", and the PC shows that a second attempt was
+  refused, with "do not Allow unless your own phone shows this code". The PC shows the device name the
+  phone sent as the phone's own claim, not as a fact. Deny closes the channel, and the person then
+  pairs again.
 - **A same-user shell agent** (an agent or a program running as the person's Windows or Unix user,
   including an MCP agent with a shell). It can read `host-key`, `devices.json`, `config.json` and the
   keychain entries the user owns, and it can run `csm-phone` or CSM tools by itself. The owner-only
@@ -292,6 +317,23 @@ Actors and what each can do.
   `devices.json` lets it know the routing-token hashes; it does not, by itself, let it pair a new phone
   (that needs the Allow on the PC).
 - **A compromised PC** (malware with the person's rights, or an administrator). Out of reach.
+
+### 4.3 Launch limits (against a hostile or stolen operator phone)
+
+Concurrency caps bound how many calls run at once, not how many run in a day. `session_new`, `session_wake`
+and `session_restart` start agent programs that cost CPU, memory and paid API use, so they have a rate:
+
+- **Per device, one launch bucket** for `session.new`, `session.wake` and `session.restart` together:
+  **6 per minute and 30 per hour**. The (N+1)th launch inside the window is answered `rate_limited`
+  before any CSM call is made. The counters are in memory and reset when the add-on restarts, which is
+  acceptable because a restart also needs the PC's user.
+- **A cap on live sessions phones created.** The add-on records the id of every session that a
+  `session.new` created, and counts only those that `session_list` still shows as live (not `exited`).
+  Default cap: **5** (`config.json` `max_phone_sessions`, range 1 to 20). A `session.new` at the cap is
+  answered `rate_limited`, and `session_new` is not called.
+- **Revoke clears nothing**: a revoked device's sessions keep running (the person closes them), but its
+  bucket is gone with the device.
+- These limits are the add-on's own policy and are not CSM's. The phone cannot change them.
 
 ---
 
@@ -309,7 +351,7 @@ connection and offers no pairing. Nothing is written in that case.
 |---|---|---|---|
 | `host-key` | the host's X25519 static private key (32 bytes, raw, no text) | owner-only (0600; Windows: one ACE for the current user, as `fsperm.rs`) | **error**: the add-on stops serving and says so. It is never replaced. |
 | `devices.json` | `{"version":1,"devices":[...]}` (see below) | owner-only | **error**, the same. A backup `devices.json.bak` (the last good copy, written before each change) is shown in the error, and the person may restore it. Nothing is restored by itself. |
-| `config.json` | the relay URL, the app origin, the folder allow list, the profiles, the command allow list, `enabled` (the second switch), push on or off | owner-only | error, the same, but the add-on runs with defaults (no relay, nothing allowed) and says why. |
+| `config.json` | the relay URL, the app origin, the folder allow list, the profiles, the command allow list, `enabled` (the second switch), push on or off, `push_hosts`, `max_phone_sessions`, `host_name` | owner-only | error: the add-on runs with defaults (no relay, nothing allowed) and says why. **The first settings write** does not overwrite it: the damaged file is renamed to `config.json.damaged-<time>` first (the same rule as `devices.json`), the screen says so, and the new file is written atomically. Nothing is replaced silently. |
 | `push.json` | not a file: push subscriptions live in the device store per device. | | |
 
 **First run, and the missing-file cases.** Decided by which files exist, in the data folder:
@@ -364,8 +406,9 @@ phone, a relay message or a config value.
 
 ## 6. The relay connection
 
-- One outbound WebSocket to `wss://<relay>/v1/host` (plain `ws://127.0.0.1` for dev only, which the
-  offer validation already allows). The relay URL is in `config.json`.
+- One outbound WebSocket to `wss://<relay>/v1/host`. Plain `ws://127.0.0.1` is allowed only when
+  `config.json` `app_origin` is `http://127.0.0.1:<port>` (the dev setup of section 11), so a production
+  config never reaches a `ws://` relay. The relay URL is in `config.json`.
 - Hello: `HostToRelay::Hello { v, host_id, host_secret, access }`. `access` is the enrolment token,
   when set, read from the keychain.
 - Then `Allow { tokens }` with the hashes of every device's routing token (`token_hash`), and
@@ -508,7 +551,15 @@ Level:  [ Viewer | Operator ]                (segmented, key "level")
   and closes the slot. The order matters: the device is saved before `Accept` is sent, so a crash never
   leaves a phone paired that the PC does not know.
 - Limits from `limits.rs`: 5 attempts per slot, one pairing channel at a time, 10 minutes per slot.
-  A sixth attempt, or a second pairing while one is open, is refused and shown on the screen.
+  A sixth attempt is refused and shown on the screen.
+- **A second phone while one is pending.** The add-on refuses it with a distinct refusal, shown on the
+  refused phone as "another phone is pairing; press Deny on the PC" (not as a generic error). On the PC
+  pairing screen, a line appears under the pending request: "A second phone tried to pair while this
+  request is pending. Do not press Allow unless your own phone shows the same check code." The count of
+  refused attempts is shown as a number and resets when the slot closes. The refusal is a new
+  `DenyReason::Busy` (`pairing.rs` has `Denied`, `Expired` and `BadRequest` today, so this is a small
+  protocol addition in step 1, with its line in `pairing.json`). The phone maps `busy` to that text.
+  Because it is a Deny, the second phone's channel closes and it cannot reach the Noise step twice.
 - The check code is `check_code(handshake_hash)` on both sides. The screen says: "If the digits differ,
   press Deny." That is the whole defence against a swapped QR.
 - The offer URL and PSK go only into the screen tree (section 4.1). They are never in a log or a result.
@@ -682,11 +733,17 @@ offer names**, because self-hosters point their PC at their own relay and the ph
 So the CSP cannot pin one relay at build time. The chosen approach (decision 11 in section 13, the
 recommended option):
 
-- The CSP is `default-src 'self'; connect-src 'self' wss: https:; img-src 'self' data:; style-src 'self';
-  script-src 'self'`. No third-party script, font or CDN.
-- The relay comes from the offer. The app accepts a relay URL only if it is `wss://` (or `ws://127.0.0.1`
-  for dev), and it sends no token to a relay before the host's key from the QR is pinned. A relay that is
-  not the PC's own cannot read or forge a Noise session, because `host_pub` comes from the QR.
+- The production CSP is `default-src 'self'; connect-src 'self' wss: https:; img-src 'self' data:;
+  style-src 'self'; script-src 'self'`. No third-party script, font or CDN. The production app refuses an
+  offer whose relay is `ws://`, always.
+- The **dev** server (`phone/tools/serve.mjs`) sends its own CSP, with `connect-src 'self' ws://127.0.0.1:*`
+  and nothing else added. It is the only place `ws://` is allowed, and it is used only with an
+  `app_origin` of `http://127.0.0.1:<port>` (section 11). The production CSP is never served on
+  127.0.0.1 and the dev CSP never on the umage domain.
+- The relay comes from the offer. The app accepts a relay URL only if it is `wss://`, or `ws://127.0.0.1`
+  when the page itself is the dev origin, and it sends no token to a relay before the host's key from the
+  QR is pinned. A relay that is not the PC's own cannot read or forge a Noise session, because `host_pub`
+  comes from the QR.
 - The offer's **app origin** is set by the PC's `config.json` key `app_origin`. Its default is the umage
   site. It must be `https://` or `http://127.0.0.1:<port>`, validated on the PC, and it is the origin that
   appears in the QR. A self-hoster who runs their own copy of `phone/` sets it; one who uses the umage app
@@ -834,7 +891,9 @@ The device list and the pairing screen are the other two screens (section 8).
   `csm-review`'s tests drive it.
 - **Web app:** `node phone/tools/serve.mjs` serves `phone/` on `http://127.0.0.1:8080`. WebCrypto and service
   workers both work on `127.0.0.1` (a secure context). The offer's app origin is `http://127.0.0.1:8080`,
-  set in the dev `config.json` as `app_origin`.
+  set in the dev `config.json` as `app_origin`. `serve.mjs` sends the dev CSP of section 10.1
+  (`connect-src 'self' ws://127.0.0.1:*`), so the page can reach the dev relay on 127.0.0.1:8787. Only
+  this server sends it; the production host sends the production CSP.
 - **Phone without a phone:** `phone/test/fake-phone.mjs` (Node 22+) is a second implementation of the phone
   side: it uses the same `noise.js` and `relay.js` against `ws://127.0.0.1:8787`, so it exercises the real
   app code, not a mock. A headless browser (Playwright, already available to the team) can drive the real
@@ -950,6 +1009,10 @@ Each line says what was checked, against which file.
 13. **Baseline on start.** The first refresh after start sends no push (section 7.1, rule 5). Recommended:
     yes. The alternative pushes for every session already waiting when the add-on starts, which repeats
     pushes after each restart.
+14. **Launch limits.** Section 4.3 proposes 6 launches a minute and 30 an hour per device (`session.new`,
+    `session.wake`, `session.restart` together), and at most 5 live sessions that phones created
+    (`max_phone_sessions`, range 1 to 20). The numbers are a starting point for the owner to confirm;
+    the design does not claim they are right for every machine.
 
 ---
 
@@ -989,6 +1052,8 @@ Each step ends with the full gate (`cargo +1.97 test --workspace`, `cargo +1.97 
 - Op dispatch to CSM calls through a trait (`CsmCalls`), with the fixed mapping of section 4, the level checks and the global in-flight cap.
 - The host-wide tracker (section 7.1), deltas and snapshots (section 7.2), coalescing, the split.
 - Push encryption (RFC 8291), per-device decisions, sending through the relay's push request (section 9).
+- Launch limits and the live-session cap (section 4.3); the `remote_control` wait timer (section 4).
+- `DenyReason::Busy` in `pairing.rs` with its vector line.
 - Screens: pairing, devices and settings (sections 8 and 10.6); the `qr` node in `csm-core/src/addons/screen` and drawing in `csm-ui`.
 - Tests (Rust), each one a real bug it would catch:
   - device store: damage (each damaged form), atomic write, the `.bak`, the first-run table (all five rows), `data_dir` null refuses to serve;
@@ -999,6 +1064,18 @@ Each step ends with the full gate (`cargo +1.97 test --workspace`, `cargo +1.97 
   - exact folder matching (a `..` path, a prefix of an entry, a case variant on Windows) and the passed spelling;
   - session names stripped of bidi and zero-width characters in deltas and push payloads;
   - the global in-flight cap answers `rate_limited` and does not queue;
+  - **launch limits (section 4.3)**: the 6th `session.new` inside a minute is refused, the (N+1)th inside
+    the window is refused, and `session_new` is never called for it (a fake `CsmCalls` counts calls);
+    the same bucket covers `session.wake` and `session.restart`; the live-session cap refuses a `session.new`
+    at 5 and admits one again after a created session exits; a viewer never reaches the bucket;
+  - **the `remote_control` wait**: eight such requests do not hold a global slot (a second op on another
+    channel completes while they wait), and the 2 pending waits per device cap refuses the third;
+  - **the pairing race (section 8)**: a second phone while one is pending gets `DenyReason::Busy`, and the
+    slot's owner can still Allow the first; the PC screen shows the refused-attempt line;
+  - **damaged `config.json` first write** renames the file to `config.json.damaged-<time>` and does not
+    overwrite it;
+  - `HelloData` carries every field of `msg.rs`, and `host_name` is cleaned and capped;
+  - the `push_hosts` check refuses a non-listed push host before the relay sees it;
   - a relay fake for the channel; the pairing exchange; deltas (gap, split, coalesce);
   - **no channel open, a session goes into `needs_you_approval`, exactly one push request reaches the fake relay**;
   - a restart does not push for a session already waiting (the baseline rule);
@@ -1046,3 +1123,10 @@ brief requires.
 - The QR text cap is 1024 bytes, and the EC level is a parameter (section 8.2).
 - `xtask`'s `DENY_ROOTS` does not list the add-on yet; it must, when the crate exists.
 - Browser X25519 support is a thing to measure, not to assume (section 10.3).
+- A flood by a paired operator is a rate problem, not a concurrency one. Concurrency caps alone do not bound
+  it, so section 4.3 adds the launch bucket and the live-session cap (review round 2).
+- `msg.rs` `clean` only validates; the add-on's own cleaner (section 4.1) is what strips bidi and zero-width
+  characters. `HelloData` has `protocol`, `level`, `host_name`, `hide_names`, `notify`, `push_ready`,
+  `remote_control`, `max_message_bytes` (section 4).
+- `pairing.rs` `DenyReason` has three values today; the "another phone is pairing" refusal needs the
+  `Busy` addition (section 8).
