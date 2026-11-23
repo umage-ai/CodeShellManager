@@ -10,14 +10,16 @@ use std::time::{Duration, Instant};
 use csm_phone::config::{Config, FolderEntry, ProfileEntry};
 use csm_phone::csm::{Csm, CsmError};
 use csm_phone::host::{Host, Out};
-use csm_phone::store;
+use csm_phone::push;
+use csm_phone::store::{self, PushSub};
+use csm_phone::tracker;
 use csm_remote_proto::codes::RefusalCode;
-use csm_remote_proto::ids::{b64_encode, token_hash};
+use csm_remote_proto::ids::{b64_decode, b64_decode_fixed, b64_encode, token_hash};
 use csm_remote_proto::limits::MAX_APP_MESSAGE_BYTES;
 use csm_remote_proto::msg::{self, ByeReason, Event, Level, Op, Request, Response, ServerMsg};
 use csm_remote_proto::noise::{MAX_NOISE_MESSAGE, PARAMS_PAIRING, PARAMS_SESSION, PSK_POSITION, check_code, prologue};
 use csm_remote_proto::pairing::{DenyReason, PairMsg};
-use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, decode_frame, encode_frame, parse_close_payload};
+use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, PushRequest, RelayToHost, decode_frame, encode_frame, parse_close_payload};
 use serde_json::{Value, json};
 use snow::{Builder, HandshakeState, TransportState};
 
@@ -174,22 +176,28 @@ fn data_frame(ch: u32, payload: &[u8]) -> Vec<u8> {
     encode_frame(FrameKind::Data, ch, payload)
 }
 
-/// Opens and completes a pairing on channel `ch`; returns the phone's transport, the check code the
-/// phone computed from its own handshake, and what the host sent.
+/// Opens and completes a pairing on channel `ch` the way the phone does: message 1 (no payload),
+/// read the host's message 2, then `Confirm` (the check code), then `Hello` (the name). Returns the
+/// phone's transport, the check code the phone computed, and what the host sent for the `Hello`
+/// (the pending entry).
 fn pair_until_waiting(host: &mut Host, phone: &Phone, ch: u32, name: &str, psk: &[u8; 32]) -> (TransportState, String, Vec<Out>) {
     let pid = host.slot.as_ref().unwrap().pairing_id;
     let outs = host.on_frame(&open_frame(ch, OpenInfo::Pairing(pid)), NOW);
     assert!(outs.is_empty(), "the open is accepted without an answer");
     let mut hs = pair_initiator(phone, &host.host_pub, &host.host_id, psk);
     let mut buf = vec![0u8; 1024];
-    let hello = serde_json::to_vec(&PairMsg::Hello { v: 1, name: name.into() }).unwrap();
-    let n = hs.write_message(&hello, &mut buf).unwrap();
+    let n = hs.write_message(&[], &mut buf).unwrap();
     let outs = host.on_frame(&data_frame(ch, &buf[..n]), NOW);
-    let answer = data_on(&outs, ch).first().cloned().unwrap_or_default();
+    let answer = data_on(&outs, ch).first().cloned().expect("the host answers message 1");
     let mut payload = vec![0u8; 1024];
     hs.read_message(&answer, &mut payload).unwrap();
     let check = check_code(hs.get_handshake_hash());
-    let t = hs.into_transport_mode().unwrap();
+    let mut t = hs.into_transport_mode().unwrap();
+    let confirm = serde_json::to_vec(&PairMsg::Confirm { check: check.clone() }).unwrap();
+    let outs = host.on_frame(&data_frame(ch, &seal(&mut t, &confirm)), NOW);
+    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })), "the confirmation alone shows nothing to the person");
+    let hello = serde_json::to_vec(&PairMsg::Hello { v: 1, name: name.into() }).unwrap();
+    let outs = host.on_frame(&data_frame(ch, &seal(&mut t, &hello)), NOW);
     (t, check, outs)
 }
 
@@ -210,6 +218,13 @@ fn accepted_device(host: &mut Host, phone: &Phone, level: Level) -> (String, [u8
 
 /// Connects a paired device on `ch`, returning its transport for requests.
 fn connect_device(host: &mut Host, phone: &Phone, token: &[u8; 32], ch: u32) -> Option<TransportState> {
+    connect_device_counted(host, phone, token, ch).map(|(t, _)| t)
+}
+
+/// As [`connect_device`], and the number of transport messages the phone has received so far. The
+/// host sends a snapshot of its session list straight after the handshake; it is read here, so the
+/// nonces stay in step, and it counts toward the rekey schedule.
+fn connect_device_counted(host: &mut Host, phone: &Phone, token: &[u8; 32], ch: u32) -> Option<(TransportState, u64)> {
     let hash = token_hash(token);
     let outs = host.on_frame(&open_frame(ch, OpenInfo::Device(hash)), NOW);
     if closed_on(&outs, ch).is_some() {
@@ -222,10 +237,16 @@ fn connect_device(host: &mut Host, phone: &Phone, token: &[u8; 32], ch: u32) -> 
     if closed_on(&outs, ch).is_some() {
         return None;
     }
-    let reply = data_on(&outs, ch).first().cloned()?;
+    let frames = data_on(&outs, ch);
+    let reply = frames.first()?;
     let mut payload = vec![0u8; 1024];
-    hs.read_message(&reply, &mut payload).ok()?;
-    hs.into_transport_mode().ok()
+    hs.read_message(reply, &mut payload).ok()?;
+    let mut t = hs.into_transport_mode().ok()?;
+    for snapshot in frames.iter().skip(1) {
+        open_msg(&mut t, snapshot)?;
+    }
+    // The handshake reply is not a transport message; the snapshot parts are.
+    Some((t, u64::try_from(frames.len().saturating_sub(1)).ok()?))
 }
 
 fn request(host: &mut Host, ch: u32, t: &mut TransportState, id: u64, op: Op) -> Option<Response> {
@@ -294,11 +315,11 @@ fn pairing_expiry_denies_the_waiting_phone() {
     assert!(host.slot.is_none());
 }
 
-/// `Noise_IKpsk2` mixes the PSK in at message 2, so the host reads a valid Hello in message 1 with
-/// any PSK. The phone is what refuses (it cannot read message 2), and the host's entry waits for
-/// the person. This test pins both halves; the host cannot refuse earlier (see the design note).
+/// A phone with the wrong PSK cannot read the host's message 2, so it can never send `Confirm`. The
+/// host must show nothing to the person, and its pairing slot must be free again once the channel
+/// is refused (a second phone can then pair).
 #[test]
-fn a_wrong_psk_is_refused_by_the_phone_at_message_two() {
+fn a_wrong_psk_never_reaches_the_person() {
     let dir = tempfile::tempdir().unwrap();
     let (mut host, _calls) = host_in(dir.path(), config());
     host.start_pairing(NOW, "0.1.0").unwrap();
@@ -308,16 +329,113 @@ fn a_wrong_psk_is_refused_by_the_phone_at_message_two() {
     host.on_frame(&open_frame(1, OpenInfo::Pairing(pid)), NOW);
     let mut hs = pair_initiator(&phone, &host.host_pub, &host.host_id, &wrong);
     let mut buf = vec![0u8; 1024];
-    let hello = serde_json::to_vec(&PairMsg::Hello { v: 1, name: "Intruder".into() }).unwrap();
-    let n = hs.write_message(&hello, &mut buf).unwrap();
+    let n = hs.write_message(&[], &mut buf).unwrap();
     let outs = host.on_frame(&data_frame(1, &buf[..n]), NOW);
     let answer = data_on(&outs, 1).first().cloned().expect("the host answers message 1");
     let mut payload = vec![0u8; 1024];
     assert!(hs.read_message(&answer, &mut payload).is_err(), "the phone refuses message 2 under the wrong PSK");
-    assert!(outs.iter().any(|o| matches!(o, Out::Pending { .. })), "the entry waits for the person");
-    let outs = host.decide(NOW, None);
-    assert!(!outs.iter().any(|o| matches!(o, Out::DevicesChanged)), "a denied entry saves nothing");
+    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })), "nothing is shown after message 1");
+    // The best such a phone can do is send something else: the host refuses it, shows nothing, and
+    // closes the channel.
+    let outs = host.on_frame(&data_frame(1, &[7u8; 90]), NOW);
+    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })), "garbage shows nothing");
+    assert_eq!(closed_on(&outs, 1), Some(Some(RefusalCode::BadRequest)));
     assert!(host.devices.is_empty());
+    // The slot is free: a second phone can open a channel on it.
+    let outs = host.on_frame(&open_frame(2, OpenInfo::Pairing(pid)), NOW);
+    assert!(closed_on(&outs, 2).is_none(), "the slot admits a second phone after the refusal");
+}
+
+/// The host refuses a `Confirm` that does not match its own check code, and a `Hello` sent before
+/// the `Confirm`. Neither shows anything.
+#[test]
+fn a_confirm_with_the_wrong_code_or_a_hello_before_it_shows_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut host, _calls) = host_in(dir.path(), config());
+    host.start_pairing(NOW, "0.1.0").unwrap();
+    let psk = host.slot.as_ref().unwrap().psk;
+    let phone = new_phone();
+    let pid = host.slot.as_ref().unwrap().pairing_id;
+    host.on_frame(&open_frame(1, OpenInfo::Pairing(pid)), NOW);
+    let mut hs = pair_initiator(&phone, &host.host_pub, &host.host_id, &psk);
+    let mut buf = vec![0u8; 1024];
+    let n = hs.write_message(&[], &mut buf).unwrap();
+    let outs = host.on_frame(&data_frame(1, &buf[..n]), NOW);
+    let answer = data_on(&outs, 1).first().cloned().unwrap();
+    let mut payload = vec![0u8; 1024];
+    hs.read_message(&answer, &mut payload).unwrap();
+    let mut t = hs.into_transport_mode().unwrap();
+    let hello = serde_json::to_vec(&PairMsg::Hello { v: 1, name: "Early".into() }).unwrap();
+    let outs = host.on_frame(&data_frame(1, &seal(&mut t, &hello)), NOW);
+    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })), "a Hello before Confirm shows nothing");
+    assert_eq!(closed_on(&outs, 1), Some(Some(RefusalCode::BadRequest)));
+
+    host.on_frame(&open_frame(2, OpenInfo::Pairing(pid)), NOW);
+    let mut hs = pair_initiator(&phone, &host.host_pub, &host.host_id, &psk);
+    let n = hs.write_message(&[], &mut buf).unwrap();
+    let outs = host.on_frame(&data_frame(2, &buf[..n]), NOW);
+    let answer = data_on(&outs, 2).first().cloned().unwrap();
+    hs.read_message(&answer, &mut payload).unwrap();
+    let mut t = hs.into_transport_mode().unwrap();
+    let wrong = serde_json::to_vec(&PairMsg::Confirm { check: "0000".into() }).unwrap();
+    let outs = host.on_frame(&data_frame(2, &seal(&mut t, &wrong)), NOW);
+    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })), "a Confirm with another code shows nothing");
+    assert_eq!(closed_on(&outs, 2), Some(Some(RefusalCode::BadRequest)));
+    assert!(host.devices.is_empty());
+}
+
+/// Message 1 must be empty now that the name comes after the confirmation. An old-style phone that
+/// puts its Hello in message 1 is refused.
+#[test]
+fn a_hello_in_message_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut host, _calls) = host_in(dir.path(), config());
+    host.start_pairing(NOW, "0.1.0").unwrap();
+    let psk = host.slot.as_ref().unwrap().psk;
+    let phone = new_phone();
+    let pid = host.slot.as_ref().unwrap().pairing_id;
+    host.on_frame(&open_frame(1, OpenInfo::Pairing(pid)), NOW);
+    let mut hs = pair_initiator(&phone, &host.host_pub, &host.host_id, &psk);
+    let mut buf = vec![0u8; 1024];
+    let hello = serde_json::to_vec(&PairMsg::Hello { v: 1, name: "Old".into() }).unwrap();
+    let n = hs.write_message(&hello, &mut buf).unwrap();
+    let outs = host.on_frame(&data_frame(1, &buf[..n]), NOW);
+    assert_eq!(closed_on(&outs, 1), Some(Some(RefusalCode::BadRequest)));
+    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })));
+}
+
+/// Every message in each direction is counted, and both ends rekey on the same count. Lowered to 3
+/// here so a short exchange crosses it several times; the product uses `REKEY_INTERVAL`.
+#[test]
+fn the_channel_rekeys_on_both_ends_at_the_same_count() {
+    let (_dir, mut host, _calls, phone, _device_id, token) = host_with_device(Level::Operator, config());
+    host.rekey_every = 3;
+    let (mut t, snapshot_messages) = connect_device_counted(&mut host, &phone, &token, 2).expect("a paired phone connects");
+    // The snapshot after the handshake is one transport message (one part), counted by the host
+    // and by the phone alike.
+    assert_eq!(snapshot_messages, 1, "one snapshot part arrives after the handshake");
+    let (mut sent, mut received) = (0u64, snapshot_messages);
+    for id in 1..=10u64 {
+        let plain = serde_json::to_vec(&Request { id, op: Op::Ping }).unwrap();
+        let cipher = seal(&mut t, &plain);
+        sent += 1;
+        if sent.is_multiple_of(3) {
+            t.rekey_outgoing();
+        }
+        let mut outs = host.on_frame(&data_frame(2, &cipher), NOW);
+        outs.extend(host.wait_idle());
+        let reply = data_on(&outs, 2).first().cloned().unwrap_or_else(|| panic!("the host answers request {id}"));
+        received += 1;
+        let plain = open_msg(&mut t, &reply).unwrap_or_else(|| panic!("the phone reads answer {id} after the rekeys"));
+        if received.is_multiple_of(3) {
+            t.rekey_incoming();
+        }
+        match ServerMsg::parse(&plain) {
+            Some(ServerMsg::Response(r)) => assert!(r.ok && r.id == id, "answer {id} is the answer to request {id}"),
+            other => panic!("expected a response to {id}, got {other:?}"),
+        }
+    }
+    assert_eq!((sent, received), (10, 11), "ten requests, and the snapshot plus ten answers received");
 }
 
 #[test]
@@ -644,4 +762,206 @@ fn a_revoke_during_a_running_call_closes_the_channel_and_the_answer_is_dropped()
     assert!(data_on(&later, 2).is_empty(), "no answer is sent on a channel the revoke closed");
     assert!(host.devices.is_empty(), "the answer does not bring the revoked device back");
     assert!(store::open(dir.path()).unwrap().devices.is_empty(), "nor the saved list");
+}
+
+// ---- the session tracker, deltas, snapshots and pushes -------------------------------------
+
+/// The RFC 8291 example's phone keys (public: `UA_PUBLIC`, auth secret), so a test can open the body.
+const UA_PUBLIC_B64: &str = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+const UA_PRIVATE_B64: &str = "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94";
+const AUTH_B64: &str = "BTBZMqHH6r4Tts7J_aSIgg";
+
+fn session_json(id: &str, name: &str, status: &str) -> Value {
+    json!({"id": id, "name": name, "folder": "/work/app", "status": status})
+}
+
+fn push_sub() -> PushSub {
+    PushSub { endpoint: "https://push.example.net/send/abc".into(), p256dh: UA_PUBLIC_B64.into(), auth: AUTH_B64.into() }
+}
+
+/// Turns pushes on for this host, to one listed push service.
+fn pushes_on(host: &mut Host) {
+    host.cfg.push = true;
+    host.cfg.push_hosts = vec!["push.example.net".into()];
+}
+
+/// Every app message the phone reads on `ch` from `outs`, in order (responses and events).
+fn phone_reads(t: &mut TransportState, outs: &[Out], ch: u32) -> Vec<ServerMsg> {
+    data_on(outs, ch).iter().filter_map(|c| open_msg(t, c)).filter_map(|p| ServerMsg::parse(&p)).collect()
+}
+
+fn pushes_in(outs: &[Out]) -> Vec<PushRequest> {
+    outs.iter()
+        .filter_map(|o| match o {
+            Out::Control(HostToRelay::Push(p)) => Some(p.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The payload a push carries, opened with the phone's own keys.
+fn open_push(p: &PushRequest) -> Value {
+    let body = b64_decode(&p.body).unwrap();
+    let ua_private: [u8; 32] = b64_decode_fixed(UA_PRIVATE_B64).unwrap();
+    let plain = push::decrypt(&body, &ua_private, &b64_decode(AUTH_B64).unwrap()).unwrap();
+    serde_json::from_slice(&plain).unwrap()
+}
+
+#[test]
+fn a_phone_gets_the_changes_to_the_session_list_and_nothing_else() {
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Viewer, config());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    let (mut t, _) = connect_device_counted(&mut host, &phone, &token, 2).expect("a paired phone connects");
+    // The first read of CSM's list: the phone's view was empty, so the list is one delta, seq 2.
+    host.tick(NOW);
+    let outs = host.wait_idle();
+    match phone_reads(&mut t, &outs, 2).as_slice() {
+        [ServerMsg::Event(Event::Delta { seq: 2, upserts, removed })] => {
+            assert_eq!(upserts.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["a"]);
+            assert!(removed.is_empty());
+        }
+        other => panic!("expected the delta, got {other:?}"),
+    }
+    // A read that finds the same list sends nothing.
+    host.tick(NOW + tracker::REFRESH_SECS);
+    let outs = host.wait_idle();
+    assert!(phone_reads(&mut t, &outs, 2).is_empty(), "an unchanged list sends nothing");
+    // One session goes and another comes: one delta with both, the next seq.
+    *calls.sessions.lock().unwrap() = vec![session_json("b", "Beta", "idle")];
+    host.tick(NOW + 2 * tracker::REFRESH_SECS);
+    let outs = host.wait_idle();
+    match phone_reads(&mut t, &outs, 2).as_slice() {
+        [ServerMsg::Event(Event::Delta { seq: 3, upserts, removed })] => {
+            assert_eq!(upserts.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+            assert_eq!(removed, &vec!["a".to_owned()]);
+        }
+        other => panic!("expected the second delta, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_snapshot_request_is_answered_from_the_tracker_without_a_csm_call() {
+    let (_dir, mut host, calls, phone, _id, token) = host_with_device(Level::Viewer, config());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    let (mut t, _) = connect_device_counted(&mut host, &phone, &token, 2).expect("a paired phone connects");
+    host.tick(NOW);
+    // The list reaches the phone as a delta; the phone reads it, so the transport stays in step.
+    let delta = host.wait_idle();
+    assert_eq!(phone_reads(&mut t, &delta, 2).len(), 1, "the phone reads the first delta");
+    let before = count(&calls, "session_list");
+    let plain = serde_json::to_vec(&Request { id: 9, op: Op::Snapshot }).unwrap();
+    let mut outs = host.on_frame(&data_frame(2, &seal(&mut t, &plain)), NOW);
+    outs.extend(host.wait_idle());
+    let msgs = phone_reads(&mut t, &outs, 2);
+    assert!(matches!(msgs.first(), Some(ServerMsg::Response(r)) if r.ok && r.id == 9), "the request is answered first: {msgs:?}");
+    assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Event(Event::Snapshot { sessions, .. }) if sessions.len() == 1)), "then the list");
+    assert_eq!(count(&calls, "session_list"), before, "a snapshot is served from the tracker, not from CSM");
+}
+
+#[test]
+fn a_session_that_starts_to_need_you_is_pushed_once_to_a_device_that_asked() {
+    let (_dir, mut host, calls, _phone, _id, _token) = host_with_device(Level::Viewer, config());
+    pushes_on(&mut host);
+    host.devices[0].push = Some(push_sub());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    host.tick(NOW);
+    host.wait_idle();
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_approval")];
+    host.tick(NOW + 2);
+    let pushes = pushes_in(&host.wait_idle());
+    assert_eq!(pushes.len(), 1, "one push for the episode");
+    let payload = open_push(&pushes[0]);
+    assert_eq!(payload["t"], "needs_you");
+    assert_eq!(payload["n"], 1);
+    assert_eq!(payload["s"], "Alpha", "the newest session is named");
+    assert_eq!(payload["sid"], "a");
+    assert_eq!(pushes[0].topic.as_deref(), Some("needs-you"));
+    assert_eq!(pushes[0].endpoint, "https://push.example.net/send/abc");
+    // The same state again is the same episode: no second push.
+    host.tick(NOW + 4);
+    assert!(pushes_in(&host.wait_idle()).is_empty());
+}
+
+#[test]
+fn a_device_that_hides_names_gets_a_count_and_no_name() {
+    let (_dir, mut host, calls, _phone, _id, _token) = host_with_device(Level::Viewer, config());
+    pushes_on(&mut host);
+    host.devices[0].push = Some(push_sub());
+    host.devices[0].hide_names = true;
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    host.tick(NOW);
+    host.wait_idle();
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_question")];
+    host.tick(NOW + 2);
+    let pushes = pushes_in(&host.wait_idle());
+    assert_eq!(pushes.len(), 1);
+    let payload = open_push(&pushes[0]);
+    assert_eq!(payload["n"], 1, "the count is always sent");
+    assert!(payload.get("s").is_none() && payload.get("sid").is_none(), "no name and no id: {payload}");
+}
+
+#[test]
+fn a_restart_does_not_push_for_a_session_already_waiting() {
+    let (_dir, mut host, calls, _phone, _id, _token) = host_with_device(Level::Viewer, config());
+    pushes_on(&mut host);
+    host.devices[0].push = Some(push_sub());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_approval")];
+    host.tick(NOW);
+    assert!(pushes_in(&host.wait_idle()).is_empty(), "the first read is the baseline and sends nothing");
+}
+
+#[test]
+fn a_second_episode_inside_the_window_is_held_and_sent_when_the_window_opens() {
+    let (_dir, mut host, calls, _phone, _id, _token) = host_with_device(Level::Viewer, config());
+    pushes_on(&mut host);
+    host.devices[0].push = Some(push_sub());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    host.tick(NOW);
+    host.wait_idle();
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_approval")];
+    host.tick(NOW + 2);
+    assert_eq!(pushes_in(&host.wait_idle()).len(), 1, "the first episode is pushed at once");
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    host.tick(NOW + 4);
+    host.wait_idle();
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_question")];
+    host.tick(NOW + 6);
+    assert!(pushes_in(&host.wait_idle()).is_empty(), "inside the 30 second window the push is held");
+    let outs = host.tick(NOW + 2 + 30);
+    let held = pushes_in(&outs);
+    assert_eq!(held.len(), 1, "the held push is sent when the window opens");
+    assert_eq!(open_push(&held[0])["sid"], "a");
+}
+
+#[test]
+fn a_push_service_that_says_the_subscription_is_gone_drops_it() {
+    let (dir, mut host, calls, _phone, _id, _token) = host_with_device(Level::Viewer, config());
+    pushes_on(&mut host);
+    host.devices[0].push = Some(push_sub());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    host.tick(NOW);
+    host.wait_idle();
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_approval")];
+    host.tick(NOW + 2);
+    let pushes = pushes_in(&host.wait_idle());
+    assert_eq!(pushes.len(), 1);
+    let outs = host.on_relay(&RelayToHost::PushResult { id: pushes[0].id, ok: false, status: Some(410), code: None });
+    assert!(outs.iter().any(|o| matches!(o, Out::DevicesChanged)));
+    assert!(host.devices[0].push.is_none(), "the device stops getting pushes");
+    assert!(store::open(dir.path()).unwrap().devices[0].push.is_none(), "and that is saved");
+}
+
+#[test]
+fn a_push_result_that_is_not_gone_keeps_the_subscription() {
+    let (_dir, mut host, calls, _phone, _id, _token) = host_with_device(Level::Viewer, config());
+    pushes_on(&mut host);
+    host.devices[0].push = Some(push_sub());
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "working")];
+    host.tick(NOW);
+    host.wait_idle();
+    *calls.sessions.lock().unwrap() = vec![session_json("a", "Alpha", "needs_you_approval")];
+    host.tick(NOW + 2);
+    let pushes = pushes_in(&host.wait_idle());
+    host.on_relay(&RelayToHost::PushResult { id: pushes[0].id, ok: false, status: Some(500), code: None });
+    assert!(host.devices[0].push.is_some(), "only 404 and 410 drop a subscription");
 }

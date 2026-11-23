@@ -217,6 +217,12 @@ impl Engine {
         Ok(list_of(&v).iter().filter_map(session_from).collect())
     }
 
+    /// One read of CSM's session list for the host-wide tracker (section 7.1). Only the reader
+    /// the phone ops use: the same field names and cleaning, no device involved.
+    pub fn track(&mut self) -> Result<Vec<SessionInfo>, String> {
+        self.session_list().map_err(|(_, message)| message)
+    }
+
     /// The PC's slash commands from `settings_get ClaudeCommands`. Any other shape is an empty list.
     fn pc_commands(&mut self) -> Result<Vec<String>, (ErrorCode, String)> {
         let v = self.csm_call("settings_get", json!({ "key": "ClaudeCommands" }))?;

@@ -183,6 +183,15 @@ impl HostRig {
         rx.recv_timeout(WAIT).expect("the host answers")
     }
 
+    /// Asserts that no output matching `bad` arrives within `wait` (outputs that do not match are
+    /// skipped).
+    fn none_matching(&self, bad: impl Fn(&Out) -> bool, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        while let Ok(o) = self.outs.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            assert!(!bad(&o), "the host reported {o:?}");
+        }
+    }
+
     /// The next output that `want` accepts; the others are skipped.
     fn wait_out(&self, mut want: impl FnMut(&Out) -> bool) -> Out {
         let deadline = Instant::now() + WAIT;
@@ -306,20 +315,25 @@ fn open(t: &mut TransportState, cipher: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Runs the pairing handshake on `ws` with `psk` and sends `PairMsg::Hello`. Returns the phone's
-/// transport and the check code it computed from its own handshake.
+/// Runs the pairing handshake on `ws` with `psk`, then sends `PairMsg::Confirm` (the check code) and
+/// `PairMsg::Hello` as transport messages. Returns the phone's transport and the check code it
+/// computed from its own handshake.
 fn pairing_exchange(ws: &mut Sock, phone: &Phone, offer: &PairingOffer, psk: &[u8; 32], name: &str) -> (TransportState, String) {
     let host_pub = offer.host_pub().expect("the offer has the host key");
     let mut hs = phone.pairing_initiator(&host_pub, &offer.h, psk);
-    let hello = serde_json::to_vec(&PairMsg::Hello { v: PROTOCOL_VERSION, name: name.into() }).unwrap();
     let mut buf = vec![0u8; 1024];
-    let n = hs.write_message(&hello, &mut buf).unwrap();
+    let n = hs.write_message(&[], &mut buf).unwrap();
     ws.send(Message::Binary(buf[..n].to_vec().into())).unwrap();
     let answer = read_binary(ws).expect("the host answers the handshake");
     let mut payload = vec![0u8; 1024];
     hs.read_message(&answer, &mut payload).expect("the answer is the host's");
     let check = check_code(hs.get_handshake_hash());
-    (hs.into_transport_mode().unwrap(), check)
+    let mut t = hs.into_transport_mode().unwrap();
+    let confirm = serde_json::to_vec(&PairMsg::Confirm { check: check.clone() }).unwrap();
+    ws.send(Message::Binary(seal(&mut t, &confirm).into())).unwrap();
+    let hello = serde_json::to_vec(&PairMsg::Hello { v: PROTOCOL_VERSION, name: name.into() }).unwrap();
+    ws.send(Message::Binary(seal(&mut t, &hello).into())).unwrap();
+    (t, check)
 }
 
 /// What a pairing leaves behind: the device, its routing token and the host's public key (from the
@@ -429,12 +443,11 @@ fn deny_tells_the_phone_and_saves_nothing() {
     relay.stop();
 }
 
-/// `Noise_IKpsk2` mixes the PSK in at message 2, so message 1 (the phone's Hello) reads fine on the
-/// host whatever the PSK is. The phone is what refuses: it cannot read the host's message 2, so it
-/// never reaches the code it would compare. The host then shows the waiting entry until the
-/// person denies it (or it expires), and nothing is saved. See the owner note in the design doc.
+/// A phone with the wrong PSK cannot read the host's message 2, so it never sends the key
+/// confirmation. Whatever it sends instead does not decrypt, so the host shows nothing to the
+/// person and saves nothing, and the channel is closed.
 #[test]
-fn a_wrong_psk_is_refused_by_the_phone_and_a_denied_entry_saves_nothing() {
+fn a_wrong_psk_shows_nothing_and_saves_nothing() {
     let relay = RelayRig::start(0);
     let dir = tempfile::tempdir().unwrap();
     let host = start_host(relay.port(), dir.path());
@@ -445,16 +458,16 @@ fn a_wrong_psk_is_refused_by_the_phone_and_a_denied_entry_saves_nothing() {
     let mut ws = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
     let host_pub = offer.host_pub().unwrap();
     let mut hs = phone.pairing_initiator(&host_pub, &offer.h, &wrong);
-    let hello = serde_json::to_vec(&PairMsg::Hello { v: PROTOCOL_VERSION, name: "Intruder".into() }).unwrap();
     let mut buf = vec![0u8; 1024];
-    let n = hs.write_message(&hello, &mut buf).unwrap();
+    let n = hs.write_message(&[], &mut buf).unwrap();
     ws.send(Message::Binary(buf[..n].to_vec().into())).unwrap();
     let answer = read_binary(&mut ws).expect("the host answers message 1 (it cannot yet tell)");
     let mut payload = vec![0u8; 1024];
     assert!(hs.read_message(&answer, &mut payload).is_err(), "the phone with the wrong PSK refuses the host's message 2");
-    host.wait_out(|o| matches!(o, Out::Pending { .. }));
-    host.decide(None);
-    assert!(host.devices().is_empty(), "a denied entry is not saved");
+    ws.send(Message::Binary(vec![7u8; 90].into())).unwrap();
+    assert!(read_binary(&mut ws).is_none(), "the host closes the channel");
+    host.none_matching(|o| matches!(o, Out::Pending { .. }), Duration::from_millis(300));
+    assert!(host.devices().is_empty(), "nothing is saved");
     relay.stop();
 }
 
@@ -513,9 +526,14 @@ fn revoke_closes_the_live_channel_and_the_relay_refuses_the_phone_after() {
     let (mut ws, mut t) = connect_device(&relay, &host_id(), &paired.host_pub, &phone, &paired.token).expect("connects before the revoke");
 
     host.revoke(&paired.device_id);
-    let bye = read_binary(&mut ws).expect("the host says bye on the live channel");
-    let ServerMsg::Event(Event::Bye { reason }) = ServerMsg::parse(&open(&mut t, &bye)).expect("a server message") else {
-        panic!("expected Bye")
+    // The snapshot that follows the handshake is read on the way (it is not the Bye).
+    let reason = loop {
+        let bye = read_binary(&mut ws).expect("the host says bye on the live channel");
+        match ServerMsg::parse(&open(&mut t, &bye)).expect("a server message") {
+            ServerMsg::Event(Event::Bye { reason }) => break reason,
+            ServerMsg::Event(_) => {}
+            ServerMsg::Response(_) => panic!("expected Bye"),
+        }
     };
     assert_eq!(reason, ByeReason::Revoked);
     assert!(read_binary(&mut ws).is_none(), "the channel closes");

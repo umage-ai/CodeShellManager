@@ -6,7 +6,10 @@
 //! - a paired phone opens with `OpenInfo::Device`, runs `Noise_IK` (its static key must be the
 //!   one saved at pairing), then sends requests that the [`Engine`] answers;
 //! - a phone that scanned the offer opens with `OpenInfo::Pairing`, runs `Noise_IKpsk2` with the
-//!   offer's PSK, and sends `PairMsg::Hello`. The person then allows or denies it on the PC.
+//!   offer's PSK, then sends `PairMsg::Confirm` (key confirmation) and `PairMsg::Hello`. Nothing
+//!   is shown to the person until the confirmation decrypts and matches: a phone without the PSK
+//!   never gets past message 2, so it never appears in the pending list. The person then allows
+//!   or denies the phone on the PC.
 //!
 //! Every reply is produced here; nothing is sent to a phone except through [`Out`].
 
@@ -14,20 +17,30 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use csm_remote_proto::codes::RefusalCode;
-use csm_remote_proto::ids::{b64_decode_fixed, b64_encode, hex, host_id, token_hash};
-use csm_remote_proto::limits::{MAX_APP_MESSAGE_BYTES, MAX_CHANNELS_PER_HOST};
-use csm_remote_proto::msg::{self, ByeReason, ErrorCode, Event, Level, Request, Response};
+use csm_remote_proto::ids::{b64_decode, b64_decode_fixed, b64_encode, hex, host_id, token_hash};
+use csm_remote_proto::limits::{MAX_APP_MESSAGE_BYTES, MAX_CHANNELS_PER_HOST, MAX_PUSH_BODY_BYTES, MAX_PUSH_ENDPOINT_BYTES};
+use csm_remote_proto::msg::{self, ByeReason, ErrorCode, Event, Level, Op, PushKind, PushPayload, Request, Response, SessionInfo};
 use csm_remote_proto::noise::{MAX_CHANNEL_SECS, MAX_NOISE_MESSAGE, PARAMS_PAIRING, PARAMS_SESSION, PSK_POSITION, REKEY_INTERVAL, check_code, prologue};
 use csm_remote_proto::pairing::{DenyReason, PairMsg, PairingOffer};
-use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, close_payload, decode_frame, encode_frame};
+use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, PushRequest, RelayToHost, Urgency, close_payload, decode_frame, encode_frame};
 use serde::Serialize;
 
 use crate::config::Config;
 use crate::csm::Csm;
-use crate::ops::Engine;
+use crate::ops::{Engine, push_host_allowed};
 use crate::pairing::{Refusal, Slot};
+use crate::push;
 use crate::store::{self, Device, Opened};
-use crate::worker::{Done, Job, Refused, Worker};
+use crate::tracker::{self, REFRESH_SECS, Tracker};
+use crate::worker::{Done, Job, Refused, TRACK_CH, Worker};
+
+/// Seconds between two web pushes to one device. A push that falls inside the window is held and
+/// sent when the window opens, carrying the newest session (section 9).
+pub const PUSH_WINDOW_SECS: u64 = 30;
+/// Lifetime of a push at the push service, in seconds.
+const PUSH_TTL_SECS: u32 = 3600;
+/// Push requests the host keeps the device for, until the relay answers them.
+const PUSH_PENDING_MAX: usize = 256;
 
 /// Requests the host keeps in flight at once, across all channels (and per channel). A request
 /// beyond it is answered `rate_limited` at once; it is not queued.
@@ -72,9 +85,28 @@ pub struct DeviceView {
 pub enum ChanState {
     DevHandshake { hs: Box<snow::HandshakeState>, device_id: String },
     PairHandshake { hs: Box<snow::HandshakeState> },
-    /// A phone finished the pairing handshake and waits for Allow, Deny or the expiry.
+    /// The host sent its message 2. The phone has not yet proven the PSK (no `Confirm` yet).
+    PairConfirm { transport: Box<snow::TransportState>, phone_pub: [u8; 32], check: String },
+    /// The phone proved the PSK; its `Hello` (the name) is what it waits for.
+    PairHello { transport: Box<snow::TransportState>, phone_pub: [u8; 32], check: String },
+    /// A phone finished the pairing exchange and waits for Allow, Deny or the expiry.
     PairWait { transport: Box<snow::TransportState>, name: String, phone_pub: [u8; 32], check: String },
-    Session { transport: Box<snow::TransportState>, device_id: String, sent: u64, received: u64 },
+    /// A paired phone. `view` is the session list the phone has (what the last snapshot or delta
+    /// left it with) and `seq` the last sequence number sent (section 7.2).
+    Session { transport: Box<snow::TransportState>, device_id: String, sent: u64, received: u64, view: BTreeMap<String, SessionInfo>, seq: u64 },
+}
+
+/// Web Push state (section 9): the request ids, when each device last got a push, the devices whose
+/// push is held by the window (with the newest session they should be told about), and the request
+/// ids waiting for the relay's answer.
+#[derive(Debug, Default)]
+pub struct PushState {
+    next_id: u32,
+    last_sent: BTreeMap<String, u64>,
+    held: BTreeMap<String, Option<SessionInfo>>,
+    pending: BTreeMap<u32, String>,
+    /// Sessions that need the person now, from the last tracker read.
+    needs_count: u32,
 }
 
 pub struct Chan {
@@ -98,6 +130,20 @@ pub struct Host {
     /// Seconds an opened pairing offer stays valid: the spec's ten minutes. Tests set it shorter
     /// before the host starts, to see the expiry through the real relay.
     pub pairing_window: u64,
+    /// Messages per direction between Noise rekeys ([`REKEY_INTERVAL`] in the product). A test
+    /// lowers it to see a rekey happen inside a short exchange; the phone must use the same count.
+    pub rekey_every: u64,
+    /// The host-wide tracker (section 7.1): CSM's session list and the push episodes.
+    pub tracker: Tracker,
+    /// A tracker read is on the worker.
+    pub track_inflight: bool,
+    /// When the last tracker read was sent (Unix seconds).
+    track_at: u64,
+    /// The last tracker error, so a repeated one is reported once.
+    track_error: Option<String>,
+    /// The time of the last call into the host (`tick` or `on_frame`), for answers from the worker.
+    clock: u64,
+    pushes: PushState,
 }
 
 /// Random bytes from the OS.
@@ -137,6 +183,13 @@ impl Host {
             chans: BTreeMap::new(),
             slot: None,
             pairing_window: u64::from(csm_remote_proto::limits::PAIRING_SLOT_MAX_SECS),
+            rekey_every: REKEY_INTERVAL,
+            tracker: Tracker::default(),
+            track_inflight: false,
+            track_at: 0,
+            track_error: None,
+            clock: 0,
+            pushes: PushState::default(),
         })
     }
 
@@ -180,7 +233,7 @@ impl Host {
     /// Ends the pairing slot. A phone waiting in it gets `deny` (when given) and its channel closes.
     fn end_pairing(&mut self, _now: u64, deny: Option<DenyReason>) -> Vec<Out> {
         let mut outs = Vec::new();
-        let pairing_channels: Vec<u32> = self.chans.iter().filter(|(_, c)| matches!(c.state, ChanState::PairHandshake { .. } | ChanState::PairWait { .. })).map(|(k, _)| *k).collect();
+        let pairing_channels: Vec<u32> = self.chans.iter().filter(|(_, c)| is_pairing(&c.state)).map(|(k, _)| *k).collect();
         for ch in pairing_channels {
             if let Some(reason) = deny
                 && let Some(frame) = self.send_pair(ch, &PairMsg::Deny { reason })
@@ -256,10 +309,28 @@ impl Host {
 
     /// Time-driven work: the pairing slot's expiry and the channels' maximum age.
     pub fn tick(&mut self, now: u64) -> Vec<Out> {
+        self.clock = now;
         let mut outs = Vec::new();
         while let Some(done) = self.worker.try_done() {
             outs.extend(self.finish(done));
         }
+        // The tracker reads CSM's list on the worker: one read at a time, one every REFRESH_SECS.
+        if !self.track_inflight && now.saturating_sub(self.track_at) >= REFRESH_SECS {
+            let job = Job {
+                ch: TRACK_CH,
+                device_id: String::new(),
+                req: Request { id: 0, op: Op::Ping },
+                now,
+                cfg: self.cfg.clone(),
+                devices: self.devices.clone(),
+                track: true,
+            };
+            if self.worker.submit(job).is_ok() {
+                self.track_inflight = true;
+                self.track_at = now;
+            }
+        }
+        outs.extend(self.send_held(now));
         if self.slot.as_ref().is_some_and(|s| s.expired(now)) {
             outs.extend(self.end_pairing(now, Some(DenyReason::Expired)));
         }
@@ -268,7 +339,7 @@ impl Host {
         let stalled: Vec<u32> = self
             .chans
             .iter()
-            .filter(|(_, c)| matches!(c.state, ChanState::DevHandshake { .. } | ChanState::PairHandshake { .. }) && now.saturating_sub(c.opened) >= HANDSHAKE_SECS)
+            .filter(|(_, c)| matches!(c.state, ChanState::DevHandshake { .. } | ChanState::PairHandshake { .. } | ChanState::PairConfirm { .. } | ChanState::PairHello { .. }) && now.saturating_sub(c.opened) >= HANDSHAKE_SECS)
             .map(|(k, _)| *k)
             .collect();
         let old: Vec<u32> = self.chans.iter().filter(|(_, c)| now.saturating_sub(c.opened) >= MAX_CHANNEL_SECS).map(|(k, _)| *k).collect();
@@ -329,6 +400,7 @@ impl Host {
 
     /// One binary frame from the relay. Garbage is ignored; nothing here panics on bytes.
     pub fn on_frame(&mut self, bytes: &[u8], now: u64) -> Vec<Out> {
+        self.clock = now;
         let Ok(frame) = decode_frame(bytes) else { return Vec::new() };
         let ch = frame.channel;
         match frame.kind {
@@ -419,25 +491,27 @@ impl Host {
                 };
                 let Some(reply) = buf.get(..n).map(<[u8]>::to_vec) else { return (None, Vec::new()) };
                 match hs.into_transport_mode() {
-                    Ok(transport) => (Some(ChanState::Session { transport: Box::new(transport), device_id, sent: 0, received: 0 }), vec![Out::Frame(encode_frame(FrameKind::Data, ch, &reply))]),
+                    Ok(transport) => {
+                        let mut transport = Box::new(transport);
+                        let (mut sent, mut view, mut seq) = (0u64, BTreeMap::new(), 0u64);
+                        // The first thing a phone gets after its handshake is a snapshot of the list.
+                        let list = self.tracker.last().map(<[SessionInfo]>::to_vec).unwrap_or_default();
+                        let mut outs = vec![Out::Frame(encode_frame(FrameKind::Data, ch, &reply))];
+                        outs.extend(resync(ch, &mut transport, &mut sent, &mut view, &mut seq, &list, self.rekey_every));
+                        (Some(ChanState::Session { transport, device_id, sent, received: 0, view, seq }), outs)
+                    }
                     Err(_) => (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]),
                 }
             }
             ChanState::PairHandshake { mut hs } => {
+                // Message 1 carries no payload. A phone without the PSK is not refused here: the
+                // host cannot check the PSK before it writes message 2, and nothing is shown until
+                // the phone confirms (see `PairConfirm`).
                 let mut buf = vec![0u8; MAX_NOISE_MESSAGE];
                 let Ok(n) = hs.read_message(payload, &mut buf) else {
-                    // A wrong PSK (a stale or forged offer) fails here, before any app message.
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 };
-                let hello = buf.get(..n).and_then(|p| serde_json::from_slice::<PairMsg>(p).ok());
-                // The name is cleaned before the person sees it on the decision screen, so a name
-                // with bidi or zero-width characters cannot disguise itself there. A name that
-                // cleans to nothing is refused.
-                let name = match hello {
-                    Some(PairMsg::Hello { v, name }) if v == csm_remote_proto::PROTOCOL_VERSION && PairMsg::valid_name(&name) => crate::policy::clean_name(&name, MAX_PAIR_NAME_CHARS),
-                    _ => return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]),
-                };
-                if name.is_empty() {
+                if n != 0 {
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 }
                 let Some(phone_pub) = hs.get_remote_static().and_then(|r| <[u8; 32]>::try_from(r).ok()) else {
@@ -452,36 +526,75 @@ impl Host {
                 let Ok(transport) = hs.into_transport_mode() else {
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 };
-                let state = ChanState::PairWait { transport: Box::new(transport), name: name.clone(), phone_pub, check: check.clone() };
-                (Some(state), vec![Out::Frame(encode_frame(FrameKind::Data, ch, &reply)), Out::Pending { check, name }])
+                let state = ChanState::PairConfirm { transport: Box::new(transport), phone_pub, check };
+                (Some(state), vec![Out::Frame(encode_frame(FrameKind::Data, ch, &reply))])
+            }
+            ChanState::PairConfirm { mut transport, phone_pub, check } => {
+                // The first transport message must decrypt (only a phone with the PSK can make it)
+                // and carry this handshake's check code. Nothing is shown to the person yet.
+                let Some(plain) = open_transport(&mut transport, payload) else {
+                    return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
+                };
+                match serde_json::from_slice::<PairMsg>(&plain) {
+                    Ok(PairMsg::Confirm { check: theirs }) if theirs == check => (Some(ChanState::PairHello { transport, phone_pub, check }), Vec::new()),
+                    _ => (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]),
+                }
+            }
+            ChanState::PairHello { mut transport, phone_pub, check } => {
+                let Some(plain) = open_transport(&mut transport, payload) else {
+                    return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
+                };
+                // The name is cleaned before the person sees it on the decision screen, so a name
+                // with bidi or zero-width characters cannot disguise itself there. A name that
+                // cleans to nothing is refused.
+                let name = match serde_json::from_slice::<PairMsg>(&plain) {
+                    Ok(PairMsg::Hello { v, name }) if v == csm_remote_proto::PROTOCOL_VERSION && PairMsg::valid_name(&name) => crate::policy::clean_name(&name, MAX_PAIR_NAME_CHARS),
+                    _ => return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]),
+                };
+                if name.is_empty() {
+                    return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
+                }
+                let state = ChanState::PairWait { transport, name: name.clone(), phone_pub, check: check.clone() };
+                (Some(state), vec![Out::Pending { check, name }])
             }
             ChanState::PairWait { transport, name, phone_pub, check } => {
                 // The phone has nothing more to say until the person answers.
                 (Some(ChanState::PairWait { transport, name, phone_pub, check }), Vec::new())
             }
-            ChanState::Session { mut transport, device_id, sent, mut received } => {
+            ChanState::Session { mut transport, device_id, sent, mut received, mut view, mut seq } => {
                 let mut buf = vec![0u8; MAX_NOISE_MESSAGE];
                 let Ok(n) = transport.read_message(payload, &mut buf) else {
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 };
                 received += 1;
-                if received.is_multiple_of(REKEY_INTERVAL) {
+                if received.is_multiple_of(self.rekey_every) {
                     transport.rekey_incoming();
                 }
                 let plain = buf.get(..n).unwrap_or_default();
                 let mut sent = sent;
-                // A parsed request goes to the worker and is answered later (`finish`). Only a
-                // refusal, or a message that does not parse, is answered here.
-                let answer_now: Option<Response> = if plain.len() > MAX_APP_MESSAGE_BYTES {
-                    Some(Response::err(0, ErrorCode::TooLarge, "the message is too large"))
+                let every = self.rekey_every;
+                let mut outs = Vec::new();
+                if plain.len() > MAX_APP_MESSAGE_BYTES {
+                    outs.extend(send_response(ch, &mut transport, &mut sent, &Response::err(0, ErrorCode::TooLarge, "the message is too large"), every));
                 } else {
                     match Request::parse(plain) {
-                        Ok(req) => self.submit(ch, &device_id, req, now).err(),
-                        Err(e) => Some(Response::err(e.id.unwrap_or(0), e.code, "the request was refused")),
+                        // The snapshot is answered from the tracker's last list: no CSM call, no worker.
+                        Ok(req) if matches!(req.op, Op::Snapshot) => {
+                            let list = self.tracker.last().map(<[SessionInfo]>::to_vec).unwrap_or_default();
+                            outs.extend(send_response(ch, &mut transport, &mut sent, &Response::ok(req.id, serde_json::json!({})), every));
+                            outs.extend(resync(ch, &mut transport, &mut sent, &mut view, &mut seq, &list, every));
+                        }
+                        // A parsed request goes to the worker and is answered later (`finish`). Only a
+                        // refusal is answered here.
+                        Ok(req) => {
+                            if let Err(response) = self.submit(ch, &device_id, req, now) {
+                                outs.extend(send_response(ch, &mut transport, &mut sent, &response, every));
+                            }
+                        }
+                        Err(e) => outs.extend(send_response(ch, &mut transport, &mut sent, &Response::err(e.id.unwrap_or(0), e.code, "the request was refused"), every)),
                     }
-                };
-                let outs: Vec<Out> = answer_now.and_then(|response| send_response(ch, &mut transport, &mut sent, &response)).into_iter().collect();
-                (Some(ChanState::Session { transport, device_id, sent, received }), outs)
+                }
+                (Some(ChanState::Session { transport, device_id, sent, received, view, seq }), outs)
             }
         }
     }
@@ -495,7 +608,7 @@ impl Host {
         if on_channel >= MAX_REQUESTS_IN_FLIGHT || total >= MAX_REQUESTS_IN_FLIGHT {
             return Err(Response::err(id, ErrorCode::RateLimited, "too many requests are running; ask again in a moment"));
         }
-        let job = Job { ch, device_id: device_id.to_owned(), req, now, cfg: self.cfg.clone(), devices: self.devices.clone() };
+        let job = Job { ch, device_id: device_id.to_owned(), req, now, cfg: self.cfg.clone(), devices: self.devices.clone(), track: false };
         match self.worker.submit(job) {
             Ok(()) => {
                 *self.inflight.entry(ch).or_insert(0) += 1;
@@ -509,6 +622,9 @@ impl Host {
     /// One answer from the worker: the device fields it may have changed are merged, and the
     /// response is sealed into its channel if that channel is still open with the same device.
     fn finish(&mut self, done: Done) -> Vec<Out> {
+        if done.ch == TRACK_CH {
+            return self.finish_track(done.sessions);
+        }
         let mut outs = Vec::new();
         if let Some(n) = self.inflight.get_mut(&done.ch) {
             *n = n.saturating_sub(1);
@@ -519,12 +635,14 @@ impl Host {
         if let Some(problem) = self.merge_devices(&done.devices, done.devices_changed) {
             outs.push(Out::Problem(problem));
         }
+        let every = self.rekey_every;
+        let Some(response) = done.response else { return outs };
         let Some(chan) = self.chans.get_mut(&done.ch) else { return outs };
         let ChanState::Session { transport, device_id, sent, .. } = &mut chan.state else { return outs };
         if *device_id != done.device_id {
             return outs;
         }
-        outs.extend(send_response(done.ch, transport, sent, &done.response));
+        outs.extend(send_response(done.ch, transport, sent, &response, every));
         outs
     }
 
@@ -552,12 +670,157 @@ impl Host {
     pub fn wait_idle(&mut self) -> Vec<Out> {
         let started = std::time::Instant::now();
         let mut outs = Vec::new();
-        while !self.inflight.is_empty() && started.elapsed() < std::time::Duration::from_secs(10) {
+        while (!self.inflight.is_empty() || self.track_inflight) && started.elapsed() < std::time::Duration::from_secs(10) {
             if let Some(done) = self.worker.next_done(std::time::Duration::from_millis(20)) {
                 outs.extend(self.finish(done));
             }
         }
         outs
+    }
+
+    /// One read of CSM's session list came back from the worker (or failed). The tracker takes it,
+    /// each connected phone gets what changed, and the sessions that started to need the person are
+    /// pushed. A failure is reported once until the list reads again.
+    fn finish_track(&mut self, sessions: Option<Result<Vec<SessionInfo>, String>>) -> Vec<Out> {
+        self.track_inflight = false;
+        match sessions {
+            Some(Ok(list)) => {
+                self.track_error = None;
+                self.pushes.needs_count = u32::try_from(list.iter().filter(|s| tracker::needs_you(s.status)).count()).unwrap_or(u32::MAX);
+                let now = self.clock;
+                let refresh = self.tracker.observe(list, now);
+                let mut outs = self.track_outs();
+                outs.extend(self.push_started(&refresh.started, now));
+                outs
+            }
+            Some(Err(message)) => {
+                if self.track_error.as_deref() == Some(message.as_str()) {
+                    return Vec::new();
+                }
+                let shown = format!("CSM did not list its sessions: {message}");
+                self.track_error = Some(message);
+                vec![Out::Problem(shown)]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// The changes since each connected phone's last message (section 7.2): a delta with the next
+    /// sequence number, split when it is large. A phone whose view is already the list gets nothing.
+    fn track_outs(&mut self) -> Vec<Out> {
+        let Some(list) = self.tracker.last().map(<[SessionInfo]>::to_vec) else { return Vec::new() };
+        let every = self.rekey_every;
+        let mut outs = Vec::new();
+        for (ch, chan) in self.chans.iter_mut() {
+            let ChanState::Session { transport, sent, view, seq, .. } = &mut chan.state else { continue };
+            let upserts: Vec<SessionInfo> = list.iter().filter(|s| view.get(&s.id) != Some(*s)).cloned().collect();
+            let removed: Vec<String> = view.keys().filter(|id| !list.iter().any(|s| &s.id == *id)).cloned().collect();
+            if upserts.is_empty() && removed.is_empty() {
+                continue;
+            }
+            let events = delta_events(*seq + 1, &upserts, &removed);
+            *seq += u64::try_from(events.len()).unwrap_or(0);
+            outs.extend(send_events(*ch, transport, sent, &events, every));
+            for s in upserts {
+                view.insert(s.id.clone(), s);
+            }
+            for id in removed {
+                view.remove(&id);
+            }
+        }
+        outs
+    }
+
+    /// Pushes for sessions that have just started to need the person: one to each device that
+    /// asked for them. A device pushed within the window gets the push when the window opens.
+    fn push_started(&mut self, started: &[SessionInfo], now: u64) -> Vec<Out> {
+        let Some(newest) = started.last().cloned() else { return Vec::new() };
+        let ids: Vec<String> = self.devices.iter().filter(|d| d.notify && d.push.is_some()).map(|d| d.device_id.clone()).collect();
+        let mut outs = Vec::new();
+        for id in ids {
+            if self.push_window_open(&id, now) {
+                outs.extend(self.push_device(&id, Some(&newest), now));
+            } else {
+                self.pushes.held.insert(id, Some(newest.clone()));
+            }
+        }
+        outs
+    }
+
+    /// The held pushes whose window has opened by `now`.
+    fn send_held(&mut self, now: u64) -> Vec<Out> {
+        let due: Vec<String> = self.pushes.held.keys().filter(|id| self.push_window_open(id, now)).cloned().collect();
+        let mut outs = Vec::new();
+        for id in due {
+            let newest = self.pushes.held.remove(&id).flatten();
+            outs.extend(self.push_device(&id, newest.as_ref(), now));
+        }
+        outs
+    }
+
+    fn push_window_open(&self, device_id: &str, now: u64) -> bool {
+        self.pushes.last_sent.get(device_id).is_none_or(|t| now.saturating_sub(*t) >= PUSH_WINDOW_SECS)
+    }
+
+    /// One `needs-you` push to one device, as a relay request. The payload names the newest session
+    /// unless the device hides names; the body is encrypted to the device's key. Nothing is sent when
+    /// the device no longer wants pushes.
+    fn push_device(&mut self, device_id: &str, newest: Option<&SessionInfo>, now: u64) -> Vec<Out> {
+        if !self.cfg.push {
+            return Vec::new();
+        }
+        let Some(device) = self.devices.iter().find(|d| d.device_id == device_id) else { return Vec::new() };
+        if !device.notify {
+            return Vec::new();
+        }
+        let Some(sub) = device.push.clone() else { return Vec::new() };
+        let hide = device.hide_names;
+        if sub.endpoint.len() > MAX_PUSH_ENDPOINT_BYTES || !push_host_allowed(&self.cfg.push_hosts, &sub.endpoint) {
+            return vec![Out::Problem("a push was not sent: its service is not on the list of push hosts".into())];
+        }
+        let (s, sid) = match newest {
+            Some(session) if !hide => (Some(crate::policy::clean_name(&session.name, 80)), Some(session.id.clone())),
+            _ => (None, None),
+        };
+        let payload = PushPayload { t: PushKind::NeedsYou, s, sid, n: self.pushes.needs_count.max(1) };
+        let Ok(plain) = serde_json::to_vec(&payload) else { return Vec::new() };
+        let body = match encrypt_push(&plain, &sub.p256dh, &sub.auth) {
+            Ok(body) => body,
+            Err(e) => return vec![Out::Problem(format!("a push was not sent: {e}"))],
+        };
+        if body.len() > MAX_PUSH_BODY_BYTES {
+            return vec![Out::Problem("a push was not sent: the message is too large".into())];
+        }
+        let id = self.pushes.next_id.wrapping_add(1);
+        self.pushes.next_id = id;
+        if self.pushes.pending.len() >= PUSH_PENDING_MAX {
+            self.pushes.pending.clear();
+        }
+        self.pushes.pending.insert(id, device_id.to_owned());
+        self.pushes.last_sent.insert(device_id.to_owned(), now);
+        let request = PushRequest { id, endpoint: sub.endpoint, ttl: PUSH_TTL_SECS, urgency: Some(Urgency::High), topic: Some("needs-you".into()), body: b64_encode(&body) };
+        vec![Out::Control(HostToRelay::Push(request))]
+    }
+
+    /// What the relay says back on the host socket. A push the push service refuses as gone (404 or
+    /// 410) drops that device's subscription; other answers are not recorded.
+    pub fn on_relay(&mut self, msg: &RelayToHost) -> Vec<Out> {
+        match msg {
+            RelayToHost::PushResult { id, ok, status, .. } => {
+                let Some(device_id) = self.pushes.pending.remove(id) else { return Vec::new() };
+                if *ok || !matches!(status, Some(404 | 410)) {
+                    return Vec::new();
+                }
+                let Some(device) = self.devices.iter_mut().find(|d| d.device_id == device_id) else { return Vec::new() };
+                device.push = None;
+                match store::save_devices(&self.dir, &self.devices) {
+                    Ok(()) => vec![Out::DevicesChanged],
+                    Err(e) => vec![Out::Problem(format!("the device list was not saved: {e}"))],
+                }
+            }
+            RelayToHost::Error { code } => vec![Out::Problem(format!("the relay refused a request ({})", code.as_str()))],
+            RelayToHost::Welcome { .. } | RelayToHost::AllowOk { .. } | RelayToHost::PairingOk { .. } => Vec::new(),
+        }
     }
 
     fn waiting_channel(&self) -> Option<u32> {
@@ -625,13 +888,98 @@ fn encode_json_response(r: &Response) -> Option<Vec<u8>> {
 
 /// One response, encrypted on the channel's transport and framed. Counts the message for the
 /// rekey schedule (the phone counts the same way).
-fn send_response(ch: u32, transport: &mut snow::TransportState, sent: &mut u64, response: &Response) -> Option<Out> {
-    let bytes = encode_json_response(response).and_then(|p| seal(transport, &p))?;
+fn send_response(ch: u32, transport: &mut snow::TransportState, sent: &mut u64, response: &Response, rekey_every: u64) -> Option<Out> {
+    let plain = encode_json_response(response)?;
+    send_msg(ch, transport, sent, &plain, rekey_every)
+}
+
+/// One app message (a response or an event) on a channel's transport, framed. Every message counts
+/// for the rekey schedule, in both directions, so the phone counts the same way.
+fn send_msg(ch: u32, transport: &mut snow::TransportState, sent: &mut u64, plain: &[u8], rekey_every: u64) -> Option<Out> {
+    let bytes = seal(transport, plain)?;
     *sent += 1;
-    if sent.is_multiple_of(REKEY_INTERVAL) {
+    if sent.is_multiple_of(rekey_every) {
         transport.rekey_outgoing();
     }
     Some(Out::Frame(encode_frame(FrameKind::Data, ch, &bytes)))
+}
+
+/// The events, one message each, in order. An event that does not encode is skipped (it cannot
+/// be made smaller by waiting; the phone's next snapshot brings it back).
+fn send_events(ch: u32, transport: &mut snow::TransportState, sent: &mut u64, events: &[Event], rekey_every: u64) -> Vec<Out> {
+    events.iter().filter_map(|e| msg::encode(e).ok()).filter_map(|plain| send_msg(ch, transport, sent, &plain, rekey_every)).collect()
+}
+
+/// A snapshot of `list` for one phone: a new sequence number, and the phone's view becomes the list
+/// (section 7.2). The parts of a split snapshot all carry that number.
+fn resync(
+    ch: u32,
+    transport: &mut snow::TransportState,
+    sent: &mut u64,
+    view: &mut BTreeMap<String, SessionInfo>,
+    seq: &mut u64,
+    list: &[SessionInfo],
+    rekey_every: u64,
+) -> Vec<Out> {
+    *seq += 1;
+    view.clear();
+    for s in list {
+        view.insert(s.id.clone(), s.clone());
+    }
+    let events = msg::split_snapshot(*seq, list, None, MAX_APP_MESSAGE_BYTES);
+    send_events(ch, transport, sent, &events, rekey_every)
+}
+
+/// The delta messages for a change: the upserts and the removed ids, split so that each message
+/// fits one app message. They take consecutive sequence numbers from `first_seq` (section 7.2
+/// point 5: each one is its own step, so the phone applies them in order).
+pub fn delta_events(first_seq: u64, upserts: &[SessionInfo], removed: &[String]) -> Vec<Event> {
+    const BUDGET: usize = MAX_APP_MESSAGE_BYTES - 512;
+    let mut parts: Vec<Event> = Vec::new();
+    let mut up: Vec<SessionInfo> = Vec::new();
+    let mut rm: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for s in upserts {
+        let size = serde_json::to_vec(s).map_or(0, |v| v.len() + 1);
+        if used + size > BUDGET && (!up.is_empty() || !rm.is_empty()) {
+            parts.push(delta_of(next_seq(first_seq, parts.len()), &mut up, &mut rm));
+            used = 0;
+        }
+        up.push(s.clone());
+        used += size;
+    }
+    for r in removed {
+        let size = r.len() + 4;
+        if used + size > BUDGET && (!up.is_empty() || !rm.is_empty()) {
+            parts.push(delta_of(next_seq(first_seq, parts.len()), &mut up, &mut rm));
+            used = 0;
+        }
+        rm.push(r.clone());
+        used += size;
+    }
+    if !up.is_empty() || !rm.is_empty() {
+        parts.push(delta_of(next_seq(first_seq, parts.len()), &mut up, &mut rm));
+    }
+    parts
+}
+
+/// The sequence number of the `index`th message of a split change.
+fn next_seq(first_seq: u64, index: usize) -> u64 {
+    first_seq.saturating_add(u64::try_from(index).unwrap_or(u64::MAX))
+}
+
+/// One delta message with the given sequence number, taking what has been collected so far.
+fn delta_of(seq: u64, up: &mut Vec<SessionInfo>, rm: &mut Vec<String>) -> Event {
+    Event::Delta { seq, upserts: std::mem::take(up), removed: std::mem::take(rm) }
+}
+
+/// The RFC 8291 body for one push: a fresh key and salt from the OS random source.
+fn encrypt_push(plain: &[u8], p256dh: &str, auth: &str) -> Result<Vec<u8>, String> {
+    let ua = b64_decode(p256dh).ok_or_else(|| "the push key is not base64".to_owned())?;
+    let auth = b64_decode(auth).ok_or_else(|| "the push auth secret is not base64".to_owned())?;
+    let key: [u8; 32] = random()?;
+    let salt: [u8; 16] = random()?;
+    push::encrypt(plain, &ua, &auth, &key, &salt)
 }
 
 /// Encrypts one application message for a transport, or `None` when it does not fit.
@@ -642,7 +990,65 @@ fn seal(transport: &mut snow::TransportState, plain: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Decrypts one transport message from the phone. `None` for anything that does not decrypt or does
+/// not fit the buffer; nothing here panics on bytes.
+fn open_transport(transport: &mut snow::TransportState, payload: &[u8]) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; MAX_NOISE_MESSAGE];
+    let n = transport.read_message(payload, &mut buf).ok()?;
+    buf.get(..n).map(<[u8]>::to_vec)
+}
+
 /// Whether a channel is a pairing channel (it holds the one pairing slot).
 fn is_pairing(state: &ChanState) -> bool {
-    matches!(state, ChanState::PairHandshake { .. } | ChanState::PairWait { .. })
+    matches!(state, ChanState::PairHandshake { .. } | ChanState::PairConfirm { .. } | ChanState::PairHello { .. } | ChanState::PairWait { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use csm_remote_proto::msg::{PhoneStatus, encode};
+
+    fn big(i: usize) -> SessionInfo {
+        SessionInfo {
+            id: format!("s{i}"),
+            name: "n".repeat(200),
+            folder: "f".repeat(400),
+            status: PhoneStatus::Working,
+            branch: Some("b".repeat(200)),
+            message: None,
+            group: None,
+            profile: None,
+            since: Some(1),
+        }
+    }
+
+    /// A change too big for one message is split into deltas with consecutive sequence numbers.
+    /// Every upsert and every removal appears exactly once, and each message encodes.
+    #[test]
+    fn a_large_change_is_split_into_deltas_with_consecutive_numbers_and_every_item_once() {
+        let upserts: Vec<SessionInfo> = (0..400).map(big).collect();
+        let removed: Vec<String> = (0..300).map(|i| format!("gone-{i}-{}", "x".repeat(40))).collect();
+        let events = delta_events(10, &upserts, &removed);
+        assert!(events.len() > 2, "the change needs several messages, got {}", events.len());
+        let mut got_up = Vec::new();
+        let mut got_rm = Vec::new();
+        for (i, ev) in events.iter().enumerate() {
+            assert!(encode(ev).is_ok(), "message {i} fits one app message");
+            let Event::Delta { seq, upserts, removed } = ev else { panic!("a delta") };
+            assert_eq!(*seq, 10 + u64::try_from(i).unwrap(), "consecutive numbers");
+            got_up.extend(upserts.iter().map(|s| s.id.clone()));
+            got_rm.extend(removed.iter().cloned());
+        }
+        assert_eq!(got_up, upserts.iter().map(|s| s.id.clone()).collect::<Vec<_>>());
+        assert_eq!(got_rm, removed);
+    }
+
+    #[test]
+    fn a_small_change_is_one_delta_and_no_change_is_none() {
+        let events = delta_events(3, &[big(1)], &["gone".to_owned()]);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Delta { seq: 3, upserts, removed } if upserts.len() == 1 && removed.len() == 1));
+        assert!(delta_events(3, &[], &[]).is_empty());
+    }
 }

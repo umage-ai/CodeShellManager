@@ -1,6 +1,7 @@
-//! The host's outbound connection to the relay: one WebSocket, plain `ws://` to a loopback relay
-//! only (the development setup). Reconnects with the backoff of `relay/README.md` (1, 2, 5, 10, 30
-//! seconds).
+//! The host's outbound connection to the relay: one WebSocket, `wss://` (TLS, with the public roots
+//! bundled in `webpki-roots`, so a relay behind a public certificate works the same on every PC) or
+//! plain `ws://` to a loopback relay (the development setup). Reconnects with the backoff of
+//! `relay/README.md` (1, 2, 5, 10, 30 seconds).
 //!
 //! One thread does everything: it reads with a one-second timeout, runs the time-driven work,
 //! applies the person's commands (start or stop pairing, allow or deny, revoke, change level) and
@@ -10,10 +11,11 @@
 //! The connect and the handshake each have a timeout, so a relay that accepts the TCP connection
 //! and then says nothing cannot hold the thread (and so cannot stop the add-on from stopping).
 //!
-//! Not built: `wss://` (needs a TLS feature of `tungstenite`, an owner decision on the crate set).
-//! A production relay URL is refused here with a reason, not silently downgraded.
+//! A relay URL that is neither `wss://` nor loopback `ws://` is refused here with a reason, never
+//! silently downgraded to plain text.
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use csm_remote_proto::msg::Level;
 use csm_remote_proto::relay::{HostToRelay, RelayToHost, to_text};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket};
+use tungstenite::{Connector, Message, WebSocket};
 
 use crate::config::is_loopback_ws_relay;
 use crate::host::{DeviceView, Host, Out};
@@ -61,12 +63,8 @@ pub fn now_secs() -> u64 {
 /// link, pending pairings, problems, devices changed), so the screen and the log can show it.
 /// Commands wait in `commands` while the relay is unreachable and are applied after a reconnect.
 pub fn run(host: &mut Host, url: &str, secret: &[u8; 32], stop: &AtomicBool, commands: &Receiver<Command>, on_out: &mut dyn FnMut(&Out)) {
-    if url.starts_with("wss://") {
-        on_out(&Out::Problem("wss:// relays are not supported in this build; only ws:// to 127.0.0.1 is used".into()));
-        return;
-    }
-    if !is_loopback_ws_relay(url) {
-        on_out(&Out::Problem("only ws:// to 127.0.0.1 is supported in this build; the relay is not used".into()));
+    if !url.starts_with("wss://") && !is_loopback_ws_relay(url) {
+        on_out(&Out::Problem("the relay must be wss://, or ws:// to 127.0.0.1 for a local test; the relay is not used".into()));
         return;
     }
     let socket_url = host_socket_url(url);
@@ -129,21 +127,47 @@ pub fn host_socket_url(relay: &str) -> String {
     if base.ends_with("/v1/host") { base.to_owned() } else { format!("{base}/v1/host") }
 }
 
-/// The TCP connect with a timeout, then the WebSocket handshake with the same timeout. Only
-/// loopback addresses are reached (checked by the caller).
+/// The TLS settings for `wss://`: the ring provider, named here so that no process-wide default is
+/// needed, and the public roots bundled in `webpki-roots`. A self-hosted relay needs a certificate
+/// from a public CA (the relay's Caddy setup gets one); a private CA is not trusted.
+fn tls_connector() -> Result<Connector, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| "the TLS settings could not be made".to_owned())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Connector::Rustls(Arc::new(config)))
+}
+
+/// The TCP connect with a timeout, then the WebSocket handshake (TLS first for `wss://`) with the
+/// same timeout. Only `wss://` and loopback `ws://` URLs get here (checked by the caller).
 fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
-    let rest = url.strip_prefix("ws://").unwrap_or_default();
+    let (tls, rest) = match (url.strip_prefix("wss://"), url.strip_prefix("ws://")) {
+        (Some(r), _) => (true, r),
+        (None, Some(r)) => (false, r),
+        (None, None) => return Err("the relay address is not usable".to_owned()),
+    };
     let authority = rest.split('/').next().unwrap_or_default();
-    let with_port = if authority.contains(':') { authority.to_owned() } else { format!("{authority}:80") };
-    let addr: SocketAddr = with_port.parse().map_err(|_| "the relay address is not usable".to_owned())?;
+    let default_port = if tls { 443 } else { 80 };
+    let with_port = if authority.contains(':') { authority.to_owned() } else { format!("{authority}:{default_port}") };
     let timeout = Duration::from_secs(CONNECT_TIMEOUT_SECS);
+    let addr = with_port.to_socket_addrs().ok().and_then(|mut it| it.next()).ok_or_else(|| "the relay address is not usable".to_owned())?;
     let tcp = TcpStream::connect_timeout(&addr, timeout).map_err(|e| format!("the relay did not accept the connection: {e}"))?;
     tcp.set_read_timeout(Some(timeout)).map_err(|_| "the socket could not be set up".to_owned())?;
     tcp.set_write_timeout(Some(timeout)).map_err(|_| "the socket could not be set up".to_owned())?;
-    let (ws, _response) = tungstenite::client::client(url, MaybeTlsStream::Plain(tcp)).map_err(|e| format!("the relay did not complete the handshake: {e}"))?;
-    if let MaybeTlsStream::Plain(tcp) = ws.get_ref() {
-        tcp.set_read_timeout(Some(Duration::from_millis(POLL_MS))).map_err(|_| "the socket could not be set up".to_owned())?;
+    // `wss://` gets the TLS connector (certificates checked against the bundled public roots); `ws://`
+    // (loopback only) is a plain WebSocket handshake.
+    let connector = if tls { Some(tls_connector()?) } else { None };
+    let (mut ws, _response) = tungstenite::client_tls_with_config(url, tcp, None, connector).map_err(|e| format!("the relay did not complete the handshake: {e}"))?;
+    let read = Duration::from_millis(POLL_MS);
+    match ws.get_mut() {
+        MaybeTlsStream::Plain(tcp) => tcp.set_read_timeout(Some(read)),
+        MaybeTlsStream::Rustls(tls) => tls.get_ref().set_read_timeout(Some(read)),
+        _ => Ok(()),
     }
+    .map_err(|_| "the socket could not be set up".to_owned())?;
     Ok(ws)
 }
 
@@ -199,7 +223,10 @@ fn session(host: &mut Host, url: &str, secret: &[u8; 32], stop: &AtomicBool, com
             }
             Ok(Message::Text(text)) => {
                 if let Ok(msg) = serde_json::from_str::<RelayToHost>(&text) {
-                    on_relay_message(&msg, on_out);
+                    let outs = host.on_relay(&msg);
+                    if let Err(e) = send_all(&mut ws, outs, on_out) {
+                        return Ended::Lost(e);
+                    }
                 }
             }
             Ok(Message::Close(_)) => return Ended::Lost("the relay closed the connection".into()),
@@ -233,14 +260,6 @@ fn apply(host: &mut Host, cmd: &Command, now: u64, on_out: &mut dyn FnMut(&Out))
             let _ = reply.send(host.devices_view());
             Vec::new()
         }
-    }
-}
-
-/// What the relay says back. Refusals are reported; nothing here changes host state.
-fn on_relay_message(msg: &RelayToHost, on_out: &mut dyn FnMut(&Out)) {
-    match msg {
-        RelayToHost::Welcome { .. } | RelayToHost::AllowOk { .. } | RelayToHost::PairingOk { .. } | RelayToHost::PushResult { .. } => {}
-        RelayToHost::Error { code } => on_out(&Out::Problem(format!("the relay refused a request ({})", code.as_str()))),
     }
 }
 
@@ -377,15 +396,35 @@ mod tests {
         assert_eq!(host_socket_url("ws://127.0.0.1:9000/v1/host"), "ws://127.0.0.1:9000/v1/host", "not doubled");
     }
 
+    /// `wss://` really negotiates TLS: a peer that answers with plain HTTP fails the TLS handshake,
+    /// which is reported as a problem and given up on within the timeouts (the URL is not
+    /// downgraded to plain text, and nothing panics).
     #[test]
-    fn a_wss_relay_is_refused_with_a_reason_in_this_build() {
+    fn a_wss_relay_that_is_not_tls_is_reported_and_given_up_on() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        let url = format!("wss://127.0.0.1:{port}");
         let dir = tempfile::tempdir().unwrap();
-        let mut host = host_at(dir.path(), "wss://relay.example");
+        let mut host = host_at(dir.path(), &url);
         let stop = AtomicBool::new(false);
-        let mut seen = Vec::new();
         let (_tx, rx) = mpsc::channel();
-        run(&mut host, "wss://relay.example/v1/host", &[5; 32], &stop, &rx, &mut |o| seen.push(o.clone()));
-        assert!(seen.iter().any(|o| matches!(o, Out::Problem(p) if p.contains("ws://"))));
+        let mut problems = Vec::new();
+        let started = Instant::now();
+        run(&mut host, &url, &[5; 32], &stop, &rx, &mut |o| {
+            if let Out::Problem(p) = o {
+                problems.push(p.clone());
+                stop.store(true, Ordering::SeqCst);
+            }
+        });
+        assert!(started.elapsed() < Duration::from_secs(CONNECT_TIMEOUT_SECS + 3), "given up on in time: {:?}", started.elapsed());
+        assert!(problems.iter().any(|p| p.contains("handshake")), "the TLS failure is reported: {problems:?}");
+        assert!(host.slot.is_none());
     }
 
     #[test]

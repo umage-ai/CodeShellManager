@@ -24,7 +24,12 @@ use crate::store::Device;
 /// bound, not the first.
 pub const QUEUE: usize = 8;
 
-/// One parsed request for the worker.
+/// The channel number a tracker read is answered on (never a real channel: the relay's are below
+/// [`u32::MAX`] and the host never opens this one).
+pub const TRACK_CH: u32 = u32::MAX;
+
+/// One parsed request for the worker, or (with `track`) one read of CSM's session list for the
+/// host-wide tracker (section 7.1). `req` is ignored for a tracker read.
 pub struct Job {
     pub ch: u32,
     pub device_id: String,
@@ -32,13 +37,16 @@ pub struct Job {
     pub now: u64,
     pub cfg: Config,
     pub devices: Vec<Device>,
+    pub track: bool,
 }
 
-/// The answer to one job: the response and the device copy the worker used (the host merges it).
+/// The answer to one job: the response (for a request) or the session list (for a tracker read),
+/// and the device copy the worker used (the host merges it).
 pub struct Done {
     pub ch: u32,
     pub device_id: String,
-    pub response: csm_remote_proto::msg::Response,
+    pub response: Option<csm_remote_proto::msg::Response>,
+    pub sessions: Option<Result<Vec<csm_remote_proto::msg::SessionInfo>, String>>,
     pub devices: Vec<Device>,
     pub devices_changed: bool,
 }
@@ -94,9 +102,14 @@ impl Worker {
 
 fn run(mut engine: Engine, jobs: Receiver<Job>, done: Sender<Done>) {
     while let Ok(job) = jobs.recv() {
-        let Job { ch, device_id, req, now, cfg, mut devices } = job;
-        let out = engine.handle(&cfg, &mut devices, &device_id, &req, now);
-        let finished = Done { ch, device_id, response: out.response, devices, devices_changed: out.devices_changed };
+        let Job { ch, device_id, req, now, cfg, mut devices, track } = job;
+        let finished = if track {
+            let sessions = engine.track();
+            Done { ch, device_id, response: None, sessions: Some(sessions), devices, devices_changed: false }
+        } else {
+            let out = engine.handle(&cfg, &mut devices, &device_id, &req, now);
+            Done { ch, device_id, response: Some(out.response), sessions: None, devices, devices_changed: out.devices_changed }
+        };
         if done.send(finished).is_err() {
             // The host is gone: nobody will read the answers.
             break;
@@ -145,7 +158,7 @@ mod tests {
     #[test]
     fn a_job_is_answered_on_the_worker_and_the_answer_comes_back() {
         let w = Worker::start(Engine::new(Box::new(Slow(Duration::from_millis(0))))).unwrap();
-        w.submit(Job { ch: 7, device_id: "d1".into(), req: ping(3), now: 50, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)] }).unwrap();
+        w.submit(Job { ch: 7, device_id: "d1".into(), req: ping(3), now: 50, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)], track: false }).unwrap();
         let started = Instant::now();
         let done = loop {
             if let Some(d) = w.try_done() {
@@ -167,7 +180,7 @@ mod tests {
         for i in 0..(QUEUE as u64 * 3) {
             // session.list calls CSM, so the worker is busy for the whole test; ping would not.
             let req = Request { id: i, op: Op::SessionList };
-            let job = Job { ch: 1, device_id: "d1".into(), req, now: 1, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)] };
+            let job = Job { ch: 1, device_id: "d1".into(), req, now: 1, cfg: Config::default(), devices: vec![device("d1", Level::Viewer)], track: false };
             if w.submit(job) == Err(Refused::Full) {
                 refused += 1;
             }

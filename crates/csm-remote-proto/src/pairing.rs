@@ -4,8 +4,11 @@
 //!    leaves the phone. The offer is a [`PairingOffer`]: relay URL, host id, host static public
 //!    key, pairing slot id (128 bit) and the one-time PSK (256 bit); it lives 10 minutes, one use.
 //! 2. The phone connects to the relay with the `pairing_id`, runs `Noise_IKpsk2` (see [`crate::noise`]),
-//!    then sends [`PairMsg::Hello`] with its device name.
-//! 3. The PC shows the device name and the [`crate::noise::check_code`]; on Allow it sends
+//!    then sends [`PairMsg::Confirm`] with its [`crate::noise::check_code`] as its first transport
+//!    message. Only a phone that read the host's message 2 (so it knows the PSK) can send it: the
+//!    host shows nothing for the channel until this message decrypts and matches its own code.
+//! 3. The phone then sends [`PairMsg::Hello`] with its device name. The PC shows the device name
+//!    and the check code; on Allow it sends
 //!    [`PairMsg::Accept`] with a fresh routing token and the granted level, on Deny
 //!    [`PairMsg::Deny`]. The phone stores `{relay, host_id, host_pub, routing_token, name}`.
 
@@ -114,7 +117,11 @@ pub const SLOT_SECS: u32 = PAIRING_SLOT_MAX_SECS;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum PairMsg {
-    /// Phone to host, first message after the handshake.
+    /// Phone to host, the first transport message: key confirmation. A phone that does not know
+    /// the PSK never reads the host's message 2, so it can never send this; `check` must equal the
+    /// host's own check code (the same handshake).
+    Confirm { check: String },
+    /// Phone to host, after `Confirm`: the device name.
     Hello { v: u8, name: String },
     /// Host to phone: the PC owner allowed it. `routing_token` is base64url of 32 bytes.
     Accept { routing_token: String, level: Level, device_id: String },

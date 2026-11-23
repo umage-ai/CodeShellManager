@@ -1,6 +1,6 @@
 # Phone remote: design note
 
-Status: **step 1 partly built** (branch `phone/addon`). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing, Noise channels and the relay client (`ws://` only), all tested. Section 18 lists what is not built and where the code deviates from this plan.
+Status: **step 1 partly built** (branch `phone/addon`, fix round 4). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, and Web Push with RFC 8291 encryption, all tested. The CSM screens (pairing, devices, settings), the `qr` node, the `csm/status` indicator and the two icons are **not built yet**. Section 18 lists what is not built and where the code deviates from this plan.
 Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
 facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
@@ -1163,9 +1163,11 @@ Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `D
   queue full, is answered `rate_limited` at once. Answers come back in submission order and are sealed into the
   channel's transport when the host reads them (`tick`, every 100 ms in the relay loop). A slow CSM therefore cannot
   hold the relay loop, the pings or a revoke.
-- `relay_client.rs`: outbound WebSocket to `127.0.0.1` only (`/v1/host` appended to the relay base). A 5 s connect
-  timeout and a 5 s handshake timeout. Backoff 1, 2, 5, 10, 30 s. A `wss://` relay and any non-loopback `ws://` relay are
-  refused with a reason, and the refusal is tested. The person's commands (start or stop pairing, allow or deny,
+- `relay_client.rs`: outbound WebSocket to a `wss://` relay (TLS through `rustls` with the ring provider named in code and
+  the public roots of `webpki-roots`; a self-hosted relay needs a public-CA certificate, as `relay/Caddyfile` provides) or
+  to a loopback `ws://` relay (`/v1/host` appended to the relay base). A 5 s connect timeout and a 5 s handshake timeout
+  (the TLS handshake included). Backoff 1, 2, 5, 10, 30 s. Any other relay URL is refused with a reason, and a `wss://`
+  peer that is not TLS fails the handshake and is given up on (tested). The person's commands (start or stop pairing, allow or deny,
   revoke, level, devices) are applied while connected and while offline. With the add-on not enabled the host only
   serves commands (`serve_offline`), so nothing dials.
 - `store.rs`: host key and host secret (`relay-secret`, 32 bytes, created on first use; refused if phones are paired and
@@ -1177,6 +1179,22 @@ Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `D
   `devices_view` gives the screen and the tools the devices without keys or token hashes. The pairing window is
   `PAIRING_SLOT_MAX_SECS` (600 s); a test may shorten it (`pairing_window`), nothing else does.
 - `ops.rs`: the op-to-tool mapping of section 4, with the readers matched to CSM's real output (section 18.4).
+- `tracker.rs` (fix round 4): the host-wide tracker of section 7.1. A read of CSM's `session_list` runs on the worker
+  every 2 s, one at a time (`REFRESH_SECS`). The first read is the baseline and starts no episode; a session that moves into
+  `needs_you_approval` or `needs_you_question` starts one episode, reported once. `since` is kept while the status stays.
+  Deviation: the tracker polls. CSM's add-on protocol has no session-change subscription for this add-on, so
+  `session_changed` is not used; the poll is coalesced to one read in flight and one per 2 s.
+- Deltas and snapshots (fix round 4, section 7.2): each session channel keeps `view` (what the phone has) and `seq`. After
+  the handshake the phone gets a snapshot; each tracker read sends one delta with the next `seq` for the changes; a split
+  change takes consecutive numbers (`delta_events`); a `snapshot` request is answered from the tracker's last list with
+  no CSM call. Every message counts for the rekey schedule, in both directions, events included.
+- `push.rs` (fix round 4): RFC 8291 `aes128gcm` encryption, checked against the RFC's own example (section 5, the body
+  bytes and the opened text). The RFC's `Content-Length: 145` does not match its 41-byte plaintext; the body is 144 bytes.
+- Push decisions (fix round 4, section 9): a device with a subscription, `notify` on and `push` on in `config.json` gets one
+  push per episode. The payload names the newest session unless the device hides names; the count is always sent. A
+  device is pushed at most once per 30 s (`PUSH_WINDOW_SECS`); a push inside the window is held and sent when it opens.
+  A push service answer of 404 or 410 drops that device's subscription and saves the device list. Not built: the
+  per-host and per-endpoint push caps of the relay are not mirrored in the add-on (the relay enforces them).
 - `pairing.rs`: `Slot` Debug never shows the PSK. `config.rs`: the loopback relay check is exact (`127.0.0.1`, then a
   port, then `/` or the end), so `127.0.0.1.example` and `127.0.0.1@host` are refused.
 - Manifest: `[process] argv = ["csm-phone"]`, `effects = ["accesses_network", "stores_data"]`, `calls` equal to
@@ -1199,23 +1217,17 @@ Tests (all pass with `cargo +1.97 test`):
 
 ### 18.1 Not built (step 1 still open)
 
-- **The pairing, devices and settings screens, the `qr` node, the indicator (`csm/status`) and the icons.** Not started in
-  fix round 2: they touch `csm-core` (the `qr` node and its validation), `csm-ui` (drawing) and the screen protocol, and
-  they need their own review. Pairing is reached only through the tools, which return the link text. The pairing-screen
-  requirements in section 8 stand as the spec.
-- **Session deltas and the host-wide tracker (section 7).** Snapshots are answered on request only. Nothing is pushed.
-- **Push notifications (section 9): encryption (RFC 8291) and `PushRequest` sending.** `push_ready` is `push &&
-  subscription`, not a check of the relay's VAPID key.
+- **The pairing, devices and settings screens, the `qr` node, the indicator (`csm/status`) and the icons. STILL OPEN
+  after fix round 4.** These touch `csm-core` (the `qr` node and its validation), `csm-ui` (drawing), the add-on's screen
+  tree and `csm-engine` (the `csm/status` notification). None is built in this round, so the add-on is not yet usable by
+  a person without the tools: pairing is reached only through the tools, which return the link text. The pairing-screen
+  requirements in section 8 stand as the spec. Owner: confirm whether these ship in step 1 or are moved to a later step.
 - **`remote_control`:** `session.new` answers `"not_built"` (section 4's wait and `Event::RemoteControl` are not built).
-- **`wss://` (TLS).** Refused, not built. The design allowed TLS or a hard refusal; the refusal is what is in place, so
-  a production relay URL cannot be used until TLS is added (an owner decision on the crate set: the `tungstenite` TLS
-  feature).
-- **The OS keychain.** The host secret is a file, protected by the Windows access list and the Unix mode (18.2). The
-  `addon_secret_*` tools are not used: their answer shape is not verified.
-- **Rekeying** is wired (10 000 messages) but not tested with a count that reaches it.
-- **The owner decision on the wrong PSK (18.2).** Open. Until it is decided, the host shows a pending request for a phone
-  that does not know the PSK, and the person can allow it. The Allow sends the phone no token it can read, and the
-  phone's key is saved, but the person has been asked to allow an unauthenticated peer.
+- **The OS keychain: not built; a decision for the owner (section 13, decision 4).** The host secret is a file, protected by
+  the Windows access list and the Unix mode (18.2). The `addon_secret_*` tools are not used: their answer shape is not
+  verified. Until the owner decides, the file is what ships.
+- **Rekeying** is tested: `the_channel_rekeys_on_both_ends_at_the_same_count` lowers the interval to 3 (`Host::rekey_every`)
+  and runs ten requests in each direction, the snapshot included. The product count is `REKEY_INTERVAL` (10 000).
 - The web app `phone/` (step 2) and the end-to-end task (step 3): not started.
 
 ### 18.2 Deviations from this plan, with the reason
@@ -1241,9 +1253,19 @@ Tests (all pass with `cargo +1.97 test`):
   with any PSK and shows the entry. The phone refuses message 2 and never completes the check code. The person's
   decision and the check code are the gate. The earlier test that claimed a refusal at message 1 sent an invalid
   payload, so it proved nothing about the PSK; both tests now assert what happens.
-  **Owner decision needed, not made here:** a key confirmation from the phone after message 2 (a transport message under
-  the PSK-derived keys) would let the host hold the entry back until the PSK is proven, and show nothing for a wrong one.
-  That changes the phone protocol and `csm-remote-proto` (its vectors), so it waits for the owner.
+  **Built in fix round 4 (key confirmation).** The phone's name now comes after the handshake: message 1 carries no
+  payload, and the first two transport messages from the phone are `PairMsg::Confirm { check }` (its check code, which
+  must match the host's) and `PairMsg::Hello { v, name }`. A phone without the PSK never reads message 2, so it cannot
+  send a decryptable confirmation: the host holds it in `PairConfirm` and shows nothing, and the slot is freed when the
+  channel closes or times out (the handshake timeout). `csm-remote-proto` gained `PairMsg::Confirm` and the pairing vectors
+  were regenerated (`CSM_UPDATE_VECTORS=1`). Tests: `a_wrong_psk_never_reaches_the_person`,
+  `a_confirm_with_the_wrong_code_or_a_hello_before_it_shows_nothing`, `a_hello_in_message_one_is_refused` (protocol), and
+  `a_wrong_psk_shows_nothing_and_saves_nothing` (the real relay). The `Hello` before `Confirm` is refused, as is a
+  message 1 with a payload.
+- **TLS roots (fix round 4).** `wss://` trusts the public CAs bundled in `webpki-roots`, not the operating system's store.
+  That makes the relay's certificate check the same on every PC and needs no native-roots feature; the cost is that a relay
+  behind a private CA is not trusted. The relay's own Caddy setup (`relay/Caddyfile`) uses a public certificate. Owner to
+  confirm this choice (decision 4 is about the keychain, not this).
 - The host key stays a 32-byte file, as section 5 says. The public half is derived with snow's own X25519 primitive
   (`host::public_of`), so the file does not need to hold it.
 - Phone device ids are `d_` plus 16 hex characters from the OS random source (`getrandom`).

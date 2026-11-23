@@ -127,6 +127,7 @@ fn pairing_vectors() {
     let offer = PairingOffer::new("wss://relay.example.test", &hid, &arr::<32>(10), &arr::<16>(6), &arr::<32>(11));
     let enc = offer.encode();
     let pair_msgs = json!({
+        "confirm": serde_json::to_value(PairMsg::Confirm { check: "0420".into() }).unwrap(),
         "hello": serde_json::to_value(PairMsg::Hello { v: 1, name: "Pixel 9".into() }).unwrap(),
         "accept": serde_json::to_value(PairMsg::Accept { routing_token: b64_encode(&arr::<32>(3)), level: Level::Operator, device_id: "d1".into() }).unwrap(),
         "deny": serde_json::to_value(PairMsg::Deny { reason: DenyReason::Denied }).unwrap(),
