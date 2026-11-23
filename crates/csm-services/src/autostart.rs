@@ -797,6 +797,7 @@ impl Backend for MemoryBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use crate::argv::split_command_line as split_args;
 
     fn win(p: &str) -> PathBuf {
@@ -851,6 +852,7 @@ mod tests {
         assert!(!startup_approved_disabled(&[]));
     }
 
+    #[cfg(windows)]
     fn run_key() -> WindowsRun<MemoryRegistry> {
         WindowsRun::new(MemoryRegistry::default())
     }
