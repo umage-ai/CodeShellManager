@@ -324,10 +324,8 @@ pub fn ago(now_ms: u64, secs: u64) -> String {
 /// The QR code of a link: its side in modules and the dark ones row by row. `None` when the link
 /// does not fit any code.
 pub fn qr_modules(link: &str) -> Option<(usize, Vec<bool>)> {
-    let qr = qrcodegen::QrCode::encode_text(link, qrcodegen::QrCodeEcc::Low).ok()?;
-    let n = qr.size();
-    let dark = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).map(|(x, y)| qr.get_module(x, y)).collect();
-    usize::try_from(n).ok().map(|n| (n, dark))
+    // Low correction, as the peer screen always had (the encoder lives in csm-core::qr).
+    csm_core::qr::encode(link, csm_core::qr::Ecc::Low).map(|m| (m.size(), m.modules().to_vec()))
 }
 
 // ---- title bar indicator -----------------------------------------------------------------------
@@ -687,38 +685,43 @@ fn pairing_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
 }
 
-/// The QR code, dark modules on a light ground with the quiet zone around it. The two colours are
-/// the theme's darkest and lightest, so a scanner always sees dark on light.
+/// The QR code, dark modules on a light ground with the quiet zone around it (see [`paint_qr`]).
 fn qr(ui: &mut Ui, t: &Tokens, n: usize, dark: &[bool]) {
+    paint_qr(ui, t, n, size::QR_SIDE, |x, y| dark.get(y * n + x).copied().unwrap_or(false), "Pairing QR code");
+}
+
+/// Draws a QR code `side` points square, the quiet zone included. Dark modules are the theme's
+/// darkest surface, on its lightest, in both themes, so a scanner always sees dark on light. `dark`
+/// says whether the module at `(x, y)` is dark; `label` is the accessible name.
+pub(crate) fn paint_qr(ui: &mut Ui, t: &Tokens, n: usize, side: f32, dark: impl Fn(usize, usize) -> bool, label: &str) {
     let luma = |c: egui::Color32| u32::from(c.r()) * 299 + u32::from(c.g()) * 587 + u32::from(c.b()) * 114;
     let ground = [t.crust, t.mantle, t.bg, t.fg];
     let ink = ground.into_iter().min_by_key(|c| luma(*c)).unwrap_or(t.fg);
     let paper = ground.into_iter().max_by_key(|c| luma(*c)).unwrap_or(t.bg);
-    let n = n as i32;
-    let cells = n + 2 * size::QR_QUIET;
-    let cell = (size::QR_SIDE / cells as f32).floor().max(1.0);
-    let side = cell * cells as f32;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    let quiet = size::QR_QUIET as usize;
+    let cells = n + 2 * quiet;
+    let cell = (side / cells.max(1) as f32).floor().max(1.0);
+    let edge = cell * cells as f32;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(edge), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::same(radius::MD), paper);
-    let origin = rect.min + Vec2::splat(cell * size::QR_QUIET as f32);
+    let origin = rect.min + Vec2::splat(cell * quiet as f32);
     for y in 0..n {
         // One rectangle per run of dark modules.
         let mut x = 0;
         while x < n {
-            let at = |x: i32| dark.get((y * n + x) as usize).copied().unwrap_or(false);
-            if !at(x) {
+            if !dark(x, y) {
                 x += 1;
                 continue;
             }
             let start = x;
-            while x < n && at(x) {
+            while x < n && dark(x, y) {
                 x += 1;
             }
-            p.rect_filled(Rect::from_min_size(origin + vec2(start as f32 * cell, y as f32 * cell), vec2((x - start) as f32 * cell, cell)), 0.0, ink);
+            p.rect_filled(Rect::from_min_size(origin + vec2((start as f32) * cell, y as f32 * cell), vec2((x - start) as f32 * cell, cell)), 0.0, ink);
         }
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Pairing QR code"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
 }
 
 fn devices_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {

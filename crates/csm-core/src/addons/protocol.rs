@@ -113,7 +113,7 @@ pub struct Handshake {
 /// version of that feature. Additive: a plugin ignores names it does not know, and a CSM that
 /// predates one leaves it out.
 pub fn capabilities() -> Value {
-    json!({"caller": 1, "data_dir": 1, "standing_calls": 1, "screens": 1})
+    json!({"caller": 1, "data_dir": 1, "standing_calls": 1, "screens": 1, "status": 1})
 }
 
 /// Whether `name` is a legal tool name after the `addon.` prefix: lowercase letters, digits and

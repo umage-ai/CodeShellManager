@@ -31,6 +31,7 @@ pub use text::{Seg, clean_label, has_invisible, is_invisible, marker_for, reveal
 
 use super::manifest::clean_text;
 use super::protocol::split_tool_id;
+use crate::qr::{self, Matrix};
 
 /// Nodes in one tree.
 pub const MAX_NODES: usize = 5_000;
@@ -405,8 +406,20 @@ pub enum Kind {
     Code(Box<CodeView>),
     /// A unified patch, as unified or side-by-side.
     Diff(Box<DiffView>),
+    /// A QR code of a short text (`docs/design/phone-remote.md`, section 8.2). The text itself is
+    /// not kept: only its matrix, computed when the tree is parsed. `code` is `None` when the text
+    /// was refused, and the node then draws a notice in its place.
+    Qr { label: String, size: QrSize, code: Option<Matrix> },
     /// A node type this CSM does not know (drawn as a small box naming it).
     Unsupported { type_name: String },
+}
+
+/// The side of a `qr` node: small, medium (the default) or large.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QrSize {
+    Sm,
+    Md,
+    Lg,
 }
 
 impl Node {
@@ -484,6 +497,7 @@ impl Node {
             Kind::FileList { .. } => "file_list",
             Kind::Code(_) => "code",
             Kind::Diff(_) => "diff",
+            Kind::Qr { .. } => "qr",
             Kind::Unsupported { type_name } => type_name,
         }
     }
@@ -1107,6 +1121,17 @@ impl<'a> TreeParser<'a> {
                 let tree = o.get("view").and_then(Value::as_str) != Some("flat");
                 Kind::FileList { files, tree, selected: o.get("selected").and_then(Value::as_str).map(normalize_path) }
             }
+            "qr" => {
+                // A bad text is a bad prop, not a bad tree: the node draws its notice and the rest
+                // of the screen is unaffected. The text is read here and not kept.
+                let text = o.get("text").and_then(Value::as_str).unwrap_or("");
+                let size = match o.get("size").and_then(Value::as_str) {
+                    Some("sm") => QrSize::Sm,
+                    Some("lg") => QrSize::Lg,
+                    _ => QrSize::Md,
+                };
+                Kind::Qr { label: label(o, "label"), size, code: qr::node_code(text).ok() }
+            }
             "code" => {
                 let (view, events) = self.code(o, depth)?;
                 needs_key = events;
@@ -1231,3 +1256,6 @@ mod tests;
 
 #[cfg(test)]
 mod code_tests;
+
+#[cfg(test)]
+mod qr_tests;

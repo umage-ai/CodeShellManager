@@ -86,6 +86,8 @@ pub enum Action {
     OpenSettings,
     /// Settings on the Remote access section (the title bar's indicator, the palette).
     OpenRemoteAccess,
+    /// Settings on the Add-ons section (the title bar's add-on status dot).
+    OpenAddonSettings,
     CloseSettings,
     /// The Usage dashboard (a page over the work area, like Settings), on a session when given.
     OpenUsage(Option<crate::screens::usage_page::Drill>),
@@ -1509,6 +1511,10 @@ impl CsmApp {
                 self.run(ctx, Action::OpenSettings);
                 self.ui.settings.section = SettingsSection::Remote;
                 screens::remote::opened(self, ctx);
+            }
+            Action::OpenAddonSettings => {
+                self.run(ctx, Action::OpenSettings);
+                self.ui.settings.section = SettingsSection::Addons;
             }
             Action::OpenUsage(drill) => {
                 self.ui.menu = None;

@@ -1239,6 +1239,7 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "pulldown-cmark",
+ "qrcodegen",
  "regex",
  "schemars",
  "semver",
@@ -1503,7 +1504,6 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "log",
- "qrcodegen",
  "schemars",
  "serde",
  "serde_json",

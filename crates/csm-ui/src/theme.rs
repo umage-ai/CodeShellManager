@@ -776,6 +776,9 @@ pub mod size {
     pub const SWITCH: [f32; 2] = [34.0, 18.0];
     /// The pairing QR code: its side with the quiet zone, and the quiet zone in modules.
     pub const QR_SIDE: f32 = 208.0;
+    /// The `qr` node's sizes (`sm`, `lg`); `QR_SIDE` is `md`.
+    pub const QR_SIDE_SM: f32 = 128.0;
+    pub const QR_SIDE_LG: f32 = 288.0;
     pub const QR_QUIET: i32 = 4;
     /// The status dot of the remote-access indicator and the device rows.
     pub const STATUS_DOT: f32 = 8.0;

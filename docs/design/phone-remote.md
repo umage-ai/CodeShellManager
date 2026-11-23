@@ -1,6 +1,6 @@
 # Phone remote: design note
 
-Status: **step 1 partly built** (branch `phone/addon`, fix round 4). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, and Web Push with RFC 8291 encryption, all tested. The CSM screens (pairing, devices, settings), the `qr` node, the `csm/status` indicator and the two icons are **not built yet**. Section 18 lists what is not built and where the code deviates from this plan.
+Status: **step 1 partly built** (branch `phone/addon`, fix round 5). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, and Web Push with RFC 8291 encryption, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). The add-on's own screens (pairing, devices, settings) are **not built yet**. Section 18 lists what is not built and where the code deviates from this plan.
 Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
 facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
@@ -1023,6 +1023,18 @@ Each line says what was checked, against which file.
     step 1 tests against the real relay. Recommended: no relay change in v1; the phone's text and the PC's Allow
     screen cover it. The owner decides.
 
+**Settled: recommended option.** The owner has taken every decision above as its recommended option:
+1 ship `phone-remote` in `samples/addons/` disabled, like `review` (the installer change is a separate
+release step, not part of this work); 2 the relay URL is blank by default, with a clearly marked place
+for the "Use the umage relay" button until the owner gives the URL; 3 the `calls` list is approved once
+at enable and shown in the enable dialog; 4 the host key and relay secret stay in files protected by
+the ACL or the mode as built (the keychain is a later change); 5 phone profiles are the add-on's own
+list; 6 `task.get` returns title and state only; 7 the inbox shares the channel's seq counter; 8 `error`
+maps to `idle` with the message; 11 `connect-src 'self' wss: https:`, with the relay from the offer and
+`app_origin` in `config.json`; 12 the `qr` node, the `csm/status` indicator and the `phone` and `devices`
+icons are in v1, each reviewed on the CSM side; 13 no push on the baseline refresh at start; 14 the launch
+limits as proposed; 15 no relay change for a second phone during pairing.
+
 ---
 
 ## 14. Owner inputs needed later (not for this step)
@@ -1147,7 +1159,7 @@ brief requires.
 
 ---
 
-## 18. Build status (step 1, partial; fix round 2)
+## 18. Build status (step 1, partial; fix round 5)
 
 Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `DENY_ROOTS`), the manifest
 `samples/addons/phone-remote/addon.toml`, and the integration tests in `apps/csm-phone-it/` (test-only, layer 7; see
@@ -1217,11 +1229,11 @@ Tests (all pass with `cargo +1.97 test`):
 
 ### 18.1 Not built (step 1 still open)
 
-- **The pairing, devices and settings screens, the `qr` node, the indicator (`csm/status`) and the icons. STILL OPEN
-  after fix round 4.** These touch `csm-core` (the `qr` node and its validation), `csm-ui` (drawing), the add-on's screen
-  tree and `csm-engine` (the `csm/status` notification). None is built in this round, so the add-on is not yet usable by
-  a person without the tools: pairing is reached only through the tools, which return the link text. The pairing-screen
-  requirements in section 8 stand as the spec. Owner: confirm whether these ship in step 1 or are moved to a later step.
+- **The pairing, devices and settings screens of the add-on are not built.** The CSM-side parts they need are built
+  (18.5): the `qr` node, the `csm/status` indicator, and the `phone` and `devices` icons. Until the three screens exist the
+  add-on is not usable by a person without the tools: pairing is reached only through the tools, which return the link
+  text. The pairing-screen requirements in section 8 stand as the spec. Owner: confirm whether these ship in step 1 or
+  are moved to a later step.
 - **`remote_control`:** `session.new` answers `"not_built"` (section 4's wait and `Event::RemoteControl` are not built).
 - **The OS keychain: not built; a decision for the owner (section 13, decision 4).** The host secret is a file, protected by
   the Windows access list and the Unix mode (18.2). The `addon_secret_*` tools are not used: their answer shape is not
@@ -1307,3 +1319,31 @@ a unit test copies the real shapes:
   The `assignee` is the session the task is given to. The body is read by no op.
 - `session_new` returns the session view (`id`). `settings_get` is read as `value` or as a bare array. Its exact answer
   is not checked against a sample yet, so the `ClaudeCommands` read may need a second look.
+
+### 18.5 CSM-side additions (built; section 8.3, each for CSM review)
+
+- **`qr` node** (section 8.2). `csm-core/src/qr.rs` holds the encoder (`qrcodegen`, moved from `csm-ui`, now `encode(text, Ecc)`
+  with `Low` and `Medium`); `csm-core/src/addons/screen/mod.rs` parses `"qr"` into `Kind::Qr { label, size, code }`. The
+  matrix is computed when the tree is parsed; the text is not kept. A text over 1024 bytes, empty, with a control character,
+  missing or not a string gives `code: None`, and the node draws "This code cannot be shown." (a bad prop, not a refused
+  tree). `size` is `sm`, `md` (default) or `lg`. Drawing is `csm-ui`'s `paint_qr` (`screens/remote.rs`), used by the peer pairing
+  screen (Low) and the add-on node (Medium), with theme tokens: dark on light in both themes, the quiet zone drawn. Tests:
+  `csm-core` `qr::tests` (the worst case of 615 bytes encodes, the refusals), `screen/qr_tests.rs` (good, oversize, hostile,
+  a bad node beside good ones), `csm-ui/tests/addon_qr_ui.rs` (drawn, notice) and `screenshots.rs` `qr_and_status_screens`.
+  Deviation: the add-on's `qr` text is never held by CSM after parsing (only the matrix), so nothing reads the offer back.
+  The screen trees are sent to CSM's UI only: `screen_list` returns the declared and open screens' metadata, never a tree,
+  so no MCP caller can read the QR text. Checked in `crates/csm-engine/src/tools/screens.rs`.
+- **`csm/status` indicator** (section 8.3, item 1). `csm-core/src/addons/status.rs` parses and cleans (controls, invisible and
+  bidi characters removed, spaces collapsed, at most 80 characters, tone one of four words). `csm-engine/src/plugins.rs`
+  coalesces to one per 500 ms per add-on (`StatusGate`, the latest held and shown when the gap opens), keeps the text in
+  `PluginRuntime.status` (serde-skipped: not in `plugin_status`, not in `addon_list`), and clears it when the process stops.
+  A refused status is listed in the add-on's `problems` (at most 20). The handshake's `capabilities` gains `"status": 1`.
+  UI: the add-on's row in Settings > Add-ons shows its dot and text; the title bar shows one dot for the worst tone of the
+  running add-ons (`screens/addons.rs` `worst_of`, `title_dot`), with the text as tooltip; a click opens Settings > Add-ons
+  (`Action::OpenAddonSettings`, a navigation action like `OpenRemoteAccess`). Tests: `csm-core` `addons::status::tests`,
+  `csm-engine` `plugins` unit tests (`StatusGate`), `csm-engine/tests/plugins.rs` `a_plugin_status_is_cleaned_...` (the
+  echo plugin sends the statuses), `csm-ui/tests/addon_qr_ui.rs` (worst tone shown, click opens Settings on Add-ons, no dot
+  when idle or unset), `csm-ui` `screens::addons::dot_tests`.
+- **Icons** `phone` and `devices` in `crates/csm-ui/src/icon_data.rs` (stroke paths in the 24-unit grid of the set).
+- **Not built here:** the add-on's own screens (18.1), the settings screen's `copy` button (8.4), the status bar. The
+  Latte quiet zone is light but the same tone as the panel behind it (the lightest token): it scans, but it has no edge.

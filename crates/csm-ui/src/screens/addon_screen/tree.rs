@@ -8,8 +8,9 @@
 use std::sync::Arc;
 
 use csm_core::addons::screen::{
-    ActionPolicy, Align, Badge, Bind, ButtonKind as BK, Comment, EventKind, FileEntry, FileRow, Gap, Kind, ListItem, Node, Opt, TextStyle, Tone, reveal,
+    ActionPolicy, Align, Badge, Bind, ButtonKind as BK, Comment, EventKind, FileEntry, FileRow, Gap, Kind, ListItem, Node, Opt, QrSize, TextStyle, Tone, reveal,
 };
+use csm_core::qr::Matrix;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, CornerRadius, Id, Layout, Rect, Sense, Stroke, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
@@ -282,12 +283,39 @@ pub(super) fn node(ui: &mut Ui, cx: &mut Cx<'_>, n: &Node) {
         Kind::FileList { files, tree, selected } => file_list(ui, cx, &key, files, *tree, selected.as_deref()),
         Kind::Code(c) => super::view::code(ui, cx, &key, c),
         Kind::Diff(d) => super::view::diff(ui, cx, &key, d),
+        Kind::Qr { label, size: qsize, code } => qr_node(ui, &t, label, *qsize, code.as_ref()),
         Kind::Unsupported { type_name } => {
             egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
                 ui.label(egui::RichText::new(format!("unsupported: {type_name}")).font(theme::mono(text::MONO_SM)).color(t.muted));
             });
         }
     }
+}
+
+/// A `qr` node: the code (dark on light, its quiet zone drawn in both themes), its label under it.
+/// A text CSM refused draws a notice in the code's place; the rest of the screen is unaffected.
+fn qr_node(ui: &mut Ui, t: &Tokens, label: &str, qsize: QrSize, code: Option<&Matrix>) {
+    let side = match qsize {
+        QrSize::Sm => size::QR_SIDE_SM,
+        QrSize::Md => size::QR_SIDE,
+        QrSize::Lg => size::QR_SIDE_LG,
+    };
+    ui.vertical(|ui| {
+        match code {
+            Some(m) => {
+                let name = if label.is_empty() { "QR code" } else { label };
+                crate::screens::remote::paint_qr(ui, t, m.size(), side, |x, y| m.is_dark(x, y), name);
+            }
+            None => {
+                egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
+                    ui.label(egui::RichText::new("This code cannot be shown.").font(theme::regular(text::CAPTION)).color(t.muted));
+                });
+            }
+        }
+        if !label.is_empty() {
+            ui.label(egui::RichText::new(label).font(theme::regular(text::CAPTION)).color(t.fg2));
+        }
+    });
 }
 
 /// A chip (`badge`, or a badge on a row).

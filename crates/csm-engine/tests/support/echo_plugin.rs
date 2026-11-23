@@ -102,6 +102,7 @@ fn main() {
                     json!({"id": "echo-test.write", "title": "Write", "summary": "Pretends to write a file", "effects": ["writes_filesystem"]}),
                     json!({"id": "echo-test.exit", "title": "Exit", "summary": "Exits the process (a crash)"}),
                     json!({"id": "echo-test.callback", "title": "Callback", "summary": "Calls session_list through csm/call"}),
+                    json!({"id": "echo-test.status", "title": "Status", "summary": "Sends the csm/status params it is given", "effects": []}),
                     json!({"id": "echo-test.csm", "title": "Csm", "summary": "Runs a CSM tool through csm/call", "effects": []}),
                     json!({"id": "echo-test.offer", "title": "Offer", "summary": "Sends csm/remotes_changed", "effects": []}),
                     json!({"id": "echo-test.open_agent", "title": "Open agent", "summary": "Says which session to open", "effects": []}),
@@ -214,6 +215,13 @@ fn main() {
                         let name = args["name"].as_str().unwrap_or("agent").to_owned();
                         let session = json!({"name": name, "ssh": {"host": "agent-alias", "config_file": "cfg/ssh_config", "remote_argv": ["tmux", "new-session", "-A", "-s", "main"]}, "resume": "rerun"});
                         send(&mut out, &reply(&id, json!({"message": "open this", "data": {"session": session}})));
+                    }
+                    "echo-test.status" => {
+                        // Sends each `csm/status` it is given, as the params it is given (a test of CSM's checks).
+                        for s in args["statuses"].as_array().cloned().unwrap_or_default() {
+                            send(&mut out, &json!({"jsonrpc": "2.0", "method": "csm/status", "params": s}));
+                        }
+                        send(&mut out, &reply(&id, json!({"message": "status sent"})));
                     }
                     "echo-test.callback" => {
                         next_csm_id += 1;
