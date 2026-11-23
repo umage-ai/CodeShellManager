@@ -457,7 +457,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `session_status_clear` | core | ui | no | Forget a session's reported status (for a status stuck after a program died mid-turn); the screen heuristic takes over again. |
 | `session_accent_reset` | core | state | no | Forget the accent colour a program pushed with OSC 9001; the session goes back to its folder's colour. |
 | `inbox_list` | core | read | no | Sessions waiting for you (oldest first), then finished or failed turns you have not seen. |
-| `inbox_next` | core | ui | no | Focus the next session in the inbox. |
+| `inbox_next` | core | ui, launch | asks | Focus the next session in the inbox. Wakes it if it is asleep. |
 | `group_list` | groups | read | no | Every group in order: id, name, session count, how many need you. |
 | `group_new` | groups | state | no | Create a group. |
 | `group_rename` | groups | state | no | Rename a group. |

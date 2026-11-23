@@ -1,0 +1,173 @@
+{
+  "addresses_invalid": [
+    {
+      "error": "unspecified",
+      "input": "tcp://0.0.0.0:1"
+    },
+    {
+      "error": "unspecified",
+      "input": "tcp://[::]:1"
+    },
+    {
+      "error": "not_unicast",
+      "input": "tcp://224.0.0.1:1"
+    },
+    {
+      "error": "port",
+      "input": "tcp://10.0.0.1:0"
+    },
+    {
+      "error": "format",
+      "input": "tcp://10.0.0.1"
+    },
+    {
+      "error": "format",
+      "input": "http://10.0.0.1:1"
+    },
+    {
+      "error": "format",
+      "input": "tcp://1.2.3:1"
+    }
+  ],
+  "addresses_valid": [
+    {
+      "input": "tcp://10.8.0.2:47300",
+      "url": "tcp://10.8.0.2:47300"
+    },
+    {
+      "input": "tcp://[fd00::2]:1",
+      "url": "tcp://[fd00::2]:1"
+    },
+    {
+      "input": "tcp://Office.Test:5",
+      "url": "tcp://office.test:5"
+    }
+  ],
+  "doc": "pairing link = 'csm://pair#' + base64url(compact JSON offer {v,a,h,k,i,p}); the address is tcp://host:port and is never 0.0.0.0 or ::; h must equal host_id(k); decode also accepts the bare payload and '#payload'",
+  "host_static_public_hex": "7a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c53",
+  "invalid": [
+    {
+      "error": "format",
+      "input": ""
+    },
+    {
+      "error": "format",
+      "input": "p=!!!"
+    },
+    {
+      "error": "field a",
+      "input": "eyJ2IjoxLCJhIjoidGNwOi8vMC4wLjAuMDo0NzMwMCIsImgiOiJzcXJlNzQ2c2Z0eng1YWM3NGlhamluemFtbCIsImsiOiJlb0dJajVhZHBLdXl1Y0RIenRYYzQtcngtUDhHRFJRYklpa3dOejVGVEZNIiwiaSI6IlUxcGhhRzkyZllTTGtwbWdwNjYxdkEiLCJwIjoiTERNNlFVaFBWbDFrYTNKNWdJZU9sWnlqcXJHNHY4Yk4xTnZpNmZEM19nVSJ9"
+    },
+    {
+      "error": "field a",
+      "input": "eyJ2IjoxLCJhIjoidGNwOi8vWzo6XTo0NzMwMCIsImgiOiJzcXJlNzQ2c2Z0eng1YWM3NGlhamluemFtbCIsImsiOiJlb0dJajVhZHBLdXl1Y0RIenRYYzQtcngtUDhHRFJRYklpa3dOejVGVEZNIiwiaSI6IlUxcGhhRzkyZllTTGtwbWdwNjYxdkEiLCJwIjoiTERNNlFVaFBWbDFrYTNKNWdJZU9sWnlqcXJHNHY4Yk4xTnZpNmZEM19nVSJ9"
+    },
+    {
+      "error": "field a",
+      "input": "eyJ2IjoxLCJhIjoid3NzOi8vcmVsYXkuZXhhbXBsZS8iLCJoIjoic3FyZTc0NnNmdHp4NWFjNzRpYWppbnphbWwiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZBIiwicCI6IkxETTZRVWhQVmwxa2EzSjVnSWVPbFp5anFyRzR2OGJOMU52aTZmRDNfZ1UifQ"
+    },
+    {
+      "error": "field h",
+      "input": "eyJ2IjoxLCJhIjoidGNwOi8vMTAuOC4wLjI6NDczMDAiLCJoIjoieHZ2ZzVqY3J5cnAybDZ6cTNtNWtxdjVkdHQiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZBIiwicCI6IkxETTZRVWhQVmwxa2EzSjVnSWVPbFp5anFyRzR2OGJOMU52aTZmRDNfZ1UifQ"
+    },
+    {
+      "error": "version 9",
+      "input": "eyJ2Ijo5LCJhIjoidGNwOi8vMTAuOC4wLjI6NDczMDAiLCJoIjoic3FyZTc0NnNmdHp4NWFjNzRpYWppbnphbWwiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZBIiwicCI6IkxETTZRVWhQVmwxa2EzSjVnSWVPbFp5anFyRzR2OGJOMU52aTZmRDNfZ1UifQ"
+    },
+    {
+      "error": "field p",
+      "input": "eyJ2IjoxLCJhIjoidGNwOi8vMTAuOC4wLjI6NDczMDAiLCJoIjoic3FyZTc0NnNmdHp4NWFjNzRpYWppbnphbWwiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZBIiwicCI6IkFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSJ9"
+    }
+  ],
+  "pair_messages": [
+    {
+      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a312c226e616d65223a224c6170746f70227d",
+      "json": {
+        "name": "Laptop",
+        "t": "hello",
+        "v": 1
+      }
+    },
+    {
+      "bytes_hex": "7b2274223a22616363657074222c226465766963655f6964223a22696a6c6d70666b32377a376d643268726464713433626d716c72222c226c6576656c223a2266756c6c227d",
+      "json": {
+        "device_id": "ijlmpfk27z7md2hrddq43bmqlr",
+        "level": "full",
+        "t": "accept"
+      }
+    },
+    {
+      "bytes_hex": "7b2274223a2264656e79222c22726561736f6e223a2264656e696564227d",
+      "json": {
+        "reason": "denied",
+        "t": "deny"
+      }
+    },
+    {
+      "bytes_hex": "7b2274223a2264656e79222c22726561736f6e223a2265787069726564227d",
+      "json": {
+        "reason": "expired",
+        "t": "deny"
+      }
+    }
+  ],
+  "pair_messages_invalid": [
+    {
+      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a322c226e616d65223a2278227d",
+      "error": "Version(2)"
+    },
+    {
+      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a312c226e616d65223a22615c6e62227d",
+      "error": "Name"
+    },
+    {
+      "bytes_hex": "7b2274223a22616363657074222c226465766963655f6964223a2278222c226c6576656c223a2266756c6c227d",
+      "error": "DeviceId"
+    },
+    {
+      "bytes_hex": "7b2274223a226e6f7065227d",
+      "error": "Format"
+    }
+  ],
+  "valid": [
+    {
+      "address": "tcp://10.8.0.2:47300",
+      "link": "csm://pair#eyJ2IjoxLCJhIjoidGNwOi8vMTAuOC4wLjI6NDczMDAiLCJoIjoic3FyZTc0NnNmdHp4NWFjNzRpYWppbnphbWwiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZBIiwicCI6IkxETTZRVWhQVmwxa2EzSjVnSWVPbFp5anFyRzR2OGJOMU52aTZmRDNfZ1UifQ",
+      "offer": {
+        "a": "tcp://10.8.0.2:47300",
+        "h": "sqre746sftzx5ac74iajinzaml",
+        "i": "U1phaG92fYSLkpmgp661vA",
+        "k": "eoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz5FTFM",
+        "p": "LDM6QUhPVl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3_gU",
+        "v": 1
+      },
+      "payload": "eyJ2IjoxLCJhIjoidGNwOi8vMTAuOC4wLjI6NDczMDAiLCJoIjoic3FyZTc0NnNmdHp4NWFjNzRpYWppbnphbWwiLCJrIjoiZW9HSWo1YWRwS3V5dWNESHp0WGM0LXJ4LVA4R0RSUWJJaWt3Tno1RlRGTSIsImkiOiJVMXBoYUc5MmZZU0xrcG1ncDY2MXZBIiwicCI6IkxETTZRVWhQVmwxa2EzSjVnSWVPbFp5anFyRzR2OGJOMU52aTZmRDNfZ1UifQ"
+    },
+    {
+      "address": "tcp://[fd00::2]:47300",
+      "link": "csm://pair#eyJ2IjoxLCJhIjoidGNwOi8vW2ZkMDA6OjJdOjQ3MzAwIiwiaCI6InNxcmU3NDZzZnR6eDVhYzc0aWFqaW56YW1sIiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiVTFwaGFHOTJmWVNMa3BtZ3A2NjF2QSIsInAiOiJMRE02UVVoUFZsMWthM0o1Z0llT2xaeWpxckc0djhiTjFOdmk2ZkQzX2dVIn0",
+      "offer": {
+        "a": "tcp://[fd00::2]:47300",
+        "h": "sqre746sftzx5ac74iajinzaml",
+        "i": "U1phaG92fYSLkpmgp661vA",
+        "k": "eoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz5FTFM",
+        "p": "LDM6QUhPVl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3_gU",
+        "v": 1
+      },
+      "payload": "eyJ2IjoxLCJhIjoidGNwOi8vW2ZkMDA6OjJdOjQ3MzAwIiwiaCI6InNxcmU3NDZzZnR6eDVhYzc0aWFqaW56YW1sIiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiVTFwaGFHOTJmWVNMa3BtZ3A2NjF2QSIsInAiOiJMRE02UVVoUFZsMWthM0o1Z0llT2xaeWpxckc0djhiTjFOdmk2ZkQzX2dVIn0"
+    },
+    {
+      "address": "tcp://office.example.test:1",
+      "link": "csm://pair#eyJ2IjoxLCJhIjoidGNwOi8vb2ZmaWNlLmV4YW1wbGUudGVzdDoxIiwiaCI6InNxcmU3NDZzZnR6eDVhYzc0aWFqaW56YW1sIiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiVTFwaGFHOTJmWVNMa3BtZ3A2NjF2QSIsInAiOiJMRE02UVVoUFZsMWthM0o1Z0llT2xaeWpxckc0djhiTjFOdmk2ZkQzX2dVIn0",
+      "offer": {
+        "a": "tcp://office.example.test:1",
+        "h": "sqre746sftzx5ac74iajinzaml",
+        "i": "U1phaG92fYSLkpmgp661vA",
+        "k": "eoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz5FTFM",
+        "p": "LDM6QUhPVl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3_gU",
+        "v": 1
+      },
+      "payload": "eyJ2IjoxLCJhIjoidGNwOi8vb2ZmaWNlLmV4YW1wbGUudGVzdDoxIiwiaCI6InNxcmU3NDZzZnR6eDVhYzc0aWFqaW56YW1sIiwiayI6ImVvR0lqNWFkcEt1eXVjREh6dFhjNC1yeC1QOEdEUlFiSWlrd056NUZURk0iLCJpIjoiVTFwaGFHOTJmWVNMa3BtZ3A2NjF2QSIsInAiOiJMRE02UVVoUFZsMWthM0o1Z0llT2xaeWpxckc0djhiTjFOdmk2ZkQzX2dVIn0"
+    }
+  ]
+}

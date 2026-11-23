@@ -1,6 +1,6 @@
 [package]
 name = "csm-peer-proto"
-description = "Owned wire DTOs of CodeShellManager's peer protocol: the snapshot, session views and events a client UI consumes. Pure: no engine, no egui."
+description = "Pure wire protocol of CodeShellManager's peer link: owned snapshot and event DTOs, framing, the message set, Noise parameters, pairing, test vectors. No engine, no egui, no I/O."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,5 +11,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+snow = "0.10"

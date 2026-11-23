@@ -408,6 +408,14 @@ fn the_inbox_is_oldest_first_and_inbox_next_follows_it() {
 }
 
 #[test]
+fn inbox_next_declares_that_it_can_wake_a_session_so_mcp_callers_are_asked() {
+    let h = H::new();
+    let spec = h.engine.registry().get("inbox_next").map(|t| t.effects).unwrap();
+    assert!(spec.contains(csm_engine::Effects::LAUNCHES_PROCESS | csm_engine::Effects::CHANGES_UI_STATE), "{spec:?}");
+    assert!(spec.needs_consent(), "an agent that calls it may start a process");
+}
+
+#[test]
 fn session_wait_completes_on_the_status_and_times_out() {
     let h = H::new();
     let id = h.session("claude");

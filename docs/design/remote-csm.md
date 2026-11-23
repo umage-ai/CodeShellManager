@@ -602,3 +602,28 @@ Base sha for this step: `277182a05544069b13ea767e0649202f19c209c2`. Emulator: `a
 Measured: 11 of 360 random streams (three sizes, 250 tokens each) and 2 of 40 deep-scrollback streams differ only in wrap markers or in the history line structure they cause. They are pinned by seed (`KNOWN_WRAP_GAPS`, `KNOWN_SCROLLBACK_WRAP_GAPS`), and each pinned stream must still differ, so a fixed one has to be unpinned. The random check ignores `WRAPLINE` and the leading-spacer flag (`wrap_free`); everything else is compared exactly: characters, zero-width marks, colours, attributes, links, wide glyphs, cursors, saved cursors, modes, title, palette and the scrollback text.
 
 **Not measured yet:** serialization cost and output size per screen (the spike is about correctness); the snapshot clones the alternate grid when the alternate screen is active. The serializer reads only cols and rows: `GridSize`'s cell pixels feed window-size replies and nothing in the grid.
+
+## P1 step 1: peer protocol (`csm-peer-proto`)
+
+Base sha for this step: `c279407f800f8f0324ceadbd0cd5c41f118765d5`.
+
+- **Decided tweaks done.** `inbox_next` declares `UI | LAUNCHES_PROCESS` (MCP callers are asked; it stays
+  forwarded by the view overlay, now by its declaration alone: `FORWARDED_UI` is gone). `theme_set` is
+  routed `Local`: the overlay holds the client's own `theme`, `theme_dark` and `theme_light`
+  (unset until the client chooses); a client checks a theme id against its own `theme_list`.
+- **Layers in the crate** (all pure, `vectors/*.json` + `tests/vectors.rs`, `CSM_UPDATE_VECTORS=1`):
+  `frame` (`u32 BE len || Noise message`, max 65 535, empty and oversize refused on the header alone),
+  `noise` (same IK and IKpsk2 parameters as the phone, prologue `"csm-peer/1" 0x00 host_id`, check
+  code domain `"csm-peer check"`, rekey counter), `codec` (frame kinds: control JSON, `term_data`,
+  `term_attach` chunks, `term_input`, control fragments for messages above one Noise message; the
+  joined control JSON is capped at 4 MiB, an attach at 64 MiB), `msg` (the 3.2 message set plus
+  `ConsentCard`, `ConsentAnswer`, `ConsentAck`), `delta` (`diff` and `apply`, property-tested),
+  `pairing` and `addr` (`csm://pair#...` offer with a `tcp://` address; `check_bind` refuses
+  `0.0.0.0` and `::` unless "all interfaces" was chosen).
+- **Host id** is `base32(SHA-256("csm-peer host" || host static public))[..26]`, so an offer cannot
+  name a host id that its key does not have; device ids the same with `"csm-peer device"`.
+- **Strictness:** a `Hello` or `Welcome` of another protocol version is refused at decode
+  (`CodecError::Version`) so the server can answer `Bye { protocol_mismatch }`; an unknown event
+  inside `Msg::Event` decodes as `None` (ignore it); any other unknown message type is refused.
+- **Attach and term data** use a client-chosen `stream: u32` from `TermSubscribe`, and absolute
+  `offset`s in the server's per-session output.
