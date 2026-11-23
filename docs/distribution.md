@@ -7,9 +7,13 @@ run time.
 
 ## 1. What the build produces
 
-`.github/workflows/release-v2-unix.yml` runs on the same triggers as `release-v2.yml` (a `v2.*`
-tag, or `workflow_dispatch` for a dry run). It uploads **workflow artifacts only**. Nothing is
-attached to a release and nothing is published.
+`.github/workflows/release-v2-unix.yml` builds Linux on a `v2.*` tag (or a dry run on
+`workflow_dispatch` / a `release-dry-run/**` branch). **macOS is built only when asked for**, because
+its runners cost about ten times Linux ones: push the tag's commit to `release-macos/<tag>`
+(`git push origin v2.0.0-beta.17:refs/heads/release-macos/v2.0.0-beta.17`; the tag must point at the
+same commit), or to any other `release-macos/<name>` for an unsigned dry run, and delete the branch
+afterwards. It uploads **workflow artifacts only**. Nothing is attached to a release and nothing is
+published.
 
 | Artifact | Contents |
 |---|---|

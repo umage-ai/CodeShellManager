@@ -4,15 +4,21 @@ name: Release (v2 beta, Linux and macOS)
 # ARTIFACTS only. Nothing here creates a GitHub Release, pushes to a package repository or tap,
 # or publishes anywhere: docs/distribution.md is the plan for that.
 #
-# Triggered exactly like release-v2.yml (the Windows MSI), so one tag or one dispatch builds every
-# platform and the versions line up:
-#   - a `v2.*` tag (e.g. v2.0.0-beta.1) on the v2 branch: version from the tag; the macOS app is
+# macOS runners cost about ten times Linux ones, so macOS is built ONLY when asked for:
+#   - a `v2.*` tag (e.g. v2.0.0-beta.1) on the v2 branch: Linux only, version from the tag (the
+#     Windows MSI comes from release-v2.yml on the same tag).
+#   - a push to `release-macos/v2.<version>` (e.g. `git push origin v2.0.0-beta.1:refs/heads/release-macos/v2.0.0-beta.1`):
+#     macOS only, for that release. The tag must exist and point at the same commit. The app is
 #     signed and notarized when the Apple secrets below exist.
-#   - workflow_dispatch, or a push to a `release-dry-run/<name>` branch: a dry run, version
-#     2.0.0-dev.<run number>, never signed. The branch push works without a copy of this file on main.
+#   - a push to `release-macos/<anything else>`: a macOS dry run, version 2.0.0-dev.<run number>,
+#     never signed.
+#   - workflow_dispatch, or a push to a `release-dry-run/<name>` branch: a Linux dry run, version
+#     2.0.0-dev.<run number>. The branch push works without a copy of this file on main.
+#   Delete a release-macos/ or release-dry-run/ branch after its run.
 # Like release-v2.yml, GitHub only dispatches a workflow that exists on the default branch, so a
 # copy of this file must sit on main before `gh workflow run release-v2-unix.yml --ref v2` works.
-# The jobs refuse any ref other than the v2 or main branch or a v2.* tag (v0.x/v1 tags are skipped).
+# The jobs refuse any ref other than the v2 or main branch, a release-dry-run/ or release-macos/
+# branch, or a v2.* tag (v0.x/v1 tags are skipped).
 #
 # Artifacts (one per platform, named like release-v2.yml's `codeshellmanager-<version>`):
 #   codeshellmanager-<ver>-linux-x86_64   CodeShellManager-<ver>-linux-x86_64.tar.gz
@@ -35,7 +41,7 @@ on:
   push:
     tags: ['v*.*.*']
     # A dry run without a copy of this file on main: push v2 to a release-dry-run/<name> branch.
-    branches: ['release-dry-run/**']
+    branches: ['release-dry-run/**', 'release-macos/**']
   workflow_dispatch:
 
 permissions:
@@ -47,12 +53,13 @@ env:
 jobs:
   # ── Versions (shared, so every package carries the same numbers) ──────────────────────────
   version:
-    if: github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-dry-run/') || startsWith(github.ref, 'refs/tags/v2.')
+    if: github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-dry-run/') || startsWith(github.ref, 'refs/heads/release-macos/') || startsWith(github.ref, 'refs/tags/v2.')
     runs-on: ubuntu-latest
     outputs:
       semver: ${{ steps.ver.outputs.semver }}
       base: ${{ steps.ver.outputs.base }}
       deb: ${{ steps.ver.outputs.deb }}
+      release: ${{ steps.ver.outputs.release }}
     steps:
       # semver (Cargo, file names):  2.0.0-beta.3
       # base (CFBundleShortVersionString, must be numeric): 2.0.0
@@ -64,8 +71,19 @@ jobs:
           IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # release-macos/v2.x.y: build the release of tag v2.x.y, which must be this very commit.
+          case "$REF_NAME" in
+            release-macos/v2.*)
+              tag="${REF_NAME#release-macos/}"
+              tag_sha=$(gh api "repos/$REPO/commits/$tag" --jq .sha) || { echo "::error::Tag $tag does not exist"; exit 1; }
+              if [ "$tag_sha" != "$GITHUB_SHA" ]; then echo "::error::Tag $tag is $tag_sha, this branch is $GITHUB_SHA"; exit 1; fi
+              IS_TAG=true; REF_NAME="$tag" ;;
+          esac
+          echo "release=$IS_TAG" >> "$GITHUB_OUTPUT"
           if [ "$IS_TAG" = "true" ]; then semver="${REF_NAME#v}"; else semver="2.0.0-dev.${RUN_NUMBER}"; fi
           re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-(beta|rc|dev)\.([0-9]+))?$'
           if ! [[ "$semver" =~ $re ]]; then
@@ -80,6 +98,7 @@ jobs:
   linux:
     name: linux (${{ matrix.arch }})
     needs: version
+    if: ${{ !startsWith(github.ref, 'refs/heads/release-macos/') }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -261,12 +280,14 @@ jobs:
   # ── macOS: universal .app in a .dmg ───────────────────────────────────────────────────────
   macos:
     needs: version
+    # Only when asked for (see the top of this file).
+    if: startsWith(github.ref, 'refs/heads/release-macos/')
     runs-on: macos-latest
     env:
       SEMVER: ${{ needs.version.outputs.semver }}
       BASE: ${{ needs.version.outputs.base }}
       BUILD: ${{ github.run_number }}
-      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
+      IS_TAG: ${{ needs.version.outputs.release }}
       HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY_P8 != '' }}
       # Matches LSMinimumSystemVersion in installer/macos/Info.plist.
       MACOSX_DEPLOYMENT_TARGET: "11.0"

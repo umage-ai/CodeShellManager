@@ -148,6 +148,8 @@ the previous one of the same channel, and the final replace an rc.
 - Delete `installer/CodeShellManager.wxs` (the WPF installer); `installer/CodeShellManager2.wxs` is the one.
 - `ci.yml` runs only when asked, on a push to a `ci/**` branch (Linux) or `ci-full/**` (all three
   platforms), to keep Actions minutes down; after the merge, keep it that way (do not add `main`).
+- A `v2.*` tag builds Windows (`release-v2.yml`) and Linux (`release-v2-unix.yml`). macOS is built
+  only when asked for, on a push to `release-macos/<tag>` (see `docs/distribution.md`).
 - Until the merge, a `v2.*` tag on a v2 commit runs only v2's workflows (a tag runs the files of
   the commit it points at), so betas are safe to tag now.
 
