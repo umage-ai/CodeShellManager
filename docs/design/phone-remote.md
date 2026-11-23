@@ -56,7 +56,7 @@ Relevant crypto already in `Cargo.lock` (no new downloads for the add-on): `snow
 | Part | Name and place | Language | Notes |
 |---|---|---|---|
 | Add-on (host side) | `apps/csm-phone/`, binary `csm-phone`, add-on id `phone-remote` | Rust | Copies the shape of `apps/csm-review`: a library (`csm_phone`) with the logic, a thin `main.rs`. Lint roots as in `DENY_ROOTS`. |
-| Relay | `relay/` (existing) | Rust | No change for v1. Dev tests start it on 127.0.0.1. |
+| Relay | `relay/` (existing) | Rust | No change for v1. The add-on's dev dependency on `csm-relay` runs the real relay on 127.0.0.1 in its tests. The relay refuses a second pairing channel with `not_allowed` (section 4.2). |
 | Phone web app | `phone/` at the repository root | plain ES modules, JSDoc types | Static files only. Its own tests run with Node. Not a Cargo member. |
 | Shared protocol | `crates/csm-remote-proto/` (existing) | Rust | Gets the Noise and pairing vectors the browser must pass. |
 | CSM additions | `csm-core` (`qr` module, the `qr` node), `csm-engine` (`csm/status` handling), `csm-ui` (drawing) | Rust | Listed for review in sections 8.2 and 8.3. |
@@ -231,15 +231,17 @@ Error mapping, from CSM's error to the phone's `ErrorCode`:
   queued work per channel, and the global cap bounds the work sent to CSM.
 - A `session.restart` can take a long time: it holds one global slot while its `csm/call` is in flight and
   does not hold the other requests of its channel.
-- **The `remote_control` wait holds no slot.** `session.new` with `remote_control` releases the global slot
-  when `session_new` returns. The wait for idle is a timer inside the add-on (a per-session entry in a
-  pending-waits table, checked on each tracker refresh and on a 5 s tick). When the session reports idle, the
-  add-on calls `session_send_command` with `/remote-control`, which takes a slot for that call only. The wait
-  ends at 2 minutes; then the entry is dropped and the phone gets `failed` for the enable step only (the
-  session stays). At most **2 pending waits per device** and **8 in total**; a further `session.new` with
-  `remote_control` is answered `rate_limited` before `session_new` is called. So eight such requests never
-  block the other CSM-bound ops.
-
+- **The `remote_control` wait holds no slot and no reply.** `session.new` with `remote_control` is answered at
+  once when `session_new` returns: `ok` with `remote_control: "pending"` in `data`. The global slot is released
+  then. The wait for idle is a timer inside the add-on (a per-session entry in a pending-waits table, checked on
+  each tracker refresh and on a 5 s tick). When the session reports idle, the add-on calls
+  `session_send_command` with `/remote-control`, which takes a slot for that call only. When that call ends, or
+  the wait ends at 2 minutes, the add-on sends one `Event::RemoteControl { session, ok, code, message }` on the
+  channel (`code` and `message` only when `ok` is false; the session stays). That event is a `msg.rs` addition in
+  step 1, with its vector line. If the channel has closed by then, the event is dropped and the phone reads the
+  setting on its next `session.get`. At most **2 pending waits per device** and **8 in total**; a further
+  `session.new` with `remote_control` is answered `rate_limited` before `session_new` is called. So eight such
+  requests never block the other CSM-bound ops, and none of them holds a request id after its reply.
 **Calls from the add-on** use `csm/call` as in `docs/addons.md` ("Process add-ons", "Messages"). Their
 results go back to the request that asked. A `csm/call` that is not answered in 30 seconds fails with
 `unavailable`.
@@ -301,14 +303,17 @@ Actors and what each can do.
   that person offer a pairing. The Allow step is on the PC, after the check code matches on both
   screens; a stranger's phone shows a request the person can deny. The slot is one use and expires.
   Out of reach: a person who photographs the QR and is at the PC when the check code matches.
-  **The race.** A photographed QR lets an attacker's phone open the one pairing channel first. The
-  check code does not help there: the attacker's phone shows the same digits the PC shows. The
-  defence is on the screens (section 8): the owner's phone, refused because a pairing is in progress,
-  shows "another phone is pairing; press Deny on the PC", and the PC shows that a second attempt was
-  refused, with "do not Allow unless your own phone shows this code". The PC shows the device name the
-  phone sent as the phone's own claim, not as a fact. Deny closes the channel, and the person then
-  pairs again.
-- **A same-user shell agent** (an agent or a program running as the person's Windows or Unix user,
+  **The race.** A photographed QR lets an attacker's phone open the one pairing channel first. The check code
+  does not help there: the attacker's phone shows the same digits the PC shows. The relay allows one pairing
+  channel per slot and refuses a second one with `not_allowed` before the host sees it
+  (`relay/src/state.rs`, `open_channel`). So the add-on never learns that a second phone tried, and it cannot
+  count the attempt or answer it with a Busy reason (there is none: `DenyReason` only exists inside a completed
+  Noise handshake). The defence is on the screens (section 8). The owner's phone, refused during someone else's
+  pairing, shows "Pairing is in use by another phone, or this code has expired or been used. If another phone
+  is pairing, check the PC and press Deny there." The PC's pending request shows the device name the phone sent,
+  as that phone's own claim, not as a fact. The owner's refused phone cannot confirm the check code, so when it
+  reports that the pairing is in use and the PC shows a request nobody started, the answer is Deny. Deny closes
+  the channel, and the person then pairs again with a new slot.- **A same-user shell agent** (an agent or a program running as the person's Windows or Unix user,
   including an MCP agent with a shell). It can read `host-key`, `devices.json`, `config.json` and the
   keychain entries the user owns, and it can run `csm-phone` or CSM tools by itself. The owner-only
   file permissions do not stop code running as the same user. **Out of reach**: nothing in this add-on
@@ -552,15 +557,14 @@ Level:  [ Viewer | Operator ]                (segmented, key "level")
   leaves a phone paired that the PC does not know.
 - Limits from `limits.rs`: 5 attempts per slot, one pairing channel at a time, 10 minutes per slot.
   A sixth attempt is refused and shown on the screen.
-- **A second phone while one is pending.** The add-on refuses it with a distinct refusal, shown on the
-  refused phone as "another phone is pairing; press Deny on the PC" (not as a generic error). On the PC
-  pairing screen, a line appears under the pending request: "A second phone tried to pair while this
-  request is pending. Do not press Allow unless your own phone shows the same check code." The count of
-  refused attempts is shown as a number and resets when the slot closes. The refusal is a new
-  `DenyReason::Busy` (`pairing.rs` has `Denied`, `Expired` and `BadRequest` today, so this is a small
-  protocol addition in step 1, with its line in `pairing.json`). The phone maps `busy` to that text.
-  Because it is a Deny, the second phone's channel closes and it cannot reach the Noise step twice.
-- The check code is `check_code(handshake_hash)` on both sides. The screen says: "If the digits differ,
+- **A second phone while one is pending.** The relay refuses the second pairing channel with `not_allowed`
+  (section 4.2), so the add-on never sees it: it does not count refused attempts and the PC shows no count
+  line. The refused phone maps `not_allowed` during pairing to "Pairing is in use by another phone, or this
+  code has expired or been used. If another phone is pairing, check the PC and press Deny there." (not the
+  generic text). The PC's pending request keeps its own device name and check code. If the add-on itself sees
+  a second pairing channel on its relay connection (a hostile relay forwarding one), it closes that channel
+  with `not_allowed` and does not run Noise on it. A distinct relay code and a PC count line would need a relay
+  change, which v1 does not make (section 13, decision 15).- The check code is `check_code(handshake_hash)` on both sides. The screen says: "If the digits differ,
   press Deny." That is the whole defence against a swapped QR.
 - The offer URL and PSK go only into the screen tree (section 4.1). They are never in a log or a result.
 
@@ -1013,6 +1017,11 @@ Each line says what was checked, against which file.
     `session.wake`, `session.restart` together), and at most 5 live sessions that phones created
     (`max_phone_sessions`, range 1 to 20). The numbers are a starting point for the owner to confirm;
     the design does not claim they are right for every machine.
+15. **Second phone during pairing.** The relay refuses it with `not_allowed`, and the PC shows no refused-attempt
+    line (section 4.2). Alternative: a relay change with a distinct `pairing_busy` code (`codes.rs`, `codes.json`,
+    the relay README), a relay-to-host notice such as `RelayToHost::PairingRefused { attempts }`, the PC line, and
+    step 1 tests against the real relay. Recommended: no relay change in v1; the phone's text and the PC's Allow
+    screen cover it. The owner decides.
 
 ---
 
@@ -1053,7 +1062,7 @@ Each step ends with the full gate (`cargo +1.97 test --workspace`, `cargo +1.97 
 - The host-wide tracker (section 7.1), deltas and snapshots (section 7.2), coalescing, the split.
 - Push encryption (RFC 8291), per-device decisions, sending through the relay's push request (section 9).
 - Launch limits and the live-session cap (section 4.3); the `remote_control` wait timer (section 4).
-- `DenyReason::Busy` in `pairing.rs` with its vector line.
+- `msg.rs` `Event::RemoteControl` (section 4) with its vector line. No `pairing.rs` change: there is no `DenyReason::Busy` (section 4.2).
 - Screens: pairing, devices and settings (sections 8 and 10.6); the `qr` node in `csm-core/src/addons/screen` and drawing in `csm-ui`.
 - Tests (Rust), each one a real bug it would catch:
   - device store: damage (each damaged form), atomic write, the `.bak`, the first-run table (all five rows), `data_dir` null refuses to serve;
@@ -1070,9 +1079,13 @@ Each step ends with the full gate (`cargo +1.97 test --workspace`, `cargo +1.97 
     at 5 and admits one again after a created session exits; a viewer never reaches the bucket;
   - **the `remote_control` wait**: eight such requests do not hold a global slot (a second op on another
     channel completes while they wait), and the 2 pending waits per device cap refuses the third;
-  - **the pairing race (section 8)**: a second phone while one is pending gets `DenyReason::Busy`, and the
-    slot's owner can still Allow the first; the PC screen shows the refused-attempt line;
-  - **damaged `config.json` first write** renames the file to `config.json.damaged-<time>` and does not
+  - **the pairing race (section 8)**: the tests run the real relay (`csm_relay`, a dev-dependency, on 127.0.0.1).
+    With one pairing slot open and its channel active, a second phone's `Open` is refused with `not_allowed`, the
+    add-on sees no second `Open`, and the first channel still completes the exchange and can Allow. A fake relay
+    that forwards a second `Open` makes the add-on close that channel without running Noise on it;
+  - **the `remote_control` event**: the reply is `ok` with `remote_control: "pending"` at once; the later result
+    arrives as `Event::RemoteControl` (ok, and failed with its code); the event is dropped without error when the
+    channel is gone;  - **damaged `config.json` first write** renames the file to `config.json.damaged-<time>` and does not
     overwrite it;
   - `HelloData` carries every field of `msg.rs`, and `host_name` is cleaned and capped;
   - the `push_hosts` check refuses a non-listed push host before the relay sees it;
@@ -1128,5 +1141,6 @@ brief requires.
 - `msg.rs` `clean` only validates; the add-on's own cleaner (section 4.1) is what strips bidi and zero-width
   characters. `HelloData` has `protocol`, `level`, `host_name`, `hide_names`, `notify`, `push_ready`,
   `remote_control`, `max_message_bytes` (section 4).
-- `pairing.rs` `DenyReason` has three values today; the "another phone is pairing" refusal needs the
-  `Busy` addition (section 8).
+- `pairing.rs` `DenyReason` has three values and gets no `Busy`. The relay refuses a second pairing channel with
+  `not_allowed` before any Noise step (`relay/src/state.rs`, `open_channel`), so the phone's own text covers the
+  case (section 8, decision 15). Review round 3.
