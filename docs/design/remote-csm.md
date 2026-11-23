@@ -636,3 +636,66 @@ Base sha for this step: `c279407f800f8f0324ceadbd0cd5c41f118765d5`.
   inside `Msg::Event` decodes as `None` (ignore it); any other unknown message type is refused.
 - **Attach and term data** use a client-chosen `stream: u32` from `TermSubscribe`, and absolute
   `offset`s in the server's per-session output.
+
+## P1 step 2: transport, pairing, server mode switch (`csm-peer`)
+
+Base sha for this step: `9581982f0ae26fbd1a0e7a3ecce8c2025219978d`.
+
+- **Crate and layers.** `csm-peer` is L4 (beside `csm-mcp` and `csm-ui`; layer map and policy `DENY_ROOTS`
+  updated). `snow` 0.10 is now a normal dependency there (it was already in `Cargo.lock` through the
+  dev-dependency, so no new crate version; `cargo deny` was not run locally, the CI job covers it).
+  The engine (L3) knows the server only through `csm_engine::PeerHost`; `StateOptions::peer_host` defaults
+  to `NoPeerHost`, so tests, `--clean`, the demo and an isolated run have no remote access at all.
+  `apps/codeshell` wires the real server (`<state folder>/peer`), calls `attach(engine)` and `resume()`.
+- **Off by default, and proven by connecting.** `PeerServer::new` touches no disk and no network. The listener
+  starts in `peer_server_enable` (UI only) and in `resume()`, which replays only `peer/server.json`, a file
+  `enable` writes (and `disable` rewrites as off). It is not in `state.json`, not a setting, not in a `.csm`.
+  `tests/peer.rs`: a fresh state, an upgraded `state.json`, a WPF import and a `.csm` import, each carrying
+  hostile `PeerServer*` / `RemoteAccess*` keys naming a free port, then `resume()` and TCP connects that must be
+  refused, with no `server.json` and no host key created.
+- **UI-only tools are a precheck refusal.** `peer_server_enable`, `peer_pair_start`, `peer_pair_answer` are
+  refused in `tools::precheck` for `Cli`, `External` and `Peer` (any level), before any consent card, and the
+  refusal is written to the audit log. Their effects are declared honestly (state, files, network, extension), so
+  consent would apply even if a future change let a caller through. `peer_server_disable` and
+  `peer_device_revoke` are allowed for everyone; `peer_status` and `peer_device_list` are reads. `settings_set`
+  has no such key (tested: NotFound for every spelling).
+- **`Caller::Peer { device_id, name, level }`** is new. Only the server makes it, after a Noise handshake with a
+  listed key; `csm-mcp`'s `accept_caller` refuses it on the wire. `is_external()` is true for it (so backup
+  import and the app-only settings stay refused for a device) but consent cards are still asked of MCP clients
+  only. A peer below Full may only run read-only tools (`level_gate`); only Full exists so far. Non-read calls
+  from a device are audited (tool, session id, effects), never typed content.
+- **Binding.** The tool checks the address (`check_bind`: an IP, no multicast, never `0.0.0.0` or `::` unless
+  `all_interfaces`), the host checks it again, and `try_listen` binds exactly that socket address. A saved
+  choice is re-checked on resume. An address that is not on this machine (a WireGuard tunnel that is down)
+  leaves the server `enabled` with `waiting` set, retrying 1-2-5-10-30 s, and never listening elsewhere.
+  With `all_interfaces` the pairing link has no single address to name, so `peer_pair_start` refuses it.
+- **Files** (`peer/`): `host.key` (JSON, private and public half, the public key must match the private one),
+  `devices.json` (public keys only; every entry re-validated on load: id derives from the key, name rules,
+  no duplicates, at most 32), `server.json`, `remote-access.log` (append-only JSON lines, rotates at 4 MiB).
+  The folder is 0700 and files 0600 on Unix; on Windows `icacls` (System32 path, argv, no shell, through
+  `csm_engine::proc`) replaces the inherited ACL with the current user, and `peer_status.private_files_restricted`
+  says whether it worked. A damaged key or list is an error, never silently replaced (that would unpair everyone).
+- **Wire flow** (all of it in `csm-peer-proto`'s vectors): a cleartext selector frame (`01` session, `02 || id`
+  pairing), then `IK` or `IKpsk2` with empty handshake payloads, prologue `csm-peer/1 0x00 host_id`. A stranger
+  gets a closed socket and nothing else (no slot, wrong id, spent or expired slot, unknown key, garbage, a
+  connection that stays silent past the handshake time); at most 8 unauthenticated connections at once.
+  Pairing: the slot is consumed when the first transport message (`PairMsg::Hello`) decrypts; both sides derive
+  the check code from the handshake hash; the device is added only when the UI answers Allow **with the check
+  code** (a wrong code is refused, the third wrong code denies); Accept or Deny travels back over the same
+  channel. A slot allows 3 handshakes; it lives `SLOT_SECS` (600) and works once.
+- **Session link.** `Hello` / `Welcome` (protocol and term minor must match, else `Bye`), a second connection of the
+  same device replaces the first (`Bye Replaced`), pings every 15 s and dead after 45 s, tool calls on their own
+  thread (at most 16 at once; results over one Noise message are fragmented, over 4 MiB become an error reply).
+  Rekeying is per direction as in the vectors (a test sends more than `REKEY_INTERVAL` messages).
+  Snapshots, deltas and terminal streams are the next steps; `TermSubscribe` is answered `Forbidden` for now.
+- **Revoke and off.** `revoke` deletes the key (or all), sends `Bye Revoked` and closes at once; `disable` joins the
+  accept thread (the port is free when it returns), sends `Bye ServerOff`, withdraws the slot and any pending
+  pairing, and saves the choice as off. The engine's exit path calls `shutdown()` (`Bye ServerQuit`), which keeps the
+  saved choice so the next start resumes.
+- **Consent from a device (decision Q3).** The server forwards `ConsentRequested` as `Msg::ConsentCard` (and
+  `ConsentResolved` as an event) to every connected Full device, and sends waiting cards to a device that connects
+  later. `consent_answer` is allowed for `Caller::Ui` and for `Caller::Peer` at Full; the first answer wins because
+  the request leaves `pending` once, and the later answerer gets `NotFound` (`ConsentAck::AlreadyResolved` on the
+  wire). Who answered is audited. Over the wire this is tested with two devices.
+- **Not done here (later steps):** the Settings panel, indicator pill and QR code (the tools return the link as
+  text), the pairing UX on the client side, snapshots and terminal streaming, the firewall step, `RemoteBackend`.

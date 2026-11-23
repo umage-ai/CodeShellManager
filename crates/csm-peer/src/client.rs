@@ -1,0 +1,339 @@
+//! The other end: pair with a host from its offer link, then connect as a paired device.
+//!
+//! Everything here blocks, so it runs on a worker thread, never the UI thread. The host's answers
+//! are untrusted input like any other: every message goes through `csm-peer-proto`'s strict
+//! decoders, and a handshake with a key other than the one the offer or the saved host named fails
+//! before a single message is read.
+
+use std::collections::HashMap;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use csm_peer_proto::addr::{Host, PeerAddr};
+use csm_peer_proto::codec::Frame;
+use csm_peer_proto::ids::{KEY_LEN, host_id};
+use csm_peer_proto::msg::{ByeReason, Level, Msg, Outcome, PROTOCOL_VERSION};
+use csm_peer_proto::noise::{Preamble, check_code};
+use csm_peer_proto::pairing::{DenyReason, OfferError, PairMsg, PeerOffer};
+use serde_json::Value;
+
+use crate::TERM_VERSION;
+use crate::identity::Identity;
+use crate::link::{Established, Io, Link, LinkError, Reader, initiate};
+
+/// What the client says about itself.
+#[derive(Debug, Clone)]
+pub struct ClientConfig {
+    /// The device name the host shows ("Laptop"); at most 64 characters, no control characters.
+    pub device_name: String,
+    pub app_version: String,
+    pub term_version: String,
+    /// TCP connect and handshake time.
+    pub connect_timeout: Duration,
+    /// How long pairing waits for the person at the host to answer.
+    pub pair_wait: Duration,
+    pub ping_every: Duration,
+    pub dead_after: Duration,
+}
+
+impl ClientConfig {
+    pub fn new(device_name: &str) -> Self {
+        Self {
+            device_name: device_name.to_owned(),
+            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            term_version: TERM_VERSION.to_owned(),
+            connect_timeout: Duration::from_secs(10),
+            pair_wait: Duration::from_secs(130),
+            ping_every: Duration::from_secs(15),
+            dead_after: Duration::from_secs(45),
+        }
+    }
+}
+
+/// Why a pairing or a connection did not happen.
+#[derive(Debug)]
+pub enum ClientError {
+    /// The offer link is not valid.
+    Offer(OfferError),
+    /// The host could not be reached.
+    Connect(String),
+    /// The host closed the connection without a word: no open offer (expired, used, a wrong id),
+    /// or this device is not on its list. The host says nothing more on purpose.
+    Refused,
+    /// The person at the host denied the device (or did not answer in time).
+    Denied(DenyReason),
+    /// The host answered Bye.
+    Bye(ByeReason),
+    /// Something else went wrong on the wire.
+    Link(String),
+    Timeout,
+}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Offer(e) => write!(f, "{e}"),
+            Self::Connect(e) => write!(f, "could not reach the host: {e}"),
+            Self::Refused => f.write_str("the host refused the connection: the pairing offer may have expired or been used, or this device is not paired"),
+            Self::Denied(DenyReason::Denied) => f.write_str("the host denied this device"),
+            Self::Denied(DenyReason::Expired) => f.write_str("nobody answered at the host in time"),
+            Self::Denied(DenyReason::BadRequest) => f.write_str("the host did not accept the request"),
+            Self::Bye(r) => write!(f, "the host ended the connection ({r:?})"),
+            Self::Link(e) => write!(f, "{e}"),
+            Self::Timeout => f.write_str("timed out"),
+        }
+    }
+}
+
+impl std::error::Error for ClientError {}
+
+fn link_failed(e: LinkError) -> ClientError {
+    match e {
+        // A silent close during the handshake is how the host says no.
+        LinkError::Closed | LinkError::Refused => ClientError::Refused,
+        LinkError::Timeout => ClientError::Timeout,
+        other => ClientError::Link(other.to_string()),
+    }
+}
+
+fn dial(addr: &PeerAddr, timeout: Duration) -> Result<TcpStream, ClientError> {
+    let targets: Vec<SocketAddr> = match &addr.host {
+        Host::Ip(ip) => vec![SocketAddr::new(*ip, addr.port)],
+        Host::Name(n) => (n.as_str(), addr.port).to_socket_addrs().map_err(|e| ClientError::Connect(e.to_string()))?.collect(),
+    };
+    let mut last = "no address".to_owned();
+    for t in targets {
+        match TcpStream::connect_timeout(&t, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(ClientError::Connect(last))
+}
+
+/// A host this device is now paired with: what to save to connect again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedHost {
+    pub address: PeerAddr,
+    pub host_id: String,
+    pub host_public: [u8; KEY_LEN],
+    /// The id the host lists this device under.
+    pub device_id: String,
+    pub level: Level,
+}
+
+/// Pairs with the host in `offer`. `on_check_code` is called with the four digits as soon as the
+/// handshake is done; the person compares them with the host's screen and clicks Allow there.
+/// Returns when the host answers.
+pub fn pair(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, on_check_code: &mut dyn FnMut(&str)) -> Result<PairedHost, ClientError> {
+    offer.validate().map_err(ClientError::Offer)?;
+    let (addr, host_pub, id, psk) = match (offer.addr(), offer.host_pub(), offer.pairing_id(), offer.psk()) {
+        (Some(a), Some(k), Some(i), Some(p)) => (a, k, i, p),
+        _ => return Err(ClientError::Offer(OfferError::Format)),
+    };
+    let stream = dial(&addr, cfg.connect_timeout)?;
+    let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?;
+    let deadline = Instant::now() + cfg.connect_timeout;
+    let Established { link, mut reader, hash, .. } =
+        initiate(io, me, &host_pub, &offer.h, Some(&psk), &Preamble::Pairing(id).encode(), deadline).map_err(link_failed)?;
+    on_check_code(&check_code(&hash));
+    let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: cfg.device_name.clone() }.encode().map_err(|_| ClientError::Link("the device name is not allowed".into()))?;
+    link.send_plains(&[hello]).map_err(link_failed)?;
+    let until = Instant::now() + cfg.pair_wait;
+    let answer = loop {
+        if Instant::now() >= until {
+            return Err(ClientError::Timeout);
+        }
+        if let Some(plain) = reader.recv_plain(Duration::from_millis(250)).map_err(link_failed)? {
+            break PairMsg::decode(&plain).map_err(|e| ClientError::Link(format!("bad answer: {e:?}")))?;
+        }
+    };
+    link.close();
+    match answer {
+        PairMsg::Accept { device_id, level } if device_id == me.device_id() => Ok(PairedHost { address: addr, host_id: host_id(&host_pub), host_public: host_pub, device_id, level }),
+        PairMsg::Accept { .. } => Err(ClientError::Link("the host named another device id".into())),
+        PairMsg::Deny { reason } => Err(ClientError::Denied(reason)),
+        PairMsg::Hello { .. } => Err(ClientError::Link("unexpected message".into())),
+    }
+}
+
+/// What the host said about itself in its `Welcome`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Welcome {
+    pub host_name: String,
+    pub server_version: String,
+    pub term_version: String,
+    pub level: Level,
+    pub device_id: String,
+}
+
+/// What a connection delivers besides call replies.
+#[derive(Debug)]
+pub enum Incoming {
+    /// Any frame that is not a reply, ping or bye (events, consent cards, terminal data...).
+    Frame(Frame),
+    /// The connection ended: with the host's reason if it sent one.
+    Closed(Option<ByeReason>),
+}
+
+type Waiting = Arc<Mutex<HashMap<u64, Sender<Outcome>>>>;
+
+/// A live connection to a host.
+pub struct Connection {
+    pub welcome: Welcome,
+    link: Arc<Link>,
+    rx: Receiver<Incoming>,
+    waiting: Waiting,
+    next_id: AtomicU64,
+}
+
+impl std::fmt::Debug for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connection").field("welcome", &self.welcome).field("closed", &self.link.is_closed()).finish()
+    }
+}
+
+/// Connects to a host this device is paired with. The host's key is the one saved at pairing: a
+/// handshake with any other key fails.
+pub fn connect(addr: &PeerAddr, host_public: &[u8; KEY_LEN], me: &Identity, cfg: &ClientConfig) -> Result<Connection, ClientError> {
+    let stream = dial(addr, cfg.connect_timeout)?;
+    let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?;
+    let deadline = Instant::now() + cfg.connect_timeout;
+    let Established { link, mut reader, .. } =
+        initiate(io, me, host_public, &host_id(host_public), None, &Preamble::Session.encode(), deadline).map_err(link_failed)?;
+    link.send_msg(Msg::Hello {
+        protocol: PROTOCOL_VERSION,
+        client: cfg.device_name.clone(),
+        app_version: cfg.app_version.clone(),
+        term_version: cfg.term_version.clone(),
+    })
+    .map_err(link_failed)?;
+    let welcome = match reader.recv(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))) {
+        Ok(Some(Frame::Control(Msg::Welcome { host_name, server_version, term_version, level, device_id, .. }))) => {
+            Welcome { host_name, server_version, term_version, level, device_id }
+        }
+        Ok(Some(Frame::Control(Msg::Bye { reason }))) => return Err(ClientError::Bye(reason)),
+        Ok(Some(_)) => return Err(ClientError::Link("the host spoke before welcoming".into())),
+        Ok(None) => return Err(ClientError::Timeout),
+        Err(e) => return Err(link_failed(e)),
+    };
+    let (tx, rx) = mpsc::channel();
+    let waiting: Waiting = Arc::new(Mutex::new(HashMap::new()));
+    let (l2, w2, (ping_every, dead_after)) = (link.clone(), waiting.clone(), (cfg.ping_every, cfg.dead_after));
+    std::thread::Builder::new()
+        .name("csm-peer-client".into())
+        .spawn(move || client_loop(&mut reader, &l2, &w2, &tx, ping_every, dead_after))
+        .map_err(|e| ClientError::Link(e.to_string()))?;
+    Ok(Connection { welcome, link, rx, waiting, next_id: AtomicU64::new(1) })
+}
+
+fn client_loop(reader: &mut Reader, link: &Arc<Link>, waiting: &Waiting, tx: &Sender<Incoming>, ping_every: Duration, dead_after: Duration) {
+    let mut last_rx = Instant::now();
+    let mut last_ping = Instant::now();
+    let mut ping_n = 0u64;
+    let tick = crate::server::tick_of(ping_every, dead_after);
+    let bye = loop {
+        match reader.recv(tick) {
+            Ok(Some(Frame::Control(Msg::Reply { id, outcome }))) => {
+                last_rx = Instant::now();
+                let sender = waiting.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+                if let Some(s) = sender {
+                    let _ = s.send(outcome);
+                }
+            }
+            Ok(Some(Frame::Control(Msg::Ping { n }))) => {
+                last_rx = Instant::now();
+                let _ = link.send_msg(Msg::Pong { n });
+            }
+            Ok(Some(Frame::Control(Msg::Pong { .. }))) => last_rx = Instant::now(),
+            Ok(Some(Frame::Control(Msg::Bye { reason }))) => break Some(reason),
+            Ok(Some(frame)) => {
+                last_rx = Instant::now();
+                if tx.send(Incoming::Frame(frame)).is_err() {
+                    break None;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => break None,
+        }
+        if link.is_closed() || last_rx.elapsed() > dead_after {
+            break None;
+        }
+        if last_ping.elapsed() >= ping_every {
+            ping_n += 1;
+            if link.send_msg(Msg::Ping { n: ping_n }).is_err() {
+                break None;
+            }
+            last_ping = Instant::now();
+        }
+    };
+    link.close();
+    // Calls still waiting will never be answered: dropping their senders tells them.
+    waiting.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    let _ = tx.send(Incoming::Closed(bye));
+}
+
+/// Why a call returned no outcome.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// The connection ended before the reply.
+    Closed,
+    Timeout,
+}
+
+impl Connection {
+    /// Sends a tool call; the receiver gets the outcome (or disconnects if the link ends).
+    pub fn call(&self, tool: &str, params: Value) -> Result<Receiver<Outcome>, CallError> {
+        let id = self.next_id.fetch_add(1, Ordering::AcqRel);
+        let (tx, rx) = mpsc::channel();
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner).insert(id, tx);
+        if self.link.send_msg(Msg::Call { id, tool: tool.to_owned(), params }).is_err() {
+            self.waiting.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+            return Err(CallError::Closed);
+        }
+        Ok(rx)
+    }
+
+    /// [`Connection::call`], waiting for the outcome.
+    pub fn call_wait(&self, tool: &str, params: Value, timeout: Duration) -> Result<Outcome, CallError> {
+        match self.call(tool, params)?.recv_timeout(timeout) {
+            Ok(o) => Ok(o),
+            Err(RecvTimeoutError::Timeout) => Err(CallError::Timeout),
+            Err(RecvTimeoutError::Disconnected) => Err(CallError::Closed),
+        }
+    }
+
+    /// Answers a consent card shown by the host (the first answer anywhere wins).
+    pub fn answer_consent(&self, request_id: u64, allow: bool) -> Result<(), CallError> {
+        self.link.send_msg(Msg::ConsentAnswer { request_id, allow }).map_err(|_| CallError::Closed)
+    }
+
+    /// Sends any client message.
+    pub fn send(&self, msg: Msg) -> Result<(), CallError> {
+        self.link.send_msg(msg).map_err(|_| CallError::Closed)
+    }
+
+    /// The next thing the host sent that is not a reply, or `None` after `wait`.
+    pub fn recv_timeout(&self, wait: Duration) -> Option<Incoming> {
+        self.rx.recv_timeout(wait).ok()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.link.is_closed()
+    }
+
+    /// Says goodbye and closes.
+    pub fn close(&self) {
+        self.link.try_bye(ByeReason::ClientQuit);
+        self.link.close();
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.link.close();
+    }
+}

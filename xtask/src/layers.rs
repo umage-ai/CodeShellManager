@@ -21,6 +21,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-engine", 3),
     ("csm-mcp", 4),
     ("csm-ui", 4),
+    ("csm-peer", 4), // peer link transport: the server (the engine's PeerHost) and the client connection; Noise over TCP
     ("csm-setup", 5),
     ("codeshell", 6),
     ("csm-cli", 6),

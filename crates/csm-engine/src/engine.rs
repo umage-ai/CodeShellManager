@@ -412,6 +412,12 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                     let _ = reply.send(Err(err));
                     return true;
                 }
+                if let Some(err) = crate::tools::peer::level_gate(&caller, &spec) {
+                    let _ = reply.send(Err(err));
+                    return true;
+                }
+                // Every non-read call of a paired device is logged, whatever its outcome.
+                crate::tools::peer::audit_peer_call(state.options.peer_host.as_ref(), &caller, &spec, &params);
                 if let Caller::External { client, .. } = &caller {
                     let granted = state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id)
                         || plugins::standing_call(&state.rt.addons, &caller, spec.id);
@@ -507,14 +513,18 @@ enum ConsentChoice {
 }
 
 fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, state: &mut State, engine: &Engine) -> Reply {
-    // Only the person, in the app, can answer. An MCP client must never approve its own request.
-    if *caller != Caller::Ui {
+    // Only the person can answer: in the app, or from a paired device at the Full level (the
+    // card is forwarded there; the first answer wins, because the request leaves `pending` once).
+    // An MCP client must never approve its own request.
+    let level_ok = matches!(caller, Caller::Peer { level, .. } if level.allows(csm_peer_proto::msg::Level::Full));
+    if *caller != Caller::Ui && !level_ok {
         return Err(ToolError::Refused("consent is answered in the app, not over MCP or the CLI".into()));
     }
     let p: ConsentAnswerParams = parse_params(params)?;
     let Some(req) = pending.remove(&p.request_id) else {
         return Err(ToolError::NotFound(format!("no waiting request {}", p.request_id)));
     };
+    state.options.peer_host.audit(crate::peer_host::AuditEvent::ConsentAnswered { by: caller.describe(), request_id: p.request_id, allow: p.answer != ConsentChoice::Deny });
     engine.events.emit(Event::ConsentResolved { request_id: p.request_id });
     match p.answer {
         ConsentChoice::Deny => {

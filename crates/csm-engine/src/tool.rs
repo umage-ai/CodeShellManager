@@ -161,11 +161,28 @@ pub enum Caller {
     /// the client runs inside one of our sessions (so "Claude in Odulodo" can be named, and so a
     /// session can never be told to type into itself without that being visible).
     External { client: String, session_id: Option<String> },
+    /// Another CodeShellManager, paired with this one over the peer link (`csm-peer`). Set only
+    /// by the peer server, from the device list entry the connection authenticated as; the
+    /// IPC bridge refuses it on the wire. `level` is the device's level.
+    Peer { device_id: String, name: String, level: csm_peer_proto::msg::Level },
 }
 
 impl Caller {
+    /// An agent or a remote caller: the rules that keep MCP clients away from what decides what
+    /// runs (backup import, app-only settings) apply to it. Consent cards are asked of MCP
+    /// clients only (`Caller::External`); a paired Full peer is the person at another screen.
     pub fn is_external(&self) -> bool {
-        matches!(self, Caller::External { .. })
+        matches!(self, Caller::External { .. } | Caller::Peer { .. })
+    }
+
+    /// Who this is, for the audit log: `ui`, `cli`, `mcp:<client>` or `peer:<name> (<id>)`.
+    pub fn describe(&self) -> String {
+        match self {
+            Caller::Ui => "ui".into(),
+            Caller::Cli => "cli".into(),
+            Caller::External { client, .. } => format!("mcp:{client}"),
+            Caller::Peer { device_id, name, .. } => format!("peer:{name} ({device_id})"),
+        }
     }
 }
 

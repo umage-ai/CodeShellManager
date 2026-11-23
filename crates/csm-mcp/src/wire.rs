@@ -64,6 +64,8 @@ pub fn accept_caller(v: Option<&Value>) -> Result<Caller, String> {
     let caller: Caller = serde_json::from_value(v.clone()).map_err(|e| format!("bad `caller`: {e}"))?;
     match caller {
         Caller::Ui => Err("a remote caller cannot act as the app's UI".to_string()),
+        // Only the peer server, after a Noise handshake with a paired device key, makes this caller.
+        Caller::Peer { .. } => Err("a remote caller cannot act as a paired peer device".to_string()),
         Caller::Cli => Ok(Caller::Cli),
         Caller::External { client, session_id } => {
             let client = clean_label(&client, MAX_CLIENT_NAME);

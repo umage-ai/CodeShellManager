@@ -16,6 +16,7 @@ csm-core = { path = "../../crates/csm-core" }
 csm-ui = { path = "../../crates/csm-ui" }
 csm-engine = { path = "../../crates/csm-engine" }
 csm-mcp = { path = "../../crates/csm-mcp" }
+csm-peer = { path = "../../crates/csm-peer" }
 csm-pty = { path = "../../crates/csm-pty" }
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
 # Native folder dialogs that never block the event loop (the quick-open's Browse…). egui-free,

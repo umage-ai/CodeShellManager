@@ -84,6 +84,10 @@ pub struct StateOptions {
     /// Starting the app at sign-in (`app_autostart_get` / `app_autostart_set`). Default (tests, the
     /// demo): an entry in memory, so nothing real changes. Production: the current user's own.
     pub autostart: Autostart,
+    /// The peer server (remote access from another CodeShellManager). Default: none, so a run
+    /// that wires nothing (tests, `--clean`, the demo) can never listen. Production wires
+    /// `csm-peer`'s host, which is itself off until the person turns it on.
+    pub peer_host: Arc<dyn crate::peer_host::PeerHost>,
 }
 
 /// Where the start-at-sign-in entry lives and the program it should start.
@@ -163,6 +167,7 @@ impl Default for StateOptions {
             samples_dir: None,
             secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
             autostart: Autostart::default(),
+            peer_host: Arc::new(crate::peer_host::NoPeerHost),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
         }
     }

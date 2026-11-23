@@ -927,6 +927,7 @@ dependencies = [
  "csm-core",
  "csm-engine",
  "csm-mcp",
+ "csm-peer",
  "csm-pty",
  "csm-ui",
  "eframe",
@@ -1262,6 +1263,21 @@ dependencies = [
  "csm-engine",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "csm-peer"
+version = "0.0.1"
+dependencies = [
+ "csm-core",
+ "csm-engine",
+ "csm-peer-proto",
+ "getrandom 0.3.4",
+ "log",
+ "serde",
+ "serde_json",
+ "snow",
  "tempfile",
 ]
 

@@ -421,7 +421,16 @@ fn main() {
         for line in persist::prepare_data_dirs(args.config_dir.as_deref(), args.clean) {
             log::info!("data folder: {line}");
         }
-        let options = StateOptions { save_path: persist::state_path(args.config_dir.as_deref()), clean: args.clean, ..StateOptions::production() };
+        // Remote access (another CSM connecting to this one): a server whose files live beside the
+        // state, off until the person turns it on in the app. Not for `--clean`, which writes nothing,
+        // and not for an isolated run with no state folder: they get no host, so nothing can listen.
+        let save_path = persist::state_path(args.config_dir.as_deref());
+        let peer_server = save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean).map(|d| csm_peer::PeerServer::new(d.join("peer")));
+        let peer_host: Arc<dyn csm_engine::PeerHost> = match &peer_server {
+            Some(p) => Arc::new(p.clone()),
+            None => Arc::new(csm_engine::NoPeerHost),
+        };
+        let options = StateOptions { save_path, clean: args.clean, peer_host, ..StateOptions::production() };
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
@@ -451,6 +460,13 @@ fn main() {
         let start = StartWindow::choose(settings.start_minimized, settings.start_minimized_to_tray, tray::POSSIBLE);
         let first_run_import = persist::first_run_wpf_import(args.config_dir.as_deref(), args.clean, report.source);
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
+        if let Some(p) = &peer_server {
+            // Gives it the engine its devices' calls run on, and replays the one thing the person
+            // may have chosen before: remote access on, at the address they picked. A fresh install,
+            // an upgrade or an import has no such choice, so this starts nothing.
+            p.attach(engine.clone());
+            p.resume();
+        }
         if let Some(path) = first_run_import {
             import_wpf_on_first_run(&engine, path);
         }
