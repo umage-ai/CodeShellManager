@@ -95,6 +95,11 @@ csm attach --host OFFICE "Build"     when several offices are paired
 - Exit codes: 0 when you detach or the session ends, 2 for a usage problem, 3 when the office cannot
   be reached or the link drops.
 
+**Trust.** `csm attach` and the remote window carry the trust of this laptop's device key. Anything
+that can run `csm` on this laptop, or open this laptop's CodeShellManager, can type into the office's
+sessions, with the same level this laptop has there (today: Full). The office cannot tell such a
+program from you at the keyboard. Only pair laptops you trust, and forget an office you no longer use.
+
 ## Troubleshooting
 
 | What you see | What to check |
@@ -111,3 +116,5 @@ csm attach --host OFFICE "Build"     when several offices are paired
 - A remote session's links and run URLs open in the laptop's browser; port forwarding is planned.
 - There is one office per window; several offices are shown as several windows.
 - Only the "Full" level exists: a paired laptop can do everything the office's own window can do.
+- Anything that can run `csm` on this laptop can type into the offices it is paired with (see the trust
+  note under `csm attach`).

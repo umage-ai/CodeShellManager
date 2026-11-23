@@ -39,6 +39,8 @@ pub enum LinkError {
     Refused,
     /// A well-formed message that breaks the protocol (the wrong one at this point).
     Protocol(&'static str),
+    /// The person cancelled a pairing while the handshake was waiting.
+    Cancelled,
 }
 
 impl std::fmt::Display for LinkError {
@@ -52,6 +54,7 @@ impl std::fmt::Display for LinkError {
             Self::Codec(e) => write!(f, "bad message: {e}"),
             Self::Refused => f.write_str("refused"),
             Self::Protocol(w) => write!(f, "protocol error: {w}"),
+            Self::Cancelled => f.write_str("cancelled"),
         }
     }
 }
@@ -90,13 +93,21 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) struct Io {
     stream: TcpStream,
     dec: FrameDecoder,
+    /// When set and raised, a handshake read gives up at its next slice (a quarter of a second).
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Io {
     pub(crate) fn new(stream: TcpStream) -> std::io::Result<Self> {
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-        Ok(Self { stream, dec: FrameDecoder::new() })
+        Ok(Self { stream, dec: FrameDecoder::new(), cancel: None })
+    }
+
+    /// Lets a raised `cancel` end a wait for a frame with [`LinkError::Cancelled`].
+    pub(crate) fn cancel_on(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
     }
 
     pub(crate) fn write_frame(&mut self, payload: &[u8]) -> Result<(), LinkError> {
@@ -125,6 +136,9 @@ impl Io {
     /// One frame, or [`LinkError::Timeout`] at `deadline`.
     pub(crate) fn read_frame_by(&mut self, deadline: Instant) -> Result<Vec<u8>, LinkError> {
         loop {
+            if self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                return Err(LinkError::Cancelled);
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(LinkError::Timeout);

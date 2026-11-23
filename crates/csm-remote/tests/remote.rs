@@ -6,6 +6,8 @@
 
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -332,4 +334,44 @@ fn stopping_the_window_ends_the_link_and_leaves_the_office_running() {
     assert!(office.engine.view().sessions.iter().any(|s| s.id == id), "the office keeps its session");
     let (mut again, _me2) = connect(&office, None, "Second laptop");
     settle(&mut again, "the second laptop to connect", live);
+}
+
+#[test]
+fn a_delta_that_does_not_apply_is_fixed_with_a_snapshot_on_the_same_link() {
+    // The office sends one delta whose base this laptop does not have. The laptop asks for the whole
+    // snapshot on the link it has: no reconnect, and the session that came with the bad delta shows.
+    let corrupt = Arc::new(AtomicBool::new(false));
+    let office = Office::new_corruptible(corrupt.clone());
+    let (first, _pty, _handle) = office.session();
+    let proxy = Proxy::start(office.server.local_addr().unwrap());
+    let (mut b, _me) = connect(&office, Some(proxy.port()), "Laptop");
+    settle(&mut b, "the connection", live);
+    settle(&mut b, "the session list", |b| b.model().sessions.iter().any(|s| s.id == first));
+    let links_before = proxy.conns.lock().unwrap().len();
+
+    corrupt.store(true, Ordering::Release);
+    let (second, _pty2, _handle2) = office.session();
+    settle(&mut b, "the new session, from the fresh snapshot", |b| b.model().sessions.iter().any(|s| s.id == second));
+    assert!(!corrupt.load(Ordering::Acquire), "the bad delta was sent, so the resync was exercised");
+    assert!(live(&b), "the link is still up");
+    assert_eq!(proxy.conns.lock().unwrap().len(), links_before, "no reconnect: the laptop asked on the same link");
+    assert!(!b.model().stale, "a resync is not an outage");
+}
+
+#[test]
+fn a_terminal_is_veiled_while_the_link_is_down_and_clear_again_after() {
+    let office = Office::new();
+    let (id, _pty, _handle) = office.session();
+    let proxy = Proxy::start(office.server.local_addr().unwrap());
+    let (mut b, _me) = connect(&office, Some(proxy.port()), "Laptop");
+    settle(&mut b, "the connection", live);
+    settle(&mut b, "the session list", |b| b.model().sessions.iter().any(|s| s.id == id));
+    b.show_terminals(std::slice::from_ref(&id));
+    let state = |b: &RemoteBackend| b.terminal(&id).map(|t| t.state());
+    settle(&mut b, "the terminal to run", |b| state(b) == Some(SourceState::Running));
+
+    proxy.cut();
+    settle(&mut b, "the terminal to be veiled", |b| state(b) == Some(SourceState::Stale));
+    settle(&mut b, "the link to come back", live);
+    settle(&mut b, "the terminal to run again", |b| state(b) == Some(SourceState::Running));
 }

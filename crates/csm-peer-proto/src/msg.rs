@@ -2,7 +2,7 @@
 //! they travel as binary frames ([`crate::codec::Frame`]) so they cost no base64.
 //!
 //! Direction is by variant: the client sends `Hello`, `Call`, `Term*` (except `TermResized` and
-//! `TermClosed`), `ConsentAnswer`, `Ping`, `Pong` and `Bye`; the server sends the rest. A
+//! `TermClosed`), `ConsentAnswer`, `SnapshotRequest`, `Ping`, `Pong` and `Bye`; the server sends the rest. A
 //! receiver refuses a message that does not belong to its peer's direction ([`Msg::from_client`]).
 //!
 //! Streams: the client picks a `stream` id (any `u32`) in `TermSubscribe`; every later frame of
@@ -126,6 +126,9 @@ pub enum Msg {
     Snapshot { snapshot: Box<Snapshot> },
     /// S to C: what changed since `delta.from`.
     Delta { delta: Delta },
+    /// C to S: send the whole snapshot again. The client sends it when a delta does not apply to its
+    /// mirror; the server answers with a `Snapshot` and the deltas go on from that version.
+    SnapshotRequest,
     /// S to C. `None` is an event this client's version does not know: ignore it.
     Event {
         #[serde(default, deserialize_with = "lenient_event")]
@@ -232,6 +235,7 @@ impl Msg {
                 | Self::TermResync { .. }
                 | Self::TermResize { .. }
                 | Self::ConsentAnswer { .. }
+                | Self::SnapshotRequest
                 | Self::Ping { .. }
                 | Self::Pong { .. }
                 | Self::Bye { .. }
@@ -249,6 +253,7 @@ impl Msg {
                 | Self::TermResync { .. }
                 | Self::TermResize { .. }
                 | Self::ConsentAnswer { .. }
+                | Self::SnapshotRequest
         )
     }
 

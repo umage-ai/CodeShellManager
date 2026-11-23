@@ -650,24 +650,24 @@ pub struct CsmApp {
     pub hooks: RemoteHooks,
 }
 
-/// The effects a remote window has on this laptop, behind closures so a test can record them.
+/// The effects a remote window has on this laptop, behind closures so a test can record them. A
+/// remote window to a paired host is started through the engine (`remote_window_open`, whose
+/// launcher the app wires in), not here.
 #[derive(Clone)]
 pub struct RemoteHooks {
     /// Opens an http or https link in this laptop's browser (checked by the caller).
     pub open_link: Arc<dyn Fn(String) + Send + Sync>,
-    /// Starts a remote window to the paired host with this id. `None`: not available here.
-    pub open_window: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 impl Default for RemoteHooks {
     fn default() -> Self {
-        Self { open_link: csm_engine::real_url_opener(), open_window: None }
+        Self { open_link: csm_engine::real_url_opener() }
     }
 }
 
 impl std::fmt::Debug for RemoteHooks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RemoteHooks").field("open_window", &self.open_window.is_some()).finish_non_exhaustive()
+        f.debug_struct("RemoteHooks").finish_non_exhaustive()
     }
 }
 
@@ -1228,15 +1228,10 @@ impl CsmApp {
                 self.dispatch.submit("peer_client_pair", params);
             }
             Action::ConnectRemoteCancel => self.dispatch.submit("peer_client_pair_cancel", json!({})),
-            Action::ConnectRemoteOpen { host_id, name } => {
+            Action::ConnectRemoteOpen { host_id, name: _ } => {
                 self.ui.overlay = Overlay::None;
-                match self.hooks.open_window.clone() {
-                    Some(open) => {
-                        open(host_id);
-                        self.toast(ctx, format!("Opening {name} in a remote window."));
-                    }
-                    None => self.toast(ctx, "Remote windows are not available in this build."),
-                }
+                // The engine's `remote_window_open` starts the window (and says so, or why not).
+                self.dispatch.submit("remote_window_open", json!({"host_id": host_id}));
             }
             Action::ConnectRemoteForget { host_id, name } => {
                 self.ui.confirm = Some(ConfirmState {

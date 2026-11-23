@@ -74,6 +74,9 @@ pub struct ServerConfig {
     pub max_streams: usize,
     /// How often the snapshot publisher looks for a new version.
     pub snapshot_every: Duration,
+    /// Tests only: the next delta any device is sent has a base that device does not have, which
+    /// makes it ask for the whole snapshot. Nothing else sets it.
+    pub corrupt_next_delta: Arc<AtomicBool>,
 }
 
 impl Default for ServerConfig {
@@ -95,6 +98,7 @@ impl Default for ServerConfig {
             attach_history_lines: 1000,
             max_streams: 16,
             snapshot_every: Duration::from_millis(50),
+            corrupt_next_delta: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -679,6 +683,7 @@ impl Inner {
                 history: self.cfg.attach_history_lines,
                 max_streams: self.cfg.max_streams,
                 snapshot_every: self.cfg.snapshot_every,
+                corrupt_next_delta: self.cfg.corrupt_next_delta.clone(),
             };
             Serving::new(engine.clone(), link.clone(), Who { conn_id, device_id: device.id.clone(), level: device.level }, knobs, self.drivers.clone(), self.audit.clone())
         });

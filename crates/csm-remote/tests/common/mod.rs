@@ -129,10 +129,24 @@ impl Office {
     /// Starts an office in `dir`. A first start enables remote access on `port`; a `restore` start
     /// (after a restart) restores the sessions and resumes the saved choice, which keeps `port`.
     pub fn boot(dir: PathBuf, port: u16, restore: bool) -> Office {
+        Office::boot_with(dir, port, restore, quick())
+    }
+
+    /// An office in a fresh folder whose publisher can be told to send one bad delta (`corrupt`).
+    pub fn new_corruptible(corrupt: Arc<AtomicBool>) -> Office {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ServerConfig { corrupt_next_delta: corrupt, ..quick() };
+        let mut office = Office::boot_with(tmp.path().to_path_buf(), free_port(), false, cfg);
+        office._tmp = Some(tmp);
+        office
+    }
+
+    /// [`Office::boot`] with the server's config given.
+    pub fn boot_with(dir: PathBuf, port: u16, restore: bool, cfg: ServerConfig) -> Office {
         let peer_dir = dir.join("peer");
         let folder = dir.join("work");
         std::fs::create_dir_all(&folder).unwrap();
-        let server = PeerServer::with_config(peer_dir, quick());
+        let server = PeerServer::with_config(peer_dir, cfg);
         let host: Arc<dyn PeerHost> = Arc::new(server.clone());
         let ptys: Arc<Mutex<Vec<Arc<FakePty>>>> = Arc::new(Mutex::new(Vec::new()));
         let list = ptys.clone();

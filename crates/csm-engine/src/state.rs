@@ -32,6 +32,10 @@ pub fn real_pty_factory() -> PtyFactory {
 /// it must hand the work off and return at once.
 pub type UrlOpener = Arc<dyn Fn(String) + Send + Sync>;
 
+/// Starts a remote window to the paired host with this id (`remote_window_open`, the app's own
+/// window only). It must hand the work off and return at once. `Err` is shown to the person.
+pub type RemoteWindowLauncher = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 /// The real URL opener: the default browser, on a worker.
 pub fn real_url_opener() -> UrlOpener {
     Arc::new(crate::tools::open::open_url_detached)
@@ -96,6 +100,9 @@ pub struct StateOptions {
     /// The client side of the peer link (pairing with another CodeShellManager, the host list).
     /// Default: none. Production wires `csm-peer`'s client, which dials out only when the person pairs.
     pub peer_client: Arc<dyn crate::peer_client::PeerClientHost>,
+    /// Starts a remote window to a paired host (`remote_window_open`). Default: refused (tests, the
+    /// demo, the CLI). Production (`apps/codeshell`) starts this executable as `--remote <host-id>`.
+    pub remote_window_launcher: RemoteWindowLauncher,
     /// The update check (`update_check`). Default (tests, the demo): no network, no schedule.
     /// Production: GitHub, once a day ([`crate::UpdateOptions::production`]).
     pub update: crate::tools::update::UpdateOptions,
@@ -180,6 +187,7 @@ impl Default for StateOptions {
             autostart: Autostart::default(),
             peer_host: Arc::new(crate::peer_host::NoPeerHost),
             peer_client: Arc::new(crate::peer_client::NoPeerClient),
+            remote_window_launcher: Arc::new(|_| Err("remote windows are not available in this build".into())),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
             ssh: Arc::new(crate::port_forward::NoSsh),
             update: crate::tools::update::UpdateOptions::default(),

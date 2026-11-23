@@ -25,6 +25,8 @@ struct Rig {
     server: PeerServer,
     client_dir: PathBuf,
     engine: Engine,
+    /// The host ids the window launcher was asked to open.
+    launched: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 fn quick() -> ServerConfig {
@@ -40,7 +42,13 @@ impl Rig {
         let tmp = tempfile::tempdir().unwrap();
         let server = PeerServer::with_config(tmp.path().join("peer"), cfg);
         let client_dir = tmp.path().join("peer-client");
+        let launched = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = launched.clone();
         let options = StateOptions {
+            remote_window_launcher: Arc::new(move |id: &str| {
+                seen.lock().unwrap().push(id.to_owned());
+                Ok(())
+            }),
             restore_on_start: false,
             peer_host: Arc::new(server.clone()) as Arc<dyn PeerHost>,
             peer_client: Arc::new(ClientPeer::new(client_dir.clone())) as Arc<dyn PeerClientHost>,
@@ -49,7 +57,7 @@ impl Rig {
         let (state, _report) = State::load(options);
         let engine = Engine::start(state, vec![]).unwrap();
         server.attach(engine.clone());
-        Rig { _tmp: tmp, server, client_dir, engine }
+        Rig { _tmp: tmp, server, client_dir, engine, launched }
     }
 
     fn ui(&self, tool: &str, params: Value) -> Result<ToolOutput, ToolError> {
@@ -81,7 +89,7 @@ impl Rig {
     }
 
     fn client_status(&self) -> Value {
-        self.cli("peer_client_pair_status", json!({})).unwrap().data
+        self.ui("peer_client_pair_status", json!({})).unwrap().data
     }
 
     /// Polls the laptop's pairing until it reaches `state`; panics with the last status otherwise.
@@ -390,4 +398,68 @@ fn a_host_that_is_not_there_fails_the_pairing_cleanly() {
     // A new pairing may start after a failed one.
     assert!(rig.start_pair(&offer_to_nowhere(), Some("Again")).is_ok());
     rig.wait_client("failed");
+}
+
+#[test]
+fn a_cancel_ends_a_pairing_that_waits_in_the_handshake_at_once() {
+    // A host that takes the connection and never answers: the laptop waits in the handshake. The
+    // cancel must end that wait, not the connect timeout (10 s).
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = PeerAddr::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
+        }
+    });
+    let rig = Rig::new();
+    let link = PeerOffer::new(&addr, &[2; 32], &[3; 16], &[4; 32]).link();
+    rig.start_pair(&link, Some("Silent")).unwrap();
+    rig.wait_client("connecting");
+    std::thread::sleep(Duration::from_millis(300));
+    let asked = Instant::now();
+    rig.ui("peer_client_pair_cancel", json!({})).unwrap();
+    rig.wait_client("cancelled");
+    assert!(asked.elapsed() < Duration::from_secs(3), "the cancel ends the handshake wait: {:?}", asked.elapsed());
+    assert!(rig.hosts().is_empty());
+    // And the next pairing is not blocked by the old one.
+    assert!(rig.start_pair(&offer_to_nowhere(), Some("Next")).is_ok());
+    rig.wait_client("failed");
+}
+
+#[test]
+fn connect_starts_a_remote_window_only_for_a_paired_host_and_only_from_the_app() {
+    let rig = Rig::new();
+    rig.enable();
+    let host = rig.pair_and_allow("Office");
+    assert_eq!(host["state"], "paired");
+    let id = rig.hosts()[0]["host_id"].as_str().unwrap().to_owned();
+
+    // The CLI and a paired device cannot open a window (the app's own window does).
+    assert!(matches!(rig.engine.call(Caller::Cli, "remote_window_open", json!({"host_id": id})), Err(ToolError::Refused(_))));
+    assert!(rig.launched.lock().unwrap().is_empty());
+    // An id that is not a paired host is refused before anything starts.
+    assert!(matches!(rig.ui("remote_window_open", json!({"host_id": "nope"})), Err(ToolError::NotFound(_))));
+    assert!(matches!(rig.ui("remote_window_open", json!({"host_id": "  "})), Err(ToolError::InvalidParams(_))));
+    assert!(rig.launched.lock().unwrap().is_empty());
+    // The app's Connect: the launcher gets the id, and the call says so.
+    let out = rig.ui("remote_window_open", json!({"host_id": id})).unwrap();
+    assert!(out.message.contains("remote window"), "{}", out.message);
+    assert_eq!(rig.launched.lock().unwrap().as_slice(), [id]);
+}
+
+#[test]
+fn the_check_code_is_shown_to_the_app_only() {
+    let rig = Rig::new();
+    rig.enable();
+    let link = rig.offer_link();
+    rig.start_pair(&link, Some("Office")).unwrap();
+    let code = rig.wait_client("check_code")["check_code"].as_str().unwrap().to_owned();
+    assert_eq!(code.len(), 4);
+    // The CLI sees the state, never the digits.
+    let cli = rig.engine.call(Caller::Cli, "peer_client_pair_status", json!({})).unwrap().data;
+    assert_eq!(cli["state"], "check_code");
+    assert!(cli["check_code"].is_null(), "{cli}");
+    rig.ui("peer_client_pair_cancel", json!({})).unwrap();
+    rig.wait_client("cancelled");
 }

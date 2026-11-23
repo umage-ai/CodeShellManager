@@ -21,6 +21,9 @@ pub enum SourceState {
     /// Waiting for the first measured size, or for the process to start.
     Starting,
     Running,
+    /// The source cannot reach its process right now (a remote window with its link down): the
+    /// last screen is shown, veiled.
+    Stale,
     Failed(String),
     Exited(Option<i32>),
 }

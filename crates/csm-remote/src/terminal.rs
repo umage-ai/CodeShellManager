@@ -21,6 +21,8 @@ pub(crate) const STARTING: u8 = 0;
 pub(crate) const RUNNING: u8 = 1;
 /// The host ended the stream (the session is gone, or it was unsubscribed).
 pub(crate) const ENDED: u8 = 2;
+/// The link is down: the emulator shows the last screen the laptop had, veiled until the link is back.
+pub(crate) const STALE: u8 = 3;
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -147,6 +149,7 @@ impl TerminalSource for RemoteTerminal {
     fn state(&self) -> SourceState {
         match self.state.load(Ordering::Acquire) {
             RUNNING => SourceState::Running,
+            STALE => SourceState::Stale,
             ENDED => SourceState::Exited(None),
             _ => SourceState::Starting,
         }

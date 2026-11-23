@@ -273,6 +273,7 @@ fn sample_frames() -> Vec<(&'static str, Frame)> {
         ("term_closed", c(Msg::TermClosed { stream: 1, reason: TermClosedReason::NotRunning })),
         ("consent_card", c(Msg::ConsentCard { request: json!({"id": 7, "tool": "session_send_text"}) })),
         ("consent_answer", c(Msg::ConsentAnswer { request_id: 7, allow: true })),
+        ("snapshot_request", c(Msg::SnapshotRequest)),
         ("consent_ack", c(Msg::ConsentAck { request_id: 7, outcome: ConsentOutcome::AlreadyResolved })),
         ("ping", c(Msg::Ping { n: 9 })),
         ("pong", c(Msg::Pong { n: 9 })),

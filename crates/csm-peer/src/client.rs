@@ -102,13 +102,18 @@ fn link_failed(e: LinkError) -> ClientError {
     }
 }
 
-fn dial(addr: &PeerAddr, timeout: Duration) -> Result<TcpStream, ClientError> {
+/// Connects to the first target that answers. `cancel` is checked before each attempt, so a
+/// cancelled pairing does not start the next one. (One attempt can still take up to `timeout`.)
+fn dial(addr: &PeerAddr, timeout: Duration, cancel: &AtomicBool) -> Result<TcpStream, ClientError> {
     let targets: Vec<SocketAddr> = match &addr.host {
         Host::Ip(ip) => vec![SocketAddr::new(*ip, addr.port)],
         Host::Name(n) => (n.as_str(), addr.port).to_socket_addrs().map_err(|e| ClientError::Connect(e.to_string()))?.collect(),
     };
     let mut last = "no address".to_owned();
     for t in targets {
+        if cancel.load(Ordering::Acquire) {
+            return Err(ClientError::Cancelled);
+        }
         match TcpStream::connect_timeout(&t, timeout) {
             Ok(s) => return Ok(s),
             Err(e) => last = e.to_string(),
@@ -132,23 +137,27 @@ pub struct PairedHost {
 /// handshake is done; the person compares them with the host's screen and clicks Allow there.
 /// Returns when the host answers.
 pub fn pair(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, on_check_code: &mut dyn FnMut(&str)) -> Result<PairedHost, ClientError> {
-    pair_cancellable(offer, me, cfg, &AtomicBool::new(false), on_check_code)
+    pair_cancellable(offer, me, cfg, Arc::new(AtomicBool::new(false)), on_check_code)
 }
 
 /// [`pair`], which gives up with [`ClientError::Cancelled`] once `cancel` is set. A cancel only
 /// stops the wait for the answer (within about a quarter of a second); an answer that has already
 /// arrived is taken. The connection is closed, so the host withdraws the request.
-pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, cancel: &AtomicBool, on_check_code: &mut dyn FnMut(&str)) -> Result<PairedHost, ClientError> {
+pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, cancel: Arc<AtomicBool>, on_check_code: &mut dyn FnMut(&str)) -> Result<PairedHost, ClientError> {
     offer.validate().map_err(ClientError::Offer)?;
     let (addr, host_pub, id, psk) = match (offer.addr(), offer.host_pub(), offer.pairing_id(), offer.psk()) {
         (Some(a), Some(k), Some(i), Some(p)) => (a, k, i, p),
         _ => return Err(ClientError::Offer(OfferError::Format)),
     };
-    let stream = dial(&addr, cfg.connect_timeout)?;
-    let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?;
+    let stream = dial(&addr, cfg.connect_timeout, &cancel)?;
+    // The handshake's reads give up within a quarter of a second of a cancel, not at the deadline.
+    let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?.cancel_on(cancel.clone());
     let deadline = Instant::now() + cfg.connect_timeout;
-    let Established { link, mut reader, hash, .. } =
-        initiate(io, me, &host_pub, &offer.h, Some(&psk), &Preamble::Pairing(id).encode(), deadline).map_err(link_failed)?;
+    let Established { link, mut reader, hash, .. } = initiate(io, me, &host_pub, &offer.h, Some(&psk), &Preamble::Pairing(id).encode(), deadline)
+        .map_err(|e| match e {
+            LinkError::Cancelled => ClientError::Cancelled,
+            other => link_failed(other),
+        })?;
     on_check_code(&check_code(&hash));
     if cancel.load(Ordering::Acquire) {
         link.close();
@@ -218,7 +227,7 @@ impl std::fmt::Debug for Connection {
 /// Connects to a host this device is paired with. The host's key is the one saved at pairing: a
 /// handshake with any other key fails.
 pub fn connect(addr: &PeerAddr, host_public: &[u8; KEY_LEN], me: &Identity, cfg: &ClientConfig) -> Result<Connection, ClientError> {
-    let stream = dial(addr, cfg.connect_timeout)?;
+    let stream = dial(addr, cfg.connect_timeout, &AtomicBool::new(false))?;
     let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?;
     let deadline = Instant::now() + cfg.connect_timeout;
     let Established { link, mut reader, .. } =
