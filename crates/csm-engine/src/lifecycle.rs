@@ -358,6 +358,7 @@ pub(crate) fn save_now(state: &mut State) {
 pub(crate) fn on_exit(state: &mut State) {
     // Remote access closes with the app (the person's choice to have it on stays saved).
     state.options.peer_host.shutdown();
+    state.options.peer_client.shutdown();
     crate::runs::kill_everything(state);
     // Usage stats: what still runs ends now (queued before the index's shutdown, so written).
     let index = state.rt.index.clone();

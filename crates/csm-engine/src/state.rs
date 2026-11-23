@@ -90,6 +90,9 @@ pub struct StateOptions {
     /// that wires nothing (tests, `--clean`, the demo) can never listen. Production wires
     /// `csm-peer`'s host, which is itself off until the person turns it on.
     pub peer_host: Arc<dyn crate::peer_host::PeerHost>,
+    /// The client side of the peer link (pairing with another CodeShellManager, the host list).
+    /// Default: none. Production wires `csm-peer`'s client, which dials out only when the person pairs.
+    pub peer_client: Arc<dyn crate::peer_client::PeerClientHost>,
     /// The update check (`update_check`). Default (tests, the demo): no network, no schedule.
     /// Production: GitHub, once a day ([`crate::UpdateOptions::production`]).
     pub update: crate::tools::update::UpdateOptions,
@@ -173,6 +176,7 @@ impl Default for StateOptions {
             secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
             autostart: Autostart::default(),
             peer_host: Arc::new(crate::peer_host::NoPeerHost),
+            peer_client: Arc::new(crate::peer_client::NoPeerClient),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
             update: crate::tools::update::UpdateOptions::default(),
         }

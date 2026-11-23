@@ -22,14 +22,17 @@
 
 pub mod audit;
 pub mod client;
+pub mod client_host;
 pub mod devices;
 pub mod fsperm;
+pub mod hosts;
 pub mod identity;
 mod link;
 pub mod netif;
 mod serve;
 mod server;
 
+pub use client_host::ClientPeer;
 pub use link::LinkError;
 pub use server::{PeerServer, ServerConfig};
 

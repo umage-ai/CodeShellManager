@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -67,6 +67,8 @@ pub enum ClientError {
     Denied(DenyReason),
     /// The host answered Bye.
     Bye(ByeReason),
+    /// The person cancelled while the host had not answered.
+    Cancelled,
     /// Something else went wrong on the wire.
     Link(String),
     Timeout,
@@ -84,6 +86,7 @@ impl std::fmt::Display for ClientError {
             Self::Bye(r) => write!(f, "the host ended the connection ({r:?})"),
             Self::Link(e) => write!(f, "{e}"),
             Self::Timeout => f.write_str("timed out"),
+            Self::Cancelled => f.write_str("cancelled"),
         }
     }
 }
@@ -129,6 +132,13 @@ pub struct PairedHost {
 /// handshake is done; the person compares them with the host's screen and clicks Allow there.
 /// Returns when the host answers.
 pub fn pair(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, on_check_code: &mut dyn FnMut(&str)) -> Result<PairedHost, ClientError> {
+    pair_cancellable(offer, me, cfg, &AtomicBool::new(false), on_check_code)
+}
+
+/// [`pair`], which gives up with [`ClientError::Cancelled`] once `cancel` is set. A cancel only
+/// stops the wait for the answer (within about a quarter of a second); an answer that has already
+/// arrived is taken. The connection is closed, so the host withdraws the request.
+pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, cancel: &AtomicBool, on_check_code: &mut dyn FnMut(&str)) -> Result<PairedHost, ClientError> {
     offer.validate().map_err(ClientError::Offer)?;
     let (addr, host_pub, id, psk) = match (offer.addr(), offer.host_pub(), offer.pairing_id(), offer.psk()) {
         (Some(a), Some(k), Some(i), Some(p)) => (a, k, i, p),
@@ -140,15 +150,24 @@ pub fn pair(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, on_check_code:
     let Established { link, mut reader, hash, .. } =
         initiate(io, me, &host_pub, &offer.h, Some(&psk), &Preamble::Pairing(id).encode(), deadline).map_err(link_failed)?;
     on_check_code(&check_code(&hash));
+    if cancel.load(Ordering::Acquire) {
+        link.close();
+        return Err(ClientError::Cancelled);
+    }
     let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: cfg.device_name.clone() }.encode().map_err(|_| ClientError::Link("the device name is not allowed".into()))?;
     link.send_plains(&[hello]).map_err(link_failed)?;
     let until = Instant::now() + cfg.pair_wait;
     let answer = loop {
-        if Instant::now() >= until {
-            return Err(ClientError::Timeout);
-        }
         if let Some(plain) = reader.recv_plain(Duration::from_millis(250)).map_err(link_failed)? {
             break PairMsg::decode(&plain).map_err(|e| ClientError::Link(format!("bad answer: {e:?}")))?;
+        }
+        if cancel.load(Ordering::Acquire) {
+            link.close();
+            return Err(ClientError::Cancelled);
+        }
+        if Instant::now() >= until {
+            link.close();
+            return Err(ClientError::Timeout);
         }
     };
     link.close();

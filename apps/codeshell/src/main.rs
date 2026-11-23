@@ -430,7 +430,13 @@ fn main() {
             Some(p) => Arc::new(p.clone()),
             None => Arc::new(csm_engine::NoPeerHost),
         };
-        let options = StateOptions { save_path, clean: args.clean, peer_host, ..StateOptions::production() };
+        // The other side of the same link: pairing with another CSM and its host list. Its files live in
+        // `peer-client` beside the state; it dials out only for a pairing the person starts in the app.
+        let peer_client: Arc<dyn csm_engine::PeerClientHost> = match save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean) {
+            Some(d) => Arc::new(csm_peer::ClientPeer::new(d.join("peer-client"))),
+            None => Arc::new(csm_engine::NoPeerClient),
+        };
+        let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, ..StateOptions::production() };
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);

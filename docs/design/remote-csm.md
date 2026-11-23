@@ -764,3 +764,35 @@ Base sha for this step: `89f07a013b789a40434a9e371b7892ca5bec2854`.
 - **Palette**: the enabling tools open the page instead of running with no parameters; `peer_server_disable` runs as is.
 - **Demo and tests**: `demo::peer::DemoPeerHost` (memory only, off by default, no socket) backs `--demo`, screenshots and the
   kittests (`tests/remote_access_ui.rs`); `demo_engine_with_peer` lets a test drive "the other side".
+
+## P1 step 5: laptop pairing and the host list (`csm-engine`, `csm-peer` client side)
+
+Base sha for this step: `9c20e082108f5e854b04421d93c70c89ec0a83f6`.
+
+- **Engine seam and tools.** `csm_engine::PeerClientHost` (`peer_client.rs`, default `NoPeerClient`, wired through
+  `StateOptions::peer_client`) carries the client's state; the tools are in `tools/peer_client.rs`. `peer_client_pair
+  {link, name?}` is UI only: `tools::precheck` refuses it for `Cli`, `External` and `Peer` before any consent card, as
+  `peer_pair_start`. `peer_client_pair_status` and `peer_hosts_list` are reads; `peer_client_pair_cancel` is allowed for
+  every caller; `peer_host_forget {host_id}` writes files, so MCP callers get a consent card for it.
+- **Client** (`csm-peer`): `client::pair_cancellable` (a cancel stops the wait within a quarter second and closes the
+  link, so the office withdraws the request; an answer that has already arrived is taken). `client_host::ClientPeer`
+  runs one pairing at a time on its own thread and reports one status: `connecting`, `check_code` (the four digits),
+  `paired`, `failed` (with why) or `cancelled`. Files in `<state folder>/peer-client/`: `device.key` (this app's key
+  pair, made on the first pairing, a damaged file is an error and is never replaced) and `hosts.json` (`hosts::HostStore`:
+  host id, name, address, the pinned host key, paired-at, last-connected; every entry is checked on load, a damaged file
+  is an error, at most 64 hosts). The name is optional and defaults to the address.
+- **Nothing listens, and nothing dials without a pairing.** `ClientPeer::new` touches no disk and no network; reading
+  the list creates no folder. The only dial is a pairing the person started in the app.
+- **Forget** removes the host entry and the host key pinned with it. This app's own device key is kept, because other
+  hosts may still know it (a choice to confirm with Allan: "removes the key" could also mean the device key).
+- **Tests.** `crates/csm-peer/tests/pairing_client.rs` (15, real TCP on 127.0.0.1, one engine playing both apps): allow
+  (both screens show the same code, the host is stored, a connection with the stored key works), the default name, deny,
+  a wrong code at the office then the right one, an expired offer, cancel (the office drops the request and a new pairing
+  works), cancel with nothing running, forget (kept across a restart, the device key stays), the precheck refusals for
+  each caller (nothing written), bad input, a fresh laptop writes nothing, a damaged host list and a damaged device key
+  are errors and are left alone, the list survives a restart, and an unreachable host fails cleanly. Unit tests in
+  `hosts.rs` and `client_host.rs`.
+- **Not done.** The laptop's "Connect to another CSM…" dialog and the check-code screen (the palette runs
+  `peer_client_pair` with no parameters, which is refused as a missing link until the dialog exists). Connecting to a
+  stored host from the laptop and `RemoteBackend` (step 6). `last_connected` is stored but nothing sets it yet. The
+  laptop's own device name is the computer's name.
