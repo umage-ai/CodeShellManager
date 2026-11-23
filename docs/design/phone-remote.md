@@ -1,6 +1,6 @@
 # Phone remote: design note
 
-Status: **step 1 built on the host side** (branch `phone/addon`, fix round 6). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, Web Push with RFC 8291 encryption, the three screens (pairing, phones, settings), the `csm/status` line, and the `remote_control` wait for `session.new`, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). Section 18.6 says what the screens do. Section 18.1 lists what is not built (the web app, step 2, and the end-to-end task, step 3) and section 18.2 where the code deviates from this plan.
+Status: **step 1 built on the host side** (branch `phone/addon`, fix round 6) and **step 2 built: the phone web app in `phone/`** (section 18.7). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, Web Push with RFC 8291 encryption, the three screens (pairing, phones, settings), the `csm/status` line, and the `remote_control` wait for `session.new`, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). Section 18.6 says what the screens do. Section 18.1 lists what is not built (the web app, step 2, and the end-to-end task, step 3) and section 18.2 where the code deviates from this plan.
 Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
 facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
@@ -1232,7 +1232,7 @@ Tests (all pass with `cargo +1.97 test`):
 - **The enrolment token has no field and no transport.** The relay connection sends no access token (`Hello.access` is
   `None`), and the settings screen says so. The `addon_secret_*` tools are still not used (18.2). Decision 2 is
   applied: the "Use the umage relay" button is not drawn until the owner gives the URL.
-- **The phone's side of `Event::RemoteControl`** (the web app, step 2) and the web app itself (`phone/`, step 2).
+- **The browser smoke test** (a Playwright pass of the real page against the local relay and add-on, section 16 step 2). The web app's own tests are built (18.7).
 - **The end-to-end task and the docs** (step 3): `cargo xtask phone-e2e`, the `docs/addons.md` section, the dev setup in
   `relay/README.md`, the `xtask ci` check for `phone/`.
 - **The `copy` button** (section 8.4) is not built; the design makes it optional.
@@ -1241,7 +1241,7 @@ Tests (all pass with `cargo +1.97 test`):
   verified. Until the owner decides, the file is what ships.
 - **Rekeying** is tested: `the_channel_rekeys_on_both_ends_at_the_same_count` lowers the interval to 3 (`Host::rekey_every`)
   and runs ten requests in each direction, the snapshot included. The product count is `REKEY_INTERVAL` (10 000).
-- The web app `phone/` (step 2) and the end-to-end task (step 3): not started (see the first bullets above for what is left).
+- The end-to-end task (step 3): not started. The web app is built (18.7); its xtask check is part of step 3.
 
 ### 18.2 Deviations from this plan, with the reason
 
@@ -1398,3 +1398,43 @@ a unit test copies the real shapes:
   screen cutting the channel with `Bye`, the settings round trip through the screen and the file, a refused value kept
   out, a damaged `config.json` kept under its name); `apps/csm-phone/tests/protocol.rs` (the `remote_control` wait: pending
   at once, the command when idle, the failure at 120 s, a third launch refused before `session_new`, no wait without the flag).
+
+### 18.7 The phone web app (step 2)
+
+Built in `phone/` (plain ES modules with JSDoc, no bundler, no runtime dependency; README in `phone/README.md`).
+Screens per 10.5: pair (paste or scan, check code, Allow waits for the PC), sessions (groups, needs you first, offline
+shows the last list), session (operate by level, close with a confirm, busy asks again with force, commands from
+`command.list`), new session (folder and profile from the PC's lists, Remote Control), settings (hide names, notify,
+push on this phone, forget this phone, about). Keys: an X25519 identity whose private half is a non-extractable
+`CryptoKey` in IndexedDB; nothing in localStorage. Service worker: the shell only, never a relay answer or session data.
+CSP: `_headers` (production, decision 11) and `tools/serve.mjs` (dev, loopback only).
+
+The vectors: `phone/test/fixtures/` are copies of `crates/csm-remote-proto/vectors/`. The Rust test `tests/vectors.rs`
+fails when a copy differs from its vector file, and `CSM_UPDATE_VECTORS=1` writes both. `npm test` runs the Noise
+vectors (every handshake byte, the transport, the check code, the 10 000-message rekey), the pairing and message
+vectors, and the rules (the delta and seq rules, the refusals, the pairing and session channels against a fake PC that
+uses the same Noise code), the worker and the notification text, and the dev server. `npm run typecheck` is
+`tsc --noEmit` with `checkJs`, clean.
+
+Deviations, with the reason:
+- **The rekey vector and the schedule.** The vector rekeys after message N of its own rekey run, which starts after a
+  five-message script. The host (`host.rs`, `send_msg`) counts every message in a direction from the first transport
+  message. The phone follows the host: `Transport` rekeys after message N counted that way. The test for the vector
+  replays the script and rekeys by hand at the vector's index, and a separate test pins the product count.
+- **Nonces and order.** A nonce is taken before the first await, and each `Transport` runs its calls one at a time, so
+  two requests in flight cannot share a nonce or reach the PC out of order. A request is sealed and sent in the order it
+  was made.
+- **The confirmation waits for the person.** The phone sends `Confirm` and its name only after the person presses
+  "The digits match" (the PC's Allow is then the second step). The host protocol allows either order; this one matches
+  the screen text of 10.5.
+- **The pairing name** is checked before anything is sent (1 to 64 characters, no control characters), as `PairMsg`.
+- **Session list in memory only.** Offline, the last list received is shown with its time. It is not kept in
+  IndexedDB or the service worker (10.2, "never cache session data").
+- **No Playwright run, no browser X25519 check.** The floor (X25519 in WebCrypto: Chrome and Edge 133+, Firefox 130+,
+  Safari 17+) is the design's figure and is not yet measured in a browser; the smoke test is the next step.
+- **Dependencies.** `typescript` 6.0.3 and `@types/node` 22.20.5, both exact and in `package-lock.json`.
+- **The app's check is not in `xtask ci` yet.** Step 3 adds the `phone/` check (tsc and `npm test`) when `phone/` exists.
+
+Not built: the browser smoke test; the end-to-end harness (step 3); the `xtask` check for `phone/`; the
+store module's IndexedDB path (no test runs IndexedDB in Node; the store's failure path is a plain message, not tested
+against a real refusing browser); the `copy` button (8.4). Every other requirement of section 10 is built.

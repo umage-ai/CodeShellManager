@@ -1,0 +1,441 @@
+{
+  "data": {
+    "command": {
+      "command": "/remote-control",
+      "label": "Continue in the Claude app"
+    },
+    "folder": {
+      "name": "api",
+      "path": "C:/code/api",
+      "pinned": true
+    },
+    "inbox_item": {
+      "id": "i1",
+      "session_id": "s1",
+      "title": "api needs you",
+      "ts": 1760000100
+    },
+    "profile": {
+      "label": "Claude",
+      "name": "claude"
+    },
+    "task_item": {
+      "id": "t1",
+      "state": "in_progress",
+      "title": "Fix login"
+    }
+  },
+  "doc": "app messages (JSON inside Noise transport messages). requests: parsed form is the canonical re-serialisation; level = least level allowed; invalid ones must be refused with that code (and answered with that id when not null)",
+  "error_codes": [
+    "bad_request",
+    "unknown_op",
+    "too_large",
+    "forbidden",
+    "unknown_session",
+    "unknown_task",
+    "folder_not_allowed",
+    "unknown_profile",
+    "command_not_allowed",
+    "busy",
+    "failed",
+    "unavailable",
+    "rate_limited"
+  ],
+  "events": [
+    {
+      "ev": "snapshot",
+      "part": 1,
+      "parts": 1,
+      "seq": 1,
+      "sessions": [
+        {
+          "branch": "main",
+          "folder": "C:/code/api",
+          "id": "s1",
+          "message": "Allow edit?",
+          "name": "api s1",
+          "profile": "claude",
+          "since": 1760000000,
+          "status": "needs_approval"
+        },
+        {
+          "branch": "main",
+          "folder": "C:/code/api",
+          "id": "s2",
+          "name": "api s2",
+          "profile": "claude",
+          "since": 1760000000,
+          "status": "asleep"
+        }
+      ],
+      "unread": 2
+    },
+    {
+      "ev": "delta",
+      "removed": [
+        "s9"
+      ],
+      "seq": 2,
+      "upserts": [
+        {
+          "branch": "main",
+          "folder": "C:/code/api",
+          "id": "s1",
+          "name": "api s1",
+          "profile": "claude",
+          "since": 1760000000,
+          "status": "working"
+        }
+      ]
+    },
+    {
+      "ev": "inbox",
+      "seq": 3,
+      "unread": 0
+    },
+    {
+      "ev": "bye",
+      "reason": "revoked"
+    },
+    {
+      "ev": "remote_control",
+      "ok": true,
+      "session": "s1"
+    },
+    {
+      "code": "busy",
+      "ev": "remote_control",
+      "message": "busy",
+      "ok": false,
+      "session": "s1"
+    }
+  ],
+  "hello_data": {
+    "hide_names": false,
+    "host_name": "WORKPC",
+    "level": "viewer",
+    "max_message_bytes": 49152,
+    "notify": true,
+    "protocol": 1,
+    "push_ready": true,
+    "remote_control": true
+  },
+  "invalid_requests": [
+    {
+      "code": "bad_request",
+      "id": null,
+      "json": "{"
+    },
+    {
+      "code": "bad_request",
+      "id": null,
+      "json": "{\"op\":\"ping\"}"
+    },
+    {
+      "code": "bad_request",
+      "id": null,
+      "json": "{\"id\":\"x\",\"op\":\"ping\"}"
+    },
+    {
+      "code": "unknown_op",
+      "id": 3,
+      "json": "{\"id\":3,\"op\":\"term.write\",\"args\":{\"text\":\"rm -rf\"}}"
+    },
+    {
+      "code": "bad_request",
+      "id": 4,
+      "json": "{\"id\":4,\"op\":\"session.wake\",\"args\":{}}"
+    },
+    {
+      "code": "bad_request",
+      "id": 5,
+      "json": "{\"id\":5,\"op\":\"session.wake\",\"args\":{\"session_id\":\"\"}}"
+    },
+    {
+      "code": "bad_request",
+      "id": 6,
+      "json": "{\"id\":6,\"op\":\"session.command\",\"args\":{\"session_id\":\"s\",\"command\":\"remote-control\"}}"
+    },
+    {
+      "code": "bad_request",
+      "id": 7,
+      "json": "{\"id\":7,\"op\":\"session.command\",\"args\":{\"session_id\":\"s\",\"command\":\"/a b\"}}"
+    },
+    {
+      "code": "bad_request",
+      "id": 8,
+      "json": "{\"id\":8,\"op\":\"push.subscribe\",\"args\":{\"endpoint\":\"http://x\",\"p256dh\":\"k\",\"auth\":\"a\"}}"
+    }
+  ],
+  "max_message_bytes": 49152,
+  "ops": [
+    "hello",
+    "ping",
+    "snapshot",
+    "session.list",
+    "session.get",
+    "inbox.list",
+    "task.list",
+    "task.get",
+    "folder.list",
+    "profile.list",
+    "command.list",
+    "session.wake",
+    "session.sleep",
+    "session.restart",
+    "session.close",
+    "session.new",
+    "session.command",
+    "session.status_clear",
+    "push.subscribe",
+    "push.unsubscribe",
+    "settings.set"
+  ],
+  "push_payloads": {
+    "hidden": {
+      "n": 2,
+      "t": "needs_you"
+    },
+    "with_name": {
+      "n": 2,
+      "s": "api",
+      "sid": "s1",
+      "t": "needs_you"
+    }
+  },
+  "responses": [
+    {
+      "data": {
+        "sessions": [
+          {
+            "branch": "main",
+            "folder": "C:/code/api",
+            "id": "s1",
+            "name": "api s1",
+            "profile": "claude",
+            "since": 1760000000,
+            "status": "idle"
+          }
+        ]
+      },
+      "id": 1,
+      "ok": true
+    },
+    {
+      "error": {
+        "code": "forbidden",
+        "message": "operator level needed"
+      },
+      "id": 2,
+      "ok": false
+    },
+    {
+      "error": {
+        "code": "busy"
+      },
+      "id": 3,
+      "ok": false
+    }
+  ],
+  "statuses": [
+    {
+      "needs_you": false,
+      "status": "working"
+    },
+    {
+      "needs_you": true,
+      "status": "needs_approval"
+    },
+    {
+      "needs_you": true,
+      "status": "needs_question"
+    },
+    {
+      "needs_you": false,
+      "status": "idle"
+    },
+    {
+      "needs_you": false,
+      "status": "done"
+    },
+    {
+      "needs_you": false,
+      "status": "asleep"
+    },
+    {
+      "needs_you": false,
+      "status": "exited"
+    }
+  ],
+  "valid_requests": [
+    {
+      "json": "{\"id\":1,\"op\":\"hello\",\"args\":{\"client\":\"phone 0.1\",\"protocol\":1}}",
+      "level": "viewer",
+      "op": "hello",
+      "parsed": {
+        "args": {
+          "client": "phone 0.1",
+          "protocol": 1
+        },
+        "id": 1,
+        "op": "hello"
+      }
+    },
+    {
+      "json": "{\"id\":2,\"op\":\"ping\"}",
+      "level": "viewer",
+      "op": "ping",
+      "parsed": {
+        "id": 2,
+        "op": "ping"
+      }
+    },
+    {
+      "json": "{\"id\":3,\"op\":\"ping\",\"args\":{}}",
+      "level": "viewer",
+      "op": "ping",
+      "parsed": {
+        "id": 3,
+        "op": "ping"
+      }
+    },
+    {
+      "json": "{\"id\":4,\"op\":\"snapshot\"}",
+      "level": "viewer",
+      "op": "snapshot",
+      "parsed": {
+        "id": 4,
+        "op": "snapshot"
+      }
+    },
+    {
+      "json": "{\"id\":5,\"op\":\"session.get\",\"args\":{\"session_id\":\"s1\"}}",
+      "level": "viewer",
+      "op": "session.get",
+      "parsed": {
+        "args": {
+          "session_id": "s1"
+        },
+        "id": 5,
+        "op": "session.get"
+      }
+    },
+    {
+      "json": "{\"id\":6,\"op\":\"session.wake\",\"args\":{\"session_id\":\"s1\"}}",
+      "level": "operator",
+      "op": "session.wake",
+      "parsed": {
+        "args": {
+          "session_id": "s1"
+        },
+        "id": 6,
+        "op": "session.wake"
+      }
+    },
+    {
+      "json": "{\"id\":7,\"op\":\"session.close\",\"args\":{\"session_id\":\"s1\"}}",
+      "level": "operator",
+      "op": "session.close",
+      "parsed": {
+        "args": {
+          "force": false,
+          "session_id": "s1"
+        },
+        "id": 7,
+        "op": "session.close"
+      }
+    },
+    {
+      "json": "{\"id\":8,\"op\":\"session.close\",\"args\":{\"session_id\":\"s1\",\"force\":true}}",
+      "level": "operator",
+      "op": "session.close",
+      "parsed": {
+        "args": {
+          "force": true,
+          "session_id": "s1"
+        },
+        "id": 8,
+        "op": "session.close"
+      }
+    },
+    {
+      "json": "{\"id\":9,\"op\":\"session.new\",\"args\":{\"folder\":\"C:/code/api\",\"profile\":\"claude\",\"name\":\"fix\",\"remote_control\":true}}",
+      "level": "operator",
+      "op": "session.new",
+      "parsed": {
+        "args": {
+          "folder": "C:/code/api",
+          "name": "fix",
+          "profile": "claude",
+          "remote_control": true
+        },
+        "id": 9,
+        "op": "session.new"
+      }
+    },
+    {
+      "json": "{\"id\":10,\"op\":\"session.new\",\"args\":{\"folder\":\"C:/code/api\",\"profile\":\"claude\",\"command\":\"calc.exe\"}}",
+      "level": "operator",
+      "op": "session.new",
+      "parsed": {
+        "args": {
+          "folder": "C:/code/api",
+          "profile": "claude",
+          "remote_control": false
+        },
+        "id": 10,
+        "op": "session.new"
+      }
+    },
+    {
+      "json": "{\"id\":11,\"op\":\"session.command\",\"args\":{\"session_id\":\"s1\",\"command\":\"/remote-control\"}}",
+      "level": "operator",
+      "op": "session.command",
+      "parsed": {
+        "args": {
+          "command": "/remote-control",
+          "force": false,
+          "session_id": "s1"
+        },
+        "id": 11,
+        "op": "session.command"
+      }
+    },
+    {
+      "json": "{\"id\":12,\"op\":\"push.subscribe\",\"args\":{\"endpoint\":\"https://fcm.googleapis.com/fcm/send/abc\",\"p256dh\":\"BKey\",\"auth\":\"sec\"}}",
+      "level": "viewer",
+      "op": "push.subscribe",
+      "parsed": {
+        "args": {
+          "auth": "sec",
+          "endpoint": "https://fcm.googleapis.com/fcm/send/abc",
+          "p256dh": "BKey"
+        },
+        "id": 12,
+        "op": "push.subscribe"
+      }
+    },
+    {
+      "json": "{\"id\":13,\"op\":\"settings.set\",\"args\":{\"hide_names\":true,\"notify\":true}}",
+      "level": "viewer",
+      "op": "settings.set",
+      "parsed": {
+        "args": {
+          "hide_names": true,
+          "notify": true
+        },
+        "id": 13,
+        "op": "settings.set"
+      }
+    },
+    {
+      "json": "{\"id\":14,\"op\":\"folder.list\"}",
+      "level": "viewer",
+      "op": "folder.list",
+      "parsed": {
+        "id": 14,
+        "op": "folder.list"
+      }
+    }
+  ]
+}

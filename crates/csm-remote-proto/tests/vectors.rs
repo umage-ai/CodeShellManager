@@ -27,16 +27,27 @@ fn path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vectors").join(format!("{name}.json"))
 }
 
+/// The phone web app reads the same vectors from `phone/test/fixtures/` (a copy, so its tests run
+/// with Node alone). The copy is written with the vectors and checked against them here.
+fn phone_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("phone").join("test").join("fixtures").join(format!("{name}.json"))
+}
+
 fn check(name: &str, value: &Value) {
     let text = format!("{}\n", serde_json::to_string_pretty(value).unwrap());
     let p = path(name);
     if std::env::var_os("CSM_UPDATE_VECTORS").is_some() {
         std::fs::write(&p, &text).unwrap();
+        std::fs::create_dir_all(phone_fixture(name).parent().unwrap()).unwrap();
+        std::fs::write(phone_fixture(name), &text).unwrap();
         return;
     }
     let on_disk = std::fs::read_to_string(&p).unwrap_or_else(|_| panic!("{} is missing; run with CSM_UPDATE_VECTORS=1", p.display()));
     let parsed: Value = serde_json::from_str(&on_disk).unwrap();
     assert_eq!(&parsed, value, "{name}.json is out of date; run with CSM_UPDATE_VECTORS=1 and review the diff");
+    // The phone's copy must be byte for byte the vector file, so the JS tests read what Rust checks.
+    let copy = std::fs::read_to_string(phone_fixture(name)).unwrap_or_default();
+    assert_eq!(copy, on_disk, "phone/test/fixtures/{name}.json is not a copy of vectors/{name}.json; run with CSM_UPDATE_VECTORS=1");
 }
 
 fn bytes(seed: u8, n: usize) -> Vec<u8> {
