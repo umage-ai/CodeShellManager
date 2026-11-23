@@ -84,6 +84,9 @@ pub struct StateOptions {
     /// Starting the app at sign-in (`app_autostart_get` / `app_autostart_set`). Default (tests, the
     /// demo): an entry in memory, so nothing real changes. Production: the current user's own.
     pub autostart: Autostart,
+    /// The update check (`update_check`). Default (tests, the demo): no network, no schedule.
+    /// Production: GitHub, once a day ([`crate::UpdateOptions::production`]).
+    pub update: crate::tools::update::UpdateOptions,
 }
 
 /// Where the start-at-sign-in entry lives and the program it should start.
@@ -164,6 +167,7 @@ impl Default for StateOptions {
             secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
             autostart: Autostart::default(),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
+            update: crate::tools::update::UpdateOptions::default(),
         }
     }
 }
@@ -192,6 +196,7 @@ impl StateOptions {
             samples_dir: bundled_samples_dir(),
             secrets: Arc::new(csm_services::secrets::KeyringStore),
             autostart: Autostart::system(),
+            update: crate::tools::update::UpdateOptions::production(),
             ..Self::default()
         }
     }
@@ -290,6 +295,8 @@ pub(crate) struct Runtime {
     /// A process add-on's status override and annotation on sessions it opened, by session id.
     /// Runtime only: cleared when its add-on stops or is disabled.
     pub(crate) plugin_marks: HashMap<String, crate::plugins::PluginMark>,
+    /// The update check: the last result, the schedule, a dismissed notice.
+    pub(crate) update: crate::tools::update::UpdateRt,
 }
 
 /// The engine's state. Create with [`State::default`] (tests), [`State::new`] or [`State::load`].

@@ -191,6 +191,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let now = Instant::now();
     let now_ms = now_ms();
     crate::usage_tail::tick(ctx.state);
+    crate::tools::update::tick(ctx);
 
     // A session nobody is looking at starts at the fallback size.
     let due: Vec<(String, u64)> = ctx

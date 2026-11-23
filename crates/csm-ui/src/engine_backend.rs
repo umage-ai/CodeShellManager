@@ -260,7 +260,7 @@ impl Backend for EngineBackend {
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
                 let effects = port.effects(&call.id);
                 // A broadcast says how many sessions got the text and how many were skipped.
-                let said = ["state_import_wpf", "session_send_text_many"].contains(&call.id.as_str());
+                let said = ["state_import_wpf", "session_send_text_many", "update_check"].contains(&call.id.as_str());
                 let say = said || (call.id != "app_quit" && effects.is_some_and(|e| e.intersects(loud)));
                 if say && !out.message.is_empty() { vec![Notice::Toast(out.message.clone())] } else { vec![] }
             }
@@ -659,6 +659,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         docs: Default::default(),
         open_with: view.open_with.iter().map(open_with_view).collect(),
         pending_open_with: view.pending_open_with.iter().map(open_with_view).collect(),
+        update: view.update.as_ref().map(|u| crate::model::UpdateBadge { version: u.version.clone(), url: u.url.clone() }),
         recently_closed: view
             .recently_closed
             .iter()

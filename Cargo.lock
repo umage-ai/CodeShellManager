@@ -1254,6 +1254,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "csm-legacy-launcher"
+version = "0.0.1"
+dependencies = [
+ "rfd",
+ "tempfile",
+ "winresource",
+]
+
+[[package]]
 name = "csm-mcp"
 version = "0.0.1"
 dependencies = [
@@ -1342,6 +1351,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "two-face",
+ "ureq",
  "winreg",
 ]
 

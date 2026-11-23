@@ -219,6 +219,17 @@ true adds them, 0.x's default becomes the default; false discards). `state_impor
 answer are refused for MCP clients before any consent card (they decide what runs). The table of
 every 0.x setting is in docs/release.md ("0.x settings").
 
+**Update check** (`tools/update.rs`, rules in `csm_core::update`, request in
+`csm_services::update`). ✅ `update_check` (network, no consent card) asks GitHub's releases of
+`umage-ai/CodeShellManager` on a worker (10 s deadline; `releases/latest` for a final build, the
+release list for a pre-release build, which also sees newer pre-releases of its own kind) and
+replies with `current`, `latest`, `update_available`, `url`; it runs whatever `CheckForUpdates`
+says, also under `--clean`. On its own the engine checks 5 s after start and then daily, only with
+`CheckForUpdates` on, in a run that saves state and for a released 2.x build
+(`StateOptions::update`; tests and the demo have no network). A newer release is the snapshot's
+`update` (the title bar's badge, which opens the release page with `open_url`). ✅ `update_dismiss`
+(version?; ui) hides it for that version. Details: docs/release.md ("Update check").
+
 **Terminal profiles and looks** (`tools/look.rs`, parsing in `csm-services::wt_profiles`). ✅ `profile_list` (read; opt-in via the `ImportWindowsTerminalProfiles` setting, refused otherwise) reads Windows Terminal's `settings.json` (Stable, Preview, unpackaged; JSONC) **on a worker thread** and returns each visible profile with its command line, starting folder and `look`. ✅ `session_look_set` (session_id + exactly one of `profile` (name), `look`, `clear: true`; state) stamps a look onto the session; `session_new` takes `look` too. A look is colours (16 + fg/bg/cursor/selection), font size, cursor shape/blink, padding, opacity, retro; it is stored in the WPF app's `Profile*` fields of `state.json` (same formats), survives restart and Recently closed, and stays put if the WT profile changes later. The renderer draws the colours, font size, cursor shape and padding; font face, weight, ligatures, blink, opacity and retro are stored but not drawn.
 
 **Backup, usage, slash commands** (`tools/backup.rs`, `tools/usage.rs`, `tools/slash.rs`).
@@ -502,6 +513,8 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `grant_revoke` | app | state | no | Make a client ask again before calling a tool (or, without `tool`, before calling any tool). |
 | `toolset_enable` | core | read | no | Offer a toolset's tools to this MCP client (core is always on). |
 | `toolset_disable` | core | read | no | Stop offering a toolset's tools to this MCP client. |
+| `update_check` | app | network | no | Ask GitHub now whether a newer CodeShellManager is released (a beta or rc build also sees newer pre-releases of its kind). Returns the running and the newest version and the release page; nothing is downloaded. Runs even with CheckForUpdates off. |
+| `update_dismiss` | app | ui | no | Hide the title bar's "Update available" badge for this version until the app restarts (a newer release shows it again). |
 | `app_autostart_get` | app | read | no | Whether the OS starts CodeShellManager when you sign in, read from the OS itself (the Windows Run key, a macOS LaunchAgent, an XDG autostart entry): enabled, whether Task Manager or the desktop turned it off, and the program it starts. |
 | `app_autostart_set` | app | launch, files | asks | Start CodeShellManager when you sign in (enabled: true) or not (false). Writes or removes the current user's OS entry for this copy of the app, started with --autostart; turning it on also clears a Task Manager disable. |
 | `git_status` | git | launch | asks | A session folder's git state, read now: branch, upstream, ahead/behind, the changed files, which repo it is a worktree of, and its GitHub pages when `origin` (else the tracked remote) is on github.com. |

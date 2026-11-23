@@ -1,0 +1,39 @@
+[package]
+name = "csm-legacy-launcher"
+description = "CodeShellManager.exe: starts codeshell.exe beside it, so 0.x's taskbar pins, shortcuts and scripts keep working"
+build = "build.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "csm_legacy_launcher"
+path = "src/lib.rs"
+
+# The 0.x app's exe name. The stable MSI and zip ship it beside codeshell.exe (docs/release.md).
+[[bin]]
+name = "CodeShellManager"
+path = "src/main.rs"
+
+# Its own main: the test binary doubles as the stand-in codeshell.exe the launcher starts.
+[[test]]
+name = "launch"
+path = "tests/launch.rs"
+harness = false
+
+# The "codeshell.exe is missing" message box (Windows only; already in the tree through
+# craft-dialogs; MIT).
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.17.2", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+# The app's icon and name on the exe, so a taskbar pin to it still looks like the app.
+winresource = "0.1"
