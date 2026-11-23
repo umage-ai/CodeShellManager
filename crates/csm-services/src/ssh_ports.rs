@@ -29,12 +29,14 @@ impl Connection {
         std::iter::once("-G".to_owned()).chain(self.args.iter().cloned()).collect()
     }
 
-    /// `ssh <args> -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L 127.0.0.1:<local>:127.0.0.1:<remote>`:
-    /// a forward that holds the connection open and fails at once rather than prompting.
-    /// The local side is bound to 127.0.0.1 only.
+    /// `ssh <args> -N -o ExitOnForwardFailure=no -o BatchMode=yes -L 127.0.0.1:<local>:127.0.0.1:<remote>`.
+    /// Not `yes`: the session's own config may forward ports the open session already holds
+    /// (NEXUS forwards each agent's web ports), and ssh would then exit at once. Whether this
+    /// forward works is decided by the local port answering (`port_forward::wait_ready`).
+    /// BatchMode: it never prompts. The local side is bound to 127.0.0.1 only.
     pub fn forward_args(&self, local_port: u16, remote_port: u16) -> Vec<String> {
         let mut out = self.args.clone();
-        out.extend(["-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-L"].map(str::to_owned));
+        out.extend(["-N", "-o", "ExitOnForwardFailure=no", "-o", "BatchMode=yes", "-L"].map(str::to_owned));
         out.push(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"));
         out
     }
@@ -282,7 +284,7 @@ mod tests {
         let c = connection_of(&argv("ssh -F cfg agent")).unwrap();
         assert_eq!(
             c.forward_args(3001, 3000),
-            ["-F", "cfg", "agent", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-L", "127.0.0.1:3001:127.0.0.1:3000"]
+            ["-F", "cfg", "agent", "-N", "-o", "ExitOnForwardFailure=no", "-o", "BatchMode=yes", "-L", "127.0.0.1:3001:127.0.0.1:3000"]
         );
     }
 
