@@ -55,7 +55,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "open_url",
             "Open link",
-            "Open an absolute http or https URL in the default browser (a link clicked in a terminal). Other schemes, relative URLs and URLs with spaces or quotes are refused; no shell is involved.",
+            "Open an absolute http or https URL in the default browser (a link clicked in a terminal). With `session_id` of an SSH session, a loopback link (localhost, 127.x, ::1) opens through a port forward to that remote host, or is not opened and reports `needs_forward`. Other schemes, relative URLs and URLs with spaces or quotes are refused; no shell is involved.",
             Effects::LAUNCHES_PROCESS,
             schema_of::<UrlParams>,
             open_url,
@@ -277,6 +277,10 @@ struct SessionParams {
 struct UrlParams {
     /// An absolute `http://` or `https://` URL.
     url: String,
+    /// The SSH session the link came from. A loopback link of an SSH session points at the
+    /// session's remote host, so it opens here only through a port forward (`port_forward.rs`).
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
@@ -328,7 +332,7 @@ fn session_clone(ctx: &Ctx<'_>, id: &str) -> Result<ShellSession, ToolError> {
 }
 
 /// Runs `work` on a worker and answers the call with its result.
-fn on_worker(ctx: &mut Ctx<'_>, name: &str, work: impl FnOnce() -> Reply + Send + 'static) -> Reply {
+pub(crate) fn on_worker(ctx: &mut Ctx<'_>, name: &str, work: impl FnOnce() -> Reply + Send + 'static) -> Reply {
     let reply = ctx.park();
     let spawned = std::thread::Builder::new().name(name.to_owned()).spawn(move || {
         let r = work();
@@ -370,6 +374,15 @@ fn open_url(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         let shown: String = p.url.chars().filter(|c| !c.is_control()).take(200).collect();
         return Err(ToolError::Refused(format!("only absolute http and https links are opened, not `{shown}`")));
     };
+    if let Some(sid) = p.session_id.as_deref() {
+        let i = find(ctx.state, sid)?;
+        let session = ctx.state.app.sessions.get(i).cloned().ok_or_else(|| ToolError::NotFound(format!("no session `{sid}`")))?;
+        if session.kind == SessionKind::Ssh
+            && let Some((_, port)) = csm_services::ssh_ports::loopback_target(&url)
+        {
+            return crate::port_forward::open_loopback(ctx, &session, url, port);
+        }
+    }
     (ctx.state.options.url_opener)(url.clone());
     Ok(ToolOutput::new(format!("Opening {url} in the browser."), json!({"url": url})))
 }

@@ -852,12 +852,26 @@ pub struct UiModel {
     /// A newer release than this build (`update_check`): the title bar's "Update available"
     /// badge, which opens `url` (`open_url`) and can be dismissed (`update_dismiss`).
     pub update: Option<UpdateBadge>,
+    /// The running SSH port forwards (`session_port_forwards`): the Session tab's Ports list.
+    pub port_forwards: Vec<PortForwardRow>,
     /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
     /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).
     pub windows: BTreeMap<String, csm_core::models::WindowSlot>,
     pub recently_closed: Vec<ClosedSessionView>,
     /// The Board's tasks, every project.
     pub tasks: std::sync::Arc<Vec<csm_core::tasks::Task>>,
+}
+
+/// A running SSH port forward, as the Session tab lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PortForwardRow {
+    pub session_id: String,
+    /// The ssh destination (`user@host` or an alias).
+    pub destination: String,
+    pub remote_port: u16,
+    pub local_port: u16,
+    /// The local address (`http://127.0.0.1:<local port>/`): a click opens it.
+    pub url: String,
 }
 
 /// A recently closed session, as the Recent menu lists it.

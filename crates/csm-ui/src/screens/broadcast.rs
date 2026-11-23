@@ -42,6 +42,7 @@ pub fn confirm(model: &UiModel, group: &str, text: &str) -> Action {
     body.push_str(" Sleeping sessions are skipped.");
     let plural = if ready == 1 { "" } else { "s" };
     Action::Confirm(ConfirmState {
+        also: None,
         title: format!("Send to {ready} session{plural}?"),
         body,
         yes_label: format!("Send to {ready}"),

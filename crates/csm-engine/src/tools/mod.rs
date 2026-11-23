@@ -14,6 +14,7 @@ mod layout;
 pub(crate) mod look;
 pub mod open;
 mod platform;
+mod ports;
 mod runs;
 mod screens;
 mod search;
@@ -47,6 +48,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(git::specs());
     v.extend(runs::specs());
     v.extend(open::specs());
+    v.extend(ports::specs());
     v.extend(platform::specs());
     v.extend(look::specs());
     v.extend(themes::specs());

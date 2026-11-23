@@ -33,6 +33,7 @@ pub mod highlight;
 pub mod launch;
 pub mod open_with;
 pub mod plugins;
+pub mod ssh_ports;
 pub mod project_docs;
 pub mod secrets;
 pub mod update;

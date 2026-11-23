@@ -174,6 +174,9 @@ pub struct ConfirmState {
     pub yes_label: String,
     pub no_label: String,
     pub yes: Box<Action>,
+    /// A third answer, between yes and no: its label and the action it runs (the port card's
+    /// "Copy link"). Closes the dialog as the others do.
+    pub also: Option<(String, Box<Action>)>,
 }
 
 /// What an in-place text field edits.
@@ -787,6 +790,7 @@ impl CsmApp {
                     let id = call.params.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
                     let name = self.model.session(&id).map_or_else(|| "the session".to_string(), |s| s.name.clone());
                     self.ui.confirm = Some(ConfirmState {
+        also: None,
                         title: "Restart now?".into(),
                         body: format!(
                             "The change to {name} needs a new process. Restart it now, or keep it running and the change applies at its next start."
@@ -866,9 +870,34 @@ impl CsmApp {
         ctx.request_repaint();
     }
 
+    /// A link to a loopback port of an SSH session's host was not opened (`open_url` answered
+    /// `needs_forward`): the card offers a forward that opens it, or the link to copy.
+    fn port_card(&mut self, data: &Value) {
+        let port = data["remote_port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(0);
+        let destination = data["destination"].as_str().unwrap_or("the SSH host").to_owned();
+        let session = data["session_id"].as_str().unwrap_or_default().to_owned();
+        let link = data["url"].as_str().unwrap_or_default().to_owned();
+        self.ui.confirm = Some(ConfirmState {
+            title: format!("Port {port} is on {destination}, not on this computer"),
+            body: "The link points at that machine's own port, so it would open nothing here. Forward the port over SSH to open it on this computer, or copy the link.".into(),
+            yes_label: "Forward and open".into(),
+            no_label: "Cancel".into(),
+            yes: Box::new(Action::Tool("session_port_forward", json!({"session_id": session, "remote_port": port, "open": true}))),
+            also: Some(("Copy link".into(), Box::new(Action::CopyText(link)))),
+        });
+        self.ui.overlay = Overlay::Confirm;
+    }
+
     /// Replies the screens act on: search results and the notes store's answers.
     fn on_tool_reply(&mut self, call: &Call, reply: &csm_engine::Reply) {
         match call.id.as_str() {
+            "open_url" => {
+                if let Ok(out) = reply
+                    && out.data["needs_forward"].as_bool() == Some(true)
+                {
+                    self.port_card(&out.data);
+                }
+            }
             "search_output" | "search_notes" => {
                 let s = &mut self.ui.search;
                 if call.params["query"].as_str() != s.searched.as_deref() {
@@ -1079,6 +1108,7 @@ impl CsmApp {
             Action::AddonConsent(id) => {
                 if let Some(a) = self.model.addons.iter().find(|a| a.id == id) {
                     self.ui.confirm = Some(ConfirmState {
+        also: None,
                         title: format!("Enable {}?", a.name),
                         body: crate::screens::addons::consent_body(a),
                         yes_label: "Enable".into(),
@@ -1451,7 +1481,7 @@ impl CsmApp {
         let session = params.get("session_id").and_then(Value::as_str).and_then(|s| self.model.session(s)).map(|s| s.name.clone());
         let (title, body) = screens::addon_screen::confirm_text(&name, &id, &tool, &params, session.as_deref());
         let yes = Box::new(Action::ScreenConfirmed { tool, params });
-        self.run(ctx, Action::Confirm(ConfirmState { title, body, yes_label: "Run it".into(), no_label: "Cancel".into(), yes }));
+        self.run(ctx, Action::Confirm(ConfirmState { also: None, title, body, yes_label: "Run it".into(), no_label: "Cancel".into(), yes }));
     }
 
     /// A tool picked in the palette: params are filled from context (the active session, the
