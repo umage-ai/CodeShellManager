@@ -118,3 +118,24 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 - Only the "Full" level exists: a paired laptop can do everything the office's own window can do.
 - Anything that can run `csm` on this laptop can type into the offices it is paired with (see the trust
   note under `csm attach`).
+
+## Through a relay (no VPN)
+
+A direct address needs the laptop to reach the office: the same LAN, or a VPN such as WireGuard. A
+relay removes that need. Both machines connect **outbound** to a relay (`relay/`, `csm-relay`), which
+copies the encrypted frames between them. The relay never holds a key that matters and cannot read a
+frame; the session is the same end-to-end session as on the direct address.
+
+- **Office:** Settings › Remote access › "Also reachable through a relay" gives the relay address
+  (`wss://…`; `ws://` only to this PC) and, when the relay asks for one, the enrolment token. The token
+  and the office's relay secret are kept in the OS keychain, never in a file. The address goes to
+  `peer/relay.json` in the app's data folder. The pairing link then names the relay too. Remote access
+  must be on for the relay to run; turning it off stops the relay.
+- **Laptop:** pairing and connecting try the direct address first, then the relay. The saved office
+  (`hosts.json`) keeps the relay route, so a later connection needs no setting. A laptop paired before
+  the office had a relay keeps working directly; pair again to add the route.
+- **Trust:** the relay sees who connects, when, and how much, never what is said. Revoking a device
+  takes its relay access away at once, as well as its keys.
+- **Limits:** a relay channel carries terminal streams, so its per-channel caps are higher than a
+  phone's (configurable on the relay: `[limits] peer_*`). A relay run by someone else is that
+  operator's to secure; the `Origin` check keeps browsers out of the peer endpoints.

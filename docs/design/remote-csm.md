@@ -1043,3 +1043,49 @@ Base sha for this round: `b16b6c48f57aaa493d627f3e32d4f9cc2d4e1060` (the final P
 **Not done.** A blackholed host still holds the pairing thread for one connect timeout before a cancel is seen (the
 standard library has no cancellable connect). Board previews in a remote window are still blank. The manual WireGuard
 checks are still open.
+
+## P2: remote over the relay (`csm-relay`, `csm-peer`, `csm-remote`, `csm-engine`)
+
+Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
+
+- **Relay: a peer namespace.** Hosts and channels are keyed by `(Kind, host id)`, `Phone` or `Peer`. `/v1/peer-host` and
+  `/v1/peer-client` are the peer endpoints; a phone can never reach a peer host and the reverse (tests in
+  `relay/tests/relay.rs`). Both refuse any `Origin` header. The peer caps (`peer_*` in `[limits]`, defaults in
+  `csm-remote-proto::limits`) are higher than the phone's, with a 1024-frame client queue for bursts.
+- **Transport.** `csm-peer::transport::Stream` is TCP or a relay channel; the Noise link, the server and the client use it
+  unchanged. A relay channel is a byte stream over relay frames (writes cut into 16 KiB frames; the write side is a bounded
+  queue, so a burst waits instead of being dropped). `csm-peer::relay_pump`: `dial` (the laptop's channel, one WebSocket
+  per channel) and `RelayHost` (the office's one WebSocket for all channels, with reconnect backoff 1-2-5-10-30 s, the
+  pairing slot replayed after a reconnect, and the allow list resent on `resync`).
+- **Routing token.** A device's relay token is `sha256("csm-peer relay token" || device public key)`; the relay's allow list holds
+  `token_hash` of it. Both sides derive it from keys they already have, so no extra message exists. Revoking a device resends
+  the allow list, and the relay closes its channel with `revoked`.
+- **Offer.** `PeerOffer` has an optional `r: {url, host_id}`. Old links decode unchanged. `url` is `wss://`, or `ws://` to
+  loopback only (a plain-text relay would carry the enrolment token in the clear). The laptop tries the direct address,
+  then the relay (`client::connect_saved`, `open_route`). `hosts.json` keeps the route (`Host::relay`).
+- **Pairing over the relay.** The offer's pairing id is the relay's pairing slot: `PairingOpen` at `pair_start`, and
+  `PairingClose` after the answer is queued (the relay's queue keeps the answer ahead of the close). Closing at consumption
+  killed the pairing channel in flight; the end-to-end test caught it.
+- **Keys.** The office's relay secret and the enrolment token live in the keychain (`codeshell-peer`, keys `relay.host-secret`
+  and `relay.enrol-token`); the address is in `peer/relay.json`. The relay runs only while remote access is on
+  (`enable` restores it, `disable` stops it).
+- **Engine.** `peer_relay_status` (read-only, App) and `peer_relay_set` (UI-only, like `peer_server_enable`). `PeerHost` gained
+  `relay_set` and `relay_status` with defaults for the no-op host.
+
+**Decisions to confirm (Allan).**
+1. The relay's peer endpoints share the operator's access rules (`[access]`), so one token admits phones and offices alike.
+   A separate peer allow policy is possible if you want it.
+2. Plain `ws://` is accepted only to loopback (tests, a relay on this PC). Anything else must be `wss://`.
+3. The office's relay identity is its own secret (not the phone add-on's), so the two can be set up independently.
+4. `SnapshotRequest`-style versioning is not needed here: the relay carries the existing peer protocol unchanged.
+
+**Not done.**
+- The Settings › Remote access form ("Also reachable through a relay") is not in csm-ui yet. The tools are there
+  (`peer_relay_set` and `peer_relay_status`, UI-only), so the form is a view over them.
+- The pairing link's QR carries the relay only through the offer's JSON, which is already what the QR encodes; no QR
+  test was added.
+- A blackholed relay holds a connect for the standard TCP connect timeout (no cancellable connect in std); the relay
+  dial has no connect timeout beyond the OS's.
+- A slow terminal on the office side blocks the relay socket's reads (one socket for all channels), so one stalled
+  channel slows the others. A per-channel reader would fix it.
+- Manual checks through a real relay (TLS, a public host) are not done; the tests use `ws://127.0.0.1`.

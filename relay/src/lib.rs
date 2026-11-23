@@ -6,7 +6,8 @@
 //! (a host's secret proves a host id; push payloads arrive already encrypted), and never logs ids
 //! at info level or payloads at all.
 //!
-//! Endpoints: `GET /v1/host` (WebSocket), `GET /v1/client` (WebSocket), `GET /v1/vapid`,
+//! Endpoints: `GET /v1/host` and `GET /v1/client` (phones), `GET /v1/peer-host` and
+//! `GET /v1/peer-client` (CSM peers, a separate namespace; no browser may open them), `GET /v1/vapid`,
 //! `GET /healthz`. Nothing else.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -28,13 +29,15 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use csm_remote_proto::codes::RefusalCode;
-pub use state::Relay;
+pub use state::{Kind, Relay};
 
 /// The HTTP/WebSocket router. Serve it with `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(relay: Arc<Relay>) -> Router {
     Router::new()
         .route("/v1/host", get(host_upgrade))
         .route("/v1/client", get(client_upgrade))
+        .route("/v1/peer-host", get(peer_host_upgrade))
+        .route("/v1/peer-client", get(peer_client_upgrade))
         .route("/v1/vapid", get(vapid))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(relay)
@@ -48,7 +51,7 @@ async fn host_upgrade(State(relay): State<Arc<Relay>>, ConnectInfo(peer): Connec
     let ip = ws::client_ip(&relay, peer, forwarded(&headers));
     let guard = relay.admit_ip(ip);
     let max = relay.settings.limits.max_frame_bytes;
-    upgrade.max_message_size(max).max_frame_size(max).on_upgrade(move |socket| ws::host_socket(relay, socket, guard))
+    upgrade.max_message_size(max).max_frame_size(max).on_upgrade(move |socket| ws::host_socket(relay, Kind::Phone, socket, guard))
 }
 
 async fn client_upgrade(State(relay): State<Arc<Relay>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
@@ -58,7 +61,7 @@ async fn client_upgrade(State(relay): State<Arc<Relay>>, ConnectInfo(peer): Conn
     let ip = ws::client_ip(&relay, peer, forwarded(&headers));
     let guard = relay.admit_ip(ip);
     let max = relay.settings.limits.max_frame_bytes;
-    upgrade.max_message_size(max).max_frame_size(max).on_upgrade(move |socket| ws::client_socket(relay, socket, guard))
+    upgrade.max_message_size(max).max_frame_size(max).on_upgrade(move |socket| ws::client_socket(relay, Kind::Phone, socket, guard))
 }
 
 /// Browser clients send `Origin`; when the operator listed origins, only those pass. A client
@@ -121,4 +124,27 @@ pub async fn serve(listener: tokio::net::TcpListener, relay: Arc<Relay>, shutdow
         .await;
     sweeper.abort();
     result
+}
+
+/// `GET /v1/peer-host`: a CSM peer's relay host. Native clients send no `Origin`; a browser always
+/// does, so any `Origin` header is refused. Phones never reach this namespace (see `state::Kind`).
+async fn peer_host_upgrade(State(relay): State<Arc<Relay>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
+    if headers.contains_key(header::ORIGIN) {
+        return (StatusCode::FORBIDDEN, RefusalCode::NotAllowed.as_str()).into_response();
+    }
+    let ip = ws::client_ip(&relay, peer, forwarded(&headers));
+    let guard = relay.admit_ip(ip);
+    let max = relay.settings.limits.max_frame_bytes;
+    upgrade.max_message_size(max).max_frame_size(max).on_upgrade(move |socket| ws::host_socket(relay, Kind::Peer, socket, guard))
+}
+
+/// `GET /v1/peer-client`: a CSM peer's client (the laptop). Refuses any `Origin`, as above.
+async fn peer_client_upgrade(State(relay): State<Arc<Relay>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
+    if headers.contains_key(header::ORIGIN) {
+        return (StatusCode::FORBIDDEN, RefusalCode::NotAllowed.as_str()).into_response();
+    }
+    let ip = ws::client_ip(&relay, peer, forwarded(&headers));
+    let guard = relay.admit_ip(ip);
+    let max = relay.settings.limits.max_frame_bytes;
+    upgrade.max_message_size(max).max_frame_size(max).on_upgrade(move |socket| ws::client_socket(relay, Kind::Peer, socket, guard))
 }

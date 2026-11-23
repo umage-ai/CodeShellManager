@@ -331,6 +331,7 @@ pub fn connect(office: &Office, port: Option<u16>, name: &str) -> (RemoteBackend
     };
     let backend = RemoteBackend::connect(ConnectParams {
         addr,
+        relay: None,
         host_public: host.host_public,
         identity: me.clone(),
         cfg: ClientConfig::new(name),

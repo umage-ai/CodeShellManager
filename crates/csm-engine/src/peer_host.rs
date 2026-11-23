@@ -147,6 +147,17 @@ pub trait PeerHost: Send + Sync {
         Vec::new()
     }
     /// The app is closing: close everything. Not a person's choice, so the saved choice stays.
+    /// Makes this server reachable through a relay (`url` empty turns that off). Returns the relay
+    /// now in use, when there is one. The default host has no relay.
+    fn relay_set(&self, _req: RelaySetRequest, _by: &str) -> Result<Option<RelayInfo>, ToolError> {
+        Err(unavailable())
+    }
+
+    /// The relay in use and what it last said, when there is one.
+    fn relay_status(&self) -> Option<RelayInfo> {
+        None
+    }
+
     fn shutdown(&self);
 }
 
@@ -182,4 +193,22 @@ impl PeerHost for NoPeerHost {
     }
     fn audit(&self, _: AuditEvent) {}
     fn shutdown(&self) {}
+}
+
+/// What the person asked for the relay: its WebSocket base address (`wss://…`, or `ws://` to this
+/// PC) and the operator's enrolment token, when the relay needs one. Empty `url` turns it off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaySetRequest {
+    pub url: String,
+    pub access: Option<String>,
+}
+
+/// The relay this server is reachable through. No secret is in here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelayInfo {
+    pub url: String,
+    /// The relay's id for this server (shown in the pairing link too).
+    pub host_id: String,
+    pub connected: bool,
+    pub last_error: Option<String>,
 }

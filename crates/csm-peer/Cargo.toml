@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 csm-engine = { path = "../csm-engine" }
 csm-peer-proto = { path = "../csm-peer-proto" }
+csm-remote-proto = { path = "../csm-remote-proto" }
+csm-services = { path = "../csm-services" }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,6 +24,8 @@ snow = "0.10"
 getrandom = "0.3"
 # This machine's interfaces and addresses, for the address picker (a read-only system query). MIT OR BSD-3-Clause.
 if-addrs = "0.15"
+# The WebSocket client for the relay (sync; TLS with the bundled webpki roots, the same ones the relay uses). MIT OR Apache-2.0.
+tungstenite = { version = "0.29", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 tempfile = "3"

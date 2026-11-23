@@ -103,7 +103,7 @@ impl Inner {
         let _guard = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
         fsperm::ensure_private_dir(&self.dir).map_err(|e| format!("could not make the folder for remote access: {e}"))?;
         let mut store = HostStore::load(&self.hosts_path()).map_err(|e| e.to_string())?;
-        store.add(name, &paired.address, &paired.host_public, unix_secs()).map(|_| ()).map_err(|e| format!("could not save the host: {e}"))
+        store.add(name, &paired.address, paired.relay.clone(), &paired.host_public, unix_secs()).map(|_| ()).map_err(|e| format!("could not save the host: {e}"))
     }
 
     fn run_pair(&self, offer: PeerOffer, name: String, cancel: Arc<AtomicBool>) {

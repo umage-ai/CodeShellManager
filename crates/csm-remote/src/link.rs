@@ -141,6 +141,8 @@ impl Limiter {
 /// What the worker needs to connect.
 pub struct Params {
     pub addr: PeerAddr,
+    /// The relay route, when the office has one (tried after the direct address).
+    pub relay: Option<csm_peer_proto::pairing::RelayRoute>,
     pub host_public: [u8; KEY_LEN],
     pub identity: Identity,
     pub cfg: ClientConfig,
@@ -239,7 +241,7 @@ impl Worker {
                 self.mark_streams(RUNNING, STALE);
             }
             self.send(Up::State(state));
-            match client::connect(&p.addr, &p.host_public, &p.identity, &p.cfg) {
+            match client::connect_saved(Some(&p.addr), p.relay.as_ref(), &p.host_public, &p.identity, &p.cfg) {
                 Ok(conn) => {
                     attempt = 0;
                     self.send(Up::State(LinkState::Live { host_name: conn.welcome.host_name.clone(), level: conn.welcome.level }));

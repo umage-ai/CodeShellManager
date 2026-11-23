@@ -612,6 +612,10 @@ fn main() {
         // and not for an isolated run with no state folder: they get no host, so nothing can listen.
         let save_path = persist::state_path(args.config_dir.as_deref());
         let peer_server = save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean).map(|d| csm_peer::PeerServer::new(d.join("peer")));
+        if let Some(p) = &peer_server {
+            // The relay secrets live in the same keychain as the add-ons' secrets.
+            p.use_secrets(std::sync::Arc::new(csm_services::secrets::KeyringStore));
+        }
         let peer_host: Arc<dyn csm_engine::PeerHost> = match &peer_server {
             Some(p) => Arc::new(p.clone()),
             None => Arc::new(csm_engine::NoPeerHost),

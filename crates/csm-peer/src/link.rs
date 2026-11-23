@@ -11,7 +11,9 @@
 //! decryption ends the connection, and nothing indexes or unwraps on what the network said.
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::Shutdown;
+
+use crate::transport::Stream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -91,14 +93,14 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Frame reading and writing on a socket, before and while it is being secured.
 pub(crate) struct Io {
-    stream: TcpStream,
+    stream: Stream,
     dec: FrameDecoder,
     /// When set and raised, a handshake read gives up at its next slice (a quarter of a second).
     cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Io {
-    pub(crate) fn new(stream: TcpStream) -> std::io::Result<Self> {
+    pub(crate) fn new(stream: Stream) -> std::io::Result<Self> {
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
         Ok(Self { stream, dec: FrameDecoder::new(), cancel: None })
@@ -151,7 +153,7 @@ impl Io {
 }
 
 struct WriteHalf {
-    stream: TcpStream,
+    stream: Stream,
     rekey: Rekey,
 }
 
@@ -159,7 +161,7 @@ struct WriteHalf {
 pub(crate) struct Link {
     noise: Mutex<snow::TransportState>,
     writer: Mutex<WriteHalf>,
-    shut: TcpStream,
+    shut: Stream,
     closed: AtomicBool,
 }
 

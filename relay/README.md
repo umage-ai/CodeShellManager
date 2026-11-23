@@ -173,3 +173,31 @@ host and channel counts. Host ids, tokens, IP addresses and payloads are never l
 `cargo test -p csm-relay` starts the real relay on an ephemeral port and drives it with in-process
 host and phone WebSocket clients: pairing, routing (byte-identical frames), isolation, revocation,
 host replacement, every refusal code, rate limits, access control, push forwarding and throttles.
+
+## CSM peers (the office and the laptop)
+
+A CodeShellManager office can be reached through the relay too (see `docs/remote-access.md`). Its
+endpoints are a separate namespace from the phones':
+
+| Path | What |
+|---|---|
+| `GET /v1/peer-host` | WebSocket: a CSM office (the same hello as `/v1/host`; hosts are keyed by kind, so a phone never finds an office, nor the reverse) |
+| `GET /v1/peer-client` | WebSocket: a CSM laptop (the same hello as `/v1/client`, with the device's routing token or the pairing id) |
+
+Both refuse any request with an `Origin` header: a browser cannot open them. The relay copies the
+Noise frames of the peer session exactly as it copies a phone's. Its limits for peer channels are
+separate and higher, because terminal output bursts:
+
+| Limit (`[limits]`) | Default |
+|---|---|
+| `peer_max_channels_per_host` | 16 |
+| `peer_frames_per_second_per_channel` | 2000 (burst 2x) |
+| `peer_bytes_per_second_per_channel` | 8 MiB |
+
+A peer host has no push. Its client channels queue 1024 frames (phones: 64), so a short burst waits
+in the queue instead of closing the channel; a sustained rate over the cap still closes it with
+`rate_limited`. The same access rules (`[access]`) admit an office as they admit a phone host.
+
+Tests: `relay/tests/relay.rs` (the namespaces, the Origin refusal, the peer limits, revocation) and
+`relay/tests/peer_relay.rs` (a real office and a real laptop through an in-process relay on 127.0.0.1:
+pairing, connecting, revoking, and the direct address winning when it answers).

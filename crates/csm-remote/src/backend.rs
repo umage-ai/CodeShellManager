@@ -43,6 +43,8 @@ const LOG_MAX: usize = 256;
 /// What a remote window needs to connect to a paired host.
 pub struct ConnectParams {
     pub addr: PeerAddr,
+    /// The relay route, when the office has one (tried after the direct address).
+    pub relay: Option<csm_peer_proto::pairing::RelayRoute>,
     pub host_public: [u8; KEY_LEN],
     pub identity: Identity,
     pub cfg: ClientConfig,
@@ -107,7 +109,7 @@ impl RemoteBackend {
     pub fn connect(p: ConnectParams) -> Result<Self, String> {
         let (up_tx, up_rx) = mpsc::channel();
         let latest = Arc::new(Latest::default());
-        let cmds = link::spawn(Params { addr: p.addr, host_public: p.host_public, identity: p.identity, cfg: p.cfg }, up_tx, latest.clone())
+        let cmds = link::spawn(Params { addr: p.addr, relay: p.relay, host_public: p.host_public, identity: p.identity, cfg: p.cfg }, up_tx, latest.clone())
             .map_err(|e| format!("could not start the connection thread: {e}"))?;
         let seeded = p.overlay.is_some();
         let mut b = RemoteBackend {

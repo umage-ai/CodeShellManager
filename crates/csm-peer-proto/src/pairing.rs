@@ -39,6 +39,10 @@ pub struct PeerOffer {
     pub k: String,
     pub i: String,
     pub p: String,
+    /// The relay this host is also reachable through, when it is set up (optional: older links and
+    /// direct-only hosts have none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r: Option<RelayRoute>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +67,13 @@ impl std::error::Error for OfferError {}
 impl PeerOffer {
     /// An offer for a host listening at `addr`. The host id is derived from the host key.
     pub fn new(addr: &PeerAddr, host_pub: &[u8; KEY_LEN], pairing_id: &[u8; PAIRING_ID_LEN], psk: &[u8; PSK_LEN]) -> Self {
-        Self { v: OFFER_VERSION, a: addr.to_url(), h: host_id(host_pub), k: b64_encode(host_pub), i: b64_encode(pairing_id), p: b64_encode(psk) }
+        Self { v: OFFER_VERSION, a: addr.to_url(), h: host_id(host_pub), k: b64_encode(host_pub), i: b64_encode(pairing_id), p: b64_encode(psk), r: None }
+    }
+
+    /// The same offer, also reachable through `relay`.
+    pub fn with_relay(mut self, relay: RelayRoute) -> Self {
+        self.r = Some(relay);
+        self
     }
 
     /// Checks every field's shape, the address (never unspecified), and that the host id is the
@@ -79,6 +89,9 @@ impl PeerOffer {
         }
         if b64_decode_fixed::<PAIRING_ID_LEN>(&self.i).is_none() {
             return Err(OfferError::Field("i"));
+        }
+        if self.r.as_ref().is_some_and(|r| !r.validate()) {
+            return Err(OfferError::Field("r"));
         }
         if b64_decode_fixed::<PSK_LEN>(&self.p).is_none() {
             return Err(OfferError::Field("p"));
@@ -256,5 +269,32 @@ mod tests {
         assert_eq!(PairMsg::decode(br#"{"t":"accept","device_id":"aaaaaaaaaaaaaaaaaaaaaaaaaa","level":"root"}"#), Err(PairError::Format));
         assert_eq!(PairMsg::decode(&vec![b' '; crate::limits::MAX_PAIR_MESSAGE + 1]), Err(PairError::TooLarge));
         assert_eq!(PairMsg::decode(b"\xff\xfe"), Err(PairError::Format));
+    }
+}
+
+/// Where a relay carries this host: the relay's WebSocket address and the relay's id for the host
+/// (the relay routes by it; the Noise session still uses the host's own key and id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayRoute {
+    pub url: String,
+    pub host_id: String,
+}
+
+/// Whether a relay address may be used: `wss://`, or `ws://` to loopback only (a relay on this PC).
+/// Plain WebSocket anywhere else would carry the relay's access token in the clear.
+pub fn relay_url_allowed(url: &str) -> bool {
+    if let Some(rest) = url.strip_prefix("wss://") {
+        return !rest.is_empty() && !rest.starts_with('/');
+    }
+    let Some(rest) = url.strip_prefix("ws://") else { return false };
+    let host = rest.split(['/', '?']).next().unwrap_or_default();
+    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+impl RelayRoute {
+    /// Checks the address and the relay's host id.
+    pub fn validate(&self) -> bool {
+        relay_url_allowed(&self.url) && self.url.len() <= 512 && is_valid_id(&self.host_id)
     }
 }

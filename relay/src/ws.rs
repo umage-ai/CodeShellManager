@@ -17,7 +17,7 @@ use tokio::time::{Instant, sleep_until, timeout};
 
 use crate::limiter::ChannelLimiter;
 use crate::push::{PushJob, endpoint_allowed};
-use crate::state::{ClientOut, Credential, HOST_QUEUE, HostOut, HostTx, IpGuard, Relay};
+use crate::state::{ClientOut, Credential, HOST_QUEUE, HostOut, HostTx, IpGuard, Kind, Relay};
 
 /// A host that sends this many malformed messages is disconnected.
 const MAX_BAD_MESSAGES: u32 = 10;
@@ -71,7 +71,7 @@ async fn first_text(ws: &mut WebSocket, secs: u64) -> Result<String, Option<Refu
 
 // ---- host socket ---------------------------------------------------------------------------
 
-pub async fn host_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuard, RefusalCode>) {
+pub async fn host_socket(relay: Arc<Relay>, kind: Kind, mut ws: WebSocket, ip: Result<IpGuard, RefusalCode>) {
     let _guard = match ip {
         Ok(g) => g,
         Err(code) => return refuse_host(&mut ws, code).await,
@@ -87,7 +87,7 @@ pub async fn host_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuar
         Err(code) => return refuse_host(&mut ws, code).await,
     };
     let (tx, mut rx) = mpsc::channel::<HostOut>(HOST_QUEUE);
-    let conn = match relay.register_host(&host_id, tx) {
+    let conn = match relay.register_host(kind, &host_id, tx) {
         Ok(c) => c,
         Err(code) => return refuse_host(&mut ws, code).await,
     };
@@ -99,11 +99,11 @@ pub async fn host_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuar
             max_channels: u32::try_from(lim.max_channels_per_host).unwrap_or(u32::MAX),
             max_allow_entries: u32::try_from(lim.max_allow_entries).unwrap_or(u32::MAX),
             max_pairing_secs: lim.max_pairing_secs,
-            push: relay.push.is_some(),
+            push: relay.push.is_some() && kind == Kind::Phone,
         },
     };
     if ws.send(Message::Text(to_text(&welcome).into())).await.is_err() {
-        relay.unregister_host(&host_id, conn);
+        relay.unregister_host(kind, &host_id, conn);
         return;
     }
 
@@ -121,7 +121,7 @@ pub async fn host_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuar
                             close_with(&mut ws, Some(RefusalCode::FrameTooLarge)).await;
                             break;
                         }
-                        let reply = host_control(&relay, &host_id, conn, t.as_str()).await;
+                        let reply = host_control(&relay, kind, &host_id, conn, t.as_str()).await;
                         if let Some(reply) = reply {
                             if matches!(reply, RelayToHost::Error { .. }) {
                                 bad += 1;
@@ -138,8 +138,8 @@ pub async fn host_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuar
                         }
                         match decode_frame(&b) {
                             Ok(f) => match f.kind {
-                                FrameKind::Data => relay.host_data(&host_id, conn, f.channel, f.payload),
-                                FrameKind::Close => relay.host_closes_channel(&host_id, conn, f.channel, parse_close_payload(f.payload)),
+                                FrameKind::Data => relay.host_data(kind, &host_id, conn, f.channel, f.payload),
+                                FrameKind::Close => relay.host_closes_channel(kind, &host_id, conn, f.channel, parse_close_payload(f.payload)),
                                 FrameKind::Open => bad += 1,
                             },
                             Err(FrameError::UnknownKind(_)) => {}
@@ -174,7 +174,7 @@ pub async fn host_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuar
             }
         }
     }
-    relay.unregister_host(&host_id, conn);
+    relay.unregister_host(kind, &host_id, conn);
     tracing::info!(side = "host", "disconnected");
 }
 
@@ -200,7 +200,7 @@ async fn authenticate_host(relay: &Relay, text: &str) -> Result<String, RefusalC
 }
 
 /// One control message from a live host. `Some` = a reply to send.
-async fn host_control(relay: &Arc<Relay>, host_id: &str, conn: u64, text: &str) -> Option<RelayToHost> {
+async fn host_control(relay: &Arc<Relay>, kind: Kind, host_id: &str, conn: u64, text: &str) -> Option<RelayToHost> {
     let err = |code| Some(RelayToHost::Error { code });
     let Ok(msg) = serde_json::from_str::<HostToRelay>(text) else { return err(RefusalCode::BadRequest) };
     match msg {
@@ -213,23 +213,24 @@ async fn host_control(relay: &Arc<Relay>, host_id: &str, conn: u64, text: &str) 
                     None => return err(RefusalCode::BadRequest),
                 }
             }
-            match relay.set_allow(host_id, conn, hashes) {
+            match relay.set_allow(kind, host_id, conn, hashes) {
                 Ok(n) => Some(RelayToHost::AllowOk { count: u32::try_from(n).unwrap_or(u32::MAX) }),
                 Err(code) => err(code),
             }
         }
         HostToRelay::PairingOpen { pairing_id, expires_in } => {
             let Some(id) = b64_decode_fixed::<PAIRING_ID_LEN>(&pairing_id) else { return err(RefusalCode::BadRequest) };
-            match relay.open_slot(host_id, conn, id, expires_in) {
+            match relay.open_slot(kind, host_id, conn, id, expires_in) {
                 Ok(secs) => Some(RelayToHost::PairingOk { expires_in: secs }),
                 Err(code) => err(code),
             }
         }
-        HostToRelay::PairingClose => match relay.close_slot(host_id, conn) {
+        HostToRelay::PairingClose => match relay.close_slot(kind, host_id, conn) {
             Ok(()) => None,
             Err(code) => err(code),
         },
-        HostToRelay::Push(req) => host_push(relay, host_id, conn, req),
+        HostToRelay::Push(req) if kind == Kind::Phone => host_push(relay, host_id, conn, req),
+        HostToRelay::Push(req) => Some(RelayToHost::PushResult { id: req.id, ok: false, status: None, code: Some(RefusalCode::PushRefused) }),
     }
 }
 
@@ -248,7 +249,7 @@ fn host_push(relay: &Arc<Relay>, host_id: &str, conn: u64, req: PushRequest) -> 
     if !relay.push_allowed(host_id, sha256(req.endpoint.as_bytes())) {
         return refuse(RefusalCode::RateLimited);
     }
-    let tx: HostTx = relay.host_tx(host_id, conn)?;
+    let tx: HostTx = relay.host_tx(Kind::Phone, host_id, conn)?;
     let id = req.id;
     let job = PushJob { endpoint: req.endpoint, ttl: req.ttl, urgency: req.urgency, topic: req.topic, body };
     tokio::spawn(async move {
@@ -262,7 +263,7 @@ fn host_push(relay: &Arc<Relay>, host_id: &str, conn: u64, req: PushRequest) -> 
 
 // ---- phone socket ----------------------------------------------------------------------------
 
-pub async fn client_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGuard, RefusalCode>) {
+pub async fn client_socket(relay: Arc<Relay>, kind: Kind, mut ws: WebSocket, ip: Result<IpGuard, RefusalCode>) {
     let _guard = match ip {
         Ok(g) => g,
         Err(code) => return refuse_client(&mut ws, code).await,
@@ -277,20 +278,21 @@ pub async fn client_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGu
         Ok(v) => v,
         Err(code) => return refuse_client(&mut ws, code).await,
     };
-    let opened = match relay.open_channel(&host_id, &cred) {
+    let opened = match relay.open_channel(kind, &host_id, &cred) {
         Ok(o) => o,
         Err(code) => return refuse_client(&mut ws, code).await,
     };
     let (channel, host_tx, mut rx) = (opened.channel, opened.host_tx, opened.rx);
     if ws.send(Message::Text(to_text(&RelayToClient::ready()).into())).await.is_err() {
-        relay.channel_gone(&host_id, channel, None);
+        relay.channel_gone(kind, &host_id, channel, None);
         return;
     }
     tracing::info!(side = "client", "channel open");
 
     let idle = Duration::from_secs(lim.client_idle_secs);
     let mut last = Instant::now();
-    let mut limiter = ChannelLimiter::new(lim.frames_per_second_per_channel, lim.bytes_per_second_per_channel, csm_remote_proto::limits::BURST_FACTOR, std::time::Instant::now());
+    let caps = relay.caps(kind);
+    let mut limiter = ChannelLimiter::new(caps.frames_per_second, caps.bytes_per_second, csm_remote_proto::limits::BURST_FACTOR, std::time::Instant::now());
     let mut why: Option<RefusalCode> = None;
     loop {
         tokio::select! {
@@ -345,7 +347,7 @@ pub async fn client_socket(relay: Arc<Relay>, mut ws: WebSocket, ip: Result<IpGu
             }
         }
     }
-    relay.channel_gone(&host_id, channel, why);
+    relay.channel_gone(kind, &host_id, channel, why);
     tracing::info!(side = "client", "channel closed");
 }
 

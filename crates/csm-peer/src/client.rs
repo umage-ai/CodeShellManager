@@ -17,11 +17,13 @@ use csm_peer_proto::codec::Frame;
 use csm_peer_proto::ids::{KEY_LEN, host_id};
 use csm_peer_proto::msg::{ByeReason, Level, Msg, Outcome, PROTOCOL_VERSION};
 use csm_peer_proto::noise::{Preamble, check_code};
-use csm_peer_proto::pairing::{DenyReason, OfferError, PairMsg, PeerOffer};
+use csm_peer_proto::pairing::{DenyReason, OfferError, PairMsg, PeerOffer, RelayRoute};
 use serde_json::Value;
 
 use crate::TERM_VERSION;
 use crate::identity::Identity;
+use crate::relay_pump::{self, ClientCred, device_relay_token};
+use crate::transport::Stream;
 use crate::link::{Established, Io, Link, LinkError, Reader, initiate};
 
 /// What the client says about itself.
@@ -125,6 +127,8 @@ fn dial(addr: &PeerAddr, timeout: Duration, cancel: &AtomicBool) -> Result<TcpSt
 /// A host this device is now paired with: what to save to connect again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairedHost {
+    /// The relay route, when the host offered one; the direct `address` is tried first.
+    pub relay: Option<RelayRoute>,
     pub address: PeerAddr,
     pub host_id: String,
     pub host_public: [u8; KEY_LEN],
@@ -149,7 +153,7 @@ pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, ca
         (Some(a), Some(k), Some(i), Some(p)) => (a, k, i, p),
         _ => return Err(ClientError::Offer(OfferError::Format)),
     };
-    let stream = dial(&addr, cfg.connect_timeout, &cancel)?;
+    let stream = open_route(Some(&addr), offer.r.as_ref(), ClientCred::Pairing(id), cfg.connect_timeout, &cancel)?;
     // The handshake's reads give up within a quarter of a second of a cancel, not at the deadline.
     let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?.cancel_on(cancel.clone());
     let deadline = Instant::now() + cfg.connect_timeout;
@@ -181,7 +185,7 @@ pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, ca
     };
     link.close();
     match answer {
-        PairMsg::Accept { device_id, level } if device_id == me.device_id() => Ok(PairedHost { address: addr, host_id: host_id(&host_pub), host_public: host_pub, device_id, level }),
+        PairMsg::Accept { device_id, level } if device_id == me.device_id() => Ok(PairedHost { address: addr, host_id: host_id(&host_pub), host_public: host_pub, device_id, level, relay: offer.r.clone() }),
         PairMsg::Accept { .. } => Err(ClientError::Link("the host named another device id".into())),
         PairMsg::Deny { reason } => Err(ClientError::Denied(reason)),
         PairMsg::Hello { .. } => Err(ClientError::Link("unexpected message".into())),
@@ -227,7 +231,14 @@ impl std::fmt::Debug for Connection {
 /// Connects to a host this device is paired with. The host's key is the one saved at pairing: a
 /// handshake with any other key fails.
 pub fn connect(addr: &PeerAddr, host_public: &[u8; KEY_LEN], me: &Identity, cfg: &ClientConfig) -> Result<Connection, ClientError> {
-    let stream = dial(addr, cfg.connect_timeout, &AtomicBool::new(false))?;
+    connect_saved(Some(addr), None, host_public, me, cfg)
+}
+
+/// [`connect`] with a route: the direct address first, then the relay (when the host has one).
+/// Through the relay the device presents its routing token, derived from its own key.
+pub fn connect_saved(direct: Option<&PeerAddr>, relay: Option<&RelayRoute>, host_public: &[u8; KEY_LEN], me: &Identity, cfg: &ClientConfig) -> Result<Connection, ClientError> {
+    let cred = ClientCred::Token(device_relay_token(me.public()));
+    let stream = open_route(direct, relay, cred, cfg.connect_timeout, &AtomicBool::new(false))?;
     let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?;
     let deadline = Instant::now() + cfg.connect_timeout;
     let Established { link, mut reader, .. } =
@@ -483,4 +494,24 @@ impl TermFollower {
             _ => Ok(TermUpdate::Ignored),
         }
     }
+}
+
+/// The stream to a host: the direct address first (when there is one), then the relay. `cancel`
+/// stops the direct attempts; a relay attempt is not interrupted once it starts.
+fn open_route(direct: Option<&PeerAddr>, relay: Option<&RelayRoute>, cred: ClientCred, timeout: Duration, cancel: &AtomicBool) -> Result<Stream, ClientError> {
+    let mut direct_err = None;
+    if let Some(addr) = direct {
+        match dial(addr, timeout, cancel) {
+            Ok(s) => return Ok(Stream::Tcp(s)),
+            Err(ClientError::Cancelled) => return Err(ClientError::Cancelled),
+            Err(e) => direct_err = Some(e),
+        }
+    }
+    if let Some(r) = relay {
+        if cancel.load(Ordering::Acquire) {
+            return Err(ClientError::Cancelled);
+        }
+        return relay_pump::dial(&r.url, &r.host_id, cred).map_err(|e| ClientError::Connect(e.to_string()));
+    }
+    Err(direct_err.unwrap_or_else(|| ClientError::Connect("no route to the host".to_owned())))
 }
