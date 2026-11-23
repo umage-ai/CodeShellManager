@@ -797,6 +797,8 @@ pub mod alpha {
     pub const PICKED: f32 = 0.2;
     /// The warning bands behind the Usage tab's context gauge.
     pub const GAUGE_BAND: f32 = 0.28;
+    /// The remote window's strip behind the office name.
+    pub const REMOTE_BAR: f32 = 0.16;
     /// The Usage dashboard's bar under a row's cost (its share of the costliest row).
     pub const SHARE_BAR: f32 = 0.56;
     /// The empty half of a side-by-side row.

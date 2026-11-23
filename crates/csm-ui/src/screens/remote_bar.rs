@@ -19,7 +19,7 @@ pub fn show(ui: &mut Ui, status: &RemoteStatus) {
     };
     let text_color = if matches!(status.link, RemoteLink::Refused(_)) { t.red } else { t.fg };
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, Tokens::tint(accent, 0.16));
+    p.rect_filled(rect, 0.0, Tokens::tint(accent, theme::alpha::REMOTE_BAR));
     p.hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, accent));
     p.circle_filled(pos2(rect.min.x + space::MD, rect.center().y), space::XS, accent);
     let label = status.bar_text();

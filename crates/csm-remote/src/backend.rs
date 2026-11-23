@@ -384,7 +384,7 @@ impl Backend for RemoteBackend {
     fn remote(&self) -> Option<RemoteStatus> {
         let (name, link) = match &self.link {
             LinkState::Connecting => (self.host_name.clone(), RemoteLink::Connecting),
-            LinkState::Live { host_name, .. } => (host_name.clone(), RemoteLink::Connected),
+            LinkState::Live { .. } => (self.host_name.clone(), RemoteLink::Connected),
             LinkState::Reconnecting { .. } | LinkState::Stopped => (self.host_name.clone(), RemoteLink::Offline),
             LinkState::Refused { reason } => (self.host_name.clone(), RemoteLink::Refused(reason.clone())),
         };

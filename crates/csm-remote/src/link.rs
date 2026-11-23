@@ -98,6 +98,14 @@ fn new_terminal(cols: u16, rows: u16) -> Terminal {
     Terminal::new(GridSize::new(cols, rows), TermConfig::default(), Arc::new(Discard))
 }
 
+/// Feeds office bytes to a mirror emulator and drops the events it queues (titles, bells, OSC 133
+/// marks, OSC 52 copies). Nothing here reads them, and an undrained queue grows for the life of
+/// the stream: a hostile office could fill the laptop's memory with 1 MiB clipboard stores.
+fn feed(t: &mut Terminal, bytes: &[u8]) {
+    t.advance(bytes);
+    drop(t.take_events());
+}
+
 /// One terminal stream: the session, its follower and the emulator the pane draws.
 struct Stream {
     session: String,
@@ -335,13 +343,13 @@ impl Worker {
             Ok(TermUpdate::Attached(a)) => {
                 let mut t = lock(&s.term);
                 *t = new_terminal(a.cols, a.rows);
-                t.advance(&a.vt);
+                feed(&mut t, &a.vt);
                 s.mode.store(t.mode().bits(), Ordering::Release);
                 s.state.store(RUNNING, Ordering::Release);
             }
             Ok(TermUpdate::Data(bytes)) => {
                 let mut t = lock(&s.term);
-                t.advance(&bytes);
+                feed(&mut t, &bytes);
                 s.mode.store(t.mode().bits(), Ordering::Release);
             }
             Ok(TermUpdate::Resized { cols, rows }) => {
@@ -435,6 +443,18 @@ pub(crate) fn refusal_of_error(e: &ClientError) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn office_output_leaves_no_queued_events() {
+        let mut t = new_terminal(80, 24);
+        let mut junk = Vec::new();
+        for i in 0..500 {
+            junk.extend_from_slice(format!("]0;title {i}]133;A").as_bytes());
+        }
+        junk.extend_from_slice(b"]52;c;aGVsbG8=");
+        feed(&mut t, &junk);
+        assert!(t.take_events().is_empty(), "the mirror must not keep events nobody reads");
+    }
 
     #[test]
     fn backoff_follows_the_schedule_and_caps() {

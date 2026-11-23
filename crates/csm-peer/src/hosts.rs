@@ -66,15 +66,14 @@ impl HostStore {
                 if f.v != 1 {
                     return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is a newer version", path.display())));
                 }
-                let before = f.hosts.len();
+                // An unusable, repeated or surplus entry makes the whole file damaged: dropping it here
+                // would rewrite the file without it on the next save.
                 let mut kept: Vec<Host> = Vec::new();
                 for h in f.hosts {
-                    if h.sound() && !kept.iter().any(|k| k.host_id == h.host_id) && kept.len() < MAX_HOSTS {
-                        kept.push(h);
+                    if !h.sound() || kept.iter().any(|k| k.host_id == h.host_id) || kept.len() >= MAX_HOSTS {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is damaged: an entry is unusable or repeated", path.display())));
                     }
-                }
-                if kept.len() != before {
-                    log::warn!("remote hosts: dropped {} unusable entries from {}", before - kept.len(), path.display());
+                    kept.push(h);
                 }
                 kept
             }
@@ -194,9 +193,14 @@ mod tests {
         let bad_addr = Host { host_id: host_id(&[4; 32]), public: b64_encode(&[4; 32]), address: "tcp://0.0.0.0:47300".into(), ..good.clone() };
         let bad_name = Host { host_id: host_id(&[3; 32]), public: b64_encode(&[3; 32]), name: "a\u{202E}b".into(), ..good.clone() };
         let dup = good.clone();
-        std::fs::write(&p, serde_json::to_string(&File { v: 1, hosts: vec![good.clone(), wrong_id, bad_addr, bad_name, dup] }).unwrap()).unwrap();
-        let s = HostStore::load(&p).unwrap();
-        assert_eq!(s.list(), std::slice::from_ref(&good));
+        for bad in [wrong_id, bad_addr, bad_name, dup] {
+            let text = serde_json::to_string(&File { v: 1, hosts: vec![good.clone(), bad] }).unwrap();
+            std::fs::write(&p, &text).unwrap();
+            assert!(HostStore::load(&p).is_err(), "one bad entry makes the file damaged");
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), text, "and it is left alone");
+        }
+        std::fs::write(&p, serde_json::to_string(&File { v: 1, hosts: vec![good.clone()] }).unwrap()).unwrap();
+        assert_eq!(HostStore::load(&p).unwrap().list(), std::slice::from_ref(&good));
         std::fs::write(&p, "not json").unwrap();
         assert!(HostStore::load(&p).is_err(), "a damaged file is an error, not an empty list");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "not json", "and it is left alone");
