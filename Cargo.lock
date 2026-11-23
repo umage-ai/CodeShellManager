@@ -1344,6 +1344,21 @@ dependencies = [
  "serde_json",
  "snow",
  "tempfile",
+ "toml",
+ "tungstenite",
+]
+
+[[package]]
+name = "csm-phone-it"
+version = "0.0.1"
+dependencies = [
+ "csm-phone",
+ "csm-relay",
+ "csm-remote-proto",
+ "serde_json",
+ "snow",
+ "tempfile",
+ "tokio",
  "tungstenite",
 ]
 

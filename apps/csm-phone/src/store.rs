@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 pub const HOST_KEY_FILE: &str = "host-key";
 pub const DEVICES_FILE: &str = "devices.json";
 pub const CONFIG_FILE: &str = "config.json";
+/// The host secret the relay checks (it hashes to the host id). A raw file beside the host key:
+/// not the OS keychain yet (see the design note, section 18.1).
+pub const SECRET_FILE: &str = "relay-secret";
 pub const DEVICES_VERSION: u32 = 1;
 pub const MAX_DEVICES: usize = 64;
 
@@ -95,6 +98,24 @@ pub struct Opened {
     pub devices: Vec<Device>,
     /// True when this run created the key and the empty list.
     pub first_run: bool,
+}
+
+/// The host secret, created on first use. Losing it would change the host id that every paired
+/// phone holds, so a missing secret with paired phones is an error, and nothing is created.
+pub fn host_secret(dir: &Path, phones_paired: bool) -> Result<[u8; 32], StoreError> {
+    let path = dir.join(SECRET_FILE);
+    match fs::read(&path) {
+        Ok(bytes) => <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| StoreError::Damaged { file: SECRET_FILE.into(), detail: "not 32 bytes".into() }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if phones_paired {
+                return Err(StoreError::Damaged { file: SECRET_FILE.into(), detail: "missing but phones are paired".into() });
+            }
+            let secret = random32()?;
+            write_atomic(&path, &secret, true)?;
+            Ok(secret)
+        }
+        Err(e) => Err(StoreError::Io(e.to_string())),
+    }
 }
 
 /// The first-run table of section 5, decided by which of the two files exist.
@@ -220,9 +241,14 @@ fn random32() -> Result<[u8; 32], StoreError> {
     Ok(b)
 }
 
+/// Writes a temporary file, makes it durable (`sync_all` before the rename, so a crash cannot leave
+/// an empty list in place of the old one), then renames it over the target.
 fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> Result<(), StoreError> {
+    use std::io::Write;
     let tmp: PathBuf = path.with_extension("tmp");
-    fs::write(&tmp, bytes).map_err(|e| StoreError::Io(e.to_string()))?;
+    let mut file = fs::File::create(&tmp).map_err(|e| StoreError::Io(e.to_string()))?;
+    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| StoreError::Io(e.to_string()))?;
+    drop(file);
     if private {
         restrict(&tmp);
     }

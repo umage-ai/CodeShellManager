@@ -277,8 +277,11 @@ fn pairing_expiry_denies_the_waiting_phone() {
     assert!(host.slot.is_none());
 }
 
+/// `Noise_IKpsk2` mixes the PSK in at message 2, so the host reads a valid Hello in message 1 with
+/// any PSK. The phone is what refuses (it cannot read message 2), and the host's entry waits for
+/// the person. This test pins both halves; the host cannot refuse earlier (see the design note).
 #[test]
-fn a_wrong_psk_from_a_stale_or_forged_offer_is_refused_before_any_message() {
+fn a_wrong_psk_is_refused_by_the_phone_at_message_two() {
     let dir = tempfile::tempdir().unwrap();
     let (mut host, _calls) = host_in(dir.path(), config());
     host.start_pairing(NOW, "0.1.0").unwrap();
@@ -288,11 +291,16 @@ fn a_wrong_psk_from_a_stale_or_forged_offer_is_refused_before_any_message() {
     host.on_frame(&open_frame(1, OpenInfo::Pairing(pid)), NOW);
     let mut hs = pair_initiator(&phone, &host.host_pub, &host.host_id, &wrong);
     let mut buf = vec![0u8; 1024];
-    let n = hs.write_message(b"{\"t\":\"hello\"}", &mut buf).unwrap();
+    let hello = serde_json::to_vec(&PairMsg::Hello { v: 1, name: "Intruder".into() }).unwrap();
+    let n = hs.write_message(&hello, &mut buf).unwrap();
     let outs = host.on_frame(&data_frame(1, &buf[..n]), NOW);
-    assert_eq!(closed_on(&outs, 1), Some(Some(RefusalCode::BadRequest)));
-    assert!(!outs.iter().any(|o| matches!(o, Out::Pending { .. })), "nothing is shown for a failed handshake");
-    assert!(host.slot.as_ref().is_some_and(|s| !s.active), "the slot is free for the next attempt");
+    let answer = data_on(&outs, 1).first().cloned().expect("the host answers message 1");
+    let mut payload = vec![0u8; 1024];
+    assert!(hs.read_message(&answer, &mut payload).is_err(), "the phone refuses message 2 under the wrong PSK");
+    assert!(outs.iter().any(|o| matches!(o, Out::Pending { .. })), "the entry waits for the person");
+    let outs = host.decide(NOW, None);
+    assert!(!outs.iter().any(|o| matches!(o, Out::DevicesChanged)), "a denied entry saves nothing");
+    assert!(host.devices.is_empty());
 }
 
 #[test]

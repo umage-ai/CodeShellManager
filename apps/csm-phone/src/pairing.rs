@@ -4,8 +4,8 @@
 
 use csm_remote_proto::limits::{MAX_PAIRING_ATTEMPTS, PAIRING_SLOT_MAX_SECS};
 
-/// The open pairing offer, as the add-on holds it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The open pairing offer, as the add-on holds it. Its Debug output never shows the PSK.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Slot {
     pub pairing_id: [u8; 16],
     pub psk: [u8; 32],
@@ -25,6 +25,18 @@ pub enum Refusal {
     WrongSlot,
     Busy,
     AttemptsUsed,
+}
+
+impl std::fmt::Debug for Slot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Slot")
+            .field("pairing_id", &"<16 bytes>")
+            .field("psk", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .field("attempts", &self.attempts)
+            .field("active", &self.active)
+            .finish()
+    }
 }
 
 impl Slot {
@@ -78,6 +90,15 @@ mod tests {
             s.active = false;
         }
         assert_eq!(s.admit(&ID, 100), Err(Refusal::AttemptsUsed), "the sixth attempt is refused");
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_psk() {
+        let s = Slot::open(ID, [0xAB; 32], 100);
+        let text = format!("{s:?}");
+        assert!(!text.contains("171"), "the decimal form of the PSK byte must not appear: {text}");
+        assert!(!text.to_lowercase().contains("abab"), "the hex form must not appear: {text}");
+        assert!(text.contains("redacted"));
     }
 
     #[test]

@@ -28,6 +28,11 @@ use crate::ops::Engine;
 use crate::pairing::{Refusal, Slot};
 use crate::store::{self, Device, Opened};
 
+/// Seconds a channel may take to finish its handshake before the host closes it.
+pub const HANDSHAKE_SECS: u64 = 20;
+/// The longest device name a pairing may carry (the same limit as a saved device).
+const MAX_PAIR_NAME_CHARS: usize = 64;
+
 /// Something the host wants done, for the relay client or the screen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Out {
@@ -35,14 +40,27 @@ pub enum Out {
     Frame(Vec<u8>),
     /// A text control message for the relay.
     Control(HostToRelay),
-    /// A phone is waiting for the person's decision: its check code and the name it sent.
+    /// A phone is waiting for the person's decision: its check code and the name it sent, cleaned
+    /// of control and hidden format characters (the same text is what gets saved).
     Pending { check: String, name: String },
+    /// The offer link for a new pairing (it carries the PSK: the pairing screen only, never a log).
+    PairingUrl(String),
     /// The pairing ended: accepted, denied, expired or stopped.
     PairingEnded,
     /// The device list changed and was saved.
     DevicesChanged,
     /// Something the person should see, in plain words (never a secret).
     Problem(String),
+}
+
+/// One paired device, as shown to the person.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DeviceView {
+    pub device_id: String,
+    pub name: String,
+    pub level: Level,
+    pub paired_at: u64,
+    pub last_seen: u64,
 }
 
 /// Where one channel is in its life.
@@ -106,6 +124,11 @@ impl Host {
             chans: BTreeMap::new(),
             slot: None,
         })
+    }
+
+    /// The paired devices as the screen and the tools show them: no keys and no token hashes.
+    pub fn devices_view(&self) -> Vec<DeviceView> {
+        self.devices.iter().map(|d| DeviceView { device_id: d.device_id.clone(), name: d.name.clone(), level: d.level, paired_at: d.paired_at, last_seen: d.last_seen }).collect()
     }
 
     /// The allow list the relay gets: the hash of each device's routing token.
@@ -223,8 +246,16 @@ impl Host {
         if self.slot.as_ref().is_some_and(|s| s.expired(now)) {
             outs.extend(self.end_pairing(now, Some(DenyReason::Expired)));
         }
+        // A channel that has not finished its handshake in time is closed, so a relay (or a phone)
+        // that opens channels and goes silent cannot hold the channel budget for an hour.
+        let stalled: Vec<u32> = self
+            .chans
+            .iter()
+            .filter(|(_, c)| matches!(c.state, ChanState::DevHandshake { .. } | ChanState::PairHandshake { .. }) && now.saturating_sub(c.opened) >= HANDSHAKE_SECS)
+            .map(|(k, _)| *k)
+            .collect();
         let old: Vec<u32> = self.chans.iter().filter(|(_, c)| now.saturating_sub(c.opened) >= MAX_CHANNEL_SECS).map(|(k, _)| *k).collect();
-        for ch in old {
+        for ch in stalled.into_iter().chain(old) {
             outs.push(self.close(ch, None));
         }
         outs
@@ -382,10 +413,16 @@ impl Host {
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 };
                 let hello = buf.get(..n).and_then(|p| serde_json::from_slice::<PairMsg>(p).ok());
+                // The name is cleaned before the person sees it on the decision screen, so a name
+                // with bidi or zero-width characters cannot disguise itself there. A name that
+                // cleans to nothing is refused.
                 let name = match hello {
-                    Some(PairMsg::Hello { v, name }) if v == csm_remote_proto::PROTOCOL_VERSION && PairMsg::valid_name(&name) => name,
+                    Some(PairMsg::Hello { v, name }) if v == csm_remote_proto::PROTOCOL_VERSION && PairMsg::valid_name(&name) => crate::policy::clean_name(&name, MAX_PAIR_NAME_CHARS),
                     _ => return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]),
                 };
+                if name.is_empty() {
+                    return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
+                }
                 let Some(phone_pub) = hs.get_remote_static().and_then(|r| <[u8; 32]>::try_from(r).ok()) else {
                     return (None, vec![self.close_ch_out(ch, Some(RefusalCode::BadRequest))]);
                 };

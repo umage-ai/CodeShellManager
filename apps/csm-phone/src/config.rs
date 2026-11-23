@@ -132,7 +132,7 @@ impl Config {
         if self.relay.starts_with("wss://") {
             return true;
         }
-        self.relay.starts_with("ws://127.0.0.1") && is_loopback_origin(&self.app_origin)
+        is_loopback_ws_relay(&self.relay) && is_loopback_origin(&self.app_origin)
     }
 
     /// The folder a phone's request names, if it is on the allow list. Exact match on canonical
@@ -150,6 +150,26 @@ impl Config {
     pub fn allowed_commands(&self, pc_commands: &[String]) -> Vec<String> {
         self.commands.iter().filter(|c| pc_commands.iter().any(|p| p == *c)).cloned().collect()
     }
+}
+
+/// `ws://127.0.0.1` with an optional port and an optional path, and nothing else. A userinfo part
+/// (`ws://127.0.0.1@host`) or a longer host name (`ws://127.0.0.1.example`) is refused.
+pub fn is_loopback_ws_relay(relay: &str) -> bool {
+    let Some(rest) = relay.strip_prefix("ws://127.0.0.1") else { return false };
+    let tail = match rest.strip_prefix(':') {
+        Some(after_colon) => {
+            let digits = after_colon.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 || digits > 5 {
+                return false;
+            }
+            match after_colon.get(digits..) {
+                Some(t) => t,
+                None => return false,
+            }
+        }
+        None => rest,
+    };
+    tail.is_empty() || tail.starts_with('/')
 }
 
 fn is_loopback_origin(origin: &str) -> bool {
@@ -180,6 +200,16 @@ mod tests {
         let mut dev = Config { relay: "ws://127.0.0.1:9000".into(), app_origin: "http://127.0.0.1:8080".into(), ..Config::default() };
         dev.validate();
         assert_eq!(dev.relay, "ws://127.0.0.1:9000");
+    }
+
+    #[test]
+    fn only_exact_loopback_relays_pass_the_dev_check() {
+        for ok in ["ws://127.0.0.1", "ws://127.0.0.1:9000", "ws://127.0.0.1:9000/v1/host", "ws://127.0.0.1/"] {
+            assert!(is_loopback_ws_relay(ok), "{ok} should pass");
+        }
+        for bad in ["ws://127.0.0.1.evil.example", "ws://127.0.0.1@evil.example", "ws://127.0.0.1:@evil.example", "ws://127.0.0.1:abc", "ws://127.0.0.1:123456", "ws://127.0.0.10", "ws://127.0.0.1?x=1", "wss://127.0.0.1:9000"] {
+            assert!(!is_loopback_ws_relay(bad), "{bad} must be refused");
+        }
     }
 
     #[test]

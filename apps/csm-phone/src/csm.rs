@@ -37,7 +37,8 @@ pub enum CsmError {
     Unavailable,
 }
 
-pub trait Csm {
+/// `Send`, so the host (which owns one) can move to the thread that runs it.
+pub trait Csm: Send {
     fn call(&self, tool: &str, params: Value) -> Result<Value, CsmError>;
 }
 

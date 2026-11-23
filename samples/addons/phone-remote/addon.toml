@@ -1,0 +1,39 @@
+# First-party add-on: "Phone remote".
+#
+# A program (csm-phone, written in Rust, installed beside codeshell.exe) that CSM starts when you
+# enable this add-on. It is OFF until you enable it, and then it still connects to nothing until
+# you turn on the connection in its settings and set a relay (config.json in its data folder).
+# With the connection on, it dials out to the relay you chose; phones pair with a link or QR code
+# that the pairing screen shows, and talk to this PC end to end encrypted. The relay only forwards
+# encrypted bytes and cannot read them. Phones can view sessions or operate them with a fixed set
+# of actions; they never see a terminal.
+#
+# Pairing, allow or deny, level changes and revoking a phone are person-only: the tools refuse any
+# agent or other add-on. See docs/design/phone-remote.md and apps/csm-phone/.
+#
+# The program is found by name: CSM looks in its own folder (where the installer puts it) and on
+# PATH. Argv elements must be plain tokens, so there is no path with spaces here.
+#
+# Effects are declared honestly:
+#   accesses_network  dials the relay you set (outbound only, TLS when the build has it), and
+#                     nothing else. It never listens on a port.
+#   stores_data       writes only inside its own data folder: the device list (no tokens, only
+#                     their hashes), the host key and secret, and config.json.
+# It runs no other process and opens no file outside its data folder. It reads and acts on
+# sessions only through CSM's own tools, listed in `calls`, so that each call does not ask: the
+# enable dialog shows the list, and a changed manifest turns the add-on off until you approve it
+# again.
+
+[addon]
+id = "phone-remote"
+name = "Phone remote"
+version = "0.1.0"
+description = "Pair a phone with this PC through a relay you choose, end to end encrypted, to view sessions and send the fixed actions. Off until you enable it and set a relay; person-only pairing; the relay never sees plain text."
+api = 1
+kind = "process"
+author = "CodeShellManager"
+
+[process]
+argv = ["csm-phone"]
+effects = ["accesses_network", "stores_data"]
+calls = ["session_list", "session_get", "session_recent", "inbox_list", "task_list", "task_get", "settings_get", "session_new", "session_wake", "session_sleep", "session_restart", "session_close", "session_status_clear", "session_send_command", "screen_open"]
