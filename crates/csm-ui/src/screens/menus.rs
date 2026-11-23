@@ -79,6 +79,11 @@ pub const SIBLING_WORKTREE: &str = "New session in sibling worktree";
 /// Label of the item that opens the Git tab's New worktree input.
 pub const NEW_WORKTREE: &str = "New worktree from this branch…";
 
+/// A session whose folder is on this machine (local or WSL): Open folder, Open with and a shell there apply.
+fn is_local(s: &crate::model::SessionView) -> bool {
+    s.kind != crate::model::Kind::Ssh
+}
+
 /// A session whose folder git can read (local or WSL, on a branch): the worktree items apply.
 fn in_repo(s: &crate::model::SessionView) -> bool {
     s.branch.is_some() && s.kind != crate::model::Kind::Ssh
@@ -249,11 +254,19 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         hinted("play", "Runs", "F5 runs default", insp("runs")),
         item("branch", "Git", insp("git")),
         Entry::Sep,
-        item("folder", "Open folder", tool("open_folder", sid.clone())),
-        open_with(s),
-        hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
-        item("copy", "Copy path", Action::CopyText(s.folder.clone())),
     ];
+    // An SSH (or NEXUS) session's folder is on another machine: nothing here can open it, so
+    // only its path is offered.
+    if is_local(s) {
+        v.extend([
+            item("folder", "Open folder", tool("open_folder", sid.clone())),
+            open_with(s),
+            hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
+            item("copy", "Copy path", Action::CopyText(s.folder.clone())),
+        ]);
+    } else {
+        v.push(item("copy", "Copy remote path", Action::CopyText(s.folder.clone())));
+    }
     v.extend(claude_copy_entries(s));
     v.extend(worktree_entries(model, s));
     v.extend([
@@ -337,10 +350,14 @@ pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
         hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
         item("pencil", "Edit session…", Action::EditSession(id.to_string())),
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
-        item("folder", "Open folder", tool("open_folder", sid.clone())),
-        open_with(s),
         hinted("copy", "Duplicate session", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
     ];
+    if is_local(s) {
+        // After "Move to group", as before; an SSH session's folder is on another machine.
+        let at = v.len() - 1;
+        v.insert(at, open_with(s));
+        v.insert(at, item("folder", "Open folder", tool("open_folder", sid.clone())));
+    }
     v.extend(worktree_entries(model, s));
     v.push(Entry::Sep);
     if s.is_claude() && s.status.is_live() {

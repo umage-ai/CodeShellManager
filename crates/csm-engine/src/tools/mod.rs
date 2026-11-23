@@ -23,6 +23,7 @@ mod slash;
 mod snapshots;
 mod tasks;
 mod themes;
+pub(crate) mod storage;
 pub(crate) mod update;
 mod usage;
 
@@ -40,6 +41,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(bulk::specs());
     v.extend(layout::specs());
     v.extend(app::specs());
+    v.extend(storage::specs());
     v.extend(update::specs());
     v.extend(autostart::specs());
     v.extend(git::specs());

@@ -22,6 +22,7 @@ mod claude;
 mod clean;
 mod db;
 mod handle;
+mod retention;
 mod status_log;
 mod usage;
 
@@ -29,5 +30,6 @@ pub use claude::{ClaudeFile, ClaudeGroupBy, ClaudeIngest, ClaudeLive, ClaudeQual
 pub use clean::{LineCleaner, normalize_folder};
 pub use db::{Db, IndexError, NoteHit, NoteRow, OutputHit, SCHEMA_VERSION, SchemaStats, fts_phrase};
 pub use handle::{Index, IndexLocation, IndexOptions};
+pub use retention::{PruneReport, RetentionPolicy, StorageInfo};
 pub use status_log::{FLICKER_MS, RETENTION_MS, StatusSpan};
 pub use usage::{UsageStat, usage_command_key, utc_day};

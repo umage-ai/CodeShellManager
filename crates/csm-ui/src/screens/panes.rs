@@ -1131,7 +1131,8 @@ pub fn pane(
     let run_label = run.map(|r| r.label.clone()).unwrap_or_default();
     let run_main_w = icon::XS + space::XS + widgets::text_width(ui, &run_label, theme::medium(text::CAPTION)) + space::SM + space::XS + space::XXS;
     let run_caret_w = icon::XS + space::SM;
-    let editor = if o.mini { None } else { s.open_with.iter().find(|e| e.is_default).or(s.open_with.first()) };
+    // No editor for an SSH (or NEXUS) session: its folder is on another machine.
+    let editor = if o.mini || s.kind == Kind::Ssh { None } else { s.open_with.iter().find(|e| e.is_default).or(s.open_with.first()) };
     let free_ctls = !o.mini && !o.maximized && (o.mode == Some(LayoutMode::Free) || o.torn);
     let bar_n = 1 + usize::from(can_max) + usize::from(!o.torn) + usize::from(!o.mini);
     // The name keeps its minimum, and the branch chip its room, before optional controls.

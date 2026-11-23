@@ -291,6 +291,8 @@ pub(crate) struct Runtime {
     /// Each followed local Claude session's main transcript, as the reader last found it
     /// (`claude_reply_get` and `claude_code_block_get` read Claude's replies from it).
     pub(crate) claude_transcripts: HashMap<String, std::path::PathBuf>,
+    /// When the index is pruned next (`tools::storage`); `None` until the first tick.
+    pub(crate) storage_next_prune: Option<Instant>,
     /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,
