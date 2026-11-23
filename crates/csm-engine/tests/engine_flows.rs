@@ -943,3 +943,36 @@ fn a_rerun_session_comes_back_without_a_claude_resume_flag() {
     assert!(!argv.contains("--resume") && !argv.contains("--session-id"), "{argv}");
     assert!(argv.contains("--model x"), "{argv}");
 }
+
+#[test]
+fn each_claude_gets_its_own_quit_wait_and_the_board_gets_the_whole_budget() {
+    // Two wedged Claudes and a per-session wait of 400 ms: each is forced after its own wait
+    // (the first used to eat a shared budget and leave the second none), and the snapshot
+    // carries the whole budget, 2 x (wait + stagger), from the start.
+    let h = H::start(test_app(), |o| o.shutdown_budget = Duration::from_millis(400));
+    let _a = h.session("claude");
+    let _b = h.session("claude");
+    for i in 0..2 {
+        h.pty(i).exit_on_close.store(false, Ordering::SeqCst);
+    }
+    let events = h.engine.subscribe();
+    let done = h.engine.submit(Caller::Ui, "app_quit", json!({}));
+    let snap = h.wait_until("the quit to start", |s| s.quit.is_some());
+    assert_eq!(snap.quit.map(|q| q.total), Some(2), "the total is known at once");
+    let budget = snap.quit_budget_ms.expect("a budget");
+    let settings = h.ok("settings_get", json!({"key": "ClaudeLaunchStaggerMs"})).data["value"].as_u64().unwrap_or(0);
+    assert_eq!(budget, 2 * (400 + settings), "per-session wait plus stagger, times the Claudes");
+    let mut forced = Vec::new();
+    while let Ok(e) = events.recv_timeout(Duration::from_secs(10)) {
+        match e {
+            Event::QuitProgress { phase, elapsed_ms, .. } if phase == "forced" => forced.push(elapsed_ms),
+            Event::QuitReady => break,
+            _ => {}
+        }
+    }
+    assert_eq!(forced.len(), 2, "both wedged Claudes are forced");
+    for ms in &forced {
+        assert!(*ms >= 350, "each waited its own time before being forced: {forced:?}");
+    }
+    done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+}

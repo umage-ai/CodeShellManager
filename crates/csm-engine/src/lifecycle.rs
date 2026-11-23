@@ -441,6 +441,7 @@ fn publish_step(state: &mut State, engine: &Engine) {
         || prev.restore != snap.restore
         || prev.restart != snap.restart
         || prev.quit != snap.quit
+        || prev.quit_budget_ms != snap.quit_budget_ms
         || prev.sessions.iter().map(|s| &s.id).ne(snap.sessions.iter().map(|s| &s.id));
     if layout_changed {
         events.emit(Event::LayoutChanged);
@@ -1270,9 +1271,11 @@ fn relaunch_after_restart(ctx: &mut Ctx<'_>, id: &str, was_focused: bool, then: 
 
 // ── Quit ─────────────────────────────────────────────────────────────────────────────────
 
-/// The quit sequence: Claude sessions are closed one after another and given until the shared
-/// budget (`ClaudeShutdownBudgetMs`) runs out to exit by themselves, with the flat settle between
-/// them; everything else is killed at once. Sessions stay in the state (they restore next time).
+/// The quit sequence: Claude sessions are closed one after another, each given up to
+/// `shutdown_budget` (15 s; busy sessions were measured exiting in 2.3-4.7 s, see
+/// docs/wpf/lessons.md) to exit by itself, with the flat settle between them, so one stuck session
+/// never eats the others' time; everything else is killed at once. The whole budget (per session
+/// times the Claude sessions) is in the snapshot for the board. Sessions stay in the state (they restore next time).
 /// Ends with the state saved and [`Event::QuitReady`].
 pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     if ctx.state.rt.shutting_down {
@@ -1305,15 +1308,19 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     // Claude sessions first in sidebar order is fine; non-Claude ones are instant.
     targets.sort_by_key(|(_, _, claude)| *claude);
     let total = targets.len();
-    ctx.state.rt.quit = Some(Progress { done: 0, total });
-    ctx.state.touch();
-    let budget = ctx.state.options.shutdown_budget;
+    // Claude sessions close one after another, so each gets its own wait (`shutdown_budget`)
+    // and the whole quit may take that times their number, plus the stagger between them.
+    let per_session = ctx.state.options.shutdown_budget;
     let settle = Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0));
+    let claudes = u32::try_from(targets.iter().filter(|(_, _, c)| *c).count()).unwrap_or(u32::MAX);
+    let budget = per_session.saturating_add(settle).saturating_mul(claudes.max(1));
+    ctx.state.rt.quit = Some(Progress { done: 0, total });
+    ctx.state.rt.quit_budget_ms = Some(u64::try_from(budget.as_millis()).unwrap_or(u64::MAX));
+    ctx.state.touch();
     let events = ctx.events.clone();
     let engine = ctx.engine.clone();
     let forced = ctx.state.rt.quit_force.clone();
     let worker = move || {
-        let start = Instant::now();
         let forced_now = || forced.load(std::sync::atomic::Ordering::Acquire);
         for (id, pty, claude) in targets {
             let t0 = Instant::now();
@@ -1329,14 +1336,13 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
             } else {
                 events.emit(Event::QuitProgress { session_id: id.clone(), phase: "closing".into(), elapsed_ms: 0 });
                 pty.close();
-                let remaining = budget.saturating_sub(start.elapsed());
-                let clean = wait_exit_unless(pty.as_ref(), remaining, &forced_now);
+                let clean = wait_exit_unless(pty.as_ref(), per_session, &forced_now);
                 pty.kill();
                 let phase = if clean { "clean" } else { "forced" };
                 log::info!("quit: {id} {phase} exit={}ms", ms(t0));
                 events.emit(Event::QuitProgress { session_id: id, phase: phase.into(), elapsed_ms: ms(t0) });
                 if clean && !forced_now() {
-                    sleep_unless(settle.min(budget.saturating_sub(start.elapsed())), &forced_now);
+                    sleep_unless(settle, &forced_now);
                 }
             }
             engine.post(Box::new(|ctx| {

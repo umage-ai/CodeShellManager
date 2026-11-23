@@ -50,7 +50,9 @@ pub struct StateOptions {
     pub first_size_timeout: Duration,
     /// Size used when no pane reported one. Matches the WPF app's `PseudoTerminal` default.
     pub fallback_size: (u16, u16),
-    /// Total time a quit waits for Claude sessions to exit cleanly (`ClaudeShutdownBudgetMs`).
+    /// How long a quit waits for EACH Claude session to exit cleanly before it is stopped. They
+    /// close one after another, so the whole quit may take this times the number of Claude
+    /// sessions (plus the launch stagger between them); the board shows that total.
     pub shutdown_budget: Duration,
     /// How long a restart (and sleep/close) waits for a Claude process to exit before killing it.
     pub exit_wait: Duration,
@@ -154,7 +156,7 @@ impl Default for StateOptions {
             pty: real_pty_factory(),
             first_size_timeout: Duration::from_millis(1500),
             fallback_size: (220, 50),
-            shutdown_budget: Duration::from_millis(30_000),
+            shutdown_budget: Duration::from_millis(15_000),
             exit_wait: Duration::from_millis(10_000),
             save_debounce: Duration::from_millis(500),
             restore_on_start: true,
@@ -253,6 +255,9 @@ pub(crate) struct Runtime {
     pub restart_cancel: bool,
     pub shutting_down: bool,
     pub quit: Option<Progress>,
+    /// The whole quit's wait budget while it runs: the per-session wait times the Claude
+    /// sessions to close, plus the stagger between them.
+    pub quit_budget_ms: Option<u64>,
     /// `app_quit { force: true }` while a quit runs: skip the remaining Claude exit waits.
     pub quit_force: Arc<std::sync::atomic::AtomicBool>,
     pub waits: Vec<Wait>,
