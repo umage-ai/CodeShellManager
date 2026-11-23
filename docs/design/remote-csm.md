@@ -564,8 +564,8 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 
 ## Decisions (Allan, 2026-11-22)
 
-- Open for P1: per-client themes (`theme_set` is routed "not modelled" for now), and whether
-  `inbox_next` should declare that it can wake a session (it would then ask MCP callers).
+- Themes are per client (Allan, 2026-11-23): the laptop keeps its own theme choice, like layout.
+- `inbox_next` declares that it can wake a session (Allan, 2026-11-23), so MCP callers are asked.
 
 - Q2 pairing: from home via remote desktop, or with the laptop at the office — both fine; no remote-initiated pairing.
 - Q3 consent: cards raised by office agents are answerable from the laptop; first answer wins.
