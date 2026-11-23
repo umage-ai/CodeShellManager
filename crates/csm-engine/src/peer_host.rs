@@ -105,7 +105,7 @@ pub enum AuditEvent {
     /// A non-read call from a paired device.
     PeerCall { device_id: String, device_name: String, tool: String, session: Option<String>, effects: Effects },
     /// A consent card answered from a device (or the app).
-    ConsentAnswered { by: String, request_id: u64, allow: bool },
+    ConsentAnswered { by: String, request_id: u64, allow: bool, answer: &'static str },
 }
 
 /// The peer server, as the engine sees it. Methods run on the engine thread: they may bind a

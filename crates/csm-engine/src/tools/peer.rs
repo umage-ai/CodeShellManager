@@ -74,7 +74,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             title: "Allow or deny a device",
             summary: "Answer the device waiting to pair: `allow` with the four-digit `check_code` both screens show, or deny. Refused for every caller except the app's own window.",
             toolset: Toolset::App,
-            effects: Effects::MUTATES_STATE.union(Effects::ENABLES_EXTENSION),
+            effects: Effects::MUTATES_STATE.union(Effects::ENABLES_EXTENSION).union(Effects::WRITES_FILESYSTEM),
             input_schema: schema_of::<AnswerParams>,
             run: peer_pair_answer,
         },
@@ -92,6 +92,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             title: "Revoke a device",
             summary: "Delete one paired device's key (`id`) or every device's (`all`: true) and close their connections at once. They need a fresh pairing to come back. Allowed for every caller.",
             toolset: Toolset::App,
+            // Not WRITES_FILESYSTEM on purpose (like peer_server_disable): that flag would put an
+            // MCP consent card in front of closing a door, and closing must work for every caller.
+            // The small private-file write is the tool's own bookkeeping, not a user file.
             effects: Effects::MUTATES_STATE.union(Effects::ACCESSES_NETWORK),
             input_schema: schema_of::<RevokeParams>,
             run: peer_device_revoke,

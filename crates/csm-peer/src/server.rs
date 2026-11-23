@@ -111,6 +111,10 @@ struct Slot {
 }
 
 impl Slot {
+    /// At Hello time the attempt was already counted when the selector was routed.
+    fn open(&self) -> bool {
+        !self.consumed && Instant::now() < self.expires
+    }
     fn usable(&self) -> bool {
         !self.consumed && self.attempts < MAX_PAIR_ATTEMPTS && Instant::now() < self.expires
     }
@@ -518,7 +522,7 @@ impl Inner {
         let code = check_code(&hash);
         {
             let mut st = self.lock();
-            let slot_ok = st.generation == gen_ && st.pending.is_none() && st.slot.as_ref().is_some_and(|s| s.usable());
+            let slot_ok = st.generation == gen_ && st.pending.is_none() && st.slot.as_ref().is_some_and(|s| s.open() && s.psk == *psk);
             if !slot_ok {
                 return Err(LinkError::Refused);
             }
@@ -533,7 +537,7 @@ impl Inner {
         self.audit.record("pair_requested", json!({"device": clean(&name), "from": peer.to_string()}));
         // Wait for the person, and notice if the other side leaves.
         let give_up = Instant::now() + self.cfg.pending_ttl;
-        let (answer, reason) = loop {
+        let (mut answer, mut reason) = loop {
             match rx.try_recv() {
                 Ok(a) => break (a, DenyReason::Denied),
                 Err(TryRecvError::Disconnected) => break (Answer::Deny, DenyReason::Denied),
@@ -553,6 +557,15 @@ impl Inner {
             }
         };
         self.clear_pending(&remote_static);
+        // An Allow can land between the last poll and the give-up check. pair_answer decides under
+        // the lock that clear_pending just took, so a device that was added is honoured here.
+        if matches!(answer, Answer::Deny)
+            && matches!(reason, DenyReason::Expired)
+            && let Ok(a) = rx.try_recv()
+        {
+            answer = a;
+            reason = DenyReason::Denied;
+        }
         let reply = match answer {
             Answer::Allow => {
                 let id = csm_peer_proto::ids::device_id(&remote_static);
@@ -725,6 +738,7 @@ impl Inner {
         };
         if self.in_flight.fetch_add(1, Ordering::AcqRel) >= self.cfg.max_in_flight_calls {
             self.in_flight.fetch_sub(1, Ordering::AcqRel);
+            self.audit.record("refused", json!({"why": "too many calls at once", "device_id": device.id, "tool": clean(&tool)}));
             let _ = link.send_msg(Msg::Reply { id, outcome: err_outcome(ErrorKind::Refused, "too many calls at once; wait for one to finish") });
             return;
         }
@@ -732,6 +746,10 @@ impl Inner {
         let counter = InFlight(self.in_flight.clone());
         let spawned = std::thread::Builder::new().name("csm-peer-call".into()).spawn(move || {
             let _counter = counter;
+            // A revoke or turn-off closed the link while this call waited to start: it does not run.
+            if link.is_closed() {
+                return;
+            }
             let outcome = match engine.call(caller, &tool, params) {
                 Ok(o) => Outcome::Ok { message: o.message, data: o.data },
                 Err(e) => outcome_of(&e),
@@ -747,6 +765,9 @@ impl Inner {
         let Some(engine) = self.engine.get().cloned() else { return };
         let (link, caller) = (link.clone(), Self::caller(device));
         let spawned = std::thread::Builder::new().name("csm-peer-consent".into()).spawn(move || {
+            if link.is_closed() {
+                return;
+            }
             let answer = if allow { "allow_once" } else { "deny" };
             let outcome = match engine.call(caller, "consent_answer", json!({"request_id": request_id, "answer": answer})) {
                 Ok(_) => ConsentOutcome::Applied,
@@ -904,6 +925,9 @@ impl PeerHost for PeerServer {
         };
         if let Err(e) = i.try_listen(gen_) {
             i.lock().choice = None;
+            // The old listener is gone, so the saved choice must say so: what the person sees is what starts up.
+            i.save_choice(false, None, false);
+            i.audit.record("enable_failed", json!({"by": clean(by), "address": req.addr.to_string(), "old_choice_cleared": true}));
             return Err(ToolError::Failed(format!("{e}. Check that the address belongs to this machine (for a WireGuard address, that the tunnel is up).")));
         }
         let bound = i.lock().run.as_ref().map(|r| r.addr);
@@ -1073,7 +1097,7 @@ impl PeerHost for PeerServer {
                 "call",
                 json!({"device_id": device_id, "device": clean(&device_name), "tool": clean(&tool), "session": session.as_deref().map(clean), "effects": format!("{effects:?}")}),
             ),
-            AuditEvent::ConsentAnswered { by, request_id, allow } => a.record("consent_answered", json!({"by": clean(&by), "request_id": request_id, "allow": allow})),
+            AuditEvent::ConsentAnswered { by, request_id, allow, answer } => a.record("consent_answered", json!({"by": clean(&by), "request_id": request_id, "allow": allow, "answer": answer})),
         }
     }
 

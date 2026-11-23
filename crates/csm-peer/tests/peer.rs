@@ -10,7 +10,6 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use csm_core::models::AppState;
 use csm_engine::{Caller, Engine, PeerHost, State, StateOptions};
 use csm_peer::client::{self, ClientConfig, ClientError, Incoming, PairedHost};
 use csm_peer::identity::Identity;
@@ -23,6 +22,7 @@ use csm_peer_proto::pairing::{DenyReason, PeerOffer};
 use serde_json::{Value, json};
 
 struct Rig {
+    loaded: Option<csm_core::state::LoadSource>,
     _tmp: tempfile::TempDir,
     peer_dir: PathBuf,
     server: PeerServer,
@@ -49,10 +49,11 @@ impl Rig {
         let host: Arc<dyn PeerHost> = Arc::new(server.clone());
         let mut options = StateOptions { restore_on_start: false, peer_host: host, ..StateOptions::default() };
         tweak(&mut options);
-        let state = State::new(AppState::default(), options);
+        // The way apps/codeshell builds it: a state file is really read when there is one.
+        let (state, report) = State::load(options);
         let engine = Engine::start(state, vec![]).unwrap();
         server.attach(engine.clone());
-        Rig { _tmp: tmp, peer_dir, server, engine }
+        Rig { _tmp: tmp, peer_dir, server, engine, loaded: report.source }
     }
 
     fn ui(&self, tool: &str, params: Value) -> Result<csm_engine::ToolOutput, csm_engine::ToolError> {
@@ -201,7 +202,7 @@ fn a_fresh_state_binds_nothing() {
 fn an_upgraded_state_file_with_remote_access_keys_binds_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let port = free_port();
-    let mut state = json!({"Sessions": [], "Groups": [], "Settings": {"Theme": "light"}});
+    let mut state = json!({"Sessions": [{"Id": "u1", "Name": "upgraded", "Command": "pwsh", "WorkingFolder": "C:\\src"}], "Groups": [], "Settings": {"Theme": "light"}});
     for (k, v) in hostile_keys(port).as_object().unwrap() {
         state[k] = v.clone();
         state["Settings"][k] = v.clone();
@@ -209,6 +210,8 @@ fn an_upgraded_state_file_with_remote_access_keys_binds_nothing() {
     let path = tmp.path().join("state.json");
     std::fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
     let rig = Rig::start(quick(), |o| o.save_path = Some(path.clone()));
+    assert!(matches!(rig.loaded, Some(csm_core::state::LoadSource::Primary)), "the file was read: {:?}", rig.loaded);
+    assert!(rig.engine.view().sessions.iter().any(|s| s.id == "u1"), "the hostile file really was loaded");
     assert_off(&rig, port);
 }
 
@@ -888,4 +891,52 @@ fn a_card_already_waiting_is_shown_to_a_device_that_connects_later() {
     assert!(result.recv_timeout(Duration::from_secs(10)).unwrap().is_err());
     conn.answer_consent(id, true).unwrap();
     assert_eq!(inbox.ack(), (id, ConsentOutcome::AlreadyResolved));
+}
+
+// ---- fix round 1 ----------------------------------------------------------------------
+
+#[test]
+fn two_bad_tries_then_the_real_pairing_still_works_on_the_third() {
+    let rig = Rig::new();
+    rig.enable();
+    let offer = rig.open_offer();
+    let mut forged = offer.clone();
+    forged.p = csm_peer_proto::ids::b64_encode(&[7u8; 32]);
+    for _ in 0..2 {
+        let r = client::pair(&forged, &Identity::generate().unwrap(), &ClientConfig::new("Guesser"), &mut |_| {});
+        assert!(matches!(r, Err(ClientError::Refused | ClientError::Link(_))), "{r:?}");
+    }
+    let me = Identity::generate().unwrap();
+    let p = Pairing::start(offer, me, "Third try");
+    let code = p.wait_pending(&rig);
+    rig.ui("peer_pair_answer", json!({"allow": true, "check_code": code})).unwrap();
+    assert!(p.finish().is_ok(), "the third handshake is allowed");
+    assert_eq!(rig.status()["devices"], 1);
+}
+
+#[test]
+fn a_failed_re_enable_clears_the_saved_choice_so_a_restart_binds_nothing() {
+    let rig = Rig::new();
+    rig.enable();
+    let r = rig.ui("peer_server_enable", json!({"address": "203.0.113.7", "port": 0}));
+    assert!(r.is_err(), "not an address of this machine");
+    let s = rig.status();
+    assert_eq!(s["enabled"], false, "{s}");
+    assert_eq!(s["listening"], Value::Null);
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(rig.peer_dir.join("server.json")).unwrap()).unwrap();
+    assert_eq!(saved["enabled"], false, "what the person saw is what is saved: {saved}");
+    let fresh = PeerServer::with_config(rig.peer_dir.clone(), quick());
+    fresh.resume();
+    assert!(fresh.local_addr().is_none(), "a fresh start listens nowhere");
+    fresh.shutdown();
+}
+
+#[test]
+fn a_refusal_before_remote_access_ever_existed_still_leaves_a_log_line() {
+    let rig = Rig::new();
+    assert!(!rig.peer_dir.exists());
+    let r = rig.engine.call(Caller::Cli, "peer_server_enable", json!({"address": "127.0.0.1", "port": 0}));
+    assert!(matches!(r, Err(csm_engine::ToolError::Refused(_))));
+    let log = std::fs::read_to_string(rig.peer_dir.join("remote-access.log")).unwrap();
+    assert!(log.contains("\"refused\"") && log.contains("peer_server_enable"), "{log}");
 }

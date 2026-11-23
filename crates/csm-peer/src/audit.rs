@@ -51,6 +51,9 @@ impl Audit {
     }
 
     fn append(&self, line: &str) -> std::io::Result<()> {
+        if let Some(dir) = self.path.parent().filter(|d| !d.exists()) {
+            crate::fsperm::ensure_private_dir(dir)?;
+        }
         if std::fs::metadata(&self.path).is_ok_and(|m| m.len() >= ROTATE_AT) {
             let _ = std::fs::rename(&self.path, self.path.with_extension("log.1"));
         }

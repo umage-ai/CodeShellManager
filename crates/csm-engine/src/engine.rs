@@ -413,6 +413,7 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                     return true;
                 }
                 if let Some(err) = crate::tools::peer::level_gate(&caller, &spec) {
+                    state.options.peer_host.audit(crate::peer_host::AuditEvent::Refused { tool: spec.id.to_owned(), caller: caller.describe() });
                     let _ = reply.send(Err(err));
                     return true;
                 }
@@ -512,6 +513,16 @@ enum ConsentChoice {
     Deny,
 }
 
+impl ConsentChoice {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow_once",
+            Self::AllowAlways => "allow_always",
+            Self::Deny => "deny",
+        }
+    }
+}
+
 fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, state: &mut State, engine: &Engine) -> Reply {
     // Only the person can answer: in the app, or from a paired device at the Full level (the
     // card is forwarded there; the first answer wins, because the request leaves `pending` once).
@@ -524,7 +535,7 @@ fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, s
     let Some(req) = pending.remove(&p.request_id) else {
         return Err(ToolError::NotFound(format!("no waiting request {}", p.request_id)));
     };
-    state.options.peer_host.audit(crate::peer_host::AuditEvent::ConsentAnswered { by: caller.describe(), request_id: p.request_id, allow: p.answer != ConsentChoice::Deny });
+    state.options.peer_host.audit(crate::peer_host::AuditEvent::ConsentAnswered { by: caller.describe(), request_id: p.request_id, allow: p.answer != ConsentChoice::Deny, answer: p.answer.name() });
     engine.events.emit(Event::ConsentResolved { request_id: p.request_id });
     match p.answer {
         ConsentChoice::Deny => {
