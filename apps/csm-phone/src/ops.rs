@@ -1,0 +1,350 @@
+//! Phone ops, mapped onto CSM tools (design note, section 4). One function does one thing for each
+//! op: the level check, then the add-on's own policy, then at most the one CSM tool the design
+//! names. Shape checks (`Op::validate`) already ran when the request was parsed.
+//!
+//! The phone never names a tool, never passes parameters through, and never sees CSM's JSON: a
+//! CSM answer is read field by field and anything unexpected is dropped, not passed on.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use csm_remote_proto::msg::{
+    CommandInfo, ErrorCode, FolderInfo, HelloData, InboxItem, Level, Op, PhoneStatus, ProfileInfo, Request, Response, SessionInfo, TaskItem,
+};
+use serde_json::{Value, json};
+
+use crate::config::Config;
+use crate::csm::{Csm, CsmError};
+use crate::policy::{InFlight, LaunchBucket, clean_name, cut, live_phone_sessions};
+use crate::store::{Device, PushSub};
+
+/// Fields of a session, task or inbox entry read from CSM, cut to these lengths.
+const MAX_TEXT: usize = 256;
+const MAX_ID: usize = 64;
+
+/// What one request changed in the device list, so the caller saves it.
+pub struct Outcome {
+    pub response: Response,
+    pub devices_changed: bool,
+}
+
+/// Mutable state the ops keep between requests: the launch buckets, the sessions phones created
+/// and the in-flight cap. It belongs to the host, not to a channel.
+pub struct Engine {
+    pub csm: Box<dyn Csm>,
+    pub inflight: InFlight,
+    pub buckets: BTreeMap<String, LaunchBucket>,
+    pub created: BTreeSet<String>,
+}
+
+impl Engine {
+    pub fn new(csm: Box<dyn Csm>) -> Self {
+        Self { csm, inflight: InFlight::new(crate::policy::MAX_IN_FLIGHT), buckets: BTreeMap::new(), created: BTreeSet::new() }
+    }
+
+    /// Runs one parsed request for `device` at time `now` (Unix seconds). Never panics: each
+    /// refusal is an answer with an error code.
+    pub fn handle(&mut self, cfg: &Config, devices: &mut [Device], device_id: &str, req: &Request, now: u64) -> Outcome {
+        let id = req.id;
+        let Some(idx) = devices.iter().position(|d| d.device_id == device_id) else {
+            return Outcome { response: Response::err(id, ErrorCode::Forbidden, "this phone is no longer paired"), devices_changed: false };
+        };
+        let level = devices.get(idx).map_or(Level::Viewer, |d| d.level);
+        if !level.allows(req.op.required_level()) {
+            return Outcome { response: Response::err(id, ErrorCode::Forbidden, "this phone's level does not allow that"), devices_changed: false };
+        }
+        let mut changed = false;
+        let response = match self.run(cfg, devices, idx, &req.op, now, &mut changed) {
+            Ok(data) => Response::ok(id, data),
+            Err((code, msg)) => Response::err(id, code, &msg),
+        };
+        if let Some(d) = devices.get_mut(idx) {
+            d.last_seen = now;
+        }
+        Outcome { response, devices_changed: changed }
+    }
+
+    fn run(&mut self, cfg: &Config, devices: &mut [Device], idx: usize, op: &Op, now: u64, changed: &mut bool) -> Result<Value, (ErrorCode, String)> {
+        match op {
+            Op::Hello { .. } => {
+                let pc = self.pc_commands()?;
+                let d = devices.get(idx).cloned().ok_or((ErrorCode::Forbidden, String::new()))?;
+                let data = HelloData {
+                    protocol: csm_remote_proto::PROTOCOL_VERSION,
+                    level: d.level,
+                    host_name: if cfg.host_name.is_empty() { "PC".to_owned() } else { cfg.host_name.clone() },
+                    hide_names: d.hide_names,
+                    notify: d.notify,
+                    push_ready: cfg.push && d.push.is_some(),
+                    remote_control: pc.iter().any(|c| c == "/remote-control"),
+                    max_message_bytes: u32::try_from(csm_remote_proto::limits::MAX_APP_MESSAGE_BYTES).unwrap_or(u32::MAX),
+                };
+                to_value(&data)
+            }
+            Op::Ping => Ok(json!({})),
+            Op::Snapshot | Op::SessionList => {
+                let sessions = self.session_list()?;
+                Ok(json!({ "sessions": sessions }))
+            }
+            Op::SessionGet { session_id } => {
+                let v = self.csm_call("session_get", json!({ "session_id": session_id }))?;
+                let mut s = session_from(&v).ok_or((ErrorCode::Failed, "CSM sent no session".to_owned()))?;
+                s.message = text(&v, "message", MAX_TEXT);
+                to_value(&s)
+            }
+            Op::InboxList => {
+                let v = self.csm_call("inbox_list", json!({}))?;
+                let items: Vec<InboxItem> = list_of(&v).iter().filter_map(inbox_from).collect();
+                Ok(json!({ "items": items }))
+            }
+            Op::TaskList => {
+                let v = self.csm_call("task_list", json!({ "include_closed": false }))?;
+                let items: Vec<TaskItem> = list_of(&v).iter().filter_map(task_from).collect();
+                Ok(json!({ "tasks": items }))
+            }
+            Op::TaskGet { task_id } => {
+                let v = self.csm_call("task_get", json!({ "task_id": task_id }))?;
+                let t = task_from(&v).ok_or((ErrorCode::UnknownTask, "no such task".to_owned()))?;
+                to_value(&t)
+            }
+            Op::FolderList => {
+                let folders: Vec<FolderInfo> = cfg
+                    .folders
+                    .iter()
+                    .map(|f| FolderInfo { path: cut(&f.path, csm_remote_proto::msg::MAX_FOLDER_CHARS), name: folder_name(&f.path), pinned: f.pinned })
+                    .collect();
+                Ok(json!({ "folders": folders }))
+            }
+            Op::ProfileList => {
+                let profiles: Vec<ProfileInfo> = cfg.profiles.iter().map(|p| ProfileInfo { name: clean_name(&p.name, MAX_ID), label: clean_name(&p.label, MAX_TEXT) }).collect();
+                Ok(json!({ "profiles": profiles }))
+            }
+            Op::CommandList => {
+                let pc = self.pc_commands()?;
+                let commands: Vec<CommandInfo> = cfg.allowed_commands(&pc).into_iter().map(|c| CommandInfo { label: c.clone(), command: c }).collect();
+                Ok(json!({ "commands": commands }))
+            }
+            Op::SessionWake { session_id } => {
+                self.launch(devices, idx, now)?;
+                self.csm_call("session_wake", json!({ "session_id": session_id }))
+            }
+            Op::SessionSleep { session_id } => self.csm_call("session_sleep", json!({ "session_id": session_id })),
+            Op::SessionRestart { session_id } => {
+                self.launch(devices, idx, now)?;
+                self.csm_call("session_restart", json!({ "session_id": session_id }))
+            }
+            Op::SessionClose { session_id, force } => self.csm_call("session_close", json!({ "session_id": session_id, "force": force })),
+            Op::SessionNew { folder, profile, name, remote_control: _ } => {
+                let f = cfg.folder_for(folder).ok_or((ErrorCode::FolderNotAllowed, "that folder is not on the allow list".to_owned()))?;
+                let p = cfg.profiles.iter().find(|p| p.name == *profile).ok_or((ErrorCode::UnknownProfile, "no such profile".to_owned()))?;
+                self.launch(devices, idx, now)?;
+                let listed = self.session_list()?;
+                let mut statuses = BTreeMap::new();
+                for s in &listed {
+                    statuses.insert(s.id.clone(), s.status);
+                }
+                if live_phone_sessions(&self.created, &statuses) >= usize::try_from(cfg.max_phone_sessions).unwrap_or(usize::MAX) {
+                    return Err((ErrorCode::RateLimited, "the phone session limit is reached".to_owned()));
+                }
+                let mut params = json!({ "folder": f.spelling, "command": p.command, "kind": "local" });
+                if let Some(n) = name {
+                    params["name"] = json!(clean_name(n, MAX_TEXT));
+                }
+                let v = self.csm_call("session_new", params)?;
+                let id = v.get("id").and_then(Value::as_str).map(|s| cut(s, MAX_ID)).ok_or((ErrorCode::Failed, "CSM did not return a session".to_owned()))?;
+                self.created.insert(id.clone());
+                Ok(json!({ "id": id, "remote_control": "not_built" }))
+            }
+            Op::SessionCommand { session_id, command, force } => {
+                let pc = self.pc_commands()?;
+                if !cfg.allowed_commands(&pc).iter().any(|c| c == command) {
+                    return Err((ErrorCode::CommandNotAllowed, "that command is not on the list".to_owned()));
+                }
+                self.csm_call("session_send_command", json!({ "session_id": session_id, "command": command, "force": force }))
+            }
+            Op::SessionStatusClear { session_id } => self.csm_call("session_status_clear", json!({ "session_id": session_id })),
+            Op::PushSubscribe { endpoint, p256dh, auth } => {
+                if !push_host_allowed(&cfg.push_hosts, endpoint) {
+                    return Err((ErrorCode::BadRequest, "that push service is not allowed".to_owned()));
+                }
+                if let Some(d) = devices.get_mut(idx) {
+                    d.push = Some(PushSub { endpoint: endpoint.clone(), p256dh: p256dh.clone(), auth: auth.clone() });
+                }
+                *changed = true;
+                Ok(json!({}))
+            }
+            Op::PushUnsubscribe => {
+                if let Some(d) = devices.get_mut(idx) {
+                    d.push = None;
+                }
+                *changed = true;
+                Ok(json!({}))
+            }
+            Op::SettingsSet { hide_names, notify } => {
+                if let Some(d) = devices.get_mut(idx) {
+                    d.hide_names = *hide_names;
+                    d.notify = *notify;
+                }
+                *changed = true;
+                Ok(json!({}))
+            }
+        }
+    }
+
+    /// One CSM call, under the in-flight cap. Beyond the cap the request is refused, not queued.
+    fn csm_call(&mut self, tool: &str, params: Value) -> Result<Value, (ErrorCode, String)> {
+        let _permit = self.inflight.try_take().ok_or((ErrorCode::RateLimited, "too many requests are in progress".to_owned()))?;
+        self.csm.call(tool, params).map_err(|e| match e {
+            CsmError::UnknownSession => (ErrorCode::UnknownSession, "no such session".to_owned()),
+            CsmError::Busy => (ErrorCode::Busy, "the session is busy".to_owned()),
+            CsmError::CommandRefused => (ErrorCode::CommandNotAllowed, "that command is refused".to_owned()),
+            CsmError::Failed(m) => (ErrorCode::Failed, m),
+            CsmError::Unavailable => (ErrorCode::Unavailable, "CSM is not answering".to_owned()),
+        })
+    }
+
+    /// The launch bucket of a device: `session.new`, `session.wake`, `session.restart` together.
+    fn launch(&mut self, devices: &[Device], idx: usize, now: u64) -> Result<(), (ErrorCode, String)> {
+        let id = devices.get(idx).map(|d| d.device_id.clone()).unwrap_or_default();
+        let bucket = self.buckets.entry(id).or_default();
+        if bucket.admit(now) { Ok(()) } else { Err((ErrorCode::RateLimited, "too many launches; wait a minute".to_owned())) }
+    }
+
+    fn session_list(&mut self) -> Result<Vec<SessionInfo>, (ErrorCode, String)> {
+        let v = self.csm_call("session_list", json!({}))?;
+        Ok(list_of(&v).iter().filter_map(session_from).collect())
+    }
+
+    /// The PC's slash commands from `settings_get ClaudeCommands`. Any other shape is an empty list.
+    fn pc_commands(&mut self) -> Result<Vec<String>, (ErrorCode, String)> {
+        let v = self.csm_call("settings_get", json!({ "key": "ClaudeCommands" }))?;
+        let items = match v.get("value").unwrap_or(&v) {
+            Value::Array(a) => a.clone(),
+            _ => Vec::new(),
+        };
+        Ok(items
+            .iter()
+            .filter_map(|i| match i {
+                Value::String(s) => Some(s.clone()),
+                Value::Object(o) => o.get("command").and_then(Value::as_str).map(str::to_owned),
+                _ => None,
+            })
+            .filter(|s| s.starts_with('/') && s.len() <= 64)
+            .collect())
+    }
+}
+
+/// Push endpoints must be https and on the host list, an exact name or a `*.suffix`.
+pub fn push_host_allowed(hosts: &[String], endpoint: &str) -> bool {
+    let Some(rest) = endpoint.strip_prefix("https://") else { return false };
+    let host = rest.split(['/', ':', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    hosts.iter().any(|h| {
+        let h = h.to_ascii_lowercase();
+        match h.strip_prefix("*.") {
+            Some(suffix) => host.len() > suffix.len() + 1 && host.ends_with(&format!(".{suffix}")),
+            None => host == h,
+        }
+    })
+}
+
+fn folder_name(path: &str) -> String {
+    let last = path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path);
+    clean_name(last, MAX_TEXT)
+}
+
+fn list_of(v: &Value) -> Vec<Value> {
+    match v {
+        Value::Array(a) => a.clone(),
+        Value::Object(o) => o.get("sessions").or_else(|| o.get("items")).or_else(|| o.get("tasks")).and_then(Value::as_array).cloned().unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn text(v: &Value, key: &str, max: usize) -> Option<String> {
+    v.get(key).and_then(Value::as_str).map(|s| clean_name(s, max)).filter(|s| !s.is_empty())
+}
+
+/// CSM's session status words, mapped onto the phone's (decision 8: `error` shows as idle with its
+/// message). Unknown words are idle.
+pub fn phone_status(word: &str) -> PhoneStatus {
+    match word {
+        "working" | "starting" => PhoneStatus::Working,
+        "needs_you_approval" => PhoneStatus::NeedsApproval,
+        "needs_you_question" => PhoneStatus::NeedsQuestion,
+        "done_unseen" => PhoneStatus::Done,
+        "asleep" => PhoneStatus::Asleep,
+        "exited" => PhoneStatus::Exited,
+        _ => PhoneStatus::Idle,
+    }
+}
+
+fn session_from(v: &Value) -> Option<SessionInfo> {
+    let id = text(v, "id", MAX_ID)?;
+    let status = phone_status(v.get("status").and_then(Value::as_str).unwrap_or(""));
+    Some(SessionInfo {
+        id,
+        name: text(v, "name", MAX_TEXT).unwrap_or_else(|| "Session".to_owned()),
+        folder: text(v, "folder", csm_remote_proto::msg::MAX_FOLDER_CHARS).unwrap_or_default(),
+        status,
+        branch: text(v, "branch", MAX_TEXT),
+        message: None,
+        group: text(v, "group", MAX_TEXT),
+        profile: None,
+        since: None,
+    })
+}
+
+fn inbox_from(v: &Value) -> Option<InboxItem> {
+    Some(InboxItem {
+        id: text(v, "id", MAX_ID)?,
+        title: text(v, "title", MAX_TEXT).unwrap_or_default(),
+        session_id: text(v, "session_id", MAX_ID),
+        ts: v.get("ts").and_then(Value::as_u64).unwrap_or(0),
+    })
+}
+
+fn task_from(v: &Value) -> Option<TaskItem> {
+    Some(TaskItem {
+        id: text(v, "id", MAX_ID)?,
+        title: text(v, "title", MAX_TEXT).unwrap_or_default(),
+        state: text(v, "state", MAX_ID).unwrap_or_default(),
+        session_id: text(v, "session_id", MAX_ID),
+    })
+}
+
+fn to_value<T: serde::Serialize>(t: &T) -> Result<Value, (ErrorCode, String)> {
+    serde_json::to_value(t).map_err(|_| (ErrorCode::Failed, "could not encode the answer".to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_hosts_are_exact_or_wildcard_and_https_only() {
+        let hosts = vec!["fcm.googleapis.com".to_owned(), "*.notify.windows.com".to_owned()];
+        assert!(push_host_allowed(&hosts, "https://fcm.googleapis.com/fcm/send/abc"));
+        assert!(push_host_allowed(&hosts, "https://x.notify.windows.com/w/?token=1"));
+        assert!(!push_host_allowed(&hosts, "https://evil.example/fcm.googleapis.com"));
+        assert!(!push_host_allowed(&hosts, "https://fcm.googleapis.com.evil.example/x"));
+        assert!(!push_host_allowed(&hosts, "http://fcm.googleapis.com/x"));
+        assert!(!push_host_allowed(&hosts, "https://notify.windows.com/x"), "the wildcard does not match its own suffix");
+    }
+
+    #[test]
+    fn statuses_map_and_unknown_words_are_idle() {
+        assert_eq!(phone_status("needs_you_approval"), PhoneStatus::NeedsApproval);
+        assert_eq!(phone_status("error"), PhoneStatus::Idle);
+        assert_eq!(phone_status("nonsense"), PhoneStatus::Idle);
+    }
+
+    #[test]
+    fn hostile_session_names_are_cleaned_and_bad_entries_dropped() {
+        let v = json!({"id": "s1", "name": "a\u{202E}b\u{0}", "folder": "/x", "status": "working"});
+        let s = session_from(&v).unwrap();
+        assert_eq!(s.name, "ab");
+        assert!(session_from(&json!({"name": "no id"})).is_none());
+    }
+}

@@ -1334,6 +1334,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "csm-phone"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "csm-remote-proto",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "snow",
+ "tempfile",
+ "tungstenite",
+]
+
+[[package]]
 name = "csm-pty"
 version = "0.0.1"
 dependencies = [

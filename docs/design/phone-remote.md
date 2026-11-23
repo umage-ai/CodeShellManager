@@ -1,6 +1,6 @@
 # Phone remote: design note
 
-Status: **design, no code yet** (branch `phone/addon`, base `b16b6c48f57aaa493d627f3e32d4f9cc2d4e1060`).
+Status: **step 1 partly built** (branch `phone/addon`). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing, Noise channels and the relay client (`ws://` only), all tested. Section 18 lists what is not built and where the code deviates from this plan.
 Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
 facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
@@ -1144,3 +1144,66 @@ brief requires.
 - `pairing.rs` `DenyReason` has three values and gets no `Busy`. The relay refuses a second pairing channel with
   `not_allowed` before any Noise step (`relay/src/state.rs`, `open_channel`), so the phone's own text covers the
   case (section 8, decision 15). Review round 3.
+
+---
+
+## 18. Build status (step 1, partial)
+
+Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `DENY_ROOTS`):
+
+- `store.rs`: host key (32 bytes raw, owner-only where Unix has it), `devices.json` with the first-run table of
+  section 5, damage detection, atomic writes with `.bak`, `start_new` recovery, damaged `config.json` renamed before
+  the first write.
+- `config.rs`: the add-on's settings, validated once at load; a remote `ws://` relay is refused.
+- `policy.rs`: folder matching on canonical keys (exact, `..` refused), name cleaning (Cc and the listed Cf ranges),
+  the launch bucket (6 a minute, 30 an hour), the live-session count, the global in-flight cap of 8 (refuses, never queues).
+- `ops.rs` and `csm.rs`: each op's level check, then the one CSM tool section 4 names; `Op::validate` runs at parse.
+  `CALLS` lists the tools the add-on may call.
+- `pairing.rs`: the slot (one channel at a time, 5 attempts, 10 minutes, one use).
+- `host.rs`: the protocol core with no sockets: Noise IKpsk2 for pairing and IK for paired phones (`snow`), Allow
+  saves the device before `Accept`, Deny, expiry, stop, revoke and level change (the host closes the channels itself),
+  channel limits, and the handling of every incoming frame without panics.
+- `relay_client.rs`: the outbound WebSocket with the 1, 2, 5, 10, 30 second backoff, a ping every 30 s, and the
+  allow list and open slot re-sent after every connect.
+
+Tests: unit tests in each module; `tests/protocol.rs` drives `Host` with a test phone written with `snow` and the
+shared `csm-remote-proto` types (pairing allow, deny, expiry, wrong PSK, a second channel, five attempts and the
+sixth refused, levels, one CSM call per read op, folders, commands, push host, launch bucket, live cap, hostile
+names, oversize requests, revoke, level change, a different key, 4000 random frames); `relay_client.rs` tests the
+reconnect against a fake relay on 127.0.0.1 (the relay is dropped and the host comes back and re-sends its allow list).
+
+### 18.1 Not built (step 1 still open)
+
+- The stdio shell (`main.rs` exits with a message), the manifest `samples/addons/phone-remote/addon.toml`, the four
+  add-on tools (`phone-remote.status|pair|revoke|enable_access`) and their caller checks, `screen_open` wiring.
+- The three screens (pairing, devices, settings), the `qr` node, `csm/status`, the `phone` and `devices` icons, and the
+  settings screen of section 10.6.
+- `wss://` (needs a TLS feature of `tungstenite`; an owner decision on the crate set). Until then only `ws://127.0.0.1`
+  relays work.
+- The host-wide tracker and session deltas (section 7): the ops answer snapshots on request only; no unsolicited
+  `Snapshot` or `Delta` events are sent yet, and the 200 ms coalescing is not built.
+- Push encryption (RFC 8291) and the `PushRequest` sending (section 9). `push_ready` is `push && subscription`, not a
+  check of the relay's VAPID key.
+- `remote_control`: `session.new` answers `"not_built"` (section 4's wait and `Event::RemoteControl` are not built;
+  `msg.rs` has no `RemoteControl` event yet).
+- Worker threads: CSM calls run inline on the host's thread, so a slow `session_restart` delays other channels. The
+  in-flight cap is enforced, but with inline calls it never holds more than one at a time.
+- Rekeying is wired (`rekey_outgoing`/`rekey_incoming` at 10 000 messages) but not tested with a message count that
+  reaches it.
+- ACL-based owner-only permissions on Windows (section 5 says reuse `fsperm.rs`): not done; files get the default ACL.
+- The tests that run the real `csm-relay` in process (section 16, step 1): **not built, and blocked by the layer rule**.
+  `csm-relay` is layer 6 and `csm-phone` is layer 6, and `xtask` checks dev-dependencies too, so a dev-dependency
+  on `csm-relay` fails `xtask ci`. Options for the owner: give the relay test harness its own layer (or exempt test-only
+  edges in `xtask/src/layers.rs`), or move the relay-level tests into a test-only crate. The reconnect test uses a small
+  fake relay instead.
+- The web app `phone/` (step 2) and the end-to-end task (step 3): not started.
+
+### 18.2 Deviations from this plan, with the reason
+
+- Threads: the relay client uses one thread with a one-second read timeout instead of a reader and a writer thread. One
+  owner of the socket is simpler to reason about, and the host has no shared state to lock.
+- The host key stays a 32-byte file, as section 5 says. The public half is derived with snow's own X25519 primitive
+  (`host::public_of`), so the file does not need to hold it.
+- Phone device ids are `d_` plus 16 hex characters from the OS random source (`getrandom`).
+- `devices.json` entries do not carry the routing token, only its hash (as section 5 already says).
+- `session.new` returns `remote_control: "not_built"` rather than `"pending"` (see 18.1): the answer says what is true.
