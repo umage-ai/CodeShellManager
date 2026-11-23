@@ -179,8 +179,11 @@ impl ViewFacts {
     }
 }
 
-/// A client's copy of the view state. The fields match the engine's; see the module docs.
-#[derive(Debug, Clone, PartialEq)]
+/// A client's copy of the view state. The fields match the engine's; see the module docs. Saved per
+/// host by a remote window (`csm-remote`'s `connect`), so it serializes; a missing field is its
+/// default.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ViewOverlay {
     /// The focused session.
     pub focused: Option<String>,
@@ -734,8 +737,13 @@ mod tests {
         "theme_set",
     ];
     /// UI-effect tools that also launch or mutate, so their declaration forwards them.
-    const FIXED_FORWARD: &[&str] = &["inbox_next"];
+    /// `remote_window_open` launches a process, so it is not UI-only; the app starts it before any
+    /// port sees the call.
+    const FIXED_FORWARD: &[&str] = &["inbox_next", "remote_window_open"];
     const FIXED_NOT_MODELLED: &[&str] = &[
+        // The connect dialog belongs to the laptop's own window: a remote window never offers it,
+        // and the app opens it before any port sees the call.
+        "peer_connect_open",
         // The inspector's width is per-client view state like the inbox height; modelled in P1.
         "inspector_panel_set",
         // The remembered custom grids are a stored preference (the engine's `UiState::custom_grids`),

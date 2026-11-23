@@ -1063,12 +1063,15 @@ pub fn pane(
         let mut child = ui.new_child(UiBuilder::new().max_rect(body));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         let PaneHost { renderer, views, padding, clean_claude_copies, .. } = host;
-        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), clean_copy: claude && *clean_claude_copies, ..opts };
+        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), clean_copy: claude && *clean_claude_copies, remote: model.remote, ..opts };
         let view = views.entry(view_key.clone()).or_insert_with(|| TerminalView::new(Id::new(("csm-pane", view_key.clone()))));
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;
         if let Some(url) = vr.open_link {
             actions.push(Action::Tool("open_url", json!({"url": url})));
+        }
+        if vr.image_paste {
+            actions.push(Action::Toast("An image cannot be pasted into a remote window: Claude reads the office's clipboard, not this laptop's. Save the image on the office first.".into()));
         }
         if vr.copy_reply {
             actions.push(Action::CopyClaude("claude_reply_get", json!({"session_id": s.id})));

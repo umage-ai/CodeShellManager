@@ -713,6 +713,8 @@ pub mod size {
     pub const HBAR_SIDE: f32 = 12.0;
     pub const HBAR_MIN: f32 = 24.0;
     pub const RESTORE_RAIL: f32 = 2.0;
+    /// The strip under the title bar of a remote window ("Connected to OFFICE · address").
+    pub const REMOTE_BAR: f32 = 24.0;
     pub const BAR: f32 = 6.0;
     pub const GRID_TILE_W: f32 = 92.0;
     pub const GRID_GLYPH: [f32; 2] = [56.0, 36.0];

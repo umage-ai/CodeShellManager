@@ -91,7 +91,12 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         x -= space::XXS;
         widgets::icon_button_at(ui, r, ui.id().with(("tb", name.to_string())), name, on, tip).clicked()
     };
-    if btn(ui, "power", false, "Quit: sessions get time to exit") {
+    // A remote window's button disconnects; the office keeps running (see `Action::AskQuit`).
+    let power_tip = match &app.remote {
+        Some(r) => format!("Disconnect from {}: the office keeps running", r.host_name),
+        None => "Quit: sessions get time to exit".to_owned(),
+    };
+    if btn(ui, "power", false, &power_tip) {
         actions.push(Action::AskQuit);
     }
     let settings_open = app.ui.settings.open;

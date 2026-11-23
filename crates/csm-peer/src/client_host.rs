@@ -27,8 +27,10 @@ use crate::hosts::HostStore;
 use crate::identity::Identity;
 use crate::unix_secs;
 
-const DEVICE_KEY: &str = "device.key";
-const HOSTS_FILE: &str = "hosts.json";
+/// The file that holds this app's device key, in the client folder (`peer-client/`).
+pub const DEVICE_KEY: &str = "device.key";
+/// The file that lists the paired hosts, in the client folder.
+pub const HOSTS_FILE: &str = "hosts.json";
 
 /// The client. Cloning shares it.
 #[derive(Clone)]

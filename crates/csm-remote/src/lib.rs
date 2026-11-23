@@ -14,10 +14,14 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod backend;
+pub mod connect;
 mod link;
 pub mod map;
+mod shared;
 mod terminal;
 
 pub use backend::{ConnectParams, RemoteBackend};
+pub use connect::{HostWindow, window_params};
+pub use shared::{RemoteHandle, RemotePort, RemoteView, shared};
 pub use link::LinkState;
 pub use terminal::RemoteTerminal;

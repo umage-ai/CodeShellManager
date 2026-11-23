@@ -147,6 +147,10 @@ pub trait Backend {
     fn run_output(&self, _session: &str, _run: &str) -> Option<csm_engine::RunOutputHandle> {
         None
     }
+    /// The host and link of a remote window; `None` for a window with its own engine. Cheap.
+    fn remote(&self) -> Option<crate::remote_window::RemoteStatus> {
+        None
+    }
 }
 
 /// The engine as a [`ToolPort`]: submits to the engine as `Caller::Ui`, and polls the replies and

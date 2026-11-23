@@ -79,6 +79,8 @@ pub struct DemoBackend {
     group_focus: HashMap<String, SessionId>,
     /// Add-on screens as a test or a screenshot set them up (see [`DemoBackend::screens_handle`]).
     screens: Arc<std::sync::Mutex<DemoScreens>>,
+    /// The remote window this demo stands for (`set_remote`); none for the demo's own sessions.
+    remote: Option<crate::remote_window::RemoteStatus>,
 }
 
 fn now_ms() -> u64 {
@@ -280,6 +282,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         "## Odulodo.Web\n- Brand facet: use brand.keyword, the\n  analyzer lowercases brand\n- Ask Allan before touching the CMS\n  listing sort\n- Staging runs on build-01, /srv/odulodo\n\nTODO\n- [ ] snapshot tests for FacetPanel\n- [x] category facet size 20 -> 30".to_string(),
     );
     UiModel {
+        remote: false,
         // The built-in Claude usage add-on is on, so the screenshots show usage.
         addons: vec![demo_claude_usage(true)],
         remotes: Vec::new(),
@@ -411,6 +414,7 @@ impl DemoBackend {
             restoring: None,
             group_focus: HashMap::new(),
             screens: Arc::default(),
+            remote: None,
         };
         let ids: Vec<SessionId> = b.model.sessions.iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         for id in ids {
@@ -1352,6 +1356,10 @@ impl Backend for DemoBackend {
         self.snap.clone()
     }
 
+    fn remote(&self) -> Option<crate::remote_window::RemoteStatus> {
+        self.remote.clone()
+    }
+
     fn terminal(&self, id: &str) -> Option<Arc<dyn TerminalSource>> {
         self.terms.get(id).cloned()
     }
@@ -1462,6 +1470,14 @@ pub struct DemoScreens {
 }
 
 impl DemoBackend {
+    /// Makes this demo stand for a remote window to `status`'s host (the strip, the hidden
+    /// local-only items). The demo still answers its own sessions: it is a stand-in, not a link.
+    pub fn set_remote(&mut self, status: Option<crate::remote_window::RemoteStatus>) {
+        self.model.remote = status.is_some();
+        self.remote = status;
+        self.snap = Arc::new(self.model.clone());
+    }
+
     /// The handle to the demo's add-on screens.
     pub fn screens_handle(&self) -> Arc<std::sync::Mutex<DemoScreens>> {
         self.screens.clone()

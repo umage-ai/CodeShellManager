@@ -37,6 +37,9 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     if app.ui.overlay == Overlay::Help {
         help(ctx, actions);
     }
+    if app.ui.overlay == Overlay::ConnectRemote {
+        crate::screens::connect_remote::show(ctx, app, actions);
+    }
     if app.model.shutdown.is_some() {
         shutdown_board(ctx, app, actions);
     }

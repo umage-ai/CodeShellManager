@@ -551,3 +551,69 @@ fn remote_access_screens() {
         h.state_mut().run(&ctx, Action::CloseSettings);
     });
 }
+
+/// A remote window (the strip in each link state, the local-only items gone, the office's quit) and
+/// the laptop's connect dialog in its states.
+#[test]
+fn remote_window_screens() {
+    use csm_ui::remote_window::{ConnectDialog, HostRow, RemoteLink, RemoteStatus};
+    type H = egui_kittest::Harness<'static, csm_ui::CsmApp>;
+    let status = |link: RemoteLink| RemoteStatus { host_name: "OFFICE".into(), address: "10.8.0.2:47300".into(), link };
+    let remote = move |name: &'static str, link: RemoteLink| {
+        shoot(name, ThemeKind::Mocha, move |b| b.set_remote(Some(status(link))), |_| {});
+    };
+    remote("23-remote-window", RemoteLink::Connected);
+    remote("23-remote-window-latte", RemoteLink::Connected);
+    remote("23-remote-window-reconnecting", RemoteLink::Offline);
+    remote("23-remote-window-refused", RemoteLink::Refused("this laptop was revoked".into()));
+    shoot(
+        "23-remote-palette",
+        ThemeKind::Mocha,
+        |b| b.set_remote(Some(status(RemoteLink::Connected))),
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenPalette);
+            h.state_mut().ui.palette.query = "quit".into();
+        },
+    );
+    shoot(
+        "23-remote-office-quit",
+        ThemeKind::Mocha,
+        |b| b.set_remote(Some(status(RemoteLink::Connected))),
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::RemoteQuitOffice);
+        },
+    );
+    let connect = |h: &mut H, hosts: bool, phase: serde_json::Value| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenConnectRemote);
+        // The engine's answers to the dialog's own reads come first; the state shown is set after.
+        settle(h);
+        if hosts {
+            h.state_mut().ui.connect = ConnectDialog {
+                hosts: vec![
+                    HostRow { host_id: "H1".into(), name: "Office".into(), address: "10.8.0.2:47300".into(), last_connected: Some(1) },
+                    HostRow { host_id: "H2".into(), name: "Home server".into(), address: "10.8.0.9:47300".into(), last_connected: None },
+                ],
+                hosts_loaded: true,
+                ..ConnectDialog::default()
+            };
+        }
+        h.state_mut().ui.connect.link = "csm://pair#eyJyIjoidGNwOi8vMTAuOC4wLjI6NDczMDAifQ".into();
+        h.state_mut().ui.connect.apply_status(&phase);
+    };
+    shoot("23-connect-dialog", ThemeKind::Mocha, |_| {}, |h| connect(h, true, serde_json::json!({"state": "idle"})));
+    shoot("23-connect-dialog-check-code", ThemeKind::Mocha, |_| {}, |h| connect(h, true, serde_json::json!({"state": "check_code", "check_code": "4821"})));
+    shoot("23-connect-dialog-latte", ThemeKind::Latte, |_| {}, |h| connect(h, true, serde_json::json!({"state": "paired", "host_name": "Office"})));
+    shoot("23-connect-dialog-failed", ThemeKind::Mocha, |_| {}, |h| connect(h, false, serde_json::json!({"state": "failed", "message": "The office refused this laptop."})));
+    shoot(
+        "23-remote-localhost-warning",
+        ThemeKind::Mocha,
+        |b| b.set_remote(Some(status(RemoteLink::Connected))),
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::Tool("open_url", serde_json::json!({"url": "http://localhost:3000/"})));
+        },
+    );
+}

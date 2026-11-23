@@ -26,6 +26,7 @@ use csm_ui::backend::{Backend, Call, Notice, ToolInfo, ToolPort};
 use csm_ui::docs_model::DocsDetails;
 use csm_ui::git_model::GitDetails;
 use csm_ui::model::UiModel;
+use csm_ui::remote_window::{RemoteLink, RemoteStatus};
 use csm_ui::terminal::TerminalSource;
 use csm_ui::theme::ThemeKind;
 use csm_ui::usage_model::UsageDetails;
@@ -83,9 +84,22 @@ pub struct RemoteBackend {
     git: GitDetails,
     usage: UsageDetails,
     docs: DocsDetails,
+    /// The host's name and address as the window shows them (`describe`).
+    host_name: String,
+    address: String,
 }
 
+/// The name a window shows until the host's own is known.
+const UNNAMED_HOST: &str = "the office";
+
 impl RemoteBackend {
+    /// Names the host and its address for the window's strip and title. The name is the one the
+    /// laptop stored for the host; the address is what the window dials, as text.
+    pub fn describe(&mut self, host_name: &str, address: &str) {
+        self.host_name = host_name.to_owned();
+        self.address = address.to_owned();
+    }
+
     /// Starts connecting. Returns at once: the worker thread does the network I/O, and the state
     /// is in [`RemoteBackend::link_state`].
     pub fn connect(p: ConnectParams) -> Result<Self, String> {
@@ -117,6 +131,8 @@ impl RemoteBackend {
             git: GitDetails::default(),
             usage: UsageDetails { live: true, ..Default::default() },
             docs: DocsDetails { live: true, ..Default::default() },
+            host_name: UNNAMED_HOST.to_owned(),
+            address: String::new(),
         };
         b.rebuild();
         Ok(b)
@@ -164,6 +180,7 @@ impl RemoteBackend {
             Some(s) => map::model(s, &self.overlay, self.theme, now_ms()),
             None => UiModel { theme: self.theme, ..UiModel::default() },
         };
+        m.remote = true;
         m.git = self.git.map.clone();
         m.folder_worktrees = self.git.folders.clone();
         m.usage = self.usage.clone();
@@ -345,13 +362,23 @@ impl Backend for RemoteBackend {
         self.model.clone()
     }
 
+    fn remote(&self) -> Option<RemoteStatus> {
+        let (name, link) = match &self.link {
+            LinkState::Connecting => (self.host_name.clone(), RemoteLink::Connecting),
+            LinkState::Live { host_name, .. } => (host_name.clone(), RemoteLink::Connected),
+            LinkState::Reconnecting { .. } | LinkState::Stopped => (self.host_name.clone(), RemoteLink::Offline),
+            LinkState::Refused { reason } => (self.host_name.clone(), RemoteLink::Refused(reason.clone())),
+        };
+        Some(RemoteStatus { host_name: name, address: self.address.clone(), link })
+    }
+
     fn terminal(&self, id: &str) -> Option<Arc<dyn TerminalSource>> {
         self.terms.get(id).map(|t| t.clone() as Arc<dyn TerminalSource>)
     }
 
     /// The host applied the effect. Errors are shown; so are the results of calls that start or
     /// discard something (the same rule as the office's own window).
-    fn on_reply(&mut self, call: &Call, reply: &Reply, port: &dyn ToolPort) -> Vec<Notice> {
+    fn on_reply(&mut self, call: &Call, reply: &Reply, _port: &dyn ToolPort) -> Vec<Notice> {
         if let Some(notices) = self.git.on_reply(call, reply) {
             self.rebuild();
             return notices;
@@ -364,7 +391,9 @@ impl Backend for RemoteBackend {
             Err(e) => vec![Notice::Toast(e.to_string())],
             Ok(out) => {
                 let loud = Effects::LAUNCHES_PROCESS.union(Effects::MAY_DISCARD_DATA);
-                let say = call.id != "app_quit" && port.effects(&call.id).is_some_and(|e| e.intersects(loud));
+                // The host's own declaration (its tool list), read here rather than through the port:
+                // a window shares this backend between its two faces, so the port may be borrowed.
+                let say = call.id != "app_quit" && self.tools.iter().find(|t| t.id == call.id).is_some_and(|t| t.effects.intersects(loud));
                 if say && !out.message.is_empty() { vec![Notice::Toast(out.message.clone())] } else { Vec::new() }
             }
         }

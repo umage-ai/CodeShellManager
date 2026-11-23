@@ -15,13 +15,31 @@ use crate::peer_client::PeerClientHost;
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 
 /// The tools only the person at the app's window may call.
-pub const UI_ONLY: [&str; 1] = ["peer_client_pair"];
+pub const UI_ONLY: [&str; 3] = ["peer_client_pair", "peer_connect_open", "remote_window_open"];
 
 pub(super) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
-            id: "peer_client_pair",
+            id: "peer_connect_open",
             title: "Connect to another CodeShellManager…",
+            summary: "Open the dialog that pairs this app with another CodeShellManager from its `csm://pair#...` link, shows the check code, and lists the paired offices with Connect and Forget. Only the app's own window opens it; refused for every other caller.",
+            toolset: Toolset::App,
+            effects: Effects::CHANGES_UI_STATE,
+            input_schema: empty_schema,
+            run: peer_connect_open,
+        },
+        ToolSpec {
+            id: "remote_window_open",
+            title: "Open a remote window",
+            summary: "Start a window of this app that runs on a paired CodeShellManager (the office) instead of a local engine. It is a separate process with its own layout, focus and theme. Only the app's own window starts one; refused for every other caller.",
+            toolset: Toolset::App,
+            effects: Effects::CHANGES_UI_STATE.union(Effects::LAUNCHES_PROCESS),
+            input_schema: schema_of::<RemoteWindowParams>,
+            run: remote_window_open,
+        },
+        ToolSpec {
+            id: "peer_client_pair",
+            title: "Pair with a link",
             summary: "Pair this app with another CodeShellManager from its `csm://pair#...` link. It starts in the background and returns at once; `peer_client_pair_status` shows the four-digit check code to compare with the other screen, and the result once the other person has allowed or denied it. Refused for every caller except the app's own window.",
             toolset: Toolset::App,
             effects: Effects::MUTATES_STATE.union(Effects::ACCESSES_NETWORK).union(Effects::WRITES_FILESYSTEM),
@@ -99,6 +117,33 @@ fn peer_client_pair(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let name = p.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
     let s = client(ctx).pair_start(&p.link, name)?;
     Ok(ToolOutput::new("Connecting. Compare the four digits with the other screen.", to_json(&s)?))
+}
+
+fn peer_connect_open(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    // The app's window opens its dialog before a call reaches the engine; one that gets here has
+    // no window to open.
+    if *ctx.caller != Caller::Ui {
+        return Err(ToolError::Refused("only the app's own window opens the connect dialog".into()));
+    }
+    Err(ToolError::Refused("the connect dialog is opened by the app's window, not by a tool call".into()))
+}
+
+/// Read for its schema and its shape only: the call is refused before it can use the id.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct RemoteWindowParams {
+    /// The paired host's id (from `peer_hosts_list`).
+    host_id: String,
+}
+
+fn remote_window_open(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    if *ctx.caller != Caller::Ui {
+        return Err(ToolError::Refused("only the app's own window opens a remote window".into()));
+    }
+    let _p: RemoteWindowParams = parse_params(params)?;
+    // The app starts the window process itself; a call that reaches the engine has nothing to start.
+    Err(ToolError::Refused("the remote window is started by the app's window, not by a tool call".into()))
 }
 
 fn peer_client_pair_status(ctx: &mut Ctx<'_>, _p: Value) -> Reply {

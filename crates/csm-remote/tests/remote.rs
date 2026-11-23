@@ -549,3 +549,35 @@ fn a_consent_card_from_an_office_agent_shows_on_the_laptop_and_the_first_answer_
     let late = office.ui("consent_answer", json!({"request_id": request_id, "answer": "allow_once"}));
     assert!(late.is_err(), "the first answer won");
 }
+
+#[test]
+fn a_window_shares_one_connection_between_its_port_and_its_view() {
+    let office = Office::new();
+    let (id, _pty, _handle) = office.session();
+    let (b, _me) = connect(&office, None, "Laptop");
+    let (mut port, view, handle) = csm_remote::shared(b);
+
+    // The port's calls go to the office and come back; the view sees the same link and mirror.
+    wait_for("the link", || match view.remote()?.link {
+        csm_ui::remote_window::RemoteLink::Connected => Some(()),
+        _ => {
+            port.poll();
+            None
+        }
+    });
+    let status = view.remote().expect("a remote window always has a status");
+    assert_eq!(status.link, csm_ui::remote_window::RemoteLink::Connected);
+    port.submit("session_rename", json!({"session_id": id, "name": "Shared"}));
+    wait_for("the rename's reply", || {
+        let (done, _) = port.poll();
+        done.iter().any(|(c, r)| c.id == "session_rename" && r.is_ok()).then_some(())
+    });
+    // The mirror is rebuilt when the port is polled (the UI does both once a frame).
+    wait_for("the renamed session in the model", || {
+        let _ = port.poll();
+        view.model().sessions.iter().any(|s| s.id == id && s.name == "Shared").then_some(())
+    });
+    assert!(view.model().remote, "the model says it is a remote window");
+    assert_eq!(port.submitted().last().map(|c| c.id.as_str()), Some("session_rename"));
+    assert_eq!(handle.overlay().theme, None, "a fresh window has no theme of its own yet");
+}

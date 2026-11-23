@@ -802,6 +802,9 @@ pub struct ShutdownBoard {
 /// Everything the screens draw.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiModel {
+    /// This window shows a paired host (a remote window): what runs on this laptop is not offered,
+    /// and a pasted image or a dropped file is refused (`remote_window`).
+    pub remote: bool,
     /// Add-ons and their state (Settings > Add-ons, the palette, the slash menu).
     pub addons: Vec<csm_engine::addons::AddonSummary>,
     /// What enabled process add-ons offer under "Remote…" (quick-open and the palette).

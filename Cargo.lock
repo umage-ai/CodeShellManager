@@ -929,6 +929,7 @@ dependencies = [
  "csm-mcp",
  "csm-peer",
  "csm-pty",
+ "csm-remote",
  "csm-ui",
  "eframe",
  "egui",

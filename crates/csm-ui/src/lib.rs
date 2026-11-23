@@ -28,6 +28,7 @@ pub mod model;
 pub mod notify;
 pub mod pane_tools;
 pub mod placement;
+pub mod remote_window;
 pub mod screens;
 pub mod start_window;
 pub mod terminal;

@@ -848,3 +848,51 @@ Now `took` and `run` saturate (`saturating_sub`, `saturating_add`) and a test ru
 `started_ms` / `ended_ms` (`i64::MIN`, `i64::MAX`, negatives) through the run view. A run that ends before it
 starts shows `0 s`. Not changed in this round: terminals are not marked stale while reconnecting, `Up::Snapshot`
 sends are not coalesced, and the bad-delta-forces-a-fresh-snapshot path has no test through the real link.
+
+## P1 step 7: the laptop's connect dialog and the remote window (`csm-ui`, `csm-remote`, `apps/codeshell`)
+
+Base sha for this step: `f0f7c0f2d0317cc333a5dc5762c5c77170888d0d`.
+
+- **Connect dialog** (`screens/connect_remote.rs`, `remote_window::ConnectDialog`). "Connect to another CodeShellManager…" is the
+  `peer_connect_open` tool (UI-only, refused for every other caller) and a palette row, opened from the laptop's own window only.
+  It pastes a link, takes an optional name, starts `peer_client_pair` and polls `peer_client_pair_status` (0.4 s) while a pairing
+  runs. It shows Connecting, the four-digit check code, Allowed, the refusal and Cancelled, and lists the paired offices from
+  `peer_hosts_list` with **Connect** (starts a remote window) and **Forget** (asks first, then `peer_host_forget`). Pairing
+  is still only started from the app; the dialog never runs in a remote window.
+- **Remote window** (`csm-ui::remote_window`, `csm-remote::shared`, `apps/codeshell --remote <host-id>`). Connect starts this exe
+  with `--remote <host-id>` (plus `--config-dir` when the laptop uses one) through `csm_engine::proc::spawn_detached`, on a thread.
+  The window starts no engine: `csm_remote::window_params` reads `peer-client/hosts.json` and `device.key` (it never makes a key
+  and refuses a host that was not paired), then `RemoteBackend` connects. One backend is shared by the window's two faces
+  (`RemotePort`, `RemoteView`, `RemoteHandle`), so the window keeps one connection. The worker's state is shown by the strip under
+  the title bar, "Connected to OFFICE · address", "Connecting to…", "OFFICE offline · reconnecting", or "OFFICE refused this laptop:
+  reason" (theme tokens; `Backend::remote()` supplies it, and the window title is prefixed with the host name).
+- **Local-only items** (design section 6): `remote_window::LOCAL_ONLY` lists open folder, open with (and its submenu, the
+  "Open with" action), "Open a shell here", backup export and import, and the connect and pair tools. A remote window hides them
+  from menus and the palette, and `CsmApp::run` refuses them with a toast before they run (the Settings backup buttons take that
+  refusal; they are not hidden). A pasted
+  image is refused in the pane (`ViewResponse::image_paste`, `ViewOptions::remote`), a dropped file becomes a toast
+  (`file_drop`), and the native folder dialog is never raised (`take_folder_request` and `take_dialog_request`).
+- **Links.** Ctrl+click (and the other `open_url` callers) in a remote window goes through `check_link` (the engine's
+  http/https check), then the laptop's browser (`RemoteHooks::open_link`). A loopback host (`localhost`, `127.0.0.1`, `::1`,
+  `*.localhost`) asks first: "This link points to OFFICE".
+- **Quit.** In a remote window Quit (title bar, palette or `app_quit`, and closing the window) **disconnects**: `CsmApp::disconnect` closes the
+  window and never calls `app_quit` on the office. "Quit CodeShellManager on OFFICE…" (palette, a confirm) forwards `app_quit` to the
+  host; when the host answers, the window disconnects.
+- **Per-client view state.** The window keeps its layout, focus, rail, inspector and theme in `peer-client/view-<host id>.json`
+  (`csm_remote::connect::{view_path, load_view, save_view}`, written on a worker thread once a second when it changed). `ViewOverlay`
+  now serializes. A damaged file is no state; a host id that is not a plain name gets no file.
+- **Consent cards** from the office's agents use the existing card UI over the mirrored model; the first answer wins on the office
+  (`consent_answer` is forwarded). The backend side is tested in `csm-remote`; the card is not separately kittested here.
+- **Tests.** `csm-ui/tests/remote_window_ui.rs` (9): the strip in each link state, the local-only items hidden from the palette and
+  menus, refused calls not sent, Quit disconnects and the office quit asks first, links (a loopback link warns), the dialog's
+  states (no link no pairing, a refused pairing shows why, the check code), and Connect / Forget on the host list.
+  `csm-ui/src/remote_window.rs` unit tests (link check, loopback, dialog answers). `csm-remote/tests/connect.rs` (3: the paired
+  office is read, an unpaired one is refused and nothing is made, a saved view is seeded) and `tests/remote.rs`
+  (`a_window_shares_one_connection_between_its_port_and_its_view`). Screenshots: `remote_window_screens` in
+  `crates/csm-ui/tests/screenshots.rs` (`23-remote-*`, `23-connect-dialog*`).
+- **Not done.** A window that cannot connect (no key, an unpaired host, a damaged list) writes its reason to stderr and exits;
+  it has no window of its own to say so. The laptop's dialog is reachable from the palette only (the app has no main menu; no
+  title-bar button). A remote window does not know the laptop's theme list (`ConnectParams::themes` is empty), so a saved theme
+  is only as good as the window's own list. The window polls its link every 100 ms (the link thread does not wake the UI).
+  Run-ready URLs (`post_run_url`) do not go to the laptop's browser yet. Remote windows have no tray, no OS notifications and
+  no window placement memory. The localhost warning's dialog answers Enter as "Open" like every confirm dialog.
