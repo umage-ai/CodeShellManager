@@ -14,6 +14,13 @@ can take (open a session, focus one, sleep a group, switch the layout, answer th
 So there is no "MCP hook" to add separately: a feature that isn't a tool isn't finished. A button
 that does something no tool can do is a review failure.
 
+**Not a tool: `csm attach`.** Attaching a console to a session of a paired office
+(`csm attach --list`, `csm attach <session>`) is a terminal stream, not a request and a reply, so it
+is a command of its own rather than a tool. It never pairs, and it runs no tool of its own: the
+session's keys and screen travel over the peer link (see [remote-access.md](remote-access.md)). The
+pairing tools (`peer_*`) are listed below; the ones that start a pairing are refused for the CLI,
+MCP clients and paired devices.
+
 ## The contract (`crates/csm-engine/src/tool.rs`)
 
 - `id`: `snake_case`, `<area>_<verb>[_<object>]`. It's also the MCP tool name; the CLI uses

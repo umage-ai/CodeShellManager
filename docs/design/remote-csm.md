@@ -896,3 +896,68 @@ Base sha for this step: `f0f7c0f2d0317cc333a5dc5762c5c77170888d0d`.
   is only as good as the window's own list. The window polls its link every 100 ms (the link thread does not wake the UI).
   Run-ready URLs (`post_run_url`) do not go to the laptop's browser yet. Remote windows have no tray, no OS notifications and
   no window placement memory. The localhost warning's dialog answers Enter as "Open" like every confirm dialog.
+
+## P1 step 8: `csm attach` and the end-to-end client test (`csm-remote`, `apps/csm-cli`)
+
+Base sha for this step: `5faf218bf4795a12a0ca6e66de0450eff616b47e`.
+
+- **`csm attach`** (C1, a harness and a way in from any console). `csm attach --offices` lists the paired offices,
+  `csm attach --list` the office's sessions (`session_list`), `csm attach <session>` (id or unique name, `--host` when
+  several are paired, `--config-dir` for a non-default app folder) attaches this console. It is a command, not a tool:
+  it is a terminal stream, and `docs/tools.md` says so. It never pairs: it only dials an office from the app's
+  `peer-client/` folder (`csm_remote::attach::connect` → `connect::paired`), and a missing key or host is refused
+  with nothing written (tested through the real folder in `tests/attach_folder.rs`, where the office is paired by a
+  laptop engine's `peer_client_pair`).
+- **The loop** (`csm_remote::attach::run`, pure against a `Console` trait). It subscribes to stream 1, draws the
+  office's serialized grid after clearing the console, then the live bytes, and joins a `TermFollower` as the
+  remote window does. Keys go as `term_input` key bytes, a paste as `Input::Paste` (the office brackets it). The console
+  resize is sent as a driver resize only when the console changed size itself (a `Resized` event), or once on the first
+  attach when the session has another size (`Sizing`). A frame that reports another device's size makes the console
+  resync and draw at the session's size, and never claims that size back, so two consoles of different sizes settle
+  (fix round 1: the office gives the driver role to every driver resize, so an echo-driven claim looped). A gap asks
+  for `term_resync`. The session's
+  `TermClosed` ends the attach (`SessionEnded`), a dead link ends it (`LinkLost`, with the reason in plain words).
+- **Detach** is Ctrl+] then `d` (`attach::Keys`, a pure state machine: Ctrl+] Ctrl+] sends one Ctrl+], Ctrl+] then
+  another key sends that key). It unsubscribes and closes; the session keeps running (tested: still listed, its
+  process still alive).
+- **The console** (`apps/csm-cli/src/attach_cmd.rs`) is `crossterm` 0.29 (MIT; features `events`, `bracketed-paste`,
+  `windows`; new to the build: it is the one safe raw-mode crate, since no `unsafe` is allowed outside `csm-pty`).
+  Raw mode and the alternate screen with bracketed paste, restored by a guard whatever ends the attach. Key bytes
+  are xterm-style (`key_bytes`, unit tested), arrows in CSI form. `csm attach` is listed in `csm --help`; its exit
+  codes are 0 (detached, or the session ended), 2 (usage), 3 (office unreachable or link lost). `cargo deny` was not run
+  locally (CI covers it).
+- **Test harness.** The in-process office moved to `crates/csm-remote/tests/common/mod.rs` (`Office::boot`,
+  `Office::restart`, `free_port`), shared by `remote.rs` (unchanged cases), `attach.rs` (eight cases on a real office:
+  draw and type, Ctrl+] Ctrl+], paste, the console's size on attach and on change, two consoles of different sizes
+  settle with a bounded number of redraws, a session closed under the console, a dropped link) and `e2e.rs`.
+- **End to end** (`tests/e2e.rs`, three tests, one process: the office's engine and `csm-peer` server, two laptops with a
+  `RemoteBackend` each, the fake PTY the only fake): (1) two laptops type into one session in order, both panes match
+  the office's emulator, and a resize from one follows to the PTY and both panes; (2) an agent's consent card is shown
+  on both laptops, laptop A answers, the card closes on laptop B and the office (the agent's call goes ahead), and a
+  second answer finds nothing (the first answer won); (3) the office restarts (engine and server stopped, the same
+  folder and port, sessions restored with their ids), both laptops reconnect, the restored session is a new process
+  so each laptop attaches afresh (the old screen is gone), and typing works again.
+- **Not done in this step.** Manual tests over a real WireGuard tunnel (firewall prompt, tunnel down at start-up, a large
+  `git diff` burst, latency feel) are still to do. `csm attach` does not reconnect: a lost link ends it (the remote
+  window does reconnect). Its keys are CSI-only (no application cursor mode), it sends no mouse or focus reports, and
+  when another device resizes the session the console redraws at that size (it does not resize back). The
+  tray tooltip and icon badge are not done (step 4). Still open from P1, all listed above: OSC 52 routing to the
+  driver, run-output streaming, add-on screen proxying, the typing indicator, compression, the window's own reconnect
+  error screen, and the step 6 fix round items (no stale marking while reconnecting, no coalescing of `Up::Snapshot`,
+  the bad-delta path through the real link).
+- **Fix round 1 (review of step 8).** The resize ping-pong between two consoles of different sizes is fixed (above,
+  tested). Office-supplied names, ids, statuses and the office's name print through `printable`, where control
+  characters show as `?` (tested). The `csm attach` loop still writes the session's bytes raw, as ssh does.
+
+### P1 status (after step 8)
+
+- **Done:** the office side (steps 1-4: protocol, transport, pairing, serving snapshot, deltas and terminal streams,
+  the Settings page, the indicator, revoke and off); the laptop side (steps 5-7: pairing from the app, the host list,
+  `RemoteBackend` and `RemoteTerminal`, the connect dialog, the remote window with its local-only rules, Quit as
+  disconnect, the per-client view state); `csm attach` and the in-process end-to-end tests (step 8).
+- **Open for P1:** the manual WireGuard checks, and the items listed under step 8 "Not done". P2 (resume from offsets
+  with the reconnect UI, consent cards on peers already work, OSC 52, run output, add-on screens, compression, the typing
+  indicator) and P3 are not started except where the list above says otherwise.
+- **User docs:** `docs/remote-access.md` (office: Settings › Remote access; laptop: Connect to another CodeShellManager;
+  `csm attach`), linked from `docs/README.md`. `docs/tools.md` notes that `csm attach` is not a tool; its catalogue
+  is unchanged (no tool was added or changed in this step).

@@ -413,7 +413,7 @@ fn backoff(attempt: u32) -> Duration {
 }
 
 /// A bye the retry cannot get past, with what to tell the person.
-fn refusal_of_bye(b: ByeReason) -> Option<String> {
+pub(crate) fn refusal_of_bye(b: ByeReason) -> Option<String> {
     Some(match b {
         ByeReason::Revoked => "This device was removed from the office's list. Pair it again to connect.".into(),
         ByeReason::ProtocolMismatch => "The two CodeShellManager versions do not speak the same protocol. Update both.".into(),
@@ -423,7 +423,7 @@ fn refusal_of_bye(b: ByeReason) -> Option<String> {
     })
 }
 
-fn refusal_of_error(e: &ClientError) -> Option<String> {
+pub(crate) fn refusal_of_error(e: &ClientError) -> Option<String> {
     match e {
         ClientError::Refused => Some("The office does not accept this device. It may have been removed, or the office forgot the pairing.".into()),
         ClientError::Bye(b) => refusal_of_bye(*b),

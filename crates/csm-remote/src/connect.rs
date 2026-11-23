@@ -12,6 +12,8 @@ use csm_peer::client_host::{ClientPeer, DEVICE_KEY, HOSTS_FILE};
 use csm_peer::fsperm::write_private;
 use csm_peer::hosts::HostStore;
 use csm_peer::identity::Identity;
+use csm_peer_proto::addr::PeerAddr;
+use csm_peer_proto::ids::KEY_LEN;
 use csm_ui::theme::ThemeKind;
 use csm_ui::view_overlay::{ThemeFact, ViewOverlay};
 
@@ -26,6 +28,25 @@ pub struct HostWindow {
     pub name: String,
     /// `10.8.0.2:47300`, without the `tcp://` of the stored form.
     pub address: String,
+}
+
+/// One paired office, as the client folder lists it: what `csm attach --offices` prints and what a
+/// window can connect to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedOffice {
+    pub host_id: String,
+    pub name: String,
+    /// `10.8.0.2:47300`, without the `tcp://` of the stored form.
+    pub address: String,
+}
+
+/// What a client needs to dial one paired office.
+pub struct Paired {
+    pub window: HostWindow,
+    pub addr: PeerAddr,
+    pub host_public: [u8; KEY_LEN],
+    pub identity: Identity,
+    pub cfg: ClientConfig,
 }
 
 /// The file that keeps one host's view state. `None` for a host id that is not a plain name (the id
@@ -48,9 +69,20 @@ pub fn save_view(path: &Path, overlay: &ViewOverlay) -> std::io::Result<()> {
     write_private(path, &bytes)
 }
 
-/// What a remote window needs to connect to `host_id`, read from the client folder `dir`. `themes` is
-/// the list of themes this window can draw; `theme` is its own mode.
-pub fn window_params(dir: &Path, host_id: &str, theme: ThemeKind, themes: Vec<ThemeFact>) -> Result<(ConnectParams, HostWindow), String> {
+/// The offices this laptop is paired with, in the order the host list keeps them. A missing list is
+/// no offices; a damaged one is an error (it is never replaced).
+pub fn paired_offices(dir: &Path) -> Result<Vec<PairedOffice>, String> {
+    let store = HostStore::load(&dir.join(HOSTS_FILE)).map_err(|e| format!("could not read the paired offices: {e}"))?;
+    Ok(store
+        .list()
+        .iter()
+        .map(|h| PairedOffice { host_id: h.host_id.clone(), name: h.name.clone(), address: h.address.trim_start_matches("tcp://").to_owned() })
+        .collect())
+}
+
+/// What is needed to connect to `host_id`, read from the client folder `dir`. Nothing is made here:
+/// a missing device key or an unpaired host is an error.
+pub fn paired(dir: &Path, host_id: &str) -> Result<Paired, String> {
     let key = dir.join(DEVICE_KEY);
     if !key.exists() {
         return Err("This laptop has no device key yet. Pair with the office from CodeShellManager first.".into());
@@ -61,9 +93,16 @@ pub fn window_params(dir: &Path, host_id: &str, theme: ThemeKind, themes: Vec<Th
     let host_public = host.public_key().ok_or_else(|| "The key stored for this office is damaged. Forget it and pair again.".to_owned())?;
     let identity = Identity::load_or_create(&key).map_err(|e| format!("this app's device key: {e}"))?;
     let device = ClientPeer::new(dir.to_path_buf()).device_name().to_owned();
-    let overlay = view_path(dir, host_id).as_deref().and_then(load_view);
     let window = HostWindow { name: host.name.clone(), address: host.address.trim_start_matches("tcp://").to_owned() };
-    Ok((ConnectParams { addr, host_public, identity, cfg: ClientConfig::new(&device), theme, themes, overlay }, window))
+    Ok(Paired { window, addr, host_public, identity, cfg: ClientConfig::new(&device) })
+}
+
+/// What a remote window needs to connect to `host_id`, read from the client folder `dir`. `themes` is
+/// the list of themes this window can draw; `theme` is its own mode.
+pub fn window_params(dir: &Path, host_id: &str, theme: ThemeKind, themes: Vec<ThemeFact>) -> Result<(ConnectParams, HostWindow), String> {
+    let p = paired(dir, host_id)?;
+    let overlay = view_path(dir, host_id).as_deref().and_then(load_view);
+    Ok((ConnectParams { addr: p.addr, host_public: p.host_public, identity: p.identity, cfg: p.cfg, theme, themes, overlay }, p.window))
 }
 
 #[cfg(test)]
@@ -102,5 +141,15 @@ mod tests {
         std::fs::write(&path, b"{ not json").expect("write");
         assert_eq!(load_view(&path), None, "a damaged file is no state");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_folder_has_no_offices_and_nothing_is_made() {
+        let dir = std::env::temp_dir().join(format!("csm-remote-offices-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(paired_offices(&dir), Ok(Vec::new()));
+        assert!(!dir.exists(), "listing creates no folder");
+        assert!(paired(&dir, "ABC234").is_err(), "an unpaired host is refused");
+        assert!(!dir.exists());
     }
 }
