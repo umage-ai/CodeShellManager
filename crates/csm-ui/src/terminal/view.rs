@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use csm_term::alacritty_terminal::grid::Dimensions;
 use csm_term::alacritty_terminal::index::{Column, Line, Point, Side};
 use csm_term::alacritty_terminal::selection::{Selection, SelectionType};
 use csm_term::alacritty_terminal::term::TermMode;
@@ -62,11 +63,26 @@ pub struct ViewOptions {
     /// A session's own font size (its look), in points; `None` is the renderer's size. Drawn from
     /// the shared atlas at that pixel size (glyphs are keyed by size): no second font is loaded.
     pub font_pt: Option<f32>,
+    /// The pane runs Claude Code: Ctrl+Shift+C with nothing selected asks for Claude's last reply
+    /// ([`ViewResponse::copy_reply`]; the tool answers "not available" for WSL and SSH).
+    pub claude: bool,
+    /// Copies of a selection are cleaned up (`claude_copy::clean`): a Claude Code pane with
+    /// `CleanClaudeCopies` on. Alt while copying gives the raw text.
+    pub clean_copy: bool,
 }
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        Self { interactive: true, request_focus: false, style: TermStyle::default(), padding: vec2(8.0, 6.0), edges: None, font_pt: None }
+        Self {
+            interactive: true,
+            request_focus: false,
+            style: TermStyle::default(),
+            padding: vec2(8.0, 6.0),
+            edges: None,
+            font_pt: None,
+            claude: false,
+            clean_copy: false,
+        }
     }
 }
 
@@ -91,7 +107,8 @@ enum Op {
     SelStart { col: usize, row: usize, right_half: bool, clicks: u8 },
     SelUpdate { col: usize, row: usize, right_half: bool },
     SelClear,
-    Copy,
+    /// Copy the selection; `raw`: as it is, never cleaned (Alt held).
+    Copy { raw: bool },
 }
 
 struct RenderCache {
@@ -123,6 +140,9 @@ pub struct ViewResponse {
     pub clicked: bool,
     /// A link was Ctrl+clicked (Cmd+click on macOS): the caller opens it (`open_url`).
     pub open_link: Option<String>,
+    /// Ctrl+Shift+C with nothing selected in a Claude pane ([`ViewOptions::claude`]): the caller
+    /// copies Claude's last reply (`claude_reply_get`).
+    pub copy_reply: bool,
 }
 
 /// The link under the pointer, looked up again only when the cell or the screen changes.
@@ -166,6 +186,11 @@ pub struct TerminalView {
     paste: PasteWatch,
     /// The link under the pointer (interactive views only).
     hover: Option<Hover>,
+    /// This frame's [`ViewOptions::claude`] and [`ViewOptions::clean_copy`].
+    claude: bool,
+    clean_copy: bool,
+    /// Ctrl+Shift+C asked for Claude's last reply this frame.
+    copy_reply: bool,
 }
 
 fn mods(m: egui::Modifiers) -> Mods {
@@ -258,6 +283,9 @@ impl TerminalView {
             grid: None,
             paste: PasteWatch::default(),
             hover: None,
+            claude: false,
+            clean_copy: false,
+            copy_reply: false,
         }
     }
 
@@ -346,6 +374,9 @@ impl TerminalView {
             source.focus_changed(focused);
         }
         let mut open_link = None;
+        self.claude = opts.claude;
+        self.clean_copy = opts.clean_copy;
+        self.copy_reply = false;
         if opts.interactive
             && let Some(g) = grid
         {
@@ -467,7 +498,7 @@ impl TerminalView {
         if false {
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "terminal"));
         }
-        ViewResponse { response: resp, grid, focused, clicked, open_link }
+        ViewResponse { response: resp, grid, focused, clicked, open_link, copy_reply: std::mem::take(&mut self.copy_reply) }
     }
 
     /// The state text to draw over an empty view (`None` while running).
@@ -528,8 +559,15 @@ impl TerminalView {
                     }
                 }
                 Event::Copy if focused => {
+                    // egui sends no modifiers with a copy: read them now. Ctrl+C and
+                    // Ctrl+Shift+C both arrive here.
+                    let m = ui.input(|i| i.modifiers);
                     if self.has_selection {
-                        self.ops.push(Op::Copy);
+                        self.ops.push(Op::Copy { raw: m.alt });
+                    } else if self.claude && m.shift {
+                        // Ctrl+Shift+C on nothing in a Claude pane: its last reply (Ctrl+C
+                        // still interrupts).
+                        self.copy_reply = true;
                     } else {
                         source.send_key(&[0x03]);
                         typed = true;
@@ -705,10 +743,18 @@ impl TerminalView {
                     }
                     self.has_selection = false;
                 }
-                Op::Copy => {
+                Op::Copy { raw } => {
                     if let Some(text) = t.term().selection_to_string()
                         && !text.is_empty()
                     {
+                        let text = if self.clean_copy && !raw {
+                            // The column the selection starts at: its first row may be partial.
+                            let first_col = t.term().selection.as_ref().and_then(|s| s.to_range(t.term())).map_or(0, |r| r.start.column.0);
+                            let clean = super::claude_copy::clean(&text, t.term().columns(), first_col);
+                            if clean.is_empty() { text } else { clean }
+                        } else {
+                            text
+                        };
                         ctx.copy_text(text);
                     }
                 }

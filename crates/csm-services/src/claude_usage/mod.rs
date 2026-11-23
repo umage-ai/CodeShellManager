@@ -7,6 +7,7 @@
 pub mod discover;
 pub mod parse;
 pub mod pricing;
+pub mod replies;
 pub mod subagents;
 pub mod tail;
 

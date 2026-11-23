@@ -151,6 +151,80 @@ pub fn claude_commands_entry(s: &crate::model::SessionView, presets: &[csm_core:
     Some(Entry::Sub { icon: "send", label: "Claude commands".into(), items })
 }
 
+/// "Copy last reply" and "Copy reply…" on a Claude pane: Claude's replies from its transcript
+/// (`claude_reply_get`, `claude_reply_list`). A WSL or SSH session's answer says it is not
+/// available there.
+fn claude_copy_entries(s: &crate::model::SessionView) -> Vec<Entry> {
+    if !s.is_claude() || !s.status.is_live() {
+        return Vec::new();
+    }
+    vec![
+        hinted("copy", "Copy last reply", "Ctrl Shift C", Action::CopyClaude("claude_reply_get", json!({"session_id": s.id}))),
+        item("copy", "Copy reply…", Action::OpenClaudeReplies(s.id.clone())),
+    ]
+}
+
+/// The longest preview in the reply picker (characters).
+const PICK_PREVIEW: usize = 48;
+
+fn short(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// The "Copy reply…" picker: the recent replies (newest first), each followed by its code blocks
+/// as entries of their own. Each copies through `claude_reply_get` / `claude_code_block_get` by
+/// the reply's id, so a reply written meanwhile doesn't shift what is copied.
+pub fn claude_replies_menu(state: Option<&crate::app::ClaudeReplies>, session: &str) -> Vec<Entry> {
+    let mut v = vec![Entry::Head("Copy Claude's reply".into())];
+    let rows = match state.filter(|r| r.session == session).map(|r| &r.rows) {
+        None | Some(None) => {
+            v.push(Entry::Head("Reading replies…".into()));
+            return v;
+        }
+        Some(Some(Err(e))) => {
+            v.push(Entry::Head(short(e, 60)));
+            return v;
+        }
+        Some(Some(Ok(rows))) => rows,
+    };
+    if rows.is_empty() {
+        v.push(Entry::Head("Claude has not replied yet".into()));
+        return v;
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 {
+            v.push(Entry::Sep);
+        }
+        let id = r["id"].as_str().unwrap_or_default();
+        let lines = r["lines"].as_u64().unwrap_or(0);
+        let lines = if lines == 1 { "1 line".to_string() } else { format!("{lines} lines") };
+        let preview = r["preview"].as_str().unwrap_or_default();
+        let label = if preview.is_empty() { "(no text)".to_string() } else { short(preview, PICK_PREVIEW) };
+        v.push(Entry::Item {
+            icon: "copy",
+            label,
+            hint: Some(if i == 0 { format!("latest · {lines}") } else { lines }),
+            danger: false,
+            action: Action::CopyClaude("claude_reply_get", json!({"session_id": session, "reply_id": id})),
+        });
+        for b in r["code_blocks"].as_array().into_iter().flatten() {
+            let k = b["index"].as_u64().unwrap_or(0);
+            let lang = b["lang"].as_str().map(|l| format!("{l} ")).unwrap_or_default();
+            let preview = b["preview"].as_str().unwrap_or_default();
+            v.push(item(
+                "braces",
+                format!("Copy code block {}: {lang}{}", k + 1, short(preview, PICK_PREVIEW / 2)),
+                Action::CopyClaude("claude_code_block_get", json!({"session_id": session, "reply_id": id, "block_index": k})),
+            ));
+        }
+    }
+    v
+}
+
 const DEMO_STATUS: &str = "Demo: set status";
 
 fn demo_status(session: &str) -> Entry {
@@ -180,6 +254,7 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
         item("copy", "Copy path", Action::CopyText(s.folder.clone())),
     ];
+    v.extend(claude_copy_entries(s));
     v.extend(worktree_entries(model, s));
     v.extend([
         Entry::Sep,
@@ -517,7 +592,10 @@ fn menu_area(
                         }
                         if r.clicked() {
                             actions.push(action.clone());
-                            actions.push(Action::CloseMenu);
+                            // An item that opens another menu in this one's place keeps it open.
+                            if !matches!(action, Action::OpenClaudeReplies(_)) {
+                                actions.push(Action::CloseMenu);
+                            }
                         }
                     }
                     Entry::ItemTip { icon, label, hint, tip, action } => {
@@ -644,6 +722,10 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
         }
         Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
+        Menu::ClaudeReplies { session, at } => {
+            let e = claude_replies_menu(app.ui.claude_replies.as_ref(), session);
+            menu_area(ctx, app, Id::new("menu-claude-replies"), pos2(at.x - size::MENU_W, at.y), &e, 0, false, actions)
+        }
         Menu::Recent { at } => {
             let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
             v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));

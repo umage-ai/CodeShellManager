@@ -29,8 +29,9 @@ fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize) -> Vec<(Stri
 
 /// Shortcuts that only mean something inside one panel (the palette, the new-session panel, a
 /// dialog), where their own tests press them, and the mouse chords (Ctrl+click on a link, tested
-/// below; Shift+click in the sidebar, tested in sidebar_ops.rs).
-const IN_PANEL: [&str; 4] = ["Ctrl+Enter", "Shift+Tab", "Ctrl+click", "Shift+click"];
+/// below; Shift+click in the sidebar, tested in sidebar_ops.rs), and Ctrl+Alt+C, which copies a
+/// selection in a Claude pane as shown (tested in claude_copy_ui.rs).
+const IN_PANEL: [&str; 5] = ["Ctrl+Enter", "Shift+Tab", "Ctrl+click", "Shift+click", "Ctrl+Alt+C"];
 
 /// Every chord shown in a string literal in `src/` (tooltips, menu hints, the palette, the help
 /// list, toasts), normalised to `Ctrl+Shift+T`. A chord is one or more of Ctrl / Shift / Alt

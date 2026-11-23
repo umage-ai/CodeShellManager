@@ -278,6 +278,9 @@ pub(crate) struct Runtime {
     /// Each followed Claude session's context fill from the light tail, while the Claude usage
     /// add-on is off (`usage_context` answers from it then).
     pub(crate) live_context: HashMap<String, crate::usage_tail::LiveContext>,
+    /// Each followed local Claude session's main transcript, as the reader last found it
+    /// (`claude_reply_get` and `claude_code_block_get` read Claude's replies from it).
+    pub(crate) claude_transcripts: HashMap<String, std::path::PathBuf>,
     /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,

@@ -237,6 +237,11 @@ pub struct AppSettings {
     /// The theme drawn in light mode: `latte` or a light add-on theme; falls back to Latte.
     #[serde(skip_serializing_if = "is_latte")]
     pub theme_light: String,
+    /// A selection copied from a Claude Code pane is cleaned up: Claude's markers, frames and
+    /// indentation go and the lines it wrapped are joined again (Alt while copying gives the raw
+    /// text). On by default; written only when turned off.
+    #[serde(skip_serializing_if = "is_true")]
+    pub clean_claude_copies: bool,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -333,6 +338,7 @@ impl Default for AppSettings {
             tray_notice_shown: false,
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
+            clean_claude_copies: t(),
             start_minimized: false,
             start_minimized_to_tray: false,
         }
