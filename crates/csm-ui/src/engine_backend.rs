@@ -625,6 +625,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         },
         rail: view.rail_tab.clone().map_or(Scope::All, Scope::Group),
         layouts,
+        custom_grids: view.custom_grids.iter().map(|&(cols, rows)| GridPreset { cols, rows }).collect(),
         active: view.focused.clone(),
         inspector: view.inspector.map(|t| match t {
             CoreTab::Notes => InspectorTab::Notes,

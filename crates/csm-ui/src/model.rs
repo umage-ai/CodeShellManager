@@ -358,7 +358,7 @@ impl LayoutMode {
     }
 }
 
-/// Grid presets (1, 2, 2×2, 3×2, 3×3) and a custom N×M.
+/// Grid presets (1, 2, 4×1, 6×1, 2×2, 3×2, 6×2, 3×3) and a custom N×M.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GridPreset {
     pub cols: u8,
@@ -366,13 +366,17 @@ pub struct GridPreset {
 }
 
 impl GridPreset {
-    pub const PRESETS: [GridPreset; 5] = [
-        GridPreset { cols: 1, rows: 1 },
-        GridPreset { cols: 2, rows: 1 },
-        GridPreset { cols: 2, rows: 2 },
-        GridPreset { cols: 3, rows: 2 },
-        GridPreset { cols: 3, rows: 3 },
-    ];
+    /// The engine's presets ([`csm_core::models::GRID_PRESETS`]), in menu order.
+    pub const PRESETS: [GridPreset; csm_core::models::GRID_PRESETS.len()] = {
+        let src = csm_core::models::GRID_PRESETS;
+        let mut out = [GridPreset { cols: 1, rows: 1 }; csm_core::models::GRID_PRESETS.len()];
+        let mut i = 0;
+        while i < src.len() {
+            out[i] = GridPreset { cols: src[i].0, rows: src[i].1 };
+            i += 1;
+        }
+        out
+    };
 
     pub fn new(cols: u8, rows: u8) -> GridPreset {
         GridPreset { cols: cols.clamp(1, 6), rows: rows.clamp(1, 6) }
@@ -382,10 +386,11 @@ impl GridPreset {
         usize::from(self.cols.max(1)) * usize::from(self.rows.max(1))
     }
 
-    /// "1", "2", "2×2", …
+    /// "1", "2", "4×1", "2×2", …: a bare number only for one or two side by side ("4" would
+    /// read as four cells).
     pub fn label(self) -> String {
         match (self.cols, self.rows) {
-            (c, 1) => c.to_string(),
+            (c @ 1..=2, 1) => c.to_string(),
             (c, r) => format!("{c}×{r}"),
         }
     }
@@ -801,6 +806,8 @@ pub struct UiModel {
     pub rail: Scope,
     /// Layouts by [`Scope::key`].
     pub layouts: BTreeMap<String, Layout>,
+    /// Remembered custom grid sizes, newest first (the Grid menu; `grid_preset_forget`).
+    pub custom_grids: Vec<GridPreset>,
     pub active: Option<SessionId>,
     pub inspector: Option<InspectorTab>,
     pub inbox_panel: InboxPanel,

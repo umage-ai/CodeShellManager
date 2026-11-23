@@ -544,6 +544,59 @@ fn quit_closes_everything_and_signals_ready() {
 }
 
 #[test]
+fn custom_grids_are_remembered_deduplicated_capped_forgotten_and_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    std::fs::write(&path, test_app().to_json().unwrap()).unwrap();
+    let ptys = Default::default();
+    let mut o = common::fast_options(&ptys);
+    o.save_path = Some(path.clone());
+    let (state, _) = State::load(o.clone());
+    let e = csm_engine::Engine::start(state, vec![]).unwrap();
+    let call = |id: &str, p: serde_json::Value| e.call(Caller::Ui, id, p).unwrap();
+    let grids = |e: &csm_engine::Engine| e.view().custom_grids.clone();
+
+    // The new presets are presets: by name, and as cols/rows they are not remembered.
+    for (name, g) in [("4x1", (4u64, 1u64)), ("6x1", (6, 1)), ("6x2", (6, 2))] {
+        let l = call("layout_set", json!({"preset": name}));
+        assert_eq!((l.data["layout"]["GridCols"].as_u64(), l.data["layout"]["GridRows"].as_u64()), (Some(g.0), Some(g.1)));
+        call("layout_set", json!({"cols": g.0, "rows": g.1}));
+    }
+    assert!(grids(&e).is_empty(), "a preset is never a custom");
+
+    // A custom size is remembered, newest first; setting it again moves it, never duplicates it.
+    call("layout_set", json!({"mode": "grid", "cols": 5, "rows": 1}));
+    let out = call("layout_set", json!({"mode": "grid", "cols": 4, "rows": 3}));
+    assert_eq!(out.data["custom_grids"], json!([[4, 3], [5, 1]]));
+    call("layout_set", json!({"mode": "grid", "cols": 5, "rows": 1}));
+    assert_eq!(grids(&e), vec![(5, 1), (4, 3)]);
+    // Only one side given: the remembered size is the resulting grid.
+    call("layout_set", json!({"rows": 4}));
+    assert_eq!(grids(&e).first(), Some(&(5, 4)));
+    // At most six; the oldest goes.
+    for (c, r) in [(1, 2), (1, 3), (2, 3), (7, 7), (8, 8)] {
+        call("layout_set", json!({"cols": c, "rows": r}));
+    }
+    assert_eq!(grids(&e), vec![(8, 8), (7, 7), (2, 3), (1, 3), (1, 2), (5, 4)]);
+    assert_eq!(call("layout_get", json!({})).data["custom_grids"].as_array().unwrap().len(), 6);
+
+    // Forget one; forgetting it again is quiet.
+    let f = call("grid_preset_forget", json!({"cols": 7, "rows": 7}));
+    assert_eq!(f.data["forgot"], true);
+    assert_eq!(grids(&e), vec![(8, 8), (2, 3), (1, 3), (1, 2), (5, 4)]);
+    assert_eq!(call("grid_preset_forget", json!({"cols": 7, "rows": 7})).data["forgot"], false);
+    assert!(e.call(Caller::Ui, "grid_preset_forget", json!({"cols": 7})).is_err(), "both sides are required");
+    assert!(e.call(Caller::Ui, "layout_set", json!({"cols": 9})).is_err());
+    e.shutdown();
+
+    // Saved with the UI state: a new engine on the same file offers them again.
+    let (state, _) = State::load(o);
+    let e = csm_engine::Engine::start(state, vec![]).unwrap();
+    assert_eq!(e.view().custom_grids, vec![(8, 8), (2, 3), (1, 3), (1, 2), (5, 4)]);
+    e.shutdown();
+}
+
+#[test]
 fn layout_view_and_settings_tools() {
     let h = H::new();
     let g = h.ok("group_new", json!({"name": "Odulodo"})).data["group_id"].as_str().unwrap().to_owned();

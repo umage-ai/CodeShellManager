@@ -158,6 +158,8 @@ pub struct Snapshot {
     pub rail_tab: Option<String>,
     /// Layout per group id, plus [`csm_core::models::ALL_LAYOUT_KEY`].
     pub layouts: BTreeMap<String, GroupLayout>,
+    /// Remembered custom grid sizes `(cols, rows)`, newest first (the Grid menu; `grid_preset_forget`).
+    pub custom_grids: Vec<(u8, u8)>,
     /// The layout key the panes use right now (the rail tab, or `__ALL__`).
     pub layout_key: String,
     /// Session ids, needs-you first (oldest first), then unseen results (oldest first).
@@ -402,6 +404,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         view: group_view_of(state),
         rail_tab: ui.rail_tab.clone(),
         layouts,
+        custom_grids: ui.custom_grids.clone(),
         layout_key: layout_key(state),
         inbox,
         focused: state.rt.focused.clone(),
