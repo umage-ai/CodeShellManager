@@ -401,6 +401,14 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         "OSC 52, as tmux, Claude Code's fullscreen mode and remote shells use it (up to 1 MB). Programs can never read the clipboard.",
         actions,
     );
+    bool_setting(
+        ui,
+        app,
+        "CleanClaudeCopies",
+        "Clean up copies from Claude",
+        "Copying a selection in a Claude Code pane drops its markers, frames and indentation and joins the lines Claude wrapped at the pane's edge. Ctrl+Alt+C copies a selection as shown.",
+        actions,
+    );
     section(ui, "Windows Terminal profiles");
     bool_setting(
         ui,

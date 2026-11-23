@@ -1,0 +1,7 @@
+⏺ Set the variables first:
+
+  $root = 'C:\work'
+  $min = 1MB
+  Get-ChildItem $root -Recurse
+
+  Then run it.

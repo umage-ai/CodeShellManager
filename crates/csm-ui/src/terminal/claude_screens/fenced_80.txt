@@ -1,0 +1,6 @@
+  ```powershell
+  $x = 1
+  Get-ChildItem -Path C:\work -Recurse -File | Where-Object { $_.Length -gt 1MB
+  } | Sort-Object Length -Descending
+  -First
+  ```

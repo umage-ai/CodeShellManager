@@ -242,6 +242,11 @@ pub struct AppSettings {
     /// off. Never checked on its own under `--clean` or an isolated run.
     #[serde(skip_serializing_if = "is_true")]
     pub check_for_updates: bool,
+    /// A selection copied from a Claude Code pane is cleaned up: Claude's markers, frames and
+    /// indentation go and the lines it wrapped are joined again (Alt while copying gives the raw
+    /// text). On by default; written only when turned off.
+    #[serde(skip_serializing_if = "is_true")]
+    pub clean_claude_copies: bool,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -338,6 +343,7 @@ impl Default for AppSettings {
             tray_notice_shown: false,
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
+            clean_claude_copies: t(),
             start_minimized: false,
             start_minimized_to_tray: false,
             check_for_updates: t(),

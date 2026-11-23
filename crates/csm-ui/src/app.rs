@@ -44,6 +44,12 @@ pub enum Action {
     CopyText(String),
     /// Copy text and say so (`(text, toast)`).
     CopyAs(String, String),
+    /// Copy what a Claude reply tool answers (`claude_reply_get`, `claude_code_block_get`): the
+    /// call goes out, and its text lands on the clipboard with a toast when it answers.
+    CopyClaude(&'static str, Value),
+    /// "Copy reply…": the picker of Claude's recent replies and their code blocks
+    /// (`claude_reply_list`), where the pane menu was.
+    OpenClaudeReplies(SessionId),
     /// Open the Runs tab with its editor on this session's run commands.
     EditRuns(SessionId),
     /// "New worktree from this branch…": the Git tab on this session with its New worktree
@@ -137,6 +143,8 @@ pub enum Menu {
     Sort { at: egui::Pos2 },
     /// The Recent menu (title bar, Ctrl+Shift+E), its top-right corner at `at`.
     Recent { at: egui::Pos2 },
+    /// "Copy reply…" on a Claude pane: its recent replies and their code blocks.
+    ClaudeReplies { session: SessionId, at: egui::Pos2 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -293,6 +301,8 @@ pub struct Prefs {
     pub close_action: csm_core::models::CloseAction,
     /// `TrayNoticeShown`: "still running in the tray" was said once, in some run.
     pub tray_notice_shown: bool,
+    /// `CleanClaudeCopies`: a selection copied from a Claude pane is cleaned up (on by default).
+    pub clean_claude_copies: bool,
 }
 
 impl Default for Prefs {
@@ -309,6 +319,7 @@ impl Default for Prefs {
             ui_zoom_percent: csm_core::models::UI_ZOOM_DEFAULT,
             close_action: csm_core::models::CloseAction::Ask,
             tray_notice_shown: false,
+            clean_claude_copies: true,
         }
     }
 }
@@ -513,10 +524,23 @@ pub struct UiState {
     /// `task_new` calls whose task is to be assigned (and sent) to a session once it exists:
     /// (the call's params, the session).
     pub pending_assign: Vec<(Value, SessionId)>,
+    /// Claude reply calls whose text goes to the clipboard when they answer ([`Action::CopyClaude`]):
+    /// (tool id, params).
+    pub pending_copies: Vec<(String, Value)>,
+    /// The "Copy reply…" picker's list (`claude_reply_list`) for a session: `None` while asked.
+    pub claude_replies: Option<ClaudeReplies>,
     /// The add-on screens: the view strip's selection, drafts, split ratios (see `screens::addon_screen`).
     pub screens: Arc<Mutex<screens::addon_screen::ScreenUi>>,
     /// The add-on screens open this frame (fetched once per frame).
     pub screen_infos: Vec<csm_engine::ScreenInfo>,
+}
+
+/// The "Copy reply…" picker's list of a session's replies (`claude_reply_list`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeReplies {
+    pub session: SessionId,
+    /// The replies (newest first), or why there are none; `None` while asked.
+    pub rows: Option<Result<Vec<Value>, String>>,
 }
 
 /// A native dialog the UI asks the host for. The answer comes back on a later frame; the frame
@@ -540,6 +564,8 @@ pub struct PaneHost {
     pub base_font_size: f32,
     /// Space between a pane's edge and its cells (`TerminalPadding`).
     pub padding: f32,
+    /// `CleanClaudeCopies`: copies from a Claude pane are cleaned up.
+    pub clean_claude_copies: bool,
 }
 
 impl PaneHost {
@@ -588,6 +614,7 @@ impl CsmApp {
                 renderer,
                 views: HashMap::new(),
                 padding: theme::space::SM,
+                clean_claude_copies: true,
             })),
             ui: UiState::default(),
             model,
@@ -702,6 +729,9 @@ impl CsmApp {
                 self.dispatch.submit("task_assign", json!({"task_id": id, "session_id": sid, "send": true}));
             }
         }
+        if self.claude_reply(ctx, call, reply) {
+            return;
+        }
         let out = match reply {
             Ok(out) => out,
             Err(_) => {
@@ -770,6 +800,50 @@ impl CsmApp {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The Claude reply tools' answers: the "Copy reply…" picker's list, and the text of a copy
+    /// asked for ([`Action::CopyClaude`]) onto the clipboard, with a toast. True when handled.
+    fn claude_reply(&mut self, ctx: &egui::Context, call: &Call, reply: &csm_engine::Reply) -> bool {
+        match call.id.as_str() {
+            "claude_reply_list" => {
+                let sid = call.params["session_id"].as_str().unwrap_or_default();
+                if let Some(r) = self.ui.claude_replies.as_mut()
+                    && r.session == sid
+                {
+                    r.rows = Some(match reply {
+                        Ok(o) => Ok(o.data["replies"].as_array().cloned().unwrap_or_default()),
+                        Err(e) => Err(e.to_string()),
+                    });
+                    ctx.request_repaint();
+                }
+                true
+            }
+            "claude_reply_get" | "claude_code_block_get" => {
+                let Some(i) = self.ui.pending_copies.iter().position(|(id, p)| *id == call.id && *p == call.params) else {
+                    return false;
+                };
+                self.ui.pending_copies.remove(i);
+                // An error: the backend toasts it ("not available for this session…").
+                if let Ok(o) = reply {
+                    let block = call.id == "claude_code_block_get";
+                    let text = o.data[if block { "code" } else { "text" }].as_str().unwrap_or_default();
+                    let lines = o.data["lines"].as_u64().unwrap_or(0);
+                    ctx.copy_text(text.to_owned());
+                    let n = if lines == 1 { "1 line".to_owned() } else { format!("{lines} lines") };
+                    let what = if block {
+                        format!("code block {}", o.data["block_index"].as_u64().unwrap_or(0) + 1)
+                    } else if o.data["index"].as_u64() == Some(0) {
+                        "Claude's last reply".to_owned()
+                    } else {
+                        "Claude's reply".to_owned()
+                    };
+                    self.toast(ctx, format!("Copied {what} ({n})"));
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -885,6 +959,9 @@ impl CsmApp {
         if let Some(b) = s.bool("TrayNoticeShown") {
             p.tray_notice_shown = b;
         }
+        if let Some(b) = s.bool("CleanClaudeCopies") {
+            p.clean_claude_copies = b;
+        }
         self.prefs = p;
     }
 
@@ -962,6 +1039,7 @@ impl CsmApp {
             host.renderer.fonts.size_pt = size;
         }
         host.padding = self.prefs.terminal_padding;
+        host.clean_claude_copies = self.prefs.clean_claude_copies;
         if host.renderer.fonts.coverage != want {
             host.renderer.fonts.coverage = want;
             if let Some(atlas) = host.renderer.atlas.as_mut() {
@@ -1104,6 +1182,25 @@ impl CsmApp {
                 self.ui.menu = None;
                 ctx.copy_text(text);
                 self.toast(ctx, toast);
+            }
+            Action::CopyClaude(id, params) => {
+                self.ui.menu = None;
+                self.ui.submenu = None;
+                self.ui.pending_copies.push((id.to_owned(), params.clone()));
+                self.dispatch.submit(id, params);
+            }
+            Action::OpenClaudeReplies(session) => {
+                // Where the pane menu was, else where the pane's ⋯ button was drawn.
+                let at = match &self.ui.menu {
+                    Some(Menu::Pane { at, .. } | Menu::Row { at, .. }) => *at,
+                    _ => ctx
+                        .data(|d| d.get_temp::<egui::Pos2>(egui::Id::new(("pane-more-at", session.clone()))))
+                        .unwrap_or_else(|| ctx.content_rect().center()),
+                };
+                self.ui.submenu = None;
+                self.ui.claude_replies = Some(ClaudeReplies { session: session.clone(), rows: None });
+                self.dispatch.submit("claude_reply_list", json!({"session_id": session, "limit": 10}));
+                self.ui.menu = Some(Menu::ClaudeReplies { session, at });
             }
             Action::EditRuns(id) => {
                 if let Some(s) = self.model.session(&id).cloned() {
@@ -1496,6 +1593,24 @@ impl CsmApp {
         if let Some(a) = self.model.active.clone() {
             if pressed(ctx, cmd | Modifiers::SHIFT, Key::R) {
                 self.run(ctx, Action::Tool("session_restart", json!({"session_id": a})));
+            }
+            // Ctrl+Shift+C: Claude's last reply. A focused terminal gets it as a copy (egui sends
+            // no key with it) and handles it there: a selection is copied instead. Elsewhere it is
+            // this key, or a copy nothing focused takes.
+            if self.model.session(&a).is_some_and(crate::model::SessionView::is_claude) {
+                let nothing_focused = ctx.memory(|m| m.focused().is_none());
+                let copy = pressed(ctx, cmd | Modifiers::SHIFT, Key::C)
+                    || (nothing_focused
+                        && ctx.input_mut(|i| {
+                            let had = i.modifiers.shift && i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                            if had {
+                                i.events.retain(|e| !matches!(e, egui::Event::Copy));
+                            }
+                            had
+                        }));
+                if copy {
+                    self.run(ctx, Action::CopyClaude("claude_reply_get", json!({"session_id": a})));
+                }
             }
             // Ctrl+.: the active pane's ⋯ menu, where its button was last drawn.
             if pressed(ctx, cmd, Key::Period) {

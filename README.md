@@ -229,6 +229,10 @@ Write your own: [docs/addons.md](docs/addons.md).
 - **Start at sign-in.** Settings → General → Start-up starts the app when you sign in (Windows,
   macOS, Linux), optionally minimized or hidden in the tray, with your sessions restored.
 - **Drop files** on a pane to paste their paths, quoted for the session's shell.
+- **Copy from Claude, cleanly.** "Copy last reply" (`Ctrl+Shift+C`) and "Copy reply…" in a Claude
+  pane's menu copy a reply or one of its code blocks exactly as Claude wrote it, from the transcript;
+  a selection copied from a Claude pane loses Claude's markers and wrapping (`Ctrl+Alt+C` copies it
+  as shown).
 - **Light and dark themes** (Catppuccin Latte and Mocha) and interface zoom.
 
 ## Requirements
@@ -310,6 +314,7 @@ A file named `portable` next to `codeshell.exe` keeps all data in a `data` folde
 | `Ctrl+Shift+N` | Notes |
 | `Ctrl+Shift+R` | Restart the active session |
 | `Ctrl+.` | The active pane's menu |
+| `Ctrl+Shift+C` | Copy Claude's last reply (in a Claude pane, nothing selected) |
 | `F2` | Rename the active session |
 | `F5` / `Shift+F5` | Run / stop the default run command |
 | `Ctrl+,` | Settings |

@@ -1,0 +1,8 @@
+⏺ The projects:
+
+  ┌─────────┬─────────────┐
+  │ Project │ What        │
+  ├─────────┼─────────────┤
+  │ shop    │ web shop    │
+  │ blog    │ static site │
+  └─────────┴─────────────┘

@@ -6,6 +6,7 @@ mod app;
 mod autostart;
 mod backup;
 mod bulk;
+mod claude_replies;
 mod docs;
 pub(crate) mod git;
 mod groups;
@@ -34,6 +35,7 @@ use crate::tool::{Caller, ToolError, ToolSpec};
 /// Every engine tool, in palette order.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut v = sessions::specs();
+    v.extend(claude_replies::specs());
     v.extend(groups::specs());
     v.extend(bulk::specs());
     v.extend(layout::specs());

@@ -1,0 +1,11 @@
+⏺ The folder has three projects:
+
+  - shop: the web shop, with its own build and a long description that wraps
+    onto a second row
+  - blog: static pages
+  - tools: scripts that run nightly, also described at some length so that it
+    wraps on the screen
+    - a nested item
+  1. first numbered step, which is also long enough to wrap around the edge of
+     the pane
+  2. second

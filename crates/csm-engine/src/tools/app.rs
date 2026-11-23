@@ -182,6 +182,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("TrayNoticeShown").or_insert(json!(s.tray_notice_shown));
         m.entry("PassSessionNameToClaude").or_insert(json!(s.pass_session_name_to_claude));
         m.entry("ClaudeUsageHistory").or_insert(json!(s.claude_usage_history));
+        m.entry("CleanClaudeCopies").or_insert(json!(s.clean_claude_copies));
         m.entry("StartMinimized").or_insert(json!(s.start_minimized));
         m.entry("StartMinimizedToTray").or_insert(json!(s.start_minimized_to_tray));
         m.entry("ThemeDark").or_insert(json!(s.theme_dark));

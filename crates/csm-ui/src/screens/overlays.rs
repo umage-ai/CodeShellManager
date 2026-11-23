@@ -119,7 +119,7 @@ fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>
 }
 
 /// Every keyboard shortcut, in one place (`?`, F1, Ctrl+/).
-pub const SHORTCUTS: [(&str, &str); 29] = [
+pub const SHORTCUTS: [(&str, &str); 31] = [
     ("Ctrl K", "Search sessions and commands"),
     ("Ctrl F", "Search all output and notes"),
     ("Ctrl T", "New session"),
@@ -138,6 +138,8 @@ pub const SHORTCUTS: [(&str, &str); 29] = [
     ("Ctrl Shift R", "Restart the active session"),
     ("Ctrl W", "Close the active session"),
     ("Ctrl click", "Open a link in a terminal"),
+    ("Ctrl Shift C", "Copy Claude's last reply (nothing selected)"),
+    ("Ctrl Alt C", "Copy a selection from Claude as shown"),
     ("F2", "Rename the active session"),
     ("F5", "Run the default run command"),
     ("Shift F5", "Stop it"),

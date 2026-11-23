@@ -1058,16 +1058,20 @@ pub fn pane(
         let body_bg = style.background();
         let edges = look.and_then(csm_core::look::Look::padding_edges).map(|e| e.map(f32::from));
         let font_pt = look.and_then(|l| l.font_size).map(|n| n as f32);
-        let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, ..ViewOptions::default() };
+        let claude = s.is_claude();
+        let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, claude, ..ViewOptions::default() };
         let mut child = ui.new_child(UiBuilder::new().max_rect(body));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
-        let PaneHost { renderer, views, padding, .. } = host;
-        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), ..opts };
+        let PaneHost { renderer, views, padding, clean_claude_copies, .. } = host;
+        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), clean_copy: claude && *clean_claude_copies, ..opts };
         let view = views.entry(view_key.clone()).or_insert_with(|| TerminalView::new(Id::new(("csm-pane", view_key.clone()))));
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;
         if let Some(url) = vr.open_link {
             actions.push(Action::Tool("open_url", json!({"url": url})));
+        }
+        if vr.copy_reply {
+            actions.push(Action::CopyClaude("claude_reply_get", json!({"session_id": s.id})));
         }
         let placeholder = if queued { Some(format!("Starting {} in {}…", s.command, s.name)) } else { TerminalView::placeholder(src) };
         if let Some(text_) = placeholder {
