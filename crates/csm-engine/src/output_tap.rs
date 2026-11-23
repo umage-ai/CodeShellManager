@@ -132,20 +132,33 @@ impl OutputTap {
     }
 
     /// Appends PTY output. Never waits: if the tap is busy the bytes are dropped and counted.
-    pub fn feed(&self, data: &[u8]) {
-        self.feed_at(data, Instant::now());
+    /// Returns the absolute offset just past these bytes (dropped ones take an offset too).
+    pub fn feed(&self, data: &[u8]) -> u64 {
+        self.feed_at(data, Instant::now())
     }
 
-    fn feed_at(&self, data: &[u8], now: Instant) {
+    /// The absolute offset just past every byte fed so far (dropped ones included). Lock-free.
+    pub fn fed(&self) -> u64 {
+        self.fed.load(Ordering::Acquire)
+    }
+
+    /// Whether a subscriber can start reading at `offset`: it lies inside the ring, or at its end.
+    pub fn holds(&self, offset: u64) -> bool {
+        let g = self.lock();
+        offset >= g.ring.oldest && offset <= g.ring.end()
+    }
+
+    fn feed_at(&self, data: &[u8], now: Instant) -> u64 {
         if data.is_empty() {
-            return;
+            return self.fed();
         }
         let n = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let start = self.fed.fetch_add(n, Ordering::AcqRel);
+        let end = start.saturating_add(n);
         let Some(mut g) = self.try_lock() else {
             self.dropped_bytes.fetch_add(n, Ordering::Relaxed);
             self.unmetered.fetch_add(n, Ordering::Relaxed);
-            return;
+            return end;
         };
         let folded = self.unmetered.swap(0, Ordering::Relaxed);
         match g.ring.push(start, data) {
@@ -157,6 +170,7 @@ impl OutputTap {
         }
         g.rate.record(n.saturating_add(folded), now.saturating_duration_since(self.origin));
         g.subscribers.retain(|tx| !matches!(tx.try_send(()), Err(TrySendError::Disconnected(()))));
+        end
     }
 
     /// A subscription that starts at `from`, or at the current end when `None`. A `from` the
@@ -217,6 +231,11 @@ impl Subscription {
     /// The offset the next [`read`](Self::read) starts at.
     pub fn offset(&self) -> u64 {
         self.next
+    }
+
+    /// How many bytes were fed that this subscription has not read yet. Lock-free.
+    pub fn behind(&self) -> u64 {
+        self.tap.fed().saturating_sub(self.next)
     }
 
     /// Waits up to `timeout` for a nudge. Returns true when one is pending. A feed that found the

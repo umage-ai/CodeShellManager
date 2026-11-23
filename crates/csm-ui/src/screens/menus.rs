@@ -14,6 +14,28 @@ use crate::theme::{self, Tokens, alpha, icon, radius, size, space, text};
 use crate::widgets;
 
 /// One row of a menu.
+/// Whether a remote window hides this menu entry: what runs on this laptop (open folder, open with,
+/// backup) is not offered there. Submenus that are only local (Open with) go with their parent.
+pub fn hidden_in_remote(entry: &Entry) -> bool {
+    // "Open a shell here" starts a shell in this laptop's view of a folder: a laptop-only item (the
+    // office's shells are the sessions the window already shows).
+    if let Entry::Item { label, .. } = entry
+        && label == "Open a shell here"
+    {
+        return true;
+    }
+    match entry {
+        Entry::Item { action, .. } | Entry::ItemTip { action, .. } => match action {
+            Action::Tool(id, _) => crate::remote_window::is_local_only(id),
+            Action::ToolNamed(id, _) | Action::PaletteTool(id) => crate::remote_window::is_local_only(id),
+            Action::OpenWithEditor => true,
+            _ => false,
+        },
+        Entry::Sub { label, .. } => label.eq_ignore_ascii_case("Open with"),
+        Entry::Head(_) | Entry::Sep => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Entry {
     Head(String),
@@ -586,6 +608,14 @@ fn menu_area(
     right: bool,
     actions: &mut Vec<Action>,
 ) -> Vec<Rect> {
+    // A remote window offers nothing that runs on this laptop.
+    let offered: Vec<Entry>;
+    let entries = if app.remote.is_some() {
+        offered = entries.iter().filter(|e| !hidden_in_remote(e)).cloned().collect();
+        offered.as_slice()
+    } else {
+        entries
+    };
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     let mut rects = Vec::new();

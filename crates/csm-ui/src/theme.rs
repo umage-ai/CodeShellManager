@@ -713,6 +713,8 @@ pub mod size {
     pub const HBAR_SIDE: f32 = 12.0;
     pub const HBAR_MIN: f32 = 24.0;
     pub const RESTORE_RAIL: f32 = 2.0;
+    /// The strip under the title bar of a remote window ("Connected to OFFICE · address").
+    pub const REMOTE_BAR: f32 = 24.0;
     pub const BAR: f32 = 6.0;
     pub const GRID_TILE_W: f32 = 92.0;
     pub const GRID_GLYPH: [f32; 2] = [56.0, 36.0];
@@ -772,6 +774,13 @@ pub mod size {
     pub const DRAG_SLOP: f32 = 4.0;
     /// An on/off switch's track.
     pub const SWITCH: [f32; 2] = [34.0, 18.0];
+    /// The pairing QR code: its side with the quiet zone, and the quiet zone in modules.
+    pub const QR_SIDE: f32 = 208.0;
+    pub const QR_QUIET: i32 = 4;
+    /// The status dot of the remote-access indicator and the device rows.
+    pub const STATUS_DOT: f32 = 8.0;
+    /// The title bar indicator: the room it never takes more than.
+    pub const REMOTE_PILL_MAX_W: f32 = 270.0;
 }
 
 /// Opacities (the mock-up's `opacity` and `color-mix` percentages).
@@ -788,6 +797,8 @@ pub mod alpha {
     pub const PICKED: f32 = 0.2;
     /// The warning bands behind the Usage tab's context gauge.
     pub const GAUGE_BAND: f32 = 0.28;
+    /// The remote window's strip behind the office name.
+    pub const REMOTE_BAR: f32 = 0.16;
     /// The Usage dashboard's bar under a row's cost (its share of the costliest row).
     pub const SHARE_BAR: f32 = 0.56;
     /// The empty half of a side-by-side row.
@@ -797,6 +808,8 @@ pub mod alpha {
     /// A closed thread's badge, and under the pointer.
     pub const THREAD_BADGE: f32 = 0.25;
     pub const THREAD_BADGE_HOVER: f32 = 0.4;
+    /// The veil over a remote window's last snapshot while its host is out of reach.
+    pub const STALE: f32 = 0.55;
 }
 
 /// How long a toast stays, and the status glyph animation rate.

@@ -9,13 +9,14 @@
 //! unless the engine rejected the params themselves (`InvalidParams`, `UnknownTool`). The demo
 //! engine's PTY factory refuses, so nothing here starts a process through it.
 
+pub mod peer;
 pub mod tools;
 pub mod transcripts;
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use csm_engine::{Event, Reply};
@@ -78,7 +79,14 @@ pub struct DemoBackend {
     group_focus: HashMap<String, SessionId>,
     /// Add-on screens as a test or a screenshot set them up (see [`DemoBackend::screens_handle`]).
     screens: Arc<std::sync::Mutex<DemoScreens>>,
+    /// The remote window this demo stands for (`set_remote`); none for the demo's own sessions.
+    remote: Option<crate::remote_window::RemoteStatus>,
+    /// The last frame's panes as the UI reported them (`show_panes`), for the tests.
+    panes: PanesLog,
 }
+
+/// The panes the UI last reported: the visible session ids and the focused one.
+pub type PanesLog = Arc<Mutex<Option<(Vec<String>, Option<String>)>>>;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -280,6 +288,8 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
     );
     UiModel {
         port_forwards: Vec::new(),
+        remote: false,
+        stale: false,
         // The built-in Claude usage add-on is on, so the screenshots show usage.
         addons: vec![demo_claude_usage(true)],
         remotes: Vec::new(),
@@ -411,6 +421,8 @@ impl DemoBackend {
             restoring: None,
             group_focus: HashMap::new(),
             screens: Arc::default(),
+            remote: None,
+            panes: Arc::default(),
         };
         let ids: Vec<SessionId> = b.model.sessions.iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         for id in ids {
@@ -1352,6 +1364,16 @@ impl Backend for DemoBackend {
         self.snap.clone()
     }
 
+    fn remote(&self) -> Option<crate::remote_window::RemoteStatus> {
+        self.remote.clone()
+    }
+
+    fn show_panes(&mut self, visible: &[String], driver: Option<&str>) {
+        if let Ok(mut log) = self.panes.lock() {
+            *log = Some((visible.to_vec(), driver.map(str::to_owned)));
+        }
+    }
+
     fn terminal(&self, id: &str) -> Option<Arc<dyn TerminalSource>> {
         self.terms.get(id).cloned()
     }
@@ -1462,6 +1484,21 @@ pub struct DemoScreens {
 }
 
 impl DemoBackend {
+    /// Makes this demo stand for a remote window to `status`'s host (the strip, the hidden
+    /// local-only items). The demo still answers its own sessions: it is a stand-in, not a link.
+    pub fn set_remote(&mut self, status: Option<crate::remote_window::RemoteStatus>) {
+        self.model.remote = status.is_some();
+        self.model.stale = matches!(status, Some(crate::remote_window::RemoteStatus { link: crate::remote_window::RemoteLink::Offline, .. }));
+        self.remote = status;
+        self.snap = Arc::new(self.model.clone());
+    }
+
+    /// The panes the UI last reported through `Backend::show_panes` (a test reads it; `None` before
+    /// the first frame).
+    pub fn panes_log(&self) -> PanesLog {
+        self.panes.clone()
+    }
+
     /// The handle to the demo's add-on screens.
     pub fn screens_handle(&self) -> Arc<std::sync::Mutex<DemoScreens>> {
         self.screens.clone()

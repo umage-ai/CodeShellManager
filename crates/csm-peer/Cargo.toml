@@ -1,0 +1,30 @@
+[package]
+name = "csm-peer"
+description = "The peer link's transport: the server that lets another CodeShellManager connect (off until the person turns it on), the client connection, Noise over TCP, device pairing, the device list and the audit log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csm-engine = { path = "../csm-engine" }
+csm-peer-proto = { path = "../csm-peer-proto" }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The Noise protocol (a normal dependency here; csm-peer-proto only tests against it). Pure Rust,
+# MIT OR Apache-2.0; its RustCrypto dependencies were already in Cargo.lock through the dev-dependency.
+snow = "0.10"
+getrandom = "0.3"
+# This machine's interfaces and addresses, for the address picker (a read-only system query). MIT OR BSD-3-Clause.
+if-addrs = "0.15"
+
+[dev-dependencies]
+tempfile = "3"
+csm-core = { path = "../csm-core" }
+csm-term = { path = "../csm-term" }
+csm-pty = { path = "../csm-pty" }

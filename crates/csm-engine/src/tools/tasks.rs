@@ -116,7 +116,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 pub(crate) fn actor(state: &State, caller: &Caller) -> Result<Actor, ToolError> {
     match caller {
         Caller::Ui | Caller::Cli => Ok(Actor::Person),
-        Caller::External { session_id: None, .. } => Ok(Actor::Outsider),
+        // A paired Full device is the person at another screen; a lower level is an outsider.
+        Caller::Peer { level, .. } if level.allows(csm_peer_proto::msg::Level::Full) => Ok(Actor::Person),
+        Caller::Peer { .. } | Caller::External { session_id: None, .. } => Ok(Actor::Outsider),
         Caller::External { session_id: Some(sid), .. } => {
             let s = state
                 .app
@@ -133,6 +135,7 @@ fn source(caller: &Caller) -> &'static str {
     match caller {
         Caller::Ui => "ui",
         Caller::Cli => "cli",
+        Caller::Peer { .. } => "peer",
         Caller::External { .. } => "mcp",
     }
 }
@@ -140,6 +143,8 @@ fn source(caller: &Caller) -> &'static str {
 fn created_by(caller: &Caller) -> String {
     match caller {
         Caller::Ui | Caller::Cli => tasks::CREATED_BY_PERSON.to_owned(),
+        Caller::Peer { level, .. } if level.allows(csm_peer_proto::msg::Level::Full) => tasks::CREATED_BY_PERSON.to_owned(),
+        Caller::Peer { device_id, .. } => format!("peer:{device_id}"),
         Caller::External { session_id: Some(s), .. } => format!("session:{s}"),
         Caller::External { client, .. } => format!("mcp:{}", super::clean_name(client, 60)),
     }

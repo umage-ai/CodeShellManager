@@ -184,6 +184,11 @@ pub(crate) struct SessionIo {
     index: Option<csm_index::Index>,
     /// The session's output ring for subscribers and the byte-rate counters.
     pub output: Arc<OutputTap>,
+    /// The output offset the emulator has consumed: written under the terminal lock right after
+    /// `advance`, so a grid read under that lock and this offset describe the same moment.
+    term_offset: AtomicU64,
+    /// Every size change of this session's terminal, with the output offset it takes effect at.
+    resizes: Mutex<ResizeLog>,
 }
 
 impl SessionIo {
@@ -208,6 +213,8 @@ impl SessionIo {
             engine,
             index,
             output: Arc::new(OutputTap::new()),
+            term_offset: AtomicU64::new(0),
+            resizes: Mutex::new(ResizeLog::default()),
         })
     }
 
@@ -270,10 +277,11 @@ impl SessionIo {
                 ix.feed(&io.id, bytes);
             }
             // Non-blocking too: the ring drops its oldest bytes, and no subscriber is waited for.
-            io.output.feed(bytes);
+            let end = io.output.feed(bytes);
             let events = {
                 let mut t = io.lock_terminal();
                 t.advance(bytes);
+                io.term_offset.store(end, Ordering::Release);
                 t.take_events()
             };
             io.bump();
@@ -289,6 +297,54 @@ impl SessionIo {
             }
         })
     }
+}
+
+/// How many size changes a session remembers for stream resume.
+const RESIZE_LOG_CAP: usize = 64;
+
+/// One size change of a terminal: from output offset `offset` on, the grid is `cols` x `rows`.
+/// `seq` counts the changes of this run, from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeMark {
+    pub seq: u64,
+    pub offset: u64,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Default)]
+struct ResizeLog {
+    marks: std::collections::VecDeque<ResizeMark>,
+    last_seq: u64,
+    /// The largest offset of a mark that was dropped to stay within the cap: a stream cannot
+    /// resume at or before it (the change it needs is gone).
+    evicted_through: Option<u64>,
+}
+
+impl ResizeLog {
+    fn push(&mut self, offset: u64, cols: u16, rows: u16) {
+        self.last_seq = self.last_seq.saturating_add(1);
+        self.marks.push_back(ResizeMark { seq: self.last_seq, offset, cols, rows });
+        while self.marks.len() > RESIZE_LOG_CAP {
+            if let Some(old) = self.marks.pop_front() {
+                self.evicted_through = Some(self.evicted_through.map_or(old.offset, |e| e.max(old.offset)));
+            }
+        }
+    }
+}
+
+/// A terminal's screen as a byte stream for a fresh emulator, with where the live stream goes on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachSnapshot {
+    /// The run this belongs to (a restart of the session has another).
+    pub instance: u64,
+    pub cols: u16,
+    pub rows: u16,
+    /// The output offset the grid describes: live bytes continue here.
+    pub offset: u64,
+    /// Resize marks with a `seq` after this one come after the grid's offset.
+    pub resize_seq: u64,
+    pub vt: Vec<u8>,
 }
 
 /// What the UI holds for one live session: the terminal to render, and the widget-level input
@@ -330,12 +386,103 @@ impl TerminalHandle {
         self.0.pty.get().map(|p| p.backend())
     }
 
+    // ---- the peer server's view of a terminal (design 3 and 5) --------------------------------
+
+    /// Which run of the session this is; a restart has another.
+    pub fn instance(&self) -> u64 {
+        self.0.instance
+    }
+
+    /// The session was torn down (closed or removed).
+    pub fn is_closed(&self) -> bool {
+        self.0.closed.load(Ordering::Acquire)
+    }
+
+    /// A reader of the session's output ring, from `from` (or the current end).
+    pub fn subscribe_output(&self, from: Option<u64>) -> crate::output_tap::Subscription {
+        self.0.output.subscribe(from)
+    }
+
+    /// The offset just past the last byte the PTY produced.
+    pub fn output_end(&self) -> u64 {
+        self.0.output.fed()
+    }
+
+    /// The offset just past the last byte the emulator has consumed (at most [`output_end`]).
+    /// A stream sends only bytes below it, so a client never runs ahead of the server's emulator
+    /// and a resize lands at the same byte on both.
+    ///
+    /// [`output_end`]: Self::output_end
+    pub fn processed_offset(&self) -> u64 {
+        self.0.term_offset.load(Ordering::Acquire)
+    }
+
+    /// The emulator's size now.
+    pub fn grid_size(&self) -> GridSize {
+        self.0.lock_terminal().size()
+    }
+
+    /// Whether a stream that has everything up to `offset` of `instance` can continue from there:
+    /// same run, the ring still holds the bytes after it, and every resize it needs is remembered.
+    pub fn can_resume(&self, instance: u64, offset: u64) -> bool {
+        if instance != self.0.instance || !self.0.output.holds(offset) {
+            return false;
+        }
+        let log = self.0.resizes.lock().unwrap_or_else(PoisonError::into_inner);
+        log.evicted_through.is_none_or(|e| e < offset)
+    }
+
+    /// The resize marks a stream resuming at `offset` has still to be told (those at or after it,
+    /// which are replayed even if it already had one at exactly `offset`: applying a size twice is
+    /// harmless), and the `seq` to continue after.
+    pub fn resizes_for_resume(&self, offset: u64) -> u64 {
+        let log = self.0.resizes.lock().unwrap_or_else(PoisonError::into_inner);
+        log.marks.iter().filter(|m| m.offset < offset).map(|m| m.seq).max().unwrap_or(0)
+    }
+
+    /// The resize marks after `seq`, oldest first.
+    pub fn resizes_after(&self, seq: u64) -> Vec<ResizeMark> {
+        let log = self.0.resizes.lock().unwrap_or_else(PoisonError::into_inner);
+        log.marks.iter().filter(|m| m.seq > seq).copied().collect()
+    }
+
+    /// The screen (and `history` lines of scrollback) as VT bytes, with the offset it describes.
+    /// Taken under the terminal lock, so the grid and the offset are one moment. A synchronized
+    /// update that is still open is flushed first (the grid would otherwise lack bytes the offset
+    /// already counts): the office pane may show that frame a moment early.
+    pub fn attach_snapshot(&self, history: usize) -> AttachSnapshot {
+        let mut t = self.0.lock_terminal();
+        t.flush_sync_if_due(Instant::now() + std::time::Duration::from_secs(3600));
+        let size = t.size();
+        let vt = csm_term::replay::serialize(&mut t, history);
+        let offset = self.0.term_offset.load(Ordering::Acquire);
+        let resize_seq = self.0.resizes.lock().unwrap_or_else(PoisonError::into_inner).last_seq;
+        drop(t);
+        AttachSnapshot { instance: self.0.instance, cols: size.cols, rows: size.rows, offset, resize_seq, vt }
+    }
+
+    /// Resizes the terminal and the PTY to `cols` x `rows` cells (a remote viewer that drives the
+    /// size). Keeps the pixel size of a cell. Does nothing when the size is already that.
+    pub fn resize_cells(&self, cols: u16, rows: u16) {
+        let cur = self.grid_size();
+        let want = GridSize { cols: cols.max(2), rows: rows.max(1), cell_width: cur.cell_width, cell_height: cur.cell_height };
+        if want != cur {
+            self.resize(want);
+        }
+    }
+
     /// The pane's measured grid. The first call starts the PTY at exactly this size; later calls
     /// resize the terminal and the PTY.
     pub fn resize(&self, size: GridSize) {
         {
             let mut t = self.0.lock_terminal();
+            let changed = t.size() != size;
             t.resize(size);
+            if changed {
+                // Under the terminal lock: the offset is the one the grid has reached.
+                let at = self.0.term_offset.load(Ordering::Acquire);
+                self.0.resizes.lock().unwrap_or_else(PoisonError::into_inner).push(at, size.cols, size.rows);
+            }
         }
         self.0.bump();
         match self.0.pty.get() {

@@ -208,7 +208,7 @@ dependencies = [
  "rustix 1.1.6",
  "rustix-openpty",
  "serde",
- "signal-hook",
+ "signal-hook 0.4.6",
  "unicode-width",
  "vte",
  "windows-sys 0.59.0",
@@ -927,7 +927,9 @@ dependencies = [
  "csm-core",
  "csm-engine",
  "csm-mcp",
+ "csm-peer",
  "csm-pty",
+ "csm-remote",
  "csm-ui",
  "eframe",
  "egui",
@@ -1147,6 +1149,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "crossterm"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
+dependencies = [
+ "bitflags 2.13.2",
+ "crossterm_winapi",
+ "document-features",
+ "mio",
+ "parking_lot",
+ "rustix 1.1.6",
+ "signal-hook 0.3.18",
+ "signal-hook-mio",
+ "winapi",
+]
+
+[[package]]
+name = "crossterm_winapi"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acdd7c62a3665c7f6830a51635d9ac9b23ed385797f70a83bb8bafe9c572ab2b"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1194,8 +1222,10 @@ name = "csm-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "crossterm",
  "csm-engine",
  "csm-mcp",
+ "csm-remote",
  "csm-setup",
  "serde",
  "serde_json",
@@ -1275,11 +1305,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "csm-peer"
+version = "0.0.1"
+dependencies = [
+ "csm-core",
+ "csm-engine",
+ "csm-peer-proto",
+ "csm-pty",
+ "csm-term",
+ "getrandom 0.3.4",
+ "if-addrs",
+ "log",
+ "serde",
+ "serde_json",
+ "snow",
+ "tempfile",
+]
+
+[[package]]
 name = "csm-peer-proto"
 version = "0.0.1"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "snow",
 ]
 
 [[package]]
@@ -1311,6 +1362,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+]
+
+[[package]]
+name = "csm-remote"
+version = "0.0.1"
+dependencies = [
+ "csm-core",
+ "csm-engine",
+ "csm-peer",
+ "csm-peer-proto",
+ "csm-pty",
+ "csm-term",
+ "csm-ui",
+ "log",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1400,6 +1467,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "log",
+ "qrcodegen",
  "schemars",
  "serde",
  "serde_json",
@@ -2476,6 +2544,16 @@ dependencies = [
  "pin-project-lite",
  "tokio",
  "tower-service",
+]
+
+[[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4040,6 +4118,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4773,12 +4857,33 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
 dependencies = [
  "libc",
  "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-mio"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
+dependencies = [
+ "libc",
+ "mio",
+ "signal-hook 0.3.18",
 ]
 
 [[package]]

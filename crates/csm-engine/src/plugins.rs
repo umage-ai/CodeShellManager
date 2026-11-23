@@ -561,6 +561,7 @@ pub(crate) fn caller_json(state: &crate::state::State, caller: &Caller) -> Value
     match caller {
         Caller::Ui => json!({"kind": "ui"}),
         Caller::Cli => json!({"kind": "cli"}),
+        Caller::Peer { device_id, name, .. } => json!({"kind": "peer", "device_id": device_id, "name": clean_text(name, 80)}),
         Caller::External { .. } if addon_of(caller).is_some() => {
             json!({"kind": "addon", "addon": addon_of(caller).unwrap_or_default()})
         }

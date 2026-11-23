@@ -183,8 +183,24 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
     // The Claude usage tools (the dashboard among them) are hidden while the add-on is off.
     let usage_on = app.model.claude_usage_on();
     let hidden = |id: &str| !usage_on && USAGE_ADDON_TOOLS.contains(&id);
+    // A remote window hides what is on this laptop, and Quit becomes Disconnect (plus the office's
+    // own quit, asked for first).
+    let remote = app.remote.is_some();
+    let hidden_remote = |id: &str| remote && (crate::remote_window::is_local_only(id) || id == "app_quit" || id == "peer_connect_open");
     let port = app.dispatch.as_ref();
-    out.extend(tool_rows(port, q, commands_only, &hidden));
+    out.extend(tool_rows(port, q, commands_only, &|id| hidden(id) || hidden_remote(id)));
+    if let Some(r) = app.remote.as_ref() {
+        let rows = [
+            ("remote_disconnect", format!("Disconnect from {}", r.host_name), "Close this window. The office keeps running."),
+            ("remote_quit_office", format!("Quit CodeShellManager on {}…", r.host_name), "Ask the office to quit: its sessions get time to exit. Asks first."),
+        ];
+        for (id, title, summary) in rows {
+            let hit = if q.is_empty() { Some(Vec::new()) } else { fuzzy(q, &title).map(|(_, idx)| idx) };
+            if let Some(idx) = hit {
+                out.push(PalRow::Tool { id: id.into(), title, summary: summary.into(), idx, hint: None });
+            }
+        }
+    }
     // An enabled add-on's commands whose tool the port offers.
     let addon_cmds: Vec<(&csm_engine::addons::CommandSummary, String)> = app
         .model

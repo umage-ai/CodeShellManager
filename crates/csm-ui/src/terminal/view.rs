@@ -69,6 +69,9 @@ pub struct ViewOptions {
     /// Copies of a selection are cleaned up (`claude_copy::clean`): a Claude Code pane with
     /// `CleanClaudeCopies` on. Alt while copying gives the raw text.
     pub clean_copy: bool,
+    /// The pane belongs to a remote window: a pasted image is not passed on (the office's clipboard
+    /// is not the laptop's; [`ViewResponse::image_paste`] says so instead).
+    pub remote: bool,
 }
 
 impl Default for ViewOptions {
@@ -82,6 +85,7 @@ impl Default for ViewOptions {
             font_pt: None,
             claude: false,
             clean_copy: false,
+            remote: false,
         }
     }
 }
@@ -143,6 +147,9 @@ pub struct ViewResponse {
     /// Ctrl+Shift+C with nothing selected in a Claude pane ([`ViewOptions::claude`]): the caller
     /// copies Claude's last reply (`claude_reply_get`).
     pub copy_reply: bool,
+    /// Ctrl+V found an image and no text in a remote window's pane: nothing was sent (the office
+    /// cannot read this laptop's clipboard). The caller says so.
+    pub image_paste: bool,
 }
 
 /// The link under the pointer, looked up again only when the cell or the screen changes.
@@ -189,6 +196,9 @@ pub struct TerminalView {
     /// This frame's [`ViewOptions::claude`] and [`ViewOptions::clean_copy`].
     claude: bool,
     clean_copy: bool,
+    /// This frame's [`ViewOptions::remote`], and whether an image paste was refused this frame.
+    remote: bool,
+    image_paste: bool,
     /// Ctrl+Shift+C asked for Claude's last reply this frame.
     copy_reply: bool,
 }
@@ -285,6 +295,8 @@ impl TerminalView {
             hover: None,
             claude: false,
             clean_copy: false,
+            remote: false,
+            image_paste: false,
             copy_reply: false,
         }
     }
@@ -377,6 +389,8 @@ impl TerminalView {
         self.claude = opts.claude;
         self.clean_copy = opts.clean_copy;
         self.copy_reply = false;
+        self.remote = opts.remote;
+        self.image_paste = false;
         if opts.interactive
             && let Some(g) = grid
         {
@@ -498,7 +512,7 @@ impl TerminalView {
         if false {
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "terminal"));
         }
-        ViewResponse { response: resp, grid, focused, clicked, open_link, copy_reply: std::mem::take(&mut self.copy_reply) }
+        ViewResponse { response: resp, grid, focused, clicked, open_link, copy_reply: std::mem::take(&mut self.copy_reply), image_paste: std::mem::take(&mut self.image_paste) }
     }
 
     /// The state text to draw over an empty view (`None` while running).
@@ -537,9 +551,14 @@ impl TerminalView {
         let mut typed = false;
         if focused && self.paste.step(&events, ui.input(|i| i.modifiers)) {
             // A paste of something that isn't text (an image): pass the raw ^V through, as a
-            // terminal does, so the program (Claude Code) reads the clipboard itself.
-            source.send_key(&[0x16]);
-            typed = true;
+            // terminal does, so the program (Claude Code) reads the clipboard itself. A remote
+            // pane cannot: the office would read its own clipboard, so nothing is sent.
+            if self.remote {
+                self.image_paste = true;
+            } else {
+                source.send_key(&[0x16]);
+                typed = true;
+            }
         }
         for ev in events {
             match ev {

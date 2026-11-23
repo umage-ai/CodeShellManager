@@ -38,7 +38,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let logo = Rect::from_min_size(pos2(rect.min.x + space::MD, rect.center().y - space::LG / 2.0 - space::XXS), Vec2::splat(space::LG + space::XS));
     p.rect_filled(logo, CornerRadius::same(radius::SM + 1), t.blue);
     icons::paint(ui, logo, "terminal", icon::SM, t.on_accent);
-    p.text(pos2(logo.max.x + space::SM, rect.center().y), Align2::LEFT_CENTER, "CodeShellManager", semibold(text::BODY), t.fg);
+    let brand = p.text(pos2(logo.max.x + space::SM, rect.center().y), Align2::LEFT_CENTER, "CodeShellManager", semibold(text::BODY), t.fg);
 
     // Middle: the search field, or the restore pill.
     let mid_w = size::SEARCH_W.min(rect.width() - 2.0 * (size::SIDEBAR - space::XL));
@@ -78,6 +78,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
     }
 
+    // Remote access, while it is on: between the brand and the search field.
+    crate::screens::remote::indicator(ui, app, brand.max.x + space::LG, mid.min.x - space::MD, rect.center().y, actions);
+
     // Right: the window's own buttons (frameless only), then recent, inspector, theme, settings,
     // quit, set apart from them.
     let mut x = if app.window_controls { window_controls(ui, rect) - space::MD } else { rect.max.x - space::SM };
@@ -88,7 +91,12 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         x -= space::XXS;
         widgets::icon_button_at(ui, r, ui.id().with(("tb", name.to_string())), name, on, tip).clicked()
     };
-    if btn(ui, "power", false, "Quit: sessions get time to exit") {
+    // A remote window's button disconnects; the office keeps running (see `Action::AskQuit`).
+    let power_tip = match &app.remote {
+        Some(r) => format!("Disconnect from {}: the office keeps running", r.host_name),
+        None => "Quit: sessions get time to exit".to_owned(),
+    };
+    if btn(ui, "power", false, &power_tip) {
         actions.push(Action::AskQuit);
     }
     let settings_open = app.ui.settings.open;

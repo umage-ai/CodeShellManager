@@ -19,7 +19,36 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+//!
+//! # The peer link
+//!
+//! The same crate holds the link's protocol (`docs/design/remote-csm.md` sections 3 and 4), layer
+//! by layer, outermost first. It is pure: no I/O, no clock, no randomness, and it never panics on
+//! bytes from the network.
+//!
+//! 1. [`frame`]: `u32 BE length || payload` on the TCP stream, one Noise message per frame.
+//! 2. [`noise`]: the Noise parameters and the "peer" prologue (distinct from the phone remote's),
+//!    the check code and the rekey counter.
+//! 3. [`codec`]: what a Noise message carries: control JSON ([`msg::Msg`]), terminal bytes with
+//!    absolute offsets, the serialized-grid attach, and typed input.
+//! 4. [`msg`] and [`delta`]: the message set, and snapshot deltas over the DTOs below.
+//! 5. [`pairing`] and [`addr`]: the pairing link (`csm://pair#...`, with a `tcp://` address), the
+//!    exchange inside the pairing channel, and the rule that the server never binds `0.0.0.0` or
+//!    `::` unless the person chose "all interfaces".
+//!
+//! `vectors/*.json` are the shared test vectors (`tests/vectors.rs` rewrites them with
+//! `CSM_UPDATE_VECTORS=1`).
+
+pub mod addr;
+pub mod codec;
+pub mod delta;
 mod event;
+pub mod frame;
+pub mod ids;
+pub mod limits;
+pub mod msg;
+pub mod noise;
+pub mod pairing;
 mod snapshot;
 
 pub use event::Event;

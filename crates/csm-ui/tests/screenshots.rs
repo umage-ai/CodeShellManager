@@ -34,10 +34,24 @@ fn shoot_sized(
     setup: impl FnOnce(&mut DemoBackend),
     after: impl FnOnce(&mut egui_kittest::Harness<'static, csm_ui::CsmApp>),
 ) {
+    shoot_host(name, theme, size, None, setup, after);
+}
+
+fn shoot_host(
+    name: &str,
+    theme: ThemeKind,
+    size: egui::Vec2,
+    host: Option<csm_ui::demo::peer::DemoPeerHost>,
+    setup: impl FnOnce(&mut DemoBackend),
+    after: impl FnOnce(&mut egui_kittest::Harness<'static, csm_ui::CsmApp>),
+) {
     let mut b = backend(theme);
     setup(&mut b);
     b.publish();
-    let mut app = app_with(b);
+    let mut app = match &host {
+        Some(host) => app_with_peer(b, host),
+        None => app_with(b),
+    };
     // As on Windows: one title bar, with the window's own minimize, maximize and close.
     app.window_controls = true;
     app.background.tray_available = true;
@@ -477,4 +491,129 @@ fn dark_theme(h: &mut egui_kittest::Harness<'static, csm_ui::CsmApp>, id: &str) 
     for _ in 0..5 {
         h.step();
     }
+}
+
+/// Remote access: Settings on every step, with the title bar indicator in each state it has.
+#[test]
+fn remote_access_screens() {
+    use csm_ui::demo::peer::DemoPeerHost;
+    use csm_ui::screens::remote::TOGGLE_LABEL;
+    use egui_kittest::kittest::Queryable;
+
+    type H = egui_kittest::Harness<'static, csm_ui::CsmApp>;
+    fn page(h: &mut H) {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenRemoteAccess);
+        wait_for(h, "the page", |a| a.ui.remote.status.available && !a.ui.remote.interfaces.is_empty());
+    }
+    fn walk(h: &mut H, to_firewall: bool) {
+        page(h);
+        h.get_by_label(TOGGLE_LABEL).click();
+        settle(h);
+        if to_firewall {
+            h.get_by_label("Next").click();
+            settle(h);
+        }
+    }
+    fn on(h: &mut H) {
+        walk(h, true);
+        h.get_by_label("Turn on and pair a device").click();
+        wait_for(h, "on", |a| a.ui.remote.status.enabled && a.ui.remote.link.is_some());
+    }
+    let size = egui::vec2(1280.0, 800.0);
+    let now = NOW_MS / 1000;
+    let go = |name: &str, theme: ThemeKind, host: DemoPeerHost, after: &dyn Fn(&mut H, &DemoPeerHost)| {
+        let h2 = host.clone();
+        shoot_host(name, theme, size, Some(host), |_| {}, |h| after(h, &h2));
+    };
+
+    go("22-remote-off", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| page(h));
+    go("22-remote-setup-address", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| walk(h, false));
+    go("22-remote-setup-firewall", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| walk(h, true));
+    go("22-remote-pairing", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, _| on(h));
+    go("22-remote-pairing-latte", ThemeKind::Latte, DemoPeerHost::new(now), &|h, _| on(h));
+    go("22-remote-pending", ThemeKind::Mocha, DemoPeerHost::new(now), &|h, host| {
+        on(h);
+        host.ask_to_pair("Allan's laptop", "4821");
+        wait_for(h, "the question", |a| a.ui.remote.status.pending_pair.is_some());
+    });
+    go("22-remote-connected", ThemeKind::Mocha, DemoPeerHost::new(now).with_device("Allan's laptop", 3 * 86_400).with_device("Tablet", 5 * 3600), &|h, host| {
+        on(h);
+        host.set_connected("Allan's laptop", true);
+        wait_for(h, "connected", |a| a.ui.remote.status.connected == 1 && a.ui.remote.devices.len() == 2);
+    });
+    // The indicator on the main window, from another page.
+    go("22-remote-indicator", ThemeKind::Mocha, DemoPeerHost::new(now).with_device("Allan's laptop", 3 * 86_400), &|h, host| {
+        on(h);
+        host.set_connected("Allan's laptop", true);
+        wait_for(h, "connected", |a| a.ui.remote.status.connected == 1);
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::CloseSettings);
+    });
+}
+
+/// A remote window (the strip in each link state, the local-only items gone, the office's quit) and
+/// the laptop's connect dialog in its states.
+#[test]
+fn remote_window_screens() {
+    use csm_ui::remote_window::{ConnectDialog, HostRow, RemoteLink, RemoteStatus};
+    type H = egui_kittest::Harness<'static, csm_ui::CsmApp>;
+    let status = |link: RemoteLink| RemoteStatus { host_name: "OFFICE".into(), address: "10.8.0.2:47300".into(), link };
+    let remote = move |name: &'static str, link: RemoteLink| {
+        shoot(name, ThemeKind::Mocha, move |b| b.set_remote(Some(status(link))), |_| {});
+    };
+    remote("23-remote-window", RemoteLink::Connected);
+    remote("23-remote-window-latte", RemoteLink::Connected);
+    remote("23-remote-window-reconnecting", RemoteLink::Offline);
+    remote("23-remote-window-refused", RemoteLink::Refused("this laptop was revoked".into()));
+    shoot(
+        "23-remote-palette",
+        ThemeKind::Mocha,
+        |b| b.set_remote(Some(status(RemoteLink::Connected))),
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::OpenPalette);
+            h.state_mut().ui.palette.query = "quit".into();
+        },
+    );
+    shoot(
+        "23-remote-office-quit",
+        ThemeKind::Mocha,
+        |b| b.set_remote(Some(status(RemoteLink::Connected))),
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::RemoteQuitOffice);
+        },
+    );
+    let connect = |h: &mut H, hosts: bool, phase: serde_json::Value| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenConnectRemote);
+        // The engine's answers to the dialog's own reads come first; the state shown is set after.
+        settle(h);
+        if hosts {
+            h.state_mut().ui.connect = ConnectDialog {
+                hosts: vec![
+                    HostRow { host_id: "H1".into(), name: "Office".into(), address: "10.8.0.2:47300".into(), last_connected: Some(1) },
+                    HostRow { host_id: "H2".into(), name: "Home server".into(), address: "10.8.0.9:47300".into(), last_connected: None },
+                ],
+                hosts_loaded: true,
+                ..ConnectDialog::default()
+            };
+        }
+        h.state_mut().ui.connect.link = "csm://pair#eyJyIjoidGNwOi8vMTAuOC4wLjI6NDczMDAifQ".into();
+        h.state_mut().ui.connect.apply_status(&phase);
+    };
+    shoot("23-connect-dialog", ThemeKind::Mocha, |_| {}, |h| connect(h, true, serde_json::json!({"state": "idle"})));
+    shoot("23-connect-dialog-check-code", ThemeKind::Mocha, |_| {}, |h| connect(h, true, serde_json::json!({"state": "check_code", "check_code": "4821"})));
+    shoot("23-connect-dialog-latte", ThemeKind::Latte, |_| {}, |h| connect(h, true, serde_json::json!({"state": "paired", "host_name": "Office"})));
+    shoot("23-connect-dialog-failed", ThemeKind::Mocha, |_| {}, |h| connect(h, false, serde_json::json!({"state": "failed", "message": "The office refused this laptop."})));
+    shoot(
+        "23-remote-localhost-warning",
+        ThemeKind::Mocha,
+        |b| b.set_remote(Some(status(RemoteLink::Connected))),
+        |h| {
+            let ctx = h.ctx.clone();
+            h.state_mut().run(&ctx, Action::Tool("open_url", serde_json::json!({"url": "http://localhost:3000/"})));
+        },
+    );
 }

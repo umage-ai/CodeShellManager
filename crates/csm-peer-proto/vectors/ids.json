@@ -1,0 +1,48 @@
+{
+  "check_codes": [
+    {
+      "check_code": "0322",
+      "handshake_hash_hex": "646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d"
+    },
+    {
+      "check_code": "8548",
+      "handshake_hash_hex": "3d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f16"
+    },
+    {
+      "check_code": "6623",
+      "handshake_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "doc": "host_id = base32_lower_nopad(SHA-256('csm-peer host' || host_static_public))[..26]; device_id = the same with 'csm-peer device'; check_code = 4 decimal digits of u32_be(SHA-256('csm-peer check' || handshake_hash)[0..4]) mod 10000; prologue = 'csm-peer/1' 0x00 host_id",
+  "keys": [
+    {
+      "device_id": "46slnx6oemapfzyiccmsk2dvux",
+      "host_id": "lkil73gv7otbneaugcrp6k2mpg",
+      "public_key_b64": "2eDn7vX8AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7I",
+      "public_key_hex": "d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2"
+    },
+    {
+      "device_id": "mbqfysobzgjajo3zluobxgc3xf",
+      "host_id": "xw6wwboqbrghtskvlbnkv4o7jn",
+      "public_key_b64": "srnAx87V3OPq8fj_Bg0UGyIpMDc-RUxTWmFob3Z9hIs",
+      "public_key_hex": "b2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b"
+    },
+    {
+      "device_id": "squ2bnehvo76ud2ijjohvyzphs",
+      "host_id": "ao7uaf4rtulehku22aaqn5rkai",
+      "public_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "device_id": "5fusp7slewmvjxnfzcg3sdlrqo",
+      "host_id": "kjzp4d4rfb73vazhj3bq5aq34p",
+      "public_key_b64": "__________________________________________8",
+      "public_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "prologue": {
+    "host_id": "lkil73gv7otbneaugcrp6k2mpg",
+    "prologue_hex": "63736d2d706565722f31006c6b696c37336776376f74626e65617567637270366b326d7067"
+  },
+  "sha256_of_abc_hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+}

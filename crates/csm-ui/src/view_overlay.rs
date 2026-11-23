@@ -18,8 +18,12 @@
 //!   acknowledgement (`rt.acknowledge`) and the last-activity stamp. Any overlay focus must be
 //!   forwarded, or replayed to the server, for those.
 //! - `inbox_next` and `view_set` with a `rail_tab` are forwarded, because the engine runs a focus
-//!   for them. The engine declares `inbox_next` as `UI` only, which under-states it (a launch
-//!   and a mutation). Fixing the declaration changes MCP consent, so Allan approves it first.
+//!   for them. `inbox_next` declares `UI | LAUNCHES_PROCESS` (it can wake a session; Allan,
+//!   2026-11-23), so the declaration alone keeps it off the overlay and MCP callers are asked.
+//! - Themes are per client (Allan, 2026-11-23): `theme_set` runs against the overlay, which holds
+//!   the client's own mode and dark and light theme ids. A client checks an id against its own
+//!   `theme_list` (the engine's registry is the server's), passed in as [`ViewFacts::themes`]: an unknown id,
+//!   or a light theme in `dark`, is refused as the engine refuses it.
 //!
 //! Ordering for a focus ([`Applied::Focused`] with `wake` set). [`apply`] commits the local focus
 //! at once, before the caller sends `session_wake`. If the wake fails, the engine has focused
@@ -38,12 +42,6 @@ use crate::backend::ToolInfo;
 /// The one tool that is UI-only in part: a local focus, and a `session_wake` when asleep.
 pub const SESSION_FOCUS: &str = "session_focus";
 
-/// UI-only tools that the engine also runs on its own state, so a client must not run them
-/// against the overlay. `inbox_next` wakes a dormant session and acknowledges its results
-/// (`lifecycle::focus`); it is declared `UI` only, which under-states it. Until the declaration
-/// is fixed (Allan's approval, since it changes MCP consent), this list is what routes it.
-pub const FORWARDED_UI: &[&str] = &["inbox_next"];
-
 /// The UI-only tools the overlay models: [`apply`] has an arm for each. `view_set` is listed,
 /// but its `rail_tab` form is forwarded (see [`route`]).
 pub const MODELLED_UI: &[&str] = &[
@@ -57,6 +55,7 @@ pub const MODELLED_UI: &[&str] = &[
     "group_collapse",
     "group_tear_off",
     "group_dock",
+    "theme_set",
 ];
 
 /// The window-placement size limit, in physical pixels (the engine's own).
@@ -69,8 +68,8 @@ pub enum Route {
     Local,
     /// `session_focus`: a local focus, plus `session_wake` when the session is asleep.
     Focus,
-    /// Sent to the server: every call that is not UI-only, and every UI-only call the engine also
-    /// runs on its own state (see [`FORWARDED_UI`] and the `rail_tab` form of `view_set`).
+    /// Sent to the server: every call that is not UI-only, and the `rail_tab` form of `view_set`
+    /// (the engine focuses a session for it).
     Forward,
     /// UI-only, but its state is not in the overlay (the window's own OS actions, add-on screens,
     /// a session's status). The caller runs it in its own UI or forwards it. It is never dropped.
@@ -84,15 +83,15 @@ pub fn is_ui_only(effects: Effects) -> bool {
     effects.difference(Effects::IDEMPOTENT) == Effects::CHANGES_UI_STATE
 }
 
-/// The route of a call, from its tool and params. The declared effects decide what is UI-only;
-/// [`FORWARDED_UI`] and the `rail_tab` form of `view_set` override a UI declaration, because the
-/// engine does more for them than the declaration says.
+/// The route of a call, from its tool and params. The declared effects decide what is UI-only
+/// (`inbox_next` declares a launch, so it is forwarded); the `rail_tab` form of `view_set`
+/// overrides a UI declaration, because the engine focuses a session for it.
 pub fn route(tool: &ToolInfo, params: &Value) -> Route {
     if tool.id == SESSION_FOCUS {
         let focus_effects = Effects::UI.union(Effects::LAUNCHES_PROCESS);
         return if tool.effects.difference(Effects::IDEMPOTENT) == focus_effects { Route::Focus } else { Route::Forward };
     }
-    if !is_ui_only(tool.effects) || FORWARDED_UI.contains(&tool.id.as_str()) {
+    if !is_ui_only(tool.effects) {
         return Route::Forward;
     }
     if tool.id == "view_set" && params.get("rail_tab").is_some_and(|tab| !tab.is_null()) {
@@ -117,14 +116,45 @@ pub struct ViewFacts {
     pub groups: BTreeSet<String>,
     /// Sessions, in sidebar order.
     pub sessions: Vec<SessionFact>,
+    /// The themes the client itself can draw (its own `theme_list`), not the server's. `theme_set`
+    /// checks an id against it, the way the engine's `theme_set` checks its registry. Empty until
+    /// the client supplies it, in which case every theme id is refused.
+    pub themes: Vec<ThemeFact>,
+}
+
+/// One theme the client can draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeFact {
+    pub id: String,
+    /// `true` for a dark theme (a `dark` slot takes it), `false` for a light one.
+    pub dark: bool,
 }
 
 impl ViewFacts {
-    /// The facts of a snapshot.
+    /// The facts of a snapshot. The client adds its themes with [`ViewFacts::with_themes`].
     pub fn from_snapshot(snap: &Snapshot) -> Self {
         Self {
             groups: snap.groups.iter().map(|g| g.id.clone()).collect(),
             sessions: snap.sessions.iter().map(|s| SessionFact { id: s.id.clone(), group: s.group_id.clone(), asleep: s.asleep }).collect(),
+            themes: Vec::new(),
+        }
+    }
+
+    /// The same facts with the client's own theme list.
+    #[must_use]
+    pub fn with_themes(mut self, themes: Vec<ThemeFact>) -> Self {
+        self.themes = themes;
+        self
+    }
+
+    /// Why `id` cannot be a `dark` (or `light`) theme, or `None`. The same rule as the engine's.
+    fn theme_unavailable(&self, id: &str, dark: bool) -> Option<String> {
+        let want = if dark { "dark" } else { "light" };
+        match self.themes.iter().find(|t| t.id == id) {
+            Some(t) if t.dark == dark => None,
+            Some(_) => Some(format!("`{id}` is not a {want} theme")),
+            None if id.contains('.') => Some(format!("`{id}` is not available: its add-on is not enabled, or has no such theme")),
+            None => Some(format!("`{id}` is not a theme")),
         }
     }
 
@@ -149,8 +179,11 @@ impl ViewFacts {
     }
 }
 
-/// A client's copy of the view state. The fields match the engine's; see the module docs.
-#[derive(Debug, Clone, PartialEq)]
+/// A client's copy of the view state. The fields match the engine's; see the module docs. Saved per
+/// host by a remote window (`csm-remote`'s `connect`), so it serializes; a missing field is its
+/// default.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ViewOverlay {
     /// The focused session.
     pub focused: Option<String>,
@@ -171,6 +204,13 @@ pub struct ViewOverlay {
     /// The session last focused in each group: the group's rail tab brings it back (issue #137).
     /// The snapshot does not carry it, so a client seeds it from the server's state.
     pub group_focus: BTreeMap<String, String>,
+    /// The client's theme mode (`dark`, `light` or `system`); `None` until the client chooses
+    /// (it then draws its own default). Themes are per client, not the server's setting.
+    pub theme: Option<String>,
+    /// The theme id drawn in dark mode; `None` is the client's default.
+    pub theme_dark: Option<String>,
+    /// The theme id drawn in light mode; `None` is the client's default.
+    pub theme_light: Option<String>,
 }
 
 impl Default for ViewOverlay {
@@ -187,12 +227,16 @@ impl Default for ViewOverlay {
             collapsed: BTreeSet::new(),
             torn_off: BTreeSet::new(),
             group_focus: BTreeMap::new(),
+            theme: None,
+            theme_dark: None,
+            theme_light: None,
         }
     }
 }
 
 impl ViewOverlay {
-    /// The view state of a snapshot. `group_focus` is not in a snapshot and starts empty.
+    /// The view state of a snapshot. `group_focus` is not in a snapshot and starts empty. The
+    /// theme is not in a snapshot either (it is a setting, and per client): it starts unset.
     pub fn from_snapshot(snap: &Snapshot) -> Self {
         Self {
             focused: snap.focused.clone(),
@@ -206,6 +250,9 @@ impl ViewOverlay {
             collapsed: snap.groups.iter().filter(|g| !g.expanded).map(|g| g.id.clone()).collect(),
             torn_off: snap.groups.iter().filter(|g| g.torn_off).map(|g| g.id.clone()).collect(),
             group_focus: BTreeMap::new(),
+            theme: None,
+            theme_dark: None,
+            theme_light: None,
         }
     }
 
@@ -244,6 +291,41 @@ impl ViewOverlay {
         if self.view == GroupView::Rail && self.rail_tab.as_deref().is_some_and(|tab| tab != group) {
             self.rail_tab = (!group.is_empty()).then(|| group.to_owned());
         }
+    }
+
+    fn theme_set(&mut self, facts: &ViewFacts, p: ThemeSetParams) -> Result<(), ToolError> {
+        if p.mode.is_none() && p.dark.is_none() && p.light.is_none() {
+            return Err(ToolError::InvalidParams("give `mode`, `dark` or `light`".into()));
+        }
+        let mode = match p.mode {
+            Some(m) => {
+                let m = m.trim().to_ascii_lowercase();
+                if !matches!(m.as_str(), "dark" | "light" | "system") {
+                    return Err(ToolError::InvalidParams(format!("mode `{m}` is not dark, light or system")));
+                }
+                Some(m)
+            }
+            None => None,
+        };
+        for (id, dark) in [(&p.dark, true), (&p.light, false)] {
+            let Some(id) = id else { continue };
+            if id.is_empty() || id.len() > MAX_THEME_ID || id.chars().any(char::is_control) {
+                return Err(ToolError::InvalidParams("a theme id is 1-128 characters with no control characters".into()));
+            }
+            if let Some(why) = facts.theme_unavailable(id, dark) {
+                return Err(ToolError::InvalidParams(why));
+            }
+        }
+        if let Some(m) = mode {
+            self.theme = Some(m);
+        }
+        if let Some(d) = p.dark {
+            self.theme_dark = Some(d);
+        }
+        if let Some(l) = p.light {
+            self.theme_light = Some(l);
+        }
+        Ok(())
     }
 
     fn view_set(&mut self, p: ViewSetParams) {
@@ -385,6 +467,10 @@ pub fn apply(overlay: &mut ViewOverlay, facts: &ViewFacts, tool: &ToolInfo, para
             overlay.view_set(parse_params(params)?);
             Ok(Applied::Local)
         }
+        "theme_set" => {
+            overlay.theme_set(facts, parse_params(params)?)?;
+            Ok(Applied::Local)
+        }
         "layout_set" => {
             overlay.layout_set(facts, parse_params(params)?)?;
             Ok(Applied::Local)
@@ -443,6 +529,9 @@ fn focus_call(overlay: &mut ViewOverlay, facts: &ViewFacts, id: &str) -> Result<
     Ok(Applied::Focused { session_id: fact.id, wake: fact.asleep })
 }
 
+/// The longest theme id accepted.
+const MAX_THEME_ID: usize = 128;
+
 /// The largest `free` layout accepted, serialized (the engine's limit).
 const MAX_FREE_BYTES: usize = 64 * 1024;
 
@@ -458,6 +547,14 @@ struct PinParams {
     session_id: String,
     #[serde(default)]
     group: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct ThemeSetParams {
+    mode: Option<String>,
+    dark: Option<String>,
+    light: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -637,14 +734,18 @@ mod tests {
         "group_collapse",
         "group_tear_off",
         "group_dock",
+        "theme_set",
     ];
-    const FIXED_FORWARD: &[&str] = &["inbox_next"];
+    /// UI-effect tools that also launch or mutate, so their declaration forwards them.
+    /// `remote_window_open` launches a process, so it is not UI-only; the app starts it before any
+    /// port sees the call.
+    const FIXED_FORWARD: &[&str] = &["inbox_next", "remote_window_open"];
     const FIXED_NOT_MODELLED: &[&str] = &[
+        // The connect dialog belongs to the laptop's own window: a remote window never offers it,
+        // and the app opens it before any port sees the call.
+        "peer_connect_open",
         // The inspector's width is per-client view state like the inbox height; modelled in P1.
         "inspector_panel_set",
-        // A stored setting (ThemeDark/ThemeLight), not view state. Per-client themes are a P1
-        // decision (a laptop may want its own); until then the caller runs or forwards it.
-        "theme_set",
         // The remembered custom grids are a stored preference (the engine's `UiState::custom_grids`),
         // not per-client view state. An overlay `layout_set` does not remember a custom size either.
         "grid_preset_forget",
@@ -719,17 +820,19 @@ mod tests {
         assert_eq!(route(&info(SESSION_FOCUS, Effects::UI | Effects::LAUNCHES_PROCESS), &none), Route::Focus);
         // Focus without the launch is not the focus route: it goes to the server.
         assert_eq!(route(&info(SESSION_FOCUS, Effects::UI), &none), Route::Forward);
-        assert_eq!(route(&info("inbox_next", Effects::UI), &none), Route::Forward);
+        assert_eq!(route(&info("inbox_next", Effects::UI.union(Effects::LAUNCHES_PROCESS)), &none), Route::Forward);
+        assert_eq!(route(&info("theme_set", Effects::UI | Effects::IDEMPOTENT), &none), Route::Local, "themes are per client");
     }
 
     #[test]
-    fn forwarded_ui_tools_route_forward_even_when_declared_ui_only() {
-        // Fails for a route that trusts the declaration: `inbox_next` is declared `UI` only.
-        assert_eq!(route(&tool("inbox_next"), &json!({})), Route::Forward);
+    fn inbox_next_declares_a_launch_and_is_forwarded() {
+        let t = tool("inbox_next");
+        assert!(t.effects.contains(Effects::LAUNCHES_PROCESS), "it can wake a session: {:?}", t.effects);
+        assert!(t.effects.needs_consent(), "so an MCP caller is asked");
+        assert!(!is_ui_only(t.effects));
+        assert_eq!(route(&t, &json!({})), Route::Forward);
         assert_eq!(route(&tool("view_set"), &json!({"rail_tab": "work"})), Route::Forward);
-        for id in FORWARDED_UI {
-            assert_eq!(route(&info(id, Effects::UI), &json!({})), Route::Forward, "`{id}`");
-        }
+        assert_eq!(route(&tool("theme_set"), &json!({"mode": "dark"})), Route::Local);
     }
 
     #[test]
@@ -753,7 +856,14 @@ mod tests {
             let r = route(t, &json!({}));
             if t.id != SESSION_FOCUS && !is_ui_only(t.effects) {
                 assert_eq!(r, Route::Forward, "`{}` ({:?})", t.id, t.effects);
-                assert!(fixed_route(&t.id).is_none(), "`{}` is not UI-only, so it has no UI route in the table", t.id);
+                assert!(
+                    matches!(fixed_route(&t.id), None | Some(Route::Forward)),
+                    "`{}` is not UI-only, so its only fixed route is Forward",
+                    t.id
+                );
+                if FIXED_FORWARD.contains(&t.id.as_str()) {
+                    seen.insert(t.id.clone());
+                }
                 continue;
             }
             let want = fixed_route(&t.id)
@@ -774,8 +884,7 @@ mod tests {
         }
         // The module's lists are the fixed ones.
         assert_eq!(MODELLED_UI, FIXED_LOCAL, "MODELLED_UI is the fixed table");
-        assert_eq!(FORWARDED_UI, FIXED_FORWARD, "FORWARDED_UI is the fixed table");
-        assert_eq!(FIXED_LOCAL.len(), 10, "ten modelled UI tools");
+        assert_eq!(FIXED_LOCAL.len(), 11, "eleven modelled UI tools");
     }
 
     /// Facts for a small fixed world: groups `work` and `home`; sessions `a` (work, awake), `b`
@@ -785,6 +894,10 @@ mod tests {
         ViewFacts {
             groups: ["work", "home"].iter().map(|s| s.to_string()).collect(),
             sessions: vec![sess("a", "work", false), sess("b", "work", true), sess("c", "", false), sess("d", "home", false)],
+            themes: [("dark", true), ("light", false), ("tones.night", true), ("latte", false)]
+                .iter()
+                .map(|(id, dark)| ThemeFact { id: (*id).into(), dark: *dark })
+                .collect(),
         }
     }
 
@@ -837,6 +950,33 @@ mod tests {
         let mut o = ViewOverlay::default();
         assert_eq!(run(&mut o, &facts, "inbox_next", json!({})).expect("forwarded"), Applied::NotInOverlay);
         assert_eq!(o, ViewOverlay::default(), "the server wakes and acknowledges it, not the overlay");
+    }
+
+    #[test]
+    fn theme_set_is_per_client_and_never_sent() {
+        let facts = world();
+        let mut o = ViewOverlay::default();
+        assert_eq!(run(&mut o, &facts, "theme_set", json!({"mode": " Dark "})).expect("mode"), Applied::Local);
+        assert_eq!(o.theme.as_deref(), Some("dark"));
+        run(&mut o, &facts, "theme_set", json!({"dark": "tones.night", "light": "latte"})).expect("ids");
+        assert_eq!((o.theme_dark.as_deref(), o.theme_light.as_deref()), (Some("tones.night"), Some("latte")));
+        assert_eq!(o.theme.as_deref(), Some("dark"), "a call that gives no mode keeps it");
+        let before = o.clone();
+        assert!(run(&mut o, &facts, "theme_set", json!({})).is_err());
+        assert!(run(&mut o, &facts, "theme_set", json!({"mode": "sepia"})).is_err());
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": ""})).is_err());
+        assert!(run(&mut o, &facts, "theme_set", json!({"light": "a\nb"})).is_err());
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "x".repeat(129)})).is_err());
+        assert!(run(&mut o, &facts, "theme_set", json!({"colour": "red"})).is_err());
+        // Availability and base are checked like the engine does.
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "latte"})).is_err(), "a light theme in dark");
+        assert!(run(&mut o, &facts, "theme_set", json!({"light": "tones.night"})).is_err(), "a dark theme in light");
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "nope"})).is_err(), "unknown");
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "tones.gone"})).is_err(), "an add-on theme that is not there");
+        assert!(run(&mut o, &facts, "theme_set", json!({"mode": "light", "dark": "nope"})).is_err());
+        assert!(run(&mut o, &ViewFacts::default(), "theme_set", json!({"dark": "dark"})).is_err(), "no theme list, no id");
+        assert_eq!(o, before, "an error changes nothing, not even the mode");
+        assert_eq!(ViewOverlay::from_snapshot(&Snapshot::default()).theme, None, "a snapshot carries no theme");
     }
 
     #[test]

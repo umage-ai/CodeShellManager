@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::backend::{Backend, Call, Notice, ToolPort};
 use crate::model::{GroupId, Scope, SessionId, Status, UiModel};
+use crate::remote_window::{self, ConnectDialog, LinkTarget, RemoteStatus};
 use crate::screens;
 use crate::terminal::{TerminalRenderer, TerminalView, lock};
 use crate::theme::{self, ThemeKind, size};
@@ -83,6 +84,8 @@ pub enum Action {
     /// Settings, as a page over the work area (title bar ⚙). Loads with `settings_get`,
     /// `app_info` and `grant_list`.
     OpenSettings,
+    /// Settings on the Remote access section (the title bar's indicator, the palette).
+    OpenRemoteAccess,
     CloseSettings,
     /// The Usage dashboard (a page over the work area, like Settings), on a session when given.
     OpenUsage(Option<crate::screens::usage_page::Drill>),
@@ -120,6 +123,22 @@ pub enum Action {
     ScreenConfirmed { tool: String, params: Value },
     /// Show this add-on screen in the view strip; `None` shows the sessions.
     ScreenFocus(Option<String>),
+    /// "Connect to another CodeShellManager…": the dialog (`peer_connect_open`).
+    OpenConnectRemote,
+    /// Pair with the link and name in the dialog (`peer_client_pair`).
+    ConnectRemotePair,
+    /// Stop a pairing that waits for the office (`peer_client_pair_cancel`).
+    ConnectRemoteCancel,
+    /// Start a remote window on a paired host: a separate process with its own view state.
+    ConnectRemoteOpen { host_id: String, name: String },
+    /// "Forget" in the dialog's list: asks first, then `peer_host_forget`.
+    ConnectRemoteForget { host_id: String, name: String },
+    /// "Quit CodeShellManager on OFFICE…" in a remote window: asks first, then quits the office.
+    RemoteQuitOffice,
+    /// The confirmed office quit (`app_quit` on the host itself, not a disconnect).
+    OfficeQuitConfirmed,
+    /// A loopback link the person confirmed: opened in this laptop's browser.
+    OpenLinkLocally(String),
 }
 
 /// Which popup menu is open.
@@ -164,6 +183,8 @@ pub enum Overlay {
     Confirm,
     /// Closing the window: keep running in the tray, or quit? (`CloseAction` Ask.)
     CloseAsk,
+    /// "Connect to another CodeShellManager…": pair with a link, the paired offices.
+    ConnectRemote,
 }
 
 /// A yes/no question: "Restart now?" after an edit that needs a new process.
@@ -207,18 +228,21 @@ pub enum SettingsSection {
     Mcp,
     /// Add-ons: the folder, enable and disable with consent, reload (`screens::addons`).
     Addons,
+    /// Let another CodeShellManager connect to this one (`peer_*`, `screens::remote`).
+    Remote,
     /// Sessions and running time per command (`usage_stats`).
     Usage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] = [
+    pub const ALL: [SettingsSection; 8] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Groups,
         SettingsSection::Mcp,
         SettingsSection::Addons,
+        SettingsSection::Remote,
         SettingsSection::Usage,
         SettingsSection::About,
     ];
@@ -230,6 +254,7 @@ impl SettingsSection {
             SettingsSection::Groups => "Group view",
             SettingsSection::Mcp => "MCP",
             SettingsSection::Addons => "Add-ons",
+            SettingsSection::Remote => "Remote access",
             SettingsSection::Usage => "Usage",
             SettingsSection::About => "About",
         }
@@ -242,6 +267,7 @@ impl SettingsSection {
             SettingsSection::Groups => "layers",
             SettingsSection::Mcp => "server",
             SettingsSection::Addons => "extensions",
+            SettingsSection::Remote => "wifi",
             SettingsSection::Usage => "history",
             SettingsSection::About => "terminal",
         }
@@ -473,6 +499,10 @@ pub struct Drags {
 /// Ephemeral UI state.
 #[derive(Default)]
 pub struct UiState {
+    /// The connect dialog's state while it is open ([`Overlay::ConnectRemote`]).
+    pub connect: ConnectDialog,
+    /// When the dialog last asked the engine for the pairing status (seconds, the frame clock).
+    pub connect_polled: f64,
     pub overlay: Overlay,
     pub palette: PaletteState,
     pub quick: QuickOpenState,
@@ -488,9 +518,14 @@ pub struct UiState {
     pub notes_cache: NotesCache,
     pub search: SearchState,
     pub focus_terminal: Option<SessionId>,
+    /// The sessions whose panes this frame draws (`Backend::show_panes` gets them at the frame's end).
+    pub shown_panes: Vec<SessionId>,
     /// The last active session seen, to move keyboard focus when it changes.
     pub last_active: Option<SessionId>,
     pub settings: SettingsState,
+    /// Remote access (another CodeShellManager connecting to this one): what the `peer_*` tools
+    /// last said, and the enable walk-through.
+    pub remote: screens::remote::RemoteState,
     pub inline: Option<InlineEdit>,
     /// When the usage tools were last asked (the Usage tab, the sidebar chips, Settings → Usage).
     pub usage: crate::screens::usage::PollState,
@@ -604,6 +639,36 @@ pub struct CsmApp {
     /// carries minimize, maximize and close, and the window's edges resize it
     /// ([`screens::titlebar`]).
     pub window_controls: bool,
+    /// The host and link of a remote window (`Backend::remote`, read once a frame); `None` for
+    /// the laptop's own window.
+    pub remote: Option<RemoteStatus>,
+    /// Set when the window should close now: a remote window's Quit (it disconnects; the office
+    /// keeps running). The host reads it once a frame and closes the window.
+    pub disconnect: bool,
+    /// What a remote window does outside the UI: open a link in this laptop's browser, start
+    /// another remote window. The app's own window sets these; tests replace them.
+    pub hooks: RemoteHooks,
+}
+
+/// The effects a remote window has on this laptop, behind closures so a test can record them.
+#[derive(Clone)]
+pub struct RemoteHooks {
+    /// Opens an http or https link in this laptop's browser (checked by the caller).
+    pub open_link: Arc<dyn Fn(String) + Send + Sync>,
+    /// Starts a remote window to the paired host with this id. `None`: not available here.
+    pub open_window: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
+
+impl Default for RemoteHooks {
+    fn default() -> Self {
+        Self { open_link: csm_engine::real_url_opener(), open_window: None }
+    }
+}
+
+impl std::fmt::Debug for RemoteHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteHooks").field("open_window", &self.open_window.is_some()).finish_non_exhaustive()
+    }
 }
 
 impl CsmApp {
@@ -631,9 +696,15 @@ impl CsmApp {
             background: crate::background::Background::default(),
             start: crate::start_window::StartUp::default(),
             window_controls: false,
+            remote: None,
+            disconnect: false,
+            hooks: RemoteHooks::default(),
         };
         // The settings the screens follow (theme, terminal font size and padding, the busy warning).
         app.dispatch.submit("settings_get", json!({}));
+        // Whether remote access is on (the title bar's indicator). A read; off and unavailable
+        // both answer quietly.
+        app.dispatch.submit("peer_status", json!({}));
         app
     }
 
@@ -646,6 +717,10 @@ impl CsmApp {
     /// system's choice. The host shows it without blocking the frame loop and answers with
     /// [`Self::folder_picked`].
     pub fn take_folder_request(&mut self) -> Option<String> {
+        if self.remote.is_some() {
+            // A remote window never opens a dialog on this laptop (`remote_step` says so).
+            return None;
+        }
         match self.ui.dialog_request.take() {
             Some(DialogRequest::Folder { start }) => Some(start),
             other => {
@@ -658,7 +733,25 @@ impl CsmApp {
     /// A native dialog the UI asked for (Browse…, Export…, Import…). The host shows it without
     /// blocking the frame loop and answers with [`Self::dialog_answered`].
     pub fn take_dialog_request(&mut self) -> Option<DialogRequest> {
+        if self.remote.is_some() {
+            return None;
+        }
         self.ui.dialog_request.take()
+    }
+
+    /// Once a frame, for a remote window: its host and link (the strip and the title), and the
+    /// file dialogs refused (a native dialog would browse this laptop, not the office).
+    fn remote_step(&mut self, ctx: &egui::Context) {
+        let status = self.backend.remote();
+        if status != self.remote {
+            if let Some(r) = &status {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(r.window_title()));
+            }
+            self.remote = status;
+        }
+        if self.remote.is_some() && self.ui.dialog_request.take().is_some() {
+            self.toast(ctx, remote_window::refusal_text("A file dialog"));
+        }
     }
 
     /// A dialog's answer (`None`: cancelled): a folder fills the quick-open, a save path exports
@@ -1001,7 +1094,13 @@ impl CsmApp {
             self.on_app_reply(ctx, &call, &reply);
             self.on_tool_reply(&call, &reply);
             screens::backup::on_reply(self, ctx, &call, &reply);
+            screens::connect_remote::on_reply(self, ctx, &call, &reply);
+            // The office quit: this window has nothing left to show, so it disconnects.
+            if call.id == "app_quit" && self.remote.is_some() && reply.is_ok() {
+                self.disconnect = true;
+            }
             screens::startup::on_reply(self, &call, &reply);
+            screens::remote::on_reply(self, ctx, &call, &reply);
             let n = self.backend.on_reply(&call, &reply, self.dispatch.as_ref());
             self.notices(ctx, n);
         }
@@ -1104,7 +1203,78 @@ impl CsmApp {
     }
 
     pub fn run(&mut self, ctx: &egui::Context, action: Action) {
+        if self.refused_in_remote(ctx, &action) {
+            return;
+        }
         match action {
+            Action::OpenConnectRemote => {
+                self.ui.connect = ConnectDialog::default();
+                self.ui.overlay = Overlay::ConnectRemote;
+                self.dispatch.submit("peer_hosts_list", json!({}));
+                self.dispatch.submit("peer_client_pair_status", json!({}));
+            }
+            Action::ConnectRemotePair => {
+                if !self.ui.connect.can_pair() {
+                    return;
+                }
+                let mut params = json!({"link": self.ui.connect.link.trim()});
+                let name = self.ui.connect.name.trim();
+                if !name.is_empty() {
+                    params["name"] = json!(name);
+                }
+                self.ui.connect.error = None;
+                self.ui.connect.phase = remote_window::PairPhase::Connecting;
+                self.ui.connect_polled = 0.0;
+                self.dispatch.submit("peer_client_pair", params);
+            }
+            Action::ConnectRemoteCancel => self.dispatch.submit("peer_client_pair_cancel", json!({})),
+            Action::ConnectRemoteOpen { host_id, name } => {
+                self.ui.overlay = Overlay::None;
+                match self.hooks.open_window.clone() {
+                    Some(open) => {
+                        open(host_id);
+                        self.toast(ctx, format!("Opening {name} in a remote window."));
+                    }
+                    None => self.toast(ctx, "Remote windows are not available in this build."),
+                }
+            }
+            Action::ConnectRemoteForget { host_id, name } => {
+                self.ui.confirm = Some(ConfirmState {
+                    also: None,
+                    title: format!("Forget {name}?"),
+                    body: format!(
+                        "This laptop removes {name} and the host key it pinned, and stops connecting there until it is paired again. {name} keeps this laptop's device key, so nothing changes on {name}."
+                    ),
+                    yes_label: "Forget".into(),
+                    no_label: "Keep".into(),
+                    yes: Box::new(Action::Tool("peer_host_forget", json!({"host_id": host_id}))),
+                });
+                self.ui.overlay = Overlay::Confirm;
+            }
+            Action::RemoteQuitOffice => {
+                let name = self.remote.as_ref().map_or_else(|| "the office".to_owned(), |r| r.host_name.clone());
+                self.ui.confirm = Some(ConfirmState {
+                    also: None,
+                    title: format!("Quit CodeShellManager on {name}?"),
+                    body: format!("Every session on {name} is closed and {name}'s app quits, so nothing runs there until it is started again. This window disconnects afterwards."),
+                    yes_label: "Quit on the office".into(),
+                    no_label: "Cancel".into(),
+                    yes: Box::new(Action::OfficeQuitConfirmed),
+                });
+                self.ui.overlay = Overlay::Confirm;
+            }
+            Action::OfficeQuitConfirmed => {
+                self.ui.overlay = Overlay::None;
+                // The host's own app_quit: a forwarded call, not this window's disconnect.
+                self.dispatch.submit("app_quit", json!({}));
+                let name = self.remote.as_ref().map_or_else(|| "the office".to_owned(), |r| r.host_name.clone());
+                self.toast(ctx, format!("Quitting CodeShellManager on {name}."));
+            }
+            Action::OpenLinkLocally(url) => {
+                self.ui.overlay = Overlay::None;
+                (self.hooks.open_link)(url.clone());
+                self.toast(ctx, format!("Opening {url} in this laptop's browser."));
+            }
             Action::AddonConsent(id) => {
                 if let Some(a) = self.model.addons.iter().find(|a| a.id == id) {
                     self.ui.confirm = Some(ConfirmState {
@@ -1273,6 +1443,11 @@ impl CsmApp {
                 let next = screens::panes::close_action(s, !self.prefs.warn_on_close_when_busy);
                 self.run(ctx, next);
             }
+            Action::AskQuit if self.remote.is_some() => {
+                // A remote window's Quit disconnects. It never quits the office.
+                self.ui.menu = None;
+                self.disconnect = true;
+            }
             Action::AskQuit => {
                 self.ui.menu = None;
                 // Window bounds still settling are saved now, ahead of the quit's own save, by
@@ -1329,6 +1504,11 @@ impl CsmApp {
                 for (id, p) in [("settings_get", json!({})), ("app_info", json!({})), ("grant_list", json!({})), ("app_autostart_get", json!({}))] {
                     self.dispatch.submit(id, p);
                 }
+            }
+            Action::OpenRemoteAccess => {
+                self.run(ctx, Action::OpenSettings);
+                self.ui.settings.section = SettingsSection::Remote;
+                screens::remote::opened(self, ctx);
             }
             Action::OpenUsage(drill) => {
                 self.ui.menu = None;
@@ -1488,6 +1668,13 @@ impl CsmApp {
     /// group the panes show); tools that need typed input open their own panel.
     fn palette_tool(&mut self, ctx: &egui::Context, id: &str) {
         self.ui.overlay = Overlay::None;
+        // The two rows only a remote window lists (the palette adds them; see `palette::rows`).
+        match id {
+            "remote_disconnect" => return self.run(ctx, Action::AskQuit),
+            "remote_quit_office" => return self.run(ctx, Action::RemoteQuitOffice),
+            "peer_connect_open" => return self.run(ctx, Action::OpenConnectRemote),
+            _ => {}
+        }
         let active = self.model.active.clone();
         let group = match self.scope() {
             Scope::Group(g) => Some(g),
@@ -1505,6 +1692,11 @@ impl CsmApp {
             }
             "settings_get" | "settings_set" | "app_info" | "grant_list" | "grant_revoke" => return self.run(ctx, Action::OpenSettings),
             "app_autostart_get" | "app_autostart_set" => return self.run(ctx, Action::OpenSettings),
+            // Turning remote access on, pairing and revoking are walked through on their page.
+            // Turning it off is one click and needs nothing else, so it runs as it is.
+            "peer_server_enable" | "peer_pair_start" | "peer_pair_answer" | "peer_device_revoke" | "peer_interfaces" | "peer_status" | "peer_device_list" => {
+                return self.run(ctx, Action::OpenRemoteAccess);
+            }
             "usage_report" => return self.run(ctx, Action::OpenUsage(None)),
             "group_new" => return self.run(ctx, Action::NewGroupPrompt),
             "session_rename" => {
@@ -1592,10 +1784,64 @@ impl CsmApp {
     }
 
     /// A tool call from a menu, a button or the palette: it closes the menu, then goes to the port.
+    /// A remote window refuses the tools whose effect is on this laptop (see
+    /// [`remote_window::is_local_only`]) with a toast, before they run. `true`: refused.
+    fn refused_in_remote(&mut self, ctx: &egui::Context, action: &Action) -> bool {
+        if self.remote.is_none() {
+            return false;
+        }
+        let id = match action {
+            Action::Tool(id, _) => id,
+            Action::ToolNamed(id, _) | Action::PaletteTool(id) => id.as_str(),
+            Action::OpenWithEditor => "open_with",
+            Action::OpenConnectRemote => "peer_connect_open",
+            _ => return false,
+        };
+        if !remote_window::is_local_only(id) {
+            return false;
+        }
+        let what = self.dispatch.tool(id).map_or_else(|| id.to_owned(), |t| t.title);
+        self.toast(ctx, remote_window::refusal_text(&what));
+        true
+    }
+
+    /// A link Ctrl+clicked in a remote window opens in this laptop's browser, after the same
+    /// http/https check the engine makes. A loopback link asks first: it names the office's machine.
+    fn open_link_in_remote(&mut self, ctx: &egui::Context, params: &Value) {
+        let url = params.get("url").and_then(Value::as_str).unwrap_or("");
+        let host = self.remote.as_ref().map_or_else(|| "the office".to_owned(), |r| r.host_name.clone());
+        match remote_window::check_link(url) {
+            None => self.toast(ctx, "Only absolute http and https links open."),
+            Some(LinkTarget::Public(u)) => self.run(ctx, Action::OpenLinkLocally(u)),
+            Some(LinkTarget::Localhost(u)) => {
+                let (title, body) = remote_window::localhost_warning(&host, &u);
+                self.ui.confirm = Some(crate::app::ConfirmState {
+                    also: None,
+                    title,
+                    body,
+                    yes_label: "Open on this laptop".into(),
+                    no_label: "Cancel".into(),
+                    yes: Box::new(Action::OpenLinkLocally(u)),
+                });
+                self.ui.overlay = Overlay::Confirm;
+            }
+        }
+    }
+
     fn tool_action(&mut self, ctx: &egui::Context, id: &str, params: Value) {
         // Opening a menu item closes the menu.
         self.ui.menu = None;
         self.ui.submenu = None;
+        if self.remote.is_some() {
+            // Quit in a remote window disconnects; links open on this laptop.
+            if id == "app_quit" {
+                self.disconnect = true;
+                return;
+            }
+            if id == "open_url" {
+                return self.open_link_in_remote(ctx, &params);
+            }
+        }
         if id == "session_sort" {
             // The sort menu shows the field sorted last, which flips when picked again.
             let field = params["by"].as_str().and_then(csm_core::session_sort::SortField::from_id);
@@ -1820,6 +2066,9 @@ impl CsmApp {
         // the tray): `logic`, which runs while hidden too.
         self.logic_in_frame(&ctx);
         screens::usage::poll(self, &ctx);
+        screens::remote::poll(self, &ctx);
+        self.remote_step(&ctx);
+        screens::connect_remote::poll(self, &ctx);
         screens::addon_screen::tick(self);
         let min = egui::vec2(size::WINDOW_MIN[0], size::WINDOW_MIN[1]);
         self.main_window_step(&ctx, min);
@@ -1856,6 +2105,12 @@ impl CsmApp {
         let title = Rect::from_min_max(full.min, pos2(full.max.x, full.min.y + size::TITLE_BAR));
         ui.scope_builder(UiBuilder::new().max_rect(title), |ui| screens::titlebar::show(ui, self, &mut actions));
         let mut body_top = title.max.y;
+        if let Some(status) = self.remote.clone() {
+            // Always visible in a remote window: the host and address, and the link's state.
+            let bar = Rect::from_min_max(pos2(full.min.x, body_top), pos2(full.max.x, body_top + size::REMOTE_BAR));
+            ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| screens::remote_bar::show(ui, &status));
+            body_top = bar.max.y;
+        }
         if let Some(r) = &self.model.restore {
             let rail = Rect::from_min_max(pos2(full.min.x, body_top), pos2(full.max.x, body_top + size::RESTORE_RAIL));
             screens::overlays::restore_rail(ui, rail, r);
@@ -1936,9 +2191,17 @@ impl CsmApp {
             let peek = Rect::from_min_max(pos2(side.min.x, body.min.y), pos2(side.min.x + size::SIDEBAR, body.max.y));
             screens::sidebar::peek(&ctx, self, peek, &mut actions);
         }
+        // A remote window whose host is out of reach shows its last snapshot, veiled (the strip says why).
+        if self.model.stale {
+            ui.painter().rect_filled(body, 0.0, theme::Tokens::tint(t.bg, theme::alpha::STALE));
+        }
         self.inline_fallback();
         screens::panes::torn_windows(&ctx, self);
         screens::addon_screen::pop_windows(&ctx, self);
+        // The panes drawn this frame, and the one with focus, for a backend that subscribes terminals.
+        let shown = std::mem::take(&mut self.ui.shown_panes);
+        let active = self.model.active.clone();
+        self.backend.show_panes(&shown, active.as_deref());
 
         // Overlays, top-most last.
         screens::open_with::show(&ctx, self, &mut actions);

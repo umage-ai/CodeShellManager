@@ -84,6 +84,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 SettingsSection::Groups => groups(ui, app, actions),
                 SettingsSection::Mcp => mcp(ui, app, actions),
                 SettingsSection::Addons => crate::screens::addons::show(ui, app, actions),
+                SettingsSection::Remote => crate::screens::remote::settings(ui, app, actions),
                 SettingsSection::Usage => {
                     crate::screens::backup::usage(ui, app, actions);
                     crate::screens::usage::settings(ui, app, actions);

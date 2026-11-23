@@ -144,7 +144,7 @@ pub fn run(argv: &[String], env: &Env) -> i32 {
     };
 
     // The commands are the registry's, so ask it, unless the command does not use them.
-    let needs_tools = !matches!(pre.first.as_deref(), Some("mcp" | "events" | "setup" | "doctor" | "uninstall"));
+    let needs_tools = !matches!(pre.first.as_deref(), Some("mcp" | "events" | "setup" | "doctor" | "uninstall" | "attach"));
     let listing = pre.help || matches!(pre.first.as_deref(), None | Some("tools" | "commands" | "help"));
     let mut note = None;
     let tools = if needs_tools {
@@ -182,6 +182,7 @@ pub fn run(argv: &[String], env: &Env) -> i32 {
         Some(("setup", m)) => setup_cmd::run_setup(m),
         Some(("doctor", m)) => setup_cmd::run_doctor(m, env),
         Some(("uninstall", m)) => setup_cmd::run_uninstall(m),
+        Some(("attach", m)) => crate::attach_cmd::run(m),
         Some((name, m)) => match tools.iter().find(|t| t.cli_name() == name) {
             Some(info) => run_tool(info, m, backend.as_mut()),
             None => {

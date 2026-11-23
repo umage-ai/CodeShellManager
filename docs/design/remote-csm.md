@@ -346,6 +346,15 @@ execution as Allan. Treat a paired device like an SSH key to the office machine.
      office screen, the person chooses **Allow** and the level, or **Deny**. Problem: Allan may
      be at home when he wants to pair. Pairing then needs the office screen, through RDP or by
      pairing while the laptop is in the office. Open question Q2.
+  6. **Selector and limits (review fix).** The responder picks `IKpsk2` or `IK` before reading
+     message 1, so each connection starts with a cleartext preamble frame: `01` session, or
+     `02 || pairing_id` pairing (`csm-peer-proto` `noise::route`, vectors in `preamble.json`).
+     No open slot or a wrong id is a silent close, the same either way. A slot is consumed when
+     the first transport message decrypts (the PSK is only proven then) and allows 3 handshakes.
+     **Check code limit:** the 4-digit code does not stop an active swapper in the middle, who can
+     grind ephemerals (about 10^4 tries) until both screens agree. We accept that: pairing is in
+     person or over RDP, the link is the secret, and the code guards against mix-ups and a
+     passive or non-participating swapper.
 - **Always-visible indicator:**
   - On the server, a pill in the title or status bar: "Remote access on · 10.8.0.2:47300". When a
     client is connected it changes to an accent colour: "Laptop connected" with a count. The pill
@@ -564,8 +573,8 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 
 ## Decisions (Allan, 2026-11-22)
 
-- Open for P1: per-client themes (`theme_set` is routed "not modelled" for now), and whether
-  `inbox_next` should declare that it can wake a session (it would then ask MCP callers).
+- Themes are per client (Allan, 2026-11-23): the laptop keeps its own theme choice, like layout.
+- `inbox_next` declares that it can wake a session (Allan, 2026-11-23), so MCP callers are asked.
 
 - Q2 pairing: from home via remote desktop, or with the laptop at the office — both fine; no remote-initiated pairing.
 - Q3 consent: cards raised by office agents are answerable from the laptop; first answer wins.
@@ -602,3 +611,385 @@ Base sha for this step: `277182a05544069b13ea767e0649202f19c209c2`. Emulator: `a
 Measured: 11 of 360 random streams (three sizes, 250 tokens each) and 2 of 40 deep-scrollback streams differ only in wrap markers or in the history line structure they cause. They are pinned by seed (`KNOWN_WRAP_GAPS`, `KNOWN_SCROLLBACK_WRAP_GAPS`), and each pinned stream must still differ, so a fixed one has to be unpinned. The random check ignores `WRAPLINE` and the leading-spacer flag (`wrap_free`); everything else is compared exactly: characters, zero-width marks, colours, attributes, links, wide glyphs, cursors, saved cursors, modes, title, palette and the scrollback text.
 
 **Not measured yet:** serialization cost and output size per screen (the spike is about correctness); the snapshot clones the alternate grid when the alternate screen is active. The serializer reads only cols and rows: `GridSize`'s cell pixels feed window-size replies and nothing in the grid.
+
+## P1 step 1: peer protocol (`csm-peer-proto`)
+
+Base sha for this step: `c279407f800f8f0324ceadbd0cd5c41f118765d5`.
+
+- **Decided tweaks done.** `inbox_next` declares `UI | LAUNCHES_PROCESS` (MCP callers are asked; it stays
+  forwarded by the view overlay, now by its declaration alone: `FORWARDED_UI` is gone). `theme_set` is
+  routed `Local`: the overlay holds the client's own `theme`, `theme_dark` and `theme_light`
+  (unset until the client chooses); a client checks a theme id against its own `theme_list`.
+- **Layers in the crate** (all pure, `vectors/*.json` + `tests/vectors.rs`, `CSM_UPDATE_VECTORS=1`):
+  `frame` (`u32 BE len || Noise message`, max 65 535, empty and oversize refused on the header alone),
+  `noise` (same IK and IKpsk2 parameters as the phone, prologue `"csm-peer/1" 0x00 host_id`, check
+  code domain `"csm-peer check"`, rekey counter), `codec` (frame kinds: control JSON, `term_data`,
+  `term_attach` chunks, `term_input`, control fragments for messages above one Noise message; the
+  joined control JSON is capped at 4 MiB, an attach at 64 MiB), `msg` (the 3.2 message set plus
+  `ConsentCard`, `ConsentAnswer`, `ConsentAck`), `delta` (`diff` and `apply`, property-tested),
+  `pairing` and `addr` (`csm://pair#...` offer with a `tcp://` address; `check_bind` refuses
+  `0.0.0.0` and `::` unless "all interfaces" was chosen).
+- **Host id** is `base32(SHA-256("csm-peer host" || host static public))[..26]`, so an offer cannot
+  name a host id that its key does not have; device ids the same with `"csm-peer device"`.
+- **Strictness:** a `Hello` or `Welcome` of another protocol version is refused at decode
+  (`CodecError::Version`) so the server can answer `Bye { protocol_mismatch }`; an unknown event
+  inside `Msg::Event` decodes as `None` (ignore it); any other unknown message type is refused.
+- **Attach and term data** use a client-chosen `stream: u32` from `TermSubscribe`, and absolute
+  `offset`s in the server's per-session output.
+
+## P1 step 2: transport, pairing, server mode switch (`csm-peer`)
+
+Base sha for this step: `9581982f0ae26fbd1a0e7a3ecce8c2025219978d`.
+
+- **Crate and layers.** `csm-peer` is L4 (beside `csm-mcp` and `csm-ui`; layer map and policy `DENY_ROOTS`
+  updated). `snow` 0.10 is now a normal dependency there (it was already in `Cargo.lock` through the
+  dev-dependency, so no new crate version; `cargo deny` was not run locally, the CI job covers it).
+  The engine (L3) knows the server only through `csm_engine::PeerHost`; `StateOptions::peer_host` defaults
+  to `NoPeerHost`, so tests, `--clean`, the demo and an isolated run have no remote access at all.
+  `apps/codeshell` wires the real server (`<state folder>/peer`), calls `attach(engine)` and `resume()`.
+- **Off by default, and proven by connecting.** `PeerServer::new` touches no disk and no network. The listener
+  starts in `peer_server_enable` (UI only) and in `resume()`, which replays only `peer/server.json`, a file
+  `enable` writes (and `disable` rewrites as off). It is not in `state.json`, not a setting, not in a `.csm`.
+  `tests/peer.rs`: a fresh state, an upgraded `state.json`, a WPF import and a `.csm` import, each carrying
+  hostile `PeerServer*` / `RemoteAccess*` keys naming a free port, then `resume()` and TCP connects that must be
+  refused, with no `server.json` and no host key created.
+- **UI-only tools are a precheck refusal.** `peer_server_enable`, `peer_pair_start`, `peer_pair_answer` are
+  refused in `tools::precheck` for `Cli`, `External` and `Peer` (any level), before any consent card, and the
+  refusal is written to the audit log. Their effects are declared honestly (state, files, network, extension), so
+  consent would apply even if a future change let a caller through. `peer_server_disable` and
+  `peer_device_revoke` are allowed for everyone; `peer_status` and `peer_device_list` are reads. `settings_set`
+  has no such key (tested: NotFound for every spelling).
+- **`Caller::Peer { device_id, name, level }`** is new. Only the server makes it, after a Noise handshake with a
+  listed key; `csm-mcp`'s `accept_caller` refuses it on the wire. `is_external()` is true for it (so backup
+  import and the app-only settings stay refused for a device) but consent cards are still asked of MCP clients
+  only. A peer below Full may only run read-only tools (`level_gate`); only Full exists so far. Non-read calls
+  from a device are audited (tool, session id, effects), never typed content.
+- **Binding.** The tool checks the address (`check_bind`: an IP, no multicast, never `0.0.0.0` or `::` unless
+  `all_interfaces`), the host checks it again, and `try_listen` binds exactly that socket address. A saved
+  choice is re-checked on resume. An address that is not on this machine (a WireGuard tunnel that is down)
+  leaves the server `enabled` with `waiting` set, retrying 1-2-5-10-30 s, and never listening elsewhere.
+  With `all_interfaces` the pairing link has no single address to name, so `peer_pair_start` refuses it.
+- **Files** (`peer/`): `host.key` (JSON, private and public half, the public key must match the private one),
+  `devices.json` (public keys only; every entry re-validated on load: id derives from the key, name rules,
+  no duplicates, at most 32), `server.json`, `remote-access.log` (append-only JSON lines, rotates at 4 MiB).
+  The folder is 0700 and files 0600 on Unix; on Windows `icacls` (System32 path, argv, no shell, through
+  `csm_engine::proc`) replaces the inherited ACL with the current user, and `peer_status.private_files_restricted`
+  says whether it worked. A damaged key or list is an error, never silently replaced (that would unpair everyone).
+- **Wire flow** (all of it in `csm-peer-proto`'s vectors): a cleartext selector frame (`01` session, `02 || id`
+  pairing), then `IK` or `IKpsk2` with empty handshake payloads, prologue `csm-peer/1 0x00 host_id`. A stranger
+  gets a closed socket and nothing else (no slot, wrong id, spent or expired slot, unknown key, garbage, a
+  connection that stays silent past the handshake time); at most 8 unauthenticated connections at once.
+  Pairing: the slot is consumed when the first transport message (`PairMsg::Hello`) decrypts; both sides derive
+  the check code from the handshake hash; the device is added only when the UI answers Allow **with the check
+  code** (a wrong code is refused, the third wrong code denies); Accept or Deny travels back over the same
+  channel. A slot allows 3 handshakes; it lives `SLOT_SECS` (600) and works once.
+- **Session link.** `Hello` / `Welcome` (protocol and term minor must match, else `Bye`), a second connection of the
+  same device replaces the first (`Bye Replaced`), pings every 15 s and dead after 45 s, tool calls on their own
+  thread (at most 16 at once; results over one Noise message are fragmented, over 4 MiB become an error reply).
+  Rekeying is per direction as in the vectors (a test sends more than `REKEY_INTERVAL` messages).
+  Snapshots, deltas and terminal streams are the next steps; `TermSubscribe` is answered `Forbidden` for now.
+- **Revoke and off.** `revoke` deletes the key (or all), sends `Bye Revoked` and closes at once; `disable` joins the
+  accept thread (the port is free when it returns), sends `Bye ServerOff`, withdraws the slot and any pending
+  pairing, and saves the choice as off. The engine's exit path calls `shutdown()` (`Bye ServerQuit`), which keeps the
+  saved choice so the next start resumes.
+- **Consent from a device (decision Q3).** The server forwards `ConsentRequested` as `Msg::ConsentCard` (and
+  `ConsentResolved` as an event) to every connected Full device, and sends waiting cards to a device that connects
+  later. `consent_answer` is allowed for `Caller::Ui` and for `Caller::Peer` at Full; the first answer wins because
+  the request leaves `pending` once, and the later answerer gets `NotFound` (`ConsentAck::AlreadyResolved` on the
+  wire). Who answered is audited. Over the wire this is tested with two devices.
+- **Not done here (later steps):** the Settings panel, indicator pill and QR code (the tools return the link as
+  text), the pairing UX on the client side, snapshots and terminal streaming, the firewall step, `RemoteBackend`.
+
+## P1 step 3: serving sessions to a device (`csm-peer`, `csm-engine`)
+
+Base sha for this step: `d62400a757bd23fcf198e1411de30d771eeb6ce6`.
+
+- **Snapshot and deltas.** After `Welcome` the device gets `Msg::Snapshot`; a publisher thread per connection compares the
+  engine's `version` every 50 ms and sends `diff(last_sent, now)`. A burst coalesces, a slow link skips versions, a
+  version where nothing the wire carries changed is not sent, and a delta above one control message falls back to a full
+  snapshot. Events forwarded besides consent: `Toast`, `Error`, `ScreenChanged` (the rest are the office's own, or are in
+  the snapshot).
+- **Terminal streams** (`serve.rs`): one thread per `TermSubscribe`, at most 16 per device, reading the P0 output ring at
+  its own pace (nothing queues). *Attach* = `TerminalHandle::attach_snapshot` (the serializer under the terminal lock, with
+  the offset the emulator has consumed, taken in the same critical section as `Terminal::advance`, so grid and offset are
+  one moment) then live bytes from that offset. *Resume* when the device names `(instance, offset)`, the ring holds the
+  offset, the resize log still has every change after it and it is not further behind than `stream_backlog_bytes`.
+  *Backpressure*: a stream whose unsent consumed bytes exceed the backlog (default 256 KiB), or whose offset the ring
+  evicted or dropped, sends a fresh attach instead. Only bytes the server's emulator has consumed are sent, and
+  `TermResized` is sent exactly at the offset the resize took effect (a per-session resize log), so the client's emulator
+  is in lockstep (tested by comparing `replay::snapshot` of both emulators).
+- **Known edge.** An attach flushes an open synchronized update (DEC 2026) first: the grid would otherwise lack bytes the
+  offset already counts. The office pane may show that frame a moment early.
+- **Input** goes to `TerminalHandle::send_key / send_mouse / paste / focus_changed` (paste is bracketed and stripped of
+  ESC by the handle). Operator level or above; audited as a byte count per session per minute (and at disconnect), never
+  content.
+- **Size.** The device that last typed, focused (`Focus(true)`) or sent `TermResize { driver: true }` drives the PTY size
+  (`TerminalHandle::resize_cells`, which keeps the cell pixel size). A device that does not drive only records the size
+  it wants and gets it when it starts driving. The office window's own pane still resizes the PTY when it changes (it is
+  not a "device"): nothing fights back, last change wins, as in the design.
+- **Client helpers** (`csm_peer::client`): `Connection::subscribe/unsubscribe/resync/resize/input` and `TermFollower`, a pure
+  tracker that joins attach chunks, checks data continues exactly where the last byte ended (`TermUpdate::Gap` = send
+  `resync`) and gives the `(instance, offset)` to resume with. The next step's `RemoteTerminal` is built on it.
+- **Consent** was done in step 2; step 3 adds the combined test (the office UI's card closes when a device answers).
+- **Not done here:** compression, OSC 52 routing to the driver, run-output streaming, add-on screen proxying, the
+  "typing" indicator, a `csm attach` CLI.
+
+## P1 step 4: server mode UI on the office machine (`csm-ui`, `csm-peer`, `csm-engine`)
+
+Base sha for this step: `89f07a013b789a40434a9e371b7892ca5bec2854`.
+
+- **Settings > Remote access** (`screens/remote.rs`, a new section after Add-ons). One switch, "Let another CodeShellManager
+  connect to this one", off by default; the page says so and that agents, the CLI and paired devices cannot turn it on.
+  Turning it on opens a walk-through (ephemeral UI state, nothing is sent until the last button): **1** the address, from
+  `peer_interfaces`, the WireGuard adapter marked and pre-selected, no wildcard row, a port (empty = 47300, 1-65535), and
+  under *Advanced* an address that is not in the list and the "every interface" switch with its warning; **2** the firewall
+  rule (a `netsh` line on Windows, a sentence elsewhere, scoped to the adapter's network), as text with a copy button:
+  CodeShellManager adds no rule. "Turn on and pair a device" calls `peer_server_enable`, then `peer_pair_start`.
+- **Pairing panel**: the link as text with Copy, a QR code (`qrcodegen` 1.8, MIT, no dependencies, error level L, drawn in
+  the theme's darkest and lightest tokens), the minutes left, and when a device has handshaken its name and the four-digit
+  check code with **Allow** (sends the code with `peer_pair_answer`) and **Deny**. The link is dropped as soon as the offer
+  is gone or the server is off. A refusal from a tool is shown on the page.
+- **Paired devices**: name, level, paired and last-seen ages, a dot while connected, **Revoke** per device and **Revoke all**
+  (asks first), through `peer_device_revoke`. Listed while the server is off too.
+- **Indicator** in the title bar between the brand and the search field, only while it is on: blue "Remote access on . addr",
+  green "Laptop connected" (or "N devices connected"), yellow "Laptop wants to pair", peach while the chosen address is
+  missing. It shortens, then shrinks to the dot, when the window is narrow; its accessible name is always the whole text. A
+  click opens the page, where the switch (or "Turn off remote access") is the one click that turns it off. The tray tooltip and
+  icon badge are not done.
+- **Polling**: one `peer_status` at start; then `peer_status` and `peer_device_list` once a second only while the server is on
+  or the page is open. Off and closed: no calls (tested).
+- **New tool** `peer_interfaces` (read-only, every caller; `PeerHost::interfaces`, implemented in `csm_peer::netif` over
+  `if-addrs` 0.15, MIT OR BSD-3-Clause: down, link-local, multicast and unspecified addresses are not offered, WireGuard by
+  name `wg*` / `*wireguard*`). `NetInterface::network` (CIDR) is computed on the host side, so the UI needs no `std::net`.
+- **Palette**: the enabling tools open the page instead of running with no parameters; `peer_server_disable` runs as is.
+- **Demo and tests**: `demo::peer::DemoPeerHost` (memory only, off by default, no socket) backs `--demo`, screenshots and the
+  kittests (`tests/remote_access_ui.rs`); `demo_engine_with_peer` lets a test drive "the other side".
+
+## P1 step 5: laptop pairing and the host list (`csm-engine`, `csm-peer` client side)
+
+Base sha for this step: `9c20e082108f5e854b04421d93c70c89ec0a83f6`.
+
+- **Engine seam and tools.** `csm_engine::PeerClientHost` (`peer_client.rs`, default `NoPeerClient`, wired through
+  `StateOptions::peer_client`) carries the client's state; the tools are in `tools/peer_client.rs`. `peer_client_pair
+  {link, name?}` is UI only: `tools::precheck` refuses it for `Cli`, `External` and `Peer` before any consent card, as
+  `peer_pair_start`. `peer_client_pair_status` and `peer_hosts_list` are reads; `peer_client_pair_cancel` is allowed for
+  every caller; `peer_host_forget {host_id}` writes files, so MCP callers get a consent card for it.
+- **Client** (`csm-peer`): `client::pair_cancellable` (a cancel stops the wait within a quarter second and closes the
+  link, so the office withdraws the request; an answer that has already arrived is taken). `client_host::ClientPeer`
+  runs one pairing at a time on its own thread and reports one status: `connecting`, `check_code` (the four digits),
+  `paired`, `failed` (with why) or `cancelled`. Files in `<state folder>/peer-client/`: `device.key` (this app's key
+  pair, made on the first pairing, a damaged file is an error and is never replaced) and `hosts.json` (`hosts::HostStore`:
+  host id, name, address, the pinned host key, paired-at, last-connected; every entry is checked on load, a damaged file
+  is an error, at most 64 hosts). The name is optional and defaults to the address.
+- **Nothing listens, and nothing dials without a pairing.** `ClientPeer::new` touches no disk and no network; reading
+  the list creates no folder. The only dial is a pairing the person started in the app.
+- **Forget** removes the host entry and the host key pinned with it. This app's own device key is kept, because other
+  hosts may still know it (a choice to confirm with Allan: "removes the key" could also mean the device key).
+- **Tests.** `crates/csm-peer/tests/pairing_client.rs` (15, real TCP on 127.0.0.1, one engine playing both apps): allow
+  (both screens show the same code, the host is stored, a connection with the stored key works), the default name, deny,
+  a wrong code at the office then the right one, an expired offer, cancel (the office drops the request and a new pairing
+  works), cancel with nothing running, forget (kept across a restart, the device key stays), the precheck refusals for
+  each caller (nothing written), bad input, a fresh laptop writes nothing, a damaged host list and a damaged device key
+  are errors and are left alone, the list survives a restart, and an unreachable host fails cleanly. Unit tests in
+  `hosts.rs` and `client_host.rs`.
+- **Not done.** The laptop's "Connect to another CSM…" dialog and the check-code screen (the palette runs
+  `peer_client_pair` with no parameters, which is refused as a missing link until the dialog exists). Connecting to a
+  stored host from the laptop and `RemoteBackend` (step 6). `last_connected` is stored but nothing sets it yet. The
+  laptop's own device name is the computer's name.
+
+## P1 step 6: RemoteBackend and RemoteTerminal (`csm-remote`)
+
+Base sha for this step: `76d93e45674fe1456e663a2ffa96711e2006f868`.
+
+- **Where it lives.** A new crate `csm-remote` at L5. `csm-ui` (L4) cannot depend on `csm-peer` (L4), and
+  `apps/codeshell` (L6) would leave the integration test with no library to import. The crate uses no egui of
+  its own: it implements `csm_ui::Backend` and `csm_ui::ToolPort` (the default `tick` is not overridden).
+  Listed in the layer map and in `DENY_ROOTS` (unwrap, expect, panic, indexing rules).
+- **Worker thread** (`link.rs`). One thread owns the `csm-peer` connection, the mirrored snapshot, every
+  terminal stream's `TermFollower` and the emulator feed. The UI thread sends `Cmd`s and polls `Up`s; it never
+  waits on the network or on an emulator lock (the view only `try_lock`s).
+  - Connect, then `tool_list` (the host's tools with their effects; calls that arrive before it wait in order).
+  - Snapshot, then deltas via `delta::apply`. A delta that does not apply reconnects for a fresh snapshot.
+  - Retries 1, 2, 5, 10, then 30 s. Each terminal resumes from `(instance, offset)`; a gap asks for `term_resync`.
+  - Refusals end the worker with `LinkState::Refused` and a reason: revoked, protocol or terminal mismatch,
+    replaced by another connection, or the host closing silently at the handshake (not on the list).
+  - A call in flight when the link drops is answered "may have run, check the result"; it is never retried.
+- **`RemoteBackend`** (`backend.rs`). Calls go through the view overlay: `Local` (view_set, layout_*, inspector_show,
+  inbox_panel_set, window_placement_set, group_*, theme_set) are answered on the laptop; `Focus` (session_focus)
+  is applied locally and also sent to the host (acknowledgement, wake), and if the host refuses the overlay is put
+  back; everything else, including `UiNotModelled`, is forwarded. The model is rebuilt from the mirror and the
+  overlay after each poll. `show_terminals(visible)` subscribes new panes and unsubscribes hidden ones;
+  `set_pane_driver` marks the typing pane.
+- **`RemoteTerminal`** (`terminal.rs`). A `TerminalSource` over a local `csm-term` emulator (replies discarded). The
+  emulator is replaced on attach and resized only on `term_resized`, in stream order. Keys, mouse, focus and paste go
+  as typed input (paste is bracketed by the host). `set_grid` sends a resize only when the pane's size changes.
+- **Mapping** (`map.rs`, pure). Wire snapshot to `UiModel` (the sessions, git, runs and open-with from the host;
+  groups, rail, focus, inspector, inbox panel and layouts from the overlay), wire events and outcomes to the
+  engine's types, tool rows to `ToolInfo`. Effects are read from their flag names; an unknown flag means "every
+  effect", so the tool is forwarded rather than taken as UI-only.
+- **Consent.** Cards arrive as `Event::ConsentRequested`; the answer is the host's `consent_answer` tool, so the
+  first answer wins on the host as before.
+- **Tests.** `csm-remote` unit tests (mapping, backoff, refusals) and `tests/remote.rs` (in-process, real engine
+  with a fake PTY, real `csm-peer` server on 127.0.0.1, a TCP proxy the test can cut): the session list; a rename
+  as a proxied call with its delta in the mirror; the view calls kept on the laptop and a focus that reaches the
+  office; a terminal that follows the office's grid (lockstep after output and after a resize), types, pastes
+  and resizes the PTY; a dropped link that resumes with the gap filled in; a revoke that ends the window as
+  refused; a consent card shown on the laptop, denied there, and the office's second answer finding nothing.
+- **Not done.** The app wiring (the connect dialog, the indicator, hiding the local-only items, Quit as disconnect,
+  the window's own overlay persistence: the caller supplies it, nothing saves it yet). `tool_list` has no input
+  schemas, so remote tools have `Value::Null` schemas until the protocol carries them. OSC 52 clipboard routing,
+  run-output streaming, add-on screen proxying, theme events from the host (the theme is the laptop's own), the
+  typing indicator and compression. Every snapshot update sends the full mirror to the UI thread (no coalescing
+  beyond the host's). Terminal cell pixel sizes are the default (only columns and rows are replicated).
+
+**Fix round 1 (base `76d93e4`, the step's own commit `397b44e`).** Review found host-supplied times in
+`csm-remote::map` doing unchecked i64 arithmetic: a hostile office could panic a debug build inside `rebuild`.
+Now `took` and `run` saturate (`saturating_sub`, `saturating_add`) and a test runs every extreme pair of
+`started_ms` / `ended_ms` (`i64::MIN`, `i64::MAX`, negatives) through the run view. A run that ends before it
+starts shows `0 s`. Not changed in this round: terminals are not marked stale while reconnecting, `Up::Snapshot`
+sends are not coalesced, and the bad-delta-forces-a-fresh-snapshot path has no test through the real link.
+
+## P1 step 7: the laptop's connect dialog and the remote window (`csm-ui`, `csm-remote`, `apps/codeshell`)
+
+Base sha for this step: `f0f7c0f2d0317cc333a5dc5762c5c77170888d0d`.
+
+- **Connect dialog** (`screens/connect_remote.rs`, `remote_window::ConnectDialog`). "Connect to another CodeShellManager…" is the
+  `peer_connect_open` tool (UI-only, refused for every other caller) and a palette row, opened from the laptop's own window only.
+  It pastes a link, takes an optional name, starts `peer_client_pair` and polls `peer_client_pair_status` (0.4 s) while a pairing
+  runs. It shows Connecting, the four-digit check code, Allowed, the refusal and Cancelled, and lists the paired offices from
+  `peer_hosts_list` with **Connect** (starts a remote window) and **Forget** (asks first, then `peer_host_forget`). Pairing
+  is still only started from the app; the dialog never runs in a remote window.
+- **Remote window** (`csm-ui::remote_window`, `csm-remote::shared`, `apps/codeshell --remote <host-id>`). Connect starts this exe
+  with `--remote <host-id>` (plus `--config-dir` when the laptop uses one) through `csm_engine::proc::spawn_detached`, on a thread.
+  The window starts no engine: `csm_remote::window_params` reads `peer-client/hosts.json` and `device.key` (it never makes a key
+  and refuses a host that was not paired), then `RemoteBackend` connects. One backend is shared by the window's two faces
+  (`RemotePort`, `RemoteView`, `RemoteHandle`), so the window keeps one connection. The worker's state is shown by the strip under
+  the title bar, "Connected to OFFICE · address", "Connecting to…", "OFFICE offline · reconnecting", or "OFFICE refused this laptop:
+  reason" (theme tokens; `Backend::remote()` supplies it, and the window title is prefixed with the host name).
+- **Local-only items** (design section 6): `remote_window::LOCAL_ONLY` lists open folder, open with (and its submenu, the
+  "Open with" action), "Open a shell here", backup export and import, and the connect and pair tools. A remote window hides them
+  from menus and the palette, and `CsmApp::run` refuses them with a toast before they run (the Settings backup buttons take that
+  refusal; they are not hidden). A pasted
+  image is refused in the pane (`ViewResponse::image_paste`, `ViewOptions::remote`), a dropped file becomes a toast
+  (`file_drop`), and the native folder dialog is never raised (`take_folder_request` and `take_dialog_request`).
+- **Links.** Ctrl+click (and the other `open_url` callers) in a remote window goes through `check_link` (the engine's
+  http/https check), then the laptop's browser (`RemoteHooks::open_link`). A loopback host (`localhost`, `127.0.0.1`, `::1`,
+  `*.localhost`) asks first: "This link points to OFFICE".
+- **Quit.** In a remote window Quit (title bar, palette or `app_quit`, and closing the window) **disconnects**: `CsmApp::disconnect` closes the
+  window and never calls `app_quit` on the office. "Quit CodeShellManager on OFFICE…" (palette, a confirm) forwards `app_quit` to the
+  host; when the host answers, the window disconnects.
+- **Per-client view state.** The window keeps its layout, focus, rail, inspector and theme in `peer-client/view-<host id>.json`
+  (`csm_remote::connect::{view_path, load_view, save_view}`, written on a worker thread once a second when it changed). `ViewOverlay`
+  now serializes. A damaged file is no state; a host id that is not a plain name gets no file.
+- **Consent cards** from the office's agents use the existing card UI over the mirrored model; the first answer wins on the office
+  (`consent_answer` is forwarded). The backend side is tested in `csm-remote`; the card is not separately kittested here.
+- **Tests.** `csm-ui/tests/remote_window_ui.rs` (9): the strip in each link state, the local-only items hidden from the palette and
+  menus, refused calls not sent, Quit disconnects and the office quit asks first, links (a loopback link warns), the dialog's
+  states (no link no pairing, a refused pairing shows why, the check code), and Connect / Forget on the host list.
+  `csm-ui/src/remote_window.rs` unit tests (link check, loopback, dialog answers). `csm-remote/tests/connect.rs` (3: the paired
+  office is read, an unpaired one is refused and nothing is made, a saved view is seeded) and `tests/remote.rs`
+  (`a_window_shares_one_connection_between_its_port_and_its_view`). Screenshots: `remote_window_screens` in
+  `crates/csm-ui/tests/screenshots.rs` (`23-remote-*`, `23-connect-dialog*`).
+- **Not done.** A window that cannot connect (no key, an unpaired host, a damaged list) writes its reason to stderr and exits;
+  it has no window of its own to say so. The laptop's dialog is reachable from the palette only (the app has no main menu; no
+  title-bar button). A remote window does not know the laptop's theme list (`ConnectParams::themes` is empty), so a saved theme
+  is only as good as the window's own list. The window polls its link every 100 ms (the link thread does not wake the UI).
+  Run-ready URLs (`post_run_url`) do not go to the laptop's browser yet. Remote windows have no tray, no OS notifications and
+  no window placement memory. The localhost warning's dialog answers Enter as "Open" like every confirm dialog.
+
+## P1 step 8: `csm attach` and the end-to-end client test (`csm-remote`, `apps/csm-cli`)
+
+Base sha for this step: `5faf218bf4795a12a0ca6e66de0450eff616b47e`.
+
+- **`csm attach`** (C1, a harness and a way in from any console). `csm attach --offices` lists the paired offices,
+  `csm attach --list` the office's sessions (`session_list`), `csm attach <session>` (id or unique name, `--host` when
+  several are paired, `--config-dir` for a non-default app folder) attaches this console. It is a command, not a tool:
+  it is a terminal stream, and `docs/tools.md` says so. It never pairs: it only dials an office from the app's
+  `peer-client/` folder (`csm_remote::attach::connect` → `connect::paired`), and a missing key or host is refused
+  with nothing written (tested through the real folder in `tests/attach_folder.rs`, where the office is paired by a
+  laptop engine's `peer_client_pair`).
+- **The loop** (`csm_remote::attach::run`, pure against a `Console` trait). It subscribes to stream 1, draws the
+  office's serialized grid after clearing the console, then the live bytes, and joins a `TermFollower` as the
+  remote window does. Keys go as `term_input` key bytes, a paste as `Input::Paste` (the office brackets it). The console
+  resize is sent as a driver resize only when the console changed size itself (a `Resized` event), or once on the first
+  attach when the session has another size (`Sizing`). A frame that reports another device's size makes the console
+  resync and draw at the session's size, and never claims that size back, so two consoles of different sizes settle
+  (fix round 1: the office gives the driver role to every driver resize, so an echo-driven claim looped). A gap asks
+  for `term_resync`. The session's
+  `TermClosed` ends the attach (`SessionEnded`), a dead link ends it (`LinkLost`, with the reason in plain words).
+- **Detach** is Ctrl+] then `d` (`attach::Keys`, a pure state machine: Ctrl+] Ctrl+] sends one Ctrl+], Ctrl+] then
+  another key sends that key). It unsubscribes and closes; the session keeps running (tested: still listed, its
+  process still alive).
+- **The console** (`apps/csm-cli/src/attach_cmd.rs`) is `crossterm` 0.29 (MIT; features `events`, `bracketed-paste`,
+  `windows`; new to the build: it is the one safe raw-mode crate, since no `unsafe` is allowed outside `csm-pty`).
+  Raw mode and the alternate screen with bracketed paste, restored by a guard whatever ends the attach. Key bytes
+  are xterm-style (`key_bytes`, unit tested), arrows in CSI form. `csm attach` is listed in `csm --help`; its exit
+  codes are 0 (detached, or the session ended), 2 (usage), 3 (office unreachable or link lost). `cargo deny` was not run
+  locally (CI covers it).
+- **Test harness.** The in-process office moved to `crates/csm-remote/tests/common/mod.rs` (`Office::boot`,
+  `Office::restart`, `free_port`), shared by `remote.rs` (unchanged cases), `attach.rs` (eight cases on a real office:
+  draw and type, Ctrl+] Ctrl+], paste, the console's size on attach and on change, two consoles of different sizes
+  settle with a bounded number of redraws, a session closed under the console, a dropped link) and `e2e.rs`.
+- **End to end** (`tests/e2e.rs`, three tests, one process: the office's engine and `csm-peer` server, two laptops with a
+  `RemoteBackend` each, the fake PTY the only fake): (1) two laptops type into one session in order, both panes match
+  the office's emulator, and a resize from one follows to the PTY and both panes; (2) an agent's consent card is shown
+  on both laptops, laptop A answers, the card closes on laptop B and the office (the agent's call goes ahead), and a
+  second answer finds nothing (the first answer won); (3) the office restarts (engine and server stopped, the same
+  folder and port, sessions restored with their ids), both laptops reconnect, the restored session is a new process
+  so each laptop attaches afresh (the old screen is gone), and typing works again.
+- **Not done in this step.** Manual tests over a real WireGuard tunnel (firewall prompt, tunnel down at start-up, a large
+  `git diff` burst, latency feel) are still to do. `csm attach` does not reconnect: a lost link ends it (the remote
+  window does reconnect). Its keys are CSI-only (no application cursor mode), it sends no mouse or focus reports, and
+  when another device resizes the session the console redraws at that size (it does not resize back). The
+  tray tooltip and icon badge are not done (step 4). Still open from P1, all listed above: OSC 52 routing to the
+  driver, run-output streaming, add-on screen proxying, the typing indicator, compression, the window's own reconnect
+  error screen, and the step 6 fix round items (no coalescing of `Up::Snapshot`,
+  the bad-delta path through the real link).
+- **Fix round 1 (review of step 8).** The resize ping-pong between two consoles of different sizes is fixed (above,
+  tested). Office-supplied names, ids, statuses and the office's name print through `printable`, where control
+  characters show as `?` (tested). The `csm attach` loop still writes the session's bytes raw, as ssh does.
+
+### P1 status (after step 8)
+
+- **Done:** the office side (steps 1-4: protocol, transport, pairing, serving snapshot, deltas and terminal streams,
+  the Settings page, the indicator, revoke and off); the laptop side (steps 5-7: pairing from the app, the host list,
+  `RemoteBackend` and `RemoteTerminal`, the connect dialog, the remote window with its local-only rules, Quit as
+  disconnect, the per-client view state); `csm attach` and the in-process end-to-end tests (step 8).
+- **Open for P1:** the manual WireGuard checks, and the items listed under step 8 "Not done". P2 (resume from offsets
+  with the reconnect UI, consent cards on peers already work, OSC 52, run output, add-on screens, compression, the typing
+  indicator) and P3 are not started except where the list above says otherwise.
+- **User docs:** `docs/remote-access.md` (office: Settings › Remote access; laptop: Connect to another CodeShellManager;
+  `csm attach`), linked from `docs/README.md`. `docs/tools.md` notes that `csm attach` is not a tool; its catalogue
+  is unchanged (no tool was added or changed in this step).
+
+## P1 client review: fix round (`csm-remote`, `csm-ui`, `apps/codeshell`, `csm-engine`)
+
+Base sha for this round: `9c20e082108f5e854b04421d93c70c89ec0a83f6` (the review was of the client side, steps 5-8, at `4fb7458`).
+
+- **Blocker: terminals were never subscribed in the real remote window.** `Backend::show_panes(visible, driver)` (a
+  new default no-op on the trait) is called at the end of each frame with the sessions whose panes the frame drew
+  (planned panes, floats, torn-off panes; live sessions only) and the focused session. `RemoteBackend::show_panes`
+  subscribes the shown panes, drops the rest, and marks the focused pane as the driver. `RemoteTerminal::set_driver`
+  sends only a change, so the per-frame call costs nothing. Tests: `csm-remote/tests/remote.rs` drives a pane through the
+  `Backend` trait only (`shown` then the office's grid, the focused pane's resize reaching the PTY, hidden unsubscribed);
+  `csm-ui/tests/remote_window_ui.rs` checks that the frame reports its panes and the focused one, and that the board shows none.
+- **Blocker: a remote window could not close.** `background::close_requested` in a remote window sets `disconnect` and
+  sends no `CancelClose` (a cancel was re-queued by the event loop every pass). `logic` does not treat the close as
+  pending once `disconnect` is set. `apps/codeshell` stops the link once (`RemoteHandle::stop`, after saving the view
+  state) and then sends `Close`. Tests: `remote_window_ui.rs` (a close, repeated closes, and Quit followed by a close:
+  never `CancelClose`, never `app_quit`). The real window close is still to be checked by hand.
+- **Office events on the laptop.** `map::event` no longer applies `WindowShowRequested`, `NotificationTestRequested`,
+  `QuitReady`, `ClipboardOffered` or `SettingChanged`. Settings stay per client: a host's setting is not followed (the
+  laptop's own preferences are its own). Test in `map.rs`.
+- **Stale snapshot.** With a snapshot in hand, `Reconnecting` and `Stopped` mark the model `stale`; the canvas is veiled
+  (`theme::alpha::STALE`) and the strip keeps saying why. Calls made while the link is down still fail at once. Tests in
+  `csm-remote` and `csm-ui`. The veil does not reach floating panes or torn-off windows (they draw in their own layers).
+- **Paired devices and the pairing tools.** `peer_client_pair_status`, `peer_client_pair_cancel`, `peer_hosts_list` and
+  `peer_host_forget` are refused for `Caller::Peer` (`PEER_REFUSED`). The CLI and MCP callers keep them (cancel and forget
+  for MCP still ask first). Test in `pairing_client.rs`.
+- **Loopback links.** `is_loopback` parses the host: `localhost` and `*.localhost`, IPv4 in 127/8 and 0/8 in every spelling a
+  browser accepts (`127.1`, `0x7f000001`, `2130706433`, `0177.0.0.1`), IPv6 `::1` and `::`, and IPv4 in IPv6 form
+  (`::ffff:127.0.0.1`, `::127.0.0.1`). Unit tests in `remote_window.rs`.
+- **Not done in this round.** Board previews in a remote window are blank (the board would subscribe every session; the
+  host allows 16 streams per device). Remote terminals are not veiled inside floating panes. Still open from step 8: the
+  manual WireGuard checks.

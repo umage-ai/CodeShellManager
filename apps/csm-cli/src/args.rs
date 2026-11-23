@@ -218,6 +218,7 @@ pub fn build(tools: &[ToolInfo], note: Option<&str>) -> Command {
                 .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON")),
         )
         .subcommand(Command::new("events").about("Print engine events from the running app as JSON lines until interrupted"))
+        .subcommand(attach_command())
         .subcommand(
             Command::new("setup")
                 .about("Connect `csm mcp` to Claude Code, Claude Desktop, Codex and Cursor (comments kept, backup made, verified)")
@@ -262,4 +263,22 @@ fn client_arg() -> Arg {
         .value_name("ID")
         .action(ArgAction::Append)
         .help("An app: claude_code, claude_desktop, codex, cursor (repeatable; default: the ones found)")
+}
+
+/// `csm attach`: one session of a paired office in this console (not a tool: it is a terminal).
+fn attach_command() -> Command {
+    Command::new("attach")
+        .about("Attach this console to a session on a paired office; Ctrl+] then d detaches")
+        .long_about(
+            "Attach this console to a session on an office this laptop is paired with (pair it in \
+             CodeShellManager: Connect to another CodeShellManager). The console shows the session's \
+             screen and types into it; the console's size is the session's size. Ctrl+] then d detaches \
+             and leaves the session running; Ctrl+] Ctrl+] types one Ctrl+]. This command never pairs.",
+        )
+        .arg(Arg::new("session").value_name("SESSION").help("The session's id or name (see --list)"))
+        .arg(Arg::new("host").long("host").value_name("OFFICE").help("The paired office, by id or name (needed when several are paired)"))
+        .arg(Arg::new("list").long("list").action(ArgAction::SetTrue).help("List the office's sessions and exit"))
+        .arg(Arg::new("offices").long("offices").action(ArgAction::SetTrue).help("List the paired offices and exit"))
+        .arg(Arg::new("config_dir").long("config-dir").value_name("DIR").help("The app's config folder (default: the usual one)"))
+        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue).help("Print JSON (with --list or --offices)"))
 }

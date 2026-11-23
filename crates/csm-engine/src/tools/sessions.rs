@@ -201,9 +201,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "inbox_next",
             title: "Next that needs you",
-            summary: "Focus the next session in the inbox.",
+            summary: "Focus the next session in the inbox. Wakes it if it is asleep.",
             toolset: Toolset::Core,
-            effects: Effects::UI,
+            effects: Effects::UI.union(Effects::LAUNCHES_PROCESS),
             input_schema: empty_schema,
             run: inbox_next,
         },

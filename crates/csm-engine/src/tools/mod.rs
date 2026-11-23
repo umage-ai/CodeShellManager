@@ -13,6 +13,8 @@ mod groups;
 mod layout;
 pub(crate) mod look;
 pub mod open;
+pub(crate) mod peer;
+pub(crate) mod peer_client;
 mod platform;
 mod ports;
 mod runs;
@@ -61,6 +63,8 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(tasks::specs());
     v.extend(addons::specs());
     v.extend(remotes::specs());
+    v.extend(peer::specs());
+    v.extend(peer_client::specs());
     v.extend(screens::specs());
     v
 }
@@ -73,6 +77,9 @@ pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, state: &State)
         && params.get("session_id").and_then(Value::as_str) == Some(own.as_str())
     {
         return Some(ToolError::Refused("a session cannot send input to itself; that would be an agent typing into its own prompt".into()));
+    }
+    if let Some(e) = peer::precheck(id, caller, state.options.peer_host.as_ref()).or_else(|| peer_client::precheck(id, caller)) {
+        return Some(e);
     }
     if let Some(e) = backup::precheck(id, caller).or_else(|| app::precheck(id, caller)).or_else(|| open::precheck(id, caller)) {
         return Some(e);

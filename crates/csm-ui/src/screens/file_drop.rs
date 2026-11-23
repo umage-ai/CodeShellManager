@@ -54,6 +54,11 @@ pub fn show(ui: &Ui, model: &UiModel, panes: &[(SessionId, Rect)], actions: &mut
     if !dropped.is_empty() {
         // A path that isn't valid Unicode can't be shown or quoted faithfully: left out.
         let paths: Vec<String> = dropped.into_iter().flatten().collect();
+        if model.remote {
+            // Those paths are on this laptop; the office cannot read them (design section 6).
+            actions.push(Action::Toast("A dropped file is not sent to a remote window: its path is on this laptop. Copy it to the office first.".into()));
+            return;
+        }
         actions.extend(drop_actions(&id, &paths));
         return;
     }

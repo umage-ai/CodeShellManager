@@ -22,6 +22,10 @@ mod lifecycle;
 /// `From` conversions from the read model and events to the owned wire types (`csm-peer-proto`).
 mod peer_wire;
 pub mod output_tap;
+/// The seam to the peer server (`csm-peer`): status types, the host trait, the audit events.
+pub mod peer_host;
+/// The seam to the laptop side of the peer link (`csm-peer`'s client): pairing and the host list.
+pub mod peer_client;
 pub mod persist;
 pub mod proc;
 pub mod registry;
@@ -45,10 +49,12 @@ pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};
 pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
 pub use plugin_screens::{DeclaredScreen, OPEN_TIMEOUT, ScreenInfo, ScreenPhase, ScreenStore};
+pub use peer_client::{ClientPairStatus, HostInfo, NoPeerClient, PairState, PeerClientHost};
+pub use peer_host::{AuditEvent, DeviceInfo, EnableRequest, NetInterface, NoPeerHost, PairAnswer, PairingStarted, PeerHost, PeerStatus, PendingPair, Revoke};
 pub use plugins::{PluginRuntime, RemoteView, RunState};
 pub use registry::{DynamicTool, Registry};
 pub use runs::{RunOutputHandle, RunPhase, RunView};
-pub use session::TerminalHandle;
+pub use session::{AttachSnapshot, ResizeMark, TerminalHandle};
 pub use snapshot::{ClosedView, GroupInfo, GroupView, SessionView, Snapshot};
 pub use state::{Autostart, LoadReport, Progress, PtyFactory, State, StateOptions, TerminalProfiles, UrlOpener, real_pty_factory, real_url_opener};
 pub use status::{Status, WaitUntil};

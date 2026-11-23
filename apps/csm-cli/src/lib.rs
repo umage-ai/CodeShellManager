@@ -5,6 +5,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod args;
+mod attach_cmd;
 mod run;
 mod setup_cmd;
 

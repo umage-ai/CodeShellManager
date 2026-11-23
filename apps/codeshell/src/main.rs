@@ -16,7 +16,12 @@
 //! codeshell [--clean] [--config-dir DIR] [--autostart] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! codeshell --demo [--static] [--restore] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! codeshell --autostart-refresh | --autostart-remove     (the installer's hooks; exit at once)
+//! codeshell --remote <host-id> [--config-dir DIR] [--latte]   (a window onto a paired office)
 //! ```
+//!
+//! `--remote` starts no engine: the window runs over `csm_remote::RemoteBackend` to the paired host
+//! (its own view state is kept beside the laptop's pairing files). Closing it, or its Quit, only
+//! disconnects; the office keeps running.
 // A GUI program on Windows, so no console window opens with it. Release builds only: a debug
 // build (`cargo run`) keeps its console for the log. The `csm` CLI stays a console program.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -51,6 +56,7 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
 
 const USAGE: &str = "codeshell [--clean] [--config-dir DIR] [--autostart] [--latte] [--font PATH] [--font-size PT] [--inbox]
 codeshell --demo [--static] [--restore] [...]
+codeshell --remote <host-id> [--config-dir DIR] [--latte]
 
   --clean           start without sessions and never write the state file (safe testing)
   --config-dir DIR  keep state.json in DIR (default: CSM_CONFIG_DIR, else the user data folder)
@@ -79,6 +85,8 @@ struct Args {
     autostart: bool,
     /// An installer hook: do it and exit.
     installer: Option<InstallerHook>,
+    /// A remote window onto this paired host (`--remote <host-id>`): no local engine.
+    remote: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +122,7 @@ fn parse_args() -> Args {
             "--autostart" => a.autostart = true,
             "--autostart-refresh" => a.installer = Some(InstallerHook::Refresh),
             "--autostart-remove" => a.installer = Some(InstallerHook::Remove),
+            "--remote" => a.remote = Some(value("--remote").to_string_lossy().into_owned()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -146,7 +155,68 @@ struct App {
     tray: Option<tray::TrayHost>,
     notifier: Option<os_notify::OsNotifier>,
     clicked: Option<Receiver<String>>,
+    /// The remote window's connection and what it keeps (`None` for the laptop's own window).
+    remote: Option<RemoteWindow>,
 }
+
+/// What a remote window keeps beside its pairing: its own view state for the host (layout, focus,
+/// rail, theme). The file is written on a worker thread, once a second at most, when it changed.
+struct RemoteWindow {
+    handle: csm_remote::RemoteHandle,
+    /// `None` when the host id is not a plain name (then nothing is kept).
+    view_file: Option<PathBuf>,
+    saved: Option<csm_ui::view_overlay::ViewOverlay>,
+    checked_at: Option<Instant>,
+    /// The link has been stopped for a disconnect (it is stopped once).
+    stopped: bool,
+}
+
+impl RemoteWindow {
+    /// Once a frame: keeps the event loop ticking (the link's state arrives on the worker thread,
+    /// not as an event), saves the view state when it changed, and closes the window on a disconnect.
+    /// A disconnect stops the link and sends the close; the close is never cancelled (see
+    /// `csm_ui::background`), so the window goes.
+    fn step(&mut self, ctx: &egui::Context, disconnect: bool) {
+        ctx.request_repaint_after(REMOTE_TICK);
+        if disconnect {
+            if !self.stopped {
+                self.stopped = true;
+                self.save_view();
+                self.handle.stop();
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        let now = Instant::now();
+        if self.checked_at.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
+            return;
+        }
+        self.checked_at = Some(now);
+        self.save_view();
+    }
+
+    /// Writes the view state on a worker thread, when it differs from what was last written.
+    fn save_view(&mut self) {
+        let Some(path) = self.view_file.clone() else { return };
+        let current = self.handle.overlay();
+        if self.saved.as_ref() == Some(&current) {
+            return;
+        }
+        self.saved = Some(current.clone());
+        let worker = std::thread::Builder::new().name("csm-remote-view".into()).spawn(move || {
+            if let Err(e) = csm_remote::connect::save_view(&path, &current) {
+                log::warn!("remote window: the view state was not saved: {e}");
+            }
+        });
+        if let Err(e) = worker {
+            log::warn!("remote window: no thread to save the view state: {e}");
+        }
+    }
+}
+
+/// How often a remote window looks at its link when nothing else wakes it (the link runs on its own
+/// thread and does not wake the UI).
+const REMOTE_TICK: Duration = Duration::from_millis(100);
 
 impl App {
     /// Sends what the UI decided to notify, follows the "needs you" count on the tray, and turns
@@ -223,6 +293,9 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.logic(ctx);
         self.tray_and_notifications(ctx);
+        if let Some(r) = self.remote.as_mut() {
+            r.step(ctx, self.app.disconnect);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -352,6 +425,116 @@ fn import_wpf_on_first_run(engine: &Engine, state_json: PathBuf) {
     }
 }
 
+/// What the laptop's window does to start a remote window: this exe, `--remote <host-id>`, with the
+/// same state folder. The child starts on a thread of its own, never on the UI thread.
+fn remote_window_opener(config_dir: Option<PathBuf>) -> Arc<dyn Fn(String) + Send + Sync> {
+    Arc::new(move |host_id: String| {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                log::warn!("remote window: this program's path is not known: {e}");
+                return;
+            }
+        };
+        let mut argv = vec!["--remote".to_owned(), host_id];
+        if let Some(dir) = &config_dir {
+            argv.push("--config-dir".to_owned());
+            argv.push(dir.display().to_string());
+        }
+        // `proc::spawn_detached` owns the process rules (no console, reaped on its own thread); this
+        // thread only keeps the start off the UI thread.
+        let spawned = std::thread::Builder::new().name("csm-remote-spawn".into()).spawn(move || {
+            if let Err(e) = csm_engine::proc::spawn_detached(&exe, &argv, None) {
+                log::warn!("remote window: could not start it: {e}");
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("remote window: no thread to start it on: {e}");
+        }
+    })
+}
+
+/// `--remote <host-id>`: a window onto a paired office. It starts no engine: the window's calls and
+/// its state are the office's, over `csm-remote`, and its own view state is kept beside the
+/// pairing files. A window that cannot connect (no key, a host that is not paired) says so on stderr
+/// and ends; the laptop's own window shows the pairing.
+fn run_remote_window(args: &Args, host_id: String, fonts: FontSet) {
+    let theme_kind = if args.latte { ThemeKind::Latte } else { ThemeKind::Mocha };
+    // The laptop's client folder: `peer-client/` beside the state file, where the pairing was made.
+    let client_dir = persist::state_path(args.config_dir.as_deref()).as_deref().and_then(std::path::Path::parent).map(|d| d.join("peer-client"));
+    let Some(client_dir) = client_dir else {
+        eprintln!("A remote window needs the laptop's state folder: pass --config-dir.");
+        std::process::exit(1);
+    };
+    let (params, host) = match csm_remote::window_params(&client_dir, &host_id, theme_kind, Vec::new()) {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!("remote window: {e}");
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    let view_file = csm_remote::connect::view_path(&client_dir, &host_id);
+    let saved = view_file.as_deref().and_then(csm_remote::connect::load_view);
+    let mut backend = match csm_remote::RemoteBackend::connect(params) {
+        Ok(b) => b,
+        Err(e) => {
+            log::error!("remote window: {e}");
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    backend.describe(&host.name, &host.address);
+
+    let start = StartWindow::Normal;
+    let viewport = egui::ViewportBuilder::default()
+        .with_title(format!("{} · CodeShellManager", host.name))
+        .with_inner_size(theme::size::WINDOW)
+        .with_min_inner_size(theme::size::WINDOW_MIN)
+        .with_icon(std::sync::Arc::new(csm_ui::app::app_icon(64)));
+    #[cfg(windows)]
+    let viewport = viewport.with_decorations(false);
+    let options = eframe::NativeOptions { viewport: start.viewport(viewport, start.offscreen()), ..Default::default() };
+    let monitors = Monitors::default();
+    let created = Arc::new(AtomicBool::new(false));
+    let (app_monitors, app_created) = (monitors.clone(), created.clone());
+    let event_loop = match EventLoop::<eframe::UserEvent>::with_user_event().build() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("event loop: {e}");
+            std::process::exit(1);
+        }
+    };
+    let app = eframe::create_native(
+        "codeshell",
+        options,
+        Box::new(move |cc| {
+            app_created.store(true, Ordering::Relaxed);
+            csm_ui::app::setup(&cc.egui_ctx, theme_kind);
+            // The window's two faces share one backend, made on the UI thread.
+            let (port, view, handle) = csm_remote::shared(backend);
+            let mut app = csm_ui::CsmApp::new(Box::new(port), Box::new(view), TerminalRenderer::new(fonts));
+            app.monitors = app_monitors;
+            app.window_controls = cfg!(windows);
+            let wake_ctx = cc.egui_ctx.clone();
+            let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
+            let remote = RemoteWindow { handle, view_file, saved, checked_at: None, stopped: false };
+            Ok(Box::new(App { app, dialogs, tray: None, notifier: None, clicked: None, remote: Some(remote) }))
+        }),
+        &event_loop,
+    );
+    let mut handler = WithMonitors { inner: app, monitors, read_at: None };
+    let mut event_loop = event_loop;
+    if let Err(e) = event_loop.run_app_on_demand(&mut handler) {
+        eprintln!("event loop: {e}");
+        std::process::exit(1);
+    }
+    if !created.load(Ordering::Relaxed) {
+        eprintln!("eframe: the window could not be created");
+        std::process::exit(1);
+    }
+}
+
 fn start_failed(e: impl std::fmt::Display) -> ! {
     eprintln!("could not start the engine: {e}");
     std::process::exit(1);
@@ -379,8 +562,10 @@ fn main() {
     }
     // One app per state file: launched again (the Start menu, a second sign-in entry), ask the
     // running one to show its window and leave. Not for `--clean`, which never shares a state.
+    // A remote window is a window of its own: it never shows the laptop's running app instead.
     if !args.demo
         && !args.clean
+        && args.remote.is_none()
         && let Some(path) = persist::state_path(args.config_dir.as_deref())
     {
         match csm_mcp::activate_running(csm_mcp::RemoteOptions::default(), &path) {
@@ -404,6 +589,11 @@ fn main() {
     let fallbacks = fallback_paths.iter().filter_map(|(p, i)| load_face(p, *i).ok()).collect();
     let fonts = FontSet::new(primary, fallbacks, size, true);
 
+    // A window onto a paired office: no engine here, only the connection to the office.
+    if let Some(host_id) = args.remote.clone() {
+        return run_remote_window(&args, host_id, fonts);
+    }
+
     let (engine, mode, theme_kind, start) = if args.demo {
         let shell: Vec<OsString> = match find_on_path("pwsh.exe").or_else(|| find_on_path("pwsh")) {
             Some(_) => vec!["pwsh".into(), "-NoLogo".into()],
@@ -421,7 +611,22 @@ fn main() {
         for line in persist::prepare_data_dirs(args.config_dir.as_deref(), args.clean) {
             log::info!("data folder: {line}");
         }
-        let options = StateOptions { save_path: persist::state_path(args.config_dir.as_deref()), clean: args.clean, ..StateOptions::production() };
+        // Remote access (another CSM connecting to this one): a server whose files live beside the
+        // state, off until the person turns it on in the app. Not for `--clean`, which writes nothing,
+        // and not for an isolated run with no state folder: they get no host, so nothing can listen.
+        let save_path = persist::state_path(args.config_dir.as_deref());
+        let peer_server = save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean).map(|d| csm_peer::PeerServer::new(d.join("peer")));
+        let peer_host: Arc<dyn csm_engine::PeerHost> = match &peer_server {
+            Some(p) => Arc::new(p.clone()),
+            None => Arc::new(csm_engine::NoPeerHost),
+        };
+        // The other side of the same link: pairing with another CSM and its host list. Its files live in
+        // `peer-client` beside the state; it dials out only for a pairing the person starts in the app.
+        let peer_client: Arc<dyn csm_engine::PeerClientHost> = match save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean) {
+            Some(d) => Arc::new(csm_peer::ClientPeer::new(d.join("peer-client"))),
+            None => Arc::new(csm_engine::NoPeerClient),
+        };
+        let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, ..StateOptions::production() };
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
@@ -451,6 +656,13 @@ fn main() {
         let start = StartWindow::choose(settings.start_minimized, settings.start_minimized_to_tray, tray::POSSIBLE);
         let first_run_import = persist::first_run_wpf_import(args.config_dir.as_deref(), args.clean, report.source);
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
+        if let Some(p) = &peer_server {
+            // Gives it the engine its devices' calls run on, and replays the one thing the person
+            // may have chosen before: remote access on, at the address they picked. A fresh install,
+            // an upgrade or an import has no such choice, so this starts nothing.
+            p.attach(engine.clone());
+            p.resume();
+        }
         if let Some(path) = first_run_import {
             import_wpf_on_first_run(&engine, path);
         }
@@ -503,6 +715,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let open_window = remote_window_opener(args.config_dir.clone());
     let app = eframe::create_native(
         "codeshell",
         options,
@@ -527,6 +740,9 @@ fn main() {
             let mut app = csm_ui::CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), backend, TerminalRenderer::new(fonts));
             app.monitors = app_monitors;
             app.window_controls = cfg!(windows);
+            if real {
+                app.hooks.open_window = Some(open_window.clone());
+            }
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
             // On the main thread, with the event loop running: where the tray must be made.
@@ -543,7 +759,7 @@ fn main() {
             // A start in the tray needs one too: without it, minimized instead.
             let mode = if tray.is_some() { start } else { start.without_tray() };
             app.start = StartUp::new(mode, start.offscreen());
-            Ok(Box::new(App { app, dialogs, tray, notifier, clicked }))
+            Ok(Box::new(App { app, dialogs, tray, notifier, clicked, remote: None }))
         }),
         &event_loop,
     );
