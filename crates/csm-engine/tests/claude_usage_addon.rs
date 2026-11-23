@@ -244,3 +244,59 @@ fn a_clean_run_never_reads_past_history_and_leaves_the_add_on_as_it_was() {
     assert_eq!(s.data["ClaudeUsageHistory"], true);
     assert_eq!(s.data["AddonApprovals"][CLAUDE_USAGE_ID], BUILTIN_DIGEST);
 }
+
+/// A transcript of `folder`'s conversation `cid`, where Claude keeps it, with one request.
+fn write_in_folder(root: &Path, folder: &str, cid: &str, msg: &str, ts: i64, input: u64) -> PathBuf {
+    let name: String = folder.trim_end_matches(['\\', '/']).chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let dir = root.join("projects").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = json!({"type": "assistant", "timestamp": csm_core::time::Timestamp::from_epoch_ms(ts).as_str(), "cwd": folder,
+        "message": {"id": msg, "model": "claude-opus-5-5", "usage": {"input_tokens": input, "output_tokens": 5, "cache_read_input_tokens": 1_000}}});
+    let p = dir.join(format!("{cid}.jsonl"));
+    std::fs::write(&p, line.to_string() + "\n").unwrap();
+    p
+}
+
+/// A live Claude session: its id, its folder and its conversation id.
+fn claude_in_folder(h: &H) -> (String, String, String) {
+    let id = h.session("claude");
+    let v = h.wait_until("an id", |v| v.session(&id).is_some_and(|s| s.claude_session_id.is_some() && s.live));
+    let s = v.session(&id).unwrap();
+    (id, s.folder.clone(), s.claude_session_id.clone().unwrap())
+}
+
+/// `/clear` in Claude starts a new conversation (a new transcript) that CSM is not told about:
+/// the session follows the newer transcript of its folder, its chip shows the new fill, and the
+/// new id is stored (for a resume). With the add-on off and on.
+#[test]
+fn a_clear_moves_the_session_to_the_new_conversation() {
+    for on in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (h, _ix) = harness(if on { on_app() } else { test_app() }, root.path(), false);
+        let (id, folder, cid) = claude_in_folder(&h);
+        write_in_folder(root.path(), &folder, &cid, "m1", now_ms() - 1_000, 190_000);
+        until(&h, "usage_context", json!({}), "the old fill", |o| fill_of(o, &id) == json!(191_000));
+
+        std::thread::sleep(Duration::from_millis(50));
+        let new_id = "0b9e8c1a-0000-4000-8000-00000000c1ea";
+        write_in_folder(root.path(), &folder, new_id, "m2", now_ms(), 500);
+        until(&h, "usage_context", json!({}), "the new fill", |o| fill_of(o, &id) == json!(1_500));
+        h.wait_until("the new id", |v| v.session(&id).is_some_and(|s| s.claude_session_id.as_deref() == Some(new_id)));
+    }
+}
+
+/// Two Claude sessions in one folder: neither adopts the other's newer transcript.
+#[test]
+fn a_shared_folder_never_adopts_a_newer_transcript() {
+    let root = tempfile::tempdir().unwrap();
+    let (h, _ix) = harness(test_app(), root.path(), false);
+    let (a, folder, cid_a) = claude_in_folder(&h);
+    let (_b, _, cid_b) = claude_in_folder(&h);
+    write_in_folder(root.path(), &folder, &cid_a, "a1", now_ms() - 1_000, 100_000);
+    until(&h, "usage_context", json!({}), "a's fill", |o| fill_of(o, &a) == json!(101_000));
+    std::thread::sleep(Duration::from_millis(50));
+    write_in_folder(root.path(), &folder, &cid_b, "b1", now_ms(), 500);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(fill_of(&h.ok("usage_context", json!({})), &a), json!(101_000));
+    assert_eq!(h.engine.view().session(&a).unwrap().claude_session_id.as_deref(), Some(cid_a.as_str()));
+}

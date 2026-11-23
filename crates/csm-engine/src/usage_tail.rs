@@ -58,6 +58,22 @@ pub(crate) struct Link {
     pub csm_session: String,
     pub claude_sid: Option<String>,
     pub folder: String,
+    /// No other CSM Claude session works in this folder, so a newer transcript of the folder
+    /// written while this one runs is its own (a `/clear` starts a new conversation id that CSM
+    /// is not told about). The same rule a resume uses (`launch::choose_claude_id`).
+    pub sole: bool,
+    /// When its process started (ms since the epoch): an adopted transcript is newer.
+    pub started_ms: i64,
+}
+
+/// Whether `session` is the only CSM Claude session working in its folder.
+pub(crate) fn sole_claude_in_folder(sessions: &[csm_core::models::ShellSession], session: &csm_core::models::ShellSession) -> bool {
+    !sessions.iter().any(|o| {
+        o.id != session.id
+            && o.kind == csm_core::models::SessionKind::Local
+            && crate::launch::is_claude_command(&o.command)
+            && discover::same_folder(&o.working_folder, &session.working_folder)
+    })
 }
 
 enum Msg {
@@ -158,6 +174,8 @@ const BUDGET: u64 = 16 * 1024 * 1024;
 const LINK_CHECK: Duration = Duration::from_millis(1000);
 /// How long a folder-based guess is reused before looking again.
 const GUESS_TTL: Duration = Duration::from_secs(20);
+/// How often a session followed by id checks its folder for a newer conversation (a `/clear`).
+const NEWER_CHECK: Duration = Duration::from_secs(3);
 /// How soon a transcript that was not found is looked for again (in its own folder's).
 const MISSING_RETRY: Duration = Duration::from_secs(2);
 /// Every project folder is searched for a known conversation not in its own folder's at most
@@ -216,11 +234,13 @@ pub(crate) fn links(state: &State) -> Vec<Link> {
         .sessions
         .iter()
         .filter(|s| s.kind == csm_core::models::SessionKind::Local && crate::launch::is_claude_command(&s.command))
-        .filter(|s| state.rt.sessions.contains_key(&s.id))
-        .map(|s| Link {
+        .filter_map(|s| state.rt.sessions.get(&s.id).map(|rt| (s, rt.started_ms)))
+        .map(|(s, started_ms)| Link {
             csm_session: s.id.clone(),
             claude_sid: s.claude_session_id.clone().filter(|c| discover::is_safe_session_id(c)),
             folder: s.working_folder.trim().to_owned(),
+            sole: sole_claude_in_folder(&state.app.sessions, s),
+            started_ms,
         })
         .collect()
 }
@@ -325,6 +345,8 @@ struct MainLook {
     sid: Option<String>,
     /// When every project folder was last searched for it.
     full_at: Option<Instant>,
+    /// When the folder was last checked for a newer conversation (a `/clear`).
+    newer_at: Option<Instant>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -551,7 +573,18 @@ impl Tailer {
             && m.path.as_ref().is_some_and(|p| p.is_file())
             && (link.claude_sid.is_some() || m.at.elapsed() < GUESS_TTL)
         {
-            let p = m.path.clone()?;
+            let mut p = m.path.clone()?;
+            // Followed by id: a `/clear` moved the session to a new conversation that nobody told
+            // CSM about. Adopt the folder's newer transcript (the engine then stores its id).
+            if link.claude_sid.is_some() && link.sole && m.newer_at.is_none_or(|t| t.elapsed() >= NEWER_CHECK) {
+                if let Some(newer) = self.newer_in_folder(link, &p) {
+                    p = newer;
+                }
+                if let Some(look) = self.mains.get_mut(&link.csm_session) {
+                    look.newer_at = Some(Instant::now());
+                    look.path = Some(p.clone());
+                }
+            }
             let id = p.file_stem()?.to_string_lossy().into_owned();
             return Some((id, p));
         }
@@ -573,9 +606,22 @@ impl Tailer {
                 .map(|p| (sid.clone(), p)),
             None => discover::newest_transcript_for_folder(&self.roots, &link.folder),
         };
-        let look = MainLook { path: found.as_ref().map(|(_, p)| p.clone()), at: Instant::now(), sid: link.claude_sid.clone(), full_at };
+        let look = MainLook { path: found.as_ref().map(|(_, p)| p.clone()), at: Instant::now(), sid: link.claude_sid.clone(), full_at, newer_at: None };
         self.mains.insert(link.csm_session.clone(), look);
         found
+    }
+
+    /// The folder's newest transcript when it is not `current`, was written after `current` and
+    /// after the session's process started: the conversation a `/clear` started.
+    fn newer_in_folder(&self, link: &Link, current: &Path) -> Option<PathBuf> {
+        let (_, newest) = discover::newest_transcript_for_folder(&self.roots, &link.folder)?;
+        if newest == current {
+            return None;
+        }
+        let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let (new_m, cur_m) = (mtime(&newest)?, mtime(current)?);
+        let new_ms = i64::try_from(new_m.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis()).ok()?;
+        (new_m > cur_m && new_ms >= link.started_ms).then_some(newest)
     }
 
     /// One pass over a link's transcripts. True when a file has more to read straight away.
@@ -844,9 +890,28 @@ fn take_subagents(state: &mut State) {
     drop(sh);
     state.rt.subagents = map;
     state.rt.live_context = context;
+    adopt_conversations(state, &transcripts);
     state.rt.claude_transcripts = transcripts;
     apply_remote_control(state, &remote);
     state.rt.dirty = true;
+}
+
+/// A followed session whose transcript is now another conversation (the tail adopted the one a
+/// `/clear` started) stores that id, so its fill, cost, replies and a later resume follow it.
+pub(crate) fn adopt_conversations(state: &mut State, transcripts: &HashMap<String, PathBuf>) {
+    let mut changed = false;
+    for (id, path) in transcripts {
+        let Some(cid) = path.file_stem().and_then(|s| s.to_str()).filter(|c| discover::is_safe_session_id(c)) else { continue };
+        let Some(s) = state.app.sessions.iter_mut().find(|s| &s.id == id) else { continue };
+        if s.claude_session_id.is_some() && s.claude_session_id.as_deref() != Some(cid) {
+            log::info!("usage: session {id} moved to Claude conversation {cid} (a /clear)");
+            s.claude_session_id = Some(cid.to_owned());
+            changed = true;
+        }
+    }
+    if changed {
+        state.persist();
+    }
 }
 
 /// Folds each session's last Remote Control line into its runtime: only into a running process,

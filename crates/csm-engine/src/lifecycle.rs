@@ -548,12 +548,7 @@ pub(crate) fn start_spawn(ctx: &mut Ctx<'_>, id: &str, instance: u64) {
         })
     };
     // Another Claude session in this folder: a resume never adopts the folder's newest transcript.
-    let sole_in_folder = !state.app.sessions.iter().any(|o| {
-        o.id != session.id
-            && o.kind == csm_core::models::SessionKind::Local
-            && crate::launch::is_claude_command(&o.command)
-            && csm_services::claude_usage::discover::same_folder(&o.working_folder, &session.working_folder)
-    });
+    let sole_in_folder = crate::usage_tail::sole_claude_in_folder(&state.app.sessions, &session);
     let job = SpawnJob {
         io: rt.io.clone(),
         session,
