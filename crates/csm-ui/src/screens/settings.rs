@@ -282,6 +282,7 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     crate::screens::claude_commands::show(ui, app, actions);
     crate::screens::backup::general(ui, app, actions);
     notifications(ui, app, actions);
+    updates(ui, app, actions);
 }
 
 /// "When I close the window": Ask, Keep running in the tray, Quit (`CloseAction`). Only where
@@ -329,6 +330,22 @@ fn notifications(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
     );
     if widgets::button(ui, ButtonKind::Secondary, Some("send"), "Send a test notification", None).clicked() {
         actions.push(Action::Tool("notification_test", json!({})));
+    }
+}
+
+/// Settings › General › Updates: the daily check (`CheckForUpdates`) and "Check now" (`update_check`).
+fn updates(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
+    section(ui, "Updates");
+    bool_setting(
+        ui,
+        app,
+        "CheckForUpdates",
+        "Check for updates",
+        "Once a day, ask GitHub whether a newer CodeShellManager is released and say so in the title bar. Nothing is downloaded, and nothing about you is sent.",
+        actions,
+    );
+    if widgets::button(ui, ButtonKind::Secondary, Some("restart"), "Check now", None).clicked() {
+        actions.push(Action::Tool("update_check", json!({})));
     }
 }
 

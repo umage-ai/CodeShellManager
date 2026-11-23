@@ -186,6 +186,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("StartMinimizedToTray").or_insert(json!(s.start_minimized_to_tray));
         m.entry("ThemeDark").or_insert(json!(s.theme_dark));
         m.entry("ThemeLight").or_insert(json!(s.theme_light));
+        m.entry("CheckForUpdates").or_insert(json!(s.check_for_updates));
     }
     Ok(v)
 }

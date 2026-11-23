@@ -658,6 +658,8 @@ mod tests {
         "session_status_clear",
         "window_show",
         "notification_test",
+        // Hides the engine's update badge (runtime state, the same for every client).
+        "update_dismiss",
         "session_annotate",
         "screen_open",
         "screen_close",

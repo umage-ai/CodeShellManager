@@ -53,4 +53,5 @@ pub use state::{Autostart, LoadReport, Progress, PtyFactory, State, StateOptions
 pub use status::{Status, WaitUntil};
 pub use tool::{Caller, Effects, ToolError, ToolFn, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 pub use tools::open::{OpenWithTarget, OpenWithView};
+pub use tools::update::{UpdateFetch, UpdateOptions, UpdateView};
 pub use usage_tail::ClaudeRoots;

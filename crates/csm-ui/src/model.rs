@@ -152,6 +152,15 @@ pub struct OpenWithItem {
     pub is_default: bool,
 }
 
+/// The title bar's update notice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdateBadge {
+    /// The newer release (`2.1.0`).
+    pub version: String,
+    /// Its release page (`https://github.com/…/releases/tag/v2.1.0`).
+    pub url: String,
+}
+
 /// One entry of the Open with list, as the editor shows it.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OpenWithEntryView {
@@ -831,6 +840,9 @@ pub struct UiModel {
     /// Open with entries from CodeShellManager 0.x waiting for the person's answer: the consent
     /// card (`open_with_pending_answer`). Empty: no card.
     pub pending_open_with: Vec<OpenWithEntryView>,
+    /// A newer release than this build (`update_check`): the title bar's "Update available"
+    /// badge, which opens `url` (`open_url`) and can be dismissed (`update_dismiss`).
+    pub update: Option<UpdateBadge>,
     /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).
     /// Saved window bounds by `main`, `group:<id>`, `pane:<session id>` (`crate::placement`).
     pub windows: BTreeMap<String, csm_core::models::WindowSlot>,
