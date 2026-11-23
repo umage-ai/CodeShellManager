@@ -194,9 +194,13 @@ separate and higher, because terminal output bursts:
 | `peer_frames_per_second_per_channel` | 2000 (burst 2x) |
 | `peer_bytes_per_second_per_channel` | 8 MiB |
 
-A peer host has no push. Its client channels queue 1024 frames (phones: 64), so a short burst waits
-in the queue instead of closing the channel; a sustained rate over the cap still closes it with
-`rate_limited`. The same access rules (`[access]`) admit an office as they admit a phone host.
+A peer host has no push. Its client channels queue 1024 frames (phones: 64). The laptop acknowledges what
+its reader has taken (a text `{"t":"ack","frames":N,"bytes":N}` on its socket, peer clients only); the relay
+forwards it to the office as an `Ack` frame (counts only, never Noise bytes). The office keeps at most 512
+frames and 2 MiB in flight per channel, so a well-behaved office never fills the queue: a slow laptop slows
+the office's writes, and a well-behaved office never fills the relay's queue. A sustained rate over the
+per-channel cap still closes it with `rate_limited`. The same access rules (`[access]`) admit an office as
+they admit a phone host.
 
 The office sets its relay in Settings › Remote access (`peer_relay_set`): the address, and the operator's
 enrolment token when `[access]` asks for one. The office keeps the token and its relay secret in its OS
@@ -204,12 +208,16 @@ keychain, never in a file. It connects to the relay only while remote access is 
 runs for an office that is not listening. The relay needs no change for this: an office's relay channel
 is an ordinary peer host.
 
-The office paces its own writes to the same per-channel caps, so a burst from the terminal waits at
-the office and is not cut off here. The defaults are what the office assumes: a relay that lowers
-`peer_*` below them will close channels the office sends at full speed. A phone can never open a peer
+The office paces its own writes to the caps the relay announces in its welcome (`frames_per_second` and
+`bytes_per_second` for the kind of host it is), so a burst from the terminal waits at the office and is not
+cut off here. A relay that lowers `peer_*` is followed, not refused. A phone can never open a peer
 channel and a peer can never open a phone channel: the namespaces are separate, and the relay tests
 check both directions.
 
 Tests: `relay/tests/relay.rs` (the namespaces, the Origin refusal, the peer limits, revocation) and
-`relay/tests/peer_relay.rs` (a real office and a real laptop through an in-process relay on 127.0.0.1:
-pairing, connecting, revoking, and the direct address winning when it answers).
+`relay/tests/peer_relay.rs` (a real office and a real laptop through an in-process relay on 127.0.0.1: a slow laptop reader keeps the link and the final screen;
+pairing, connecting, revoking, the direct address winning when it answers, and the relay-only paths).
+
+Crate tests: `csm-remote-proto` pins the `Ack` frame and its payload; `csm-peer` `relay_pump` tests the
+window (a writer waits at the window and is released by an ack or by a close), and that a relay which stops
+reading cannot hold a close, and that an Open arriving while the gate is full does not deadlock.

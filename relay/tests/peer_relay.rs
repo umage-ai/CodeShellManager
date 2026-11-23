@@ -403,3 +403,37 @@ fn a_phone_cannot_open_a_peer_channel_and_a_peer_cannot_open_a_phone_channel() {
     });
     drop(office);
 }
+
+#[test]
+fn a_slow_laptop_reader_keeps_the_link_and_the_final_screen() {
+    let relay = start_relay();
+    let office = office(&relay);
+    let (me, host) = pair_through_relay(&office);
+    let (id, pty) = office.session();
+    let r = route(&host);
+    let direct = PeerAddr::parse(DEAD_DIRECT).unwrap();
+    let conn = client::connect_saved(Some(&direct), Some(&r), &host.host_public, &me, &ClientConfig::new("Laptop")).unwrap();
+    conn.subscribe(STREAM, &id, None).unwrap();
+    pty.emit(b"ready\r\n");
+    assert!(read_until(&conn, "ready").is_some());
+    // The laptop stops reading while the office writes 4 MiB: more than the window (2 MiB), so the
+    // office waits on the laptop's acks instead of the relay dropping the channel for a full queue.
+    // The writes happen on their own thread, so a waiting office cannot hold the test.
+    let writer_pty = pty.clone();
+    let writer = std::thread::spawn(move || {
+        let chunk = vec![b'y'; 16 * 1024];
+        for _ in 0..256 {
+            writer_pty.emit(&chunk);
+        }
+    });
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(!conn.is_closed(), "a slow reader does not end the channel");
+    // The laptop reads again: the link is live, and the final screen has the marker.
+    let marker_pty = pty.clone();
+    let marker = std::thread::spawn(move || marker_pty.emit(b"\r\nFINAL-MARK\r\n"));
+    assert!(read_until(&conn, "FINAL-MARK").is_some(), "the final output arrives after the slow reader catches up");
+    writer.join().unwrap();
+    marker.join().unwrap();
+    assert!(!conn.is_closed(), "the channel survived the backlog");
+    assert!(matches!(conn.call_wait("session_list", json!({}), Duration::from_secs(10)).unwrap(), Outcome::Ok { .. }));
+}

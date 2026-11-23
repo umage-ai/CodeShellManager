@@ -1128,3 +1128,61 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
   the laptop makes it, sends its hash in pairing, the office stores that hash per device, and the laptop keeps the secret
   with its saved host. That touches the pairing message, the device records and the saved host, so it is not
   a cheap change and is left for a round that changes those formats anyway. Noise still gates every session.
+
+## P2 follow-ups, final review round 1 (`csm-peer`, `csm-remote-proto`, `csm-remote`, `relay`, `csm-engine`)
+
+**Already in place when this round started (checked, with the test that holds each one).**
+- *Snapshot coalescing and the notice limit (follow-up 1).* `csm-remote/src/link.rs` keeps one snapshot slot and one
+  pending wake (`Latest`), so the window's queue never grows with the office's deltas. Office notices pass through a
+  fixed rate (`NOTICES_PER_SEC`, one "more dropped" note); consent cards are never limited. Test:
+  `the_window_gets_only_the_newest_snapshot_and_one_wake_at_a_time`, `notices_are_admitted_at_a_fixed_rate...`.
+- *A delta that does not apply (follow-up 2).* The worker asks for a fresh snapshot on the same link
+  (`Msg::SnapshotRequest`, answered in `csm-peer/src/serve.rs`), and the terminals are marked stale while it is
+  away. Test: `remote.rs`, the corrupted-delta test. That test (`a_delta_that_does_not_apply_is_fixed_with_a_snapshot_on_the_same_link`) uses the
+  `corrupt_next_delta` knob of a fake office, a proxied link, and checks that no reconnect happened.
+- *Inspector width per client (follow-up 3).* `inspector_panel_set` is a `Local` route in the fixed table
+  (`csm-ui/src/view_overlay.rs`), so the width is the window's own. The table test enforces each UI tool's route.
+- *`remote_window_open` (follow-up 4).* `StateOptions::remote_window_launcher` is wired by `apps/codeshell`, which starts
+  `codeshell --remote <host-id>` by argv. The Connect button reaches it. `peer_client_pair_status` leaves out the check
+  code for every caller but the window (`tools/peer_client.rs`). Test: `csm-peer/tests/pairing_client.rs` (the launcher).
+- *Refusals for a paired device (follow-up 5).* `PEER_REFUSED` covers `peer_hosts_list`, `peer_host_forget`,
+  `peer_client_pair_status` and `peer_client_pair_cancel`. Test: `pairing_client.rs`, the loop over the four ids.
+- *Cancel during connect and handshake (follow-up 6).* `dial` checks the cancel flag between attempts, and the
+  handshake's reads give up within a quarter second of a cancel (`client::pair_cancellable`). Tests:
+  `a_cancel_ends_a_pairing_that_waits_in_the_handshake_at_once` and the cancel tests in `pairing_client.rs`.
+- *The trust note (follow-up 7).* `docs/remote-access.md` says that `csm attach` and the remote window carry this
+  laptop's device key, and what that lets a program on the laptop do.
+
+**Relay flow control and close (the final review's blockers and majors).**
+- *Closing never waits.* `Sink::close` is a separate method. The office's close is a `Cmd::Close` on the unbounded
+  command queue, not counted by the gate, so a full gate cannot hold it. The laptop's close sets a flag the pump checks,
+  and queues a close only if there is room. An Open that arrives while the gate is full and the stream is closed at once
+  does not deadlock (test: `an_open_arriving_while_the_gate_is_full_does_not_deadlock`).
+- *A stalled relay ends the connection.* The relay socket has a 5 s write timeout (`WRITE_STALL`). A relay that stops
+  reading ends the session, the gate and the windows are released, and the reconnect loop takes over. Test:
+  `a_relay_that_stops_reading_cannot_hold_a_channel_close`.
+- *End-to-end window.* The laptop reports what its reader has taken: a text `{"t":"ack","frames","bytes"}` on the peer
+  client socket (peer clients only; the relay forwards it as `FrameKind::Ack`, counts only). The office keeps at most
+  512 frames and 2 MiB in flight per channel (`WINDOW_FRAMES`, `WINDOW_BYTES`), and a writer waits at the window.
+  A stall of 30 s with no acks ends the channel. A well-behaved office never fills the relay's queue (the window stays
+  under the 1024-frame queue). A slow laptop therefore slows the office and the backlog rule applies (a fresh screen
+  when far behind). Tests: `the_window_makes_a_writer_wait...`, `closing_a_window_releases...`, and the relay test
+  `a_slow_laptop_reader_keeps_the_link_and_the_final_screen` (4 MiB while the laptop does not read).
+- *Rates from the relay.* The Welcome carries `frames_per_second` and `bytes_per_second` for the kind of host. The office
+  paces to them (zero means the old defaults, for an older relay). `max_channels` is the kind's own cap.
+  Test: `the_relays_announced_rates_are_used...`.
+- *No head-of-line blocking.* A channel that waits for pacing keeps its items in order in its own queue (`stalled`); the
+  other channels are sent. Control messages still go ahead. The outbox bound counts all waiting items.
+- *Bounded inbound on the laptop.* The laptop's inbound queue is a bounded `sync_channel`; a reader that falls behind ends
+  the channel, as the office does.
+- *Test knobs.* `corrupt_next_delta` exists only with the `test-knobs` feature (enabled by `csm-remote`'s dev-dependencies)
+  or in this crate's own tests. Production builds cannot set it.
+
+**Not done, and why.**
+- The reviewer's "stalled relay makes PeerServer::shutdown return in a bound" is covered one level down
+  (`RelayHost`: the close and the drop return at once). The full `PeerServer::shutdown` over a stalled relay is
+  not a separate test; `try_bye` still waits for the gate, and the gate frees within the 5 s write timeout.
+- The round-robin between channels is by queue order, not by a fair scheduler: a channel at its window does not
+  hold others (its writers wait), but a saturated channel still fills the shared outbox bound (512). A test with two
+  saturated channels is not written.
+- The routing secret (the per-device routing token derived from the public key) is still open, as recorded above.

@@ -4,11 +4,18 @@
 //! relay announces and hands it to the server, and reconnects with backoff when the relay goes
 //! away. Nothing in here understands the Noise session; the bytes are opaque.
 //!
-//! The office's writes are bounded and paced. Each channel's writer waits when the office's queue
-//! is full (backpressure to the terminal), and the pump sends a channel's frames no faster than the
-//! relay's per-channel caps, so a burst waits here instead of tripping the relay's rate limit, which
-//! closes the channel. Inbound data that the reader does not take in time drops the channel instead
-//! of stalling the thread that serves every channel.
+//! Flow control, end to end. The office keeps at most [`WINDOW_FRAMES`] frames and
+//! [`WINDOW_BYTES`] bytes in flight per channel: the laptop's reader reports (as acks, counts only)
+//! what it has taken, and a writer waits while the window is full. So a slow laptop slows the
+//! office's writes exactly as a slow TCP reader does, and the stream's backlog rule (a fresh attach
+//! when far behind) applies over the relay too. The office also paces each channel to the rates
+//! the relay announced in its Welcome, and a channel that waits for pacing does not hold up the
+//! others.
+//!
+//! Closing never waits. A close is a control command (not counted by the gate), and the laptop's
+//! close is a flag the pump checks, so a full queue or a stalled relay cannot keep a channel open
+//! when the app quits or the remote is turned off. A relay socket has a write timeout: a relay that
+//! stops reading ends the connection, and the reconnect loop takes over.
 //!
 //! Connections are made with a timeout (the TCP connect and the WebSocket handshake, TLS included),
 //! so an unreachable relay cannot hold the caller for the operating system's full connect timeout.
@@ -27,13 +34,15 @@ use std::time::{Duration, Instant};
 use csm_remote_proto::codes::RefusalCode;
 use csm_remote_proto::ids::{TOKEN_LEN, b64_encode, sha256, token_hash};
 use csm_remote_proto::limits::{BURST_FACTOR, PEER_BYTES_PER_SECOND_PER_CHANNEL, PEER_FRAMES_PER_SECOND_PER_CHANNEL};
-use csm_remote_proto::relay::{ClientToRelay, FrameKind, HostToRelay, OpenInfo, RelayToClient, RelayToHost, close_payload, decode_frame, encode_frame, to_text};
+use csm_remote_proto::relay::{
+    ClientToRelay, FrameKind, HostToRelay, LimitsInfo, OpenInfo, PeerClientText, RelayToClient, RelayToHost, close_payload, decode_ack, decode_frame, encode_frame, to_text,
+};
 use tungstenite::handshake::HandshakeError;
 use tungstenite::handshake::client::ClientHandshake;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
-use crate::transport::{Out, QueueSink, RELAY_QUEUE, RelayStream, Sink, Stream};
+use crate::transport::{Consumed, Out, QueueSink, RELAY_QUEUE, RelayStream, Sink, Stream};
 
 /// How long a relay WebSocket waits for one read before the pump looks at its queue again.
 const POLL: Duration = Duration::from_millis(5);
@@ -43,12 +52,24 @@ const PING_EVERY: Duration = Duration::from_secs(20);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the WebSocket handshake (TLS included) may take.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one write to the relay may take. A relay that stops reading (a hung process, a zero
+/// window) ends the connection after this, so nothing waits on it for longer.
+const WRITE_STALL: Duration = Duration::from_secs(5);
 /// Frames a channel's writer may queue before it waits.
 const FRAME_QUEUE: usize = 256;
-/// Frames the office holds for pacing before it stops taking more from the writers.
-const OUTBOX_MAX: usize = 128;
+/// Frames the office holds (ready to send, or waiting for pacing) before it stops taking more.
+const OUTBOX_MAX: usize = 512;
 /// Inbound frames a channel's reader may fall behind before the channel is dropped.
 const INBOX_MAX: usize = 1024;
+/// Frames a channel may have in flight (sent, not yet taken by the laptop). Below the relay's queue
+/// for a peer client, so a well-behaved office never overflows it.
+pub const WINDOW_FRAMES: u64 = 512;
+/// Bytes a channel may have in flight.
+pub const WINDOW_BYTES: u64 = 2 * 1024 * 1024;
+/// How long a writer waits with no acknowledgement from the laptop before it gives up the channel.
+const ACK_STALL: Duration = Duration::from_secs(30);
+/// The least time between two acknowledgements from the laptop (they carry counts only).
+const ACK_EVERY: Duration = Duration::from_millis(10);
 
 type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -106,6 +127,7 @@ fn connect(base: &str, path: &str) -> Result<Ws, RelayErr> {
     let tcp = dial_tcp(host, port)?;
     tcp.set_nodelay(true).map_err(|e| RelayErr::Failed(e.to_string()))?;
     tcp.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(|e| RelayErr::Failed(e.to_string()))?;
+    tcp.set_write_timeout(Some(WRITE_STALL)).map_err(|e| RelayErr::Failed(e.to_string()))?;
     let (ws, _) = if secure {
         tungstenite::client_tls(url.as_str(), tcp).map_err(handshake_failed)?
     } else {
@@ -190,12 +212,17 @@ pub fn dial(url: &str, host_id: &str, cred: ClientCred) -> Result<Stream, RelayE
     hello_client(&mut ws, &hello)?;
 
     let (out_tx, out_rx) = mpsc::sync_channel::<Out>(RELAY_QUEUE);
-    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>();
+    // Bounded: the office keeps its window, so a reader that falls this far behind is not served.
+    let (in_tx, in_rx) = mpsc::sync_channel::<Vec<u8>>(INBOX_MAX);
+    let sink = QueueSink::new(out_tx);
+    let closing = sink.closing();
+    let consumed = Arc::new(Consumed::default());
+    let pump_consumed = consumed.clone();
     std::thread::Builder::new()
         .name("csm-peer-relay-client".into())
-        .spawn(move || client_pump(ws, &out_rx, &in_tx))
+        .spawn(move || client_pump(ws, &out_rx, &in_tx, &closing, &pump_consumed))
         .map_err(|e| RelayErr::Failed(e.to_string()))?;
-    Ok(Stream::Relay(RelayStream::new(in_rx, Arc::new(QueueSink(out_tx)))))
+    Ok(Stream::Relay(RelayStream::with_counter(in_rx, Arc::new(sink), consumed)))
 }
 
 /// The credential a laptop presents on its relay channel.
@@ -205,9 +232,18 @@ pub enum ClientCred {
     Token([u8; TOKEN_LEN]),
 }
 
-fn client_pump(mut ws: Ws, out_rx: &Receiver<Out>, in_tx: &Sender<Vec<u8>>) {
+/// Pumps the laptop's channel: its writes out, the relay's frames in, and the acks for what the
+/// reader has taken. Ends when the channel is closed from either side or the socket fails.
+fn client_pump(mut ws: Ws, out_rx: &Receiver<Out>, in_tx: &SyncSender<Vec<u8>>, closing: &AtomicBool, consumed: &Consumed) {
     let mut last_ping = Instant::now();
+    let mut acked = (0u64, 0u64);
+    let mut last_ack: Option<Instant> = None;
     loop {
+        if closing.load(Ordering::Acquire) {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+            return;
+        }
         loop {
             match out_rx.try_recv() {
                 Ok(Out::Data(d)) => {
@@ -224,6 +260,16 @@ fn client_pump(mut ws: Ws, out_rx: &Receiver<Out>, in_tx: &Sender<Vec<u8>>) {
                 Err(TryRecvError::Disconnected) => return,
             }
         }
+        // Tell the office what the reader has taken, so its window moves. Counts only.
+        let counts = consumed.snapshot();
+        if counts != acked && last_ack.is_none_or(|t| t.elapsed() >= ACK_EVERY) {
+            let text = to_text(&PeerClientText::Ack { frames: counts.0, bytes: counts.1 });
+            if ws.send(Message::Text(text.into())).is_err() {
+                return;
+            }
+            acked = counts;
+            last_ack = Some(Instant::now());
+        }
         if last_ping.elapsed() >= PING_EVERY {
             last_ping = Instant::now();
             if ws.send(Message::Ping(Vec::new().into())).is_err() {
@@ -232,7 +278,8 @@ fn client_pump(mut ws: Ws, out_rx: &Receiver<Out>, in_tx: &Sender<Vec<u8>>) {
         }
         match ws.read() {
             Ok(Message::Binary(b)) => {
-                if in_tx.send(b.to_vec()).is_err() {
+                // A reader this far behind broke the window the office keeps: end the channel.
+                if in_tx.try_send(b.to_vec()).is_err() {
                     return;
                 }
             }
@@ -257,11 +304,14 @@ pub type AllowList = Arc<dyn Fn() -> Vec<[u8; 32]> + Send + Sync>;
 /// What the server asks of the relay thread. Control messages and frames share ONE queue, so they
 /// reach the relay in the order the server sent them (a pairing's answer must leave before the
 /// pairing slot closes, or the relay closes the laptop's channel first). The queue is unbounded
-/// for control, which is small and never waited for; frames are bounded by [`Gate`].
+/// for control and closes, which are small and never waited for; frames are bounded by [`Gate`].
 enum Cmd {
     Control(HostToRelay),
     Resync,
     Frame(Frame),
+    /// Close a channel. Not counted by the gate, and never waits: the one thing a sink does on a
+    /// close, from any thread.
+    Close { channel: u32, epoch: u64 },
     Stop,
 }
 
@@ -270,7 +320,15 @@ enum Cmd {
 struct Frame {
     channel: u32,
     epoch: u64,
-    out: Out,
+    data: Vec<u8>,
+}
+
+fn item_channel(cmd: &Cmd) -> Option<u32> {
+    match cmd {
+        Cmd::Frame(f) => Some(f.channel),
+        Cmd::Close { channel, .. } => Some(*channel),
+        _ => None,
+    }
 }
 
 /// Bounds the frames waiting for the relay thread: a writer waits while [`FRAME_QUEUE`] frames are
@@ -321,27 +379,105 @@ impl Gate {
     }
 }
 
+/// The office's window on one channel: what it has sent that the laptop has not yet taken.
+struct Credit {
+    state: Mutex<CreditState>,
+    moved: Condvar,
+}
+
+#[derive(Default)]
+struct CreditState {
+    sent_frames: u64,
+    sent_bytes: u64,
+    acked_frames: u64,
+    acked_bytes: u64,
+    closed: bool,
+}
+
+impl Credit {
+    fn new() -> Self {
+        Self { state: Mutex::new(CreditState::default()), moved: Condvar::new() }
+    }
+
+    /// Takes room for one frame of `len` bytes, waiting while the window is full. Fails when the
+    /// channel closes, or when the laptop has acknowledged nothing for [`ACK_STALL`].
+    fn reserve(&self, len: usize) -> io::Result<()> {
+        let mut s = lock(&self.state);
+        let mut seen = (s.acked_frames, s.acked_bytes);
+        let mut since = Instant::now();
+        loop {
+            if s.closed {
+                return Err(gone());
+            }
+            let in_frames = s.sent_frames.saturating_sub(s.acked_frames);
+            let in_bytes = s.sent_bytes.saturating_sub(s.acked_bytes);
+            if in_frames < WINDOW_FRAMES && in_bytes < WINDOW_BYTES {
+                s.sent_frames += 1;
+                s.sent_bytes = s.sent_bytes.saturating_add(u64::try_from(len).unwrap_or(u64::MAX));
+                return Ok(());
+            }
+            if (s.acked_frames, s.acked_bytes) != seen {
+                seen = (s.acked_frames, s.acked_bytes);
+                since = Instant::now();
+            }
+            if since.elapsed() >= ACK_STALL {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "the relay stopped passing the laptop's acknowledgements"));
+            }
+            s = self.moved.wait_timeout(s, GATE_WAIT).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
+    /// The laptop has taken `frames` frames and `bytes` bytes (cumulative). Never more than sent.
+    fn acked(&self, frames: u64, bytes: u64) {
+        let mut s = lock(&self.state);
+        s.acked_frames = s.acked_frames.max(frames.min(s.sent_frames));
+        s.acked_bytes = s.acked_bytes.max(bytes.min(s.sent_bytes));
+        self.moved.notify_all();
+    }
+
+    fn close(&self) {
+        let mut s = lock(&self.state);
+        s.closed = true;
+        self.moved.notify_all();
+    }
+}
+
 fn gone() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "the relay connection is gone")
 }
 
-/// The sink for one channel of the office's relay socket: its writes become frames in the thread's
-/// queue, and wait at the gate when the queue is full.
+/// The sink for one channel of the office's relay socket: its writes wait for the window and the
+/// gate, and its close never waits for either.
 struct HostSink {
     cmds: Sender<Cmd>,
     gate: Arc<Gate>,
+    credit: Arc<Credit>,
     channel: u32,
     epoch: u64,
 }
 
 impl Sink for HostSink {
     fn send(&self, out: Out) -> io::Result<()> {
-        self.gate.enter()?;
-        if self.cmds.send(Cmd::Frame(Frame { channel: self.channel, epoch: self.epoch, out })).is_err() {
-            self.gate.leave();
-            return Err(gone());
+        match out {
+            Out::Close => {
+                self.close();
+                Ok(())
+            }
+            Out::Data(data) => {
+                self.credit.reserve(data.len())?;
+                self.gate.enter()?;
+                if self.cmds.send(Cmd::Frame(Frame { channel: self.channel, epoch: self.epoch, data })).is_err() {
+                    self.gate.leave();
+                    return Err(gone());
+                }
+                Ok(())
+            }
         }
-        Ok(())
+    }
+
+    fn close(&self) {
+        self.credit.close();
+        let _ = self.cmds.send(Cmd::Close { channel: self.channel, epoch: self.epoch });
     }
 }
 
@@ -379,21 +515,7 @@ impl RelayHost {
         let (cmds, rx) = mpsc::channel::<Cmd>();
         let status = Arc::new(Mutex::new(HostStatus::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        let mut state = HostState {
-            cmds: cmds.clone(),
-            rx,
-            gate: Arc::new(Gate::new()),
-            pending: VecDeque::new(),
-            channels: HashMap::new(),
-            open: HashMap::new(),
-            pacers: HashMap::new(),
-            epoch: 0,
-            on_channel,
-            allow,
-            status: status.clone(),
-            slot: None,
-            stop: stop.clone(),
-        };
+        let mut state = HostState::new(cmds.clone(), rx, on_channel, allow, status.clone(), stop.clone());
         let thread = std::thread::Builder::new()
             .name("csm-peer-relay-host".into())
             .spawn(move || state.run(&route))
@@ -432,19 +554,30 @@ struct Chan {
     epoch: u64,
 }
 
+/// An outbound channel the relay has open: the epoch it was opened under, and its window.
+struct OpenChan {
+    epoch: u64,
+    credit: Arc<Credit>,
+}
+
 struct HostState {
     /// Handed to the channels' sinks.
     cmds: Sender<Cmd>,
     rx: Receiver<Cmd>,
     gate: Arc<Gate>,
-    /// Taken from the queue, in order, and waiting to be sent (paced frames wait here).
+    /// Taken from the queue, in order, and waiting to be sent.
     pending: VecDeque<Cmd>,
+    /// Data (and closes) waiting for pacing, per channel and in order. A saturated channel waits
+    /// here while the others are sent.
+    stalled: HashMap<u32, VecDeque<Cmd>>,
     /// Channels the relay has open, by number: where their inbound data goes.
     channels: HashMap<u32, Chan>,
-    /// The epoch of each channel this office may still write to (opened, not yet closed).
-    open: HashMap<u32, u64>,
+    /// The channels this office may still write to (opened, not yet closed).
+    open: HashMap<u32, OpenChan>,
     /// The per-channel pacing of the office's writes.
     pacers: HashMap<u32, Pacer>,
+    /// The frames and bytes a second per channel the relay enforces, from its Welcome.
+    rates: (u32, u32),
     epoch: u64,
     on_channel: OnChannel,
     allow: AllowList,
@@ -454,10 +587,40 @@ struct HostState {
     stop: Arc<AtomicBool>,
 }
 
+impl HostState {
+    fn new(cmds: Sender<Cmd>, rx: Receiver<Cmd>, on_channel: OnChannel, allow: AllowList, status: Arc<Mutex<HostStatus>>, stop: Arc<AtomicBool>) -> Self {
+        Self {
+            cmds,
+            rx,
+            gate: Arc::new(Gate::new()),
+            pending: VecDeque::new(),
+            stalled: HashMap::new(),
+            channels: HashMap::new(),
+            open: HashMap::new(),
+            pacers: HashMap::new(),
+            rates: (PEER_FRAMES_PER_SECOND_PER_CHANNEL, PEER_BYTES_PER_SECOND_PER_CHANNEL),
+            epoch: 0,
+            on_channel,
+            allow,
+            status,
+            slot: None,
+            stop,
+        }
+    }
+
+    /// Pending and waiting items (the outbox bound counts both).
+    fn outbox_len(&self) -> usize {
+        self.pending.len() + self.stalled.values().map(VecDeque::len).sum::<usize>()
+    }
+}
+
 impl Drop for HostState {
-    /// Wakes any writer still waiting at the gate: the thread is gone, so its frames never go out.
+    /// Wakes any writer still waiting: the thread is gone, so its frames never go out.
     fn drop(&mut self) {
         self.gate.close();
+        for o in self.open.values() {
+            o.credit.close();
+        }
     }
 }
 
@@ -515,7 +678,7 @@ impl HostState {
                 self.remember(msg);
                 false
             }
-            Cmd::Resync => false,
+            Cmd::Resync | Cmd::Close { .. } => false,
             Cmd::Frame(_) => {
                 self.gate.leave();
                 false
@@ -526,9 +689,12 @@ impl HostState {
     /// Drops every channel of the lost session: the relay has forgotten them. Control messages that
     /// were not sent are remembered, so a pairing slot still open is replayed after a reconnect.
     fn forget_session(&mut self) {
+        for (_, o) in self.open.drain() {
+            o.credit.close();
+        }
         self.channels.clear();
-        self.open.clear();
         self.pacers.clear();
+        self.stalled.clear();
         while let Some(cmd) = self.pending.pop_front() {
             if let Cmd::Control(msg) = cmd {
                 self.remember(msg);
@@ -553,7 +719,8 @@ impl HostState {
             access: route.access.clone(),
         };
         ws.send(Message::Text(to_text(&hello).into())).map_err(|e| RelayErr::Failed(e.to_string()))?;
-        wait_welcome(&mut ws)?;
+        let limits = wait_welcome(&mut ws)?;
+        self.rates = rates_from(&limits);
         lock(&self.status).connected = true;
         lock(&self.status).last_error = None;
         self.send_control(&mut ws, &HostToRelay::Allow { tokens: (self.allow)().iter().map(|h| b64_encode(h)).collect() })?;
@@ -566,9 +733,9 @@ impl HostState {
                 let _ = ws.close(None);
                 return Ok(SessionEnd::Stopped);
             }
-            // Take the commands in the order they were given. Stops once the pending queue is full,
-            // so the writers wait at the gate instead of the queue growing without bound.
-            while self.pending.len() < OUTBOX_MAX {
+            // Take the commands in the order they were given. Stops once the outbox is full, so the
+            // writers wait at the gate instead of the queue growing without bound.
+            while self.outbox_len() < OUTBOX_MAX {
                 match self.rx.try_recv() {
                     Ok(Cmd::Stop) => {
                         let _ = ws.close(None);
@@ -608,13 +775,26 @@ impl HostState {
     }
 
     fn is_open(&self, channel: u32, epoch: u64) -> bool {
-        self.open.get(&channel) == Some(&epoch)
+        self.open.get(&channel).is_some_and(|o| o.epoch == epoch)
     }
 
-    /// Sends the pending commands in order. A data frame goes only when its channel's pacing has
-    /// room; the first one that must wait stops the pump, so a channel's bytes keep their order.
+    /// Ends an outbound channel: its window closes (waking its writers) and anything of it still
+    /// waiting is dropped.
+    fn end_channel(&mut self, channel: u32) {
+        if let Some(o) = self.open.remove(&channel) {
+            o.credit.close();
+        }
+        self.channels.remove(&channel);
+        self.pacers.remove(&channel);
+        self.stalled.remove(&channel);
+    }
+
+    /// Sends the pending commands in order. Control messages go at once. A channel's data goes
+    /// only when its pacing has room; a channel that must wait keeps its items in order in
+    /// `stalled`, and the others are not held up behind it.
     fn pump(&mut self, ws: &mut Ws) -> Result<(), RelayErr> {
         let now = Instant::now();
+        self.drain_stalled(ws, now)?;
         while let Some(cmd) = self.pending.pop_front() {
             match cmd {
                 Cmd::Control(msg) => {
@@ -625,34 +805,65 @@ impl HostState {
                     let tokens = (self.allow)().iter().map(|h| b64_encode(h)).collect();
                     self.send_control(ws, &HostToRelay::Allow { tokens })?;
                 }
-                Cmd::Frame(f) => {
-                    if !self.is_open(f.channel, f.epoch) {
-                        continue;
-                    }
-                    match f.out {
-                        Out::Data(d) => {
-                            let pacer = self.pacers.entry(f.channel).or_insert_with(|| Pacer::new(now));
-                            if !pacer.try_take(d.len(), now) {
-                                self.pending.push_front(Cmd::Frame(Frame { channel: f.channel, epoch: f.epoch, out: Out::Data(d) }));
-                                break;
-                            }
-                            ws.send(Message::Binary(encode_frame(FrameKind::Data, f.channel, &d).into())).map_err(|e| RelayErr::Failed(e.to_string()))?;
-                        }
-                        Out::Close => {
-                            self.open.remove(&f.channel);
-                            self.channels.remove(&f.channel);
-                            self.pacers.remove(&f.channel);
-                            ws.send(Message::Binary(encode_frame(FrameKind::Close, f.channel, &close_payload(None)).into())).map_err(|e| RelayErr::Failed(e.to_string()))?;
-                        }
+                Cmd::Stop => {}
+                other => {
+                    let Some(channel) = item_channel(&other) else { continue };
+                    if self.stalled.get(&channel).is_some_and(|q| !q.is_empty()) {
+                        self.stalled.entry(channel).or_default().push_back(other);
+                    } else if let Some(wait) = self.send_item(ws, other, now)? {
+                        self.stalled.entry(channel).or_default().push_back(wait);
                     }
                 }
-                Cmd::Stop => {}
             }
         }
         Ok(())
     }
 
-    /// One binary frame from the relay: a new channel, its data, or its close.
+    /// Sends what is waiting for pacing, channel by channel, in order.
+    fn drain_stalled(&mut self, ws: &mut Ws, now: Instant) -> Result<(), RelayErr> {
+        let channels: Vec<u32> = self.stalled.keys().copied().collect();
+        for channel in channels {
+            while let Some(cmd) = self.stalled.get_mut(&channel).and_then(VecDeque::pop_front) {
+                if let Some(wait) = self.send_item(ws, cmd, now)? {
+                    self.stalled.entry(channel).or_default().push_front(wait);
+                    break;
+                }
+            }
+            if self.stalled.get(&channel).is_some_and(VecDeque::is_empty) {
+                self.stalled.remove(&channel);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends one data frame or close if its channel is open and its pacing has room. Returns the
+    /// item back when it must wait for pacing. Never waits on anything else.
+    fn send_item(&mut self, ws: &mut Ws, cmd: Cmd, now: Instant) -> Result<Option<Cmd>, RelayErr> {
+        match cmd {
+            Cmd::Frame(f) => {
+                if !self.is_open(f.channel, f.epoch) {
+                    return Ok(None);
+                }
+                let (frames, bytes) = self.rates;
+                let pacer = self.pacers.entry(f.channel).or_insert_with(|| Pacer::with_rates(frames, bytes, now));
+                if !pacer.try_take(f.data.len(), now) {
+                    return Ok(Some(Cmd::Frame(f)));
+                }
+                ws.send(Message::Binary(encode_frame(FrameKind::Data, f.channel, &f.data).into())).map_err(|e| RelayErr::Failed(e.to_string()))?;
+                Ok(None)
+            }
+            Cmd::Close { channel, epoch } => {
+                if self.is_open(channel, epoch) {
+                    self.end_channel(channel);
+                    ws.send(Message::Binary(encode_frame(FrameKind::Close, channel, &close_payload(None)).into())).map_err(|e| RelayErr::Failed(e.to_string()))?;
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// One binary frame from the relay: a new channel, its data, its close, or the laptop's ack.
     fn incoming_frame(&mut self, bytes: &[u8]) {
         let Ok(frame) = decode_frame(bytes) else { return };
         match frame.kind {
@@ -662,13 +873,14 @@ impl HostState {
                     return;
                 }
                 // A new incarnation of this channel number: nothing from an older one may go out.
+                self.end_channel(frame.channel);
                 self.epoch += 1;
                 let epoch = self.epoch;
-                self.pacers.remove(&frame.channel);
+                let credit = Arc::new(Credit::new());
                 let (in_tx, in_rx) = mpsc::sync_channel::<Vec<u8>>(INBOX_MAX);
-                let sink = Arc::new(HostSink { cmds: self.cmds.clone(), gate: self.gate.clone(), channel: frame.channel, epoch });
+                let sink = Arc::new(HostSink { cmds: self.cmds.clone(), gate: self.gate.clone(), credit: credit.clone(), channel: frame.channel, epoch });
                 self.channels.insert(frame.channel, Chan { tx: in_tx, epoch });
-                self.open.insert(frame.channel, epoch);
+                self.open.insert(frame.channel, OpenChan { epoch, credit });
                 (self.on_channel)(Stream::Relay(RelayStream::new(in_rx, sink)), info);
             }
             FrameKind::Data => {
@@ -680,18 +892,30 @@ impl HostState {
                     // thread that serves every channel. The relay is told by the close queued here.
                     Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
                         self.channels.remove(&frame.channel);
-                        self.pending.push_back(Cmd::Frame(Frame { channel: frame.channel, epoch, out: Out::Close }));
+                        self.pending.push_back(Cmd::Close { channel: frame.channel, epoch });
                     }
+                }
+            }
+            FrameKind::Ack => {
+                let Some((frames, bytes)) = decode_ack(frame.payload) else { return };
+                if let Some(o) = self.open.get(&frame.channel) {
+                    o.credit.acked(frames, bytes);
                 }
             }
             FrameKind::Close => {
                 // Dropping the sender ends the stream: its reader sees end of file.
-                self.channels.remove(&frame.channel);
-                self.open.remove(&frame.channel);
-                self.pacers.remove(&frame.channel);
+                self.end_channel(frame.channel);
             }
         }
     }
+}
+
+/// The per-channel rates from the relay's Welcome. A relay older than the fields sends zero: the
+/// office then uses the defaults it has always used.
+fn rates_from(l: &LimitsInfo) -> (u32, u32) {
+    let frames = if l.frames_per_second > 0 { l.frames_per_second } else { PEER_FRAMES_PER_SECOND_PER_CHANNEL };
+    let bytes = if l.bytes_per_second > 0 { l.bytes_per_second } else { PEER_BYTES_PER_SECOND_PER_CHANNEL };
+    (frames, bytes)
 }
 
 /// A token bucket: `rate` units a second, holding at most [`BURST_FACTOR`] seconds of them.
@@ -724,8 +948,13 @@ struct Pacer {
 }
 
 impl Pacer {
+    #[cfg(test)]
     fn new(now: Instant) -> Self {
-        Self { frames: Bucket::new(PEER_FRAMES_PER_SECOND_PER_CHANNEL, now), bytes: Bucket::new(PEER_BYTES_PER_SECOND_PER_CHANNEL, now) }
+        Self::with_rates(PEER_FRAMES_PER_SECOND_PER_CHANNEL, PEER_BYTES_PER_SECOND_PER_CHANNEL, now)
+    }
+
+    fn with_rates(frames: u32, bytes: u32, now: Instant) -> Self {
+        Self { frames: Bucket::new(frames, now), bytes: Bucket::new(bytes, now) }
     }
 
     /// Takes one frame with `len` payload bytes if both caps have room. Takes nothing otherwise.
@@ -748,13 +977,13 @@ enum SessionEnd {
     Lost,
 }
 
-fn wait_welcome(ws: &mut Ws) -> Result<(), RelayErr> {
+fn wait_welcome(ws: &mut Ws) -> Result<LimitsInfo, RelayErr> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match ws.read() {
             Ok(Message::Text(t)) => {
                 return match serde_json::from_str::<RelayToHost>(t.as_str()) {
-                    Ok(RelayToHost::Welcome { .. }) => Ok(()),
+                    Ok(RelayToHost::Welcome { limits, .. }) => Ok(limits),
                     Ok(RelayToHost::Error { code }) => Err(RelayErr::Refused(code)),
                     _ => Err(RelayErr::Failed("the relay answered in a form this app does not read".to_owned())),
                 };
@@ -775,6 +1004,8 @@ fn wait_welcome(ws: &mut Ws) -> Result<(), RelayErr> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use std::io::Write;
+    use std::net::{Shutdown, TcpListener};
 
     #[test]
     fn pacer_holds_a_burst_to_the_frame_cap_then_refills_at_the_rate() {
@@ -810,6 +1041,20 @@ mod tests {
     }
 
     #[test]
+    fn the_relays_announced_rates_are_used_and_zero_means_the_defaults() {
+        let mut l = LimitsInfo { max_frame_bytes: 0, max_channels: 0, max_allow_entries: 0, max_pairing_secs: 0, push: false, frames_per_second: 0, bytes_per_second: 0 };
+        assert_eq!(rates_from(&l), (PEER_FRAMES_PER_SECOND_PER_CHANNEL, PEER_BYTES_PER_SECOND_PER_CHANNEL));
+        l.frames_per_second = 300;
+        l.bytes_per_second = 4096;
+        assert_eq!(rates_from(&l), (300, 4096));
+        // A relay configured below the defaults: the office paces to it, so a burst waits here.
+        let t0 = Instant::now();
+        let (f, b) = rates_from(&l);
+        let mut p = Pacer::with_rates(f, b, t0);
+        assert_eq!(usize::try_from(f * BURST_FACTOR).unwrap(), (0..5000).filter(|_| p.try_take(1, t0)).count());
+    }
+
+    #[test]
     fn office_urls_are_checked_before_any_connection() {
         assert!(url_allowed("ws://127.0.0.1:9"));
         assert!(!url_allowed("ws://127.0.0.1:80@evil.example/x"));
@@ -817,5 +1062,115 @@ mod tests {
             Err(RelayErr::Failed(m)) => assert!(m.contains("wss://"), "{m}"),
             _ => panic!("a userinfo URL must be refused before a connection"),
         }
+    }
+
+    #[test]
+    fn the_window_makes_a_writer_wait_until_the_laptop_takes_frames() {
+        let c = Arc::new(Credit::new());
+        for _ in 0..WINDOW_FRAMES {
+            c.reserve(1).unwrap();
+        }
+        let waiter = c.clone();
+        let writer = std::thread::spawn(move || waiter.reserve(1));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!writer.is_finished(), "a full window makes the writer wait");
+        c.acked(1, 1);
+        assert!(writer.join().unwrap().is_ok(), "one frame taken makes room for one");
+        // The window is bytes as well as frames: a byte-full window holds the writer too.
+        let big = Arc::new(Credit::new());
+        big.reserve(usize::try_from(WINDOW_BYTES).unwrap()).unwrap();
+        let waiter = big.clone();
+        let writer = std::thread::spawn(move || waiter.reserve(1));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!writer.is_finished(), "a byte-full window makes the writer wait");
+        big.acked(1, WINDOW_BYTES);
+        assert!(writer.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn an_ack_never_counts_more_than_was_sent() {
+        let c = Credit::new();
+        c.reserve(10).unwrap();
+        c.acked(u64::MAX, u64::MAX);
+        let s = lock(&c.state);
+        assert_eq!((s.acked_frames, s.acked_bytes), (1, 10));
+    }
+
+    #[test]
+    fn closing_a_window_releases_a_waiting_writer_with_an_error() {
+        let c = Arc::new(Credit::new());
+        for _ in 0..WINDOW_FRAMES {
+            c.reserve(1).unwrap();
+        }
+        let waiter = c.clone();
+        let writer = std::thread::spawn(move || waiter.reserve(1));
+        std::thread::sleep(Duration::from_millis(20));
+        c.close();
+        assert!(writer.join().unwrap().is_err());
+    }
+
+    /// The deadlock the review found: an Open arrives while the gate is full, and the stream it
+    /// hands out is closed at once (the server does this when its unauthenticated slots are full).
+    /// The pump is the thread that closes, so a close that waits for the gate would wait for itself.
+    #[test]
+    fn an_open_arriving_while_the_gate_is_full_does_not_deadlock() {
+        let on_channel: OnChannel = Box::new(|stream, _| {
+            let _ = stream.shutdown(Shutdown::Both);
+        });
+        let (cmds, rx) = mpsc::channel();
+        let allow: AllowList = Arc::new(Vec::<[u8; 32]>::new);
+        let mut st = HostState::new(cmds, rx, on_channel, allow, Arc::new(Mutex::new(HostStatus::default())), Arc::new(AtomicBool::new(false)));
+        // Fill the gate: nothing enters until the thread takes frames, and here it never does.
+        for _ in 0..FRAME_QUEUE {
+            st.gate.enter().unwrap();
+        }
+        let open = encode_frame(FrameKind::Open, 9, &OpenInfo::Pairing([1; 16]).encode());
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            st.incoming_frame(&open);
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("the pump must not wait on its own gate");
+    }
+
+    /// A relay that accepts the office and then never reads again. Closing the channel, and dropping
+    /// the connection, must return at once: the office's close is a command, not a write that waits
+    /// for the relay.
+    #[test]
+    fn a_relay_that_stops_reading_cannot_hold_a_channel_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (opened_tx, opened_rx) = mpsc::channel::<Stream>();
+        std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(tcp).unwrap();
+            let _hello = ws.read();
+            let welcome = RelayToHost::Welcome {
+                v: csm_remote_proto::PROTOCOL_VERSION,
+                limits: LimitsInfo { max_frame_bytes: 65536, max_channels: 16, max_allow_entries: 64, max_pairing_secs: 600, push: false, frames_per_second: 0, bytes_per_second: 0 },
+            };
+            ws.send(Message::Text(to_text(&welcome).into())).unwrap();
+            let open = encode_frame(FrameKind::Open, 1, &OpenInfo::Pairing([2; 16]).encode());
+            ws.send(Message::Binary(open.into())).unwrap();
+            // Keep the socket open and never read again.
+            std::thread::sleep(Duration::from_secs(20));
+        });
+        let on_channel: OnChannel = Box::new(move |stream, _| {
+            let _ = opened_tx.send(stream);
+        });
+        let route = HostRoute { url: format!("ws://127.0.0.1:{port}"), host_secret: [7; 32], access: None };
+        let host = RelayHost::start(route, Arc::new(Vec::<[u8; 32]>::new), on_channel).unwrap();
+        let stream = opened_rx.recv_timeout(Duration::from_secs(10)).expect("the office opens the channel");
+        // A writer that fills the window (no acks come) and waits there.
+        let mut writer_stream = stream.try_clone().unwrap();
+        let writer = std::thread::spawn(move || writer_stream.write_all(&vec![1u8; 3 * 1024 * 1024]));
+        std::thread::sleep(Duration::from_millis(50));
+        // Quit while the writer waits and the relay is silent.
+        let started = Instant::now();
+        drop(host);
+        stream.shutdown(Shutdown::Both).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2), "the close must not wait for the relay");
+        let result = writer.join().unwrap();
+        assert!(result.is_err(), "a writer whose channel closed gets an error, not a hang");
     }
 }

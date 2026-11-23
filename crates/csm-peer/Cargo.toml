@@ -27,6 +27,11 @@ if-addrs = "0.15"
 # The WebSocket client for the relay (sync; TLS with the bundled webpki roots, the same ones the relay uses). MIT OR Apache-2.0.
 tungstenite = { version = "0.29", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 
+[features]
+# Test-only knobs (a corrupted delta to force a resync). Enabled by the dev-dependencies of the crates
+# whose tests use them, never by the apps.
+test-knobs = []
+
 [dev-dependencies]
 tempfile = "3"
 csm-core = { path = "../csm-core" }

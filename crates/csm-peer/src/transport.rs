@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -32,6 +33,32 @@ pub enum Out {
 /// channel number attached).
 pub trait Sink: Send + Sync {
     fn send(&self, out: Out) -> io::Result<()>;
+
+    /// Closes the channel. Must never wait for room: a close can come from the thread that drains
+    /// the sink, or while the sink is full, and waiting there would stall the channel for good.
+    fn close(&self) {
+        let _ = self.send(Out::Close);
+    }
+}
+
+/// How much of a channel's inbound traffic its reader has taken: frames and bytes. A peer client
+/// reports these to the office (as acks), which keeps its in-flight output inside a window.
+#[derive(Debug, Default)]
+pub struct Consumed {
+    frames: AtomicU64,
+    bytes: AtomicU64,
+}
+
+impl Consumed {
+    /// `(frames, bytes)` taken so far.
+    pub fn snapshot(&self) -> (u64, u64) {
+        (self.frames.load(Ordering::Acquire), self.bytes.load(Ordering::Acquire))
+    }
+
+    fn took(&self, len: usize) {
+        self.frames.fetch_add(1, Ordering::AcqRel);
+        self.bytes.fetch_add(u64::try_from(len).unwrap_or(u64::MAX), Ordering::AcqRel);
+    }
 }
 
 /// One end of a relay channel.
@@ -44,6 +71,7 @@ struct Chan {
     pending: Mutex<VecDeque<u8>>,
     read_timeout: Mutex<Option<Duration>>,
     sink: Arc<dyn Sink>,
+    consumed: Arc<Consumed>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -53,7 +81,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl RelayStream {
     /// A channel fed by `incoming` (the pump's data frames) and written through `sink`.
     pub fn new(incoming: Receiver<Vec<u8>>, sink: Arc<dyn Sink>) -> Self {
-        Self { inner: Arc::new(Chan { incoming: Mutex::new(incoming), pending: Mutex::new(VecDeque::new()), read_timeout: Mutex::new(None), sink }) }
+        Self::with_counter(incoming, sink, Arc::new(Consumed::default()))
+    }
+
+    /// As [`RelayStream::new`], counting what the reader takes into `consumed`.
+    pub fn with_counter(incoming: Receiver<Vec<u8>>, sink: Arc<dyn Sink>, consumed: Arc<Consumed>) -> Self {
+        Self { inner: Arc::new(Chan { incoming: Mutex::new(incoming), pending: Mutex::new(VecDeque::new()), read_timeout: Mutex::new(None), sink, consumed }) }
     }
 
     fn set_read_timeout(&self, d: Option<Duration>) {
@@ -78,7 +111,10 @@ impl RelayStream {
             };
             drop(rx);
             match next {
-                Some(v) => pending.extend(v),
+                Some(v) => {
+                    self.inner.consumed.took(v.len());
+                    pending.extend(v);
+                }
                 None => return Ok(0),
             }
         }
@@ -99,7 +135,7 @@ impl RelayStream {
     }
 
     fn close(&self) {
-        let _ = self.inner.sink.send(Out::Close);
+        self.inner.sink.close();
     }
 }
 
@@ -185,12 +221,35 @@ impl Write for Stream {
     }
 }
 
-/// A sink that queues writes for a pump thread (a client's own channel).
-pub struct QueueSink(pub SyncSender<Out>);
+/// A sink that queues writes for a pump thread (a client's own channel). Closing it sets `closing`
+/// (which the pump checks at every step) and queues a close if there is room; it never waits.
+pub struct QueueSink {
+    tx: SyncSender<Out>,
+    closing: Arc<AtomicBool>,
+}
+
+impl QueueSink {
+    pub fn new(tx: SyncSender<Out>) -> Self {
+        Self { tx, closing: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// The flag the pump thread watches: set once the channel is closed from this side.
+    pub fn closing(&self) -> Arc<AtomicBool> {
+        self.closing.clone()
+    }
+}
 
 impl Sink for QueueSink {
     fn send(&self, out: Out) -> io::Result<()> {
-        self.0.send(out).map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the relay connection is gone"))
+        if self.closing.load(Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "the relay channel is closed"));
+        }
+        self.tx.send(out).map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the relay connection is gone"))
+    }
+
+    fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+        let _ = self.tx.try_send(Out::Close);
     }
 }
 
@@ -260,7 +319,7 @@ mod tests {
     #[test]
     fn a_full_queue_makes_the_writer_wait_instead_of_dropping() {
         let (tx, rx) = sync_channel::<Out>(2);
-        let mut st = Stream::Relay(RelayStream::new(std::sync::mpsc::channel().1, Arc::new(QueueSink(tx))));
+        let mut st = Stream::Relay(RelayStream::new(std::sync::mpsc::channel().1, Arc::new(QueueSink::new(tx))));
         st.write_all(b"one").unwrap();
         st.write_all(b"two").unwrap();
         let writer = std::thread::spawn(move || {

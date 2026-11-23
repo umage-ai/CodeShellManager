@@ -10,7 +10,8 @@ use csm_remote_proto::codes::RefusalCode;
 use csm_remote_proto::ids::{HOST_SECRET_LEN, PAIRING_ID_LEN, TOKEN_LEN, b64_decode_fixed, host_id as derive_host_id, ct_eq, is_valid_host_id, sha256};
 use csm_remote_proto::limits::{MAX_CONTROL_BYTES, MAX_HOST_ACCESS_TOKEN_BYTES, MAX_PUSH_BODY_BYTES, MAX_PUSH_ENDPOINT_BYTES, MAX_PUSH_TTL_SECS};
 use csm_remote_proto::relay::{
-    ClientToRelay, FrameError, FrameKind, HostToRelay, LimitsInfo, PushRequest, RelayToClient, RelayToHost, decode_frame, encode_frame, parse_close_payload, to_text,
+    ClientToRelay, FrameError, FrameKind, HostToRelay, LimitsInfo, PeerClientText, PushRequest, RelayToClient, RelayToHost, decode_frame, encode_ack, encode_frame,
+    parse_close_payload, to_text,
 };
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until, timeout};
@@ -96,10 +97,13 @@ pub async fn host_socket(relay: Arc<Relay>, kind: Kind, mut ws: WebSocket, ip: R
         v: PROTOCOL_VERSION,
         limits: LimitsInfo {
             max_frame_bytes: u32::try_from(lim.max_frame_bytes).unwrap_or(u32::MAX),
-            max_channels: u32::try_from(lim.max_channels_per_host).unwrap_or(u32::MAX),
+            // This kind's own caps: a peer host is told the peer limits, not the phone ones.
+            max_channels: u32::try_from(relay.caps(kind).max_channels).unwrap_or(u32::MAX),
             max_allow_entries: u32::try_from(lim.max_allow_entries).unwrap_or(u32::MAX),
             max_pairing_secs: lim.max_pairing_secs,
             push: relay.push.is_some() && kind == Kind::Phone,
+            frames_per_second: relay.caps(kind).frames_per_second,
+            bytes_per_second: relay.caps(kind).bytes_per_second,
         },
     };
     if ws.send(Message::Text(to_text(&welcome).into())).await.is_err() {
@@ -140,7 +144,7 @@ pub async fn host_socket(relay: Arc<Relay>, kind: Kind, mut ws: WebSocket, ip: R
                             Ok(f) => match f.kind {
                                 FrameKind::Data => relay.host_data(kind, &host_id, conn, f.channel, f.payload),
                                 FrameKind::Close => relay.host_closes_channel(kind, &host_id, conn, f.channel, parse_close_payload(f.payload)),
-                                FrameKind::Open => bad += 1,
+                                FrameKind::Open | FrameKind::Ack => bad += 1,
                             },
                             Err(FrameError::UnknownKind(_)) => {}
                             Err(_) => bad += 1,
@@ -312,6 +316,28 @@ pub async fn client_socket(relay: Arc<Relay>, kind: Kind, mut ws: WebSocket, ip:
                             break;
                         }
                         let frame = encode_frame(FrameKind::Data, channel, &b);
+                        if host_tx.try_send(HostOut::Binary(frame)).is_err() {
+                            why = Some(RefusalCode::RateLimited);
+                            close_with(&mut ws, why).await;
+                            break;
+                        }
+                    }
+                    // A peer client may report how much of its channel it has taken (an ack). The
+                    // relay forwards only the counts, to the host, as an Ack frame; it never reads
+                    // Noise bytes. Phones have no such message.
+                    Message::Text(t) if kind == Kind::Peer && t.len() <= 256 => {
+                        last = Instant::now();
+                        let Ok(PeerClientText::Ack { frames, bytes }) = serde_json::from_str::<PeerClientText>(t.as_str()) else {
+                            why = Some(RefusalCode::BadRequest);
+                            close_with(&mut ws, why).await;
+                            break;
+                        };
+                        if !limiter.allow(0, std::time::Instant::now()) {
+                            why = Some(RefusalCode::RateLimited);
+                            close_with(&mut ws, why).await;
+                            break;
+                        }
+                        let frame = encode_frame(FrameKind::Ack, channel, &encode_ack(frames, bytes));
                         if host_tx.try_send(HostOut::Binary(frame)).is_err() {
                             why = Some(RefusalCode::RateLimited);
                             close_with(&mut ws, why).await;
