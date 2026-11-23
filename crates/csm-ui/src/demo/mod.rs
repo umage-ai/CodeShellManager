@@ -291,6 +291,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         active: Some("web".into()),
         inspector: None,
         inbox_panel: InboxPanel::default(),
+        inspector_width: None,
         restore: None,
         shutdown: None,
         folders,
@@ -1236,6 +1237,11 @@ impl DemoBackend {
                 if let Some(h) = p.height.filter(|h| h.is_finite()) {
                     self.model.inbox_panel.height = h.clamp(crate::theme::size::INBOX_MIN_H, crate::theme::size::INBOX_MAX_H);
                 }
+                vec![]
+            }
+            "inspector_panel_set" => {
+                let reset = call.params.get("reset").and_then(Value::as_bool).unwrap_or(false);
+                self.model.inspector_width = if reset { None } else { call.params.get("width").and_then(Value::as_f64).map(|w| w as f32).filter(|w| w.is_finite()) };
                 vec![]
             }
             "run_start" | "run_stop" => {

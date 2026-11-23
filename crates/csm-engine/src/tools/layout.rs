@@ -64,6 +64,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             inbox_panel_set,
         ),
         t(
+            "inspector_panel_set",
+            "Inspector width",
+            "Set the inspector's width in logical pixels (200-2000), as dragging its left edge does; `reset: true` goes back to the default.",
+            Effects::UI,
+            schema_of::<InspectorPanelParams>,
+            inspector_panel_set,
+        ),
+        t(
             "window_placement_set",
             "Save window placement",
             "Remember where a window is: the main window, a torn-off group or a torn-off pane (physical pixels, the monitor's DPI, maximized). The app sends it as windows move; it applies at the next start or tear-off.",
@@ -168,6 +176,33 @@ struct InboxPanelParams {
     height: Option<f32>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct InspectorPanelParams {
+    /// Logical pixels (200-2000).
+    width: Option<f32>,
+    /// Back to the default width.
+    #[serde(default)]
+    reset: bool,
+}
+
+fn inspector_panel_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: InspectorPanelParams = parse_params(params)?;
+    match (p.width, p.reset) {
+        (Some(_), true) => return Err(ToolError::InvalidParams("give width or reset, not both".into())),
+        (None, false) => return Err(ToolError::InvalidParams("give width or reset".into())),
+        (Some(w), false) => {
+            if !w.is_finite() || !(200.0..=2000.0).contains(&w) {
+                return Err(ToolError::InvalidParams("width must be 200-2000".into()));
+            }
+            ctx.state.app.ui.inspector_width = Some(w);
+        }
+        (None, true) => ctx.state.app.ui.inspector_width = None,
+    }
+    ctx.state.persist();
+    Ok(ToolOutput::new("Inspector width updated.", json!({"width": ctx.state.app.ui.inspector_width})))
+}
+
 fn view_json(ctx: &mut Ctx<'_>) -> Value {
     let snap = current(ctx);
     json!({
@@ -178,6 +213,7 @@ fn view_json(ctx: &mut Ctx<'_>) -> Value {
         "inspector": snap.inspector,
         "inbox_open": snap.inbox_open,
         "inbox_height": snap.inbox_height,
+        "inspector_width": snap.inspector_width,
     })
 }
 

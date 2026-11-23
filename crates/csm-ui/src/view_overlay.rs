@@ -652,6 +652,8 @@ mod tests {
     ];
     const FIXED_FORWARD: &[&str] = &["inbox_next"];
     const FIXED_NOT_MODELLED: &[&str] = &[
+        // The inspector's width is per-client view state like the inbox height; modelled in P1.
+        "inspector_panel_set",
         // A stored setting (ThemeDark/ThemeLight), not view state. Per-client themes are a P1
         // decision (a laptop may want its own); until then the caller runs or forwards it.
         "theme_set",

@@ -150,6 +150,9 @@ pub struct UiState {
     /// Height of the inbox panel in logical pixels; `None` is the UI's default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inbox_height: Option<f32>,
+    /// Width of the inspector in logical pixels, set by dragging its edge; `None` is the UI's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspector_width: Option<f32>,
     /// The inspector's tab, `None` when it is hidden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inspector: Option<InspectorTab>,
@@ -176,6 +179,7 @@ impl Default for UiState {
             layouts: BTreeMap::new(),
             inbox_open: true,
             inbox_height: None,
+            inspector_width: None,
             inspector: None,
             torn_off_groups: Vec::new(),
             focused_session: None,

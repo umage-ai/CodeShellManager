@@ -442,6 +442,8 @@ pub struct Toast {
 pub struct Drags {
     /// The inbox divider: the height being shown.
     pub inbox_h: Option<f32>,
+    /// The inspector's left edge: the width being shown.
+    pub inspector_w: Option<f32>,
     /// A Free-mode divider: the tree being shown.
     pub tree: Option<crate::model::SplitNode>,
     /// A floating pane being moved: (session, rect).
@@ -1742,14 +1744,46 @@ impl CsmApp {
         } else if self.ui.usage_page.open {
             ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::usage_page::show(ui, self, &mut actions));
         } else {
+            let mut inspector_rect = None;
             if self.model.inspector.is_some() {
-                // Never narrower than a readable column, never more than 40% of the body.
-                let w = size::INSPECTOR.min((body.width() * 0.4).max(size::INSPECTOR_MIN));
+                // Never narrower than a readable column. The default is at most 40% of the body;
+                // dragging the left edge may widen it to 70% (`inspector_panel_set`).
+                let max_w = (body.width() * 0.7).max(size::INSPECTOR_MIN);
+                let w = match self.ui.drags.inspector_w.or(self.model.inspector_width) {
+                    Some(w) => w.clamp(size::INSPECTOR_MIN, max_w),
+                    None => size::INSPECTOR.min((body.width() * 0.4).max(size::INSPECTOR_MIN)),
+                };
                 let insp = Rect::from_min_max(pos2(body.max.x - w, body.min.y), body.max);
                 work.max.x = insp.min.x;
                 ui.scope_builder(UiBuilder::new().max_rect(insp), |ui| screens::inspector::show(ui, self, &mut actions));
+                inspector_rect = Some((insp, w, max_w));
             }
             ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::panes::workspace(ui, self, &mut actions));
+            // The inspector's left edge drags its width (registered last, so it sits on top of
+            // both sides); a double click resets it.
+            if let Some((insp, w, max_w)) = inspector_rect {
+                let grip = Rect::from_center_size(pos2(insp.min.x, insp.center().y), egui::vec2(size::SPLIT_GRIP, insp.height()));
+                let resp = ui.interact(grip, egui::Id::new("inspector-split"), egui::Sense::click_and_drag());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Inspector edge"));
+                if resp.dragged() || resp.hovered() {
+                    let t = theme::Tokens::get(ui.ctx());
+                    ui.painter().vline(insp.min.x, insp.y_range(), egui::Stroke::new(size::RING, t.blue));
+                }
+                let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeColumn).on_hover_text("Drag to resize the inspector. Double-click resets.");
+                // A triple click (a double click right after another click) resets it too, as the inbox
+                // divider does.
+                if resp.double_clicked() || resp.triple_clicked() {
+                    self.ui.drags.inspector_w = None;
+                    actions.push(Action::Tool("inspector_panel_set", json!({"reset": true})));
+                } else if resp.dragged() {
+                    let base = self.ui.drags.inspector_w.unwrap_or(w);
+                    self.ui.drags.inspector_w = Some((base - resp.drag_delta().x).clamp(size::INSPECTOR_MIN, max_w));
+                } else if resp.drag_stopped()
+                    && let Some(w) = self.ui.drags.inspector_w.take()
+                {
+                    actions.push(Action::Tool("inspector_panel_set", json!({"width": w.clamp(200.0, 2000.0)})));
+                }
+            }
         }
         if self.ui.compact && self.ui.peek_sidebar {
             let peek = Rect::from_min_max(pos2(side.min.x, body.min.y), pos2(side.min.x + size::SIDEBAR, body.max.y));

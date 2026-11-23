@@ -804,6 +804,8 @@ pub struct UiModel {
     pub active: Option<SessionId>,
     pub inspector: Option<InspectorTab>,
     pub inbox_panel: InboxPanel,
+    /// The inspector's width as dragged; `None` is the default.
+    pub inspector_width: Option<f32>,
     pub restore: Option<RestoreProgress>,
     pub shutdown: Option<ShutdownBoard>,
     pub folders: Vec<FolderSuggestion>,

@@ -638,6 +638,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
             open: view.inbox_open,
             height: view.inbox_height.filter(|h| h.is_finite()).unwrap_or(crate::theme::size::INBOX_DEFAULT_H),
         },
+        inspector_width: view.inspector_width.filter(|w| w.is_finite()),
         restore: view.restore.map(|p| RestoreProgress {
             done: u32::try_from(p.done).unwrap_or(u32::MAX),
             total: u32::try_from(p.total).unwrap_or(u32::MAX),

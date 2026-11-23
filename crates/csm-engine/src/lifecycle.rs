@@ -435,6 +435,7 @@ fn publish_step(state: &mut State, engine: &Engine) {
         || prev.focused != snap.focused
         || prev.inbox_open != snap.inbox_open
         || prev.inbox_height != snap.inbox_height
+        || prev.inspector_width != snap.inspector_width
         || prev.inspector != snap.inspector
         || prev.restore != snap.restore
         || prev.restart != snap.restart

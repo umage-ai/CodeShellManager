@@ -106,6 +106,7 @@ fn realistic() -> Snapshot {
         focused: Some("s1".into()),
         inbox_open: true,
         inbox_height: Some(180.5),
+        inspector_width: Some(420.0),
         recently_closed: vec![ClosedView { name: "old".into(), subtitle: "Ubuntu: src".into(), command: "wsl.exe -d Ubuntu".into() }],
         open_with: vec![OpenWithEntry {
             id: "vscode".into(),

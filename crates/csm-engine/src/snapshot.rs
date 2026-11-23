@@ -165,6 +165,8 @@ pub struct Snapshot {
     pub focused: Option<String>,
     pub inbox_open: bool,
     pub inbox_height: Option<f32>,
+    /// The inspector's width (logical pixels) when dragged; `None` is the default.
+    pub inspector_width: Option<f32>,
     pub inspector: Option<InspectorTab>,
     /// Restore loop progress while it runs.
     pub restore: Option<Progress>,
@@ -407,6 +409,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         focused: state.rt.focused.clone(),
         inbox_open: ui.inbox_open,
         inbox_height: ui.inbox_height,
+        inspector_width: ui.inspector_width,
         inspector: ui.inspector,
         restore: state.rt.restore,
         restart: state.rt.restart,

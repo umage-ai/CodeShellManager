@@ -996,3 +996,32 @@ fn the_pane_menu_button_is_labelled_when_there_is_room() {
     assert!(matches!(h.state().ui.menu, Some(csm_ui::app::Menu::Pane { .. })), "the pane menu opened");
     // Overview's mini panes have no menu button; a narrow Side by side pane falls back to ⋯.
 }
+
+#[test]
+fn the_inspector_edge_drags_its_width_and_a_double_click_resets_it() {
+    let mut h = h();
+    h.get_by_label_contains("Inspector  Ctrl+I").click();
+    settle(&mut h);
+    let edge = h.get_by_label("Inspector edge").rect().center();
+    drag(&mut h, edge, egui::vec2(-120.0, 0.0));
+    let (id, params) = last_call(&h);
+    assert_eq!(id, "inspector_panel_set");
+    let w = params["width"].as_f64().expect("a width");
+    assert!(w > f64::from(csm_ui::theme::size::INSPECTOR) + 60.0, "dragging left widens it ({w})");
+    assert_eq!(h.state().model.inspector_width.map(f64::from), Some(w));
+    // The edge followed the new width; double-clicking it goes back to the default.
+    let edge = h.get_by_label("Inspector edge").rect().center();
+    h.event(egui::Event::PointerMoved(edge));
+    h.step();
+    // Two clicks, a frame apart: inside the double-click window.
+    for _ in 0..2 {
+        h.event(egui::Event::PointerButton { pos: edge, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        h.event(egui::Event::PointerButton { pos: edge, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    settle(&mut h);
+    settle(&mut h);
+    assert_eq!(last_call(&h), ("inspector_panel_set".to_string(), serde_json::json!({"reset": true})));
+    assert_eq!(h.state().model.inspector_width, None);
+}

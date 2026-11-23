@@ -20,6 +20,9 @@ pub struct Snapshot {
     pub focused: Option<String>,
     pub inbox_open: bool,
     pub inbox_height: Option<f32>,
+    /// The inspector's dragged width; absent from older servers.
+    #[serde(default)]
+    pub inspector_width: Option<f32>,
     /// Closed sessions that can be reopened, newest first.
     pub recently_closed: Vec<ClosedView>,
     /// The Open with list (the editor in Settings).
