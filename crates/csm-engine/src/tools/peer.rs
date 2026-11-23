@@ -63,7 +63,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "peer_relay_set",
             title: "Reach this machine through a relay…",
-            summary: "Also let paired devices reach remote access through a relay (`wss://` address), for networks without a VPN. The relay only copies encrypted frames. The operator's enrolment token, when the relay needs one, is kept in the OS keychain, never in a file. An empty `url` turns the relay off. Refused for every caller except the app's own window.",
+            summary: "Also let paired devices reach remote access through a relay (`wss://` address), for networks without a VPN. The relay only copies encrypted frames. The operator's enrolment token, when the relay needs one, is kept in the OS keychain, never in a file. The relay runs only while remote access is on. An empty `url` turns the relay off. Refused for every caller except the app's own window.",
             toolset: Toolset::App,
             effects: opens,
             input_schema: schema_of::<RelaySetParams>,
@@ -305,7 +305,8 @@ struct RelaySetParams {
     /// The relay's address, `wss://relay.example` (or `ws://` to this PC). Empty turns the relay off.
     #[serde(default)]
     url: String,
-    /// The operator's enrolment token, when the relay needs one. Kept in the OS keychain.
+    /// The operator's enrolment token, when the relay needs one. Kept in the OS keychain. Left out:
+    /// the saved token is kept when the address is the same, else removed. Empty: removed.
     #[serde(default)]
     access: Option<String>,
 }
@@ -316,7 +317,8 @@ fn peer_relay_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         return Err(ToolError::Refused("only the app's own window can set the relay".into()));
     }
     let p: RelaySetParams = parse_params(params)?;
-    let access = p.access.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    // Left out (`None`) keeps the saved token for the same address; `Some("")` removes it.
+    let access = p.access.map(|t| t.trim().to_owned());
     let by = ctx.caller.describe();
     match host(ctx).relay_set(RelaySetRequest { url: p.url.trim().to_owned(), access }, &by)? {
         Some(info) => Ok(ToolOutput::new(format!("Also reachable through {}.", info.url), to_json(&info)?)),

@@ -122,7 +122,65 @@ pub struct RemoteState {
     pub setup: Option<Setup>,
     /// The last refusal or failure of a `peer_*` call, shown on the page.
     pub error: Option<String>,
+    /// The relay in use or saved (`peer_relay_status`). `None` when none is set.
+    pub relay: Option<RelayView>,
+    /// The relay's address and token fields, while they are open.
+    pub relay_form: RelayForm,
+    /// The last refusal of `peer_relay_set`, shown on the relay card.
+    pub relay_error: Option<String>,
     polled_at: Option<f64>,
+}
+
+/// The relay as `peer_relay_status` reports it (also the reply of `peer_relay_set`). No secret.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct RelayView {
+    pub url: String,
+    pub host_id: String,
+    pub connected: bool,
+    pub last_error: Option<String>,
+    /// Whether an enrolment token is saved in the keychain (the token itself is never shown).
+    pub access_set: bool,
+}
+
+/// The enrolment token as typed. It lives in the field only until it is sent, and is never printed.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() { "Secret(empty)" } else { "Secret(<hidden>)" })
+    }
+}
+
+/// The relay's address and token fields.
+#[derive(Debug, Clone, Default)]
+pub struct RelayForm {
+    /// Open: the fields show (the relay is being turned on, or the saved one is being changed).
+    pub editing: bool,
+    pub url: String,
+    pub token: Secret,
+}
+
+/// The `peer_relay_set` params for saving an address. The token goes in `access` only when it is
+/// typed; left out, the engine keeps the saved token for the same address. Empty `url` turns the
+/// relay off.
+pub fn relay_set_params(url: &str, token: &str) -> Value {
+    let mut params = json!({"url": url.trim()});
+    let token = token.trim();
+    if !token.is_empty() {
+        params["access"] = json!(token);
+    }
+    params
+}
+
+/// The relay in a reply: `null` (or an empty address) means none is set.
+fn relay_view(v: &Value) -> Option<RelayView> {
+    if v.is_null() {
+        return None;
+    }
+    let view: RelayView = parse(v);
+    (!view.url.is_empty()).then_some(view)
 }
 
 // ---- replies and polling -----------------------------------------------------------------------
@@ -145,11 +203,13 @@ pub fn on_reply(app: &mut CsmApp, _ctx: &egui::Context, call: &Call, reply: &csm
     if !call.id.starts_with("peer_") {
         return;
     }
-    let reads = matches!(call.id.as_str(), "peer_status" | "peer_device_list" | "peer_interfaces");
+    let reads = matches!(call.id.as_str(), "peer_status" | "peer_device_list" | "peer_interfaces" | "peer_relay_status");
     let out = match reply {
         Ok(out) => out,
         Err(e) => {
-            if !reads {
+            if call.id == "peer_relay_set" {
+                app.ui.remote.relay_error = Some(e.to_string());
+            } else if !reads {
                 app.ui.remote.error = Some(e.to_string());
             }
             return;
@@ -190,6 +250,18 @@ pub fn on_reply(app: &mut CsmApp, _ctx: &egui::Context, call: &Call, reply: &csm
             app.dispatch.submit("peer_status", json!({}));
             app.dispatch.submit("peer_device_list", json!({}));
         }
+        "peer_relay_status" => r.relay = relay_view(&out.data),
+        "peer_relay_set" => {
+            r.relay = relay_view(&out.data);
+            r.relay_error = None;
+            r.relay_form.editing = false;
+            // An open pairing link names the relay it was made with: a new offer carries the new one.
+            let open_link = r.link.is_some();
+            if open_link {
+                app.dispatch.submit("peer_pair_start", json!({}));
+            }
+            app.dispatch.submit("peer_relay_status", json!({}));
+        }
         _ => {}
     }
 }
@@ -197,7 +269,7 @@ pub fn on_reply(app: &mut CsmApp, _ctx: &egui::Context, call: &Call, reply: &csm
 /// The page opened (or the palette sent the person here): read everything once.
 pub fn opened(app: &mut CsmApp, ctx: &egui::Context) {
     app.ui.remote.polled_at = Some(ctx.input(|i| i.time));
-    for id in ["peer_status", "peer_device_list", "peer_interfaces"] {
+    for id in ["peer_status", "peer_device_list", "peer_interfaces", "peer_relay_status"] {
         app.dispatch.submit(id, json!({}));
     }
 }
@@ -219,6 +291,7 @@ pub fn poll(app: &mut CsmApp, ctx: &egui::Context) {
         app.ui.remote.polled_at = Some(now);
         app.dispatch.submit("peer_status", json!({}));
         app.dispatch.submit("peer_device_list", json!({}));
+        app.dispatch.submit("peer_relay_status", json!({}));
     }
     ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_S));
 }
@@ -419,6 +492,7 @@ pub fn settings(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         status_card(ui, app, actions);
         pairing_card(ui, app, actions);
     }
+    relay_card(ui, app);
     devices_card(ui, app, actions);
     if let Some(e) = app.ui.remote.error.clone() {
         ui.add_space(space::SM);
@@ -431,6 +505,146 @@ pub fn settings(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
 fn dot(ui: &mut Ui, color: egui::Color32) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(size::STATUS_DOT), Sense::hover());
     ui.painter().circle_filled(r.center(), size::STATUS_DOT / 2.0, color);
+}
+
+/// The toggle of the relay card.
+pub const RELAY_TOGGLE_LABEL: &str = "Also reachable through a relay";
+
+/// The relay card: for a laptop that cannot reach this PC over a VPN. The toggle opens the address
+/// and token fields (on) or removes the relay (off). A saved relay shows its status, and can be
+/// changed or turned off. Every change goes to the engine through the dispatch (background), and
+/// the token is cleared from the field as soon as it is sent.
+fn relay_card(ui: &mut Ui, app: &mut CsmApp) {
+    let t = Tokens::get(ui.ctx());
+    let relay = app.ui.remote.relay.clone();
+    let editing = app.ui.remote.relay_form.editing;
+    let on = relay.is_some() || editing;
+    // What the card asked for this frame; applied after the frame so no state is borrowed twice.
+    let (mut toggled, mut save, mut change, mut turn_off) = (false, false, false, false);
+    let mut cancel = false;
+    ui.add_space(space::SM);
+    widgets::card_frame(&t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = space::SM;
+        let hint = if on {
+            "On. Turning it off removes the address and the token. The relay copies encrypted frames only."
+        } else {
+            "Off. Only the direct address is offered. Turn this on where there is no VPN."
+        };
+        toggled = widgets::toggle(ui, on, RELAY_TOGGLE_LABEL, Some(hint)).clicked();
+        caption(
+            ui,
+            "A relay copies encrypted frames between this PC and a laptop that cannot reach it directly. It cannot read them. It runs only while remote access is on, and a pairing link then names it too.",
+        );
+        if editing {
+            relay_fields(ui, app, &mut save, &mut cancel);
+        } else if let Some(r) = &relay {
+            relay_status_line(ui, &t, r, &mut change, &mut turn_off);
+        }
+        if let Some(e) = app.ui.remote.relay_error.clone() {
+            ui.label(egui::RichText::new(e).font(theme::regular(text::BODY)).color(t.red));
+        }
+    });
+    if toggled {
+        if on && relay.is_some() {
+            turn_off = true;
+        } else if on {
+            cancel = true;
+        } else {
+            app.ui.remote.relay_form.editing = true;
+        }
+    }
+    if cancel {
+        app.ui.remote.relay_form = RelayForm::default();
+        app.ui.remote.relay_error = None;
+    }
+    if change {
+        let form = &mut app.ui.remote.relay_form;
+        form.editing = true;
+        if form.url.trim().is_empty()
+            && let Some(r) = &relay
+        {
+            form.url = r.url.clone();
+        }
+        app.ui.remote.relay_error = None;
+    }
+    if turn_off {
+        app.ui.remote.relay_form = RelayForm::default();
+        app.dispatch.submit("peer_relay_set", relay_set_params("", ""));
+    }
+    if save {
+        let form = &mut app.ui.remote.relay_form;
+        let params = relay_set_params(&form.url, &form.token.0);
+        // The token leaves the field now, sent or not: it is not kept in the page state.
+        form.token = Secret::default();
+        if form.url.trim().is_empty() {
+            app.ui.remote.relay_error = Some("Type the relay's address, for example wss://relay.example.".to_owned());
+        } else {
+            app.ui.remote.relay_error = None;
+            app.dispatch.submit("peer_relay_set", params);
+        }
+    }
+}
+
+/// The address and token fields of the relay card, and Save and Cancel.
+fn relay_fields(ui: &mut Ui, app: &mut CsmApp, save: &mut bool, cancel: &mut bool) {
+    let t = Tokens::get(ui.ctx());
+    let saved_token = app.ui.remote.relay.as_ref().is_some_and(|r| r.access_set);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Address").font(theme::regular(text::BODY)).color(t.fg));
+        let edit = egui::TextEdit::singleline(&mut app.ui.remote.relay_form.url)
+            .id(Id::new("remote-relay-url"))
+            .hint_text(egui::RichText::new("wss://relay.example").color(t.faint))
+            .font(theme::mono(text::MONO))
+            .desired_width(size::FIELD_W);
+        ui.add(edit).widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Relay address"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Enrolment token").font(theme::regular(text::BODY)).color(t.fg));
+        let hint = if saved_token { "saved: leave empty to keep it" } else { "only if the relay asks for one" };
+        let edit = egui::TextEdit::singleline(&mut app.ui.remote.relay_form.token.0)
+            .id(Id::new("remote-relay-token"))
+            .password(true)
+            .hint_text(egui::RichText::new(hint).color(t.faint))
+            .font(theme::mono(text::MONO))
+            .desired_width(size::FIELD_W);
+        ui.add(edit).widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Relay enrolment token"));
+    });
+    caption(ui, "The token is kept in the OS keychain, never in a file. Leave it empty to keep the saved token for the same address.");
+    ui.horizontal(|ui| {
+        if widgets::button(ui, ButtonKind::Primary, None, "Save relay", None).clicked() {
+            *save = true;
+        }
+        if widgets::button(ui, ButtonKind::Ghost, None, "Cancel", None).clicked() {
+            *cancel = true;
+        }
+    });
+}
+
+/// The saved relay, while the fields are closed: its address, whether it is connected, and the
+/// change and turn-off buttons.
+fn relay_status_line(ui: &mut Ui, t: &Tokens, r: &RelayView, change: &mut bool, turn_off: &mut bool) {
+    let (color, status) = if r.connected {
+        (t.green, "Connected to the relay.".to_owned())
+    } else {
+        (t.peach, format!("Not connected: {}", r.last_error.as_deref().unwrap_or("starting")))
+    };
+    ui.horizontal(|ui| {
+        dot(ui, color);
+        ui.label(egui::RichText::new(format!("Also reachable through {}", r.url)).font(theme::medium(text::BODY)).color(t.fg));
+    });
+    caption(ui, &status);
+    if r.access_set {
+        caption(ui, "An enrolment token is saved in the OS keychain.");
+    }
+    ui.horizontal(|ui| {
+        if widgets::button(ui, ButtonKind::Secondary, None, "Change\u{2026}", None).clicked() {
+            *change = true;
+        }
+        if widgets::button(ui, ButtonKind::Danger, None, "Turn off the relay", None).clicked() {
+            *turn_off = true;
+        }
+    });
 }
 
 fn status_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
@@ -887,5 +1101,51 @@ mod tests {
         assert!(s.available && s.enabled && s.devices == 2);
         let junk: StatusView = parse(&json!("not an object"));
         assert!(!junk.available, "a bad reply reads as unavailable, never a panic");
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+
+    #[test]
+    fn the_relay_params_carry_the_token_only_when_typed() {
+        assert_eq!(relay_set_params(" wss://relay.example ", ""), json!({"url": "wss://relay.example"}), "left out: the saved token is kept by the engine");
+        assert_eq!(relay_set_params("wss://relay.example", "  tok-0123456789abcdef  "), json!({"url": "wss://relay.example", "access": "tok-0123456789abcdef"}));
+        assert_eq!(relay_set_params("", "tok"), json!({"url": "", "access": "tok"}), "the engine turns it off whatever the token");
+        assert_eq!(relay_set_params("", ""), json!({"url": ""}), "turning off sends no token");
+    }
+
+    #[test]
+    fn a_relay_reply_is_none_or_a_view_without_a_secret() {
+        assert_eq!(relay_view(&Value::Null), None, "no relay set");
+        assert_eq!(relay_view(&json!({"url": ""})), None, "an empty address is no relay");
+        let v = relay_view(&json!({"url": "wss://relay.example", "host_id": "abc", "connected": false, "last_error": "remote access is off", "access_set": true, "future": 1})).unwrap();
+        assert_eq!((v.url.as_str(), v.connected, v.access_set), ("wss://relay.example", false, true));
+        assert_eq!(v.last_error.as_deref(), Some("remote access is off"));
+        assert!(relay_view(&json!("not an object")).is_none(), "a bad reply reads as no relay, never a panic");
+    }
+
+    #[test]
+    fn the_typed_token_never_shows_in_debug_output() {
+        let mut r = RemoteState::default();
+        r.relay_form.editing = true;
+        r.relay_form.url = "wss://relay.example".into();
+        r.relay_form.token = Secret("hunter2-enrolment-token".into());
+        let shown = format!("{r:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("wss://relay.example"), "the address may show: {shown}");
+        assert_eq!(format!("{:?}", Secret::default()), "Secret(empty)");
+    }
+
+    #[test]
+    fn a_logged_relay_call_has_its_token_redacted_and_nothing_else_changed() {
+        let params = json!({"url": "wss://relay.example", "access": "hunter2-enrolment-token"});
+        let shown = crate::backend::redacted_params("peer_relay_set", &params);
+        assert_eq!(shown, json!({"url": "wss://relay.example", "access": "<redacted>"}));
+        assert_eq!(params["access"], "hunter2-enrolment-token", "the original is not changed");
+        // Other tools are logged as they are, and a relay call without a token has nothing to hide.
+        assert_eq!(crate::backend::redacted_params("peer_pair_answer", &json!({"access": "x"})), json!({"access": "x"}));
+        assert_eq!(crate::backend::redacted_params("peer_relay_set", &json!({"url": ""})), json!({"url": ""}));
     }
 }

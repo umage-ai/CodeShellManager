@@ -1213,15 +1213,24 @@ impl std::fmt::Display for From {
 struct RelayState {
     host: RelayHost,
     route: RelayRoute,
+    /// Whether an enrolment token was given (the token itself is not kept here).
+    access_set: bool,
 }
 
 /// What the person set up for the relay: its address, the host secret (kept in the secret store,
 /// never in the state file) and the operator's enrolment token, when the relay needs one.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RelayConfig {
     pub url: String,
     pub host_secret: [u8; 32],
     pub access: Option<String>,
+}
+
+impl std::fmt::Debug for RelayConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Neither secret reaches a log line.
+        f.debug_struct("RelayConfig").field("url", &self.url).field("host_secret", &"<hidden>").field("access", &self.access.as_ref().map(|_| "<hidden>")).finish()
+    }
 }
 
 impl PeerServer {
@@ -1239,8 +1248,9 @@ impl PeerServer {
         let allow: AllowList = Arc::new(move || for_allow.relay_allow());
         let for_channels = i.clone();
         let on_channel: OnChannel = Box::new(move |stream, _info| for_channels.relay_channel(stream));
+        let access_set = cfg.access.is_some();
         let host = RelayHost::start(HostRoute { url: cfg.url, host_secret: cfg.host_secret, access: cfg.access }, allow, on_channel).map_err(|e| e.to_string())?;
-        *lock_relay(i) = Some(RelayState { host, route });
+        *lock_relay(i) = Some(RelayState { host, route, access_set });
         log::info!("remote access: also reachable through a relay");
         Ok(())
     }
@@ -1334,6 +1344,12 @@ fn read_secret(store: &dyn csm_services::secrets::SecretStore, key: &str) -> Opt
     store.get(RELAY_SERVICE, key).ok().flatten()
 }
 
+/// The address saved in the peer folder, when that file is there and readable.
+fn saved_relay_url(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<RelayFile>(&text).ok().map(|f| f.url)
+}
+
 impl PeerServer {
     /// Gives the server the keychain its relay secrets are kept in. Call once, before `resume`.
     pub fn use_secrets(&self, store: Arc<dyn csm_services::secrets::SecretStore>) {
@@ -1370,13 +1386,26 @@ impl PeerServer {
                 s
             }
         };
-        match &req.access {
+        // The token: a given one is saved, an empty one is removed, and one left out is kept only
+        // when the address is the same as the saved one (never sent on to another relay).
+        let token = match req.access.as_deref() {
+            Some(t) if !t.trim().is_empty() => Some(t.trim().to_owned()),
+            Some(_) => None,
+            None if saved_relay_url(&path).as_deref() == Some(url.as_str()) => read_secret(store.as_ref(), RELAY_TOKEN_KEY),
+            None => None,
+        };
+        match &token {
             Some(t) => store.set(RELAY_SERVICE, RELAY_TOKEN_KEY, t).map_err(|e| ToolError::Failed(format!("could not keep the enrolment token: {e}")))?,
             None => {
                 let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
             }
         }
-        self.set_relay(Some(RelayConfig { url: url.clone(), host_secret: secret, access: req.access.clone() })).map_err(ToolError::Refused)?;
+        // The relay runs only while remote access is on: saved now, it starts when it comes on.
+        if i.lock().run.is_some() {
+            self.set_relay(Some(RelayConfig { url: url.clone(), host_secret: secret, access: token })).map_err(ToolError::Refused)?;
+        } else {
+            i.relay_stop();
+        }
         let text = serde_json::to_string(&RelayFile { v: 1, url: url.clone() }).unwrap_or_default();
         crate::fsperm::ensure_private_dir(&i.dir).map_err(|e| Inner::io_failed("could not save the relay address", &e))?;
         crate::fsperm::write_private(&path, text.as_bytes()).map_err(|e| Inner::io_failed("could not save the relay address", &e))?;
@@ -1407,10 +1436,32 @@ impl PeerServer {
         }
     }
 
+    /// The relay in use: running, with what it last said. While remote access is off the saved
+    /// relay is still listed (not connected), so the settings page can show what is set.
     fn relay_info(&self) -> Option<RelayInfo> {
-        let guard = lock_relay(&self.inner);
-        let r = guard.as_ref()?;
-        let st = r.host.status();
-        Some(RelayInfo { url: r.route.url.clone(), host_id: r.route.host_id.clone(), connected: st.connected, last_error: st.last_error })
+        {
+            let guard = lock_relay(&self.inner);
+            if let Some(r) = guard.as_ref() {
+                let st = r.host.status();
+                return Some(RelayInfo { url: r.route.url.clone(), host_id: r.route.host_id.clone(), connected: st.connected, last_error: st.last_error, access_set: r.access_set });
+            }
+        }
+        self.saved_relay_info()
+    }
+
+    /// The relay the person saved, while it is not running.
+    fn saved_relay_info(&self) -> Option<RelayInfo> {
+        let i = &self.inner;
+        let url = saved_relay_url(&i.dir.join(RELAY_FILE))?;
+        let store = i.secrets.get()?.clone();
+        let secret = read_secret(store.as_ref(), RELAY_SECRET_KEY).and_then(|s| b64_decode_fixed::<32>(&s))?;
+        let access_set = read_secret(store.as_ref(), RELAY_TOKEN_KEY).is_some();
+        Some(RelayInfo {
+            url,
+            host_id: csm_remote_proto::ids::host_id(&secret),
+            connected: false,
+            last_error: Some("remote access is off, so the relay is not running".to_owned()),
+            access_set,
+        })
     }
 }

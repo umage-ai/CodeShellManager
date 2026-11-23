@@ -127,10 +127,15 @@ copies the encrypted frames between them. The relay never holds a key that matte
 frame; the session is the same end-to-end session as on the direct address.
 
 - **Office:** Settings › Remote access › "Also reachable through a relay" gives the relay address
-  (`wss://…`; `ws://` only to this PC) and, when the relay asks for one, the enrolment token. The token
-  and the office's relay secret are kept in the OS keychain, never in a file. The address goes to
-  `peer/relay.json` in the app's data folder. The pairing link then names the relay too. Remote access
-  must be on for the relay to run; turning it off stops the relay.
+  (`wss://…`; `ws://` only to this PC) and, when the relay asks for one, the enrolment token (a
+  password field, cleared as soon as it is sent). The token and the office's relay secret are kept in
+  the OS keychain, never in a file. The address goes to `peer/relay.json` in the app's data folder.
+  The card shows whether the relay is connected, and "Change…" and "Turn off the relay" change it.
+  Leaving the token empty keeps the saved one for the same address; a different address does not get
+  the saved token, so it is removed and must be typed again. The pairing link then names the relay too:
+  an open pairing link is made again when the relay changes, but a link already copied keeps the
+  route it was made with. The relay runs only while remote
+  access is on: while it is off the card says the relay is not running, and turning it off stops it.
 - **Laptop:** pairing and connecting try the direct address first, then the relay. The saved office
   (`hosts.json`) keeps the relay route, so a later connection needs no setting. A laptop paired before
   the office had a relay keeps working directly; pair again to add the route.

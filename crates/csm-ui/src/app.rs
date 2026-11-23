@@ -1687,9 +1687,9 @@ impl CsmApp {
             }
             "settings_get" | "settings_set" | "app_info" | "grant_list" | "grant_revoke" => return self.run(ctx, Action::OpenSettings),
             "app_autostart_get" | "app_autostart_set" => return self.run(ctx, Action::OpenSettings),
-            // Turning remote access on, pairing and revoking are walked through on their page.
+            // Turning remote access on, pairing, revoking and the relay (its fields are on the page) are on their page.
             // Turning it off is one click and needs nothing else, so it runs as it is.
-            "peer_server_enable" | "peer_pair_start" | "peer_pair_answer" | "peer_device_revoke" | "peer_interfaces" | "peer_status" | "peer_device_list" => {
+            "peer_server_enable" | "peer_pair_start" | "peer_pair_answer" | "peer_device_revoke" | "peer_interfaces" | "peer_status" | "peer_device_list" | "peer_relay_set" => {
                 return self.run(ctx, Action::OpenRemoteAccess);
             }
             "usage_report" => return self.run(ctx, Action::OpenUsage(None)),

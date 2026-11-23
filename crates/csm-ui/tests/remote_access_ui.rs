@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use csm_engine::Caller;
 use csm_ui::demo::peer::DemoPeerHost;
-use csm_ui::screens::remote::{PillKind, TOGGLE_LABEL};
+use csm_ui::screens::remote::{PillKind, RELAY_TOGGLE_LABEL, Secret, TOGGLE_LABEL};
 use csm_ui::theme::ThemeKind;
 use csm_ui::{Action, CsmApp};
 use egui_kittest::Harness;
@@ -297,4 +297,62 @@ fn the_palette_sends_the_enabling_commands_to_the_page() {
     assert_eq!(h.state().ui.settings.section, csm_ui::app::SettingsSection::Remote);
     assert!(host.calls().is_empty(), "the palette opens the page; it does not turn anything on");
     assert_eq!(peer_calls(&h, "peer_server_enable"), 0);
+}
+
+/// The relay card: the toggle opens the fields, the token is a password that leaves the page state
+/// once sent, the engine gets it (the demo host records only that one was given), no log or call
+/// history keeps it, and a refused address shows on the card while the saved one stays.
+#[test]
+fn the_relay_card_sends_the_token_once_and_keeps_it_out_of_the_logs() {
+    const TOKEN: &str = "hunter2-enrolment-token";
+    let host = host();
+    let mut h = rig(&host);
+    open_page(&mut h);
+    assert!(h.state().ui.remote.relay.is_none(), "no relay is set by default");
+
+    h.get_by_label(RELAY_TOGGLE_LABEL).click();
+    settle(&mut h);
+    assert!(h.state().ui.remote.relay_form.editing, "the toggle opens the fields");
+    assert!(h.query_by_label("Relay enrolment token").is_some(), "the token field is there");
+    assert!(host.calls().is_empty(), "opening the fields calls nothing");
+
+    {
+        let form = &mut h.state_mut().ui.remote.relay_form;
+        form.url = "wss://relay.example".into();
+        form.token = Secret(TOKEN.into());
+    }
+    settle(&mut h);
+    h.get_by_label("Save relay").click();
+    wait_for(&mut h, "the relay is saved", |a| a.ui.remote.relay.is_some());
+
+    let relay = h.state().ui.remote.relay.clone().unwrap();
+    assert_eq!((relay.url.as_str(), relay.access_set, relay.connected), ("wss://relay.example", true, false), "saved, and off while remote access is off");
+    assert!(h.state().ui.remote.relay_form.token.0.is_empty(), "the token leaves the page state once sent");
+    assert!(!h.state().ui.remote.relay_form.editing, "the fields close after saving");
+    assert_eq!(host.calls().iter().filter(|c| c.starts_with("relay_set url=wss://relay.example access=true")).count(), 1, "{:?}", host.calls());
+    assert!(host.calls().iter().all(|c| !c.contains(TOKEN)), "the host never sees the token in its calls: {:?}", host.calls());
+
+    // Neither the call history nor the debug view of the page state keeps the token.
+    let saved_call = h.state().submitted().iter().find(|c| c.id == "peer_relay_set").cloned().expect("the call was made");
+    assert_eq!(saved_call.params["access"], "<redacted>");
+    assert!(!format!("{:?}", h.state().submitted()).contains(TOKEN));
+    assert!(!format!("{:?}", h.state().ui.remote).contains(TOKEN));
+
+    // A refused address shows on the card; the saved relay is not changed by it.
+    {
+        let form = &mut h.state_mut().ui.remote.relay_form;
+        form.editing = true;
+        form.url = "http://relay.example".into();
+    }
+    settle(&mut h);
+    h.get_by_label("Save relay").click();
+    wait_for(&mut h, "the refusal is shown", |a| a.ui.remote.relay_error.is_some());
+    assert_eq!(h.state().ui.remote.relay.as_ref().map(|r| r.url.as_str()), Some("wss://relay.example"), "the saved relay stays");
+
+    // Turning it off removes the address and the token, and the card goes back to its toggle.
+    h.state_mut().ui.remote.relay_form = Default::default();
+    settle(&mut h);
+    h.get_by_label("Also reachable through a relay").click();
+    wait_for(&mut h, "the relay is off", |a| a.ui.remote.relay.is_none());
+    assert!(host.calls().iter().any(|c| c.starts_with("relay_set url= access=false")), "{:?}", host.calls());
 }

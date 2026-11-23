@@ -198,6 +198,12 @@ A peer host has no push. Its client channels queue 1024 frames (phones: 64), so 
 in the queue instead of closing the channel; a sustained rate over the cap still closes it with
 `rate_limited`. The same access rules (`[access]`) admit an office as they admit a phone host.
 
+The office sets its relay in Settings › Remote access (`peer_relay_set`): the address, and the operator's
+enrolment token when `[access]` asks for one. The office keeps the token and its relay secret in its OS
+keychain, never in a file. It connects to the relay only while remote access is on, so a relay never
+runs for an office that is not listening. The relay needs no change for this: an office's relay channel
+is an ordinary peer host.
+
 The office paces its own writes to the same per-channel caps, so a burst from the terminal waits at
 the office and is not cut off here. The defaults are what the office assumes: a relay that lowers
 `peer_*` below them will close channels the office sends at full speed. A phone can never open a peer

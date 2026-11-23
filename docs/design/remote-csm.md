@@ -1100,11 +1100,31 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
   cannot write into a new one.
 
 **Not done.**
-- The Settings › Remote access form ("Also reachable through a relay") is not in csm-ui yet. The tools are there
-  (`peer_relay_set` and `peer_relay_status`, UI-only), so the form is a view over them.
+- ~~The Settings › Remote access form~~ Done in round 2 (see below).
 - The routing token is `sha256(device public key)`, so anyone who knows a device's public key can open relay channels
   for it (Noise still stops them reading or pairing, but they use the office's slots). A per-device secret mixed into
   the token would close that; it changes the allow list format, so it is a follow-up.
 - The pairing link's QR carries the relay only through the offer's JSON, which is already what the QR encodes; no QR
   test was added.
 - Manual checks through a real relay (TLS, a public host) are not done; the tests use `ws://127.0.0.1`.
+
+**Review round 2 (the relay form and the token).**
+- *The form.* Settings › Remote access has "Also reachable through a relay" (`screens/remote.rs`, `relay_card`). The
+  toggle opens the address and token fields (off: the relay is removed). Save, Change and Turn off go to
+  `peer_relay_set` through the dispatch, so the UI thread never waits. The card shows `peer_relay_status`: connected, or
+  why not. The pairing link is made again when the relay changes, so the offer names the current route. The token is a
+  password field and leaves the page state at once when sent. Tests: `relay_tests` (the params, replies, Debug output),
+  and `the_relay_card_sends_the_token_once_and_keeps_it_out_of_the_logs` (kittest, demo host).
+- *The token stays out of logs.* `backend::redacted_params` replaces `access` with `<redacted>` in the debug line and the
+  call history; the engine still gets the real params. `RelaySetRequest` and `RelayConfig` print their tokens and host
+  secret as `<hidden>`.
+- *The token's meaning.* `access` absent keeps the saved token only for the same address, else removes it; `""` removes
+  it; text saves it. Before, an absent token was deleted on every save, so changing only the address lost the token.
+- *Not started while off.* Saving a relay while remote access is off used to start it. It is now only saved, and
+  `peer_relay_status` lists it as not connected ("remote access is off, so the relay is not running"). Turning remote
+  access on starts it (`restore_relay`), as before.
+- *Still open (the routing secret).* The routing token is still `sha256("csm-peer relay token" || device public key)`,
+  so the allow list can be opened by anyone holding a device's public key. Fixing it needs a per-device routing secret:
+  the laptop makes it, sends its hash in pairing, the office stores that hash per device, and the laptop keeps the secret
+  with its saved host. That touches the pairing message, the device records and the saved host, so it is not
+  a cheap change and is left for a round that changes those formats anyway. Noise still gates every session.
