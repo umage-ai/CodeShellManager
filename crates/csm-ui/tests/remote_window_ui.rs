@@ -226,10 +226,7 @@ fn the_connect_dialog_follows_the_pairing_states() {
 
 #[test]
 fn the_paired_offices_connect_forget_and_open_a_remote_window() {
-    let (opened, open) = recorder();
-    let mut app = app_with(backend(ThemeKind::Mocha));
-    app.hooks.open_window = Some(open);
-    let mut h = harness(app);
+    let mut h = harness(app_with(backend(ThemeKind::Mocha)));
     settle(&mut h);
     run(&mut h, Action::OpenConnectRemote);
     h.state_mut().ui.connect = ConnectDialog {
@@ -241,7 +238,8 @@ fn the_paired_offices_connect_forget_and_open_a_remote_window() {
     assert!(h.query_by_label("Office").is_some(), "the office is listed");
     h.get_by_label("Connect").click();
     settle(&mut h);
-    assert_eq!(opened.lock().unwrap().as_slice(), ["HOST1"], "Connect starts a remote window to that host");
+    let opened: Vec<serde_json::Value> = h.state().submitted().iter().filter(|c| c.id == "remote_window_open").map(|c| c.params.clone()).collect();
+    assert_eq!(opened, vec![json!({"host_id": "HOST1"})], "Connect asks the engine for a remote window to that host");
 
     run(&mut h, Action::OpenConnectRemote);
     h.state_mut().ui.connect.hosts = vec![HostRow { host_id: "HOST1".into(), name: "Office".into(), address: String::new(), last_connected: None }];
@@ -254,15 +252,6 @@ fn the_paired_offices_connect_forget_and_open_a_remote_window() {
     assert!(!submitted_ids(&h).iter().any(|i| i == "peer_host_forget"), "nothing is forgotten before the answer");
     run(&mut h, *c.yes);
     assert!(submitted_ids(&h).iter().any(|i| i == "peer_host_forget"));
-}
-
-#[test]
-fn an_opened_remote_window_needs_a_host_to_open() {
-    // The laptop's window without the hook: the dialog says it cannot open one (no panic, no process).
-    let mut h = local();
-    run(&mut h, Action::ConnectRemoteOpen { host_id: "HOST1".into(), name: "Office".into() });
-    assert!(h.state().hooks.open_window.is_none());
-    h.step();
 }
 
 // ── Close, the panes the frame draws, and the stale mark ─────────────────────────────────────

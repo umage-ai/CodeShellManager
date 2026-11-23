@@ -372,6 +372,13 @@
     },
     {
       "json": {
+        "t": "snapshot_request"
+      },
+      "name": "snapshot_request",
+      "plaintext_hex": "017b2274223a22736e617073686f745f72657175657374227d"
+    },
+    {
+      "json": {
         "outcome": "already_resolved",
         "request_id": 7,
         "t": "consent_ack"

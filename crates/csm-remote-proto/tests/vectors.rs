@@ -17,7 +17,7 @@ use csm_remote_proto::msg::{
 };
 use csm_remote_proto::noise::{PARAMS_PAIRING, PARAMS_SESSION, REKEY_INTERVAL, check_code, prologue};
 use csm_remote_proto::pairing::{DenyReason, PairMsg, PairingOffer};
-use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, PushRequest, RelayToClient, RelayToHost, Urgency, close_payload, encode_frame};
+use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, PushRequest, RelayToClient, RelayToHost, Urgency, close_payload, encode_ack, encode_frame};
 use serde_json::{Value, json};
 use snow::Builder;
 use snow::params::DHChoice;
@@ -85,6 +85,7 @@ fn frames_vectors() {
         (FrameKind::Open, 8, OpenInfo::Pairing(arr::<16>(9)).encode()),
         (FrameKind::Close, 7, close_payload(None).to_vec()),
         (FrameKind::Close, 7, close_payload(Some(RefusalCode::Revoked)).to_vec()),
+        (FrameKind::Ack, 7, encode_ack(3, 9_000).to_vec()),
     ]
     .iter()
     .map(|(k, ch, payload)| {
@@ -92,6 +93,7 @@ fn frames_vectors() {
             FrameKind::Data => "data",
             FrameKind::Open => "open",
             FrameKind::Close => "close",
+            FrameKind::Ack => "ack",
         };
         json!({"kind": kind, "channel": ch, "payload_hex": hex(payload), "frame_hex": hex(&encode_frame(*k, *ch, payload))})
     })

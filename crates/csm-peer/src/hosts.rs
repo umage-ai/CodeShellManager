@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use csm_peer_proto::addr::PeerAddr;
+use csm_peer_proto::pairing::RelayRoute;
 use csm_peer_proto::ids::{KEY_LEN, b64_decode_fixed, b64_encode, host_id, is_valid_id};
 use csm_peer_proto::msg::valid_name;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,10 @@ pub struct Host {
     pub paired_at: u64,
     #[serde(default)]
     pub last_connected: Option<u64>,
+    /// The relay this host is also reachable through, when the host offered one (the direct
+    /// address is tried first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<csm_peer_proto::pairing::RelayRoute>,
 }
 
 impl Host {
@@ -40,7 +45,7 @@ impl Host {
 
     /// An entry that passes every check: a name, an address, and a key whose host id is the one listed.
     fn sound(&self) -> bool {
-        valid_name(&self.name) && is_valid_id(&self.host_id) && self.peer_addr().is_some() && self.public_key().is_some_and(|k| host_id(&k) == self.host_id)
+        valid_name(&self.name) && is_valid_id(&self.host_id) && self.peer_addr().is_some() && self.public_key().is_some_and(|k| host_id(&k) == self.host_id) && self.relay.as_ref().is_none_or(|r| r.validate())
     }
 }
 
@@ -92,9 +97,9 @@ impl HostStore {
     }
 
     /// Stores a host after a pairing. Pairing with the same host again replaces its entry.
-    pub fn add(&mut self, name: &str, address: &PeerAddr, key: &[u8; KEY_LEN], now: u64) -> std::io::Result<Host> {
+    pub fn add(&mut self, name: &str, address: &PeerAddr, relay: Option<RelayRoute>, key: &[u8; KEY_LEN], now: u64) -> std::io::Result<Host> {
         let id = host_id(key);
-        let h = Host { host_id: id.clone(), name: name.trim().to_owned(), address: address.to_url(), public: b64_encode(key), paired_at: now, last_connected: None };
+        let h = Host { host_id: id.clone(), name: name.trim().to_owned(), address: address.to_url(), public: b64_encode(key), paired_at: now, last_connected: None, relay };
         if !h.sound() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the host's name or address is not usable"));
         }
@@ -149,8 +154,8 @@ mod tests {
         let p = d.path().join("hosts.json");
         let mut s = HostStore::load(&p).unwrap();
         assert!(s.list().is_empty());
-        let h = s.add("Office", &addr("tcp://10.8.0.2:47300"), &[5; 32], 100).unwrap();
-        s.add("Shed", &addr("tcp://10.8.0.9:47300"), &[6; 32], 101).unwrap();
+        let h = s.add("Office", &addr("tcp://10.8.0.2:47300"), None, &[5; 32], 100).unwrap();
+        s.add("Shed", &addr("tcp://10.8.0.9:47300"), None, &[6; 32], 101).unwrap();
         assert_eq!(s.find(&h.host_id).unwrap().name, "Office");
         assert!(s.touch(&h.host_id, 200).unwrap());
         assert!(!s.touch("nobody", 200).unwrap());
@@ -170,8 +175,8 @@ mod tests {
     fn pairing_the_same_host_again_replaces_its_entry() {
         let d = tempfile::tempdir().unwrap();
         let mut s = HostStore::load(&d.path().join("h.json")).unwrap();
-        s.add("Old", &addr("tcp://10.8.0.2:47300"), &[5; 32], 1).unwrap();
-        s.add("New", &addr("tcp://10.8.0.3:47300"), &[5; 32], 2).unwrap();
+        s.add("Old", &addr("tcp://10.8.0.2:47300"), None, &[5; 32], 1).unwrap();
+        s.add("New", &addr("tcp://10.8.0.3:47300"), None, &[5; 32], 2).unwrap();
         assert_eq!(s.list().len(), 1);
         assert_eq!(s.list()[0].name, "New");
         assert_eq!(s.list()[0].address, "tcp://10.8.0.3:47300");
@@ -188,6 +193,7 @@ mod tests {
             public: b64_encode(&[7; 32]),
             paired_at: 1,
             last_connected: None,
+            relay: None,
         };
         let wrong_id = Host { host_id: host_id(&[9; 32]), public: b64_encode(&[8; 32]), ..good.clone() };
         let bad_addr = Host { host_id: host_id(&[4; 32]), public: b64_encode(&[4; 32]), address: "tcp://0.0.0.0:47300".into(), ..good.clone() };
@@ -214,8 +220,8 @@ mod tests {
             let mut key = [0u8; 32];
             key[0] = u8::try_from(i).unwrap();
             key[1] = 1;
-            s.add("H", &addr("tcp://10.8.0.2:47300"), &key, 1).unwrap();
+            s.add("H", &addr("tcp://10.8.0.2:47300"), None, &key, 1).unwrap();
         }
-        assert!(s.add("One more", &addr("tcp://10.8.0.2:47300"), &[250; 32], 1).is_err());
+        assert!(s.add("One more", &addr("tcp://10.8.0.2:47300"), None, &[250; 32], 1).is_err());
     }
 }

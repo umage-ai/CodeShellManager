@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use csm_relay::config::Config;
 use csm_relay::push::{BoxFuture, PushJob, PushOutcome, PushSender};
-use csm_relay::{Relay, serve};
+use csm_relay::{Kind, Relay, serve};
 use csm_remote_proto::codes::RefusalCode;
 use csm_remote_proto::ids::{b64_encode, host_id, token_hash};
 use csm_remote_proto::relay::{FrameKind, HostToRelay, OpenInfo, PushRequest, RelayToClient, RelayToHost, decode_frame, encode_frame, parse_close_payload};
@@ -127,9 +127,13 @@ fn secret(seed: u8) -> [u8; 32] {
 
 impl Host {
     async fn try_connect(rig: &Rig, seed: u8, access: Option<&str>, headers: &[(&str, &str)]) -> Result<Host, RefusalCode> {
+        Host::try_connect_at(rig, "/v1/host", seed, access, headers).await
+    }
+
+    async fn try_connect_at(rig: &Rig, path: &str, seed: u8, access: Option<&str>, headers: &[(&str, &str)]) -> Result<Host, RefusalCode> {
         let secret = secret(seed);
         let id = host_id(&secret);
-        let mut ws = ws_connect(rig, "/v1/host", headers).await.unwrap();
+        let mut ws = ws_connect(rig, path, headers).await.unwrap();
         let hello = HostToRelay::Hello { v: 1, host_id: id.clone(), host_secret: b64_encode(&secret), access: access.map(str::to_owned) };
         send_text(&mut ws, &csm_remote_proto::relay::to_text(&hello)).await;
         match next(&mut ws).await {
@@ -207,7 +211,11 @@ fn hello_pairing(host: &str, id: &[u8; 16]) -> String {
 
 impl Phone {
     async fn connect_raw(rig: &Rig, hello: &str, headers: &[(&str, &str)]) -> Result<Phone, RefusalCode> {
-        let mut ws = ws_connect(rig, "/v1/client", headers).await.unwrap();
+        Phone::connect_at(rig, "/v1/client", hello, headers).await
+    }
+
+    async fn connect_at(rig: &Rig, path: &str, hello: &str, headers: &[(&str, &str)]) -> Result<Phone, RefusalCode> {
+        let mut ws = ws_connect(rig, path, headers).await.unwrap();
         send_text(&mut ws, hello).await;
         match next(&mut ws).await {
             Got::Text(t) => match serde_json::from_str::<RelayToClient>(&t).unwrap() {
@@ -274,7 +282,7 @@ async fn pairing_then_routing_is_byte_identical_both_ways() {
     host.allow(&[token]).await;
     send_text(&mut host.ws, &csm_remote_proto::relay::to_text(&HostToRelay::PairingClose)).await;
     assert!(matches!(phone.recv().await, Got::Close(Some(1000))));
-    assert!(!rig.relay.has_slot(&host.id));
+    assert!(!rig.relay.has_slot(Kind::Phone, &host.id));
 
     // The paired phone now connects with its routing token.
     let mut again = Phone::token(&rig, &host.id, &token).await.unwrap();
@@ -874,4 +882,122 @@ async fn relay_state_does_not_outlive_its_connections() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("state leaked: {:?}", rig.relay.counts());
+}
+
+// ---- CSM peers: their own namespace ------------------------------------------------------------
+
+async fn peer_client(rig: &Rig, host: &str, token: &[u8; 32]) -> Result<Phone, RefusalCode> {
+    Phone::connect_at(rig, "/v1/peer-client", &hello_token(host, token), &[]).await
+}
+
+#[tokio::test]
+async fn a_peer_channel_routes_bytes_both_ways_in_the_peer_namespace() {
+    let rig = start_open().await;
+    let mut host = Host::try_connect_at(&rig, "/v1/peer-host", 3, None, &[]).await.unwrap();
+    host.allow(&[tok(7)]).await;
+    let mut client = peer_client(&rig, &host.id, &tok(7)).await.unwrap();
+    let (kind, ch, payload) = host.frame().await;
+    assert_eq!(kind, FrameKind::Open);
+    assert_eq!(OpenInfo::decode(&payload), Some(OpenInfo::Device(token_hash(&tok(7)))));
+    let up: Vec<u8> = (0..=255u8).collect();
+    client.send(&up).await;
+    assert_eq!(host.frame().await, (FrameKind::Data, ch, up.clone()));
+    host.send_data(ch, &up).await;
+    assert!(matches!(client.recv().await, Got::Bin(b) if b == up));
+}
+
+#[tokio::test]
+async fn phones_and_peers_never_reach_each_others_hosts() {
+    let rig = start_open().await;
+    // The same host id, registered once as a phone host and once as a peer host: two namespaces.
+    let mut phone_host = Host::connect(&rig, 4).await;
+    let mut peer_host = Host::try_connect_at(&rig, "/v1/peer-host", 4, None, &[]).await.unwrap();
+    assert_eq!(phone_host.id, peer_host.id);
+    phone_host.allow(&[tok(1)]).await;
+    peer_host.allow(&[tok(1)]).await;
+    // Each endpoint reaches only its own host, even with the same credential.
+    let _phone = Phone::token(&rig, &phone_host.id, &tok(1)).await.unwrap();
+    assert!(matches!(phone_host.frame().await, (FrameKind::Open, _, _)));
+    let _peer = peer_client(&rig, &peer_host.id, &tok(1)).await.unwrap();
+    assert!(matches!(peer_host.frame().await, (FrameKind::Open, _, _)));
+
+    // A host that exists only as a peer host is invisible to phones, and the reverse.
+    let mut peer_only = Host::try_connect_at(&rig, "/v1/peer-host", 5, None, &[]).await.unwrap();
+    peer_only.allow(&[tok(2)]).await;
+    assert_eq!(Phone::token(&rig, &peer_only.id, &tok(2)).await.err(), Some(RefusalCode::HostOffline));
+    let mut phone_only = Host::connect(&rig, 6).await;
+    phone_only.allow(&[tok(3)]).await;
+    assert_eq!(peer_client(&rig, &phone_only.id, &tok(3)).await.err(), Some(RefusalCode::HostOffline));
+}
+
+#[tokio::test]
+async fn a_peer_host_cannot_send_a_push() {
+    let rig = start_open().await;
+    let mut host = Host::try_connect_at(&rig, "/v1/peer-host", 3, None, &[]).await.unwrap();
+    let r = host.control(&push_req(1, "https://fcm.googleapis.com/x", b"x")).await;
+    assert!(matches!(r, RelayToHost::PushResult { ok: false, code: Some(RefusalCode::PushRefused), .. }), "{r:?}");
+}
+
+#[tokio::test]
+async fn browsers_cannot_open_the_peer_endpoints() {
+    let rig = start_open().await;
+    let origin = [("origin", "https://phone.example")];
+    assert!(ws_connect(&rig, "/v1/peer-host", &origin).await.is_err());
+    assert!(ws_connect(&rig, "/v1/peer-client", &origin).await.is_err());
+}
+
+#[tokio::test]
+async fn peer_channels_take_their_own_higher_limits() {
+    // 300 frames at once: far over a phone channel's 50 frames/s (burst 100), well within a peer's.
+    let rig = start_open().await;
+    let mut host = Host::try_connect_at(&rig, "/v1/peer-host", 3, None, &[]).await.unwrap();
+    host.allow(&[tok(7)]).await;
+    let mut client = peer_client(&rig, &host.id, &tok(7)).await.unwrap();
+    let _ = host.frame().await;
+    for i in 0..300u32 {
+        client.send(&i.to_be_bytes()).await;
+    }
+    for i in 0..300u32 {
+        match host.frame().await {
+            (FrameKind::Data, _, payload) => assert_eq!(payload, i.to_be_bytes()),
+            other => panic!("frame {i}: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn peer_frame_rate_is_configurable_and_enforced() {
+    let mut c = open_config();
+    c.limits.peer_frames_per_second_per_channel = 5;
+    let rig = start(c, None).await;
+    let mut host = Host::try_connect_at(&rig, "/v1/peer-host", 3, None, &[]).await.unwrap();
+    host.allow(&[tok(7)]).await;
+    let mut client = peer_client(&rig, &host.id, &tok(7)).await.unwrap();
+    let _ = host.frame().await;
+    for _ in 0..60 {
+        let _ = client.ws.send(Message::Binary(b"x".to_vec().into())).await;
+    }
+    let mut closed = None;
+    for _ in 0..80 {
+        match host.frame().await {
+            (FrameKind::Close, _, payload) => {
+                closed = Some(parse_close_payload(&payload));
+                break;
+            }
+            (FrameKind::Data, ..) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(closed, Some(Some(RefusalCode::RateLimited)));
+}
+
+#[tokio::test]
+async fn revoking_a_peer_device_drops_its_channel_at_once() {
+    let rig = start_open().await;
+    let mut host = Host::try_connect_at(&rig, "/v1/peer-host", 3, None, &[]).await.unwrap();
+    host.allow(&[tok(7)]).await;
+    let mut client = peer_client(&rig, &host.id, &tok(7)).await.unwrap();
+    let _ = host.frame().await;
+    host.allow(&[]).await;
+    assert!(matches!(client.recv().await, Got::Close(Some(c)) if refusal(Some(c)) == Some(RefusalCode::Revoked)));
 }

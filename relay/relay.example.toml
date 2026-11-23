@@ -47,6 +47,10 @@ enrol_tokens = []
 # max_pairing_attempts = 5
 # max_pairing_secs = 600
 # max_frame_bytes = 65536
+# CSM peers (their own namespace, see README "CSM peers"): higher caps for terminal streams.
+# peer_max_channels_per_host = 16
+# peer_frames_per_second_per_channel = 2000
+# peer_bytes_per_second_per_channel = 8388608
 
 [push]
 # Web Push forwarding. Set enabled = false to run without it (GET /v1/vapid then answers 404).

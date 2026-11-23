@@ -15,6 +15,10 @@ pub const MAX_SOCKETS_PER_IP: usize = 20;
 pub const MAX_NEW_CONNECTIONS_PER_IP_PER_MINUTE: usize = 10;
 pub const FRAMES_PER_SECOND_PER_CHANNEL: u32 = 50;
 pub const BYTES_PER_SECOND_PER_CHANNEL: u32 = 256 * 1024;
+/// CSM peers (terminal streams burst and carry whole screens): the caps of a `Peer` channel.
+pub const PEER_MAX_CHANNELS_PER_HOST: usize = 16;
+pub const PEER_FRAMES_PER_SECOND_PER_CHANNEL: u32 = 2_000;
+pub const PEER_BYTES_PER_SECOND_PER_CHANNEL: u32 = 8 * 1024 * 1024;
 /// Burst allowance is this many times the per-second rate.
 pub const BURST_FACTOR: u32 = 2;
 pub const HOST_SILENCE_SECS: u64 = 90;

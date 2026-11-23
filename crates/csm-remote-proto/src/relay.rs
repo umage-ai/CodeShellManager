@@ -108,10 +108,46 @@ pub enum RelayToHost {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LimitsInfo {
     pub max_frame_bytes: u32,
+    /// The channels this kind of host may have open (phone or CSM peer, as the socket is).
     pub max_channels: u32,
     pub max_allow_entries: u32,
     pub max_pairing_secs: u32,
     pub push: bool,
+    /// The per-channel frames and bytes a second this kind's channels may send. Zero when the relay
+    /// is older than this field: the host then uses its own defaults.
+    #[serde(default)]
+    pub frames_per_second: u32,
+    #[serde(default)]
+    pub bytes_per_second: u32,
+}
+
+/// Text a CSM peer client (and only a `Peer` client) sends on its socket. The relay turns an `Ack`
+/// into an [`FrameKind::Ack`] frame for the host: the bytes its reader has taken, so the office can
+/// keep a channel's in-flight output inside a window. Counts only, never Noise bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum PeerClientText {
+    Ack { frames: u64, bytes: u64 },
+}
+
+/// Bytes of an `Ack` frame's payload: `frames u64 BE | bytes u64 BE`.
+pub const ACK_PAYLOAD_BYTES: usize = 16;
+
+pub fn encode_ack(frames: u64, bytes: u64) -> [u8; ACK_PAYLOAD_BYTES] {
+    let mut out = [0u8; ACK_PAYLOAD_BYTES];
+    out[..8].copy_from_slice(&frames.to_be_bytes());
+    out[8..].copy_from_slice(&bytes.to_be_bytes());
+    out
+}
+
+/// `(frames, bytes)` of an `Ack` payload, or `None` when it is not exactly the right size.
+pub fn decode_ack(payload: &[u8]) -> Option<(u64, u64)> {
+    if payload.len() != ACK_PAYLOAD_BYTES {
+        return None;
+    }
+    let f: [u8; 8] = payload.get(..8)?.try_into().ok()?;
+    let b: [u8; 8] = payload.get(8..)?.try_into().ok()?;
+    Some((u64::from_be_bytes(f), u64::from_be_bytes(b)))
 }
 
 /// Phone to relay: the first message of a `/v1/client` socket. Exactly one of `token` (base64url
@@ -158,6 +194,9 @@ pub enum FrameKind {
     Open = 2,
     /// Either way: the channel is over. Payload: `u16 BE`, a [`RefusalCode`] number or 0.
     Close = 3,
+    /// Relay to host, peer channels only: the laptop's reader has taken this many frames and bytes.
+    /// Payload: [`encode_ack`]. An older host ignores it (unknown kinds are skipped).
+    Ack = 4,
 }
 
 impl FrameKind {
@@ -166,6 +205,7 @@ impl FrameKind {
             1 => Some(Self::Data),
             2 => Some(Self::Open),
             3 => Some(Self::Close),
+            4 => Some(Self::Ack),
             _ => None,
         }
     }
@@ -283,6 +323,18 @@ mod tests {
         assert_eq!(parse_close_payload(&close_payload(None)), None);
         assert_eq!(parse_close_payload(&close_payload(Some(RefusalCode::Revoked))), Some(RefusalCode::Revoked));
         assert_eq!(parse_close_payload(&[]), None);
+    }
+
+    #[test]
+    fn ack_payload_round_trip_and_size_is_exact() {
+        let p = encode_ack(7, 1 << 40);
+        assert_eq!(decode_ack(&p), Some((7, 1 << 40)));
+        assert_eq!(decode_ack(&p[..15]), None);
+        assert_eq!(decode_ack(&[p.as_slice(), &[0]].concat()), None);
+        let f = encode_frame(FrameKind::Ack, 3, &p);
+        assert_eq!(decode_frame(&f).map(|d| d.kind), Ok(FrameKind::Ack));
+        let t: PeerClientText = serde_json::from_str(r#"{"t":"ack","frames":2,"bytes":9}"#).unwrap();
+        assert_eq!(t, PeerClientText::Ack { frames: 2, bytes: 9 });
     }
 
     #[test]

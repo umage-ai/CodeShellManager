@@ -18,14 +18,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::engine::{Ctx, Reply};
-use crate::peer_host::{AuditEvent, EnableRequest, PairAnswer, PeerHost, Revoke};
+use crate::peer_host::{AuditEvent, EnableRequest, PairAnswer, PeerHost, RelaySetRequest, Revoke};
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
 
 /// The port suggested when the person gives none.
 pub const DEFAULT_PORT: u16 = 47_300;
 
 /// The tools only the person at the app's window may call.
-pub const UI_ONLY: [&str; 3] = ["peer_server_enable", "peer_pair_start", "peer_pair_answer"];
+pub const UI_ONLY: [&str; 4] = ["peer_server_enable", "peer_pair_start", "peer_pair_answer", "peer_relay_set"];
 
 pub(super) fn specs() -> Vec<ToolSpec> {
     // Declared honestly: turning it on opens a network door to shells, so it is flagged like
@@ -50,6 +50,24 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             effects: Effects::READ_ONLY,
             input_schema: empty_schema,
             run: peer_interfaces,
+        },
+        ToolSpec {
+            id: "peer_relay_status",
+            title: "Relay status",
+            summary: "Whether remote access is also reachable through a relay, which relay, and whether this machine is connected to it right now. No secrets.",
+            toolset: Toolset::App,
+            effects: Effects::READ_ONLY,
+            input_schema: empty_schema,
+            run: peer_relay_status,
+        },
+        ToolSpec {
+            id: "peer_relay_set",
+            title: "Reach this machine through a relay…",
+            summary: "Also let paired devices reach remote access through a relay (`wss://` address), for networks without a VPN. The relay only copies encrypted frames. The operator's enrolment token, when the relay needs one, is kept in the OS keychain, never in a file. The relay runs only while remote access is on. An empty `url` turns the relay off. Refused for every caller except the app's own window.",
+            toolset: Toolset::App,
+            effects: opens,
+            input_schema: schema_of::<RelaySetParams>,
+            run: peer_relay_set,
         },
         ToolSpec {
             id: "peer_server_enable",
@@ -279,4 +297,41 @@ fn peer_device_revoke(ctx: &mut Ctx<'_>, params: Value) -> Reply {
 
 fn to_json<T: serde::Serialize>(v: &T) -> Result<Value, ToolError> {
     serde_json::to_value(v).map_err(|e| ToolError::Failed(e.to_string()))
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RelaySetParams {
+    /// The relay's address, `wss://relay.example` (or `ws://` to this PC). Empty turns the relay off.
+    #[serde(default)]
+    url: String,
+    /// The operator's enrolment token, when the relay needs one. Kept in the OS keychain. Left out:
+    /// the saved token is kept when the address is the same, else removed. Empty: removed.
+    #[serde(default)]
+    access: Option<String>,
+}
+
+fn peer_relay_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    if *ctx.caller != Caller::Ui {
+        // Belt and braces: `precheck` already refused it.
+        return Err(ToolError::Refused("only the app's own window can set the relay".into()));
+    }
+    let p: RelaySetParams = parse_params(params)?;
+    // Left out (`None`) keeps the saved token for the same address; `Some("")` removes it.
+    let access = p.access.map(|t| t.trim().to_owned());
+    let by = ctx.caller.describe();
+    match host(ctx).relay_set(RelaySetRequest { url: p.url.trim().to_owned(), access }, &by)? {
+        Some(info) => Ok(ToolOutput::new(format!("Also reachable through {}.", info.url), to_json(&info)?)),
+        None => Ok(ToolOutput::new("The relay is off.", Value::Null)),
+    }
+}
+
+fn peer_relay_status(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    match host(ctx).relay_status() {
+        Some(info) => {
+            let message = if info.connected { "Connected to the relay." } else { "Not connected to the relay." };
+            Ok(ToolOutput::new(message, to_json(&info)?))
+        }
+        None => Ok(ToolOutput::new("No relay is set.", Value::Null)),
+    }
 }

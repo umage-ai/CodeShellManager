@@ -33,7 +33,7 @@ use csm_ui::usage_model::UsageDetails;
 use csm_ui::view_overlay::{self, Applied, Route, ThemeFact, ViewOverlay};
 use serde_json::Value;
 
-use crate::link::{self, Cmd, LinkState, Params, Up};
+use crate::link::{self, Cmd, Latest, LinkState, Params, Up};
 use crate::map;
 use crate::terminal::RemoteTerminal;
 
@@ -43,6 +43,8 @@ const LOG_MAX: usize = 256;
 /// What a remote window needs to connect to a paired host.
 pub struct ConnectParams {
     pub addr: PeerAddr,
+    /// The relay route, when the office has one (tried after the direct address).
+    pub relay: Option<csm_peer_proto::pairing::RelayRoute>,
     pub host_public: [u8; KEY_LEN],
     pub identity: Identity,
     pub cfg: ClientConfig,
@@ -58,6 +60,8 @@ pub struct ConnectParams {
 pub struct RemoteBackend {
     cmds: Sender<Cmd>,
     up: Receiver<Up>,
+    /// The newest mirrored snapshot, taken when the worker wakes the window (`Up::Snapshot`).
+    latest: Arc<Latest>,
     link: LinkState,
     theme: ThemeKind,
     themes: Vec<ThemeFact>,
@@ -104,12 +108,14 @@ impl RemoteBackend {
     /// is in [`RemoteBackend::link_state`].
     pub fn connect(p: ConnectParams) -> Result<Self, String> {
         let (up_tx, up_rx) = mpsc::channel();
-        let cmds = link::spawn(Params { addr: p.addr, host_public: p.host_public, identity: p.identity, cfg: p.cfg }, up_tx)
+        let latest = Arc::new(Latest::default());
+        let cmds = link::spawn(Params { addr: p.addr, relay: p.relay, host_public: p.host_public, identity: p.identity, cfg: p.cfg }, up_tx, latest.clone())
             .map_err(|e| format!("could not start the connection thread: {e}"))?;
         let seeded = p.overlay.is_some();
         let mut b = RemoteBackend {
             cmds,
             up: up_rx,
+            latest,
             link: LinkState::Connecting,
             theme: p.theme,
             themes: p.themes,
@@ -259,7 +265,8 @@ impl RemoteBackend {
                 self.tools = Arc::from(list);
                 self.tools_known = true;
             }
-            Up::Snapshot(snap) => {
+            Up::Snapshot => {
+                let Some(snap) = self.latest.take() else { return };
                 if !self.seeded {
                     map::seed_overlay(&snap, &mut self.overlay);
                     self.seeded = true;

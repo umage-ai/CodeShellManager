@@ -50,6 +50,7 @@ pub const MODELLED_UI: &[&str] = &[
     "layout_pin",
     "layout_unpin",
     "inspector_show",
+    "inspector_panel_set",
     "inbox_panel_set",
     "window_placement_set",
     "group_collapse",
@@ -194,6 +195,8 @@ pub struct ViewOverlay {
     pub inbox_open: bool,
     pub inbox_height: Option<f32>,
     pub inspector: Option<InspectorTab>,
+    /// The inspector's dragged width. Per client: a remote window keeps its own, never the host's.
+    pub inspector_width: Option<f32>,
     pub view: GroupView,
     /// Window slots by key: `main`, `group:<id>` and `pane:<session id>`.
     pub windows: BTreeMap<String, WindowSlot>,
@@ -222,6 +225,7 @@ impl Default for ViewOverlay {
             inbox_open: true,
             inbox_height: None,
             inspector: None,
+            inspector_width: None,
             view: GroupView::default(),
             windows: BTreeMap::new(),
             collapsed: BTreeSet::new(),
@@ -245,6 +249,7 @@ impl ViewOverlay {
             inbox_open: snap.inbox_open,
             inbox_height: snap.inbox_height,
             inspector: snap.inspector,
+            inspector_width: snap.inspector_width,
             view: snap.view,
             windows: snap.windows.clone(),
             collapsed: snap.groups.iter().filter(|g| !g.expanded).map(|g| g.id.clone()).collect(),
@@ -391,6 +396,25 @@ impl ViewOverlay {
         Ok(())
     }
 
+    /// The engine's rules: a width is 200-2000 logical pixels, `reset` clears it, and not both.
+    fn inspector_panel_set(&mut self, p: InspectorPanelParams) -> Result<(), ToolError> {
+        match (p.width, p.reset) {
+            (Some(_), true) => Err(ToolError::InvalidParams("give width or reset, not both".into())),
+            (None, false) => Err(ToolError::InvalidParams("give width or reset".into())),
+            (Some(w), false) => {
+                if !w.is_finite() || !(200.0..=2000.0).contains(&w) {
+                    return Err(ToolError::InvalidParams("width must be 200-2000".into()));
+                }
+                self.inspector_width = Some(w);
+                Ok(())
+            }
+            (None, true) => {
+                self.inspector_width = None;
+                Ok(())
+            }
+        }
+    }
+
     fn inbox_panel_set(&mut self, p: InboxPanelParams) -> Result<(), ToolError> {
         if let Some(h) = p.height {
             if !h.is_finite() || !(40.0..=2000.0).contains(&h) {
@@ -486,6 +510,10 @@ pub fn apply(overlay: &mut ViewOverlay, facts: &ViewFacts, tool: &ToolInfo, para
         "inspector_show" => {
             let p: InspectorParams = parse_params(params)?;
             overlay.inspector = p.tab.into();
+            Ok(Applied::Local)
+        }
+        "inspector_panel_set" => {
+            overlay.inspector_panel_set(parse_params(params)?)?;
             Ok(Applied::Local)
         }
         "inbox_panel_set" => {
@@ -648,6 +676,16 @@ struct InspectorParams {
     tab: InspectorParam,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InspectorPanelParams {
+    /// Logical pixels (200-2000).
+    width: Option<f32>,
+    /// Back to the default width.
+    #[serde(default)]
+    reset: bool,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct InboxPanelParams {
@@ -729,6 +767,7 @@ mod tests {
         "layout_pin",
         "layout_unpin",
         "inspector_show",
+        "inspector_panel_set",
         "inbox_panel_set",
         "window_placement_set",
         "group_collapse",
@@ -744,8 +783,6 @@ mod tests {
         // The connect dialog belongs to the laptop's own window: a remote window never offers it,
         // and the app opens it before any port sees the call.
         "peer_connect_open",
-        // The inspector's width is per-client view state like the inbox height; modelled in P1.
-        "inspector_panel_set",
         // The remembered custom grids are a stored preference (the engine's `UiState::custom_grids`),
         // not per-client view state. An overlay `layout_set` does not remember a custom size either.
         "grid_preset_forget",
@@ -884,7 +921,7 @@ mod tests {
         }
         // The module's lists are the fixed ones.
         assert_eq!(MODELLED_UI, FIXED_LOCAL, "MODELLED_UI is the fixed table");
-        assert_eq!(FIXED_LOCAL.len(), 11, "eleven modelled UI tools");
+        assert_eq!(FIXED_LOCAL.len(), 12, "twelve modelled UI tools");
     }
 
     /// Facts for a small fixed world: groups `work` and `home`; sessions `a` (work, awake), `b`
@@ -1224,6 +1261,10 @@ mod tests {
             ("layout_set", json!({"group": "work", "free": 3})),
             ("inspector_show", json!({"tab": "git"})),
             ("inspector_show", json!({"tab": "hidden"})),
+            ("inspector_panel_set", json!({"width": 420.0})),
+            ("inspector_panel_set", json!({"width": 5.0})),
+            ("inspector_panel_set", json!({"width": 300.0, "reset": true})),
+            ("inspector_panel_set", json!({"reset": true})),
             ("inbox_panel_set", json!({"height": 10.0})),
             ("inbox_panel_set", json!({"height": 300.0, "open": false})),
             ("window_placement_set", w("main", 1)),
@@ -1255,6 +1296,7 @@ mod tests {
             assert_eq!(o.layouts, snap.layouts, "{id} {params}: layouts");
             assert_eq!((o.inbox_open, o.inbox_height), (snap.inbox_open, snap.inbox_height), "{id} {params}: inbox");
             assert_eq!(o.inspector, snap.inspector, "{id} {params}: inspector");
+            assert_eq!(o.inspector_width, snap.inspector_width, "{id} {params}: inspector width");
             assert_eq!(o.windows, snap.windows, "{id} {params}: windows");
             let collapsed: BTreeSet<String> = snap.groups.iter().filter(|g| !g.expanded).map(|g| g.id.clone()).collect();
             let torn: BTreeSet<String> = snap.groups.iter().filter(|g| g.torn_off).map(|g| g.id.clone()).collect();

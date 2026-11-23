@@ -9,7 +9,7 @@
 //! [`LinkState::Refused`] and the reason: retrying cannot help.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,10 +27,14 @@ use csm_ui::backend::ToolInfo;
 use serde_json::{Value, json};
 
 use crate::map;
-use crate::terminal::{ENDED, RUNNING, lock};
+use crate::terminal::{ENDED, RUNNING, STALE, lock};
 
 /// The call key the worker uses for its own `tool_list` at connect. The UI's keys start at 1.
 const TOOLS_KEY: u64 = 0;
+
+/// Office notifications (toasts and the like) a window shows per second. The rest are dropped, and
+/// one note says so. Consent cards and their answers are never limited: they wait for a person.
+const NOTICES_PER_SEC: u32 = 10;
 
 /// What the window shows of the connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,24 +70,88 @@ pub enum Up {
     State(LinkState),
     /// The host's `tool_list`, once per connection.
     Tools(Vec<ToolInfo>),
-    /// The whole mirrored snapshot, after a full copy or a delta.
-    Snapshot(Box<WireSnapshot>),
+    /// The mirrored snapshot has changed: take it from the [`Latest`] slot the window was given.
+    /// One wake is pending at a time, so a fast office cannot queue copies of its state.
+    Snapshot,
     Event(WireEvent),
     Reply { key: u64, outcome: Outcome },
+}
+
+/// The newest mirrored snapshot, waiting for the window. Only the latest is kept: a chatty office
+/// costs the laptop one copy, however many deltas it sends while the window is busy.
+#[derive(Default)]
+pub struct Latest {
+    slot: Mutex<Option<Box<WireSnapshot>>>,
+    /// A wake is in the window's queue and has not been handled yet.
+    awake: AtomicBool,
+}
+
+impl Latest {
+    /// Replaces the waiting snapshot. `true` when the window must be woken (none was pending).
+    fn put(&self, snap: Box<WireSnapshot>) -> bool {
+        *self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snap);
+        !self.awake.swap(true, Ordering::AcqRel)
+    }
+
+    /// The waiting snapshot, if any. Called by the window when it handles [`Up::Snapshot`].
+    pub fn take(&self) -> Option<Box<WireSnapshot>> {
+        // Cleared first: a snapshot put after this point sends a new wake.
+        self.awake.store(false, Ordering::Release);
+        self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    }
+}
+
+/// Admits office notifications at a fixed rate per second.
+struct Limiter {
+    start: Instant,
+    count: u32,
+    noted: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Pass,
+    /// The first one dropped in this second: the window says that some were dropped.
+    DropNoted,
+    Drop,
+}
+
+impl Limiter {
+    fn new(now: Instant) -> Self {
+        Self { start: now, count: 0, noted: false }
+    }
+
+    fn admit(&mut self, now: Instant) -> Verdict {
+        if now.saturating_duration_since(self.start) >= Duration::from_secs(1) {
+            *self = Self::new(now);
+        }
+        if self.count < NOTICES_PER_SEC {
+            self.count += 1;
+            return Verdict::Pass;
+        }
+        if self.noted {
+            Verdict::Drop
+        } else {
+            self.noted = true;
+            Verdict::DropNoted
+        }
+    }
 }
 
 /// What the worker needs to connect.
 pub struct Params {
     pub addr: PeerAddr,
+    /// The relay route, when the office has one (tried after the direct address).
+    pub relay: Option<csm_peer_proto::pairing::RelayRoute>,
     pub host_public: [u8; KEY_LEN],
     pub identity: Identity,
     pub cfg: ClientConfig,
 }
 
 /// Starts the worker. The returned sender is the only way to reach it.
-pub fn spawn(params: Params, up: Sender<Up>) -> std::io::Result<Sender<Cmd>> {
+pub fn spawn(params: Params, up: Sender<Up>, latest: Arc<Latest>) -> std::io::Result<Sender<Cmd>> {
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new().name("csm-remote-link".into()).spawn(move || Worker::new(up).run(params, &rx))?;
+    std::thread::Builder::new().name("csm-remote-link".into()).spawn(move || Worker::new(up, latest).run(params, &rx))?;
     Ok(tx)
 }
 
@@ -125,14 +193,37 @@ enum End {
 
 struct Worker {
     up: Sender<Up>,
+    latest: Arc<Latest>,
     mirror: Option<WireSnapshot>,
+    /// A delta did not apply: the office was asked for a fresh snapshot, and deltas wait for it.
+    resyncing: bool,
+    notices: Limiter,
     streams: HashMap<u32, Stream>,
     pending: HashMap<u64, mpsc::Receiver<Outcome>>,
 }
 
 impl Worker {
-    fn new(up: Sender<Up>) -> Self {
-        Self { up, mirror: None, streams: HashMap::new(), pending: HashMap::new() }
+    fn new(up: Sender<Up>, latest: Arc<Latest>) -> Self {
+        Self { up, latest, mirror: None, resyncing: false, notices: Limiter::new(Instant::now()), streams: HashMap::new(), pending: HashMap::new() }
+    }
+
+    /// The mirror as the window sees it: the newest copy is kept for the window, and it is woken
+    /// only when none is waiting.
+    fn publish(&self) {
+        if let Some(m) = &self.mirror
+            && self.latest.put(Box::new(m.clone()))
+        {
+            self.send(Up::Snapshot);
+        }
+    }
+
+    /// Shows an office notification, rate-limited. Consent cards are passed on whatever the rate.
+    fn notice(&mut self, e: WireEvent) {
+        match self.notices.admit(Instant::now()) {
+            Verdict::Pass => self.send(Up::Event(e)),
+            Verdict::DropNoted => self.send(Up::Event(WireEvent::Toast { message: "More notifications were dropped.".into() })),
+            Verdict::Drop => {}
+        }
     }
 
     fn send(&self, u: Up) {
@@ -145,8 +236,12 @@ impl Worker {
         let mut reason = String::new();
         loop {
             let state = if attempt == 0 { LinkState::Connecting } else { LinkState::Reconnecting { attempt, reason: reason.clone() } };
+            if attempt > 0 {
+                // Until the link is back, what the terminals show is not the office's current screen.
+                self.mark_streams(RUNNING, STALE);
+            }
             self.send(Up::State(state));
-            match client::connect(&p.addr, &p.host_public, &p.identity, &p.cfg) {
+            match client::connect_saved(Some(&p.addr), p.relay.as_ref(), &p.host_public, &p.identity, &p.cfg) {
                 Ok(conn) => {
                     attempt = 0;
                     self.send(Up::State(LinkState::Live { host_name: conn.welcome.host_name.clone(), level: conn.welcome.level }));
@@ -172,6 +267,13 @@ impl Worker {
             if self.wait(backoff(attempt), cmds) {
                 return self.finish(LinkState::Stopped);
             }
+        }
+    }
+
+    /// Moves every stream in state `from` to `to` (the terminals' stale mark follows the link).
+    fn mark_streams(&self, from: u8, to: u8) {
+        for s in self.streams.values() {
+            let _ = s.state.compare_exchange(from, to, Ordering::AcqRel, Ordering::Acquire);
         }
     }
 
@@ -229,6 +331,7 @@ impl Worker {
 
     /// Serves one connection until it ends.
     fn live(&mut self, conn: &Connection, cmds: &Receiver<Cmd>) -> End {
+        self.mark_streams(STALE, RUNNING);
         for (stream, s) in &self.streams {
             if conn.subscribe(*stream, &s.session, s.follower.resume_point()).is_err() {
                 return End::Lost { bye: None, why: "the connection closed while resuming the terminals".into() };
@@ -309,19 +412,35 @@ impl Worker {
         match frame {
             Frame::Control(Msg::Snapshot { snapshot }) => {
                 self.mirror = Some((**snapshot).clone());
-                self.send(Up::Snapshot(snapshot.clone()));
+                self.resyncing = false;
+                self.publish();
             }
             Frame::Control(Msg::Delta { delta }) => {
+                if self.resyncing {
+                    // A snapshot is on its way; the deltas after it follow from that version.
+                    return None;
+                }
                 let applied = match self.mirror.as_mut() {
-                    Some(m) => delta.apply(m).map(|()| m.clone()),
-                    None => return Some(End::Lost { bye: None, why: "a change arrived before the snapshot".into() }),
+                    Some(m) => delta.apply(m).map_err(|e| format!("{e:?}")),
+                    None => Err("a change arrived before the snapshot".to_owned()),
                 };
                 match applied {
-                    Ok(m) => self.send(Up::Snapshot(Box::new(m))),
-                    Err(e) => return Some(End::Lost { bye: None, why: format!("could not follow the office's changes ({e:?})") }),
+                    Ok(()) => self.publish(),
+                    Err(why) => {
+                        // The mirror is out of step with the office. Ask for the whole snapshot on this
+                        // link, instead of dropping the link and reconnecting for the same result.
+                        log::warn!("remote window: a change did not apply ({why}); asking the office for a fresh snapshot");
+                        self.resyncing = true;
+                        if conn.send(Msg::SnapshotRequest).is_err() {
+                            return Some(End::Lost { bye: None, why: "the connection closed while asking for a snapshot".into() });
+                        }
+                    }
                 }
             }
-            Frame::Control(Msg::Event { event: Some(e) }) => self.send(Up::Event(e.clone())),
+            Frame::Control(Msg::Event { event: Some(e) }) => match e {
+                WireEvent::ConsentRequested { .. } | WireEvent::ConsentResolved { .. } => self.send(Up::Event(e.clone())),
+                _ => self.notice(e.clone()),
+            },
             Frame::Control(Msg::ConsentCard { request }) => self.send(Up::Event(WireEvent::ConsentRequested { request: request.clone() })),
             Frame::TermAttach { .. } | Frame::TermData { .. } | Frame::Control(Msg::TermResized { .. } | Msg::TermClosed { .. }) => {
                 self.term_frame(conn, frame);
@@ -474,6 +593,49 @@ mod tests {
         assert!(refusal_of_error(&ClientError::Refused).is_some());
         assert!(refusal_of_error(&ClientError::Connect("refused".into())).is_none());
         assert!(refusal_of_error(&ClientError::Timeout).is_none());
+    }
+
+    #[test]
+    fn the_window_gets_only_the_newest_snapshot_and_one_wake_at_a_time() {
+        let latest = Latest::default();
+        let mut wakes = 0;
+        for version in 1..=1000u64 {
+            let snap = WireSnapshot { version, ..WireSnapshot::default() };
+            if latest.put(Box::new(snap)) {
+                wakes += 1;
+            }
+        }
+        assert_eq!(wakes, 1, "one wake is pending, however many snapshots came in");
+        assert_eq!(latest.take().map(|s| s.version), Some(1000), "the window gets the newest");
+        assert!(latest.take().is_none(), "nothing is left for a second take");
+        assert!(latest.put(Box::new(WireSnapshot::default())), "after a take, the next snapshot wakes the window again");
+    }
+
+    #[test]
+    fn a_snapshot_put_while_the_window_takes_is_not_lost() {
+        let latest = Latest::default();
+        assert!(latest.put(Box::new(WireSnapshot { version: 1, ..WireSnapshot::default() })));
+        assert_eq!(latest.take().map(|s| s.version), Some(1));
+        // The worker puts a newer one after the take: it must wake the window again.
+        assert!(latest.put(Box::new(WireSnapshot { version: 2, ..WireSnapshot::default() })));
+        assert_eq!(latest.take().map(|s| s.version), Some(2));
+    }
+
+    #[test]
+    fn notices_are_admitted_at_a_fixed_rate_with_one_note_per_second() {
+        let t0 = Instant::now();
+        let mut lim = Limiter::new(t0);
+        let verdicts: Vec<Verdict> = (0..25).map(|_| lim.admit(t0)).collect();
+        assert_eq!(verdicts.iter().filter(|v| **v == Verdict::Pass).count(), NOTICES_PER_SEC as usize);
+        assert_eq!(verdicts.iter().filter(|v| **v == Verdict::DropNoted).count(), 1, "one drop is noted");
+        assert_eq!(verdicts.iter().filter(|v| **v == Verdict::Drop).count(), 25 - NOTICES_PER_SEC as usize - 1);
+        // A new second admits again, and its first drop is noted again.
+        let t1 = t0 + Duration::from_millis(1000);
+        assert_eq!(lim.admit(t1), Verdict::Pass);
+        for _ in 1..NOTICES_PER_SEC {
+            lim.admit(t1);
+        }
+        assert_eq!(lim.admit(t1), Verdict::DropNoted);
     }
 
     #[test]

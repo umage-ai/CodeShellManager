@@ -39,6 +39,10 @@ pub struct PeerOffer {
     pub k: String,
     pub i: String,
     pub p: String,
+    /// The relay this host is also reachable through, when it is set up (optional: older links and
+    /// direct-only hosts have none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r: Option<RelayRoute>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +67,13 @@ impl std::error::Error for OfferError {}
 impl PeerOffer {
     /// An offer for a host listening at `addr`. The host id is derived from the host key.
     pub fn new(addr: &PeerAddr, host_pub: &[u8; KEY_LEN], pairing_id: &[u8; PAIRING_ID_LEN], psk: &[u8; PSK_LEN]) -> Self {
-        Self { v: OFFER_VERSION, a: addr.to_url(), h: host_id(host_pub), k: b64_encode(host_pub), i: b64_encode(pairing_id), p: b64_encode(psk) }
+        Self { v: OFFER_VERSION, a: addr.to_url(), h: host_id(host_pub), k: b64_encode(host_pub), i: b64_encode(pairing_id), p: b64_encode(psk), r: None }
+    }
+
+    /// The same offer, also reachable through `relay`.
+    pub fn with_relay(mut self, relay: RelayRoute) -> Self {
+        self.r = Some(relay);
+        self
     }
 
     /// Checks every field's shape, the address (never unspecified), and that the host id is the
@@ -79,6 +89,9 @@ impl PeerOffer {
         }
         if b64_decode_fixed::<PAIRING_ID_LEN>(&self.i).is_none() {
             return Err(OfferError::Field("i"));
+        }
+        if self.r.as_ref().is_some_and(|r| !r.validate()) {
+            return Err(OfferError::Field("r"));
         }
         if b64_decode_fixed::<PSK_LEN>(&self.p).is_none() {
             return Err(OfferError::Field("p"));
@@ -256,5 +269,126 @@ mod tests {
         assert_eq!(PairMsg::decode(br#"{"t":"accept","device_id":"aaaaaaaaaaaaaaaaaaaaaaaaaa","level":"root"}"#), Err(PairError::Format));
         assert_eq!(PairMsg::decode(&vec![b' '; crate::limits::MAX_PAIR_MESSAGE + 1]), Err(PairError::TooLarge));
         assert_eq!(PairMsg::decode(b"\xff\xfe"), Err(PairError::Format));
+    }
+}
+
+/// Where a relay carries this host: the relay's WebSocket address and the relay's id for the host
+/// (the relay routes by it; the Noise session still uses the host's own key and id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayRoute {
+    pub url: String,
+    pub host_id: String,
+}
+
+/// Whether a relay address may be used: `wss://`, or `ws://` to loopback only (a relay on this PC).
+/// Plain WebSocket anywhere else would carry the relay's access token in the clear.
+///
+/// The check is strict on purpose: the address comes from an untrusted pairing link and from
+/// `hosts.json`, and a URL parser that reads `user@host` or a backslash differently from this check
+/// would send plain WebSocket to another machine. So userinfo (`@`), backslashes, fragments (`#`),
+/// whitespace and control characters are refused outright, and for `ws://` the host must be exactly
+/// `127.0.0.1`, `localhost` or `[::1]`, with an optional port.
+pub fn relay_url_allowed(url: &str) -> bool {
+    if url.len() > 512 || url.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '@' | '\\' | '#')) {
+        return false;
+    }
+    if let Some(rest) = url.strip_prefix("wss://") {
+        // TLS checks the certificate against the host, so any host name will do.
+        let authority = rest.split(['/', '?']).next().unwrap_or_default();
+        return !authority.is_empty() && !authority.starts_with(':');
+    }
+    let Some(rest) = url.strip_prefix("ws://") else { return false };
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    loopback_authority(authority)
+}
+
+/// `host[:port]` where the host is a loopback literal or `localhost`.
+fn loopback_authority(authority: &str) -> bool {
+    let (host, tail) = if let Some(after) = authority.strip_prefix('[') {
+        let Some((v6, tail)) = after.split_once(']') else { return false };
+        if v6 != "::1" {
+            return false;
+        }
+        ("[::1]", tail)
+    } else {
+        authority.find(':').map_or((authority, ""), |i| (&authority[..i], &authority[i..]))
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return false;
+    }
+    tail.is_empty() || tail.strip_prefix(':').is_some_and(valid_port)
+}
+
+fn valid_port(p: &str) -> bool {
+    p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok_and(|n| n != 0)
+}
+
+impl RelayRoute {
+    /// Checks the address and the relay's host id.
+    pub fn validate(&self) -> bool {
+        relay_url_allowed(&self.url) && self.url.len() <= 512 && is_valid_id(&self.host_id)
+    }
+}
+
+#[cfg(test)]
+mod relay_url_tests {
+    use super::relay_url_allowed;
+
+    #[test]
+    fn loopback_and_tls_addresses_are_allowed() {
+        for ok in ["ws://127.0.0.1", "ws://127.0.0.1:8080", "ws://127.0.0.1:8080/", "ws://127.0.0.1:8080/v1/peer-host?x=1", "ws://localhost:9", "ws://[::1]:9/v1", "wss://relay.example", "wss://relay.example:443/v1/peer-host"] {
+            assert!(relay_url_allowed(ok), "{ok} should be allowed");
+        }
+    }
+
+    #[test]
+    fn userinfo_and_other_host_tricks_are_refused() {
+        for bad in [
+            "ws://127.0.0.1:80@evil.example/x",
+            "ws://127.0.0.1@evil.example/x",
+            "ws://user:pass@127.0.0.1:80/",
+            "ws://127.0.0.1\\@evil.example/",
+            "ws://127.0.0.1\\evil.example/",
+            "ws://127.0.0.1#@evil.example/",
+            "ws://127.0.0.1:80#x",
+            "ws://127.0.0.1.evil.example/",
+            "ws://localhost.evil.example/",
+            "ws://127.0.0.1%2eevil.example/",
+            "ws://127.0.0.1:80:80/",
+            "ws://127.0.0.1:/",
+            "ws://127.0.0.1:0/",
+            "ws://127.0.0.1:65536/",
+            "ws://127.0.0.1:port/",
+            "ws://[::1/",
+            "ws://[::2]:9/",
+            "ws://0.0.0.0:9/",
+            "ws://10.8.0.2:9/",
+            "ws://192.168.1.5/",
+            "ws:///127.0.0.1",
+            "ws://",
+            "ws:/127.0.0.1",
+            "ws://127.0.0.1 @evil.example/",
+            "ws://evil.example/?@127.0.0.1",
+            "ws://evil.example/?127.0.0.1",
+            "http://127.0.0.1:9/",
+            "https://127.0.0.1:9/",
+            "wss://",
+            "wss:///relay.example",
+            "wss://:443/",
+            "wss://user@relay.example/",
+            "wss://relay.example\\@evil.example/",
+            "wss://relay.example#@evil.example/",
+            "",
+        ] {
+            assert!(!relay_url_allowed(bad), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn oversized_or_control_character_urls_are_refused() {
+        let long = format!("wss://relay.example/{}", "a".repeat(600));
+        assert!(!relay_url_allowed(&long));
+        assert!(!relay_url_allowed("wss://relay.example\n/"));
+        assert!(!relay_url_allowed("wss://relay.example\u{7f}/"));
     }
 }

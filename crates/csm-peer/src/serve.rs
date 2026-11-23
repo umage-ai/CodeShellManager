@@ -53,8 +53,10 @@ use crate::link::{Link, LinkError};
 pub(crate) type Drivers = Arc<Mutex<HashMap<String, u64>>>;
 
 /// The numbers a server is tuned with.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Knobs {
+    /// Tests only (see [`ServerConfig::corrupt_next_delta`]).
+    pub corrupt_next_delta: Arc<AtomicBool>,
     /// A stream this many bytes behind resyncs instead of catching up.
     pub backlog: usize,
     /// Scrollback lines an attach carries.
@@ -115,6 +117,8 @@ pub(crate) struct Serving {
     writer: Mutex<Option<std::sync::mpsc::SyncSender<Job>>>,
     stop: Arc<AtomicBool>,
     meter: Mutex<Meter>,
+    /// Set by the device when a delta did not apply: the publisher sends the whole snapshot next.
+    want_snapshot: Arc<AtomicBool>,
 }
 
 /// How a stream begins.
@@ -149,6 +153,7 @@ impl Serving {
             writer: Mutex::new(Some(tx)),
             stop: Arc::new(AtomicBool::new(false)),
             meter: Mutex::new(Meter { bytes: HashMap::new(), since: Instant::now() }),
+            want_snapshot: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -159,9 +164,10 @@ impl Serving {
         self.link.send_msg(Msg::Snapshot { snapshot: Box::new(first.clone()) })?;
         let (engine, link, stop, every) = (self.engine.clone(), self.link.clone(), self.stop.clone(), self.knobs.snapshot_every);
         let audit = (self.audit.clone(), self.device_id.clone());
+        let pokes = Pokes { want: self.want_snapshot.clone(), corrupt: self.knobs.corrupt_next_delta.clone() };
         std::thread::Builder::new()
             .name("csm-peer-snapshot".into())
-            .spawn(move || publish_loop(&engine, &link, &stop, every, first, &audit))
+            .spawn(move || publish_loop(&engine, &link, &stop, every, first, &audit, &pokes))
             .map(|_| ())
             .map_err(|e| LinkError::Io(e.to_string()))
     }
@@ -210,6 +216,7 @@ impl Serving {
             Frame::Control(Msg::TermResync { stream }) => self.resync(*stream),
             Frame::Control(Msg::TermResize { stream, cols, rows, driver }) => self.resize(*stream, *cols, *rows, *driver),
             Frame::TermInput { stream, input } => self.input(*stream, input),
+            Frame::Control(Msg::SnapshotRequest) => self.want_snapshot.store(true, Ordering::Release),
             _ => return false,
         }
         true
@@ -264,7 +271,7 @@ impl Serving {
             stream,
             session: session.to_owned(),
             handle,
-            knobs: self.knobs,
+            knobs: self.knobs.clone(),
             stop,
             conn_stop: self.stop.clone(),
             chan: self.chan(stream),
@@ -411,27 +418,43 @@ impl Serving {
 
 // ---- the snapshot publisher ------------------------------------------------------------------
 
-fn publish_loop(engine: &Engine, link: &Link, stop: &AtomicBool, every: Duration, mut last: Snapshot, who: &(Arc<Audit>, String)) {
+/// What the device can ask of the publisher, beside the usual deltas.
+pub(crate) struct Pokes {
+    /// The device could not follow a delta: send the whole snapshot now.
+    pub want: Arc<AtomicBool>,
+    /// Tests only: the next delta goes out with a base the device does not have.
+    pub corrupt: Arc<AtomicBool>,
+}
+
+fn publish_loop(engine: &Engine, link: &Link, stop: &AtomicBool, every: Duration, mut last: Snapshot, who: &(Arc<Audit>, String), pokes: &Pokes) {
     let mut told = false;
     loop {
         std::thread::sleep(every);
         if stop.load(Ordering::Acquire) || link.is_closed() {
             return;
         }
+        let asked = pokes.want.swap(false, Ordering::AcqRel);
         let view = engine.view();
-        if view.version == last.version {
+        if !asked && view.version == last.version {
             continue;
         }
         let next = Snapshot::from(&*view);
-        let delta = diff(&last, &next);
-        if delta.ops.is_empty() {
-            // Nothing the wire carries changed: the device stays at the old version, and the next
-            // delta starts there.
-            continue;
-        }
-        let sent = match link.send_msg(Msg::Delta { delta }) {
-            Err(LinkError::Codec(CodecError::TooLarge)) => link.send_msg(Msg::Snapshot { snapshot: Box::new(next.clone()) }),
-            other => other,
+        let sent = if asked {
+            link.send_msg(Msg::Snapshot { snapshot: Box::new(next.clone()) })
+        } else {
+            let mut delta = diff(&last, &next);
+            if delta.ops.is_empty() {
+                // Nothing the wire carries changed: the device stays at the old version, and the next
+                // delta starts there.
+                continue;
+            }
+            if pokes.corrupt.swap(false, Ordering::AcqRel) {
+                delta.from = delta.from.wrapping_add(7);
+            }
+            match link.send_msg(Msg::Delta { delta }) {
+                Err(LinkError::Codec(CodecError::TooLarge)) => link.send_msg(Msg::Snapshot { snapshot: Box::new(next.clone()) }),
+                other => other,
+            }
         };
         match sent {
             Ok(()) => {

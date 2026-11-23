@@ -1080,6 +1080,10 @@ pub fn pane(
         if vr.copy_reply {
             actions.push(Action::CopyClaude("claude_reply_get", json!({"session_id": s.id})));
         }
+        if src.state() == SourceState::Stale {
+            // The link is down: the screen is the last one the laptop had, veiled until it is back.
+            p.rect_filled(body, 0.0, theme::Tokens::tint(t.bg, theme::alpha::STALE));
+        }
         let placeholder = if queued { Some(format!("Starting {} in {}…", s.command, s.name)) } else { TerminalView::placeholder(src) };
         if let Some(text_) = placeholder {
             p.rect_filled(body, 0.0, body_bg);

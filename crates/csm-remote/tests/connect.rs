@@ -24,7 +24,7 @@ fn paired(dir: &Path) -> String {
     let office = Identity::generate().unwrap();
     let addr = PeerAddr { host: Host::Ip(IpAddr::V4(Ipv4Addr::new(10, 8, 0, 2))), port: 47300 };
     let mut store = HostStore::load(&dir.join(HOSTS_FILE)).unwrap();
-    let host = store.add("Office", &addr, office.public(), 1_700_000_000).unwrap();
+    let host = store.add("Office", &addr, None, office.public(), 1_700_000_000).unwrap();
     let _ = me;
     host.host_id
 }

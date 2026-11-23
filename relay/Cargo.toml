@@ -37,3 +37,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 tokio = { version = "1", features = ["io-util"] }
+csm-peer = { path = "../crates/csm-peer" }
+csm-peer-proto = { path = "../crates/csm-peer-proto" }
+csm-engine = { path = "../crates/csm-engine" }
+csm-core = { path = "../crates/csm-core" }
+csm-pty = { path = "../crates/csm-pty" }
+tempfile = "3"

@@ -103,11 +103,11 @@ impl Inner {
         let _guard = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
         fsperm::ensure_private_dir(&self.dir).map_err(|e| format!("could not make the folder for remote access: {e}"))?;
         let mut store = HostStore::load(&self.hosts_path()).map_err(|e| e.to_string())?;
-        store.add(name, &paired.address, &paired.host_public, unix_secs()).map(|_| ()).map_err(|e| format!("could not save the host: {e}"))
+        store.add(name, &paired.address, paired.relay.clone(), &paired.host_public, unix_secs()).map(|_| ()).map_err(|e| format!("could not save the host: {e}"))
     }
 
     fn run_pair(&self, offer: PeerOffer, name: String, cancel: Arc<AtomicBool>) {
-        let outcome = self.pair_once(&offer, &name, &cancel);
+        let outcome = self.pair_once(&offer, &name, cancel);
         let host_id = offer.h.clone();
         let status = match outcome {
             Ok(()) => ClientPairStatus { state: PairState::Paired, host_name: Some(name), host_id: Some(host_id), check_code: None, message: None },
@@ -119,7 +119,7 @@ impl Inner {
 
     /// The pairing itself. A storage problem after the host allowed us is reported as a failure:
     /// the host then has a device it will not see again until pairing is repeated.
-    fn pair_once(&self, offer: &PeerOffer, name: &str, cancel: &AtomicBool) -> Result<(), ClientError> {
+    fn pair_once(&self, offer: &PeerOffer, name: &str, cancel: Arc<AtomicBool>) -> Result<(), ClientError> {
         fsperm::ensure_private_dir(&self.dir).map_err(|e| ClientError::Link(format!("could not make the folder for remote access: {e}")))?;
         let me = Identity::load_or_create(&self.dir.join(DEVICE_KEY)).map_err(|e| ClientError::Link(format!("this app's device key: {e}")))?;
         let cfg = ClientConfig::new(&self.device_name);

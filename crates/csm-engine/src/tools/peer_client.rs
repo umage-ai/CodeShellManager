@@ -54,7 +54,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "peer_client_pair_status",
             title: "Pairing progress",
-            summary: "The state of the latest pairing with another CodeShellManager: connecting, the check code to compare, paired, failed (with why) or cancelled. No keys and no link.",
+            summary: "The state of the latest pairing with another CodeShellManager: connecting, the check code to compare, paired, failed (with why) or cancelled. No keys and no link. The check code is shown to the app's own window only.",
             toolset: Toolset::App,
             effects: Effects::READ_ONLY,
             input_schema: empty_schema,
@@ -136,26 +136,40 @@ fn peer_connect_open(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
     Err(ToolError::Refused("the connect dialog is opened by the app's window, not by a tool call".into()))
 }
 
-/// Read for its schema and its shape only: the call is refused before it can use the id.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct RemoteWindowParams {
     /// The paired host's id (from `peer_hosts_list`).
     host_id: String,
 }
 
+/// The app's Connect button: the host must be one this app is paired with, then the launcher the
+/// host wired in (`StateOptions::remote_window_launcher`) starts the window. A launcher that is
+/// not wired refuses, and its message is the reply.
 fn remote_window_open(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if *ctx.caller != Caller::Ui {
         return Err(ToolError::Refused("only the app's own window opens a remote window".into()));
     }
-    let _p: RemoteWindowParams = parse_params(params)?;
-    // The app starts the window process itself; a call that reaches the engine has nothing to start.
-    Err(ToolError::Refused("the remote window is started by the app's window, not by a tool call".into()))
+    let p: RemoteWindowParams = parse_params(params)?;
+    let id = p.host_id.trim();
+    if id.is_empty() {
+        return Err(ToolError::InvalidParams("give the `host_id` from `peer_hosts_list`".into()));
+    }
+    if !client(ctx).hosts()?.iter().any(|h| h.host_id == id) {
+        return Err(ToolError::NotFound(format!("no paired host `{id}`; `peer_hosts_list` shows the ids")));
+    }
+    let launch = ctx.state.options.remote_window_launcher.clone();
+    launch(id).map_err(ToolError::Failed)?;
+    Ok(ToolOutput::new("Opening a remote window.", serde_json::json!({"host_id": id})))
 }
 
 fn peer_client_pair_status(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
-    let s = client(ctx).status();
+    let mut s = client(ctx).status();
+    // The check code is for the person's own screen (the app's window). An agent or the CLI sees the
+    // state and the outcome, not the digits: a code read from a log would let it approve a pairing.
+    if *ctx.caller != Caller::Ui {
+        s.check_code = None;
+    }
     Ok(ToolOutput::new("Pairing status.", to_json(&s)?))
 }
 

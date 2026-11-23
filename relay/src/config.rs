@@ -78,6 +78,10 @@ pub struct LimitsConfig {
     pub max_pairing_attempts: u8,
     pub max_pairing_secs: u32,
     pub max_frame_bytes: usize,
+    /// CSM peer channels (the terminal streams): their own caps, higher than the phone's.
+    pub peer_max_channels_per_host: usize,
+    pub peer_frames_per_second_per_channel: u32,
+    pub peer_bytes_per_second_per_channel: u32,
 }
 
 impl Default for LimitsConfig {
@@ -96,6 +100,9 @@ impl Default for LimitsConfig {
             max_pairing_attempts: L::MAX_PAIRING_ATTEMPTS,
             max_pairing_secs: L::PAIRING_SLOT_MAX_SECS,
             max_frame_bytes: L::MAX_FRAME_BYTES,
+            peer_max_channels_per_host: L::PEER_MAX_CHANNELS_PER_HOST,
+            peer_frames_per_second_per_channel: L::PEER_FRAMES_PER_SECOND_PER_CHANNEL,
+            peer_bytes_per_second_per_channel: L::PEER_BYTES_PER_SECOND_PER_CHANNEL,
         }
     }
 }

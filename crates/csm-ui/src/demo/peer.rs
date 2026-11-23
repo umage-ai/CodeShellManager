@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use csm_engine::{
-    AuditEvent, DeviceInfo, EnableRequest, NetInterface, PairAnswer, PairingStarted, PeerHost, PeerStatus, PendingPair, Revoke, ToolError,
+    AuditEvent, DeviceInfo, EnableRequest, NetInterface, PairAnswer, PairingStarted, PeerHost, PeerStatus, PendingPair, RelayInfo, RelaySetRequest, Revoke, ToolError,
 };
 
 #[derive(Default)]
@@ -24,6 +24,8 @@ struct State {
     calls: Vec<String>,
     audit: Vec<AuditEvent>,
     next_id: u32,
+    /// The relay the person set: its address, and whether a token is saved for it.
+    relay: Option<(String, bool)>,
 }
 
 /// The demo host. Cloning shares the state.
@@ -41,6 +43,16 @@ impl DemoPeerHost {
 
     fn st(&self) -> MutexGuard<'_, State> {
         self.st.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn relay_info_of(s: &State) -> Option<RelayInfo> {
+        s.relay.as_ref().map(|(url, access_set)| RelayInfo {
+            url: url.clone(),
+            host_id: "demohostdemohostdemohost".into(),
+            connected: s.enabled,
+            last_error: (!s.enabled).then(|| "remote access is off, so the relay is not running".to_owned()),
+            access_set: *access_set,
+        })
     }
 
     /// A device that is already paired (a previous run), `age_secs` ago.
@@ -200,6 +212,30 @@ impl PeerHost for DemoPeerHost {
             iface("Ethernet", "192.168.1.20", "192.168.1.0/24", false, false),
             iface("Loopback Pseudo-Interface 1", "127.0.0.1", "127.0.0.0/8", false, true),
         ]
+    }
+
+    fn relay_set(&self, req: RelaySetRequest, by: &str) -> Result<Option<RelayInfo>, ToolError> {
+        let mut s = self.st();
+        // The token is never recorded: the calls say only whether one was given.
+        let given = req.access.as_deref().is_some_and(|t| !t.trim().is_empty());
+        s.calls.push(format!("relay_set url={} access={given} by {by}", req.url));
+        if req.url.is_empty() {
+            s.relay = None;
+            return Ok(None);
+        }
+        if !(req.url.starts_with("wss://") || req.url.starts_with("ws://127.0.0.1")) {
+            return Err(ToolError::InvalidParams("the relay address must be wss://, or ws:// to this PC".into()));
+        }
+        let access_set = match req.access.as_deref() {
+            Some(t) => !t.trim().is_empty(),
+            None => s.relay.as_ref().is_some_and(|(url, set)| *url == req.url && *set),
+        };
+        s.relay = Some((req.url, access_set));
+        Ok(Self::relay_info_of(&s))
+    }
+
+    fn relay_status(&self) -> Option<RelayInfo> {
+        Self::relay_info_of(&self.st())
     }
 
     fn shutdown(&self) {}

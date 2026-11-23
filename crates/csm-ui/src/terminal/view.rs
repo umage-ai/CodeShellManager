@@ -519,7 +519,7 @@ impl TerminalView {
     pub fn placeholder(source: &dyn TerminalSource) -> Option<String> {
         match source.state() {
             SourceState::Starting => Some("Starting…".into()),
-            SourceState::Running => None,
+            SourceState::Running | SourceState::Stale => None,
             SourceState::Failed(e) => Some(format!("Could not start: {e}")),
             SourceState::Exited(code) => Some(match code {
                 Some(c) => format!("The process exited with code {c}."),

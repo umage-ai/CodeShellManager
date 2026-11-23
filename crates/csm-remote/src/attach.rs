@@ -133,7 +133,7 @@ pub fn explain_session_end(reason: TermClosedReason) -> String {
 /// Never pairs: an unpaired host is refused and nothing is written.
 pub fn connect(dir: &Path, host_id: &str) -> Result<(String, Connection), String> {
     let paired = connect::paired(dir, host_id)?;
-    let conn = csm_peer::client::connect(&paired.addr, &paired.host_public, &paired.identity, &paired.cfg).map_err(|e| {
+    let conn = csm_peer::client::connect_saved(Some(&paired.addr), paired.relay.as_ref(), &paired.host_public, &paired.identity, &paired.cfg).map_err(|e| {
         let why = refusal_of_error(&e).unwrap_or_else(|| e.to_string());
         format!("could not connect to {}: {why}", paired.window.name)
     })?;

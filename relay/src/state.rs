@@ -20,6 +20,27 @@ use crate::push::PushSender;
 
 pub const HOST_QUEUE: usize = 256;
 pub const CLIENT_QUEUE: usize = 64;
+/// Peer channels carry terminal streams, which burst (a `cat` of a big file): a deeper queue.
+pub const PEER_CLIENT_QUEUE: usize = 1024;
+
+/// Which namespace a host and its channels live in. A phone can only ever reach a `Phone` host and
+/// a CSM peer client only a `Peer` host, so the two never share a channel even when they present
+/// the same host id. Each kind has its own limits (see `LimitsConfig`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Phone,
+    Peer,
+}
+
+impl Kind {
+    /// The queue depth for this kind's client channels.
+    fn client_queue(self) -> usize {
+        match self {
+            Kind::Phone => CLIENT_QUEUE,
+            Kind::Peer => PEER_CLIENT_QUEUE,
+        }
+    }
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -83,7 +104,7 @@ struct PushCounters {
 
 pub struct Relay {
     pub settings: Settings,
-    hosts: Mutex<HashMap<String, HostEntry>>,
+    hosts: Mutex<HashMap<(Kind, String), HostEntry>>,
     ips: Mutex<HashMap<IpAddr, IpEntry>>,
     push_counters: Mutex<PushCounters>,
     pub push: Option<Arc<dyn PushSender>>,
@@ -128,6 +149,25 @@ impl Relay {
             next_conn: AtomicU64::new(1),
         })
     }
+}
+
+/// The per-channel caps of one kind of host, as the relay applies them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    pub max_channels: usize,
+    pub frames_per_second: u32,
+    pub bytes_per_second: u32,
+}
+
+impl Relay {
+    /// The caps for channels of `kind`: phones use the phone limits, CSM peers their own.
+    pub fn caps(&self, kind: Kind) -> Caps {
+        let l = &self.settings.limits;
+        match kind {
+            Kind::Phone => Caps { max_channels: l.max_channels_per_host, frames_per_second: l.frames_per_second_per_channel, bytes_per_second: l.bytes_per_second_per_channel },
+            Kind::Peer => Caps { max_channels: l.peer_max_channels_per_host, frames_per_second: l.peer_frames_per_second_per_channel, bytes_per_second: l.peer_bytes_per_second_per_channel },
+        }
+    }
 
     // ---- per-IP limits ----------------------------------------------------------------
 
@@ -145,15 +185,17 @@ impl Relay {
 
     // ---- hosts ------------------------------------------------------------------------
 
-    /// Registers the live connection for `host_id`, replacing (and closing) an older one.
-    pub fn register_host(&self, host_id: &str, tx: HostTx) -> Result<u64, RefusalCode> {
+    /// Registers the live connection for `host_id` in `kind`'s namespace, replacing (and closing)
+    /// an older one of the same kind.
+    pub fn register_host(&self, kind: Kind, host_id: &str, tx: HostTx) -> Result<u64, RefusalCode> {
         let mut hosts = lock(&self.hosts);
-        if !hosts.contains_key(host_id) && hosts.len() >= self.settings.limits.max_hosts {
+        let key = (kind, host_id.to_owned());
+        if !hosts.contains_key(&key) && hosts.len() >= self.settings.limits.max_hosts {
             return Err(RefusalCode::RelayFull);
         }
         let conn = self.next_conn.fetch_add(1, Ordering::Relaxed);
         let entry = HostEntry { conn, tx, allow: HashSet::new(), slot: None, channels: HashMap::new(), next_channel: 1 };
-        if let Some(old) = hosts.insert(host_id.to_owned(), entry) {
+        if let Some(old) = hosts.insert(key, entry) {
             let _ = old.tx.try_send(HostOut::Shutdown(RefusalCode::HostReplaced));
             for chan in old.channels.into_values() {
                 let _ = chan.tx.try_send(ClientOut::Close(Some(RefusalCode::HostOffline)));
@@ -162,11 +204,12 @@ impl Relay {
         Ok(conn)
     }
 
-    /// Removes the host if `conn` is still its live connection; closes its phones.
-    pub fn unregister_host(&self, host_id: &str, conn: u64) {
+    /// Removes the host if `conn` is still its live connection; closes its clients.
+    pub fn unregister_host(&self, kind: Kind, host_id: &str, conn: u64) {
         let mut hosts = lock(&self.hosts);
-        if hosts.get(host_id).is_some_and(|h| h.conn == conn)
-            && let Some(old) = hosts.remove(host_id)
+        let key = (kind, host_id.to_owned());
+        if hosts.get(&key).is_some_and(|h| h.conn == conn)
+            && let Some(old) = hosts.remove(&key)
         {
             for chan in old.channels.into_values() {
                 let _ = chan.tx.try_send(ClientOut::Close(Some(RefusalCode::HostOffline)));
@@ -174,13 +217,13 @@ impl Relay {
         }
     }
 
-    /// Replaces the allow list; phones whose entry vanished are closed with `revoked`.
-    pub fn set_allow(&self, host_id: &str, conn: u64, tokens: Vec<[u8; 32]>) -> Result<usize, RefusalCode> {
+    /// Replaces the allow list; clients whose entry vanished are closed with `revoked`.
+    pub fn set_allow(&self, kind: Kind, host_id: &str, conn: u64, tokens: Vec<[u8; 32]>) -> Result<usize, RefusalCode> {
         if tokens.len() > self.settings.limits.max_allow_entries {
             return Err(RefusalCode::RelayFull);
         }
         let mut hosts = lock(&self.hosts);
-        let h = live(&mut hosts, host_id, conn)?;
+        let h = live(&mut hosts, kind, host_id, conn)?;
         h.allow = tokens.into_iter().collect();
         let revoked: Vec<u32> = h.channels.iter().filter(|(_, c)| c.device.is_some_and(|d| !h.allow.contains(&d))).map(|(id, _)| *id).collect();
         for id in revoked {
@@ -191,18 +234,18 @@ impl Relay {
         Ok(h.allow.len())
     }
 
-    pub fn open_slot(&self, host_id: &str, conn: u64, pairing_id: [u8; PAIRING_ID_LEN], secs: u32) -> Result<u32, RefusalCode> {
+    pub fn open_slot(&self, kind: Kind, host_id: &str, conn: u64, pairing_id: [u8; PAIRING_ID_LEN], secs: u32) -> Result<u32, RefusalCode> {
         let secs = secs.clamp(1, self.settings.limits.max_pairing_secs);
         let mut hosts = lock(&self.hosts);
-        let h = live(&mut hosts, host_id, conn)?;
+        let h = live(&mut hosts, kind, host_id, conn)?;
         h.slot = Some(Slot { pairing_id, expires: Instant::now() + Duration::from_secs(u64::from(secs)), attempts: 0, active: false });
         Ok(secs)
     }
 
     /// Drops the slot and any pairing channel still open on it.
-    pub fn close_slot(&self, host_id: &str, conn: u64) -> Result<(), RefusalCode> {
+    pub fn close_slot(&self, kind: Kind, host_id: &str, conn: u64) -> Result<(), RefusalCode> {
         let mut hosts = lock(&self.hosts);
-        let h = live(&mut hosts, host_id, conn)?;
+        let h = live(&mut hosts, kind, host_id, conn)?;
         h.slot = None;
         let pairing: Vec<u32> = h.channels.iter().filter(|(_, c)| c.pairing).map(|(id, _)| *id).collect();
         for id in pairing {
@@ -215,13 +258,14 @@ impl Relay {
 
     // ---- channels ---------------------------------------------------------------------
 
-    /// A phone presents a credential for `host_id`. On success the host is told (`Open` frame).
-    pub fn open_channel(&self, host_id: &str, cred: &Credential) -> Result<OpenedChannel, RefusalCode> {
-        let l = &self.settings.limits;
+    /// A client presents a credential for `host_id` in `kind`'s namespace. On success the host is
+    /// told (`Open` frame). A `Phone` client can never find a `Peer` host, or the reverse.
+    pub fn open_channel(&self, kind: Kind, host_id: &str, cred: &Credential) -> Result<OpenedChannel, RefusalCode> {
+        let caps = self.caps(kind);
         let mut hosts = lock(&self.hosts);
-        let h = hosts.get_mut(host_id).ok_or(RefusalCode::HostOffline)?;
+        let h = hosts.get_mut(&(kind, host_id.to_owned())).ok_or(RefusalCode::HostOffline)?;
         let now = Instant::now();
-        if h.channels.len() >= l.max_channels_per_host {
+        if h.channels.len() >= caps.max_channels {
             return Err(RefusalCode::RelayFull);
         }
         let info = match cred {
@@ -233,7 +277,7 @@ impl Relay {
             }
             Credential::Pairing(id) => {
                 let slot = h.slot.as_mut().ok_or(RefusalCode::NotAllowed)?;
-                if now >= slot.expires || !ct_eq(&slot.pairing_id, id) || slot.attempts >= l.max_pairing_attempts || slot.active {
+                if now >= slot.expires || !ct_eq(&slot.pairing_id, id) || slot.attempts >= self.settings.limits.max_pairing_attempts || slot.active {
                     return Err(RefusalCode::NotAllowed);
                 }
                 slot.attempts += 1;
@@ -248,13 +292,13 @@ impl Relay {
                 break c;
             }
         };
-        let (tx, rx) = mpsc::channel(CLIENT_QUEUE);
+        let (tx, rx) = mpsc::channel(kind.client_queue());
         let device = match info {
             OpenInfo::Device(d) => Some(d),
             OpenInfo::Pairing(_) => None,
         };
         let pairing = device.is_none();
-        let limiter = ChannelLimiter::new(l.frames_per_second_per_channel, l.bytes_per_second_per_channel, csm_remote_proto::limits::BURST_FACTOR, now);
+        let limiter = ChannelLimiter::new(caps.frames_per_second, caps.bytes_per_second, csm_remote_proto::limits::BURST_FACTOR, now);
         if h.tx.try_send(HostOut::Binary(encode_frame(FrameKind::Open, channel, &info.encode()))).is_err() {
             if let Some(slot) = h.slot.as_mut() {
                 slot.active = false;
@@ -265,10 +309,10 @@ impl Relay {
         Ok(OpenedChannel { channel, host_tx: h.tx.clone(), rx })
     }
 
-    /// The phone side of `channel` is gone: tell the host (unless the channel was already closed).
-    pub fn channel_gone(&self, host_id: &str, channel: u32, code: Option<RefusalCode>) {
+    /// The client side of `channel` is gone: tell the host (unless the channel was already closed).
+    pub fn channel_gone(&self, kind: Kind, host_id: &str, channel: u32, code: Option<RefusalCode>) {
         let mut hosts = lock(&self.hosts);
-        let Some(h) = hosts.get_mut(host_id) else { return };
+        let Some(h) = hosts.get_mut(&(kind, host_id.to_owned())) else { return };
         if let Some(c) = h.channels.remove(&channel) {
             if c.pairing
                 && let Some(s) = h.slot.as_mut()
@@ -280,9 +324,9 @@ impl Relay {
     }
 
     /// The host asked to close `channel` (for example a pairing it denied).
-    pub fn host_closes_channel(&self, host_id: &str, conn: u64, channel: u32, code: Option<RefusalCode>) {
+    pub fn host_closes_channel(&self, kind: Kind, host_id: &str, conn: u64, channel: u32, code: Option<RefusalCode>) {
         let mut hosts = lock(&self.hosts);
-        let Ok(h) = live(&mut hosts, host_id, conn) else { return };
+        let Ok(h) = live(&mut hosts, kind, host_id, conn) else { return };
         if let Some(c) = h.channels.remove(&channel) {
             if c.pairing
                 && let Some(s) = h.slot.as_mut()
@@ -293,10 +337,10 @@ impl Relay {
         }
     }
 
-    /// A Noise message from the host for a phone. Over-rate or a stuck phone closes the channel.
-    pub fn host_data(&self, host_id: &str, conn: u64, channel: u32, payload: &[u8]) {
+    /// A Noise message from the host for a client. Over-rate or a stuck client closes the channel.
+    pub fn host_data(&self, kind: Kind, host_id: &str, conn: u64, channel: u32, payload: &[u8]) {
         let mut hosts = lock(&self.hosts);
-        let Ok(h) = live(&mut hosts, host_id, conn) else { return };
+        let Ok(h) = live(&mut hosts, kind, host_id, conn) else { return };
         let Some(c) = h.channels.get_mut(&channel) else { return };
         let now = Instant::now();
         let verdict = if !c.limiter.allow(payload.len(), now) {
@@ -361,7 +405,7 @@ impl Relay {
         }
     }
 
-    /// `(hosts, channels)` for the status log line.
+    /// `(hosts, channels)` for the status log line, over both kinds.
     pub fn counts(&self) -> (usize, usize) {
         let hosts = lock(&self.hosts);
         (hosts.len(), hosts.values().map(|h| h.channels.len()).sum())
@@ -375,17 +419,21 @@ impl Relay {
     }
 
     /// Queue handle for a live host (for pushing results back).
-    pub fn host_tx(&self, host_id: &str, conn: u64) -> Option<HostTx> {
-        lock(&self.hosts).get(host_id).filter(|h| h.conn == conn).map(|h| h.tx.clone())
+    pub fn host_tx(&self, kind: Kind, host_id: &str, conn: u64) -> Option<HostTx> {
+        lock(&self.hosts).get(&(kind, host_id.to_owned())).filter(|h| h.conn == conn).map(|h| h.tx.clone())
     }
 
     /// Pending (unconsumed) pairing slot, for tests.
-    pub fn has_slot(&self, host_id: &str) -> bool {
-        lock(&self.hosts).get(host_id).is_some_and(|h| h.slot.is_some())
+    pub fn has_slot(&self, kind: Kind, host_id: &str) -> bool {
+        lock(&self.hosts).get(&(kind, host_id.to_owned())).is_some_and(|h| h.slot.is_some())
+    }
+
+    /// Whether a live host of `kind` is registered under `host_id`, for tests and status.
+    pub fn host_online(&self, kind: Kind, host_id: &str) -> bool {
+        lock(&self.hosts).contains_key(&(kind, host_id.to_owned()))
     }
 }
 
-fn live<'a>(hosts: &'a mut HashMap<String, HostEntry>, host_id: &str, conn: u64) -> Result<&'a mut HostEntry, RefusalCode> {
-    hosts.get_mut(host_id).filter(|h| h.conn == conn).ok_or(RefusalCode::HostReplaced)
+fn live<'a>(hosts: &'a mut HashMap<(Kind, String), HostEntry>, kind: Kind, host_id: &str, conn: u64) -> Result<&'a mut HostEntry, RefusalCode> {
+    hosts.get_mut(&(kind, host_id.to_owned())).filter(|h| h.conn == conn).ok_or(RefusalCode::HostReplaced)
 }
-

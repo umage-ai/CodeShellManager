@@ -29,12 +29,14 @@ pub mod hosts;
 pub mod identity;
 mod link;
 pub mod netif;
+pub mod relay_pump;
 mod serve;
 mod server;
+pub mod transport;
 
 pub use client_host::ClientPeer;
 pub use link::LinkError;
-pub use server::{PeerServer, ServerConfig};
+pub use server::{PeerServer, RelayConfig, ServerConfig};
 
 /// The terminal emulator version both ends must share (a minor-version match is required,
 /// `csm_peer_proto::msg::check_term_versions`). Every crate of the workspace has one version.

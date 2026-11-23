@@ -19,7 +19,7 @@
 //! Allow with that code (`pair_answer`), never by the handshake alone.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -43,6 +43,12 @@ use crate::audit::{Audit, clean};
 use crate::devices::{Device, DeviceStore, level_name};
 use crate::fsperm;
 use crate::identity::Identity;
+use crate::relay_pump::{AllowList, HostRoute, HostStatus, OnChannel, RelayHost, device_relay_hash};
+use csm_engine::{RelayInfo, RelaySetRequest};
+use csm_remote_proto::ids::{b64_decode_fixed, b64_encode};
+use crate::transport::Stream;
+use csm_peer_proto::pairing::RelayRoute;
+use csm_remote_proto::relay::HostToRelay;
 use crate::link::{Established, Io, Link, LinkError, Reader, respond};
 use crate::serve::{Drivers, Knobs, Serving, Who};
 use crate::{TERM_VERSION, unix_secs};
@@ -74,6 +80,10 @@ pub struct ServerConfig {
     pub max_streams: usize,
     /// How often the snapshot publisher looks for a new version.
     pub snapshot_every: Duration,
+    /// Tests only: the next delta any device is sent has a base that device does not have, which
+    /// makes it ask for the whole snapshot. Nothing else sets it.
+    #[cfg(any(test, feature = "test-knobs"))]
+    pub corrupt_next_delta: Arc<AtomicBool>,
 }
 
 impl Default for ServerConfig {
@@ -95,6 +105,8 @@ impl Default for ServerConfig {
             attach_history_lines: 1000,
             max_streams: 16,
             snapshot_every: Duration::from_millis(50),
+            #[cfg(any(test, feature = "test-knobs"))]
+            corrupt_next_delta: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -181,6 +193,10 @@ struct Inner {
     next_conn: AtomicU64,
     unauth: AtomicUsize,
     in_flight: Arc<AtomicUsize>,
+    /// The relay this server is also reachable through, when the person set one up.
+    relay: Mutex<Option<RelayState>>,
+    /// The keychain (or a test store): the relay secrets live here, never in a file.
+    secrets: OnceLock<Arc<dyn csm_services::secrets::SecretStore>>,
 }
 
 /// The server. Cloning shares it. Dropping the last handle closes everything (the threads hold
@@ -226,6 +242,8 @@ impl PeerServer {
                 next_conn: AtomicU64::new(1),
                 unauth: AtomicUsize::new(0),
                 in_flight: Arc::new(AtomicUsize::new(0)),
+                relay: Mutex::new(None),
+                secrets: OnceLock::new(),
             }),
         }
     }
@@ -283,6 +301,7 @@ impl PeerServer {
             st.generation
         };
         self.inner.audit.record("resumed", json!({"address": addr.to_string()}));
+        self.restore_relay();
         if let Err(e) = self.inner.try_listen(gen_) {
             self.inner.lock().waiting = Some(e);
             let inner = self.inner.clone();
@@ -410,7 +429,7 @@ impl Inner {
                         continue; // dropped unanswered
                     }
                     let inner = self.clone();
-                    let spawned = std::thread::Builder::new().name("csm-peer-conn".into()).spawn(move || inner.serve(stream, peer, gen_));
+                    let spawned = std::thread::Builder::new().name("csm-peer-conn".into()).spawn(move || inner.serve(Stream::Tcp(stream), From::Addr(peer), gen_));
                     if spawned.is_err() {
                         self.unauth.fetch_sub(1, Ordering::AcqRel);
                     }
@@ -431,6 +450,7 @@ impl Inner {
             let mut st = self.lock();
             st.generation += 1;
             st.slot = None;
+            self.relay_slot_close();
             st.waiting = None;
             (st.run.take(), std::mem::take(&mut st.conns), st.pending.take())
         };
@@ -474,7 +494,7 @@ impl Inner {
 
     // ---- one connection ---------------------------------------------------------------------
 
-    fn serve(self: Arc<Self>, stream: TcpStream, peer: SocketAddr, gen_: u64) {
+    fn serve(self: Arc<Self>, stream: Stream, peer: From, gen_: u64) {
         let _ = stream.set_nonblocking(false);
         let mut guard = Unauth { inner: &self, held: true };
         let result = self.serve_inner(stream, peer, gen_, &mut guard);
@@ -486,7 +506,7 @@ impl Inner {
         }
     }
 
-    fn serve_inner(&self, stream: TcpStream, peer: SocketAddr, gen_: u64, guard: &mut Unauth<'_>) -> Result<(), LinkError> {
+    fn serve_inner(&self, stream: Stream, peer: From, gen_: u64, guard: &mut Unauth<'_>) -> Result<(), LinkError> {
         let mut io = Io::new(stream).map_err(|e| LinkError::Io(e.to_string()))?;
         let deadline = Instant::now() + self.cfg.handshake_timeout;
         let pre = io.read_frame_by(deadline)?;
@@ -591,6 +611,8 @@ impl Inner {
         if let Ok(bytes) = reply.encode() {
             let _ = link.send_plains(&[bytes]);
         }
+        // The relay's slot closes after the answer, so the answer is queued before the close.
+        self.relay_slot_close();
         // Give the answer a moment to leave before the socket closes.
         std::thread::sleep(Duration::from_millis(50));
         link.close();
@@ -679,6 +701,7 @@ impl Inner {
                 history: self.cfg.attach_history_lines,
                 max_streams: self.cfg.max_streams,
                 snapshot_every: self.cfg.snapshot_every,
+                corrupt_next_delta: self.corrupt_knob(),
             };
             Serving::new(engine.clone(), link.clone(), Who { conn_id, device_id: device.id.clone(), level: device.level }, knobs, self.drivers.clone(), self.audit.clone())
         });
@@ -852,7 +875,7 @@ impl Inner {
 /// Where a connection came from, which listener run it belongs to, and when its handshake is due.
 #[derive(Clone, Copy)]
 struct Arrival {
-    peer: SocketAddr,
+    peer: From,
     gen_: u64,
     deadline: Instant,
 }
@@ -947,6 +970,14 @@ fn forward_events(inner: &Arc<Inner>, rx: &Receiver<csm_engine::Event>) {
 }
 
 impl PeerHost for PeerServer {
+    fn relay_set(&self, req: RelaySetRequest, by: &str) -> Result<Option<RelayInfo>, ToolError> {
+        self.set_relay_from_request(req, by)
+    }
+
+    fn relay_status(&self) -> Option<RelayInfo> {
+        self.relay_info()
+    }
+
     fn status(&self) -> PeerStatus {
         self.inner.status()
     }
@@ -977,12 +1008,14 @@ impl PeerHost for PeerServer {
         let bound = i.lock().run.as_ref().map(|r| r.addr);
         i.save_choice(true, bound, req.allow_all_interfaces);
         i.audit.record("enabled", json!({"by": clean(by), "address": bound.map(|a| a.to_string()), "all_interfaces": req.allow_all_interfaces}));
+        self.restore_relay();
         Ok(i.status())
     }
 
     fn disable(&self, by: &str) -> PeerStatus {
         let i = &self.inner;
         i.stop_all(ByeReason::ServerOff);
+        i.relay_stop();
         let was = i.lock().choice.take().is_some();
         if was || i.dir.join("server.json").exists() {
             i.save_choice(false, None, false);
@@ -1009,7 +1042,12 @@ impl PeerHost for PeerServer {
                 ToolError::Refused("the server listens on every interface, so a pairing link has no one address to name; turn it on for one address instead".into())
             })?;
             st.slot = Some(Slot { id, psk, expires: Instant::now() + i.cfg.pair_ttl, attempts: 0, consumed: false });
-            (PeerOffer::new(&peer_addr, &host, &id, &psk), i.cfg.pair_ttl.as_secs())
+            i.relay_open_slot(&id, i.cfg.pair_ttl.as_secs());
+            let mut offer = PeerOffer::new(&peer_addr, &host, &id, &psk);
+            if let Some(route) = i.relay_route() {
+                offer = offer.with_relay(route);
+            }
+            (offer, i.cfg.pair_ttl.as_secs())
         };
         i.audit.record("pair_started", json!({"by": clean(by)}));
         Ok(PairingStarted { link: offer.link(), address: offer.a.clone(), expires_in_secs: secs })
@@ -1044,6 +1082,7 @@ impl PeerHost for PeerServer {
                 let (name, key) = (p.name.clone(), p.key);
                 i.load_devices(&mut st)?;
                 let added = st.devices.as_mut().map(|d| d.add(&name, &key, Level::Full, unix_secs()));
+                i.relay_resync();
                 match added {
                     Some(Ok(dev)) => {
                         if let Some(done) = st.pending.take() {
@@ -1111,6 +1150,7 @@ impl PeerHost for PeerServer {
                 (Revoke::All, Some(d)) => d.clear().map_err(|e| Inner::io_failed("could not save the device list", &e))?,
                 _ => 0,
             };
+            i.relay_resync();
             let keys: Vec<u64> = st.conns.iter().filter(|(_, c)| ids.contains(&c.device_id)).map(|(k, _)| *k).collect();
             let closing: Vec<Conn> = keys.iter().filter_map(|k| st.conns.remove(k)).collect();
             // A device waiting to pair under a revoke-all is withdrawn as well.
@@ -1152,5 +1192,289 @@ impl PeerHost for PeerServer {
     fn shutdown(&self) {
         self.inner.dead.store(true, Ordering::Release);
         self.inner.stop_all(ByeReason::ServerQuit);
+    }
+}
+
+/// Where a connection came from, for the audit log: its address, or the relay that carried it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum From {
+    Addr(SocketAddr),
+    Relay,
+}
+
+impl std::fmt::Display for From {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Addr(a) => write!(f, "{a}"),
+            Self::Relay => f.write_str("relay"),
+        }
+    }
+}
+
+/// The relay this server is reachable through: the running host, and the route the offer names.
+struct RelayState {
+    host: RelayHost,
+    route: RelayRoute,
+    /// Whether an enrolment token was given (the token itself is not kept here).
+    access_set: bool,
+}
+
+/// What the person set up for the relay: its address, the host secret (kept in the secret store,
+/// never in the state file) and the operator's enrolment token, when the relay needs one.
+#[derive(Clone)]
+pub struct RelayConfig {
+    pub url: String,
+    pub host_secret: [u8; 32],
+    pub access: Option<String>,
+}
+
+impl std::fmt::Debug for RelayConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Neither secret reaches a log line.
+        f.debug_struct("RelayConfig").field("url", &self.url).field("host_secret", &"<hidden>").field("access", &self.access.as_ref().map(|_| "<hidden>")).finish()
+    }
+}
+
+impl PeerServer {
+    /// Makes this server reachable through a relay as well (or, with `None`, stops that). The
+    /// direct listener is unchanged. A bad address is refused before anything starts.
+    pub fn set_relay(&self, cfg: Option<RelayConfig>) -> Result<(), String> {
+        let i = &self.inner;
+        i.relay_stop();
+        let Some(cfg) = cfg else { return Ok(()) };
+        let route = RelayRoute { url: cfg.url.clone(), host_id: csm_remote_proto::ids::host_id(&cfg.host_secret) };
+        if !route.validate() {
+            return Err("the relay address must be wss://, or ws:// to this PC".to_owned());
+        }
+        let for_allow = i.clone();
+        let allow: AllowList = Arc::new(move || for_allow.relay_allow());
+        let for_channels = i.clone();
+        let on_channel: OnChannel = Box::new(move |stream, _info| for_channels.relay_channel(stream));
+        let access_set = cfg.access.is_some();
+        let host = RelayHost::start(HostRoute { url: cfg.url, host_secret: cfg.host_secret, access: cfg.access }, allow, on_channel).map_err(|e| e.to_string())?;
+        *lock_relay(i) = Some(RelayState { host, route, access_set });
+        log::info!("remote access: also reachable through a relay");
+        Ok(())
+    }
+
+    /// The relay route the offers name, when one is set.
+    pub fn relay_route(&self) -> Option<RelayRoute> {
+        self.inner.relay_route()
+    }
+
+    /// What the relay last said, when one is set.
+    pub fn relay_status(&self) -> Option<HostStatus> {
+        lock_relay(&self.inner).as_ref().map(|r| r.host.status())
+    }
+}
+
+fn lock_relay(i: &Inner) -> MutexGuard<'_, Option<RelayState>> {
+    i.relay.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Inner {
+    /// Stops the running relay host, if any. Lock order: the server's state lock may be held while
+    /// the relay lock is taken (briefly, never while waiting on anything), never the reverse. So the
+    /// relay is taken out of its mutex first and dropped after the lock is released: the host thread
+    /// calls back into the state lock (the allow list, incoming channels), and a drop that waited
+    /// for it under the relay lock could deadlock.
+    fn relay_stop(&self) {
+        let old = lock_relay(self).take();
+        drop(old);
+    }
+
+    fn relay_route(&self) -> Option<RelayRoute> {
+        lock_relay(self).as_ref().map(|r| r.route.clone())
+    }
+
+    fn relay_open_slot(&self, id: &[u8; PAIRING_ID_LEN], secs: u64) {
+        if let Some(r) = lock_relay(self).as_ref() {
+            let expires_in = u32::try_from(secs).unwrap_or(SLOT_SECS).min(SLOT_SECS);
+            r.host.control(HostToRelay::PairingOpen { pairing_id: b64_encode(id), expires_in });
+        }
+    }
+
+    fn relay_slot_close(&self) {
+        if let Some(r) = lock_relay(self).as_ref() {
+            r.host.control(HostToRelay::PairingClose);
+        }
+    }
+
+    fn relay_resync(&self) {
+        if let Some(r) = lock_relay(self).as_ref() {
+            r.host.resync();
+        }
+    }
+
+    /// The corrupt-next-delta knob a session gets. Only the test builds have one to set.
+    #[cfg(any(test, feature = "test-knobs"))]
+    fn corrupt_knob(&self) -> Arc<AtomicBool> {
+        self.cfg.corrupt_next_delta.clone()
+    }
+
+    #[cfg(not(any(test, feature = "test-knobs")))]
+    fn corrupt_knob(&self) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    /// Every paired device's relay hash, as the relay's allow list wants them.
+    fn relay_allow(&self) -> Vec<[u8; 32]> {
+        let mut st = self.lock();
+        let _ = self.load_devices(&mut st);
+        st.devices.as_ref().map(|d| d.list().iter().filter_map(Device::public_key).map(|k| device_relay_hash(&k)).collect()).unwrap_or_default()
+    }
+
+    /// A relay channel from a paired device (or a pairing): served like a direct connection.
+    fn relay_channel(self: &Arc<Self>, stream: Stream) {
+        if self.unauth.fetch_add(1, Ordering::AcqRel) >= self.cfg.max_unauthenticated {
+            self.unauth.fetch_sub(1, Ordering::AcqRel);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        let gen_ = self.lock().generation;
+        let inner = self.clone();
+        let spawned = std::thread::Builder::new().name("csm-peer-relay-conn".into()).spawn(move || inner.serve(stream, From::Relay, gen_));
+        if spawned.is_err() {
+            self.unauth.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// The keychain entries the relay uses (service `codeshell-peer`).
+const RELAY_SERVICE: &str = "codeshell-peer";
+const RELAY_SECRET_KEY: &str = "relay.host-secret";
+const RELAY_TOKEN_KEY: &str = "relay.enrol-token";
+/// The relay's address (not secret) in the peer folder; the secrets stay in the keychain.
+const RELAY_FILE: &str = "relay.json";
+
+#[derive(Serialize, Deserialize)]
+struct RelayFile {
+    v: u8,
+    url: String,
+}
+
+fn read_secret(store: &dyn csm_services::secrets::SecretStore, key: &str) -> Option<String> {
+    store.get(RELAY_SERVICE, key).ok().flatten()
+}
+
+/// The address saved in the peer folder, when that file is there and readable.
+fn saved_relay_url(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<RelayFile>(&text).ok().map(|f| f.url)
+}
+
+impl PeerServer {
+    /// Gives the server the keychain its relay secrets are kept in. Call once, before `resume`.
+    pub fn use_secrets(&self, store: Arc<dyn csm_services::secrets::SecretStore>) {
+        let _ = self.inner.secrets.set(store);
+    }
+
+    fn set_relay_from_request(&self, req: RelaySetRequest, by: &str) -> Result<Option<RelayInfo>, ToolError> {
+        let i = &self.inner;
+        let Some(store) = i.secrets.get().cloned() else {
+            return Err(ToolError::Failed("no keychain is wired for the relay secrets".into()));
+        };
+        let url = req.url.trim().to_owned();
+        let path = i.dir.join(RELAY_FILE);
+        if url.is_empty() {
+            // Taken out first and dropped after the lock is released: see `Inner::relay_stop`.
+            i.relay_stop();
+            let _ = std::fs::remove_file(&path);
+            let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
+            i.audit.record("relay_off", json!({"by": clean(by)}));
+            return Ok(None);
+        }
+        if !csm_peer_proto::pairing::relay_url_allowed(&url) || url.len() > 512 {
+            return Err(ToolError::InvalidParams("the relay address must be wss://, or ws:// to this PC".into()));
+        }
+        if req.access.as_ref().is_some_and(|t| t.len() > 256) {
+            return Err(ToolError::InvalidParams("an enrolment token is at most 256 characters".into()));
+        }
+        // The host secret is made once and kept: the same relay id survives a change of address.
+        let secret = match read_secret(store.as_ref(), RELAY_SECRET_KEY).and_then(|s| b64_decode_fixed::<32>(&s)) {
+            Some(s) => s,
+            None => {
+                let s = crate::random::<32>().map_err(|e| Inner::io_failed("random numbers", &e))?;
+                store.set(RELAY_SERVICE, RELAY_SECRET_KEY, &b64_encode(&s)).map_err(|e| ToolError::Failed(format!("could not keep the relay secret: {e}")))?;
+                s
+            }
+        };
+        // The token: a given one is saved, an empty one is removed, and one left out is kept only
+        // when the address is the same as the saved one (never sent on to another relay).
+        let token = match req.access.as_deref() {
+            Some(t) if !t.trim().is_empty() => Some(t.trim().to_owned()),
+            Some(_) => None,
+            None if saved_relay_url(&path).as_deref() == Some(url.as_str()) => read_secret(store.as_ref(), RELAY_TOKEN_KEY),
+            None => None,
+        };
+        match &token {
+            Some(t) => store.set(RELAY_SERVICE, RELAY_TOKEN_KEY, t).map_err(|e| ToolError::Failed(format!("could not keep the enrolment token: {e}")))?,
+            None => {
+                let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
+            }
+        }
+        // The relay runs only while remote access is on: saved now, it starts when it comes on.
+        if i.lock().run.is_some() {
+            self.set_relay(Some(RelayConfig { url: url.clone(), host_secret: secret, access: token })).map_err(ToolError::Refused)?;
+        } else {
+            i.relay_stop();
+        }
+        let text = serde_json::to_string(&RelayFile { v: 1, url: url.clone() }).unwrap_or_default();
+        crate::fsperm::ensure_private_dir(&i.dir).map_err(|e| Inner::io_failed("could not save the relay address", &e))?;
+        crate::fsperm::write_private(&path, text.as_bytes()).map_err(|e| Inner::io_failed("could not save the relay address", &e))?;
+        i.audit.record("relay_set", json!({"by": clean(by)}));
+        Ok(self.relay_info())
+    }
+
+    /// Starts the relay the person saved, when the keychain still has its secret. Called when remote
+    /// access comes on, so a relay never runs while remote access is off.
+    fn restore_relay(&self) {
+        if lock_relay(&self.inner).is_some() {
+            return;
+        }
+        let path = self.inner.dir.join(RELAY_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let Ok(file) = serde_json::from_str::<RelayFile>(&text) else {
+            log::warn!("remote access: {} is not readable; the relay stays off", path.display());
+            return;
+        };
+        let Some(store) = self.inner.secrets.get().cloned() else { return };
+        let Some(secret) = read_secret(store.as_ref(), RELAY_SECRET_KEY).and_then(|s| b64_decode_fixed::<32>(&s)) else {
+            log::warn!("remote access: the relay secret is missing from the keychain; the relay stays off");
+            return;
+        };
+        let access = read_secret(store.as_ref(), RELAY_TOKEN_KEY);
+        if let Err(e) = self.set_relay(Some(RelayConfig { url: file.url, host_secret: secret, access })) {
+            log::warn!("remote access: the saved relay is not used: {e}");
+        }
+    }
+
+    /// The relay in use: running, with what it last said. While remote access is off the saved
+    /// relay is still listed (not connected), so the settings page can show what is set.
+    fn relay_info(&self) -> Option<RelayInfo> {
+        {
+            let guard = lock_relay(&self.inner);
+            if let Some(r) = guard.as_ref() {
+                let st = r.host.status();
+                return Some(RelayInfo { url: r.route.url.clone(), host_id: r.route.host_id.clone(), connected: st.connected, last_error: st.last_error, access_set: r.access_set });
+            }
+        }
+        self.saved_relay_info()
+    }
+
+    /// The relay the person saved, while it is not running.
+    fn saved_relay_info(&self) -> Option<RelayInfo> {
+        let i = &self.inner;
+        let url = saved_relay_url(&i.dir.join(RELAY_FILE))?;
+        let store = i.secrets.get()?.clone();
+        let secret = read_secret(store.as_ref(), RELAY_SECRET_KEY).and_then(|s| b64_decode_fixed::<32>(&s))?;
+        let access_set = read_secret(store.as_ref(), RELAY_TOKEN_KEY).is_some();
+        Some(RelayInfo {
+            url,
+            host_id: csm_remote_proto::ids::host_id(&secret),
+            connected: false,
+            last_error: Some("remote access is off, so the relay is not running".to_owned()),
+            access_set,
+        })
     }
 }

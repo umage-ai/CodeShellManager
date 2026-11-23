@@ -95,6 +95,11 @@ csm attach --host OFFICE "Build"     when several offices are paired
 - Exit codes: 0 when you detach or the session ends, 2 for a usage problem, 3 when the office cannot
   be reached or the link drops.
 
+**Trust.** `csm attach` and the remote window carry the trust of this laptop's device key. Anything
+that can run `csm` on this laptop, or open this laptop's CodeShellManager, can type into the office's
+sessions, with the same level this laptop has there (today: Full). The office cannot tell such a
+program from you at the keyboard. Only pair laptops you trust, and forget an office you no longer use.
+
 ## Troubleshooting
 
 | What you see | What to check |
@@ -111,3 +116,47 @@ csm attach --host OFFICE "Build"     when several offices are paired
 - A remote session's links and run URLs open in the laptop's browser; port forwarding is planned.
 - There is one office per window; several offices are shown as several windows.
 - Only the "Full" level exists: a paired laptop can do everything the office's own window can do.
+- Anything that can run `csm` on this laptop can type into the offices it is paired with (see the trust
+  note under `csm attach`).
+
+## Through a relay (no VPN)
+
+A direct address needs the laptop to reach the office: the same LAN, or a VPN such as WireGuard. A
+relay removes that need. Both machines connect **outbound** to a relay (`relay/`, `csm-relay`), which
+copies the encrypted frames between them. The relay never holds a key that matters and cannot read a
+frame; the session is the same end-to-end session as on the direct address.
+
+- **Office:** Settings › Remote access › "Also reachable through a relay" gives the relay address
+  (`wss://…`; `ws://` only to this PC) and, when the relay asks for one, the enrolment token (a
+  password field, cleared as soon as it is sent). The token and the office's relay secret are kept in
+  the OS keychain, never in a file. The address goes to `peer/relay.json` in the app's data folder.
+  The card shows whether the relay is connected, and "Change…" and "Turn off the relay" change it.
+  Leaving the token empty keeps the saved one for the same address; a different address does not get
+  the saved token, so it is removed and must be typed again. The pairing link then names the relay too:
+  an open pairing link is made again when the relay changes, but a link already copied keeps the
+  route it was made with. The relay runs only while remote
+  access is on: while it is off the card says the relay is not running, and turning it off stops it.
+- **Laptop:** pairing and connecting try the direct address first, then the relay. The saved office
+  (`hosts.json`) keeps the relay route, so a later connection needs no setting. A laptop paired before
+  the office had a relay keeps working directly; pair again to add the route.
+- **Trust:** the relay sees who connects, when, and how much, never what is said. Revoking a device
+  takes its relay access away at once, as well as its keys.
+- **Limits:** a relay channel carries terminal streams, so its per-channel caps are higher than a
+  phone's (configurable on the relay: `[limits] peer_*`). A relay run by someone else is that
+  operator's to secure; the `Origin` check keeps browsers out of the peer endpoints.
+- **Bursts:** the office paces its writes to the per-channel caps the relay announces when it connects
+  (2000 frames and 8 MiB a second by default), so a large burst such as `cat` of a big file waits at the
+  office instead of tripping the relay's limit and ending the session. A relay configured with lower
+  peer caps is followed, not refused: the office reads the caps from the relay's welcome.
+- **Slow laptops:** the laptop acknowledges what its reader has taken, and the office keeps at most
+  512 frames and 2 MiB in flight per terminal stream. A laptop on a slow link therefore slows the
+  office's output, as a slow direct connection does, and a long burst catches up with a fresh screen
+  rather than ending the link. A well-behaved office never fills the relay's queue for a channel.
+- **Stalled relays:** a relay that stops reading ends the office's connection after 5 s of blocked
+  writes, and the office reconnects with backoff. Turning remote access off or quitting the app waits
+  at most about 5 s for a stalled relay.
+- **Addresses:** a relay address is refused if it has userinfo (`user@`), a backslash, a fragment or
+  whitespace. `ws://` is accepted only to `127.0.0.1`, `localhost` or `[::1]`; any other host needs `wss://`.
+  The same check guards the address in a pairing link and in `hosts.json`.
+- **Timeouts:** the connect to the relay gives up after 10 s per address, and the WebSocket handshake
+  (TLS included) after 10 s, so an unreachable relay does not stall the app.

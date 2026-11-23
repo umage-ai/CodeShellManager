@@ -44,6 +44,8 @@ pub struct PairedOffice {
 pub struct Paired {
     pub window: HostWindow,
     pub addr: PeerAddr,
+    /// The relay route, when the office has one (tried after the direct address).
+    pub relay: Option<csm_peer_proto::pairing::RelayRoute>,
     pub host_public: [u8; KEY_LEN],
     pub identity: Identity,
     pub cfg: ClientConfig,
@@ -94,7 +96,7 @@ pub fn paired(dir: &Path, host_id: &str) -> Result<Paired, String> {
     let identity = Identity::load_or_create(&key).map_err(|e| format!("this app's device key: {e}"))?;
     let device = ClientPeer::new(dir.to_path_buf()).device_name().to_owned();
     let window = HostWindow { name: host.name.clone(), address: host.address.trim_start_matches("tcp://").to_owned() };
-    Ok(Paired { window, addr, host_public, identity, cfg: ClientConfig::new(&device) })
+    Ok(Paired { window, addr, relay: host.relay.clone(), host_public, identity, cfg: ClientConfig::new(&device) })
 }
 
 /// What a remote window needs to connect to `host_id`, read from the client folder `dir`. `themes` is
@@ -102,7 +104,7 @@ pub fn paired(dir: &Path, host_id: &str) -> Result<Paired, String> {
 pub fn window_params(dir: &Path, host_id: &str, theme: ThemeKind, themes: Vec<ThemeFact>) -> Result<(ConnectParams, HostWindow), String> {
     let p = paired(dir, host_id)?;
     let overlay = view_path(dir, host_id).as_deref().and_then(load_view);
-    Ok((ConnectParams { addr: p.addr, host_public: p.host_public, identity: p.identity, cfg: p.cfg, theme, themes, overlay }, p.window))
+    Ok((ConnectParams { addr: p.addr, relay: p.relay, host_public: p.host_public, identity: p.identity, cfg: p.cfg, theme, themes, overlay }, p.window))
 }
 
 #[cfg(test)]

@@ -183,12 +183,27 @@ impl EnginePort {
     }
 }
 
+/// The params as they may be logged or kept in the call history: a secret parameter is replaced
+/// with `"<redacted>"`. The engine itself always gets the real params.
+pub fn redacted_params(id: &str, params: &Value) -> Value {
+    let mut shown = params.clone();
+    if id == "peer_relay_set"
+        && let Some(obj) = shown.as_object_mut()
+        && obj.contains_key("access")
+    {
+        obj.insert("access".to_owned(), Value::String("<redacted>".to_owned()));
+    }
+    shown
+}
+
 impl ToolPort for EnginePort {
     /// `engine.submit(Caller::Ui, id, params)`; the reply is picked up by [`ToolPort::poll`].
     fn submit(&mut self, id: &str, params: Value) {
-        log::debug!("ui → {id} {params}");
-        let call = Call { id: id.to_string(), params };
-        let rx = self.engine.submit(Caller::Ui, &call.id, call.params.clone());
+        // The log, the call history and the debug line get the redacted params; the engine gets the real ones.
+        let shown = redacted_params(id, &params);
+        log::debug!("ui → {id} {shown}");
+        let call = Call { id: id.to_string(), params: shown };
+        let rx = self.engine.submit(Caller::Ui, &call.id, params);
         if self.log.len() >= LOG_MAX {
             self.log.remove(0);
         }

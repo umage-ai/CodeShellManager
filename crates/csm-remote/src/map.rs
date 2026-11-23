@@ -230,7 +230,7 @@ pub fn model(snap: &WireSnapshot, overlay: &ViewOverlay, theme: ThemeKind, now_m
             open: overlay.inbox_open,
             height: overlay.inbox_height.filter(|h| h.is_finite()).unwrap_or(csm_ui::theme::size::INBOX_DEFAULT_H),
         },
-        inspector_width: snap.inspector_width.filter(|w| w.is_finite()),
+        inspector_width: overlay.inspector_width.filter(|w| w.is_finite()),
         folders: folders(&sessions),
         windows: overlay.windows.clone(),
         open_with: snap
@@ -275,6 +275,7 @@ pub fn seed_overlay(snap: &WireSnapshot, overlay: &mut ViewOverlay) {
     overlay.focused = snap.focused.clone();
     overlay.inbox_open = snap.inbox_open;
     overlay.inbox_height = snap.inbox_height;
+    overlay.inspector_width = snap.inspector_width;
     overlay.collapsed = snap.groups.iter().filter(|g| !g.expanded).map(|g| g.id.clone()).collect();
     overlay.torn_off = snap.groups.iter().filter(|g| g.torn_off).map(|g| g.id.clone()).collect();
 }
@@ -487,5 +488,17 @@ mod tests {
         ] {
             assert_eq!(event(&e), None, "{e:?} is not applied to a remote window");
         }
+    }
+
+    #[test]
+    fn the_inspector_width_is_the_clients_own_not_the_offices() {
+        // The office's snapshot says 300; this client dragged its own inspector to 420.
+        let snap = WireSnapshot { inspector_width: Some(300.0), ..WireSnapshot::default() };
+        let mut overlay = ViewOverlay::default();
+        assert_eq!(model(&snap, &overlay, ThemeKind::Mocha, 0).inspector_width, None, "a new client starts without a width");
+        seed_overlay(&snap, &mut overlay);
+        assert_eq!(overlay.inspector_width, Some(300.0), "the first snapshot seeds the width once");
+        overlay.inspector_width = Some(420.0);
+        assert_eq!(model(&snap, &overlay, ThemeKind::Mocha, 0).inspector_width, Some(420.0), "the client's own width wins");
     }
 }

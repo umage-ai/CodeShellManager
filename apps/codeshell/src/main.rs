@@ -425,32 +425,28 @@ fn import_wpf_on_first_run(engine: &Engine, state_json: PathBuf) {
     }
 }
 
-/// What the laptop's window does to start a remote window: this exe, `--remote <host-id>`, with the
-/// same state folder. The child starts on a thread of its own, never on the UI thread.
-fn remote_window_opener(config_dir: Option<PathBuf>) -> Arc<dyn Fn(String) + Send + Sync> {
-    Arc::new(move |host_id: String| {
-        let exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                log::warn!("remote window: this program's path is not known: {e}");
-                return;
-            }
-        };
-        let mut argv = vec!["--remote".to_owned(), host_id];
+/// What the laptop's window does to start a remote window (`remote_window_open`): this exe, by argv,
+/// `--remote <host-id>`, with the same state folder. The child starts on a thread of its own, never
+/// on the UI thread; the call returns once that thread is started.
+fn remote_window_launcher(config_dir: Option<PathBuf>) -> csm_engine::RemoteWindowLauncher {
+    Arc::new(move |host_id: &str| {
+        let exe = std::env::current_exe().map_err(|e| format!("this program's path is not known: {e}"))?;
+        let mut argv = vec!["--remote".to_owned(), host_id.to_owned()];
         if let Some(dir) = &config_dir {
             argv.push("--config-dir".to_owned());
             argv.push(dir.display().to_string());
         }
         // `proc::spawn_detached` owns the process rules (no console, reaped on its own thread); this
         // thread only keeps the start off the UI thread.
-        let spawned = std::thread::Builder::new().name("csm-remote-spawn".into()).spawn(move || {
-            if let Err(e) = csm_engine::proc::spawn_detached(&exe, &argv, None) {
-                log::warn!("remote window: could not start it: {e}");
-            }
-        });
-        if let Err(e) = spawned {
-            log::warn!("remote window: no thread to start it on: {e}");
-        }
+        std::thread::Builder::new()
+            .name("csm-remote-spawn".into())
+            .spawn(move || {
+                if let Err(e) = csm_engine::proc::spawn_detached(&exe, &argv, None) {
+                    log::warn!("remote window: could not start it: {e}");
+                }
+            })
+            .map(|_| ())
+            .map_err(|e| format!("no thread to start the window on: {e}"))
     })
 }
 
@@ -616,6 +612,10 @@ fn main() {
         // and not for an isolated run with no state folder: they get no host, so nothing can listen.
         let save_path = persist::state_path(args.config_dir.as_deref());
         let peer_server = save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean).map(|d| csm_peer::PeerServer::new(d.join("peer")));
+        if let Some(p) = &peer_server {
+            // The relay secrets live in the same keychain as the add-ons' secrets.
+            p.use_secrets(std::sync::Arc::new(csm_services::secrets::KeyringStore));
+        }
         let peer_host: Arc<dyn csm_engine::PeerHost> = match &peer_server {
             Some(p) => Arc::new(p.clone()),
             None => Arc::new(csm_engine::NoPeerHost),
@@ -626,7 +626,8 @@ fn main() {
             Some(d) => Arc::new(csm_peer::ClientPeer::new(d.join("peer-client"))),
             None => Arc::new(csm_engine::NoPeerClient),
         };
-        let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, ..StateOptions::production() };
+        let remote_window_launcher = remote_window_launcher(args.config_dir.clone());
+        let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, remote_window_launcher, ..StateOptions::production() };
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
@@ -715,7 +716,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let open_window = remote_window_opener(args.config_dir.clone());
     let app = eframe::create_native(
         "codeshell",
         options,
@@ -740,9 +740,6 @@ fn main() {
             let mut app = csm_ui::CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), backend, TerminalRenderer::new(fonts));
             app.monitors = app_monitors;
             app.window_controls = cfg!(windows);
-            if real {
-                app.hooks.open_window = Some(open_window.clone());
-            }
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
             // On the main thread, with the event loop running: where the tray must be made.
