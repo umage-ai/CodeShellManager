@@ -22,7 +22,8 @@
 //!   2026-11-23), so the declaration alone keeps it off the overlay and MCP callers are asked.
 //! - Themes are per client (Allan, 2026-11-23): `theme_set` runs against the overlay, which holds
 //!   the client's own mode and dark and light theme ids. A client checks an id against its own
-//!   `theme_list` (the engine's registry is the server's, so the overlay does not).
+//!   `theme_list` (the engine's registry is the server's), passed in as [`ViewFacts::themes`]: an unknown id,
+//!   or a light theme in `dark`, is refused as the engine refuses it.
 //!
 //! Ordering for a focus ([`Applied::Focused`] with `wake` set). [`apply`] commits the local focus
 //! at once, before the caller sends `session_wake`. If the wake fails, the engine has focused
@@ -115,14 +116,45 @@ pub struct ViewFacts {
     pub groups: BTreeSet<String>,
     /// Sessions, in sidebar order.
     pub sessions: Vec<SessionFact>,
+    /// The themes the client itself can draw (its own `theme_list`), not the server's. `theme_set`
+    /// checks an id against it, the way the engine's `theme_set` checks its registry. Empty until
+    /// the client supplies it, in which case every theme id is refused.
+    pub themes: Vec<ThemeFact>,
+}
+
+/// One theme the client can draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeFact {
+    pub id: String,
+    /// `true` for a dark theme (a `dark` slot takes it), `false` for a light one.
+    pub dark: bool,
 }
 
 impl ViewFacts {
-    /// The facts of a snapshot.
+    /// The facts of a snapshot. The client adds its themes with [`ViewFacts::with_themes`].
     pub fn from_snapshot(snap: &Snapshot) -> Self {
         Self {
             groups: snap.groups.iter().map(|g| g.id.clone()).collect(),
             sessions: snap.sessions.iter().map(|s| SessionFact { id: s.id.clone(), group: s.group_id.clone(), asleep: s.asleep }).collect(),
+            themes: Vec::new(),
+        }
+    }
+
+    /// The same facts with the client's own theme list.
+    #[must_use]
+    pub fn with_themes(mut self, themes: Vec<ThemeFact>) -> Self {
+        self.themes = themes;
+        self
+    }
+
+    /// Why `id` cannot be a `dark` (or `light`) theme, or `None`. The same rule as the engine's.
+    fn theme_unavailable(&self, id: &str, dark: bool) -> Option<String> {
+        let want = if dark { "dark" } else { "light" };
+        match self.themes.iter().find(|t| t.id == id) {
+            Some(t) if t.dark == dark => None,
+            Some(_) => Some(format!("`{id}` is not a {want} theme")),
+            None if id.contains('.') => Some(format!("`{id}` is not available: its add-on is not enabled, or has no such theme")),
+            None => Some(format!("`{id}` is not a theme")),
         }
     }
 
@@ -258,7 +290,7 @@ impl ViewOverlay {
         }
     }
 
-    fn theme_set(&mut self, p: ThemeSetParams) -> Result<(), ToolError> {
+    fn theme_set(&mut self, facts: &ViewFacts, p: ThemeSetParams) -> Result<(), ToolError> {
         if p.mode.is_none() && p.dark.is_none() && p.light.is_none() {
             return Err(ToolError::InvalidParams("give `mode`, `dark` or `light`".into()));
         }
@@ -272,9 +304,13 @@ impl ViewOverlay {
             }
             None => None,
         };
-        for id in [&p.dark, &p.light].into_iter().flatten() {
+        for (id, dark) in [(&p.dark, true), (&p.light, false)] {
+            let Some(id) = id else { continue };
             if id.is_empty() || id.len() > MAX_THEME_ID || id.chars().any(char::is_control) {
                 return Err(ToolError::InvalidParams("a theme id is 1-128 characters with no control characters".into()));
+            }
+            if let Some(why) = facts.theme_unavailable(id, dark) {
+                return Err(ToolError::InvalidParams(why));
             }
         }
         if let Some(m) = mode {
@@ -429,7 +465,7 @@ pub fn apply(overlay: &mut ViewOverlay, facts: &ViewFacts, tool: &ToolInfo, para
             Ok(Applied::Local)
         }
         "theme_set" => {
-            overlay.theme_set(parse_params(params)?)?;
+            overlay.theme_set(facts, parse_params(params)?)?;
             Ok(Applied::Local)
         }
         "layout_set" => {
@@ -855,6 +891,10 @@ mod tests {
         ViewFacts {
             groups: ["work", "home"].iter().map(|s| s.to_string()).collect(),
             sessions: vec![sess("a", "work", false), sess("b", "work", true), sess("c", "", false), sess("d", "home", false)],
+            themes: [("dark", true), ("light", false), ("tones.night", true), ("latte", false)]
+                .iter()
+                .map(|(id, dark)| ThemeFact { id: (*id).into(), dark: *dark })
+                .collect(),
         }
     }
 
@@ -925,7 +965,14 @@ mod tests {
         assert!(run(&mut o, &facts, "theme_set", json!({"light": "a\nb"})).is_err());
         assert!(run(&mut o, &facts, "theme_set", json!({"dark": "x".repeat(129)})).is_err());
         assert!(run(&mut o, &facts, "theme_set", json!({"colour": "red"})).is_err());
-        assert_eq!(o, before, "an error changes nothing");
+        // Availability and base are checked like the engine does.
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "latte"})).is_err(), "a light theme in dark");
+        assert!(run(&mut o, &facts, "theme_set", json!({"light": "tones.night"})).is_err(), "a dark theme in light");
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "nope"})).is_err(), "unknown");
+        assert!(run(&mut o, &facts, "theme_set", json!({"dark": "tones.gone"})).is_err(), "an add-on theme that is not there");
+        assert!(run(&mut o, &facts, "theme_set", json!({"mode": "light", "dark": "nope"})).is_err());
+        assert!(run(&mut o, &ViewFacts::default(), "theme_set", json!({"dark": "dark"})).is_err(), "no theme list, no id");
+        assert_eq!(o, before, "an error changes nothing, not even the mode");
         assert_eq!(ViewOverlay::from_snapshot(&Snapshot::default()).theme, None, "a snapshot carries no theme");
     }
 

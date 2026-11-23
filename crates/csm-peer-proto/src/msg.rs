@@ -184,10 +184,21 @@ fn valid_text(s: &str, max_bytes: usize) -> bool {
     !s.is_empty() && s.len() <= max_bytes && no_control(s)
 }
 
-/// 1 to 64 characters, no control characters, not only whitespace: a device or host name.
+/// Unicode format characters (category Cf) and line/paragraph separators: invisible, and able to
+/// reorder or hide the text around them (bidi overrides, zero-width joiners, BOM).
+fn is_format_char(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2 | 0x180E
+        | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0x110BD | 0x110CD | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A
+        | 0xE0001 | 0xE0020..=0xE007F)
+}
+
+/// 1 to 64 characters, no control or invisible format characters, not only whitespace: a device
+/// or host name (the person reads it on the Allow screen, so it must not be able to spoof).
 pub fn valid_name(name: &str) -> bool {
     let n = name.trim().chars().count();
-    (1..=MAX_NAME_CHARS).contains(&n) && name.chars().count() <= MAX_NAME_CHARS && no_control(name)
+    (1..=MAX_NAME_CHARS).contains(&n) && name.chars().count() <= MAX_NAME_CHARS && no_control(name) && !name.chars().any(is_format_char)
 }
 
 /// A tool id: lowercase letters, digits, `_`, `.` and `-`, at most 128 bytes.
@@ -324,6 +335,10 @@ mod tests {
         assert!(!valid_name(""));
         assert!(!valid_name("   "));
         assert!(!valid_name("a\nb"));
+        for bad in ["a\u{202E}b", "a\u{200B}b", "\u{FEFF}x", "x\u{2066}", "a\u{200F}", "a\u{2028}b", "a\u{00AD}b", "a\u{E0041}b"] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+        assert!(valid_name("Laptop \u{e9}\u{4e2d}"));
         assert!(!valid_name(&"x".repeat(65)));
         assert!(valid_name(&"x".repeat(64)));
         assert!(valid_tool_id("session_send_text"));

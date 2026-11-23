@@ -5,8 +5,11 @@
 //!    [`PeerOffer`]: the address (`tcp://10.8.0.2:47300`), the host id, the host's static public
 //!    key, a pairing id (128 bit) and a one-time PSK (256 bit). It lives 10 minutes and works once.
 //! 2. On the other machine the person pastes the link into "Connect to another CSM". The client
-//!    connects to the address and runs `Noise_IKpsk2` ([`crate::noise`]), then sends
-//!    [`PairMsg::Hello`] with its device name.
+//!    connects to the address, sends the pairing preamble (`0x02 || i`, the offer's pairing id; it
+//!    is how the host picks `IKpsk2` before message 1, see [`crate::noise::route`]), runs
+//!    `Noise_IKpsk2` ([`crate::noise`]), then sends [`PairMsg::Hello`] with its device name. The
+//!    slot is consumed when that first message decrypts, and allows
+//!    [`crate::noise::MAX_PAIR_ATTEMPTS`] handshakes.
 //! 3. **Both screens show the 4-digit check code** ([`crate::noise::check_code`]) and the
 //!    device name. On the host the person chooses Allow (with a level) or Deny. On Allow the host
 //!    sends [`PairMsg::Accept`] and adds the client's static key to its device list. Pairing is
@@ -27,7 +30,7 @@ pub const LINK_PREFIX: &str = "csm://pair#";
 pub const SLOT_SECS: u32 = 600;
 
 /// The offer. Short keys keep the QR small: `a` address, `h` host id, `k` host static public key,
-/// `i` pairing id, `p` PSK (binary ones in base64url).
+/// `i` pairing id (the preamble's slot selector, not a secret), `p` PSK (binary ones in base64url).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerOffer {
     pub v: u8,

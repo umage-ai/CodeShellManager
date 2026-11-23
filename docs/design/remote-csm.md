@@ -346,6 +346,15 @@ execution as Allan. Treat a paired device like an SSH key to the office machine.
      office screen, the person chooses **Allow** and the level, or **Deny**. Problem: Allan may
      be at home when he wants to pair. Pairing then needs the office screen, through RDP or by
      pairing while the laptop is in the office. Open question Q2.
+  6. **Selector and limits (review fix).** The responder picks `IKpsk2` or `IK` before reading
+     message 1, so each connection starts with a cleartext preamble frame: `01` session, or
+     `02 || pairing_id` pairing (`csm-peer-proto` `noise::route`, vectors in `preamble.json`).
+     No open slot or a wrong id is a silent close, the same either way. A slot is consumed when
+     the first transport message decrypts (the PSK is only proven then) and allows 3 handshakes.
+     **Check code limit:** the 4-digit code does not stop an active swapper in the middle, who can
+     grind ephemerals (about 10^4 tries) until both screens agree. We accept that: pairing is in
+     person or over RDP, the link is the secret, and the code guards against mix-ups and a
+     passive or non-participating swapper.
 - **Always-visible indicator:**
   - On the server, a pill in the title or status bar: "Remote access on · 10.8.0.2:47300". When a
     client is connected it changes to an accent colour: "Laptop connected" with a count. The pill

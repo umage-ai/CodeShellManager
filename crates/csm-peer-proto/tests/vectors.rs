@@ -16,7 +16,7 @@ use csm_peer_proto::frame::{FrameDecoder, FrameError, encode_frame};
 use csm_peer_proto::ids::{b64_encode, device_id, hex, host_id, sha256, unhex};
 use csm_peer_proto::limits::{MAX_FRAME_LEN, MAX_PLAINTEXT};
 use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, TermClosedReason};
-use csm_peer_proto::noise::{PARAMS_PAIRING, PARAMS_SESSION, REKEY_INTERVAL, check_code, prologue};
+use csm_peer_proto::noise::{MAX_PAIR_ATTEMPTS, PARAMS_PAIRING, PARAMS_SESSION, Preamble, REKEY_INTERVAL, Route, check_code, prologue, route};
 use csm_peer_proto::pairing::{DenyReason, OfferError, PairError, PairMsg, PeerOffer};
 use csm_peer_proto::{Event, GroupInfo, Snapshot};
 use serde_json::{Value, json};
@@ -489,7 +489,7 @@ fn noise_vector(name: &str, params: &str, psk: Option<[u8; 32]>) -> Value {
 #[test]
 fn noise_vectors() {
     let v = json!({
-        "doc": "Noise handshake + transport of the peer profile, with fixed static and ephemeral keys (snow's fixed_ephemeral_key_for_testing_only). The prologue is 'csm-peer/1' 0x00 host_id, where host_id derives from the responder's static public key. The psk goes at position 2 (IKpsk2). Transport plaintexts are real frames (see messages.json); every Noise message travels in one length-prefixed frame.",
+        "doc": "Noise handshake + transport of the peer profile, with fixed static and ephemeral keys (snow's fixed_ephemeral_key_for_testing_only). The prologue is 'csm-peer/1' 0x00 host_id, where host_id derives from the responder's static public key. The psk goes at position 2 (IKpsk2). Transport plaintexts are real frames (see messages.json); every Noise message travels in one length-prefixed frame. Before message 1 the client sends a cleartext preamble frame that selects the pattern (01 = IK, 02 || pairing_id = IKpsk2); see preamble.json.",
         "pairing": noise_vector("pairing", PARAMS_PAIRING, Some(arr::<32>(24))),
         "session": noise_vector("session", PARAMS_SESSION, None),
     });
@@ -509,4 +509,58 @@ fn the_phone_profile_cannot_complete_a_peer_handshake() {
     let mut out = vec![0u8; 65535];
     let n = init.write_message(&[], &mut buf).unwrap();
     assert!(resp.read_message(&buf[..n], &mut out).is_err(), "a handshake of another profile is refused");
+}
+
+#[test]
+fn a_session_message_one_does_not_open_under_the_pairing_pattern_and_back() {
+    let k = keys();
+    let rs_pub = x25519_public(&k.rs);
+    let pro = prologue(&host_id(&rs_pub));
+    let psk = arr::<32>(24);
+    let mut buf = vec![0u8; 65535];
+    let mut out = vec![0u8; 65535];
+
+    let mut ik = builder(PARAMS_SESSION, &k, None, &pro, true, &rs_pub, &k.ei).build_initiator().unwrap();
+    let n = ik.write_message(&[], &mut buf).unwrap();
+    let mut psk_resp = builder(PARAMS_PAIRING, &k, Some(&psk), &pro, false, &rs_pub, &k.er).build_responder().unwrap();
+    assert!(psk_resp.read_message(&buf[..n], &mut out).is_err(), "a session client cannot reach the pairing path");
+
+    let mut ikpsk = builder(PARAMS_PAIRING, &k, Some(&psk), &pro, true, &rs_pub, &k.ei).build_initiator().unwrap();
+    let n = ikpsk.write_message(&[], &mut buf).unwrap();
+    let mut ik_resp = builder(PARAMS_SESSION, &k, None, &pro, false, &rs_pub, &k.er).build_responder().unwrap();
+    assert!(ik_resp.read_message(&buf[..n], &mut out).is_err(), "a pairing client cannot reach the session path");
+}
+
+#[test]
+fn preamble_vectors() {
+    let id = arr::<16>(30);
+    let slot = id;
+    let cases: Vec<Value> = [
+        ("session", Preamble::Session.encode(), Some(slot)),
+        ("pairing_open_slot", Preamble::Pairing(id).encode(), Some(slot)),
+        ("pairing_wrong_id", Preamble::Pairing(arr::<16>(31)).encode(), Some(slot)),
+        ("pairing_no_slot", Preamble::Pairing(id).encode(), None),
+        ("session_no_slot", Preamble::Session.encode(), None),
+        ("empty", vec![], Some(slot)),
+        ("unknown_tag", vec![3], Some(slot)),
+        ("session_with_trailing_byte", vec![1, 0], Some(slot)),
+        ("pairing_short_id", [vec![2], id[..15].to_vec()].concat(), Some(slot)),
+        ("pairing_long_id", [vec![2], id.to_vec(), vec![0]].concat(), Some(slot)),
+    ]
+    .into_iter()
+    .map(|(name, pre, open)| {
+        let r = match route(&pre, open.as_ref()) {
+            Route::Session => "session",
+            Route::Pairing => "pairing",
+            Route::Refuse => "refuse",
+        };
+        json!({"name": name, "preamble_hex": hex(&pre), "frame_hex": hex(&encode_frame(&pre).unwrap_or_default()), "open_slot_hex": open.map(|s| hex(&s)), "route": r})
+    })
+    .collect();
+    let v = json!({
+        "doc": "Every connection starts with one cleartext frame before Noise message 1: 01 = session (IK), 02 || pairing_id (16 bytes) = pairing (IKpsk2). The host routes to pairing only when a slot is open and the id matches (constant-time compare); everything else is refused by closing without writing. A slot is consumed when the first transport message decrypts, and allows 3 handshakes.",
+        "max_pair_attempts": MAX_PAIR_ATTEMPTS,
+        "cases": cases,
+    });
+    check("preamble", &v);
 }

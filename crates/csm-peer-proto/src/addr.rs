@@ -54,6 +54,8 @@ fn is_name(s: &str) -> bool {
 }
 
 fn ip_ok(ip: &IpAddr) -> Result<(), AddrError> {
+    // `::ffff:0.0.0.0` is IPv4 `0.0.0.0` on a dual-stack socket: judge the IPv4 form.
+    let ip = &ip.to_canonical();
     if ip.is_unspecified() {
         return Err(AddrError::Unspecified);
     }
@@ -137,7 +139,7 @@ pub fn check_bind(addr: &SocketAddr, allow_all: bool) -> Result<(), AddrError> {
     if addr.port() == 0 {
         return Err(AddrError::Port);
     }
-    let ip = addr.ip();
+    let ip = addr.ip().to_canonical();
     if ip.is_multicast() || ip == IpAddr::V4(Ipv4Addr::BROADCAST) {
         return Err(AddrError::NotUnicast);
     }
@@ -209,5 +211,17 @@ mod tests {
         assert_eq!(check_bind(&"10.8.0.2:0".parse().unwrap(), false), Err(AddrError::Port));
         assert_eq!(check_bind(&"224.0.0.1:5".parse().unwrap(), true), Err(AddrError::NotUnicast));
         assert!(PeerAddr::from_socket(any4).is_err());
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_is_judged_as_ipv4() {
+        for s in ["[::ffff:0.0.0.0]:47300", "[::ffff:224.0.0.1]:47300", "[::ffff:255.255.255.255]:47300"] {
+            let sock: SocketAddr = s.parse().unwrap();
+            assert!(check_bind(&sock, false).is_err(), "{s}");
+            assert!(PeerAddr::parse(&format!("tcp://{s}")).is_err(), "{s}");
+        }
+        assert_eq!(check_bind(&"[::ffff:0.0.0.0]:47300".parse().unwrap(), true), Ok(()), "Advanced");
+        assert_eq!(check_bind(&"[::ffff:224.0.0.1]:5".parse().unwrap(), true), Err(AddrError::NotUnicast));
+        assert_eq!(check_bind(&"[::ffff:10.8.0.2]:47300".parse().unwrap(), false), Ok(()));
     }
 }

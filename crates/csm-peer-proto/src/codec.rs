@@ -231,17 +231,55 @@ impl<'a> Reader<'a> {
 #[derive(Debug, Default)]
 pub struct Decoder {
     partial: Option<Vec<u8>>,
+    role: Role,
+}
+
+/// Which end a [`Decoder`] runs on, and so which direction's frames it accepts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Either direction. For tests and vectors only; a connection uses `server` or `client`.
+    #[default]
+    Any,
+    /// Receives what a client sends: client control messages and `term_input`.
+    Server,
+    /// Receives what a server sends: server control messages, `term_data` and `term_attach`.
+    Client,
 }
 
 impl Decoder {
+    /// A decoder that accepts either direction (tests and vectors).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The decoder of a server's connection: refuses frames only a server may send.
+    pub fn server() -> Self {
+        Self { partial: None, role: Role::Server }
+    }
+
+    /// The decoder of a client's connection: refuses frames only a client may send.
+    pub fn client() -> Self {
+        Self { partial: None, role: Role::Client }
+    }
+
+    fn direction_ok(&self, frame: &Frame) -> bool {
+        match (self.role, frame) {
+            (Role::Any, _) => true,
+            (Role::Server, Frame::Control(m)) => m.from_client(),
+            (Role::Client, Frame::Control(m)) => m.from_server(),
+            (Role::Server, Frame::TermInput { .. }) => true,
+            (Role::Client, Frame::TermData { .. } | Frame::TermAttach { .. }) => true,
+            _ => false,
+        }
     }
 
     /// Decodes one Noise plaintext. `Ok(None)` means a fragment was taken and more are due.
     /// After an error, close the connection.
     pub fn decode(&mut self, plaintext: &[u8]) -> Result<Option<Frame>, CodecError> {
-        let r = self.decode_inner(plaintext);
+        let r = self.decode_inner(plaintext).and_then(|f| match f {
+            Some(frame) if !self.direction_ok(&frame) => Err(CodecError::Malformed("direction")),
+            other => Ok(other),
+        });
         if r.is_err() {
             self.partial = None;
         }
@@ -361,6 +399,8 @@ pub struct AttachAssembler {
 }
 
 const MAX_OPEN_ATTACHES: usize = 64;
+/// All open attaches together: one big grid or a few small ones, not 64 big ones.
+pub const MAX_ATTACH_TOTAL_BYTES: usize = MAX_ATTACH_BYTES;
 
 impl AttachAssembler {
     pub fn new() -> Self {
@@ -384,7 +424,9 @@ impl AttachAssembler {
                 Attach { stream: *stream, instance: *instance, cols: *cols, rows: *rows, offset: *offset, vt: Vec::new() }
             }
         };
-        if cur.vt.len() + vt.len() > MAX_ATTACH_BYTES {
+        // `cur` was removed from `open`, so `buffered` counts the other attaches only.
+        let buffered: usize = self.open.values().map(|a| a.vt.len()).sum();
+        if cur.vt.len() + vt.len() > MAX_ATTACH_BYTES || buffered + cur.vt.len() + vt.len() > MAX_ATTACH_TOTAL_BYTES {
             return Err(CodecError::TooLarge);
         }
         cur.vt.extend_from_slice(vt);
@@ -505,6 +547,58 @@ mod tests {
         // Streams are independent.
         let a = Frame::TermAttach { stream: 7, instance: 1, cols: 80, rows: 24, offset: 0, more: false, vt: vec![9] };
         assert_eq!(asm.push(&a).unwrap().map(|x| x.vt), Some(vec![9]));
+    }
+
+    #[test]
+    fn open_attaches_share_one_byte_budget() {
+        let mut asm = AttachAssembler::new();
+        let chunk = vec![0u8; MAX_TERM_CHUNK];
+        let push = |asm: &mut AttachAssembler, stream: u32| {
+            asm.push(&Frame::TermAttach { stream, instance: 1, cols: 80, rows: 24, offset: 0, more: true, vt: chunk.clone() })
+        };
+        let big = MAX_ATTACH_TOTAL_BYTES * 2 / 3 / MAX_TERM_CHUNK;
+        for _ in 0..big {
+            assert_eq!(push(&mut asm, 1).unwrap(), None);
+        }
+        let mut refused = false;
+        for _ in 0..big {
+            if push(&mut asm, 2) == Err(CodecError::TooLarge) {
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused, "a second attach cannot add another budget");
+    }
+
+    #[test]
+    fn direction_is_enforced_by_role() {
+        use crate::delta::Delta;
+        let enc = |f: &Frame| f.encode().unwrap().remove(0);
+        let to_server = [
+            Frame::Control(Msg::TermUnsubscribe { stream: 1 }),
+            Frame::Control(Msg::TermResync { stream: 1 }),
+            Frame::TermInput { stream: 1, input: Input::Key(vec![b'a']) },
+        ];
+        let to_client = [
+            Frame::Control(Msg::Delta { delta: Delta { from: 1, to: 2, ops: vec![] } }),
+            Frame::TermData { stream: 1, instance: 1, offset: 0, bytes: vec![b'x'] },
+            Frame::TermAttach { stream: 1, instance: 1, cols: 80, rows: 24, offset: 0, more: false, vt: vec![] },
+        ];
+        let both = [Frame::Control(Msg::Ping { n: 1 }), Frame::Control(Msg::Pong { n: 1 })];
+        for f in &to_server {
+            assert!(Decoder::server().decode(&enc(f)).unwrap().is_some(), "{f:?}");
+            assert_eq!(Decoder::client().decode(&enc(f)), Err(CodecError::Malformed("direction")), "{f:?}");
+            assert!(Decoder::new().decode(&enc(f)).unwrap().is_some());
+        }
+        for f in &to_client {
+            assert!(Decoder::client().decode(&enc(f)).unwrap().is_some(), "{f:?}");
+            assert_eq!(Decoder::server().decode(&enc(f)), Err(CodecError::Malformed("direction")), "{f:?}");
+            assert!(Decoder::new().decode(&enc(f)).unwrap().is_some());
+        }
+        for f in &both {
+            assert!(Decoder::client().decode(&enc(f)).unwrap().is_some());
+            assert!(Decoder::server().decode(&enc(f)).unwrap().is_some());
+        }
     }
 
     #[test]

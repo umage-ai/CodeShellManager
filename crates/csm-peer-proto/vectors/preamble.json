@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "frame_hex": "0000000101",
+      "name": "session",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "01",
+      "route": "session"
+    },
+    {
+      "frame_hex": "00000011026e757c838a91989fa6adb4bbc2c9d0d7",
+      "name": "pairing_open_slot",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "026e757c838a91989fa6adb4bbc2c9d0d7",
+      "route": "pairing"
+    },
+    {
+      "frame_hex": "0000001102474e555c636a71787f868d949ba2a9b0",
+      "name": "pairing_wrong_id",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "02474e555c636a71787f868d949ba2a9b0",
+      "route": "refuse"
+    },
+    {
+      "frame_hex": "00000011026e757c838a91989fa6adb4bbc2c9d0d7",
+      "name": "pairing_no_slot",
+      "open_slot_hex": null,
+      "preamble_hex": "026e757c838a91989fa6adb4bbc2c9d0d7",
+      "route": "refuse"
+    },
+    {
+      "frame_hex": "0000000101",
+      "name": "session_no_slot",
+      "open_slot_hex": null,
+      "preamble_hex": "01",
+      "route": "session"
+    },
+    {
+      "frame_hex": "",
+      "name": "empty",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "",
+      "route": "refuse"
+    },
+    {
+      "frame_hex": "0000000103",
+      "name": "unknown_tag",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "03",
+      "route": "refuse"
+    },
+    {
+      "frame_hex": "000000020100",
+      "name": "session_with_trailing_byte",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "0100",
+      "route": "refuse"
+    },
+    {
+      "frame_hex": "00000010026e757c838a91989fa6adb4bbc2c9d0",
+      "name": "pairing_short_id",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "026e757c838a91989fa6adb4bbc2c9d0",
+      "route": "refuse"
+    },
+    {
+      "frame_hex": "00000012026e757c838a91989fa6adb4bbc2c9d0d700",
+      "name": "pairing_long_id",
+      "open_slot_hex": "6e757c838a91989fa6adb4bbc2c9d0d7",
+      "preamble_hex": "026e757c838a91989fa6adb4bbc2c9d0d700",
+      "route": "refuse"
+    }
+  ],
+  "doc": "Every connection starts with one cleartext frame before Noise message 1: 01 = session (IK), 02 || pairing_id (16 bytes) = pairing (IKpsk2). The host routes to pairing only when a slot is open and the id matches (constant-time compare); everything else is refused by closing without writing. A slot is consumed when the first transport message decrypts, and allows 3 handshakes.",
+  "max_pair_attempts": 3
+}

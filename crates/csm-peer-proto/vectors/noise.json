@@ -1,5 +1,5 @@
 {
-  "doc": "Noise handshake + transport of the peer profile, with fixed static and ephemeral keys (snow's fixed_ephemeral_key_for_testing_only). The prologue is 'csm-peer/1' 0x00 host_id, where host_id derives from the responder's static public key. The psk goes at position 2 (IKpsk2). Transport plaintexts are real frames (see messages.json); every Noise message travels in one length-prefixed frame.",
+  "doc": "Noise handshake + transport of the peer profile, with fixed static and ephemeral keys (snow's fixed_ephemeral_key_for_testing_only). The prologue is 'csm-peer/1' 0x00 host_id, where host_id derives from the responder's static public key. The psk goes at position 2 (IKpsk2). Transport plaintexts are real frames (see messages.json); every Noise message travels in one length-prefixed frame. Before message 1 the client sends a cleartext preamble frame that selects the pattern (01 = IK, 02 || pairing_id = IKpsk2); see preamble.json.",
   "pairing": {
     "check_code": "8863",
     "handshake_hash_hex": "fe42c4e5425f9eba6d99eedc32139a4691d2b49ae4ff69c2984742cbab77b9a6",
