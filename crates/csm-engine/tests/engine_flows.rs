@@ -290,6 +290,29 @@ fn the_screen_heuristic_raises_needs_you_when_no_status_is_reported() {
 }
 
 #[test]
+fn a_restored_session_is_not_judged_by_the_screen_heuristic_until_it_is_addressed() {
+    // Restore is not news: a resumed Claude reprints its last reply, which may end in a question
+    // (ConPTY's cursor jumps and all). That raised "needs you", and a notification, for every
+    // restored session at start-up.
+    let mut app = test_app();
+    app.sessions.push(ShellSession { id: "a".into(), command: "claude".into(), working_folder: ".".into(), ..Default::default() });
+    let h = H::start(app, |_| {});
+    h.wait_status("a", Status::Idle);
+    h.pty(0).emit(b"\x1b[40;1H\xe2\x97\x8f\x1b[1CShall\x1b[1CI\x1b[1Cadd\x1b[1Cthis\x1b[1Cto\x1b[1Cthe\x1b[1Cplan?");
+    // Past the heuristic's 1.5 s idle window.
+    std::thread::sleep(Duration::from_millis(2500));
+    let v = h.engine.view();
+    assert_eq!(v.session("a").map(|s| s.status), Some(Status::Idle), "resumed output is not a question to the person");
+    assert!(v.inbox.is_empty());
+    // Once the person has typed into it, a question it then asks is judged again, with its spaces.
+    h.engine.terminal("a").unwrap().send_key(csm_engine::input::typed("y", false));
+    std::thread::sleep(Duration::from_millis(100));
+    h.pty(0).emit(b"\r\n\x1b[41;1HDo\x1b[1Cyou\x1b[1Cwant\x1b[1Cto\x1b[1Ccontinue?");
+    let v = h.wait_until("heuristic alert", |v| v.session("a").is_some_and(|s| s.status.needs_you()));
+    assert_eq!(v.session("a").and_then(|s| s.status_message.as_deref()), Some("Do you want to continue?"));
+}
+
+#[test]
 fn a_shell_waiting_at_its_prompt_is_idle_not_needs_you() {
     // The WPF heuristic matched any line ending in `>` or `(y/N)`, so every idle shell showed as
     // "needs you". Plain shells are no longer judged by the screen heuristic.

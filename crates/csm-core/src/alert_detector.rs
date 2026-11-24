@@ -24,8 +24,8 @@ const MAX_MESSAGE_UNITS: usize = 100;
 // OSC strings end in BEL (\x07) or ST (ESC \). Matching only BEL made an ST-terminated OSC
 // either leak its payload into prompt matching or lazily swallow real output up to the next
 // BEL. The `?` in the CSI class covers private-mode sequences (ESC[?25h). Same pattern as
-// OutputIndexer.AnsiPattern in the C# app; keep the two in step.
-static ANSI: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\x1B\[[?0-9;]*[mGKHFJABCDsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]").ok());
+// OutputIndexer.AnsiPattern in the C# app, plus ECH (`X`) and CUP's `f` form.
+static ANSI: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\x1B\[[?0-9;]*[mGKHFJABCDXfsuhlct]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[=>]").ok());
 
 // Claude's prompt (U+276F), generic y/n prompts, and "?" questions.
 static PROMPT: LazyLock<Option<Regex>> =
@@ -35,9 +35,20 @@ static APPROVAL: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"(?i)(Do you want to|Allow|Approve|Bash command|Continue\?|Proceed\?|tool_use|permission)").ok());
 
 /// Removes ANSI escape sequences (CSI, BEL- or ST-terminated OSC, and `ESC =` / `ESC >`).
+///
+/// A CSI that moves the cursor right or to a position (CUF `C`, CHA `G`, CUP `H`/`f`) or erases
+/// cells in place (ECH `X`) leaves one space instead: ConPTY repaints only the cells that changed
+/// and jumps over the rest, blanks included, so `Do you want` can arrive as `Do ESC[C you ESC[C
+/// want` without the blanks, and dropping the jumps glued the words ("Doyouwant", which reached
+/// notifications).
 pub fn strip_ansi(raw: &str) -> String {
     match ANSI.as_ref() {
-        Some(re) => re.replace_all(raw, "").into_owned(),
+        Some(re) => re
+            .replace_all(raw, |c: &regex::Captures<'_>| {
+                let seq = c.get(0).map_or("", |m| m.as_str());
+                if seq.starts_with("\x1B[") && seq.ends_with(['C', 'G', 'H', 'f', 'X']) { " " } else { "" }
+            })
+            .into_owned(),
         None => raw.to_owned(),
     }
 }
@@ -413,6 +424,21 @@ mod tests {
         // OpenConsole opens with ESC[1t ESC[c ESC[?1004h ESC[?9001h; `c` and `t` are in the
         // final-byte class so they do not reach the output.
         assert_eq!(strip_ansi("\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hhello"), "hello");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_a_space_where_conpty_jumped_over_blank_cells() {
+        // ConPTY's repaint: unchanged blanks are skipped with CUF, a new row is reached with CUP,
+        // and a run of blanks may be erased with ECH. The words must not be glued together.
+        let raw = "\x1b[12;3H\x1b[1mDo\x1b[Cyou\x1b[1Cwant\x1b[Cto\x1b[Cproceed?\x1b[m\x1b[13;3H1.\x1b[3XYes\x1b[5Gnow";
+        assert_eq!(strip_ansi(raw), " Do you want to proceed? 1. Yes now");
+        let mut d = AlertDetector::new("s", "n");
+        d.feed("Brewed\x1b[1Cfor\x1b[1C45s\x1b[1C\u{b7}\x1b[1CDo\x1b[1Cyou\x1b[1Cwant\x1b[1Cto\x1b[1Ccontinue?", 0);
+        let e = d.poll(IDLE_MS).expect("alert");
+        assert_eq!(e.alert_type, AlertType::ToolApproval, "\"Do you want to\" matches once the spaces are back");
+        assert_eq!(e.message, "Brewed for 45s \u{b7} Do you want to continue?");
+        // Colour, cursor-left and private modes still vanish without a trace.
+        assert_eq!(strip_ansi("a\x1b[31mb\x1b[2Dc\x1b[?25ld"), "abcd");
     }
 
     #[test]
