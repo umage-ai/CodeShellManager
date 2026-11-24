@@ -1,0 +1,135 @@
+# Sample add-on: GitHub Copilot CLI (the agentic `copilot` program, not the old `gh copilot`).
+#
+# Shipped with CodeShellManager under <install dir>\samples\addons\. Settings > Add-ons >
+# "Install samples" copies it into your add-ons folder; it stays off until you Enable it.
+# Needs `copilot` on PATH (winget install GitHub.Copilot, npm i -g @github/copilot, or brew).
+# See docs/addons.md.
+#
+# Verified against `copilot --help` and `copilot help commands`: `--continue` resumes the most
+# recent session, `--resume [sessionId]` picks one (a picker without an id), and
+# `--allow-all-tools` / `--allow-all` / `--yolo` skip approvals. Restore of a profile session
+# starts `copilot` again (a new session); the "continue" profile resumes the last one.
+# CodeShellManager does not know Copilot's session ids, so a {session_id} resume template would
+# not help here.
+#
+# UNCERTAINTY: the TUI strings could not be read from a running session (the program is a bundled
+# binary and the docs quote few of them). The approval rule uses the documented option "No, and
+# tell Copilot what to do differently (Esc)" plus likely question wording; the working rule guesses
+# "Esc to cancel" / "Thinking", and the idle rule the input hints "Type @ to mention files",
+# "Ctrl+c Exit" and "/ for commands". The approval rule is the surest, the working and idle rules
+# less so, and the question rule is the weakest. Copilot's wording changes between releases; if a
+# status stops tracking, adjust the patterns here (the file's digest changes, so you enable it
+# again). Rules match against the last 12 non-empty screen lines; the first matching rule wins.
+# Patterns are TOML literal strings ('...'), so a backslash is a regex backslash.
+
+[addon]
+id = "copilot-cli"
+name = "GitHub Copilot CLI"
+version = "0.1.0"
+description = "Launch profiles for GitHub's Copilot CLI, with status detection for approvals, questions, work and idle."
+api = 1
+kind = "pack"
+author = "CodeShellManager samples"
+homepage = "https://github.com/github/copilot-cli"
+
+# A new Copilot CLI session in the session's folder.
+[[profile]]
+name = "agent"
+argv = ["copilot"]
+resume = "re-run"
+status = [
+  { match = '(?i)no, and tell copilot what to do differently|do you want to (run|allow|make|create|edit)|allow copilot to', status = "needs_you_approval" },
+  { match = '(?i)enter to select.*esc|enter to submit', status = "needs_you_question" },
+  { match = '(?i)esc to (cancel|stop)|\bthinking\b', status = "working" },
+  { match = '(?i)type @ to mention files|ctrl\+c exit|/ for commands', status = "idle" },
+]
+
+# Resume the most recent Copilot session (`copilot --continue`).
+[[profile]]
+name = "continue"
+argv = ["copilot", "--continue"]
+resume = "re-run"
+status = [
+  { match = '(?i)no, and tell copilot what to do differently|do you want to (run|allow|make|create|edit)|allow copilot to', status = "needs_you_approval" },
+  { match = '(?i)enter to select.*esc|enter to submit', status = "needs_you_question" },
+  { match = '(?i)esc to (cancel|stop)|\bthinking\b', status = "working" },
+  { match = '(?i)type @ to mention files|ctrl\+c exit|/ for commands', status = "idle" },
+]
+
+# RISKY: `--allow-all-tools` lets Copilot run every tool (shell commands, file writes) without
+# asking. File paths and URLs are still checked. Use it only in a folder you can afford to lose.
+# The approval status will rarely show, because nothing asks.
+[[profile]]
+name = "allow-all-tools"
+argv = ["copilot", "--allow-all-tools"]
+resume = "re-run"
+status = [
+  { match = '(?i)no, and tell copilot what to do differently|do you want to (run|allow|make|create|edit)|allow copilot to', status = "needs_you_approval" },
+  { match = '(?i)enter to select.*esc|enter to submit', status = "needs_you_question" },
+  { match = '(?i)esc to (cancel|stop)|\bthinking\b', status = "working" },
+  { match = '(?i)type @ to mention files|ctrl\+c exit|/ for commands', status = "idle" },
+]
+
+# Copilot CLI slash commands (added to the slash menu only when you do not already have them).
+[[slash]]
+command = "/model"
+description = "Choose the AI model"
+
+[[slash]]
+command = "/clear"
+description = "Clear the conversation history"
+
+[[slash]]
+command = "/compact"
+description = "Summarise the conversation to free context"
+
+[[slash]]
+command = "/context"
+description = "Show context window usage"
+
+[[slash]]
+command = "/usage"
+description = "Show session usage metrics"
+
+[[slash]]
+command = "/session"
+description = "Show session info and the workspace summary"
+
+[[slash]]
+command = "/resume"
+description = "Switch to a different session"
+
+[[slash]]
+command = "/share"
+description = "Share the session to a markdown file or gist"
+
+[[slash]]
+command = "/plan"
+description = "Create an implementation plan before coding"
+
+[[slash]]
+command = "/diff"
+description = "Review the changes made in the folder"
+
+[[slash]]
+command = "/help"
+description = "Show help for interactive commands"
+
+# Palette commands: each calls an existing tool with fixed parameters.
+[[command]]
+id = "new"
+title = "New Copilot session"
+tool = "session_new"
+params = { profile = "copilot-cli.agent", name = "Copilot" }
+
+[[command]]
+id = "continue"
+title = "Continue the last Copilot session"
+tool = "session_new"
+params = { profile = "copilot-cli.continue", name = "Copilot (continued)" }
+
+[[command]]
+id = "allow-all-tools"
+title = "New Copilot session (allow all tools, risky)"
+tool = "session_new"
+params = { profile = "copilot-cli.allow-all-tools", name = "Copilot (allow all)" }

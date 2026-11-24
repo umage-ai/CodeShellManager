@@ -97,7 +97,7 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   Settings → MCP. Optionally offered to the Claude sessions the app starts (off by default).
 - **Add-ons**: declarative packs (agent launch profiles with status rules, run templates, slash
   presets, palette commands) and process add-ons (their own tools and screens), enabled only after
-  you see what they add. Samples ship with the app: Codex CLI, Gemini CLI, Review and Session
+  you see what they add. Samples ship with the app: Codex CLI, GitHub Copilot CLI, Gemini CLI, OpenCode, Review and Session
   summary.
 - **Run commands from `package.json`**: a Node project gets one run command per script; MCP
   clients can add and edit run commands (with consent); a local dev server's URL opens as soon as
