@@ -265,6 +265,16 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_state_notifies_once_however_long_it_lasts() {
+        let mut n = primed("a", Attention::Quiet);
+        assert_eq!(n.observe(&[obs("a", Attention::Question)], &cx(10_000)).len(), 1);
+        // Once a frame for ten minutes, past many rate-limit windows: nothing more.
+        for t in (10_016..610_000).step_by(16) {
+            assert!(n.observe(&[obs("a", Attention::Question)], &cx(t)).is_empty(), "at {t}");
+        }
+    }
+
+    #[test]
     fn leaving_an_attention_state_is_not_news() {
         let mut n = primed("a", Attention::Approval);
         assert!(n.observe(&[obs("a", Attention::Quiet)], &cx(10_000)).is_empty());
@@ -365,6 +375,8 @@ mod tests {
         assert!(out[0].body.ends_with('…'));
         assert_eq!(title_for(" \x07 "), "CodeShellManager");
         assert_eq!(clean("  a  b "), "a b");
+        // Whitespace of any kind between words is kept as one space, never dropped.
+        assert_eq!(clean("Do\tyou\r\nwant\u{a0}to\x1bgo?"), "Do you want to go?");
     }
 
     #[test]

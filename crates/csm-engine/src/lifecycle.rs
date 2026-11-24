@@ -218,6 +218,14 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             continue;
         }
         let alert = rt.io.detector().poll(now_ms);
+        // Restore is not news: a run nobody has sent anything to or focused yet is only printing
+        // what it prints by itself (a resumed conversation's last reply, the banner). Judging that
+        // raised a "needs you" and a notification for every restored Claude session. The judgment
+        // is spent; the next one comes with the next output once the session was addressed.
+        if alert.is_some() && !rt.io.was_addressed() {
+            let _ = rt.io.detector().notify_user_interacted();
+            continue;
+        }
         if let Some(a) = alert {
             rt.heuristic = Some(a.alert_type);
             rt.heuristic_message = Some(a.message);
