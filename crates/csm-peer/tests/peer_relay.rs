@@ -22,7 +22,9 @@ use csm_peer::identity::Identity;
 use csm_peer::{PeerServer, RelayConfig, ServerConfig};
 use csm_peer_proto::addr::PeerAddr;
 use csm_peer_proto::codec::{Frame, Input};
-use csm_peer_proto::msg::{Level, Outcome};
+use csm_peer_proto::ids::{hex, sha256};
+use csm_peer_proto::limits::{UPLOAD_CHUNK, UPLOAD_CREDIT};
+use csm_peer_proto::msg::{Level, Msg, Outcome, UploadKind};
 use csm_peer_proto::pairing::{PeerOffer, RelayRoute};
 use csm_pty::{Backend, ExitCallback, OutputSink, Pty, PtySize, SpawnOptions};
 use serde_json::{Value, json};
@@ -429,4 +431,118 @@ fn a_slow_laptop_reader_keeps_the_link_and_the_final_screen() {
     marker.join().unwrap();
     assert!(!conn.is_closed(), "the channel survived the backlog");
     assert!(matches!(conn.call_wait("session_list", json!({}), Duration::from_secs(10)).unwrap(), Outcome::Ok { .. }));
+}
+
+// ---- uploads through the relay (design: "Uploads", section 10, step 2) ------------------------
+
+/// A file's bytes, in a pattern that is not all one value.
+fn pattern(n: usize) -> Vec<u8> {
+    (0..n).map(|i| u8::try_from(i % 251).unwrap_or(0).wrapping_mul(7)).collect()
+}
+
+/// One file of a drop, as the laptop sends it.
+struct Upload {
+    id: u64,
+    name: &'static str,
+    data: Vec<u8>,
+    digest: String,
+    sent: usize,
+    acked: usize,
+    accepted: bool,
+    ended: bool,
+    done: bool,
+}
+
+/// Sends a drop over `conn` the way the laptop does: the files begin together, their chunks take
+/// turns, each file stays inside its credit, and each ends with its digest. Terminal output goes on
+/// meanwhile, and the largest gap between two terminal frames is returned. Panics on a refusal or a
+/// closed channel.
+fn upload_drop_while_streaming(conn: &Connection, session: &str, pty: &FakePty, files: &[(&'static str, Vec<u8>)]) -> Duration {
+    let mut ups: Vec<Upload> = files
+        .iter()
+        .enumerate()
+        .map(|(i, (name, data))| Upload { id: i as u64 + 1, name, data: data.clone(), digest: hex(&sha256(data)), sent: 0, acked: 0, accepted: false, ended: false, done: false })
+        .collect();
+    for u in &ups {
+        conn.send(Msg::UploadBegin { id: u.id, session: session.to_owned(), name: u.name.to_owned(), size: u.data.len() as u64, kind: UploadKind::File }).unwrap();
+    }
+    let end = Instant::now() + Duration::from_secs(180);
+    let (mut last, mut max_gap) = (Instant::now(), Duration::ZERO);
+    let (mut next_line, mut lines) = (Instant::now(), 0usize);
+    while !ups.iter().all(|u| u.done) {
+        assert!(Instant::now() < end, "the drop did not finish");
+        assert!(!conn.is_closed(), "the relay closed the channel during the upload");
+        for u in ups.iter_mut().filter(|u| u.accepted && !u.done) {
+            let chunks = u.data.len().div_ceil(UPLOAD_CHUNK);
+            if u.sent < chunks && u.sent.saturating_sub(u.acked) < UPLOAD_CREDIT {
+                let from = u.sent * UPLOAD_CHUNK;
+                let to = (from + UPLOAD_CHUNK).min(u.data.len());
+                conn.send_frame(&Frame::UploadChunk { id: u.id, offset: from as u64, bytes: u.data[from..to].to_vec() }).unwrap();
+                u.sent += 1;
+            } else if u.sent == chunks && !u.ended {
+                conn.send(Msg::UploadEnd { id: u.id, sha256: u.digest.clone() }).unwrap();
+                u.ended = true;
+            }
+        }
+        if Instant::now() >= next_line && lines < 300 {
+            pty.emit(format!("tick {lines}\r\n").as_bytes());
+            lines += 1;
+            next_line = Instant::now() + Duration::from_millis(50);
+        }
+        match conn.recv_timeout(Duration::from_millis(2)) {
+            Some(Incoming::Frame(Frame::TermData { .. })) => {
+                let now = Instant::now();
+                max_gap = max_gap.max(now.duration_since(last));
+                last = now;
+            }
+            Some(Incoming::Frame(Frame::Control(m))) => match m {
+                Msg::UploadAccepted { id } => {
+                    if let Some(u) = ups.iter_mut().find(|u| u.id == id) {
+                        u.accepted = true;
+                    }
+                }
+                Msg::UploadAck { id, received } => {
+                    if let Some(u) = ups.iter_mut().find(|u| u.id == id) {
+                        u.acked = u.acked.max(usize::try_from(received).unwrap_or(usize::MAX).div_ceil(UPLOAD_CHUNK));
+                    }
+                }
+                Msg::UploadDone { id, .. } => {
+                    if let Some(u) = ups.iter_mut().find(|u| u.id == id) {
+                        u.done = true;
+                    }
+                }
+                Msg::UploadRefused { id, reason } => panic!("upload {id} was refused: {reason:?}"),
+                _ => {}
+            },
+            Some(Incoming::Closed(r)) => panic!("the link closed ({r:?}) during the upload"),
+            _ => {}
+        }
+    }
+    max_gap
+}
+
+/// A 24 MiB file and a small one, through the real relay. The first is more than the relay's
+/// 16 MiB burst for a peer channel (8 MiB/s, burst of 2 seconds), so a laptop that sent it as fast as
+/// the office acknowledged would get the channel closed with `RateLimited`. The laptop paces its bulk
+/// frames, so the channel stays open, and the terminal keeps streaming while the drop goes.
+#[test]
+#[ignore = "needs CSM_RELAY_BIN: the csm-relay binary (umage-ai/csm-relay)"]
+fn a_big_relayed_upload_keeps_the_channel_and_the_terminal_stream() {
+    let relay = start_relay();
+    let office = office(&relay);
+    let (me, host) = pair_through_relay(&office);
+    let (id, pty) = office.session();
+    let r = route(&host);
+    let direct = PeerAddr::parse(DEAD_DIRECT).unwrap();
+    let conn = client::connect_saved(Some(&direct), Some(&r), &host.host_public, &me, &ClientConfig::new("Laptop")).unwrap();
+    conn.subscribe(STREAM, &id, None).unwrap();
+    pty.emit(b"ready\r\n");
+    assert!(read_until(&conn, "ready").is_some(), "the attach arrives");
+    let files = [("big.bin", pattern(24 << 20)), ("small.txt", pattern(1 << 20))];
+    let max_gap = upload_drop_while_streaming(&conn, &id, &pty, &files);
+    assert!(!conn.is_closed(), "the channel survived the upload");
+    assert!(max_gap < Duration::from_secs(3), "terminal output stalled for {max_gap:?} during the upload");
+    pty.emit(b"after the upload\r\n");
+    assert!(read_until(&conn, "after the upload").is_some(), "the terminal still streams after the upload");
+    assert!(matches!(conn.call_wait("session_list", json!({}), Duration::from_secs(10)).unwrap(), Outcome::Ok { .. }), "calls still work");
 }

@@ -9,7 +9,7 @@ use csm_peer_proto::codec::{AttachAssembler, Decoder, Frame, Input};
 use csm_peer_proto::delta::{Delta, DeltaOp};
 use csm_peer_proto::frame::{FrameDecoder, encode_frame};
 use csm_peer_proto::limits::{MAX_FRAME_LEN, MAX_PLAINTEXT};
-use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, TermClosedReason};
+use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, TermClosedReason};
 use csm_peer_proto::pairing::{PairMsg, PeerOffer};
 use csm_peer_proto::{Event, Snapshot};
 use serde_json::json;
@@ -45,9 +45,9 @@ impl Rng {
 fn corpus() -> Vec<Vec<u8>> {
     let c = Frame::Control;
     let frames = vec![
-        c(Msg::Hello { protocol: 2, client: "Laptop".into(), app_version: "2.0.0".into(), term_version: "0.26.0".into() }),
+        c(Msg::Hello { protocol: PROTOCOL_VERSION, client: "Laptop".into(), app_version: "2.0.0".into(), term_version: "0.26.0".into() }),
         c(Msg::Welcome {
-            protocol: 2,
+            protocol: PROTOCOL_VERSION,
             host_name: "OFFICE".into(),
             server_version: "2.0.0".into(),
             term_version: "0.26.0".into(),
@@ -244,7 +244,7 @@ fn pairing_decoders_survive_random_text_and_bytes() {
     let mut rng = Rng(0xabad_1dea);
     let addr = PeerAddr::parse("tcp://10.8.0.2:47300").unwrap();
     let link = PeerOffer::new(&addr, &[2; 32], &[3; 16], &[4; 32]).link();
-    let pair = PairMsg::Hello { v: 2, name: "Laptop".into() }.encode().unwrap();
+    let pair = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into() }.encode().unwrap();
     for _ in 0..ROUNDS {
         let raw = rng.some_bytes(120);
         let _ = PairMsg::decode(&raw);

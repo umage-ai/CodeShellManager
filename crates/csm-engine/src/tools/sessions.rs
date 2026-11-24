@@ -938,7 +938,16 @@ fn session_drop_paths(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     let i = find(ctx.state, &p.session_id)?;
     let kind = ctx.state.app.sessions.get(i).map_or(SessionKind::Local, |s| s.kind);
-    let text = build_dropped_paths_payload(&p.paths, drop_quoting(kind));
+    // A WSL program sees the Linux side of a path, not the Windows one: translate, or refuse.
+    let paths: Vec<String> = if kind == SessionKind::Wsl {
+        p.paths
+            .iter()
+            .map(|path| wsl_path(path).ok_or_else(|| ToolError::Refused(format!("{path} is not a Windows drive path or a WSL path, so the WSL session cannot read it"))))
+            .collect::<Result<_, _>>()?
+    } else {
+        p.paths.clone()
+    };
+    let text = build_dropped_paths_payload(&paths, drop_quoting(kind));
     if text.is_empty() {
         return Err(ToolError::Refused("nothing was inserted: those paths have characters that can't be typed safely at a prompt".into()));
     }
@@ -954,6 +963,38 @@ pub(super) fn drop_quoting(kind: SessionKind) -> Quoting {
         SessionKind::Local => Quoting::native(),
         SessionKind::Ssh | SessionKind::Wsl => Quoting::Posix,
     }
+}
+
+/// The Linux path a WSL program uses for a Windows path: `C:\Users\x` is `/mnt/c/Users/x`, and
+/// `\\wsl$\<distro>\home\x` (or `\\wsl.localhost\...`) is `/home/x`. `None` for anything else (a
+/// UNC share, a relative path, a `.` or `..` part), which a WSL program cannot be sure to read.
+pub(super) fn wsl_path(path: &str) -> Option<String> {
+    let norm = path.replace('/', "\\");
+    let (base, rest) = if let Some(after) = norm.strip_prefix("\\\\wsl$\\").or_else(|| norm.strip_prefix("\\\\wsl.localhost\\")) {
+        // The distro name, then the Linux path inside it.
+        let (distro, inner) = after.split_once('\\')?;
+        if distro.is_empty() {
+            return None;
+        }
+        (String::new(), inner.to_owned())
+    } else {
+        let mut chars = norm.chars();
+        let drive = chars.next()?;
+        if !drive.is_ascii_alphabetic() || chars.next()? != ':' {
+            return None;
+        }
+        let rest = chars.as_str().strip_prefix('\\')?;
+        (format!("/mnt/{}", drive.to_ascii_lowercase()), rest.to_owned())
+    };
+    let mut out = base;
+    for part in rest.split('\\').filter(|p| !p.is_empty()) {
+        if part == "." || part == ".." {
+            return None;
+        }
+        out.push('/');
+        out.push_str(part);
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Pastes `text` into one live session (bracketed paste; `submit` presses Enter after it, as its
@@ -1145,6 +1186,21 @@ fn inbox_next(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
 #[cfg(test)]
 mod drop_tests {
     use super::*;
+
+    #[test]
+    fn a_windows_path_is_the_linux_path_a_wsl_program_reads() {
+        assert_eq!(wsl_path(r"C:\Users\Allan\peer\uploads\s1\1-report.pdf").as_deref(), Some("/mnt/c/Users/Allan/peer/uploads/s1/1-report.pdf"));
+        assert_eq!(wsl_path("D:/data/x y.txt").as_deref(), Some("/mnt/d/data/x y.txt"));
+        assert_eq!(wsl_path(r"\\wsl$\Ubuntu\home\me\a.png").as_deref(), Some("/home/me/a.png"));
+        assert_eq!(wsl_path(r"\\wsl.localhost\Debian\srv\x").as_deref(), Some("/srv/x"));
+        // What a WSL program cannot be sure to read is refused, not guessed at.
+        assert_eq!(wsl_path(r"\\server\share\a.txt"), None, "a UNC share");
+        assert_eq!(wsl_path(r"\\wsl$\Ubuntu"), None, "a distro with no path");
+        assert_eq!(wsl_path(r"C:\..\..\etc"), None, "a parent step");
+        assert_eq!(wsl_path(r"C:relative"), None, "a drive-relative path");
+        assert_eq!(wsl_path("relative/x"), None);
+        assert_eq!(wsl_path(""), None);
+    }
 
     #[test]
     fn a_drop_quotes_for_the_session_shell_wsl_and_ssh_being_posix() {

@@ -17,13 +17,13 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use csm_peer_proto::ids::hex;
-use csm_peer_proto::limits::{MAX_UPLOAD_NAME_BYTES, MAX_UPLOAD_SESSION_ID, UPLOAD_ACK_EVERY, UPLOAD_ACTIVE_TOTAL, UPLOAD_CREDIT};
+use csm_peer_proto::limits::{MAX_UPLOAD_NAME_BYTES, MAX_UPLOAD_SESSION_ID, UPLOAD_ACK_EVERY, UPLOAD_ACTIVE_TOTAL, UPLOAD_CHUNK, UPLOAD_CREDIT};
 use csm_peer_proto::msg::{Msg, UploadKind, UploadRefused};
 use sha2::{Digest, Sha256};
 
@@ -37,6 +37,75 @@ pub const UPLOAD_STALL: Duration = Duration::from_secs(30);
 pub const KEEP_FOR: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Partial files older than this are removed when the office starts.
 pub const KEEP_PARTS_FOR: Duration = Duration::from_secs(24 * 60 * 60);
+/// The most the uploads folder may hold, finished and partial files together, across every
+/// session. An upload that would go over is refused `TooLarge`, so a full device cannot fill the
+/// office's disk.
+pub const UPLOAD_FOLDER_QUOTA: u64 = 1024 * 1024 * 1024;
+/// How many names a partial file may try before the begin is refused (`<stamp>-<name>.part`, then
+/// `<stamp>-<name>.1.part`, and so on).
+const PART_TRIES: u32 = 1000;
+
+/// The bytes the uploads folder holds, shared by every link. A begin reserves the declared size
+/// (refused `TooLarge` when that would go over [`UPLOAD_FOLDER_QUOTA`]); a reservation that ends
+/// without a finished file gives its bytes back.
+#[derive(Debug, Default)]
+pub struct Quota {
+    used: AtomicU64,
+}
+
+impl Quota {
+    /// Sets the count to what the folder holds now (on start, after the cleanup).
+    pub fn set_used(&self, bytes: u64) {
+        self.used.store(bytes, Ordering::Release);
+    }
+
+    fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation, UploadRefused> {
+        let mut cur = self.used.load(Ordering::Acquire);
+        loop {
+            let next = cur.checked_add(bytes).filter(|n| *n <= UPLOAD_FOLDER_QUOTA).ok_or(UploadRefused::TooLarge)?;
+            match self.used.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Ok(Reservation { quota: self.clone(), bytes, kept: false }),
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    fn release(&self, bytes: u64) {
+        let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |u| Some(u.saturating_sub(bytes)));
+    }
+}
+
+/// A begin's bytes in the quota. Given back when dropped, unless the file was kept.
+struct Reservation {
+    quota: Arc<Quota>,
+    bytes: u64,
+    kept: bool,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if !self.kept {
+            self.quota.release(self.bytes);
+        }
+    }
+}
+
+/// The bytes of every regular file under `root`, for [`Quota::set_used`]. Links are not followed.
+pub fn bytes_under(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(folders) = std::fs::read_dir(root) else { return 0 };
+    for folder in folders.flatten() {
+        let Ok(files) = std::fs::read_dir(folder.path()) else { continue };
+        for file in files.flatten() {
+            if let Ok(m) = std::fs::symlink_metadata(file.path())
+                && m.is_file()
+            {
+                total = total.saturating_add(m.len());
+            }
+        }
+    }
+    total
+}
 
 /// `<peer folder>/uploads`: the only place uploads are written.
 pub fn root_in(peer_dir: &Path) -> PathBuf {
@@ -62,6 +131,7 @@ pub fn reason_name(reason: UploadRefused) -> &'static str {
         UploadRefused::Corrupt => "corrupt",
         UploadRefused::Stalled => "stalled",
         UploadRefused::Failed => "failed",
+        UploadRefused::NotSupported => "not_supported",
     }
 }
 
@@ -237,12 +307,30 @@ impl Drop for Finished {
     }
 }
 
-/// Why the reader ended an upload, if it has to tell the laptop. Set before the reader drops the
-/// sender; the worker reads it when the channel closes. `None` at close is a silent end.
-type StopReason = Arc<Mutex<Option<UploadRefused>>>;
+/// Why an open upload ends. The reader sets it before it drops the upload's sender, and the worker
+/// reads it before it acts on each job, so a stop is never followed by a rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// The office refuses the upload and tells the laptop why.
+    Refuse(UploadRefused),
+    /// The laptop cancelled. Nothing is sent back.
+    Cancelled,
+    /// The link closed, the server went off, or the device was revoked. Nothing is sent back.
+    LinkClosed,
+}
 
-fn take_reason(stop: &StopReason) -> Option<UploadRefused> {
-    stop.lock().unwrap_or_else(PoisonError::into_inner).take()
+/// The first stop wins: a stall that is followed by a cancel is still a stall.
+type StopReason = Arc<Mutex<Option<Stop>>>;
+
+fn set_stop(stop: &StopReason, why: Stop) {
+    let mut cur = stop.lock().unwrap_or_else(PoisonError::into_inner);
+    if cur.is_none() {
+        *cur = Some(why);
+    }
+}
+
+fn peek_stop(stop: &StopReason) -> Option<Stop> {
+    *stop.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 struct Active {
@@ -250,20 +338,35 @@ struct Active {
     stop: StopReason,
     finished: Arc<AtomicBool>,
     last: Instant,
+    /// The bytes the worker has acknowledged (stored before each `UploadAck` is sent). The reader
+    /// reads it to enforce the credit: a chunk may end at most `CREDIT_BYTES` past it.
+    acked: Arc<AtomicU64>,
 }
 
-/// The uploads open on one link. Dropping it ends them all silently (the partial files go): the
-/// link closed, the device was revoked, or the server was turned off.
+/// The most a laptop may send beyond what the office has acknowledged, in bytes.
+const CREDIT_BYTES: u64 = (UPLOAD_CREDIT * UPLOAD_CHUNK) as u64;
+
+/// The uploads open on one link. Dropping it ends them all (the partial files go, and the log
+/// says `link_closed`): the link closed, the device was revoked, or the server was turned off.
 pub(crate) struct UploadHub {
     active: HashMap<u64, Active>,
     total: Arc<AtomicUsize>,
     audit: Arc<Audit>,
+    quota: Arc<Quota>,
+}
+
+impl Drop for UploadHub {
+    fn drop(&mut self) {
+        for (_, a) in self.active.drain() {
+            set_stop(&a.stop, Stop::LinkClosed);
+        }
+    }
 }
 
 impl UploadHub {
-    /// `total` is shared by every link of the server.
-    pub(crate) fn new(total: Arc<AtomicUsize>, audit: Arc<Audit>) -> Self {
-        Self { active: HashMap::new(), total, audit }
+    /// `total` is shared by every link of the server, and `quota` by every upload.
+    pub(crate) fn new(total: Arc<AtomicUsize>, audit: Arc<Audit>, quota: Arc<Quota>) -> Self {
+        Self { active: HashMap::new(), total, audit, quota }
     }
 
     fn prune(&mut self) {
@@ -282,13 +385,14 @@ impl UploadHub {
         if self.active.contains_key(&plan.id) {
             return Err(UploadRefused::Failed);
         }
+        let reservation = self.quota.reserve(plan.size)?;
         let slot = Slot::take(&self.total)?;
         fsperm::ensure_private_dir(&plan.dir).map_err(|_| UploadRefused::Failed)?;
-        let part = plan.dir.join(format!("{}-{}.part", plan.stamp_ms, plan.name));
-        let file = OpenOptions::new().write(true).create_new(true).open(&part).map_err(|_| UploadRefused::Failed)?;
+        let (part, file) = create_part(&plan.dir, plan.stamp_ms, &plan.name)?;
         let (tx, rx) = mpsc::sync_channel::<Job>(UPLOAD_CREDIT + 1);
         let finished = Arc::new(AtomicBool::new(false));
         let stop: StopReason = Arc::new(Mutex::new(None));
+        let acked = Arc::new(AtomicU64::new(0));
         let worker = Worker {
             id: plan.id,
             kind: plan.kind,
@@ -307,6 +411,8 @@ impl UploadHub {
             link: link.clone(),
             audit: self.audit.clone(),
             stop: stop.clone(),
+            reservation,
+            acked: acked.clone(),
         };
         let done = Finished(finished.clone());
         let spawned = std::thread::Builder::new().name("csm-peer-upload".into()).spawn(move || {
@@ -319,7 +425,7 @@ impl UploadHub {
             let _ = std::fs::remove_file(&part);
             return Err(UploadRefused::Failed);
         }
-        self.active.insert(plan.id, Active { tx, stop, finished, last: Instant::now() });
+        self.active.insert(plan.id, Active { tx, stop, finished, last: Instant::now(), acked });
         let _ = link.send_msg(Msg::UploadAccepted { id: plan.id });
         Ok(())
     }
@@ -329,13 +435,22 @@ impl UploadHub {
     pub(crate) fn chunk(&mut self, id: u64, offset: u64, bytes: Vec<u8>) -> Result<(), UploadRefused> {
         self.prune();
         let Some(a) = self.active.get_mut(&id) else { return Err(UploadRefused::Overrun) };
+        // The credit: a compliant laptop never has more than CREDIT_BYTES past what is acknowledged.
+        // The worker stores the acknowledged count before it sends the ack, so a laptop that has
+        // seen the ack never sees a stale count here.
+        let end = offset.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if end > a.acked.load(Ordering::Acquire).saturating_add(CREDIT_BYTES) {
+            self.end_with(id, Stop::Refuse(UploadRefused::Overrun));
+            return Ok(());
+        }
+        let Some(a) = self.active.get_mut(&id) else { return Ok(()) };
         match a.tx.try_send(Job::Chunk { offset, bytes }) {
             Ok(()) => {
                 a.last = Instant::now();
                 Ok(())
             }
             Err(TrySendError::Full(_)) => {
-                self.end_with(id, Some(UploadRefused::Overrun));
+                self.end_with(id, Stop::Refuse(UploadRefused::Overrun));
                 Ok(())
             }
             Err(TrySendError::Disconnected(_)) => Err(UploadRefused::Overrun),
@@ -350,7 +465,7 @@ impl UploadHub {
         match a.tx.try_send(Job::End { sha256 }) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
-                self.end_with(id, Some(UploadRefused::Overrun));
+                self.end_with(id, Stop::Refuse(UploadRefused::Overrun));
                 Ok(())
             }
             Err(TrySendError::Disconnected(_)) => Err(UploadRefused::Overrun),
@@ -359,7 +474,7 @@ impl UploadHub {
 
     /// `UploadCancel` from the laptop: the partial file goes, and nothing is sent back.
     pub(crate) fn cancel(&mut self, id: u64) {
-        self.end_with(id, None);
+        self.end_with(id, Stop::Cancelled);
     }
 
     /// Ends the uploads with no chunk for [`UPLOAD_STALL`]. The worker refuses them `Stalled`.
@@ -367,17 +482,32 @@ impl UploadHub {
         self.prune();
         let stalled: Vec<u64> = self.active.iter().filter(|(_, a)| now.duration_since(a.last) > UPLOAD_STALL).map(|(id, _)| *id).collect();
         for id in stalled {
-            self.end_with(id, Some(UploadRefused::Stalled));
+            self.end_with(id, Stop::Refuse(UploadRefused::Stalled));
         }
     }
 
-    /// Ends an upload: the reason (if any) is stored, then the sender is dropped, which is what the
-    /// worker waits for. The worker is never waited for here.
-    fn end_with(&mut self, id: u64, reason: Option<UploadRefused>) {
-        if let (Some(a), Some(r)) = (self.active.remove(&id), reason) {
-            *a.stop.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
+    /// Ends an upload: the reason is stored, then the sender is dropped. The worker reads the
+    /// reason before it acts on any job still queued, so a cancel after `UploadEnd` keeps nothing.
+    fn end_with(&mut self, id: u64, why: Stop) {
+        if let Some(a) = self.active.remove(&id) {
+            set_stop(&a.stop, why);
         }
     }
+}
+
+/// Creates the partial file for an upload: `<stamp>-<name>.part`, or with `.n` before `.part` when
+/// that name is taken (two files of one drop can share a name and a millisecond). Never overwrites.
+fn create_part(dir: &Path, stamp_ms: u128, name: &str) -> Result<(PathBuf, File), UploadRefused> {
+    for n in 0..PART_TRIES {
+        let file_name = if n == 0 { format!("{stamp_ms}-{name}.part") } else { format!("{stamp_ms}-{name}.{n}.part") };
+        let path = dir.join(file_name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(UploadRefused::Failed),
+        }
+    }
+    Err(UploadRefused::Failed)
 }
 
 /// Everything a worker thread owns while one upload is open.
@@ -399,18 +529,22 @@ struct Worker {
     link: Arc<Link>,
     audit: Arc<Audit>,
     stop: StopReason,
+    reservation: Reservation,
+    acked: Arc<AtomicU64>,
 }
 
 impl Worker {
     fn run(mut self, rx: &Receiver<Job>) {
         loop {
-            // The reader dropped its sender: the upload was ended. Any reason it left is for the
-            // laptop; no reason is a silent end (cancel, the link closed, the server went off).
+            // The reader sets the stop before it drops the sender, so a stop is seen here before
+            // any job queued behind it (a cancel after `UploadEnd` finds no file to keep).
+            if let Some(why) = peek_stop(&self.stop) {
+                return self.stopped(why);
+            }
             let Ok(job) = rx.recv() else {
-                return match take_reason(&self.stop) {
-                    Some(reason) => self.refuse(reason),
-                    None => self.discard(),
-                };
+                // The sender went without a stop only if the hub was dropped, which is a closed link.
+                let why = peek_stop(&self.stop).unwrap_or(Stop::LinkClosed);
+                return self.stopped(why);
             };
             match job {
                 Job::Chunk { offset, bytes } => {
@@ -419,17 +553,32 @@ impl Worker {
                     }
                     if self.since_ack >= UPLOAD_ACK_EVERY {
                         self.since_ack = 0;
+                        self.acked.store(self.received, Ordering::Release);
                         let _ = self.link.send_msg(Msg::UploadAck { id: self.id, received: self.received });
                     }
                 }
                 Job::End { sha256 } => {
                     return match self.finish(&sha256) {
                         Ok(path) => self.done(path),
-                        Err(reason) => self.refuse(reason),
+                        Err(why) => self.stopped(why),
                     };
                 }
             }
         }
+    }
+
+    /// Ends the upload for `why`: the partial file goes, and only a refusal is sent to the laptop.
+    fn stopped(mut self, why: Stop) {
+        match why {
+            Stop::Refuse(reason) => self.refuse(reason),
+            Stop::Cancelled => self.silent_end("cancel"),
+            Stop::LinkClosed => self.silent_end("link_closed"),
+        }
+    }
+
+    fn silent_end(&mut self, reason: &str) {
+        self.discard();
+        self.audit.record("upload_cancelled", serde_json::json!({"session": clean(&self.session), "device": clean(&self.device), "reason": reason}));
     }
 
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), UploadRefused> {
@@ -458,23 +607,33 @@ impl Worker {
     }
 
     /// Checks the size and digest, makes the file durable, and renames it into place.
-    fn finish(&mut self, sha256: &str) -> Result<PathBuf, UploadRefused> {
+    /// Any stop that is set before the rename wins: a cancel that arrives after `UploadEnd` keeps
+    /// nothing, so the laptop never gets a done for a drop it has cancelled.
+    fn finish(&mut self, sha256: &str) -> Result<PathBuf, Stop> {
+        if let Some(why) = peek_stop(&self.stop) {
+            return Err(why);
+        }
+        let refuse = Stop::Refuse;
         if self.received != self.size {
-            return Err(UploadRefused::Corrupt);
+            return Err(refuse(UploadRefused::Corrupt));
         }
         let digest = hex(&std::mem::take(&mut self.hasher).finalize());
         if !digest.eq_ignore_ascii_case(sha256) {
-            return Err(UploadRefused::Corrupt);
+            return Err(refuse(UploadRefused::Corrupt));
         }
         let base = match self.kind {
             UploadKind::File => self.name.clone(),
-            UploadKind::Image => format!("clipboard.{}", self.ext.ok_or(UploadRefused::NotAnImage)?),
+            UploadKind::Image => format!("clipboard.{}", self.ext.ok_or(refuse(UploadRefused::NotAnImage))?),
         };
-        let file = self.file.take().ok_or(UploadRefused::Failed)?;
-        file.sync_all().map_err(|_| UploadRefused::Failed)?;
+        let file = self.file.take().ok_or(refuse(UploadRefused::Failed))?;
+        file.sync_all().map_err(|_| refuse(UploadRefused::Failed))?;
         drop(file);
-        let target = self.free_name(&base)?;
-        std::fs::rename(&self.part, &target).map_err(|_| UploadRefused::Failed)?;
+        if let Some(why) = peek_stop(&self.stop) {
+            return Err(why);
+        }
+        let target = self.free_name(&base).map_err(refuse)?;
+        std::fs::rename(&self.part, &target).map_err(|_| refuse(UploadRefused::Failed))?;
+        self.reservation.kept = true;
         Ok(target)
     }
 
@@ -498,6 +657,7 @@ impl Worker {
     }
 
     fn done(&self, path: PathBuf) {
+        self.acked.store(self.received, Ordering::Release);
         let _ = self.link.send_msg(Msg::UploadAck { id: self.id, received: self.received });
         let shown = path.display().to_string();
         let _ = self.link.send_msg(Msg::UploadDone { id: self.id, path: shown.clone() });
@@ -624,5 +784,88 @@ mod tests {
         assert_eq!(clean_old(&root, two_days), Cleaned { removed: 1, failed: 0 });
         assert!(!session.join("a.part").exists());
         assert!(session.join("b.bin").exists());
+    }
+
+    #[test]
+    fn two_partial_files_with_one_name_and_one_millisecond_never_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (p1, _f1) = create_part(tmp.path(), 5, "README.md").unwrap();
+        let (p2, _f2) = create_part(tmp.path(), 5, "README.md").unwrap();
+        let (p3, _f3) = create_part(tmp.path(), 5, "README.md").unwrap();
+        assert!(p1 != p2 && p2 != p3 && p1 != p3, "{p1:?} {p2:?} {p3:?}");
+        assert!(p1.exists() && p2.exists() && p3.exists());
+        assert!(p1.to_string_lossy().ends_with("5-README.md.part"));
+    }
+
+    #[test]
+    fn the_quota_refuses_what_would_go_over_and_gives_back_what_is_not_kept() {
+        let quota = Arc::new(Quota::default());
+        quota.set_used(UPLOAD_FOLDER_QUOTA - 10);
+        assert!(matches!(quota.reserve(11), Err(UploadRefused::TooLarge)), "over the quota");
+        let mut kept = quota.reserve(4).unwrap();
+        kept.kept = true;
+        let given_back = quota.reserve(6).unwrap();
+        assert!(matches!(quota.reserve(1), Err(UploadRefused::TooLarge)), "the folder is full");
+        drop(given_back);
+        assert!(quota.reserve(6).is_ok(), "a dropped reservation frees its bytes");
+        drop(kept);
+        assert_eq!(quota.used.load(Ordering::Acquire), UPLOAD_FOLDER_QUOTA - 10 + 4, "a kept file stays counted");
+        assert!(matches!(quota.reserve(u64::MAX), Err(UploadRefused::TooLarge)), "no overflow");
+    }
+
+    /// A hub with one open upload whose worker is not running: its jobs queue in `rx`, which the
+    /// caller keeps alive (dropping it would make every chunk a disconnect).
+    fn hub_with_one_open_upload(id: u64, dir: &std::path::Path) -> (UploadHub, StopReason, Arc<AtomicU64>, mpsc::Receiver<Job>) {
+        let audit = Arc::new(Audit::new(dir.join("log")));
+        let mut hub = UploadHub::new(Arc::new(AtomicUsize::new(0)), audit, Arc::new(Quota::default()));
+        let (tx, rx) = mpsc::sync_channel::<Job>(UPLOAD_CREDIT + 1);
+        let stop: StopReason = Arc::new(Mutex::new(None));
+        let acked = Arc::new(AtomicU64::new(0));
+        hub.active.insert(id, Active { tx, stop: stop.clone(), finished: Arc::new(AtomicBool::new(false)), last: Instant::now(), acked: acked.clone() });
+        (hub, stop, acked, rx)
+    }
+
+    #[test]
+    fn an_upload_with_no_chunk_for_the_stall_time_is_refused_stalled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut hub, stop, _, _rx) = hub_with_one_open_upload(3, tmp.path());
+        hub.expire_stalled(Instant::now());
+        assert_eq!(peek_stop(&stop), None, "a fresh upload is not stalled");
+        hub.expire_stalled(Instant::now() + UPLOAD_STALL + Duration::from_secs(1));
+        assert_eq!(peek_stop(&stop), Some(Stop::Refuse(UploadRefused::Stalled)));
+        assert!(hub.active.is_empty(), "the stalled upload is no longer open");
+    }
+
+    #[test]
+    fn the_first_stop_wins_and_a_closed_link_ends_every_open_upload_as_link_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut hub, stop, _, _rx) = hub_with_one_open_upload(4, tmp.path());
+        hub.cancel(4);
+        set_stop(&stop, Stop::Refuse(UploadRefused::Failed));
+        assert_eq!(peek_stop(&stop), Some(Stop::Cancelled), "a later reason does not overwrite the first");
+        let (hub, stop, _, _rx) = hub_with_one_open_upload(5, tmp.path());
+        drop(hub);
+        assert_eq!(peek_stop(&stop), Some(Stop::LinkClosed));
+    }
+
+    #[test]
+    fn the_office_acknowledged_count_bounds_what_a_laptop_may_send() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut hub, stop, _, _rx) = hub_with_one_open_upload(6, tmp.path());
+        let chunk = vec![0u8; UPLOAD_CHUNK];
+        // Eight chunks with nothing acknowledged is the whole credit.
+        for i in 0..UPLOAD_CREDIT {
+            assert!(hub.chunk(6, (i * UPLOAD_CHUNK) as u64, chunk.clone()).is_ok(), "chunk {i} is within the credit");
+        }
+        // A ninth, unacknowledged, ends the upload with Overrun.
+        hub.chunk(6, (UPLOAD_CREDIT * UPLOAD_CHUNK) as u64, chunk.clone()).unwrap();
+        assert_eq!(peek_stop(&stop), Some(Stop::Refuse(UploadRefused::Overrun)));
+        // With four chunks acknowledged, the window has opened by four.
+        let (mut hub, stop2, acked2, _rx2) = hub_with_one_open_upload(7, tmp.path());
+        acked2.store((4 * UPLOAD_CHUNK) as u64, Ordering::Release);
+        assert!(hub.chunk(7, (UPLOAD_CREDIT * UPLOAD_CHUNK) as u64, chunk.clone()).is_ok());
+        assert!(hub.chunk(7, ((UPLOAD_CREDIT + 3) * UPLOAD_CHUNK) as u64, chunk.clone()).is_ok());
+        assert_eq!(peek_stop(&stop2), None, "four acknowledged chunks open four more");
+        assert_eq!(peek_stop(&stop), Some(Stop::Refuse(UploadRefused::Overrun)));
     }
 }

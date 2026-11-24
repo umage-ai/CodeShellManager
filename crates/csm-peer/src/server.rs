@@ -196,6 +196,8 @@ struct Inner {
     in_flight: Arc<AtomicUsize>,
     /// Uploads open across every link (at most `UPLOAD_ACTIVE_TOTAL`).
     uploads_active: Arc<AtomicUsize>,
+    /// The bytes the uploads folder holds, across every link (at most `UPLOAD_FOLDER_QUOTA`).
+    upload_quota: Arc<uploads::Quota>,
     /// The relay this server is also reachable through, when the person set one up.
     relay: Mutex<Option<RelayState>>,
     /// The keychain (or a test store): the relay secrets live here, never in a file.
@@ -246,6 +248,7 @@ impl PeerServer {
                 unauth: AtomicUsize::new(0),
                 in_flight: Arc::new(AtomicUsize::new(0)),
                 uploads_active: Arc::new(AtomicUsize::new(0)),
+                upload_quota: Arc::new(uploads::Quota::default()),
                 relay: Mutex::new(None),
                 secrets: OnceLock::new(),
             }),
@@ -260,8 +263,11 @@ impl PeerServer {
         }
         // Old uploads go on a background thread, never before the window shows.
         let root = uploads::root_in(&self.inner.dir);
+        let quota = self.inner.upload_quota.clone();
         let cleaned = std::thread::Builder::new().name("csm-peer-upload-clean".into()).spawn(move || {
             let c = uploads::clean_old(&root, std::time::SystemTime::now());
+            // What the folder holds now, for the quota (the cleanup just removed what it could).
+            quota.set_used(uploads::bytes_under(&root));
             if c.removed > 0 || c.failed > 0 {
                 log::info!("remote access: {}", uploads::cleanup_summary(c));
             }
@@ -748,7 +754,7 @@ impl Inner {
         let mut ping_n: u64 = 0;
         let tick = tick_of(self.cfg.ping_every, self.cfg.dead_after);
         // The uploads of this link. Dropped when the loop ends: their partial files go with them.
-        let mut uploads = UploadHub::new(self.uploads_active.clone(), self.audit.clone());
+        let mut uploads = UploadHub::new(self.uploads_active.clone(), self.audit.clone(), self.upload_quota.clone());
         loop {
             if link.is_closed() {
                 return "closed";
@@ -829,8 +835,13 @@ impl Inner {
         if !device.level.allows(Level::Full) {
             return refuse(UploadRefused::Forbidden);
         }
-        if !uploads::is_folder_id(session) || !self.session_exists(session) {
+        let shell = if uploads::is_folder_id(session) { self.session_kind(session) } else { None };
+        let Some(shell) = shell else {
             return refuse(UploadRefused::NoSession);
+        };
+        // An SSH session's shell runs on another machine: a path on the office means nothing there.
+        if shell == "ssh" {
+            return refuse(UploadRefused::NotSupported);
         }
         if size > kind.limit() {
             return refuse(UploadRefused::TooLarge);
@@ -856,9 +867,10 @@ impl Inner {
         }
     }
 
-    /// Whether the engine has a session of that id right now.
-    fn session_exists(&self, session: &str) -> bool {
-        self.engine.get().is_some_and(|e| e.view().sessions.iter().any(|s| s.id == session))
+    /// The shell kind of the session with that id right now (`local`, `wsl`, `ssh`), or `None` when
+    /// there is no such session.
+    fn session_kind(&self, session: &str) -> Option<&'static str> {
+        self.engine.get()?.view().sessions.iter().find(|s| s.id == session).map(|s| s.kind)
     }
 
     fn caller(device: &Device) -> Caller {

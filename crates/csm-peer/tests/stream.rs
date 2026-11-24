@@ -19,7 +19,7 @@ use csm_peer::{PeerServer, ServerConfig};
 use csm_peer_proto::Snapshot as WireSnapshot;
 use csm_peer_proto::codec::{Frame, Input};
 use csm_peer_proto::ids::{hex, sha256};
-use csm_peer_proto::limits::{MAX_UPLOAD_FILE, UPLOAD_CHUNK};
+use csm_peer_proto::limits::{MAX_UPLOAD_FILE, UPLOAD_CHUNK, UPLOAD_CREDIT};
 use csm_peer_proto::msg::{ByeReason, ConsentOutcome, Msg, Outcome, TermClosedReason, UploadKind, UploadRefused as UploadRefusedKind};
 use csm_peer_proto::pairing::PeerOffer;
 use csm_pty::{Backend, ExitCallback, OutputSink, Pty, PtySize, SpawnOptions};
@@ -1010,6 +1010,112 @@ fn a_cancel_deletes_the_partial_file_and_sends_nothing_back() {
     conn.send(Msg::UploadCancel { id: 40 }).unwrap();
     wait_for("the partial file to go", || upload_files(&rig, &session).is_empty().then_some(()));
     assert!(maybe_msg(&conn, Duration::from_millis(300), refused(40)).is_none(), "a cancel is silent");
+    let log = wait_for("the cancel in the log", || std::fs::read_to_string(rig.peer_dir.join("remote-access.log")).ok().filter(|l| l.contains("upload_cancelled")));
+    assert!(log.contains("\"reason\":\"cancel\""), "{log}");
+}
+
+#[test]
+fn a_chunk_beyond_the_credit_is_refused_overrun_and_the_partial_file_goes() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    let data = payload(UPLOAD_CHUNK);
+    begin(&conn, 90, &session, "flood.bin", (UPLOAD_CHUNK * 10) as u64, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(90));
+    // Nothing is acknowledged yet, so the window is the first eight chunks: offset 8 is the ninth.
+    conn.send_frame(&chunk_frame(90, UPLOAD_CREDIT * UPLOAD_CHUNK, &data)).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(90)), Msg::UploadRefused { id: 90, reason: UploadRefusedKind::Overrun });
+    wait_for("the partial file to go", || upload_files(&rig, &session).is_empty().then_some(()));
+    // The link stays up for the next upload.
+    begin(&conn, 91, &session, "after.bin", 3, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(91));
+}
+
+#[test]
+fn a_terminal_stream_keeps_its_frames_during_a_large_upload() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (id, pty, handle) = rig.session();
+    // The upload and the terminal share one connection, as they do in a remote window.
+    let mut v = dev.connect();
+    v.conn.subscribe(STREAM, &id, None).unwrap();
+    v.until("the attach", |v| v.attaches == 1);
+    let data = payload(16 * 1024 * 1024);
+    let chunks = data.len() / UPLOAD_CHUNK;
+    begin(&v.conn, 100, &id, "big.bin", data.len() as u64, UploadKind::File);
+    let (mut sent, mut accepted_seen, mut ended) = (0usize, false, false);
+    let (mut last_data, mut max_gap, mut seen) = (Instant::now(), Duration::ZERO, v.data_frames);
+    let (mut next_line, mut lines) = (Instant::now(), 0usize);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        assert!(Instant::now() < deadline, "the upload did not finish");
+        v.step(Duration::from_millis(2));
+        if v.data_frames != seen {
+            seen = v.data_frames;
+            let now = Instant::now();
+            max_gap = max_gap.max(now.duration_since(last_data));
+            last_data = now;
+        }
+        if v.msgs.iter().any(|m| matches!(m, Msg::UploadDone { id: 100, .. })) {
+            break;
+        }
+        accepted_seen = accepted_seen || v.msgs.iter().any(|m| matches!(m, Msg::UploadAccepted { id: 100 }));
+        let acked_bytes = v.msgs.iter().filter_map(|m| if let Msg::UploadAck { id: 100, received } = m { Some(*received) } else { None }).max().unwrap_or(0);
+        let acked_chunks = usize::try_from(acked_bytes).unwrap_or(usize::MAX).div_ceil(UPLOAD_CHUNK);
+        if accepted_seen && !ended {
+            while sent < chunks && sent.saturating_sub(acked_chunks) < UPLOAD_CREDIT {
+                let from = sent * UPLOAD_CHUNK;
+                v.conn.send_frame(&chunk_frame(100, from, &data[from..from + UPLOAD_CHUNK])).unwrap();
+                sent += 1;
+            }
+            if sent == chunks {
+                v.conn.send(Msg::UploadEnd { id: 100, sha256: digest(&data) }).unwrap();
+                ended = true;
+            }
+        }
+        if Instant::now() >= next_line && lines < 200 {
+            pty.emit(format!("line {lines}\r\n").as_bytes());
+            lines += 1;
+            next_line = Instant::now() + Duration::from_millis(20);
+        }
+    }
+    assert!(max_gap < Duration::from_secs(2), "terminal output stalled for {max_gap:?} during the upload");
+    v.until("the last line", |v| v.text().contains(&format!("line {}", lines - 1)));
+    wait_for("the emulator", || (handle.processed_offset() >= handle.output_end()).then_some(()));
+}
+
+#[test]
+fn revoking_a_device_mid_upload_deletes_the_partial_file_and_logs_the_end() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    begin(&conn, 61, &session, "revoked.bin", 9000, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(61));
+    conn.send_frame(&chunk_frame(61, 0, &payload(4000))).unwrap();
+    wait_for("the partial file", || upload_files(&rig, &session).iter().any(|n| n.ends_with(".part")).then_some(()));
+    rig.ui("peer_device_revoke", json!({"id": dev.host.device_id})).unwrap();
+    wait_for("the partial file to go", || upload_files(&rig, &session).is_empty().then_some(()));
+    let log = wait_for("the end in the log", || std::fs::read_to_string(rig.peer_dir.join("remote-access.log")).ok().filter(|l| l.contains("upload_cancelled")));
+    assert!(log.contains("link_closed"), "{log}");
+}
+
+#[test]
+fn files_cannot_be_uploaded_into_an_ssh_session_yet() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    // The shell runs on another machine, so a path on the office would mean nothing there.
+    let out = rig.ui("session_new", json!({"ssh": {"host": "example-host"}, "command": "fake"})).unwrap();
+    let id = out.data["id"].as_str().unwrap().to_owned();
+    let conn = dev.connect().conn;
+    begin(&conn, 110, &id, "x.txt", 1, UploadKind::File);
+    assert_eq!(expect_msg(&conn, "the refusal", refused(110)), Msg::UploadRefused { id: 110, reason: UploadRefusedKind::NotSupported });
+    assert!(upload_files(&rig, &id).is_empty(), "nothing is written for an SSH session");
 }
 
 #[test]

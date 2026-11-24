@@ -173,12 +173,17 @@ impl Link {
     /// Sends already-encoded plaintexts, one Noise message each, back to back (the fragments of
     /// one control message must not be separated by another sender).
     pub(crate) fn send_plains(&self, plains: &[Vec<u8>]) -> Result<(), LinkError> {
+        self.send_lane(plains, false)
+    }
+
+    /// As [`Link::send_plains`]; `bulk` marks upload chunks, which a paced relay channel may hold back.
+    fn send_lane(&self, plains: &[Vec<u8>], bulk: bool) -> Result<(), LinkError> {
         if self.is_closed() {
             return Err(LinkError::Closed);
         }
         let mut w = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
         for p in plains {
-            if let Err(e) = self.write_one(&mut w, p) {
+            if let Err(e) = self.write_one(&mut w, p, bulk) {
                 self.close();
                 return Err(e);
             }
@@ -186,7 +191,7 @@ impl Link {
         Ok(())
     }
 
-    fn write_one(&self, w: &mut WriteHalf, plain: &[u8]) -> Result<(), LinkError> {
+    fn write_one(&self, w: &mut WriteHalf, plain: &[u8], bulk: bool) -> Result<(), LinkError> {
         if plain.len() > MAX_PLAINTEXT {
             return Err(LinkError::Codec(CodecError::TooLarge));
         }
@@ -200,11 +205,12 @@ impl Link {
             n
         };
         let framed = encode_frame(ct.get(..n).unwrap_or_default())?;
-        w.stream.write_all(&framed).map_err(|e| io_err(&e))
+        let written = if bulk { w.stream.write_all_bulk(&framed) } else { w.stream.write_all(&framed) };
+        written.map_err(|e| io_err(&e))
     }
 
     pub(crate) fn send_frame(&self, frame: &Frame) -> Result<(), LinkError> {
-        self.send_plains(&frame.encode()?)
+        self.send_lane(&frame.encode()?, matches!(frame, Frame::UploadChunk { .. }))
     }
 
     pub(crate) fn send_msg(&self, msg: Msg) -> Result<(), LinkError> {
@@ -219,7 +225,7 @@ impl Link {
         let Ok(plains) = Frame::Control(Msg::Bye { reason }).encode() else { return };
         if let Ok(mut w) = self.writer.try_lock() {
             for p in &plains {
-                if self.write_one(&mut w, p).is_err() {
+                if self.write_one(&mut w, p, false).is_err() {
                     break;
                 }
             }

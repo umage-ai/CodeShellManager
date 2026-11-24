@@ -1200,21 +1200,51 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
 
 ## Uploads: file drops and image paste (P3, `csm-peer-proto`, `csm-peer`, `csm-remote`, `csm-engine`, `csm-ui`)
 
-Status: steps 1 to 3 are built. The office side (`csm-peer` uploads, the `session_drop_paths` tool),
-the laptop side (`csm-remote/src/upload.rs`, run by the link's worker) and the UI (the upload card,
-file drops and image paste in a remote window) are in. The rows for file drop and image paste in
-section 6 point here.
+Status: steps 1 to 3 are built, and the final review's fix round 1 is in (protocol 3). The office side
+(`csm-peer` uploads, the `session_drop_paths` tool), the laptop side (`csm-remote/src/upload.rs`, run by
+the link's worker) and the UI (the upload card, file drops and image paste in a remote window) are in.
+The rows for file drop and image paste in section 6 point here.
 
 Where the build differs from the text below, the build is right and this note is the record:
 - **No three-lane writer.** The laptop's worker sends one upload frame per turn of its loop, and it
   drains the window's commands (keystrokes included) before each turn. A keystroke therefore waits
-  for at most one chunk, the same bound the lanes give, without a second writer.
-- **No laptop-side pacing for relays.** The relay queues and paces frames it forwards, and the
-  credit window (8 unacknowledged chunks per file) bounds what is ever in flight, so the laptop does
-  not add its own rate. A relayed 64 MB file is slow, not unbounded.
+  for at most one chunk, the same bound the lanes give, without a second writer. Frames are never
+  reordered on the wire: the relay carries the Noise session as one byte stream, so a frame that
+  overtook another would break decryption.
+- **The laptop paces its upload chunks on a relay channel.** The relay closes a peer channel that
+  goes over its bucket (the peer defaults: 8 MiB/s and 2000 frames/s per channel, with a burst of two
+  seconds), and it does not queue what it cannot pass on. A client's `Ready` does not announce those
+  caps, so the laptop paces to half the defaults (`CLIENT_BULK_BYTES_PER_SECOND` and
+  `CLIENT_BULK_FRAMES_PER_SECOND` in `csm-peer/src/relay_pump.rs`). The other half is the margin for
+  control, terminal input and acks, which share the bucket. The pacing sits in the channel's write
+  (`RelayStream::paced`), under the link's writer lock: a bulk write waits for its tokens there, and
+  every other write only debits them. A keystroke waits for at most one paced chunk, which is the
+  bound above. A 64 MB file takes about 16 seconds over a relay, not 4.5 minutes. The credit window
+  (8 unacknowledged chunks per file) bounds what is ever in flight.
 - **Local drops also paste through `session_drop_paths`.** Its quoting follows the session's shell
-  kind (native for a local session, POSIX for WSL and SSH), and it refuses drops of more than 20
-  paths and drops that cannot be typed safely.
+  kind: native for a local session, POSIX for WSL and SSH. For a WSL session the drive path is
+  translated to the Linux one (`C:\x` is `/mnt/c/x`, and `\\wsl$\<distro>\x` is `/x`), and a path
+  that has no such form (a UNC share, a `..` part) is refused, because the WSL program cannot be
+  sure to read it. The tool refuses drops of more than 20 paths and drops that cannot be typed safely.
+- **SSH sessions refuse uploads** (`UploadRefused::NotSupported`, the laptop's toast says files cannot
+  be uploaded into an SSH session yet). The file would sit on the office, where the remote host cannot
+  read it. The paste of a local drop into an SSH session is unchanged.
+- **The credit is enforced on the office.** The office stores the bytes it has acknowledged before it
+  sends each `UploadAck`, and the reader refuses a chunk that ends more than `UPLOAD_CREDIT` chunks past
+  that count with `Overrun`. A compliant laptop never trips it (its own window is the same bound).
+- **A folder quota.** The uploads folder holds at most `UPLOAD_FOLDER_QUOTA` (1 GiB) across all
+  sessions, finished and partial files together. A begin that would go over it is refused `TooLarge`.
+  The count is set from the folder when the office starts, after the cleanup, and it is given back
+  when an upload does not keep its file.
+- **Partial files do not collide.** Two files of one drop with one name in one millisecond get
+  `<stamp>-<name>.part` and `<stamp>-<name>.1.part`, and so on; a partial file is never overwritten.
+- **Cancel and a closed link are logged.** An upload that is cancelled, or that ends because the link
+  closed (a revoke, the server turned off, a dropped link), writes `upload_cancelled` with reason
+  `cancel` or `link_closed`. Nothing is sent back for either. A cancel that arrives after `UploadEnd`
+  wins if it arrives before the rename; the rename itself is not interruptible.
+- **Forbidden is checked at `UploadBegin` only.** A device that is revoked, or a server turned off,
+  mid-upload ends the link, and the link's end deletes the partial files (see section 7). No second
+  check is made at `UploadEnd`.
 - **The upload itself is not a tool.** It is a laptop action (it reads the laptop's files and
   clipboard), so only the paste is a tool, as the rule for files on the laptop requires.
 
@@ -1238,7 +1268,7 @@ never pass through JSON or base64. Every upload has an `id: u64` chosen by the l
 | S→C | `UploadAccepted` (control) | `id`. Sent after `UploadBegin` passes the checks and the `.part` file exists. The laptop sends no chunk before it. |
 | S→C | `UploadAck` (control) | `id`, `received` (bytes written to the `.part` file so far). Sent after every 4 chunks are written and at `UploadEnd`. This is the only credit for the chunk window (section 2). |
 | S→C | `UploadDone` (control) | `id`, `path` (absolute office path of the final file). |
-| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| NotAllowed \| Forbidden \| NoSession \| BadName \| NotAnImage \| Overrun \| DiskFull \| Corrupt \| Stalled \| Failed`. `Overrun` is a chunk beyond the credit (section 2). `Forbidden` covers server mode off, a revoked device and a level below Full. |
+| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| Forbidden \| NoSession \| BadName \| NotAnImage \| Overrun \| DiskFull \| Corrupt \| Stalled \| Failed \| NotSupported`. `Overrun` is a chunk beyond the credit (section 2). `Forbidden` covers server mode off, a revoked device and a level below Full. `NotSupported` is an SSH session (see the build notes above). `TooLarge` also covers the folder quota. |
 
 Paste is not part of these messages. After the laptop has `UploadDone` for every file in a drop, it calls
 a tool (section 5).
@@ -1276,7 +1306,8 @@ their own credit scheme.
   reader and its disk writer thread. Because the laptop never has more than 8 chunks unacknowledged, the
   reader never waits for the queue, so reading the link never waits for the disk. A chunk beyond the
   credit (a ninth unacknowledged chunk) is a protocol violation: the office refuses with `Overrun`, deletes
-  the partial file and keeps the link up.
+  the partial file and keeps the link up. The office checks this on each chunk against the count it has
+  acknowledged (the build notes above), so it does not depend on how fast the disk is.
 - Memory on the office is bounded: at most 8 active uploads (section 3) times 8 chunks times 32 KiB,
   which is 2 MiB of queued chunks in the worst case.
 
@@ -1290,14 +1321,16 @@ finishes first, so a keystroke waits for at most one 32.8 KiB frame. On the dire
 write, which is about 26 ms at 10 Mbit/s. Active uploads are served round robin, one chunk each per turn,
 so a multi-file drop does not finish one file before starting the next.
 
-**Relay pacing.** The relay announces per-channel rates in its `Welcome` (256 KiB/s and 50 frames/s
-today; see the csm-relay row of the options table earlier in this file). The laptop's writer waits on
-the same pacing before every frame it sends, control and chunks alike. The design assumes the relay's
-caps apply to each direction. Step 2 must confirm this. If they apply only to the office, the laptop
-still paces itself to the same rates, so the behaviour does not change. A consequence to expect: a
-large upload over the relay runs at about 256 KiB/s. A 64 MiB file takes about 4.5 minutes. Keystrokes
-share the same bucket, but lane 3 takes a token only when lane 1 is empty, so a keystroke never waits
-behind an upload token.
+**Relay pacing (as built).** The relay enforces a per-channel, per-direction token bucket on each client
+frame (`ChannelLimiter`): the peer defaults are 8 MiB/s and 2000 frames/s, with a two-second burst. A
+frame over the bucket closes the channel `RateLimited`, and so does a frame the relay cannot pass on
+(its host queue is full). It does not queue. The relay's `Welcome` carries the caps to the office
+only, so the laptop uses the defaults with margin: half of each (the build notes above). Only upload
+chunks wait for tokens; control and terminal input always go, and they debit the same bucket. The
+wait is in the channel's write, not in a separate queue, because the Noise messages must keep the
+order they were encrypted in. The test `a_big_relayed_upload_keeps_the_channel_and_the_terminal_stream`
+(`csm-peer/tests/peer_relay.rs`, run with `CSM_RELAY_BIN`) sends 25 MiB through the real relay while
+the terminal streams, and checks the channel stays open and the output keeps flowing.
 
 **Concurrency.** At most 2 uploads are active per device on the laptop, and the rest wait in the laptop's
 queue. The office refuses a ninth active upload across all devices (`TooMany`, with a total cap of 8).
@@ -1324,6 +1357,7 @@ in 30 s ends it with `Stalled` and deletes the partial file. Neither rule drops 
 | Stall | 30 s (`UPLOAD_STALL`) with chunks outstanding (laptop) or no chunk (office) | both ends |
 | Active uploads | 2 per device (laptop); 8 in total (`UPLOAD_ACTIVE_TOTAL`) | laptop queue; office refuses `TooMany` |
 | Queued bytes on the office | 8 uploads x 8 chunks x 32 KiB = 2 MiB at most | office per-upload queues |
+| Uploads folder | 1 GiB in all (`UPLOAD_FOLDER_QUOTA`), finished and partial files together; over it, `TooLarge` | office, reserved at begin |
 
 
 ### 4. Storage, names and sanitising
@@ -1332,12 +1366,13 @@ in 30 s ends it with `Stalled` and deletes the partial file. Neither rule drops 
   `.../uploads/<session-id>/1795800000123-report.pdf`. Never inside a project folder.
 - `<session-id>` is used as a folder name only after it matches `[A-Za-z0-9_-]{1,64}` and names an
   existing session. Anything else is `NoSession`.
-- **Partial files:** the office writes `<final>.part` and renames it to the final name only after the
+- **Partial files:** the office writes `<stamp>-<name>.part` (or `<stamp>-<name>.n.part` when that name is
+  taken, see the build notes above) and renames it to the final name only after the
   `UploadEnd` checks pass. A rename never overwrites: if the name exists, a suffix ` (n)` is added.
 - **Directory:** created with the owner-only permissions the peer identity files use (`fsperm.rs`).
 - **Sanitising the name** (the laptop's name is a label, never trusted):
   1. Keep only the last component after splitting on both `\` and `/`.
-  2. Reject `.` and `..`; an empty result becomes `file` (or `image` for kind image).
+  2. Reject `.` and `..`; an empty result becomes `file`. (An image's name is always `clipboard`, see 7, so an empty image name never shows.)
   3. Drop control characters and invisible format characters (the same rule as `csm_core::dropped_paths`).
   4. Replace `< > : " | ? *` with `_`. Trim trailing dots and spaces.
   5. A reserved Windows name (`CON PRN AUX NUL COM1-9 LPT1-9`, with or without an extension) gets a `_` prefix.
@@ -1378,8 +1413,9 @@ in 30 s ends it with `Stalled` and deletes the partial file. Neither rule drops 
 ### 7. Refusals, failure cases and restart
 
 - **Refused unless:** server mode is on, the device is not revoked, and the device's level is Full (an
-  upload counts as typing into the session). Otherwise `Forbidden`, checked at `UploadBegin` and again
-  at `UploadEnd`.
+  upload counts as typing into the session). Otherwise `Forbidden`, checked at `UploadBegin` only. A
+  revoke or a server turned off mid-upload closes the link, and that ends the upload (see the build
+  notes above: there is no recheck at `UploadEnd`).
 - **Link drop mid-upload:** restart, not resume. The office deletes the `.part` file when the link closes.
   The laptop shows "upload failed: the link dropped", and the user drops again. A paste is not idempotent,
   so nothing retries it automatically. (Resume would need an offset handshake and a partial-file index, for
@@ -1404,7 +1440,9 @@ in 30 s ends it with `Stalled` and deletes the partial file. Neither rule drops 
 - `remote-access.log` gets one line when an upload starts, and one when it finishes, is refused or is cancelled:
   `upload begin session=<id> device=<id> name="<sanitised>" size=<bytes> kind=<file|image>`,
   `upload done session=<id> device=<id> size=<bytes> path=<path>`, and
-  `upload refused session=<id> device=<id> reason=<reason>`.
+  `upload refused session=<id> device=<id> reason=<reason>`. A cancel, or an upload that ends because
+  the link closed, is `upload_cancelled session=<id> device=<id> reason=<cancel|link_closed>`. The build
+  writes these as JSON events (`upload_begin`, `upload_done`, `upload_refused`, `upload_cancelled`).
 - Never the contents, never the hash, never the laptop's own path.
 - The paste itself goes through the existing tool audit, as `session_drop_paths`.
 

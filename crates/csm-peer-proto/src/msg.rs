@@ -19,7 +19,7 @@ use crate::{Event, Snapshot};
 
 /// The version of the message set. A `Hello` or `Welcome` of another value is refused at decode.
 /// (The Noise prologue carries the wire generation; this one allows a friendly `Bye`.)
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// What a device may do. The server enforces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -158,6 +158,9 @@ pub enum UploadRefused {
     Stalled,
     /// Any other write or file error.
     Failed,
+    /// The session cannot take uploads (an SSH session: the file would sit on the office, where
+    /// the remote host cannot read it).
+    NotSupported,
 }
 
 /// A control message.

@@ -174,7 +174,7 @@ fn pairing_vectors() {
     let pair_valid: Vec<Value> = pair_msgs.iter().map(|m| json!({"json": serde_json::to_value(m).unwrap(), "bytes_hex": hex(&m.encode().unwrap())})).collect();
     let pair_invalid: Vec<Value> = [
         (br#"{"t":"hello","v":1,"name":"x"}"#.as_slice(), PairError::Version(1)),
-        (br#"{"t":"hello","v":2,"name":"a\nb"}"#.as_slice(), PairError::Name),
+        (&format!("{{\"t\":\"hello\",\"v\":{PROTOCOL_VERSION},\"name\":\"a\\nb\"}}").into_bytes()[..], PairError::Name),
         (br#"{"t":"accept","device_id":"x","level":"full"}"#.as_slice(), PairError::DeviceId),
         (br#"{"t":"nope"}"#.as_slice(), PairError::Format),
     ]

@@ -139,6 +139,7 @@ pub fn refusal_text(reason: UploadRefused) -> &'static str {
         UploadRefused::Corrupt => "the file did not arrive intact",
         UploadRefused::Stalled => "the office stopped taking the file",
         UploadRefused::Failed => "the office could not write the file",
+        UploadRefused::NotSupported => "files cannot be uploaded into an SSH session yet",
     }
 }
 

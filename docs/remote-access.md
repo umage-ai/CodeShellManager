@@ -114,14 +114,18 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 - **Dropping files** onto a pane of a remote window uploads them to the office. **Pasting an image**
   (Ctrl+V with an image on the laptop's clipboard) uploads the image as `clipboard.png`. When every
   file is on the office, its path is pasted into the session, quoted for that session's shell (native
-  for a local session, POSIX for WSL and SSH), as a local drop is: a bracketed paste, never followed
-  by Enter. Claude Code reads the image from that path.
+  for a local session, POSIX for WSL), as a local drop is: a bracketed paste, never followed by Enter.
+  Claude Code reads the image from that path. In a WSL session the path is the Linux one
+  (`/mnt/c/...`), so the program inside WSL can open it.
+- **SSH sessions cannot take uploads yet.** The file would sit on the office, where the remote host
+  cannot read it, so the laptop says so and nothing is sent.
 - A progress card shows each drop. **Cancel** stops it: the office deletes the partial file and nothing
   is pasted. If one file fails, nothing from that drop is pasted.
 - **Folders are refused** with a message: drop the files in them, or copy the folder to the office.
 - **Limits:** 64 MB a file, 32 MB an image, 256 MB and 20 files a drop. The office refuses an upload
   when remote access is off, when the device has been removed, or when the device may not type into
-  sessions. Several uploads may be running at once: at most two from each laptop.
+  sessions. Several uploads may be running at once: at most two from each laptop. The uploads folder
+  holds at most 1 GB in all; an upload that would go past that is refused as too large.
 - **Where the files go:** `<office data folder>\peer\uploads\<session id>\<time in ms>-<name>`, for
   example `...\peer\uploads\<session id>\1795800000123-report.pdf`. Never in a project folder. The name
   is the laptop's, cleaned up: no folders, no `..`, no reserved Windows names, at most 120 bytes.
@@ -130,7 +134,8 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 - **Cleanup:** when the office starts, uploads older than 7 days are deleted (partial files older than
   a day). Nothing outside the uploads folder is touched.
 - **Logging:** `remote-access.log` records an upload's start, end, refusal or cancel, with the file's
-  name, size, session and device. It never records the contents.
+  name, size, session and device. An upload that ends because the link closed is logged as cancelled
+  with the reason `link_closed`. It never records the contents.
 - A link that drops during an upload ends it: nothing is pasted, and the laptop says so. Drop the
   files again once the link is back.
 
