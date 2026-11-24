@@ -344,10 +344,15 @@ fn tool(session: &Session, name: &str, params: &Value) -> ToolResult {
         let pending = if is_person(params) { lock(&session.shared).pending.clone() } else { None };
         let pending = pending.map(|(check, who)| json!({"check": check, "name": who}));
         let devices = if session.commands.is_some() { devices_count(session)? } else { 0 };
-        return Ok(("Phone remote status.".into(), json!({"enabled": session.enabled, "relay_set": session.relay_set, "devices": devices, "pending": pending, "problem": session.problem})));
+        // The host id is shown on the settings screen too; it is null until the host has started once.
+        let host_id = lock(&session.shared).host.as_ref().map(|h| h.host_id.clone());
+        return Ok((
+            "Phone remote status.".into(),
+            json!({"enabled": session.enabled, "relay_set": session.relay_set, "devices": devices, "pending": pending, "problem": session.problem, "host_id": host_id}),
+        ));
     }
     if !is_person(params) {
-        return Err((-32000, "only the person can do this (the app or `csm`), not an agent or another add-on".into()));
+        return Err((-32000, "only the person can do this (the app), not an agent, the CLI or another add-on".into()));
     }
     match name {
         TOOL_PAIR_START => {
@@ -585,6 +590,22 @@ mod tests {
         assert_eq!(person.1["pending"]["name"], "Pixel 9");
         let agent = tool(&session, TOOL_STATUS, &json!({"caller": {"kind": "external", "client": "claude-code"}})).unwrap();
         assert!(agent.1["pending"].is_null(), "an agent does not see the waiting phone: {}", agent.1);
+    }
+
+    #[test]
+    fn the_status_tool_names_the_host_id_once_the_host_has_run() {
+        let session = Session::idle(None);
+        let before = tool(&session, TOOL_STATUS, &json!({})).unwrap();
+        assert!(before.1["host_id"].is_null(), "no host yet: {}", before.1);
+        lock(&session.shared).host = Some(crate::host::HostView {
+            cfg: crate::config::Config::default(),
+            devices: Vec::new(),
+            slot_expires: None,
+            restart_needed: false,
+            host_id: "abcdefghijklmnopqrstuvwxyz".into(),
+        });
+        let after = tool(&session, TOOL_STATUS, &json!({})).unwrap();
+        assert_eq!(after.1["host_id"], "abcdefghijklmnopqrstuvwxyz");
     }
 
     #[test]

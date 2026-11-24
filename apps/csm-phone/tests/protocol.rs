@@ -309,6 +309,23 @@ fn pairing_deny_sends_denied_and_saves_nothing() {
 /// The person compared the code on the screen for the first phone. Its channel then closed (the relay
 /// dropped it), and a second phone took the same offer. The answer the person gave for the first code
 /// must not allow the second phone: nothing is saved, and the second phone is still the one to allow.
+/// A phone that waits and then leaves (its channel closes) before the person decides: the host says
+/// so, so the screen drops the code and Allow and Deny. The pairing slot stays open for the next phone.
+#[test]
+fn a_waiting_phone_that_leaves_is_reported_as_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut host, _calls) = host_in(dir.path(), config());
+    host.start_pairing(NOW, "0.1.0").unwrap();
+    let psk = host.slot.as_ref().unwrap().psk;
+    let phone = new_phone();
+    let (_t, _check, outs) = pair_until_waiting(&mut host, &phone, 1, "Leaving", &psk);
+    assert!(outs.iter().any(|o| matches!(o, Out::Pending { .. })));
+    let outs = host.on_frame(&close_frame(1), NOW);
+    assert!(outs.iter().any(|o| matches!(o, Out::PendingCleared)), "{outs:?}");
+    assert!(!outs.iter().any(|o| matches!(o, Out::PairingEnded)), "the slot is still open");
+    assert!(host.slot.as_ref().is_some_and(|s| !s.active), "the slot is free for the next phone");
+}
+
 #[test]
 fn an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing() {
     let dir = tempfile::tempdir().unwrap();

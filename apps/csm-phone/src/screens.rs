@@ -55,6 +55,7 @@ impl Live {
                 self.offer = None;
                 self.pending = None;
             }
+            Out::PendingCleared => self.pending = None,
             Out::Notice(text) => self.notice = Some(cut(text, 200)),
             Out::Link(link) => self.link = Some(link.clone()),
             Out::Frame(_) | Out::Control(_) | Out::Problem(_) | Out::DevicesChanged => {}
@@ -347,6 +348,8 @@ fn settings_tree(view: &View, ui: &Ui) -> Value {
     kids.push(text_input("origin", &cfg.app_origin, "https://phone.example", "Save app address"));
     kids.push(text("A phone's link is made with this app address. Use the default unless you run your own copy of the phone app."));
     kids.push(text("The relay's access token is not supported in this version: the relay connection sends none."));
+    kids.push(text("This PC's host id (read only). A self-hosted relay admits this PC only if the id is in its access.allowed_hosts list:"));
+    kids.push(text(&host.host_id));
 
     kids.push(heading("Folders a phone may open sessions in"));
     if cfg.folders.is_empty() {
@@ -602,11 +605,14 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
+    /// A host id in the shape `csm_remote_proto::ids::host_id` makes (26 characters, a-z and 2-7).
+    const TEST_HOST_ID: &str = "abcdefghijklmnopqrstuvwxyz";
+
     fn live_with_host(cfg: Config, devices: Vec<DeviceView>) -> Live {
         Live {
             enabled: true,
             link: Some(Link::Up),
-            host: Some(HostView { cfg, devices, slot_expires: None, restart_needed: false }),
+            host: Some(HostView { cfg, devices, slot_expires: None, restart_needed: false, host_id: TEST_HOST_ID.into() }),
             ..Live::default()
         }
     }
@@ -775,6 +781,40 @@ mod tests {
         assert!(cmds.is_empty());
     }
 
+    /// Whether a string equal to `s` appears anywhere in the tree.
+    fn has_string(v: &Value, s: &str) -> bool {
+        match v {
+            Value::String(x) => x == s,
+            Value::Array(a) => a.iter().any(|x| has_string(x, s)),
+            Value::Object(o) => o.values().any(|x| has_string(x, s)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn the_settings_screen_shows_the_host_id_read_only() {
+        let live = live_with_host(Config::default(), Vec::new());
+        let tree = tree(SETTINGS, &view(&live), &Ui::default()).unwrap();
+        assert!(has_string(&tree, TEST_HOST_ID), "the host id is drawn: {tree}");
+        let mut found_input = false;
+        let mut stack = vec![&tree];
+        while let Some(v) = stack.pop() {
+            match v {
+                Value::Array(a) => stack.extend(a.iter()),
+                Value::Object(o) => {
+                    if o.get("type") == Some(&json!("text_input")) && o.get("key").and_then(Value::as_str).is_some_and(|k| k.contains("host")) {
+                        found_input = true;
+                    }
+                    stack.extend(o.values());
+                }
+                _ => {}
+            }
+        }
+        assert!(!found_input, "the host id is not an input");
+        let cmds = event(SETTINGS, &view(&live), &mut Ui::default(), "host_id", "submit", &json!({"value": "x"}));
+        assert!(cmds.is_empty(), "no event changes the host id");
+    }
+
     #[test]
     fn a_command_checkbox_maps_to_the_command_it_shows() {
         let cfg = Config { commands: vec!["/remote-control".into(), "/clear".into()], ..Config::default() };
@@ -830,6 +870,22 @@ mod tests {
         assert!(live.offer.is_some() && live.pending.is_some());
         live.absorb(&Out::PairingEnded);
         assert!(live.offer.is_none() && live.pending.is_none());
+    }
+
+    #[test]
+    fn a_waiting_phone_that_leaves_takes_its_code_off_the_pairing_screen() {
+        let mut live = Live { host: Some(HostView { cfg: Config::default(), devices: Vec::new(), slot_expires: Some(2_000), restart_needed: false, host_id: TEST_HOST_ID.into() }), ..Live::default() };
+        live.absorb(&Out::PairingUrl("https://phone.example/#offer".into()));
+        live.absorb(&Out::Pending { check: "8216".into(), name: "Pixel 9".into() });
+        let shown = tree(PAIR, &View { live: &live, now: 1_000, problem: None }, &Ui::default()).unwrap();
+        assert!(shown.to_string().contains("8216"), "the code is shown while the phone waits: {shown}");
+        live.absorb(&Out::PendingCleared);
+        assert!(live.pending.is_none());
+        assert!(live.offer.is_some(), "the slot stays open for another phone");
+        let after = tree(PAIR, &View { live: &live, now: 1_000, problem: None }, &Ui::default()).unwrap();
+        assert!(!after.to_string().contains("8216"), "the code is gone once the phone left: {after}");
+        let cmds = event(PAIR, &View { live: &live, now: 1_000, problem: None }, &mut Ui::default(), "allow:8216", "click", &Value::Null);
+        assert!(cmds.is_empty(), "Allow does nothing for a code that is no longer waiting");
     }
 
     #[test]

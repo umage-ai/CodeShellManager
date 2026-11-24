@@ -71,7 +71,7 @@ impl Engine {
                 let data = HelloData {
                     protocol: csm_remote_proto::PROTOCOL_VERSION,
                     level: d.level,
-                    host_name: if cfg.host_name.is_empty() { "PC".to_owned() } else { cfg.host_name.clone() },
+                    host_name: if cfg.host_name.is_empty() { os_host_name() } else { cfg.host_name.clone() },
                     hide_names: d.hide_names,
                     notify: d.notify,
                     push_ready: cfg.push && d.push.is_some(),
@@ -244,13 +244,22 @@ impl Engine {
     }
 }
 
-/// Push endpoints must be https and on the host list, an exact name or a `*.suffix`.
+/// The PC's name for a phone's hello when the person has not set one: the OS host name (COMPUTERNAME on
+/// Windows, HOSTNAME elsewhere), read once and cleaned like any name, or "PC" when neither is usable.
+fn os_host_name() -> String {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let raw = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+        let cleaned = clean_name(&raw, MAX_TEXT);
+        if cleaned.is_empty() { "PC".to_owned() } else { cleaned }
+    })
+    .clone()
+}
+
+/// Push endpoints must be https and on the host list, an exact name or a `*.suffix`. The host is read by
+/// the relay's rule (`csm_remote_proto::endpoint`), so the add-on refuses what the relay would refuse.
 pub fn push_host_allowed(hosts: &[String], endpoint: &str) -> bool {
-    let Some(rest) = endpoint.strip_prefix("https://") else { return false };
-    let host = rest.split(['/', ':', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
-    if host.is_empty() {
-        return false;
-    }
+    let Some(host) = csm_remote_proto::endpoint::push_endpoint_host(endpoint) else { return false };
     hosts.iter().any(|h| {
         let h = h.to_ascii_lowercase();
         match h.strip_prefix("*.") {
@@ -343,6 +352,18 @@ mod tests {
         assert!(!push_host_allowed(&hosts, "https://fcm.googleapis.com.evil.example/x"));
         assert!(!push_host_allowed(&hosts, "http://fcm.googleapis.com/x"));
         assert!(!push_host_allowed(&hosts, "https://notify.windows.com/x"), "the wildcard does not match its own suffix");
+        assert!(!push_host_allowed(&hosts, "https://evil.example\\@x.notify.windows.com/"), "a backslash before the @ is not a host");
+        assert!(!push_host_allowed(&hosts, "https://fcm.googleapis.com@evil.example/x"), "userinfo is not a host");
+        assert!(!push_host_allowed(&hosts, "https://fcm.googleapis.com:8443/x"), "only port 443");
+        assert!(push_host_allowed(&hosts, "https://fcm.googleapis.com:443/x"), "port 443 is the default");
+    }
+
+    #[test]
+    fn the_os_host_name_is_cleaned_and_never_empty() {
+        let name = os_host_name();
+        assert!(!name.is_empty(), "the fallback is PC");
+        assert_eq!(name, clean_name(&name, MAX_TEXT), "already cleaned");
+        assert_eq!(os_host_name(), name, "read once");
     }
 
     #[test]

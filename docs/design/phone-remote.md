@@ -1238,9 +1238,12 @@ Tests (all pass with `cargo +1.97 test`):
 
 ### 18.1 Not built (after step 3)
 
-- **The enrolment token has no field and no transport.** The relay connection sends no access token (`Hello.access` is
-  `None`), and the settings screen says so. The `addon_secret_*` tools are still not used (18.2). Decision 2 is
-  applied: the "Use the umage relay" button is not drawn until the owner gives the URL.
+- **The enrolment token is not supported yet.** It has no field on the settings screen and no transport: the relay
+  connection sends no access token (`Hello.access` is `None`), and the settings screen says so. A self-hosted relay
+  therefore admits a PC only by its host id, in `access.allowed_hosts` or its file (`relay/README.md`, rule 2). The
+  host id is shown read-only on the settings screen and returned by `phone-remote.status` (18.11). A relay with
+  `open = false` refuses a PC that is not listed with `not_enrolled`. The `addon_secret_*` tools are still not used
+  (18.2). Decision 2 is applied: the "Use the umage relay" button is not drawn until the owner gives the URL.
 - **The browser smoke test** (a Playwright pass of the real page against the local relay and add-on, section 16 step 2). The web app's own tests are built (18.7).
 - **The `docs/addons.md` section for the phone remote** is not written: the user docs are `docs/phone-remote.md` (18.8).
   The end-to-end task, the dev setup in `relay/README.md` and the `xtask ci` check for `phone/` are built (18.8).
@@ -1519,3 +1522,37 @@ names do (section 3).
   could, by chance, match the waiting phone's code. The check is a human comparison of 4 digits; the collision chance
   for an attacker who controls a second phone is about 1 in 10,000 per attempt. Accepted for step 1; a longer code
   would remove it, and is a design change for the owner.
+
+### 18.11 Final review, fix round 9
+
+The final review found one major and five minor issues. Each is fixed, with a test that would have caught it, except
+where the item is a CI or documentation change:
+
+- **`cargo xtask ci` in CI (major).** `ci.yml` ran `cargo xtask ci --skip-cargo` with no Node and no `phone/node_modules`,
+  so every `ci/**` and `ci-full/**` run would have failed. The build job (every OS in its matrix) now runs
+  `actions/setup-node@v4` with Node 22 and `npm ci` in `phone/` before the xtask step. No trigger changed. xtask still
+  requires `node_modules` and says so.
+- **Relay admission (major).** A PC could not be admitted by a self-hosted relay: no screen or tool showed its host id,
+  and the enrolment token has no field and is never sent, so `open = false` refused it with `not_enrolled`. Now the
+  host id is shown read-only on the settings screen (`HostView.host_id`, drawn as text, with no input and no event) and
+  returned by `phone-remote.status` (`host_id`, null until the host has run once; it is not a secret, the pairing offer
+  carries it). Tests: `screens` `the_settings_screen_shows_the_host_id_read_only`, `shell` unit
+  `the_status_tool_names_the_host_id_once_the_host_has_run`. `docs/phone-remote.md`, `relay/README.md`,
+  `relay/relay.example.toml` and 18.1 now say the enrolment token is not supported by the add-on yet and that
+  `access.allowed_hosts` (the host id) is the way to admit a PC.
+- **Push endpoint host (minor).** The add-on's `push_host_allowed` read the host with a looser split than the relay, so
+  `https://evil.example\@x.notify.windows.com/` was accepted. Both now use one rule,
+  `csm_remote_proto::endpoint::push_endpoint_host` (authority characters `[A-Za-z0-9.-]`, an optional `:443`, no
+  userinfo, no backslash); the relay's `endpoint_host` delegates to it. Tests: `csm-remote-proto` `endpoint` unit test,
+  `ops` `push_hosts_are_exact_or_wildcard_and_https_only` (backslash, userinfo, other port, and `:443` accepted).
+- **A waiting phone that leaves (minor).** When a pairing channel closed before the person decided, `Live.pending` kept
+  the check code and Allow and Deny stayed on the pairing screen. `Out::PendingCleared` is now emitted by `on_frame`
+  and `tick` when a phone that was waiting is no longer waiting, unless the same event already ended the pairing. The
+  slot stays open for the next phone. Tests: `protocol.rs` `a_waiting_phone_that_leaves_is_reported_as_cleared`,
+  `screens` `a_waiting_phone_that_leaves_takes_its_code_off_the_pairing_screen` (the tree loses the code; Allow does
+  nothing).
+- **Refusal text (minor).** The person-only refusal said "(the app or `csm`)", which read as if the CLI could act. The
+  CLI is refused too (18.9), so the text now reads "(the app), not an agent, the CLI or another add-on". The phrase "or `csm`" is gone.
+- **The hello's host name (minor).** With no name set in the settings, the hello now carries the OS host name
+  (`COMPUTERNAME`, or `HOSTNAME` elsewhere), read once and cleaned with `clean_name`, and "PC" only when that is empty.
+  Test: `ops` `the_os_host_name_is_cleaned_and_never_empty`.

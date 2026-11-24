@@ -26,8 +26,10 @@ The relay speaks plain HTTP/WebSocket. Put TLS in front of it (the supplied `Cad
 with automatic certificates; any reverse proxy that passes WebSocket upgrades works). Phones and
 CSM connect to `wss://<your relay>/v1/...`.
 
-Then, in CSM, point the Phone remote add-on at your relay (relay URL, plus the host's enrolment
-token if you use one) and pair a phone.
+Then admit the PC by its host id (rule 2 below): the id is shown read-only on the Phone remote
+settings screen. Then, in CSM, point the Phone remote add-on at your relay (its relay URL on the
+same screen) and pair a phone. The add-on does not send an enrolment token yet, so a self-hosted
+relay admits a PC only through `access.allowed_hosts` or its file.
 
 ### Develop locally (no hosted service)
 
@@ -92,13 +94,15 @@ any rule says so:
 1. `access.open = true`: every host. For a relay on your own network, or one you deliberately run
    for everyone.
 2. `access.allowed_hosts` / `access.allowed_hosts_file`: the host's id is listed. The id
-   (26 characters) is shown in CSM under Settings > Add-ons > Phone remote. The file is re-read at
-   every host connection, so adding a line needs no restart.
+   (26 characters) is shown read-only on the PC's Phone remote settings screen (Settings > Add-ons >
+   Phone remote) and returned by `phone-remote.status`. This is the way to admit a PC today. The file
+   is re-read at every host connection, so adding a line needs no restart.
 3. `access.enrol_tokens`: the host presents a secret in its hello. Use this to hand a team one
    token instead of collecting ids. Each entry is the secret (16+ characters) or `sha256:<hex>`
    (`csm-relay enrol-token <secret>` prints it), so the config file need not hold the secret.
    Remove the entry and restart to cut a token off; hosts already connected stay until they
-   reconnect.
+   reconnect. **Not usable with the Phone remote add-on yet**: the add-on's relay connection sends
+   no token, so a PC refused by a closed relay gets `not_enrolled` until its id is in rule 2.
 
 Refusal is `not_enrolled`. The host id is `base32(SHA-256("csm-relay host" || host_secret))`; the
 relay checks the secret the host sends (inside TLS) hashes to the id it claims, so only the

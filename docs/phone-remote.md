@@ -47,8 +47,9 @@ the dot opens Settings > Add-ons.
 
 ## Choosing a relay
 
-- **Run your own.** Copy `relay/relay.example.toml` to `relay/relay.toml`, admit your PC (its host id
-  is shown in the add-on's settings, or use an enrolment token from `csm-relay enrol-token`), and run
+- **Run your own.** Copy `relay/relay.example.toml` to `relay/relay.toml`, admit your PC by its host id (the
+  settings screen shows it read-only; list it in `access.allowed_hosts`; enrolment tokens are not supported by
+  the add-on yet), and run
   `docker compose -f relay/docker-compose.yml up -d --build` (Caddy does TLS). `relay/README.md` has the
   details, including the limits and the push settings.
 - **For local testing only.** `relay/relay.dev.toml` admits every host on `127.0.0.1:8787` with push
@@ -138,11 +139,11 @@ relay.
 | Item | Why |
 |---|---|
 | Relay hosting with TLS and a DNS name (`wss://`) | PCs and phones connect to it |
-| Relay admission for umage PCs (an allow-list file or an enrolment token) | the relay refuses hosts it does not admit |
+| Relay admission for umage PCs (the host ids in `access.allowed_hosts` or its file) | the relay refuses hosts it does not admit |
 | A static HTTPS domain for the phone app | phones open the app there; the QR code points at it |
 | The umage relay URL | the "Use the umage relay" button (hidden until then) |
 | VAPID keys | not needed: the relay creates its key pair on first run; set `push.vapid_subject` to a contact |
-| Enrolment tokens for a second PC or a team | `csm-relay enrol-token` |
+| Enrolment tokens for a team (not supported by the add-on yet; a PC is admitted by its host id) | a later step, with the add-on's token transport |
 | The installer change that ships the add-on | a release step (`docs/release.md`); the add-on is in `samples/addons/` and disabled |
 
 The phone app needs no build. Publish the files of `phone/` at the root of the static origin, leaving

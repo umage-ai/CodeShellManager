@@ -93,6 +93,9 @@ pub enum Out {
     PairingUrl(String),
     /// The pairing ended: accepted, denied, expired or stopped.
     PairingEnded,
+    /// The waiting phone left before the person decided (its channel closed): its check code and the
+    /// Allow and Deny buttons go. The pairing slot may still be open for another phone.
+    PendingCleared,
     /// The device list changed and was saved.
     DevicesChanged,
     /// Something the person should see, in plain words (never a secret).
@@ -128,6 +131,9 @@ pub struct HostView {
     pub slot_expires: Option<u64>,
     /// The relay or the connect switch differs from what this run started with: a restart applies it.
     pub restart_needed: bool,
+    /// This PC's host id: the name a self-hosted relay admits (its `access.allowed_hosts`). Shown read-only
+    /// on the settings screen and in `phone-remote.status`. It is not a secret (the pairing offer carries it).
+    pub host_id: String,
 }
 
 /// One paired device, as shown to the person.
@@ -296,6 +302,7 @@ impl Host {
             devices: self.devices_view(),
             slot_expires: self.slot.as_ref().filter(|s| !s.expired(now)).map(|s| now + u64::from(s.seconds_left(now))),
             restart_needed: self.restart_pending(),
+            host_id: self.host_id.clone(),
         }
     }
 
@@ -468,8 +475,26 @@ impl Host {
         outs
     }
 
-    /// Time-driven work: the pairing slot's expiry and the channels' maximum age.
+    /// Time-driven work: the pairing slot's expiry and the channels' maximum age. A waiting phone whose
+    /// channel is closed here is reported with [`Out::PendingCleared`] (see [`Self::settle_pending`]).
     pub fn tick(&mut self, now: u64) -> Vec<Out> {
+        let before = self.waiting_check().is_some();
+        let outs = self.tick_inner(now);
+        self.settle_pending(before, outs)
+    }
+
+    /// Adds [`Out::PendingCleared`] when a phone was waiting before the event and none is now, unless the
+    /// event already ended the pairing (which clears the code too). A phone that waits when the event
+    /// starts and is replaced by another still shows its own code, through `Out::Pending`.
+    fn settle_pending(&self, was_waiting: bool, mut outs: Vec<Out>) -> Vec<Out> {
+        let ended = outs.iter().any(|o| matches!(o, Out::PairingEnded | Out::PendingCleared));
+        if was_waiting && !ended && self.waiting_check().is_none() {
+            outs.push(Out::PendingCleared);
+        }
+        outs
+    }
+
+    fn tick_inner(&mut self, now: u64) -> Vec<Out> {
         self.clock = now;
         let mut outs = Vec::new();
         while let Some(done) = self.worker.try_done() {
@@ -567,6 +592,12 @@ impl Host {
 
     /// One binary frame from the relay. Garbage is ignored; nothing here panics on bytes.
     pub fn on_frame(&mut self, bytes: &[u8], now: u64) -> Vec<Out> {
+        let was_waiting = self.waiting_check().is_some();
+        let outs = self.frame_inner(bytes, now);
+        self.settle_pending(was_waiting, outs)
+    }
+
+    fn frame_inner(&mut self, bytes: &[u8], now: u64) -> Vec<Out> {
         self.clock = now;
         let Ok(frame) = decode_frame(bytes) else { return Vec::new() };
         let ch = frame.channel;
