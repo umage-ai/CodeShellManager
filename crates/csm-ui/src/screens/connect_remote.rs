@@ -66,7 +66,7 @@ pub fn on_reply(app: &mut CsmApp, _ctx: &egui::Context, call: &Call, reply: &csm
 pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new("connect-remote-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("connect-remote-scrim")).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
         if resp.clicked() {

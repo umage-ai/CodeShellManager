@@ -680,6 +680,14 @@ pub mod size {
     pub const PALETTE_LIST_H: f32 = 420.0;
     /// The New session form's choices: a scroll area this tall at most (the rest scrolls).
     pub const NEW_SESSION_CHOICES_H: f32 = 180.0;
+    /// The New session dialog: its widest (it narrows with the window), a folder row (name over
+    /// path), the widest a command or profile chip gets before it elides, the label column of its
+    /// option rows, and a connection field (host, remote folder).
+    pub const NEW_SESSION_W: f32 = 680.0;
+    pub const FOLDER_ROW: f32 = 44.0;
+    pub const NEW_SESSION_CHIP_MAX_W: f32 = 240.0;
+    pub const NEW_SESSION_LABEL_W: f32 = 64.0;
+    pub const NEW_SESSION_FIELD_W: f32 = 200.0;
     pub const MENU_W: f32 = 236.0;
     pub const MENU_ROW: f32 = 30.0;
     /// The Recent menu (name, folder, status, age and key per row).

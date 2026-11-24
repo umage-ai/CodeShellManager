@@ -165,7 +165,7 @@ pub const SHORTCUTS: [(&str, &str); 31] = [
 fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new("help-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("help-scrim")).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
         if resp.clicked() {
@@ -376,7 +376,7 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
 fn scrim(ctx: &egui::Context, id: &str) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new(id)).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
     });

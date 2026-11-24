@@ -68,6 +68,88 @@ fn shoot_host(
 }
 
 #[test]
+fn new_session_screens() {
+    // The New session dialog: wide, light, narrow window, a long command list, an add-on form.
+    let many_commands = |b: &mut DemoBackend| {
+        b.model_mut().launch_commands = [
+            "claude",
+            "claude --continue",
+            "claude --dangerously-skip-permissions",
+            "claudelocal",
+            "ollama launch hermes",
+            "ollama launch opencode",
+            "opencode",
+            "codex",
+            "gh copilot suggest --target shell with a very long argument list that cannot fit",
+            "pwsh -NoLogo",
+            "wsl.exe -d Ubuntu",
+        ]
+        .map(String::from)
+        .to_vec();
+    };
+    let nexus = |load: &'static str| csm_engine::NewSessionView {
+        addon: "nexus".into(),
+        addon_name: "NEXUS".into(),
+        source: "agent".into(),
+        title: "New NEXUS agent".into(),
+        submit_label: "Create agent".into(),
+        choice_title: "Project".into(),
+        name_title: Some("Agent name".into()),
+        load,
+        choices: ["Alpha", "Billing portal", "Customer data platform", "Docs", "Edge gateway"]
+            .iter()
+            .map(|n| csm_engine::Choice { id: n.to_lowercase(), label: (*n).into(), detail: "repo".into() })
+            .collect(),
+        load_error: None,
+        submit: "idle",
+        submit_text: None,
+    };
+    shoot("08-new-session-commands", ThemeKind::Mocha, many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot("08-new-session-latte", ThemeKind::Latte, many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.query = "odu".into();
+    });
+    shoot_sized("08-new-session-narrow", ThemeKind::Mocha, egui::vec2(520.0, 800.0), many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot_sized("08-new-session-narrow-latte", ThemeKind::Latte, egui::vec2(520.0, 800.0), many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot("08-new-session-addon-tab", ThemeKind::Mocha, |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot("08-new-session-addon-form", ThemeKind::Mocha, |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+        h.state_mut().ui.quick.new_choice = Some("docs".into());
+    });
+    shoot("08-new-session-addon-form-latte", ThemeKind::Latte, |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    });
+    shoot_sized("08-new-session-addon-form-narrow", ThemeKind::Mocha, egui::vec2(520.0, 800.0), |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    });
+    shoot("08-new-session-wsl", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.remote = true;
+        h.state_mut().ui.quick.rkind = csm_ui::app::RemoteKind::Wsl;
+    });
+}
+
+#[test]
 fn screens() {
     shoot("01-main", ThemeKind::Mocha, |_| {}, |_| {});
     shoot("01-main-latte", ThemeKind::Latte, |_| {}, |_| {});

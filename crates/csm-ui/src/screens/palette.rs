@@ -240,10 +240,13 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
     out
 }
 
+/// The dimmed layer under a dialog. It is `Order::Middle`, below every dialog card (`Foreground`): egui lifts a pressed area, and
+/// a scrim is pressed to close its dialog, so a scrim in the cards' own order stayed above its card the next time the dialog opened
+/// (egui keeps the relative order of layers that reappear together): a dark, unusable window.
 fn scrim(ctx: &egui::Context, id: &str, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new(id)).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
         if resp.clicked() {
@@ -887,8 +890,7 @@ fn checked_siblings(app: &CsmApp, folder: &str) -> Vec<String> {
 /// repository (`name  ⎇ branch`, and how many sessions are already there).
 fn siblings_list(ui: &mut Ui, sibs: &[WorktreeRow], checked: &mut Vec<String>) {
     let t = Tokens::get(ui.ctx());
-    let inset = space::MD + space::XS;
-    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().min.y, Stroke::new(size::HAIRLINE, t.surface0));
+    let inset = 0.0;
     ui.add_space(space::SM);
     ui.horizontal(|ui| {
         ui.add_space(inset);
@@ -963,29 +965,151 @@ fn track_siblings(ctx: &egui::Context, app: &mut CsmApp) {
     }
 }
 
-/// The Remote row: one chip per place an enabled process add-on offers (`remote_open`), under
-/// "Remote…". Clicking one starts that session at once.
-fn remote_row(ui: &mut Ui, remotes: &[csm_engine::RemoteView], picked: &mut Option<(String, String)>) {
+/// The side padding of the New session dialog's sections.
+const PAD: f32 = space::LG;
+
+/// A section of the New session dialog: a hairline, its caps title with `tail` right-aligned on the
+/// same line (a hint or a selector), then `body`, all inside the dialog's padding.
+fn section(ui: &mut Ui, title: &str, tail: impl FnOnce(&mut Ui), body: impl FnOnce(&mut Ui)) {
     let t = Tokens::get(ui.ctx());
     let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
     ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric((space::MD + space::XXS) as i8, space::SM as i8)).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(PAD as i8, space::MD as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Remote…").font(theme::regular(text::CAPTION)).color(t.muted))
-                .on_hover_text("Places an add-on offers to open a session on");
-            for r in remotes.iter().take(24) {
-                let shown: String = r.label.chars().take(40).collect();
-                let tip = format!("{} · {}
-{}", r.addon_name, r.detail, "Click to open it");
-                let resp = widgets::button(ui, ButtonKind::Ghost, Some("server"), &shown, None).on_hover_text(tip);
-                let l = format!("Remote: {} › {}", r.addon_name, r.label);
-                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
-                if resp.clicked() {
-                    *picked = Some((r.addon.clone(), r.id.clone()));
-                }
-            }
+        ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
+        ui.horizontal(|ui| {
+            ui.set_min_height(size::CONTROL_SM);
+            widgets::caps(ui, title);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), tail);
         });
+        body(ui);
+    });
+}
+
+/// One option row: a fixed label column, then the controls (wrapping when the dialog is narrow).
+fn labeled_row(ui: &mut Ui, label: &str, body: impl FnOnce(&mut Ui)) {
+    let t = Tokens::get(ui.ctx());
+    let w = ui.available_width();
+    ui.horizontal_top(|ui| {
+        let (lr, _) = ui.allocate_exact_size(vec2(size::NEW_SESSION_LABEL_W, size::CONTROL), Sense::hover());
+        ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, label, theme::regular(text::CAPTION), t.muted);
+        ui.vertical(|ui| {
+            ui.set_width((w - size::NEW_SESSION_LABEL_W - ui.spacing().item_spacing.x).max(0.0));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(space::XS + space::XXS, space::XS + space::XXS);
+                body(ui);
+            });
+        });
+    });
+}
+
+/// A selectable chip (a command, a profile, a place to run): the selected one has the accent
+/// outline and the stronger text; one wider than `max_w` elides its label (the tooltip has all).
+fn chip(ui: &mut Ui, label: &str, mono: bool, on: bool, max_w: f32, tip: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let font = if mono {
+        theme::mono(text::MONO)
+    } else if on {
+        theme::semibold(text::BODY)
+    } else {
+        theme::regular(text::BODY)
+    };
+    let w = (widgets::text_width(ui, label, font.clone()) + space::ROW_X * 2.0).min(max_w.max(space::XXL));
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CONTROL_SM), Sense::click());
+    let (fill, stroke, fg) = if on {
+        (t.field, t.blue, t.fg)
+    } else if resp.hovered() {
+        (t.row_sel, t.surface1, t.fg)
+    } else {
+        (t.crust, t.surface0, t.fg2)
+    };
+    ui.painter().rect(rect, CornerRadius::same(radius::MD), fill, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
+    widgets::paint_text(ui, rect.center(), Align2::CENTER_CENTER, label, font, fg, w - space::ROW_X * 2.0);
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
+}
+
+/// A tab of the dialog's header: icon and title, the open one underlined in the accent.
+fn tab(ui: &mut Ui, icon_name: &str, label: &str, on: bool, max_w: f32, tip: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let font = if on { theme::semibold(text::BODY) } else { theme::medium(text::BODY) };
+    let iw = icon::LG + space::XS + space::XXS;
+    let w = (space::ROW_X * 2.0 + iw + widgets::text_width(ui, label, font.clone())).min(max_w);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, size::TAB - space::SM), Sense::click());
+    let fg = if on {
+        t.fg
+    } else if resp.hovered() {
+        t.fg2
+    } else {
+        t.muted
+    };
+    icons::paint(ui, Rect::from_min_size(pos2(rect.min.x + space::ROW_X, rect.center().y - icon::LG / 2.0), Vec2::splat(icon::LG)), icon_name, icon::LG, fg);
+    widgets::paint_text(ui, pos2(rect.min.x + space::ROW_X + iw, rect.center().y), Align2::LEFT_CENTER, label, font, fg, w - space::ROW_X * 2.0 - iw);
+    if on {
+        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - space::XXS), rect.max), CornerRadius::same(radius::SM / 2), t.blue);
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
+}
+
+/// `s` cut in the middle with `…` until `fits` accepts it: the start (a drive, a root) and the end
+/// (the folder itself) are what tell paths apart. Pure over `fits`, so it tests without a UI.
+fn middle_fit(s: &str, fits: impl Fn(&str) -> bool) -> String {
+    if fits(s) {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let build = |keep: usize| -> String {
+        let head = keep / 3;
+        let tail = keep - head;
+        let h: String = chars.iter().take(head).collect();
+        let t: String = chars.iter().skip(n.saturating_sub(tail)).collect();
+        format!("{h}…{t}")
+    };
+    let (mut lo, mut hi) = (0usize, n);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(&build(mid)) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    build(lo)
+}
+
+/// A labelled single-line field of the connection form, `w` wide.
+fn conn_field(ui: &mut Ui, label: &str, buf: &mut String, hint: &str, w: f32) {
+    let t = Tokens::get(ui.ctx());
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = space::XS;
+        ui.label(egui::RichText::new(label).font(theme::regular(text::CAPTION)).color(t.muted));
+        let edit = egui::TextEdit::singleline(buf)
+            .hint_text(egui::RichText::new(hint).color(t.faint))
+            .font(theme::mono(text::MONO))
+            .margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8 + 1))
+            .desired_width(w);
+        let r = ui.add(edit);
+        let l = label.to_string();
+        r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
+    });
+}
+
+/// The places an enabled process add-on offers (`remote_open`): one chip each; a click starts that
+/// session at once.
+fn remote_row(ui: &mut Ui, remotes: &[csm_engine::RemoteView], picked: &mut Option<(String, String)>) {
+    labeled_row(ui, "Saved", |ui| {
+        let max = ui.available_width().min(size::NEW_SESSION_CHIP_MAX_W);
+        for r in remotes.iter().take(24) {
+            let tip = format!("{} · {}\nClick to open it", r.addon_name, r.detail);
+            let resp = chip(ui, &r.label, false, false, max, &tip);
+            let l = format!("Remote: {} › {}", r.addon_name, r.label);
+            resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
+            if resp.clicked() {
+                *picked = Some((r.addon.clone(), r.id.clone()));
+            }
+        }
     });
 }
 
@@ -995,40 +1119,77 @@ pub(crate) fn form_can_submit(f: &csm_engine::NewSessionView, choice: Option<&st
     f.load == "ready" && f.submit != "running" && choice.is_some_and(|c| f.choices.iter().any(|x| x.id == c))
 }
 
-/// The New session row: one chip per form an enabled process add-on offers ("New NEXUS agent").
-/// A chip opens the form under the row: its choices are asked (`new_session_load`), then the
-/// picker and the submit (`new_session_submit`). The add-on's own tools do the work.
-fn new_session_row(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpenState, actions: &mut Vec<Action>) {
+/// The add-on form open in the dialog, if its add-on still offers it.
+fn open_form<'a>(forms: &'a [csm_engine::NewSessionView], q: &QuickOpenState) -> Option<&'a csm_engine::NewSessionView> {
+    let (a, s) = q.new_form.as_ref()?;
+    forms.iter().find(|f| f.addon == *a && f.source == *s)
+}
+
+/// The `new_session_submit` params of the open form, when it can be submitted (a loaded choice
+/// picked, none running); the name only when typed and not blank.
+fn form_submit_args(f: &csm_engine::NewSessionView, q: &QuickOpenState) -> Option<serde_json::Value> {
+    if !form_can_submit(f, q.new_choice.as_deref()) {
+        return None;
+    }
+    let mut args = json!({"addon": f.addon, "source": f.source, "choice": q.new_choice.clone().unwrap_or_default()});
+    let name = q.new_name.trim();
+    if f.name_title.is_some() && !name.is_empty() {
+        args["name"] = json!(name);
+    }
+    Some(args)
+}
+
+/// Switches the dialog's tab: 0 is the session (folder and command), 1.. are the add-on forms
+/// (their choices are asked on the first open).
+fn select_tab(q: &mut QuickOpenState, forms: &[csm_engine::NewSessionView], tab: usize, actions: &mut Vec<Action>) {
+    if tab == 0 {
+        q.new_form = None;
+        return;
+    }
+    let Some(f) = forms.get(tab - 1) else { return };
+    if q.new_form.as_ref().is_some_and(|(a, s)| *a == f.addon && *s == f.source) {
+        return;
+    }
+    q.new_form = Some((f.addon.clone(), f.source.clone()));
+    q.new_choice = None;
+    q.new_name.clear();
+    q.new_pending = false;
+    actions.push(Action::Tool("new_session_load", json!({"addon": f.addon, "source": f.source})));
+}
+
+/// The tabs under the dialog's title: the session itself, then one tab per form an enabled process
+/// add-on offers ("New NEXUS agent"). Alt+1.. switch between them.
+fn form_tabs(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpenState, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
-    let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
-    ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric((space::MD + space::XXS) as i8, space::SM as i8)).show(ui, |ui| {
+    let max = (ui.available_width() - PAD * 2.0).clamp(size::NEW_SESSION_CHIP_MAX_W / 2.0, size::NEW_SESSION_CHIP_MAX_W);
+    let mut want = None;
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(space::SM as i8, 0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("New session").font(theme::regular(text::CAPTION)).color(t.muted));
-            for f in forms.iter().take(8) {
-                let open = q.new_form.as_ref().is_some_and(|(a, s)| *a == f.addon && *s == f.source);
-                let kind = if open { ButtonKind::Primary } else { ButtonKind::Ghost };
-                let resp = widgets::button(ui, kind, Some("server"), &f.title, None).on_hover_text(format!("{} · opens the form below", f.addon_name));
+            ui.spacing_mut().item_spacing = vec2(space::XXS, 0.0);
+            let session_on = q.new_form.is_none();
+            let r = tab(ui, "plus", "Session", session_on, max, "A terminal session in a folder (Alt+1)");
+            r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, session_on, "New session: folder and command"));
+            if r.clicked() {
+                want = Some(0);
+            }
+            for (i, f) in forms.iter().take(8).enumerate() {
+                let on = q.new_form.as_ref().is_some_and(|(a, s)| *a == f.addon && *s == f.source);
+                let tip = format!("{} · a form from the add-on (press {} while holding Alt)", f.addon_name, i + 2);
+                let r = tab(ui, "server", &f.title, on, max, &tip);
                 let l = format!("New session form: {}", f.title);
-                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
-                if resp.clicked() {
-                    if open {
-                        q.new_form = None;
-                    } else {
-                        q.new_form = Some((f.addon.clone(), f.source.clone()));
-                        q.new_choice = None;
-                        q.new_name.clear();
-                        q.new_pending = false;
-                        actions.push(Action::Tool("new_session_load", json!({"addon": f.addon, "source": f.source})));
-                    }
+                r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
+                if r.clicked() {
+                    want = Some(i + 1);
                 }
             }
         });
-        if let Some(f) = q.new_form.clone().and_then(|(a, s)| forms.iter().find(|f| f.addon == a && f.source == s)) {
-            new_session_panel(ui, f, q, actions);
-        }
     });
+    let (x, y) = (ui.max_rect().x_range(), ui.cursor().min.y);
+    ui.painter().hline(x, y, Stroke::new(size::HAIRLINE, t.surface0));
+    if let Some(i) = want {
+        select_tab(q, forms, i, actions);
+    }
 }
 
 /// The open form: the picker (loading, the reason it failed, empty, or the choices) and the submit
@@ -1046,21 +1207,23 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
         return;
     }
     let ident = json!({"addon": f.addon, "source": f.source});
-    ui.add_space(space::XS);
+    ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
+    ui.label(egui::RichText::new(format!("{} · runs in the {} add-on", f.title, f.addon_name)).font(theme::regular(text::CAPTION)).color(t.muted));
     match f.load {
         "ready" if f.choices.is_empty() => {
             ui.label(egui::RichText::new("Nothing to choose from yet.").font(theme::regular(text::BODY)).color(t.muted));
         }
         "ready" => {
-            ui.label(egui::RichText::new(&f.choice_title).font(theme::regular(text::CAPTION)).color(t.muted));
+            widgets::caps(ui, &f.choice_title);
             // Every choice the engine kept (up to its cap), in a scroll area: none is cut off.
             egui::ScrollArea::vertical().id_salt(("new_session_choices", f.addon.as_str(), f.source.as_str())).max_height(size::NEW_SESSION_CHOICES_H).auto_shrink([false, true]).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(space::XS + space::XXS, space::XS + space::XXS);
+                    let max = ui.available_width().min(size::NEW_SESSION_CHIP_MAX_W);
                     for c in &f.choices {
                         let on = q.new_choice.as_deref() == Some(c.id.as_str());
-                        let kind = if on { ButtonKind::Primary } else { ButtonKind::Ghost };
                         let tip = if c.detail.is_empty() { c.id.clone() } else { format!("{} · {}", c.id, c.detail) };
-                        let resp = widgets::button(ui, kind, None, &c.label, None).on_hover_text(tip);
+                        let resp = chip(ui, &c.label, false, on, max, &tip);
                         let l = format!("{}: {}", f.choice_title, c.label);
                         resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, on, l.clone()));
                         if resp.clicked() {
@@ -1090,6 +1253,7 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
         let edit = egui::TextEdit::singleline(&mut q.new_name)
             .id(Id::new(("new_session_name", f.addon.as_str(), f.source.as_str())))
             .font(theme::regular(text::INPUT))
+            .margin(egui::Margin::symmetric(space::SM as i8, space::SM as i8))
             .char_limit(csm_core::addons::manifest::MAX_NEW_SESSION_NAME)
             .desired_width(ui.available_width());
         let resp = ui.add(edit);
@@ -1099,15 +1263,12 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
     let can = form_can_submit(f, q.new_choice.as_deref());
     let running = f.submit == "running";
     let label = if running { "Starting…" } else { f.submit_label.as_str() };
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let resp = ui.add_enabled_ui(can, |ui| widgets::button(ui, ButtonKind::Primary, None, label, None)).inner;
-        if resp.clicked() && can {
-            let choice = q.new_choice.clone().unwrap_or_default();
-            let mut args = json!({"addon": f.addon, "source": f.source, "choice": choice});
-            let name = q.new_name.trim();
-            if f.name_title.is_some() && !name.is_empty() {
-                args["name"] = json!(name);
-            }
+        if resp.clicked()
+            && can
+            && let Some(args) = form_submit_args(f, q)
+        {
             q.new_pending = true;
             actions.push(Action::Tool("new_session_submit", args));
         }
@@ -1125,64 +1286,64 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
     });
 }
 
-/// The Profile row: none / keep / each Windows Terminal profile, one click each, then the enabled
-/// add-ons' launch profiles (`addon_profiles`: id, name, command line; new sessions only).
+/// The Profile section: none / keep / each Windows Terminal profile, one click each, then the
+/// enabled add-ons' launch profiles (`addon_profiles`: id, name, command line; new sessions only).
 fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: bool, launch: &[String], addon_profiles: &[(String, String, String)]) {
     let t = Tokens::get(ui.ctx());
-    let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
-    ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric((space::MD + space::XXS) as i8, space::SM as i8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Profile").font(theme::regular(text::CAPTION)).color(t.muted))
-                .on_hover_text("A Windows Terminal profile's colours, font size, cursor and padding for this session");
-            let chip = |ui: &mut Ui, label: &str, on: bool, tip: &str| -> bool {
-                let kind = if on { ButtonKind::Primary } else { ButtonKind::Ghost };
-                let shown: String = label.chars().take(40).collect();
-                let r = widgets::button(ui, kind, None, &shown, None).on_hover_text(tip);
-                let l = format!("Profile: {label}");
-                r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
-                r.clicked()
-            };
-            if q.edit.is_some() && has_look && chip(ui, "Keep current", q.profile == ProfilePick::Keep, "Leave this session's look as it is") {
-                q.profile = ProfilePick::Keep;
-            }
-            let none_on = q.profile == ProfilePick::None || (q.profile == ProfilePick::Keep && !has_look);
-            if chip(ui, "None", none_on, "The app's terminal look") {
-                q.profile = ProfilePick::None;
-            }
-            let list = q.profiles.clone().unwrap_or_default();
-            for p in &list {
-                let name = p["name"].as_str().unwrap_or_default();
-                if name.is_empty() {
-                    continue;
+    section(
+        ui,
+        "Profile",
+        |_| {},
+        |ui| {
+            let max = ui.available_width().min(size::NEW_SESSION_CHIP_MAX_W);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(space::XS + space::XXS, space::XS + space::XXS);
+                let pick = |ui: &mut Ui, label: &str, on: bool, tip: &str| -> bool {
+                    let r = chip(ui, label, false, on, max, tip);
+                    let l = format!("Profile: {label}");
+                    r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
+                    r.clicked()
+                };
+                if q.edit.is_some() && has_look && pick(ui, "Keep current", q.profile == ProfilePick::Keep, "Leave this session's look as it is") {
+                    q.profile = ProfilePick::Keep;
                 }
-                let on = q.profile == ProfilePick::Profile(name.to_string());
-                let tip = format!("{} · {}", p["commandline"].as_str().unwrap_or_default(), p["source"].as_str().unwrap_or_default());
-                if chip(ui, name, on, &tip) {
-                    take_profile(q, p, launch);
+                let none_on = q.profile == ProfilePick::None || (q.profile == ProfilePick::Keep && !has_look);
+                if pick(ui, "None", none_on, "The app's terminal look") {
+                    q.profile = ProfilePick::None;
                 }
-            }
-            if q.edit.is_none() {
-                for (id, name, command_line) in addon_profiles {
-                    let on = q.addon_profile.as_deref() == Some(id.as_str());
-                    let tip = format!("Add-on profile {id}: runs `{command_line}`. Click again to start a plain session.");
-                    if chip(ui, &format!("Add-on: {name}"), on, &tip) {
-                        q.addon_profile = if on { None } else { Some(id.clone()) };
+                let list = q.profiles.clone().unwrap_or_default();
+                for p in &list {
+                    let name = p["name"].as_str().unwrap_or_default();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let on = q.profile == ProfilePick::Profile(name.to_string());
+                    let tip = format!(
+                        "A Windows Terminal profile: colours, font size, cursor and padding\n{} · {}",
+                        p["commandline"].as_str().unwrap_or_default(),
+                        p["source"].as_str().unwrap_or_default()
+                    );
+                    if pick(ui, name, on, &tip) {
+                        take_profile(q, p, launch);
                     }
                 }
-            }
+                if q.edit.is_none() {
+                    for (id, name, command_line) in addon_profiles {
+                        let on = q.addon_profile.as_deref() == Some(id.as_str());
+                        let tip = format!("Add-on profile {id}: runs `{command_line}`. Click again to start a plain session.");
+                        if pick(ui, &format!("Add-on: {name}"), on, &tip) {
+                            q.addon_profile = if on { None } else { Some(id.clone()) };
+                        }
+                    }
+                }
+            });
             if import_on && q.profiles.as_ref().is_some_and(Vec::is_empty) {
                 ui.label(egui::RichText::new("No Windows Terminal profiles found.").font(theme::regular(text::CAPTION)).color(t.faint));
             } else if !import_on {
-                ui.label(
-                    egui::RichText::new("Turn on Windows Terminal profiles in Settings › Appearance to pick one.")
-                        .font(theme::regular(text::CAPTION))
-                        .color(t.faint),
-                );
+                ui.label(egui::RichText::new("Turn on Windows Terminal profiles in Settings › Appearance to pick one.").font(theme::regular(text::CAPTION)).color(t.faint));
             }
-        });
-    });
+        },
+    );
 }
 
 /// A launch command as `session_new` takes it: the program, then the rest as typed arguments
@@ -1204,22 +1365,77 @@ pub fn split_command(cmd: &str) -> (String, Option<String>) {
     }
 }
 
+/// Where the dialog starts the session: 0 this PC, 1 over SSH, 2 in WSL.
+fn place_of(q: &QuickOpenState) -> usize {
+    match (q.remote, q.rkind) {
+        (false, _) => 0,
+        (true, RemoteKind::Ssh) => 1,
+        (true, RemoteKind::Wsl) => 2,
+    }
+}
+
+fn set_place(q: &mut QuickOpenState, place: usize) {
+    q.remote = place != 0;
+    match place {
+        1 => q.rkind = RemoteKind::Ssh,
+        2 => q.rkind = RemoteKind::Wsl,
+        _ => {}
+    }
+}
+
+/// The key caps of the dialog's footer and what each does.
+fn footer_hints(q: &QuickOpenState, in_form: bool, cmd: &str) -> Vec<(&'static str, String)> {
+    if q.edit.is_some() {
+        vec![("Enter", "save".to_string()), ("Esc", "cancel".to_string()), ("", "A new folder, command or connection needs a restart".to_string())]
+    } else if in_form {
+        vec![("Enter", "create".to_string()), ("Alt 1", "back to the session".to_string()), ("Esc", "close".to_string())]
+    } else {
+        let short: String = cmd.chars().take(24).collect();
+        let mut v = vec![("Enter", format!("start {short}")), ("Ctrl Enter", "start, keep open".to_string()), ("Tab", "next command".to_string())];
+        if !q.remote {
+            v.push(("Up Down", "folders".to_string()));
+        }
+        v.push(("Esc", "close".to_string()));
+        v
+    }
+}
+
 fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     scrim(ctx, "quick-scrim", actions);
     let editing = app.ui.quick.edit.clone();
     let commands = quick_commands(app);
-    let n = folder_rows(app, &app.ui.quick.query).len();
+    let new_forms = app.model.new_sessions.clone();
+    let in_form = editing.is_none() && open_form(&new_forms, &app.ui.quick).is_some();
+    let n = if in_form { 0 } else { folder_rows(app, &app.ui.quick.query).len() };
     let ncmd = commands.len().max(1);
-    let (down, up, enter, ctrl_enter, tab, shift_tab) = ctx.input_mut(|i| {
+    let tabs_on = editing.is_none() && !new_forms.is_empty();
+    let (down, up, enter, ctrl_enter, tab, shift_tab, alt_tab, alt_group, alt_run) = ctx.input_mut(|i| {
+        let mut alt_tab = None;
+        for (k, ix) in [(Key::Num1, 0), (Key::Num2, 1), (Key::Num3, 2), (Key::Num4, 3), (Key::Num5, 4), (Key::Num6, 5), (Key::Num7, 6), (Key::Num8, 7), (Key::Num9, 8)] {
+            if i.consume_key(Modifiers::ALT, k) && tabs_on {
+                alt_tab = Some(ix);
+            }
+        }
         (
             i.consume_key(Modifiers::NONE, Key::ArrowDown),
             i.consume_key(Modifiers::NONE, Key::ArrowUp),
             i.consume_key(Modifiers::NONE, Key::Enter),
             i.consume_key(Modifiers::COMMAND, Key::Enter),
-            i.consume_key(Modifiers::NONE, Key::Tab),
-            i.consume_key(Modifiers::SHIFT, Key::Tab),
+            // In a form, Tab keeps its usual job (the next field).
+            !in_form && i.consume_key(Modifiers::NONE, Key::Tab),
+            !in_form && i.consume_key(Modifiers::SHIFT, Key::Tab),
+            alt_tab,
+            i.consume_key(Modifiers::ALT, Key::G),
+            i.consume_key(Modifiers::ALT, Key::R),
         )
     });
+    if let Some(i) = alt_tab {
+        select_tab(&mut app.ui.quick, &new_forms, i, actions);
+    }
+    if alt_run {
+        let next = (place_of(&app.ui.quick) + 1) % 3;
+        set_place(&mut app.ui.quick, next);
+    }
     if n > 0 && down {
         // The first arrow from a typed path lands on the first row, not the second.
         app.ui.quick.sel = if typed_path_wins(&app.ui.quick) { 0 } else { (app.ui.quick.sel + 1) % n };
@@ -1246,21 +1462,33 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     }
     track_siblings(ctx, app);
     if enter || ctrl_enter {
-        actions.extend(start_quick(app, ctrl_enter));
-        if !ctrl_enter || editing.is_some() {
-            return;
+        if in_form {
+            if let Some(f) = open_form(&new_forms, &app.ui.quick)
+                && let Some(args) = form_submit_args(f, &app.ui.quick)
+            {
+                app.ui.quick.new_pending = true;
+                actions.push(Action::Tool("new_session_submit", args));
+            }
+        } else {
+            actions.extend(start_quick(app, ctrl_enter));
+            if !ctrl_enter || editing.is_some() {
+                return;
+            }
+            // Kept open: the ticked siblings started; another Enter must not start them again.
+            app.ui.quick.siblings.clear();
         }
-        // Kept open: the ticked siblings started; another Enter must not start them again.
-        app.ui.quick.siblings.clear();
     }
     let rows = folder_rows(app, &app.ui.quick.query);
     let model = app.model.clone();
+    let can_start = app.ui.quick.remote || chosen_folder(app).is_some();
     let mut q = app.ui.quick.clone();
     let scroll = std::mem::take(&mut app.ui.quick.scroll_to_sel);
     let mut picked = None;
     let mut changed = false;
     let mut open_group_menu = None;
-    let mut save_clicked = false;
+    let mut start_clicked = false;
+    let mut keep_clicked = false;
+    let mut place_pick = None;
     let mut ask_distros = false;
     let mut browse = false;
     // The Profile picker: when profile import is on, or to clear the look an edited session has.
@@ -1281,28 +1509,28 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         .collect();
     let remotes = model.remotes.clone();
     let mut picked_remote: Option<(String, String)> = None;
-    let new_forms = model.new_sessions.clone();
     let mut form_actions: Vec<Action> = Vec::new();
-    card(ctx, "quick-open", size::PALETTE_W, |ui| {
+    let screen = ctx.content_rect();
+    let w = size::NEW_SESSION_W.min(screen.width() - space::LG * 2.0).max(size::MENU_W);
+    // What the body may take: the window less the dialog's top gap and its header, tabs and footer.
+    let chrome = size::CONTROL_LG + space::MD + size::CONTROL * 3.0 + if tabs_on { size::TAB } else { 0.0 };
+    let body_h = (screen.height() - size::PALETTE_TOP - space::XL - chrome).max(size::PALETTE_LIST_H / 2.0);
+    card(ctx, "quick-open", w, |ui| {
         let t = Tokens::get(ui.ctx());
+        // Header: the title (or, editing, the session's name field) and the Esc key cap.
+        let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::MD), Sense::hover());
+        ui.painter().rect_filled(hr, CornerRadius { nw: radius::XL, ne: radius::XL, sw: 0, se: 0 }, t.mantle);
+        ui.painter().hline(hr.x_range(), hr.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
+        let kw = widgets::kbd_width(ui, "Esc");
+        widgets::paint_kbd(ui, Rect::from_center_size(pos2(hr.max.x - PAD - kw / 2.0, hr.center().y), vec2(kw, size::KBD)), "Esc");
         if let Some(id) = &q.edit {
-            // Edit mode: what is being edited, and its name.
-            let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::SM), Sense::hover());
-            ui.painter().rect_filled(hr, CornerRadius { nw: radius::XL, ne: radius::XL, sw: 0, se: 0 }, t.mantle);
-            ui.painter().hline(hr.x_range(), hr.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
             let accent = model.session(id).map_or(t.blue, |s| t.accent(s.accent));
-            let stripe = Rect::from_center_size(pos2(hr.min.x + space::LG + size::STRIPE / 2.0, hr.center().y), vec2(size::STRIPE, space::LG));
+            let stripe = Rect::from_center_size(pos2(hr.min.x + PAD + size::STRIPE / 2.0, hr.center().y), vec2(size::STRIPE, space::LG));
             ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), accent);
-            let tr = ui.painter().text(
-                pos2(stripe.max.x + space::SM, hr.center().y),
-                Align2::LEFT_CENTER,
-                "Edit session",
-                theme::semibold(text::BODY),
-                t.fg,
-            );
+            let tr = ui.painter().text(pos2(stripe.max.x + space::SM, hr.center().y), Align2::LEFT_CENTER, "Edit session", theme::semibold(text::TITLE), t.fg);
             let nr = Rect::from_min_max(
                 pos2(tr.max.x + space::LG, hr.min.y + space::XS + space::XXS),
-                pos2(hr.max.x - space::LG, hr.max.y - space::XS - space::XXS),
+                pos2((hr.max.x - PAD - kw - space::MD).max(tr.max.x + space::LG + space::XXL), hr.max.y - space::XS - space::XXS),
             );
             let name = egui::TextEdit::singleline(&mut q.name)
                 .id(Id::new("quick-name"))
@@ -1311,294 +1539,323 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 .vertical_align(egui::Align::Center);
             let r = ui.put(nr, name);
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Session name"));
-        }
-        let (icon_name, hint) = if q.edit.is_some() { ("folder", "Folder: a path") } else { ("plus", "Folder to start in: type a name or a path") };
-        let resp = if q.remote && q.edit.is_some() {
-            // An SSH or WSL session's folder is in the connection fields below.
-            ui.allocate_response(vec2(ui.available_width(), space::XS), Sense::hover())
-        } else if q.remote {
-            // A remote folder is typed in the connection fields: nothing local to browse to.
-            input_row(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input")
         } else {
-            // Browse…: a native folder dialog, shown by the host after this frame.
-            let bw = widgets::button_width(ui, Some("folder"), BROWSE, None);
-            let (resp, slot) = input_row_with(ui, icon_name, &mut q.query, hint, &mut q.focus_input, "quick-input", bw);
-            let br = Rect::from_center_size(pos2(slot.max.x - bw / 2.0, slot.center().y), vec2(bw, size::CONTROL));
-            let b = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Ghost, Some("folder"), BROWSE, None))
-                .inner;
-            if b.on_hover_text("Choose a folder with the system's folder dialog").clicked() {
-                browse = true;
-            }
-            resp
-        };
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder"));
-        changed = resp.changed();
-        // Typing resets `navigated` (below, after the card), so a change this frame counts as unset.
-        let path_wins = q.edit.is_none() && (changed || !q.navigated) && typed_path(&q.query).is_some();
-        let list_h = if q.edit.is_some() { size::PALETTE_LIST_H / 2.0 } else { size::PALETTE_LIST_H };
-        let show_list = !(q.remote && q.edit.is_some());
-        egui::ScrollArea::vertical().max_height(if show_list { list_h } else { 0.0 }).auto_shrink([false, true]).show(ui, |ui| {
-            if !show_list {
+            ui.painter().text(pos2(hr.min.x + PAD, hr.center().y), Align2::LEFT_CENTER, "New session", theme::semibold(text::TITLE), t.fg);
+        }
+        if tabs_on {
+            form_tabs(ui, &new_forms, &mut q, &mut form_actions);
+        }
+        let form = if editing.is_none() { open_form(&new_forms, &q).cloned() } else { None };
+        egui::ScrollArea::vertical().id_salt("quick-body").max_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if let Some(f) = &form {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(PAD as i8, space::LG as i8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    new_session_panel(ui, f, &mut q, &mut form_actions);
+                });
                 return;
             }
-            ui.add_space(space::XS);
-            ui.horizontal(|ui| {
-                ui.add_space(space::MD + space::XS);
-                widgets::caps(ui, if q.query.trim().is_empty() { "Recent folders" } else { "Folders" });
-            });
-            ui.add_space(space::XS);
-            if rows.is_empty() {
-                ui.add_space(space::LG);
-                ui.vertical_centered(|ui| {
-                    let msg = if q.query.trim().is_empty() {
-                        "No recent folders yet. Type a path, or Browse… for one.".to_string()
-                    } else {
-                        format!("No folder matches. Enter starts in “{}” if it exists.", q.query.trim())
-                    };
-                    ui.label(egui::RichText::new(msg).color(t.muted))
-                });
-                ui.add_space(space::LG);
-            } else if path_wins {
-                ui.horizontal(|ui| {
-                    ui.add_space(space::MD + space::XS);
-                    ui.label(egui::RichText::new(format!("Enter starts in “{}”. ↓ picks a folder below.", q.query.trim())).color(t.muted));
-                });
-                ui.add_space(space::XS);
-            }
-            for (i, (fi, idx)) in rows.iter().enumerate() {
-                let Some(f) = model.folders.get(*fi) else { continue };
-                let (outer, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::PALETTE_ROW), Sense::hover());
-                let rect = outer.shrink2(vec2(space::XS + space::XXS, 0.0));
-                let r = ui.interact(rect, Id::new(("qo-row", i)), Sense::click());
-                if (i == q.sel && !path_wins) || r.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
-                }
-                if i == q.sel && scroll {
-                    ui.scroll_to_rect(rect, None);
-                }
-                let cy = rect.center().y;
-                let x = rect.min.x + space::SM;
-                icons::paint(
-                    ui,
-                    Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)),
-                    if f.recent { "history" } else { "folder" },
-                    icon::LG,
-                    t.muted,
-                );
-                let job = highlighted(ui, &f.name, idx, t.fg);
-                let g = ui.ctx().fonts_mut(|fo| fo.layout_job(job));
-                let gw = g.size().x;
-                let nx = x + icon::LG + space::ROW_X;
-                ui.painter().galley(pos2(nx, cy - g.size().y / 2.0), g, t.fg);
-                let tag = if f.open > 0 {
-                    format!("{} open", f.open)
-                } else if f.tag.starts_with("Repo under") {
-                    "repo".into()
-                } else {
-                    f.tag.clone()
-                };
-                let tr = ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, &tag, theme::regular(text::CAPTION), t.muted);
-                let mut right = tr.min.x - space::SM;
-                if let Some(b) = &f.branch {
-                    let cw = (widgets::text_width(ui, b, theme::mono(text::MONO_SM)) + icon::XS + space::SM + space::XS)
-                        .min(size::BRANCH_MAX_W + space::XXL);
-                    let cr = Rect::from_min_size(pos2(right - cw, cy - size::CHIP / 2.0), vec2(cw, size::CHIP));
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(cr), |ui| widgets::branch_chip(ui, b, false, 0, cw, false));
-                    right = cr.min.x - space::SM;
-                }
-                widgets::paint_text(
-                    ui,
-                    pos2(nx + gw + space::ROW_X, cy),
-                    Align2::LEFT_CENTER,
-                    &f.path,
-                    theme::mono(text::MONO_SM),
-                    t.muted,
-                    (right - nx - gw - space::ROW_X).max(0.0),
-                );
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Folder: {}", f.name)));
-                if r.clicked() {
-                    q.navigated = true;
-                    if q.edit.is_some() {
-                        // Edit: a row fills the field; Save is separate.
-                        q.query = f.path.clone();
-                        q.sel = i;
-                    } else {
-                        picked = Some(i);
-                    }
-                }
-            }
-            ui.add_space(space::XS);
-        });
-        if let Some(sibs) = q.siblings_for.as_ref().and_then(|(f, _, _)| sibling_worktrees(&model, f)).filter(|s| !s.is_empty()) {
-            siblings_list(ui, &sibs, &mut q.siblings);
-        }
-        // The command row: Tab cycles.
-        let t = Tokens::get(ui.ctx());
-        let (crect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL + space::LG + space::XS), Sense::hover());
-        ui.painter().hline(crect.x_range(), crect.min.y, Stroke::new(size::HAIRLINE, t.surface0));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(crect.shrink2(vec2(space::MD + space::XXS, space::SM))), |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.label(egui::RichText::new("Command").font(theme::regular(text::CAPTION)).color(t.muted));
-                // The cycle control (`.cyc`).
-                let font = theme::mono(text::MONO);
-                let widths: Vec<f32> = commands.iter().map(|c| widgets::text_width(ui, c, font.clone()) + space::MD).collect();
-                let total: f32 = widths.iter().sum::<f32>() + space::XXS * (widths.len() as f32 + 1.0);
-                let (seg, _) = ui.allocate_exact_size(vec2(total, size::CONTROL), Sense::hover());
-                ui.painter().rect(seg, CornerRadius::same(radius::MD + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
-                let mut x = seg.min.x + space::XXS;
-                for (i, (c, w)) in commands.iter().zip(widths).enumerate() {
-                    let b = Rect::from_min_size(pos2(x, seg.min.y + space::XXS), vec2(w, size::CONTROL_SM));
-                    x += w + space::XXS;
-                    let r = ui.interact(b, Id::new(("qo-cmd", i)), Sense::click());
-                    let on = i == q.cmd;
-                    if on {
-                        ui.painter().rect_filled(b, CornerRadius::same(radius::SM + 1), t.field);
-                    }
-                    ui.painter().text(b.center(), Align2::CENTER_CENTER, c, font.clone(), if on { t.fg } else { t.muted });
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, true, format!("Command: {c}")));
-                    if r.clicked() {
-                        q.cmd = i;
-                    }
-                }
-                widgets::kbd(ui, "Tab").on_hover_text("Tab cycles the command, Shift+Tab goes back");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let kind = if q.remote { ButtonKind::Primary } else { ButtonKind::Secondary };
-                    let tip = if q.remote { "Back to a local folder" } else { "Connect over SSH or WSL instead" };
-                    if widgets::button(ui, kind, Some("server"), "Remote…", None).on_hover_text(tip).clicked() {
-                        q.remote = !q.remote;
-                    }
-                    if q.edit.is_none() {
-                        let gname = q.group.as_deref().and_then(|g| model.group(g)).map_or_else(|| "Ungrouped".to_string(), |g| g.name.clone());
-                        let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None)
-                            .on_hover_text("Group: suggested from the scope; pick another");
-                        if gr.clicked() {
-                            open_group_menu = Some(gr.rect.left_bottom());
+            // WHERE: this PC (a folder), or over SSH or in WSL (a connection).
+            let cur = place_of(&q);
+            section(
+                ui,
+                "Where",
+                |ui| {
+                    let max = size::NEW_SESSION_CHIP_MAX_W;
+                    ui.spacing_mut().item_spacing.x = space::XS + space::XXS;
+                    for (i, l, tip) in [(2, "WSL", "A Linux distribution under WSL (Alt+R cycles)"), (1, "SSH", "A host over SSH (Alt+R cycles)"), (0, "This PC", "A local folder (Alt+R cycles)")] {
+                        let r = chip(ui, l, false, cur == i, max, tip);
+                        let label = format!("Run on: {l}");
+                        r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, cur == i, label.clone()));
+                        if r.clicked() {
+                            place_pick = Some(i);
                         }
                     }
-                });
-            });
-        });
-        if import_on || has_look || (q.edit.is_none() && !addon_profiles.is_empty()) {
-            profile_row(ui, &mut q, has_look, import_on, &launch, &addon_profiles);
-        }
-        if q.edit.is_none() && !remotes.is_empty() {
-            remote_row(ui, &remotes, &mut picked_remote);
-        }
-        if q.edit.is_none() && !new_forms.is_empty() {
-            new_session_row(ui, &new_forms, &mut q, &mut form_actions);
-        }
-        if q.remote {
-            let picker = q.rkind == RemoteKind::Wsl && q.distros.as_ref().is_some_and(|d| !d.is_empty());
-            let extra = if picker { size::CONTROL + space::SM } else { 0.0 };
-            let (rr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG * 2.0 + space::LG + extra), Sense::hover());
-            ui.painter().rect_filled(rr, 0.0, t.mantle);
-            ui.painter().hline(rr.x_range(), rr.min.y, Stroke::new(size::HAIRLINE, t.surface0));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(rr.shrink2(vec2(space::MD + space::XXS, space::MD))), |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Connect over").font(theme::regular(text::CAPTION)).color(t.muted));
+                },
+                |ui| {
+                    if !q.remote {
+                        // The folder: a field with Browse… beside it, then the folders it matches.
+                        let hint = if q.edit.is_some() { "A folder path" } else { "Type a folder name or a path" };
                         ui.horizontal(|ui| {
-                            for (k, l) in [(RemoteKind::Ssh, "SSH"), (RemoteKind::Wsl, "WSL")] {
-                                let kind = if q.rkind == k { ButtonKind::Primary } else { ButtonKind::Secondary };
-                                if widgets::button(ui, kind, None, l, None).clicked() {
-                                    q.rkind = k;
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            let bw = widgets::button_width(ui, Some("folder"), BROWSE, None);
+                            let ew = (ui.available_width() - bw - space::SM).max(space::XXL * 2.0);
+                            let edit = egui::TextEdit::singleline(&mut q.query)
+                                .id(Id::new("quick-input"))
+                                .hint_text(egui::RichText::new(hint).color(t.faint))
+                                .font(theme::regular(text::INPUT))
+                                .margin(egui::Margin::symmetric(space::SM as i8, space::SM as i8))
+                                .desired_width(ew);
+                            let resp = ui.add(edit);
+                            if q.focus_input {
+                                resp.request_focus();
+                                q.focus_input = false;
+                            }
+                            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder"));
+                            changed = resp.changed();
+                            // Browse…: a native folder dialog, shown by the host after this frame.
+                            if widgets::button(ui, ButtonKind::Secondary, Some("folder"), BROWSE, None).on_hover_text("Choose a folder with the system's folder dialog").clicked() {
+                                browse = true;
+                            }
+                        });
+                        // Typing resets `navigated` (below, after the card), so a change this frame counts as unset.
+                        let path_wins = q.edit.is_none() && (changed || !q.navigated) && typed_path(&q.query).is_some();
+                        ui.horizontal(|ui| {
+                            widgets::caps(ui, if q.query.trim().is_empty() { "Recent folders" } else { "Folders" });
+                        });
+                        if rows.is_empty() {
+                            let msg = if q.query.trim().is_empty() {
+                                "No recent folders yet. Type a path, or Browse… for one.".to_string()
+                            } else {
+                                format!("No folder matches. Enter starts in “{}” if it exists.", q.query.trim())
+                            };
+                            ui.add(egui::Label::new(egui::RichText::new(msg).font(theme::regular(text::BODY)).color(t.muted)).wrap());
+                        } else if path_wins {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("Enter starts in “{}”. Down picks a folder below.", q.query.trim())).font(theme::regular(text::CAPTION)).color(t.muted),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (i, (fi, idx)) in rows.iter().enumerate() {
+                            let Some(f) = model.folders.get(*fi) else { continue };
+                            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::FOLDER_ROW), Sense::hover());
+                            let r = ui.interact(rect, Id::new(("qo-row", i)), Sense::click());
+                            if (i == q.sel && !path_wins) || r.hovered() {
+                                ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                            }
+                            if i == q.sel && scroll {
+                                ui.scroll_to_rect(rect, None);
+                            }
+                            let cy = rect.center().y;
+                            let x = rect.min.x + space::SM;
+                            icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), if f.recent { "history" } else { "folder" }, icon::LG, t.muted);
+                            let nx = x + icon::LG + space::ROW_X;
+                            let tag = if f.open > 0 {
+                                format!("{} open", f.open)
+                            } else if f.tag.starts_with("Repo under") {
+                                "repo".into()
+                            } else {
+                                f.tag.clone()
+                            };
+                            let tr = ui.painter().text(pos2(rect.max.x - space::SM, cy), Align2::RIGHT_CENTER, &tag, theme::regular(text::CAPTION), t.muted);
+                            let mut right = tr.min.x - space::SM;
+                            if let Some(b) = &f.branch {
+                                let cw = (widgets::text_width(ui, b, theme::mono(text::MONO_SM)) + space::XL + space::XS).min(size::BRANCH_MAX_W + space::XXL);
+                                // A narrow dialog keeps the room for the name and path (the tooltip has the branch).
+                                if right - cw - nx >= size::NEW_SESSION_FIELD_W / 2.0 {
+                                    let cr = Rect::from_min_size(pos2(right - cw, cy - size::CHIP / 2.0), vec2(cw, size::CHIP));
+                                    ui.scope_builder(egui::UiBuilder::new().max_rect(cr), |ui| widgets::branch_chip(ui, b, false, 0, cw, false));
+                                    right = cr.min.x - space::SM;
+                                }
+                            }
+                            let text_w = (right - nx).max(space::XXL);
+                            let mut job = highlighted(ui, &f.name, idx, t.fg);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
+                            let g = ui.ctx().fonts_mut(|fo| fo.layout_job(job));
+                            ui.painter().galley(pos2(nx, rect.min.y + space::SM - space::XXS), g, t.fg);
+                            let mono = theme::mono(text::MONO_SM);
+                            let shown = middle_fit(&f.path, |s| widgets::text_width(ui, s, mono.clone()) <= text_w);
+                            ui.painter().text(pos2(nx, rect.max.y - space::SM + space::XXS), Align2::LEFT_BOTTOM, shown, mono, t.muted);
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Folder: {}", f.name)));
+                            let tip = match &f.branch {
+                                Some(b) => format!("{}\n⎇ {b}", f.path),
+                                None => f.path.clone(),
+                            };
+                            let r = r.on_hover_text(tip);
+                            if r.clicked() {
+                                q.navigated = true;
+                                if q.edit.is_some() {
+                                    // Edit: a row fills the field; Save is separate.
+                                    q.query = f.path.clone();
+                                    q.sel = i;
+                                } else {
+                                    picked = Some(i);
+                                }
+                            }
+                        }
+                        ui.spacing_mut().item_spacing.y = space::SM;
+                        if let Some(sibs) = q.siblings_for.as_ref().and_then(|(f, _, _)| sibling_worktrees(&model, f)).filter(|s| !s.is_empty()) {
+                            siblings_list(ui, &sibs, &mut q.siblings);
+                        }
+                    } else {
+                        // SSH or WSL: the connection, in fields that wrap with the dialog.
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(space::MD, space::SM);
+                            match q.rkind {
+                                RemoteKind::Ssh => {
+                                    conn_field(ui, "Host", &mut q.host, "user@host", size::NEW_SESSION_FIELD_W);
+                                    conn_field(ui, "Port", &mut q.ssh_port, "22", size::GRID_TILE_W);
+                                    conn_field(ui, "Remote folder", &mut q.remote_folder, "/srv/app", size::NEW_SESSION_FIELD_W);
+                                }
+                                RemoteKind::Wsl => {
+                                    if q.distros.is_none() {
+                                        // Asked once, off the engine thread (`wsl.exe` can boot a VM).
+                                        q.distros = Some(Vec::new());
+                                        ask_distros = true;
+                                    }
+                                    conn_field(ui, "Distro", &mut q.distro, "Ubuntu", size::NEW_SESSION_FIELD_W);
+                                    conn_field(ui, "User", &mut q.wsl_user, "default", size::GRID_TILE_W);
+                                    conn_field(ui, "Linux folder", &mut q.linux_folder, "~/src (blank: home)", size::NEW_SESSION_FIELD_W);
                                 }
                             }
                         });
-                    });
-                    ui.add_space(space::MD);
-                    let field = |ui: &mut Ui, label: &str, buf: &mut String, hint: &str| {
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(label).font(theme::regular(text::CAPTION)).color(t.muted));
-                            let edit = egui::TextEdit::singleline(buf).hint_text(egui::RichText::new(hint).color(t.faint));
-                            let w = if label == "Port" || label == "User" { size::GRID_TILE_W } else { size::MENU_W - space::XXL * 2.0 };
-                            let r = ui.add(edit.font(theme::mono(text::MONO)).desired_width(w));
-                            let l = label.to_string();
-                            r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
-                        });
-                    };
-                    match q.rkind {
-                        RemoteKind::Ssh => {
-                            field(ui, "Host", &mut q.host, "user@host");
-                            field(ui, "Port", &mut q.ssh_port, "22");
-                            field(ui, "Remote folder", &mut q.remote_folder, "/srv/app");
-                        }
-                        RemoteKind::Wsl => {
-                            if q.distros.is_none() {
-                                // Asked once, off the engine thread (`wsl.exe` can boot a VM).
-                                q.distros = Some(Vec::new());
-                                ask_distros = true;
-                            }
-                            field(ui, "Distro", &mut q.distro, "Ubuntu");
-                            field(ui, "User", &mut q.wsl_user, "default");
-                            field(ui, "Linux folder", &mut q.linux_folder, "~/src (blank: home)");
+                        // The installed distributions, one click each.
+                        let installed: Vec<String> = q.distros.clone().unwrap_or_default();
+                        if q.rkind == RemoteKind::Wsl && !installed.is_empty() {
+                            labeled_row(ui, "Installed", |ui| {
+                                for d in &installed {
+                                    if chip(ui, d, false, q.distro == *d, size::NEW_SESSION_CHIP_MAX_W, "").clicked() {
+                                        q.distro = d.clone();
+                                    }
+                                }
+                            });
                         }
                     }
-                });
-                // The installed distributions, one click each.
-                let installed: Vec<String> = q.distros.clone().unwrap_or_default();
-                if q.rkind == RemoteKind::Wsl && !installed.is_empty() {
+                    if q.edit.is_none() && !remotes.is_empty() {
+                        remote_row(ui, &remotes, &mut picked_remote);
+                    }
+                },
+            );
+            // COMMAND: Tab cycles; the first is the default.
+            section(
+                ui,
+                "Command",
+                |ui| {
+                    ui.label(egui::RichText::new("cycles").font(theme::regular(text::CAPTION)).color(t.faint));
+                    widgets::kbd(ui, "Tab").on_hover_text("Tab cycles the command, Shift+Tab goes back");
+                },
+                |ui| {
+                    let max = ui.available_width().min(size::NEW_SESSION_CHIP_MAX_W);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Installed").font(theme::regular(text::CAPTION)).color(t.muted));
-                        for d in &installed {
-                            let kind = if q.distro == *d { ButtonKind::Primary } else { ButtonKind::Ghost };
-                            if widgets::button(ui, kind, None, d, None).clicked() {
-                                q.distro = d.clone();
+                        ui.spacing_mut().item_spacing = vec2(space::XS + space::XXS, space::XS + space::XXS);
+                        for (i, c) in commands.iter().enumerate() {
+                            let on = i == q.cmd;
+                            let tip = if i == 0 { format!("{c}\nThe default command") } else { c.clone() };
+                            let r = chip(ui, c, true, on, max, &tip);
+                            let l = format!("Command: {c}");
+                            r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, l.clone()));
+                            if r.clicked() {
+                                q.cmd = i;
                             }
                         }
                     });
+                },
+            );
+            if import_on || has_look || (q.edit.is_none() && !addon_profiles.is_empty()) {
+                profile_row(ui, &mut q, has_look, import_on, &launch, &addon_profiles);
+            }
+            // GROUP: where the new session sits in the sidebar (a session being edited keeps its own).
+            if q.edit.is_none() {
+                section(
+                    ui,
+                    "Group",
+                    |_| {},
+                    |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            let gname = q.group.as_deref().and_then(|g| model.group(g)).map_or_else(|| "Ungrouped".to_string(), |g| g.name.clone());
+                            let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None).on_hover_text("The group the new session joins: suggested from the scope; pick another (Alt+G)");
+                            if gr.clicked() || alt_group {
+                                open_group_menu = Some(gr.rect.left_bottom());
+                            }
+                            ui.label(egui::RichText::new("New sessions join this group in the sidebar.").font(theme::regular(text::CAPTION)).color(t.faint));
+                        });
+                    },
+                );
+            }
+        });
+        // Footer: the keys, and the buttons that do the same.
+        let cmd = commands.get(q.cmd).cloned().unwrap_or_default();
+        let hints = footer_hints(&q, form.is_some(), &cmd);
+        let edit = q.edit.is_some();
+        let nsib = q.siblings.len();
+        let start_label = if edit {
+            "Save".to_string()
+        } else if nsib > 0 {
+            format!("Start in {}", nsib + 1)
+        } else {
+            "Start".to_string()
+        };
+        let start_tip = if edit {
+            "Save the changes (Enter)".to_string()
+        } else if nsib > 0 {
+            format!("Start {cmd} here and in {nsib} sibling worktree{} (Enter)", if nsib == 1 { "" } else { "s" })
+        } else {
+            format!("Start {cmd} (Enter)")
+        };
+        let keep_label = "Start and keep open";
+        let mut buttons = |ui: &mut Ui| {
+            if form.is_some() {
+                return;
+            }
+            // Right to left: the primary action is the rightmost.
+            let go = ui.add_enabled_ui(can_start, |ui| widgets::button(ui, ButtonKind::Primary, None, &start_label, None).on_hover_text(&start_tip)).inner;
+            if go.clicked() && can_start {
+                start_clicked = true;
+            }
+            if !edit {
+                let keep = ui
+                    .add_enabled_ui(can_start, |ui| widgets::button(ui, ButtonKind::Secondary, None, keep_label, None).on_hover_text("Start it and keep this dialog open for the next one (Ctrl+Enter)"))
+                    .inner;
+                if keep.clicked() && can_start {
+                    keep_clicked = true;
+                }
+            }
+        };
+        let hints_ui = |ui: &mut Ui| {
+            for (k, what) in &hints {
+                if !k.is_empty() {
+                    widgets::kbd(ui, k);
+                }
+                ui.label(egui::RichText::new(what).font(theme::regular(text::CAPTION)).color(t.muted));
+                ui.add_space(space::SM);
+            }
+        };
+        let hints_w: f32 = hints
+            .iter()
+            .map(|(k, what)| {
+                (if k.is_empty() { 0.0 } else { widgets::kbd_width(ui, k) + space::XS }) + widgets::text_width(ui, what, theme::regular(text::CAPTION)) + space::SM * 2.0
+            })
+            .sum();
+        let btns_w = if form.is_some() {
+            0.0
+        } else {
+            widgets::button_width(ui, None, &start_label, None) + if edit { 0.0 } else { widgets::button_width(ui, None, keep_label, None) + space::SM }
+        };
+        let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HAIRLINE), Sense::hover());
+        ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
+        egui::Frame::NONE
+            .fill(t.mantle)
+            .corner_radius(CornerRadius { nw: 0, ne: 0, sw: radius::XL, se: radius::XL })
+            .inner_margin(egui::Margin::symmetric(PAD as i8, space::SM as i8 + 2))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if hints_w + btns_w + space::LG <= ui.available_width() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
+                        hints_ui(ui);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            buttons(ui);
+                        });
+                    });
+                } else {
+                    // Narrow: the keys wrap, and the buttons take their own row.
+                    ui.spacing_mut().item_spacing.y = space::SM;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(space::XS, space::XS);
+                        hints_ui(ui);
+                    });
+                    if btns_w > 0.0 {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            buttons(ui);
+                        });
+                    }
                 }
             });
-        }
-        // Footer.
-        let (frect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL + space::SM), Sense::hover());
-        ui.painter().hline(frect.x_range(), frect.min.y, Stroke::new(size::HAIRLINE, t.surface0));
-        let fy = frect.center().y;
-        let cmd = commands.get(q.cmd).cloned().unwrap_or_default();
-        let mut fx = frect.min.x + space::MD + space::XXS;
-        let keys: Vec<(&str, String)> = if q.edit.is_some() {
-            vec![("Enter", "save".to_string()), ("Esc", "cancel".to_string())]
-        } else {
-            vec![
-                (
-                    "Enter",
-                    if q.siblings.is_empty() {
-                        format!("start {cmd}")
-                    } else {
-                        format!("start {cmd} here and in {} sibling{}", q.siblings.len(), if q.siblings.len() == 1 { "" } else { "s" })
-                    },
-                ),
-                ("Ctrl Enter", "start and keep this open".to_string()),
-            ]
-        };
-        for (k, what) in keys {
-            let kw = widgets::kbd_width(ui, k);
-            widgets::paint_kbd(ui, Rect::from_min_size(pos2(fx, fy - size::KBD / 2.0), vec2(kw, size::KBD)), k);
-            let r = ui.painter().text(pos2(fx + kw + space::XS + space::XXS, fy), Align2::LEFT_CENTER, what, theme::regular(text::CAPTION), t.muted);
-            fx = r.max.x + space::LG;
-        }
-        let tail = if q.edit.is_some() { "A new folder, command or connection needs a restart" } else { "Type a path or a folder name" };
-        let save_w = if q.edit.is_some() { widgets::text_width(ui, "Save", theme::medium(text::BODY)) + space::ROW_X * 2.0 } else { 0.0 };
-        widgets::paint_text(
-            ui,
-            pos2(frect.max.x - space::MD - save_w - if save_w > 0.0 { space::SM } else { 0.0 }, fy),
-            Align2::RIGHT_CENTER,
-            tail,
-            theme::regular(text::CAPTION),
-            t.muted,
-            (frect.max.x - fx - save_w - space::XL).max(0.0),
-        );
-        if q.edit.is_some() {
-            let br = Rect::from_min_size(pos2(frect.max.x - space::MD - save_w, fy - size::CONTROL / 2.0), vec2(save_w, size::CONTROL));
-            if ui
-                .scope_builder(egui::UiBuilder::new().max_rect(br), |ui| widgets::button(ui, ButtonKind::Primary, None, "Save", None))
-                .inner
-                .clicked()
-            {
-                save_clicked = true;
-            }
-        }
     });
     if changed {
         q.sel = 0;
@@ -1613,6 +1870,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         app.ui.dialog_request = Some(crate::app::DialogRequest::Folder { start });
     }
     actions.extend(form_actions);
+    if let Some(i) = place_pick {
+        set_place(&mut q, i);
+    }
     if let Some((addon, remote_id)) = picked_remote {
         app.ui.quick = q;
         actions.push(Action::CloseOverlays);
@@ -1625,9 +1885,13 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     if ask_profiles {
         actions.push(Action::Tool("profile_list", json!({})));
     }
-    if save_clicked {
+    if start_clicked || keep_clicked {
         app.ui.quick = q;
-        actions.extend(start_quick(app, false));
+        actions.extend(start_quick(app, keep_clicked));
+        if keep_clicked && editing.is_none() {
+            // Kept open: the ticked siblings started; another click must not start them again.
+            app.ui.quick.siblings.clear();
+        }
         return;
     }
     if let Some(i) = picked {
@@ -1853,5 +2117,35 @@ mod new_session_form_tests {
     #[test]
     fn an_empty_picker_offers_no_submit() {
         assert!(!form_can_submit(&form("ready", "idle", &[]), Some("")));
+    }
+}
+
+#[cfg(test)]
+mod new_session_layout_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_path_is_cut_in_the_middle_and_keeps_its_ends() {
+        let p = "/home/someone/source/repos/a-very-long-organisation/the-project";
+        let shown = middle_fit(p, |s| s.chars().count() <= 30);
+        assert!(shown.chars().count() <= 30, "{shown}");
+        assert!(shown.starts_with("/ho") && shown.ends_with("the-project"), "{shown}");
+        assert!(shown.contains('…'));
+    }
+
+    #[test]
+    fn a_path_that_fits_is_untouched_and_nothing_fitting_gives_an_ellipsis() {
+        assert_eq!(middle_fit("/src", |_| true), "/src");
+        assert_eq!(middle_fit("/src/app", |s| s.chars().count() <= 1), "…");
+        assert_eq!(middle_fit("", |_| false), "…");
+    }
+
+    #[test]
+    fn the_place_selector_round_trips() {
+        let mut q = QuickOpenState::default();
+        for p in [0, 1, 2, 0] {
+            set_place(&mut q, p);
+            assert_eq!(place_of(&q), p);
+        }
     }
 }
