@@ -168,6 +168,8 @@ jobs:
             s="$(basename "$d")"
             mkdir -p "$app/samples/addons/$s"
             cp "samples/addons/$s/addon.toml" "$app/samples/addons/$s/"
+            # A theme add-on's fonts/ folder (with the licences) goes along.
+            if [ -d "samples/addons/$s/fonts" ]; then cp -r "samples/addons/$s/fonts" "$app/samples/addons/$s/fonts"; fi
           done
           python3 -I scripts/ico-to-png.py apps/codeshell/assets/codeshell.ico stage/icons/256.png
           desktop-file-validate installer/linux/ai.umage.CodeShellManager.desktop

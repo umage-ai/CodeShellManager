@@ -138,7 +138,7 @@ fn block(ui: &mut Ui, cx: &mut Cx<'_>, b: &Block) {
             paragraph(ui, cx, kids, Style { strong: true, size, ..body });
         }
         Block::Code { text: code, .. } => {
-            egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
+            egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add(egui::Label::new(job_for(&t, code.trim_end_matches('\n'), Style { color: t.fg2, size: text::MONO + 0.5, ..body }, false).tap_mono()).wrap());
             });
@@ -169,7 +169,7 @@ fn block(ui: &mut Ui, cx: &mut Cx<'_>, b: &Block) {
                 });
             });
             let bar = Rect::from_min_size(r.response.rect.min + vec2(0.0, 0.0), vec2(size::STRIPE, r.response.rect.height()));
-            ui.painter().rect_filled(bar, CornerRadius::same(radius::SM), t.surface1);
+            ui.painter().rect_filled(bar, CornerRadius::same(radius::sm()), t.surface1);
         }
         Block::Rule => {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), space::SM), Sense::hover());

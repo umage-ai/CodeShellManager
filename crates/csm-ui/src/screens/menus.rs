@@ -675,7 +675,7 @@ fn menu_area(
                         let open = app.ui.submenu.as_deref() == Some(label.as_str());
                         let r = widgets::menu_item(ui, icon, label, None, false);
                         if open {
-                            ui.painter().rect_filled(r.rect, CornerRadius::same(radius::SM + 1), Tokens::tint(t.row_sel, alpha::ASLEEP));
+                            ui.painter().rect_filled(r.rect, CornerRadius::same(radius::sm() + 1), Tokens::tint(t.row_sel, alpha::ASLEEP));
                         }
                         icons::paint(
                             ui,
@@ -844,10 +844,10 @@ fn grid_tile(ui: &mut egui::Ui, t: &Tokens, tile: Option<GridPreset>, on: bool, 
     });
     let hovered = r.hovered() || forget.as_ref().is_some_and(|(_, f)| f.hovered());
     if hovered {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_hover);
     }
     if on {
-        ui.painter().rect_stroke(rect, CornerRadius::same(radius::MD), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, CornerRadius::same(radius::md()), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
     }
     let glyph = Rect::from_min_size(
         pos2(rect.center().x - size::GRID_GLYPH[0] / 2.0, rect.min.y + space::SM),
@@ -858,7 +858,7 @@ fn grid_tile(ui: &mut egui::Ui, t: &Tokens, tile: Option<GridPreset>, on: bool, 
             let cells = crate::screens::panes::grid_cells(glyph, usize::from(g.cols), usize::from(g.rows), space::XXS);
             let fill = if on { Tokens::tint(t.blue, alpha::ASLEEP) } else { t.surface1 };
             for c in cells {
-                ui.painter().rect_filled(c, CornerRadius::same(radius::SM / 2), fill);
+                ui.painter().rect_filled(c, CornerRadius::same(radius::sm() / 2), fill);
             }
             g.label()
         }
@@ -884,7 +884,7 @@ fn grid_tile(ui: &mut egui::Ui, t: &Tokens, tile: Option<GridPreset>, on: bool, 
     let forget = forget.map(|(x, f)| {
         if hovered {
             let over = f.hovered();
-            ui.painter().rect_filled(x, CornerRadius::same(radius::SM), if over { t.surface1 } else { t.mantle });
+            ui.painter().rect_filled(x, CornerRadius::same(radius::sm()), if over { t.surface1 } else { t.mantle });
             icons::paint(ui, x, "x", icon::SM, if over { t.fg } else { t.muted });
         }
         f.on_hover_text("Forget this grid")

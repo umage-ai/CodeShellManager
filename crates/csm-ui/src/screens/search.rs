@@ -158,11 +158,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         (s.pending > 0, s.error.clone(), s.searched.clone(), s.offer.clone())
     };
     egui::Area::new(Id::new("search-card")).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::new()
-            .fill(t.pop)
-            .stroke(Stroke::new(size::HAIRLINE, t.surface1))
-            .corner_radius(CornerRadius::same(radius::XL))
-            .shadow(egui::Shadow { offset: [0, 16], blur: 40, spread: 0, color: t.shadow })
+        crate::widgets::overlay_frame(&t)
             .show(ui, |ui| {
                 ui.set_width(w);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -228,7 +224,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                                 let x = rect.min.x + space::SM;
                                 ui.painter().rect_filled(
                                     Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
-                                    CornerRadius::same(radius::SM / 2),
+                                    CornerRadius::same(radius::sm() / 2),
                                     accent,
                                 );
                                 let nx = x + size::STRIPE + space::ROW_X;
@@ -285,7 +281,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                             Item::Hit { session_name, ts, excerpt, matches, .. } => {
                                 let r = ui.interact(rect, Id::new(("search-hit", i)), Sense::click());
                                 if r.hovered() {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                                    ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                                 }
                                 let age = ago(*ts);
                                 let aw = widgets::text_width(ui, &age, theme::regular(text::CAPTION));
@@ -310,7 +306,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                             Item::Note { folder, excerpt, matches, .. } => {
                                 let r = ui.interact(rect, Id::new(("search-note", i)), Sense::click());
                                 if r.hovered() {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                                    ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                                 }
                                 let x = rect.min.x + space::SM + size::STRIPE + space::ROW_X;
                                 let fr = widgets::paint_text(

@@ -170,6 +170,9 @@ jobs:
             New-Item -ItemType Directory -Force "publish/samples/addons/$s" | Out-Null
             Copy-Item "samples/addons/$s/addon.toml" "publish/samples/addons/$s/"
           }
+          # A sample's font files (a theme add-on's fonts/ folder) ride along with their licences.
+          New-Item -ItemType Directory -Force "publish/samples/addons/theme-fun/fonts" | Out-Null
+          Copy-Item "samples/addons/theme-fun/fonts/*" "publish/samples/addons/theme-fun/fonts/"
           # The bundled ConPTY must be Microsoft's, unmodified (it is never re-signed by us).
           foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
             $sig = Get-AuthenticodeSignature "publish/$f"
@@ -194,6 +197,7 @@ jobs:
           $wxs = Get-Content installer/CodeShellManager2.wxs -Raw
           $staged = $ours + @('conpty.dll', 'OpenConsole.exe', 'codeshell.aumid', 'THIRD-PARTY-LICENSES.html')
           foreach ($s in $samples) { $staged += "samples\addons\$s\addon.toml" }
+          foreach ($f in 'W95FA.otf', 'OFL-W95FA.txt', 'VarelaRound-Regular.ttf', 'OFL-VarelaRound.txt') { $staged += "samples\addons\theme-fun\fonts\$f" }
           foreach ($f in $staged) {
             if ($wxs -notmatch [regex]::Escape("`$(var.PublishDir)\$f")) { throw "installer/CodeShellManager2.wxs does not install $f" }
           }

@@ -36,7 +36,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let head = Rect::from_min_size(rect.min + vec2(0.0, space::SM), vec2(rect.width(), size::CONTROL));
     let cy = head.center().y;
     let stripe = Rect::from_center_size(pos2(head.min.x + space::MD + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG));
-    ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+    ui.painter().rect_filled(stripe, CornerRadius::same(radius::sm() / 2), t.accent(s.accent));
     let close = Rect::from_center_size(pos2(head.max.x - space::SM - size::CONTROL_SM / 2.0, cy), Vec2::splat(size::CONTROL_SM));
     if widgets::icon_button_at(ui, close, Id::new("insp-close"), "panelRClose", false, "Hide the inspector  Ctrl+I").clicked() {
         actions.push(Action::Tool("inspector_show", json!({"tab": "hidden"})));
@@ -132,7 +132,7 @@ fn notes(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Actio
     let frame = egui::Frame::new()
         .fill(t.field)
         .stroke(Stroke::new(size::HAIRLINE, t.surface0))
-        .corner_radius(CornerRadius::same(radius::MD))
+        .corner_radius(CornerRadius::same(radius::md()))
         .inner_margin(egui::Margin::symmetric(space::MD as i8, space::ROW_X as i8));
     let resp = frame
         .show(ui, |ui| {
@@ -201,7 +201,7 @@ fn session(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
         k(ui, "Accent");
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::splat(space::MD), Sense::hover());
-            ui.painter().rect_filled(r, CornerRadius::same(radius::SM - 1), t.accent(s.accent));
+            ui.painter().rect_filled(r, CornerRadius::same(radius::sm().saturating_sub(1)), t.accent(s.accent));
             if s.accent_overridden {
                 ui.label(egui::RichText::new("set by the program").font(theme::regular(text::SMALL)));
                 if ui.link(egui::RichText::new("Reset").font(theme::regular(text::SMALL))).on_hover_text("Back to the folder's colour").clicked() {

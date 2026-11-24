@@ -162,7 +162,8 @@ with a note.
 
 ## Themes
 
-A pack can carry colour themes: colours only, no code. A minimal one:
+A pack can carry themes: colours, and optionally how the window draws (corners, 3D borders, title
+bar colours, fonts), but no code. A minimal one:
 
 ```toml
 [[theme]]
@@ -193,6 +194,49 @@ theme's: Catppuccin Mocha for `dark`, Latte for `light`.
   `subtext0`, the colours from the accents), light themes Latte's; `foreground` is `text`,
   `background` is `base`, `cursor` is `rosewater`.
 
+**`[theme.style]`, optional.** How the window draws beyond its colours. Every key is optional, and a
+theme without the table (or a key) looks exactly as before.
+
+```toml
+[theme.style]
+corners = "square"               # "rounded" (default) | "square" | "soft"
+borders = "bevel"                # "flat" (default) | "bevel"
+ui_font = "fonts/W95FA.otf"      # "default" | "mono" | a font file in the add-on's folder
+ui_font_scale = 1.0              # 0.5 to 2.0, default 1.0
+terminal_font = "default"        # "default" | a font file in the add-on's folder
+[theme.style.titlebar]
+background = "#000080"           # the title bar's colours, "#rrggbb" or "#rrggbbaa"
+text = "#ffffff"
+inactive_background = "#808080"  # while the window is not focused (default: as when focused)
+inactive_text = "#c0c0c0"
+```
+
+- `corners`: scales every corner radius (windows, panels, buttons, chips, menus, fields, pills).
+  `rounded` is the app's own, `square` has none, `soft` is one and a half times the usual.
+- `borders`: `flat` is one hairline. `bevel` is the classic 3D look: raised buttons, menus,
+  dialogs and the command palette (light top-left, dark bottom-right edges), sunken panes, the
+  Needs you inbox, the search field and segmented controls, pressed buttons that sink, a lit menu
+  row in the accent colour. The edges are derived from the theme's face colour (`base`), so give
+  `base` and `mantle` the same grey for the full effect. Text fields and lists drawn
+  by egui itself get square corners and the bevel's grey outline, not a full bevel.
+- `titlebar`: the app's own title bar (its background, the brand and icon colours), and the
+  window's caption buttons are 3D squares with `bevel`. A pair below WCAG's 4.5:1 is not checked;
+  pick readable ones.
+- `ui_font`: the font of the whole interface. `default` is Figtree. `mono` is the bundled
+  JetBrains Mono (an Emacs look). A path such as `fonts/W95FA.otf` is a `.ttf` or `.otf` file
+  inside the add-on's folder: relative, `/` separators, no `..`, no drive letter. Figtree and
+  egui's own fonts stay behind it for the symbols it lacks. `ui_font_scale` sizes it: a pixel
+  font wants its native size.
+- `terminal_font`: the terminal's font, the same way (`mono` is the terminal's own font already).
+  Terminal text keeps the size set in Settings.
+
+**Fonts a theme brings.** Font files are read once, on the add-on scan's worker thread (never on
+the UI thread), when the add-ons load, and again when the folder is rescanned or the font file
+changes while the add-on is enabled. A file must be a regular file inside the add-on's folder (a
+link out of it is refused), at most 4 MiB, a TrueType or OpenType font with Latin letters. Fonts
+only ever load from those bytes, never from a system path or by name. The samples' fonts are
+open-licensed; ship the licence text beside any font you bundle.
+
 **How the window's colours follow.** About 60 tokens (surfaces, text, accents, status colours,
 syntax and diff colours, the terminal) each derive from one slot. A token keeps the offset it has
 from its slot in the base theme: `bg` is `base`, `field` is `base` lifted by a few steps, Latte's
@@ -201,7 +245,10 @@ exactly Mocha. Tints keep their alpha; a slot's own alpha scales it.
 
 **Problems.** A colour that does not parse, an unknown key or an unknown `[theme.*]` table is
 skipped and listed under the add-on in Settings > Add-ons; the theme still loads with the base's
-colour there. An entry with no `id`, `name` or a valid `base` is skipped, and so is a second theme
+colour there. The same goes for `[theme.style]`: an unknown key or an invalid value (a `corners`
+that is not one of the three, a font path with `..`, a scale outside 0.5 to 2.0) is listed and that
+key keeps its default; a font file that is missing, too big, a link out of the folder or not a
+font is listed (`font fonts/x.otf: no such file; the default font is used`) and the theme draws with the default font. An entry with no `id`, `name` or a valid `base` is skipped, and so is a second theme
 with the same id. Up to 32 themes per add-on. Contrast is checked against WCAG: `text` on `base`,
 `mantle`, `crust` and `surface0`, `subtext1` on `base` (4.5:1), `overlay2` on `base` (3:1) and the
 terminal's foreground on its background (4.5:1). A pair below is reported as a `warning:` problem;
@@ -220,7 +267,8 @@ second (modified time and size, on a worker). A change reloads the add-ons, and 
 the new colours. An edit that only touches `[[theme]]` tables keeps the add-on enabled (colours run
 nothing); any other change turns it off until it is enabled again, as for every add-on. A process
 add-on's themes are ignored, like its other declarative entries.
-The theme-only exception is a deliberate policy decision (Allan, 2026-11-22).
+The theme-only exception is a deliberate policy decision (Allan, 2026-11-22), and it covers
+`[theme.style]`: the font files are checked and read on a worker, and a font is data, not code.
 
 ## Enabling: the consent point
 
@@ -1033,7 +1081,7 @@ Claude Code token and API-equivalent cost accounting from Claude's own transcrip
 | `review` | process | the Review add-on above: changed files, diffs and comment threads that agents answer (first-party, with a screen) |
 | `session-summary` | process | the Session summary plugin above |
 | `themes` | pack | three dark themes: Catppuccin Frappé and Macchiato (official palette, MIT) and an original High contrast |
-| `theme-fun` | pack | three original colour themes: Emacs (dark), Windows 98 and Blossom (light) |
+| `theme-fun` | pack | three original themes: Emacs (dark, square, monospace UI), Windows 98 (3D bevels, navy title bar, W95FA pixel font) and Blossom (soft corners, Varela Round). Brings `fonts/` |
 
 The MSI installs per machine and add-ons live per user, so nothing is enabled or copied at install
 time. **Settings > Add-ons > Install samples** (`addon_install_samples`) copies each sample folder

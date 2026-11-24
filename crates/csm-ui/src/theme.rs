@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use egui::epaint::text::{FontData, FontDefinitions, FontFamily, FontTweak, VariationCoords};
 use egui::{Color32, CornerRadius, FontId, Stroke, TextStyle, Visuals};
+use csm_core::addons::{Borders, Corners, FontChoice};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -68,6 +69,8 @@ const fn hex(rgb: u32) -> Color32 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
     pub kind: ThemeKind,
+    /// What the theme's `[theme.style]` adds (3D borders, title bar colours).
+    pub style: StyleTokens,
     // Surfaces, darkest to lightest in Mocha.
     pub crust: Color32,
     pub mantle: Color32,
@@ -153,6 +156,7 @@ impl Tokens {
         match kind {
             ThemeKind::Mocha => Tokens {
                 kind,
+                style: StyleTokens::default(),
                 crust: hex(0x11111b),
                 mantle: hex(0x181825),
                 bg: hex(0x1e1e2e),
@@ -221,6 +225,7 @@ impl Tokens {
             },
             ThemeKind::Latte => Tokens {
                 kind,
+                style: StyleTokens::default(),
                 crust: hex(0xdce0e8),
                 mantle: hex(0xe6e9ef),
                 bg: hex(0xeff1f5),
@@ -362,6 +367,7 @@ impl Tokens {
         let d = |token: Color32, key: &str| shift(token, b.c(key), p.c(key));
         let mut t = Tokens {
             kind: p.kind,
+            style: StyleTokens::default(),
             crust: d(r.crust, "crust"),
             mantle: d(r.mantle, "mantle"),
             bg: d(r.bg, "base"),
@@ -558,14 +564,152 @@ pub fn resolve(kind: ThemeKind, id: &str, addons: &[csm_engine::addons::AddonSum
     if id.is_empty() || id == builtin {
         return (Palette::builtin(kind), None);
     }
-    let found = id.split_once('.').and_then(|(addon, theme)| {
-        addons.iter().find(|a| a.id == addon && a.state == csm_engine::addons::AddonState::Loaded).and_then(|a| a.themes.iter().find(|t| t.id == theme))
-    });
-    match found {
+    match find_theme(kind, id, addons).map(|(_, t)| t) {
         Some(t) if ThemeKind::of_base(t.base) == kind => (Palette::from_spec(t), None),
         Some(t) => (Palette::builtin(kind), Some(format!("“{}” is a {} theme, so {builtin} is drawn instead.", t.name, t.base.id()))),
         None => (Palette::builtin(kind), Some(format!("The theme `{id}` is not available (its add-on is off or gone), so {builtin} is drawn instead."))),
     }
+}
+
+// ---- theme style ([theme.style]) ----------------------------------------------------------
+
+/// What a theme's `[theme.style]` adds to the tokens: the 3D border switch and the title bar's
+/// colours. The default is today's look, drawn from the other tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StyleTokens {
+    /// Raised buttons and panels, sunken fields (`borders = "bevel"`).
+    pub bevel: bool,
+    pub title_bg: Option<Color32>,
+    pub title_fg: Option<Color32>,
+    /// While the window is not focused.
+    pub title_bg_off: Option<Color32>,
+    pub title_fg_off: Option<Color32>,
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let l = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+impl Tokens {
+    /// The 3D edges, derived from the face colour (`bg`): highlight, light, shadow, dark shadow.
+    /// On a 3D grey (#c0c0c0) these are white, #dfdfdf, #808080 and #1d1d1d.
+    pub fn bevel_hi(&self) -> Color32 {
+        mix(self.bg, Color32::WHITE, 1.0)
+    }
+
+    pub fn bevel_lt(&self) -> Color32 {
+        mix(self.bg, Color32::WHITE, 0.5)
+    }
+
+    pub fn bevel_sh(&self) -> Color32 {
+        mix(self.bg, Color32::BLACK, 0.33)
+    }
+
+    pub fn bevel_dk(&self) -> Color32 {
+        mix(self.bg, Color32::BLACK, 0.85)
+    }
+
+    /// The title bar's background; `focused` is whether the window has the keyboard.
+    pub fn title_bg(&self, focused: bool) -> Color32 {
+        let on = self.style.title_bg.unwrap_or(self.mantle);
+        if focused { on } else { self.style.title_bg_off.unwrap_or(on) }
+    }
+
+    pub fn title_fg(&self, focused: bool) -> Color32 {
+        let on = self.style.title_fg.unwrap_or(self.fg);
+        if focused { on } else { self.style.title_fg_off.unwrap_or(on) }
+    }
+
+    /// Whether the theme gives the title bar its own colours.
+    pub fn custom_title(&self) -> bool {
+        self.style.title_bg.is_some()
+    }
+}
+
+/// The UI font a theme asks for.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum UiFont {
+    /// Figtree.
+    #[default]
+    Default,
+    /// JetBrains Mono for all text.
+    Mono,
+    /// A font file the add-on brought (already read and checked).
+    Custom(csm_engine::addons::FontBytes),
+}
+
+/// A theme's `[theme.style]` resolved: corners, borders, title bar colours and fonts. The default
+/// is the built-in look.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThemeLook {
+    pub corners: Corners,
+    pub borders: Borders,
+    /// Title bar background, text, and the same while the window is not focused.
+    pub title: [Option<Color32>; 4],
+    pub ui_font: UiFont,
+    /// The UI font's size, percent.
+    pub ui_font_scale: u16,
+    /// The terminal's font; `None` is the app's own.
+    pub terminal_font: Option<csm_engine::addons::FontBytes>,
+}
+
+impl Default for ThemeLook {
+    fn default() -> Self {
+        ThemeLook { corners: Corners::Rounded, borders: Borders::Flat, title: [None; 4], ui_font: UiFont::Default, ui_font_scale: 100, terminal_font: None }
+    }
+}
+
+impl ThemeLook {
+    /// An add-on theme's look; `fonts` are the files its add-on loaded. A font that is not among
+    /// them (it did not load) is the default.
+    pub fn from_spec(spec: &csm_core::addons::ThemeSpec, fonts: &csm_engine::addons::ThemeFonts) -> ThemeLook {
+        let s = &spec.style;
+        let find = |rel: &str| fonts.iter().find(|(p, _)| p == rel).map(|(_, b)| b.clone());
+        let color = |c: &Option<String>| c.as_deref().and_then(csm_core::addons::theme::parse_hex).map(color_of);
+        ThemeLook {
+            corners: s.corners,
+            borders: s.borders,
+            title: [color(&s.titlebar.background), color(&s.titlebar.text), color(&s.titlebar.inactive_background), color(&s.titlebar.inactive_text)],
+            ui_font: match &s.ui_font {
+                FontChoice::Default => UiFont::Default,
+                FontChoice::Mono => UiFont::Mono,
+                FontChoice::File(p) => find(p).map_or(UiFont::Default, UiFont::Custom),
+            },
+            ui_font_scale: s.ui_font_scale,
+            terminal_font: match &s.terminal_font {
+                FontChoice::File(p) => find(p),
+                _ => None,
+            },
+        }
+    }
+
+    fn tokens(&self) -> StyleTokens {
+        StyleTokens { bevel: self.borders == Borders::Bevel, title_bg: self.title[0], title_fg: self.title[1], title_bg_off: self.title[2], title_fg_off: self.title[3] }
+    }
+
+    fn corner_percent(&self) -> u16 {
+        match self.corners {
+            Corners::Rounded => 100,
+            Corners::Square => 0,
+            Corners::Soft => 150,
+        }
+    }
+}
+
+/// The look to draw for `kind` when the chosen theme is `id` ([`resolve`] picks the same theme):
+/// the built-in look when it is not available.
+pub fn resolve_look(kind: ThemeKind, id: &str, addons: &[csm_engine::addons::AddonSummary]) -> ThemeLook {
+    match find_theme(kind, id.trim(), addons) {
+        Some((a, t)) if ThemeKind::of_base(t.base) == kind => ThemeLook::from_spec(t, &a.theme_fonts),
+        _ => ThemeLook::default(),
+    }
+}
+
+fn find_theme<'a>(_kind: ThemeKind, id: &str, addons: &'a [csm_engine::addons::AddonSummary]) -> Option<(&'a csm_engine::addons::AddonSummary, &'a csm_core::addons::ThemeSpec)> {
+    let (addon, theme) = id.split_once('.')?;
+    let a = addons.iter().find(|a| a.id == addon && a.state == csm_engine::addons::AddonState::Loaded)?;
+    a.themes.iter().find(|t| t.id == theme).map(|t| (a, t))
 }
 
 fn tokens_id() -> egui::Id {
@@ -588,14 +732,45 @@ pub mod space {
 }
 
 /// Corners: tags and rows (4), controls and fields (6), cards, menus and dialogs (8), the
-/// palette and the window (10).
+/// palette and the window (10). A theme's `corners` scales them (`square` 0, `soft` 1.5 times),
+/// per thread (the UI thread draws; the scale is set where the theme is applied).
 pub mod radius {
-    pub const SM: u8 = 4;
-    pub const MD: u8 = 6;
-    pub const LG: u8 = 8;
-    pub const XL: u8 = 10;
-    /// Fully round (pills, badges).
-    pub const PILL: u8 = 255;
+    use std::cell::Cell;
+
+    thread_local! {
+        static SCALE: Cell<u16> = const { Cell::new(100) };
+    }
+
+    /// Sets the percentage every radius is scaled by (100 is the built-in look).
+    pub fn set_scale(percent: u16) {
+        SCALE.with(|s| s.set(percent));
+    }
+
+    fn scaled(px: u8) -> u8 {
+        let v = (u32::from(px) * u32::from(SCALE.with(Cell::get)) + 50) / 100;
+        u8::try_from(v.min(200)).unwrap_or(200)
+    }
+
+    pub fn sm() -> u8 {
+        scaled(4)
+    }
+
+    pub fn md() -> u8 {
+        scaled(6)
+    }
+
+    pub fn lg() -> u8 {
+        scaled(8)
+    }
+
+    pub fn xl() -> u8 {
+        scaled(10)
+    }
+
+    /// Fully round (pills, badges); square corners keep a pill square.
+    pub fn pill() -> u8 {
+        if SCALE.with(Cell::get) == 0 { 0 } else { 255 }
+    }
 }
 
 /// Type sizes, in points. The mock-up's app window is dense: 13 px body text.
@@ -859,9 +1034,24 @@ pub fn mono(size: f32) -> FontId {
     FontId::monospace(size)
 }
 
+/// The UI font installed on a context, to tell when a theme asks for another.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct InstalledFont(UiFont, u16);
+
+fn installed_font_id() -> egui::Id {
+    egui::Id::new("csm-theme-ui-font")
+}
+
 /// Figtree (three weights) and JetBrains Mono, with egui's default fonts behind them for
 /// symbols Figtree lacks.
 pub fn install_fonts(ctx: &egui::Context) {
+    install_ui_font(ctx, &UiFont::Default, 100);
+}
+
+/// The fonts for a UI font choice. Every family keeps egui's own fonts and Figtree behind the
+/// chosen one, for the symbols it lacks. Fonts come from bytes only (bundled or a theme add-on's,
+/// already read and checked): never from a system path.
+fn install_ui_font(ctx: &egui::Context, ui_font: &UiFont, scale_percent: u16) {
     let mut fonts = FontDefinitions::default();
     for (name, weight) in FIGTREE_FACES {
         let tweak = FontTweak { coords: VariationCoords::new([(*b"wght", weight)]), ..Default::default() };
@@ -870,25 +1060,53 @@ pub fn install_fonts(ctx: &egui::Context) {
     fonts.font_data.insert("JetBrainsMono".to_owned(), Arc::new(FontData::from_static(crate::terminal::fonts::JETBRAINS_MONO)));
     let defaults_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let defaults_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
-    let with = |first: &str, rest: &[String]| -> Vec<String> { std::iter::once(first.to_owned()).chain(rest.iter().cloned()).collect() };
-    fonts.families.insert(FontFamily::Proportional, with("Figtree", &defaults_prop));
-    fonts.families.insert(medium_family(), with("Figtree-Medium", &defaults_prop));
-    fonts.families.insert(semibold_family(), with("Figtree-SemiBold", &defaults_prop));
-    fonts.families.insert(FontFamily::Monospace, with("JetBrainsMono", &defaults_mono));
+    let with = |first: &[&str], rest: &[String]| -> Vec<String> { first.iter().map(|s| (*s).to_owned()).chain(rest.iter().cloned()).collect() };
+    let figtree = |name: &'static str| -> Vec<String> { with(&[name], &defaults_prop) };
+    let (regular_f, medium_f, semibold_f) = match ui_font {
+        UiFont::Default => (figtree("Figtree"), figtree("Figtree-Medium"), figtree("Figtree-SemiBold")),
+        UiFont::Mono => {
+            let mono = |fallback: &'static str| with(&["JetBrainsMono", fallback], &defaults_prop);
+            (mono("Figtree"), mono("Figtree-Medium"), mono("Figtree-SemiBold"))
+        }
+        UiFont::Custom(bytes) => {
+            let tweak = FontTweak { scale: f32::from(scale_percent) / 100.0, ..Default::default() };
+            fonts.font_data.insert("ThemeUi".to_owned(), Arc::new(FontData::from_owned(bytes.0.as_ref().clone()).tweak(tweak)));
+            let custom = |fallback: &'static str| with(&["ThemeUi", fallback], &defaults_prop);
+            (custom("Figtree"), custom("Figtree-Medium"), custom("Figtree-SemiBold"))
+        }
+    };
+    fonts.families.insert(FontFamily::Proportional, regular_f);
+    fonts.families.insert(medium_family(), medium_f);
+    fonts.families.insert(semibold_family(), semibold_f);
+    fonts.families.insert(FontFamily::Monospace, with(&["JetBrainsMono"], &defaults_mono));
     ctx.set_fonts(fonts);
+    ctx.data_mut(|d| d.insert_temp(installed_font_id(), InstalledFont(ui_font.clone(), scale_percent)));
 }
 
 /// Apply a theme: stores the tokens and sets egui's own visuals from them.
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
-    apply_tokens(ctx, Tokens::for_kind(kind));
+    apply_tokens(ctx, Tokens::for_kind(kind), 100);
 }
 
-/// Apply any theme's palette (a built-in's gives exactly [`apply`]).
+/// Apply any theme's palette with the built-in look (a built-in's gives exactly [`apply`]).
 pub fn apply_palette(ctx: &egui::Context, palette: &Palette) {
-    apply_tokens(ctx, Tokens::from_palette(palette));
+    apply_look(ctx, palette, &ThemeLook::default());
 }
 
-fn apply_tokens(ctx: &egui::Context, t: Tokens) {
+/// Apply a theme: its palette and its `[theme.style]` look. Fonts take effect from the next pass
+/// (egui rebuilds them then), and only when they differ from what is installed.
+pub fn apply_look(ctx: &egui::Context, palette: &Palette, look: &ThemeLook) {
+    let mut t = Tokens::from_palette(palette);
+    t.style = look.tokens();
+    apply_tokens(ctx, t, look.corner_percent());
+    let wanted = InstalledFont(look.ui_font.clone(), look.ui_font_scale);
+    if ctx.data(|d| d.get_temp::<InstalledFont>(installed_font_id())).unwrap_or_default() != wanted {
+        install_ui_font(ctx, &wanted.0, wanted.1);
+    }
+}
+
+fn apply_tokens(ctx: &egui::Context, t: Tokens, corner_percent: u16) {
+    radius::set_scale(corner_percent);
     ctx.data_mut(|d| d.insert_temp(tokens_id(), t));
     ctx.set_theme(if t.dark() { egui::Theme::Dark } else { egui::Theme::Light });
     let mut v = if t.dark() { Visuals::dark() } else { Visuals::light() };
@@ -903,8 +1121,8 @@ fn apply_tokens(ctx: &egui::Context, t: Tokens) {
     v.hyperlink_color = t.blue;
     v.warn_fg_color = t.peach;
     v.error_fg_color = t.red;
-    v.window_corner_radius = CornerRadius::same(radius::LG);
-    v.menu_corner_radius = CornerRadius::same(radius::LG);
+    v.window_corner_radius = CornerRadius::same(radius::lg());
+    v.menu_corner_radius = CornerRadius::same(radius::lg());
     v.window_shadow = egui::Shadow { offset: [0, 14], blur: 36, spread: 0, color: t.shadow };
     v.popup_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: t.shadow };
     v.text_edit_bg_color = Some(t.field);
@@ -926,8 +1144,20 @@ fn apply_tokens(ctx: &egui::Context, t: Tokens) {
         wv.weak_bg_fill = bg;
         wv.bg_stroke = Stroke::new(size::HAIRLINE, stroke);
         wv.fg_stroke = Stroke::new(size::HAIRLINE, t.fg);
-        wv.corner_radius = CornerRadius::same(radius::MD);
+        wv.corner_radius = CornerRadius::same(radius::md());
         wv.expansion = 0.0;
+    }
+    if t.style.bevel {
+        // 3D: no soft shadows, hard 1 px edges in the bevel's own greys.
+        v.window_shadow = egui::Shadow::NONE;
+        v.popup_shadow = egui::Shadow::NONE;
+        v.window_stroke = Stroke::new(size::HAIRLINE, t.bevel_dk());
+        let w = &mut v.widgets;
+        w.noninteractive.bg_stroke = Stroke::new(size::HAIRLINE, t.bevel_sh());
+        w.inactive.bg_stroke = Stroke::new(size::HAIRLINE, t.bevel_sh());
+        w.hovered.bg_stroke = Stroke::new(size::HAIRLINE, t.bevel_dk());
+        w.active.bg_stroke = Stroke::new(size::HAIRLINE, t.bevel_dk());
+        w.open.bg_stroke = Stroke::new(size::HAIRLINE, t.bevel_dk());
     }
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
@@ -1141,6 +1371,7 @@ mod tests {
             process_calls: vec![],
             process: None,
             themes,
+            theme_fonts: Vec::new(),
             problems: vec![],
         }
     }
@@ -1191,6 +1422,80 @@ mod tests {
     fn theme_ids_round_trip() {
         for k in ThemeKind::ALL {
             assert_eq!(ThemeKind::from_id(k.id()), Some(k));
+        }
+    }
+    /// The default look changes nothing: the built-ins draw exactly as before (tokens, egui's
+    /// visuals and the radius scale).
+    #[test]
+    fn the_default_look_leaves_the_built_in_themes_as_they_were() {
+        for kind in ThemeKind::ALL {
+            let (a, b) = (egui::Context::default(), egui::Context::default());
+            apply(&a, kind);
+            apply_look(&b, &Palette::builtin(kind), &ThemeLook::default());
+            assert_eq!(Tokens::get(&a), Tokens::get(&b), "{kind:?}");
+            assert_eq!(a.global_style().visuals, b.global_style().visuals, "{kind:?}");
+            assert_eq!((radius::sm(), radius::md(), radius::lg(), radius::xl(), radius::pill()), (4, 6, 8, 10, 255));
+        }
+        assert_eq!(ThemeLook::default().tokens(), StyleTokens::default());
+        assert!(!Tokens::for_kind(ThemeKind::Mocha).style.bevel);
+    }
+
+    #[test]
+    fn corners_scale_every_radius_and_square_keeps_pills_square() {
+        radius::set_scale(0);
+        assert_eq!((radius::sm(), radius::md(), radius::lg(), radius::xl(), radius::pill()), (0, 0, 0, 0, 0));
+        assert_eq!(radius::sm().saturating_sub(1), 0, "no underflow in the arithmetic screens do");
+        radius::set_scale(150);
+        assert_eq!((radius::sm(), radius::md(), radius::lg(), radius::xl(), radius::pill()), (6, 9, 12, 15, 255));
+        radius::set_scale(100);
+        assert_eq!(radius::lg(), 8);
+    }
+
+    fn fun_pack(state: csm_engine::addons::AddonState, fonts: csm_engine::addons::ThemeFonts) -> csm_engine::addons::AddonSummary {
+        let text = include_str!("../../../samples/addons/theme-fun/addon.toml");
+        let themes = csm_core::addons::parse(text, "theme-fun").unwrap().themes;
+        csm_engine::addons::AddonSummary { id: "theme-fun".into(), theme_fonts: fonts, ..summary(state, themes) }
+    }
+
+    #[test]
+    fn a_theme_look_takes_its_style_and_its_loaded_fonts() {
+        use csm_engine::addons::{AddonState, FontBytes};
+        let bytes = FontBytes(std::sync::Arc::new(include_bytes!("../../../samples/addons/theme-fun/fonts/W95FA.otf").to_vec()));
+        let loaded = vec![("fonts/W95FA.otf".to_owned(), bytes.clone())];
+        let on = vec![fun_pack(AddonState::Loaded, loaded)];
+        let win98 = resolve_look(ThemeKind::Latte, "theme-fun.win98", &on);
+        assert_eq!((win98.corners, win98.borders), (Corners::Square, Borders::Bevel));
+        assert_eq!(win98.ui_font, UiFont::Custom(bytes));
+        assert_eq!(win98.title[0], Some(hex(0x000080)));
+        assert_eq!(win98.title[1], Some(hex(0xffffff)));
+        let emacs = resolve_look(ThemeKind::Mocha, "theme-fun.emacs", &on);
+        assert_eq!((emacs.ui_font, emacs.corners, emacs.borders), (UiFont::Mono, Corners::Square, Borders::Flat));
+        assert_eq!(resolve_look(ThemeKind::Latte, "theme-fun.blossom", &on).corners, Corners::Soft);
+        // The font did not load: the theme draws with the default font, the rest of its style stays.
+        let none = vec![fun_pack(AddonState::Loaded, Vec::new())];
+        let win98 = resolve_look(ThemeKind::Latte, "theme-fun.win98", &none);
+        assert_eq!((win98.ui_font, win98.borders), (UiFont::Default, Borders::Bevel));
+        // Off, gone or the wrong mode: the built-in look.
+        let off = vec![fun_pack(AddonState::Disabled, Vec::new())];
+        assert_eq!(resolve_look(ThemeKind::Latte, "theme-fun.win98", &off), ThemeLook::default());
+        assert_eq!(resolve_look(ThemeKind::Mocha, "theme-fun.win98", &on), ThemeLook::default());
+        assert_eq!(resolve_look(ThemeKind::Mocha, "mocha", &on), ThemeLook::default());
+    }
+
+    #[test]
+    fn the_fun_themes_keep_the_contrast_the_built_ins_keep() {
+        let text = include_str!("../../../samples/addons/theme-fun/addon.toml");
+        for s in csm_core::addons::parse(text, "theme-fun").unwrap().themes {
+            let t = Tokens::from_palette(&Palette::from_spec(&s));
+            for surface in [t.bg, t.mantle, t.pop] {
+                assert!(contrast(t.fg, surface) >= 4.5, "{}: body text {:.2}", s.id, contrast(t.fg, surface));
+                assert!(contrast(t.muted, surface) >= 3.0, "{}: muted text {:.2}", s.id, contrast(t.muted, surface));
+            }
+            assert!(contrast(t.term_fg, t.term_bg) >= 4.5, "{}: terminal text", s.id);
+            let look = ThemeLook::from_spec(&s, &Vec::new());
+            if let (Some(bg), Some(fg)) = (look.title[0], look.title[1]) {
+                assert!(contrast(fg, bg) >= 4.5, "{}: title bar text {:.2}", s.id, contrast(fg, bg));
+            }
         }
     }
 }

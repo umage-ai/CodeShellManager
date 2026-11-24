@@ -273,6 +273,7 @@ mod dot_tests {
             process_calls: vec![],
             process: None,
             themes: vec![],
+            theme_fonts: Vec::new(),
             problems: vec![],
         };
         let body = consent_body(&a);
@@ -315,6 +316,7 @@ mod dot_tests {
             }],
             process: None,
             themes: vec![],
+            theme_fonts: Vec::new(),
             problems: vec![],
         };
         let body = consent_body(&a);

@@ -32,6 +32,16 @@ name = "Emacs"
 base = "dark"
 description = "Classic dark Emacs font-lock colours on a charcoal background."
 
+[theme.style]
+corners = "square"
+borders = "flat"
+ui_font = "mono"           # JetBrains Mono for the whole UI
+[theme.style.titlebar]
+background = "#3c3c3c"    # the modeline grey
+text = "#f5deb3"
+inactive_background = "#2e2e2e"
+inactive_text = "#9a9a9a"
+
 [theme.colors]
 rosewater = "#ffdab9"   # peach puff
 flamingo = "#ffa07a"    # light salmon
@@ -88,6 +98,17 @@ name = "Windows 98"
 base = "light"
 description = "3D-face grey, white fields, navy and teal, and the VGA palette."
 
+[theme.style]
+corners = "square"
+borders = "bevel"
+ui_font = "fonts/W95FA.otf"   # W95FA by Alina Sava, SIL OFL 1.1 (fonts/OFL-W95FA.txt)
+ui_font_scale = 1.0
+[theme.style.titlebar]
+background = "#000080"    # the navy caption
+text = "#ffffff"
+inactive_background = "#808080"
+inactive_text = "#c0c0c0"
+
 [theme.colors]
 rosewater = "#c0c0c0"
 flamingo = "#a04040"
@@ -100,21 +121,21 @@ yellow = "#7a5c00"
 green = "#007a00"
 teal = "#008080"        # the desktop teal
 sky = "#006a8a"
-sapphire = "#0000a0"
-blue = "#000080"        # the navy title and selection
+sapphire = "#006080"
+blue = "#008080"  # the teal accent
 lavender = "#4a4ab0"
 text = "#000000"
 subtext1 = "#1a1a1a"
 subtext0 = "#333333"
-overlay2 = "#666666"
-overlay1 = "#707070"
-overlay0 = "#808080"
+overlay2 = "#4a4a4a"
+overlay1 = "#555555"
+overlay0 = "#666666"
 surface2 = "#585858"
 surface1 = "#808080"    # the shadow grey
 surface0 = "#ffffff"    # white fields
 base = "#c0c0c0"        # 3D face
-mantle = "#b5b5b5"
-crust = "#a0a0a0"
+mantle = "#c0c0c0"  # the same 3D face
+crust = "#dfdfdf"  # light face: text on an accent fill
 
 [theme.terminal]
 foreground = "#000000"
@@ -143,6 +164,13 @@ id = "blossom"
 name = "Blossom"
 base = "light"
 description = "Soft pastel blush, lavender, peach and mint on a creamy pink."
+
+[theme.style]
+corners = "soft"
+ui_font = "fonts/VarelaRound-Regular.ttf"   # Varela Round, SIL OFL 1.1 (fonts/OFL-VarelaRound.txt)
+[theme.style.titlebar]
+background = "#f4c9c3"
+text = "#4a1d3d"
 
 [theme.colors]
 rosewater = "#f8c8d4"

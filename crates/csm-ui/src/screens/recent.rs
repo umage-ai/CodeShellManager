@@ -115,7 +115,7 @@ fn row(ui: &mut egui::Ui, t: &Tokens, item: &Item<'_>, i: usize, selected: bool,
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::MENU_ROW), Sense::click());
     let p = ui.painter().clone();
     if selected || resp.hovered() {
-        p.rect_filled(rect, CornerRadius::same(radius::SM + 1), t.row_sel);
+        p.rect_filled(rect, CornerRadius::same(radius::sm() + 1), t.row_sel);
     }
     let cy = rect.center().y;
     let mut right = rect.max.x - space::ROW_X;

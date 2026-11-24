@@ -34,7 +34,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let resp = ui.interact(r, Id::new(("settings-sec", sec.label())), Sense::click());
         let on = app.ui.settings.section == sec;
         if on || resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
+            ui.painter().rect_filled(r, CornerRadius::same(radius::md()), if on { t.row_sel } else { t.row_hover });
         }
         let ir = Rect::from_min_size(pos2(r.min.x + space::ROW_X, r.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, sec.icon(), icon::MD, if on { t.blue } else { t.muted });
@@ -451,14 +451,14 @@ fn theme_row(ui: &mut Ui, entry: &theme::ThemeEntry, slot: &str, selected: bool)
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::click());
     if selected || resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), if selected { t.row_sel } else { t.row_hover });
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), if selected { t.row_sel } else { t.row_hover });
     }
     let mut x = rect.min.x + space::ROW_X;
     let side = size::BADGE;
     for c in entry.palette.swatches() {
         let r = Rect::from_min_size(pos2(x, rect.center().y - side / 2.0), Vec2::splat(side));
-        ui.painter().rect_filled(r, CornerRadius::same(radius::SM), c);
-        ui.painter().rect_stroke(r, CornerRadius::same(radius::SM), Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
+        ui.painter().rect_filled(r, CornerRadius::same(radius::sm()), c);
+        ui.painter().rect_stroke(r, CornerRadius::same(radius::sm()), Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
         x += side + space::XXS;
     }
     x += space::SM;
@@ -601,7 +601,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     // Hero: the logo, the name, what it is, the version.
     ui.horizontal(|ui| {
         let (logo, _) = ui.allocate_exact_size(Vec2::splat(size::ABOUT_LOGO), Sense::hover());
-        ui.painter().rect_filled(logo, CornerRadius::same(radius::LG), t.blue);
+        ui.painter().rect_filled(logo, CornerRadius::same(radius::lg()), t.blue);
         icons::paint(ui, logo, "terminal", icon::HERO, t.on_accent);
         ui.add_space(space::LG);
         ui.vertical(|ui| {
@@ -616,7 +616,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     egui::Frame::new()
         .fill(t.mantle)
         .stroke(Stroke::new(size::HAIRLINE, t.surface0))
-        .corner_radius(CornerRadius::same(radius::LG))
+        .corner_radius(CornerRadius::same(radius::lg()))
         .inner_margin(space::LG)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -277,11 +277,7 @@ fn card(ctx: &egui::Context, id: &str, w: f32, body: impl FnOnce(&mut Ui)) {
     let screen = ctx.content_rect();
     let pos = pos2(screen.center().x - w / 2.0, screen.min.y + size::PALETTE_TOP);
     egui::Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::new()
-            .fill(t.pop)
-            .stroke(Stroke::new(size::HAIRLINE, t.surface1))
-            .corner_radius(CornerRadius::same(radius::XL))
-            .shadow(egui::Shadow { offset: [0, 16], blur: 40, spread: 0, color: t.shadow })
+        crate::widgets::overlay_frame(&t)
             .show(ui, |ui| {
                 ui.set_width(w);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -408,7 +404,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 let rect = outer.shrink2(vec2(space::XS + space::XXS, 0.0));
                 let r = ui.interact(rect, Id::new(("pal-row", i)), Sense::click());
                 if i == sel || r.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                    ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                 }
                 if i == sel && scroll {
                     ui.scroll_to_rect(rect, None);
@@ -420,7 +416,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         let Some(s) = model.session(id) else { continue };
                         ui.painter().rect_filled(
                             Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
-                            CornerRadius::same(radius::SM / 2),
+                            CornerRadius::same(radius::sm() / 2),
                             t.accent(s.accent),
                         );
                         x += size::STRIPE + space::ROW_X;
@@ -1288,11 +1284,11 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         if let Some(id) = &q.edit {
             // Edit mode: what is being edited, and its name.
             let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::SM), Sense::hover());
-            ui.painter().rect_filled(hr, CornerRadius { nw: radius::XL, ne: radius::XL, sw: 0, se: 0 }, t.mantle);
+            ui.painter().rect_filled(hr, CornerRadius { nw: radius::xl(), ne: radius::xl(), sw: 0, se: 0 }, t.mantle);
             ui.painter().hline(hr.x_range(), hr.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
             let accent = model.session(id).map_or(t.blue, |s| t.accent(s.accent));
             let stripe = Rect::from_center_size(pos2(hr.min.x + space::LG + size::STRIPE / 2.0, hr.center().y), vec2(size::STRIPE, space::LG));
-            ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), accent);
+            ui.painter().rect_filled(stripe, CornerRadius::same(radius::sm() / 2), accent);
             let tr = ui.painter().text(
                 pos2(stripe.max.x + space::SM, hr.center().y),
                 Align2::LEFT_CENTER,
@@ -1372,7 +1368,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 let rect = outer.shrink2(vec2(space::XS + space::XXS, 0.0));
                 let r = ui.interact(rect, Id::new(("qo-row", i)), Sense::click());
                 if (i == q.sel && !path_wins) || r.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                    ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                 }
                 if i == q.sel && scroll {
                     ui.scroll_to_rect(rect, None);
@@ -1445,7 +1441,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 let widths: Vec<f32> = commands.iter().map(|c| widgets::text_width(ui, c, font.clone()) + space::MD).collect();
                 let total: f32 = widths.iter().sum::<f32>() + space::XXS * (widths.len() as f32 + 1.0);
                 let (seg, _) = ui.allocate_exact_size(vec2(total, size::CONTROL), Sense::hover());
-                ui.painter().rect(seg, CornerRadius::same(radius::MD + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+                ui.painter().rect(seg, CornerRadius::same(radius::md() + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
                 let mut x = seg.min.x + space::XXS;
                 for (i, (c, w)) in commands.iter().zip(widths).enumerate() {
                     let b = Rect::from_min_size(pos2(x, seg.min.y + space::XXS), vec2(w, size::CONTROL_SM));
@@ -1453,7 +1449,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                     let r = ui.interact(b, Id::new(("qo-cmd", i)), Sense::click());
                     let on = i == q.cmd;
                     if on {
-                        ui.painter().rect_filled(b, CornerRadius::same(radius::SM + 1), t.field);
+                        ui.painter().rect_filled(b, CornerRadius::same(radius::sm() + 1), t.field);
                     }
                     ui.painter().text(b.center(), Align2::CENTER_CENTER, c, font.clone(), if on { t.fg } else { t.muted });
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, true, format!("Command: {c}")));

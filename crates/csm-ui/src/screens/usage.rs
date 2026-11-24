@@ -112,13 +112,13 @@ fn gauge(ui: &mut Ui, ratio: f64, level: FillLevel) {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::GAUGE_H), Sense::hover());
     let p = ui.painter();
-    let rr = CornerRadius::same(radius::SM);
+    let rr = CornerRadius::same(radius::sm());
     p.rect_filled(rect, rr, t.surface0);
     let x_at = |r: f64| rect.min.x + rect.width() * (r.clamp(0.0, 1.0) as f32);
     let warn = Rect::from_min_max(pos2(x_at(cu::WARN_RATIO), rect.min.y), pos2(x_at(cu::CRITICAL_RATIO), rect.max.y));
     let crit = Rect::from_min_max(pos2(x_at(cu::CRITICAL_RATIO), rect.min.y), rect.max);
     p.rect_filled(warn, CornerRadius::ZERO, Tokens::tint(t.yellow, alpha::GAUGE_BAND));
-    p.rect_filled(crit, CornerRadius { nw: 0, sw: 0, ne: radius::SM, se: radius::SM }, Tokens::tint(t.red, alpha::GAUGE_BAND));
+    p.rect_filled(crit, CornerRadius { nw: 0, sw: 0, ne: radius::sm(), se: radius::sm() }, Tokens::tint(t.red, alpha::GAUGE_BAND));
     let fill = Rect::from_min_max(rect.min, pos2(x_at(ratio), rect.max.y));
     p.rect_filled(fill, rr, level_color(&t, level));
     p.vline(x_at(cu::CRITICAL_RATIO), rect.y_range(), Stroke::new(size::HAIRLINE, t.red));
