@@ -167,6 +167,9 @@ pub enum Menu {
     Recent { at: egui::Pos2 },
     /// "Copy reply…" on a Claude pane: its recent replies and their code blocks.
     ClaudeReplies { session: SessionId, at: egui::Pos2 },
+    /// The main menu: every action, grouped by area (F10, a clean Alt tap, the title bar's button).
+    /// Its top-left corner at `at`.
+    Main { at: egui::Pos2 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -569,6 +572,9 @@ pub struct UiState {
     pub selection: csm_core::sidebar_selection::Selection,
     /// The session rows the sidebar drew last frame, top to bottom (Shift-click's range).
     pub sidebar_visible: Vec<SessionId>,
+    /// The sidebar's focus order, top to bottom, as drawn last frame: each session row (with its
+    /// session id) and each group header (`None`). The arrow keys move through it.
+    pub sidebar_nav: Vec<(egui::Id, Option<SessionId>)>,
     /// The last sort applied (`session_sort`): its field shows its direction and flips when
     /// picked again.
     pub sort: Option<(csm_core::session_sort::SortField, bool)>,
@@ -1887,6 +1893,12 @@ impl CsmApp {
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = Modifiers::COMMAND;
         let pressed = |ctx: &egui::Context, m: Modifiers, k: Key| ctx.input_mut(|i| consume_exact(i, m, k));
+        // The main menu: F10, or a clean Alt tap (`alt_tap`). The tap is read first, before any
+        // key is taken: a key used with Alt is not a tap, so Alt+letter still reaches the terminal.
+        let tapped = self.alt_tap_fired(ctx);
+        if pressed(ctx, Modifiers::NONE, Key::F10) || tapped {
+            self.toggle_main_menu(ctx);
+        }
         // An open menu takes its keys before anything else: it is modal from the keyboard
         // (`screens::menus::menu_keys`). Ctrl chords it does not read still reach the shortcuts.
         if self.ui.menu.is_some()
@@ -2011,10 +2023,12 @@ impl CsmApp {
                 }
             }
         }
-        // F2 renames the active session in place.
+        // F2 renames the active session in place. A focused sidebar row or group header renames
+        // its own item instead (the sidebar takes the key).
         if self.ui.overlay == Overlay::None
             && self.ui.inline.is_none()
             && let Some(a) = self.model.active.clone()
+            && !self.sidebar_item_focused(ctx)
             && pressed(ctx, Modifiers::NONE, Key::F2)
         {
             self.run(ctx, Action::StartRename(a));
@@ -2032,6 +2046,17 @@ impl CsmApp {
                 if let Some(tab) = tab {
                     self.run(ctx, Action::Tool("view_set", json!({"rail_tab": tab.key()})));
                 }
+            }
+        }
+        // Ctrl+PgUp / Ctrl+PgDn: the add-on screen tab before / after the shown one. Ctrl+Alt+PgUp /
+        // PgDn: the rail tab before / after (`rail_tab_prev`, `rail_tab_next`). docs/design/keyboard.md, 3.
+        for (key, forward) in [(Key::PageDown, true), (Key::PageUp, false)] {
+            if pressed(ctx, cmd, key) {
+                self.screen_tab_step(ctx, forward);
+            }
+            if pressed(ctx, cmd | Modifiers::ALT, key) {
+                let tool = if forward { "rail_tab_next" } else { "rail_tab_prev" };
+                self.run(ctx, Action::Tool(tool, json!({})));
             }
         }
         if pressed(ctx, cmd, Key::Comma) {
@@ -2070,6 +2095,34 @@ impl CsmApp {
             self.run(ctx, Action::CloseSettings);
         } else if self.ui.usage_page.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseUsage);
+        }
+    }
+
+    /// Whether a clean Alt tap ended this frame (`alt_tap`). Reads this frame's input only.
+    fn alt_tap_fired(&self, ctx: &egui::Context) -> bool {
+        let id = egui::Id::new("alt-tap-state");
+        let (alt, other, focused) = ctx.input(|i| {
+            let m = i.modifiers;
+            // Another key, text, a click or a scroll, or Ctrl/Shift/Command, makes it a chord.
+            let typed = i.events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::PointerButton { .. }));
+            let other = typed || i.pointer.any_pressed() || i.smooth_scroll_delta != egui::Vec2::ZERO || m.ctrl || m.shift || m.command || m.mac_cmd;
+            (m.alt, other, i.focused)
+        });
+        let mut state: crate::alt_tap::AltTap = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
+        let tapped = state.update(alt, other, focused);
+        ctx.data_mut(|d| d.insert_temp(id, state));
+        tapped
+    }
+
+    /// Opens the main menu, or closes it when it is open. It opens only over the panes: a dialog
+    /// or an inline edit keeps the keyboard.
+    fn toggle_main_menu(&mut self, ctx: &egui::Context) {
+        if matches!(self.ui.menu, Some(Menu::Main { .. })) {
+            self.run(ctx, Action::CloseMenu);
+        } else if self.ui.overlay == Overlay::None && self.ui.inline.is_none() {
+            let menu = Menu::Main { at: screens::menus::main_menu_at(ctx) };
+            self.run(ctx, Action::OpenMenu(menu.clone()));
+            self.ui.menu_sel = screens::menus::first_highlight(self, &menu);
         }
     }
 
@@ -2137,6 +2190,25 @@ impl CsmApp {
         self.ui.region = None;
         self.ui.focus_terminal = Some(id.clone());
         self.dispatch.submit("session_focus", json!({"session_id": id}));
+    }
+
+    /// Whether a sidebar session row or group header has the keyboard focus (as drawn last frame).
+    fn sidebar_item_focused(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.focused()).is_some_and(|f| self.ui.sidebar_nav.iter().any(|(id, _)| *id == f))
+    }
+
+    /// Ctrl+PgUp / Ctrl+PgDn: shows the add-on screen tab before (or after) the one shown. The
+    /// Sessions tab is first; a screen in its own window is skipped (its tab docks it on a click).
+    fn screen_tab_step(&mut self, ctx: &egui::Context, forward: bool) {
+        let mut tabs: Vec<Option<String>> = vec![None];
+        tabs.extend(self.ui.screen_infos.iter().filter(|i| !i.popped_out).map(|i| Some(i.instance.clone())));
+        let now = lock(&self.ui.screens).active.clone();
+        let n = tabs.len();
+        let at = tabs.iter().position(|t| *t == now).unwrap_or(0);
+        let to = if forward { (at + 1) % n } else { (at + n - 1) % n };
+        if let Some(next) = tabs.get(to).cloned() {
+            self.run(ctx, Action::ScreenFocus(next));
+        }
     }
 
     /// A terminal pane has keyboard focus: its keys (Esc above all) belong to the program in it.
@@ -2352,6 +2424,10 @@ impl CsmApp {
 
 /// Where the title bar's Recent button left the menu's anchor (temp data under this id).
 pub const RECENT_ANCHOR: &str = "recent-anchor";
+
+/// Where the title bar's main menu button is drawn last frame. A press on the button is not
+/// "outside" the menu, so a second click closes the menu rather than reopening it.
+pub const MAIN_ANCHOR: &str = "main-menu-anchor";
 
 /// Consumes a key press with exactly these modifiers (Ctrl and Cmd as egui's `COMMAND`).
 /// egui's `consume_shortcut` ignores extra Shift and Alt, so Ctrl+Shift+T would also be Ctrl+T;

@@ -15,12 +15,14 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod alt_tap;
 pub mod app;
 pub mod backend;
 pub mod background;
 pub mod demo;
 pub mod docs_model;
 pub mod focus;
+pub mod list_keys;
 pub mod engine_backend;
 pub mod git_model;
 mod icon_data;

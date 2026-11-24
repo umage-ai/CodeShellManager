@@ -236,6 +236,22 @@ pub fn menu_item(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>, 
     menu_item_at(ui, icon_name, label, hint, danger, false, None)
 }
 
+/// A menu row that cannot run now: drawn muted, with no highlight and no hover. The keys skip it.
+pub fn menu_item_off(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let font = crate::theme::regular(text::BODY);
+    let w = ui.available_width().max(size::MENU_W - space::SM);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, size::MENU_ROW), Sense::hover());
+    let ir = Rect::from_min_size(pos2(rect.min.x + space::SM, rect.center().y - icon::LG / 2.0), Vec2::splat(icon::LG));
+    icons::paint(ui, ir, icon_name, icon::LG, t.muted);
+    ui.painter().text(pos2(ir.max.x + space::ROW_X, rect.center().y), Align2::LEFT_CENTER, label, font, t.muted);
+    if let Some(h) = hint {
+        ui.painter().text(pos2(rect.max.x - space::ROW_X, rect.center().y), Align2::RIGHT_CENTER, h, crate::theme::mono(text::TINY), t.muted);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, false, label));
+    resp
+}
+
 /// A menu row. `selected`: the keyboard highlight (the row fill and the focus ring). `underline`:
 /// the char index of the access letter in `label`, drawn underlined.
 pub fn menu_item_at(

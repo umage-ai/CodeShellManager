@@ -190,6 +190,13 @@ pub fn strip(ui: &mut Ui, rect: Rect, infos: &[ScreenInfo], active: Option<&str>
     let cy = rect.center().y;
     let mut x = rect.min.x + space::SM;
     let tab_h = size::CONTROL;
+    // The tabs in order (Sessions, then each open screen): the arrow keys move along them.
+    let order: Vec<Id> = std::iter::once(Id::new("view-sessions")).chain(infos.iter().map(|i| Id::new(("view-screen", &i.instance)))).collect();
+    for id in &order {
+        if crate::list_keys::move_from(ui.ctx(), *id, &order, crate::list_keys::Axis::Horizontal).is_some() {
+            break;
+        }
+    }
     let tab = |ui: &mut Ui, x: &mut f32, id: Id, label: &str, ic: Option<&str>, mark: bool, close: bool, on: bool, popped: bool, name: String| -> (egui::Response, Option<egui::Response>) {
         let font = if on { semibold(text::BODY) } else { theme::medium(text::BODY) };
         let lw = widgets::text_width(ui, label, font.clone()).min(size::VIEW_TAB_MAX_W - 80.0);
@@ -232,6 +239,9 @@ pub fn strip(ui: &mut Ui, rect: Rect, infos: &[ScreenInfo], active: Option<&str>
             let n = name;
             move || WidgetInfo::selected(WidgetType::RadioButton, true, on, n.clone())
         });
+        if resp.has_focus() {
+            widgets::focus_ring(ui, r, radius::MD);
+        }
         (resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip), close_resp)
     };
     let (sessions, _) = tab(ui, &mut x, Id::new("view-sessions"), "Sessions", None, false, false, active.is_none(), false, "View: Sessions".into());

@@ -64,6 +64,24 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: session_focus,
         },
         ToolSpec {
+            id: "pane_focus_next",
+            title: "Next pane",
+            summary: "Focus the next awake session in the rail's tab (or in All), in sidebar order, wrapping round. Does nothing when no session is awake.",
+            toolset: Toolset::Core,
+            effects: Effects::UI.union(Effects::LAUNCHES_PROCESS),
+            input_schema: crate::tool::empty_schema,
+            run: pane_focus_next,
+        },
+        ToolSpec {
+            id: "pane_focus_prev",
+            title: "Previous pane",
+            summary: "Focus the previous awake session in the rail's tab (or in All), in sidebar order, wrapping round. Does nothing when no session is awake.",
+            toolset: Toolset::Core,
+            effects: Effects::UI.union(Effects::LAUNCHES_PROCESS),
+            input_schema: crate::tool::empty_schema,
+            run: pane_focus_prev,
+        },
+        ToolSpec {
             id: "session_rename",
             title: "Rename session…",
             summary: "Give a session a new name.",
@@ -568,6 +586,41 @@ fn session_focus(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: IdParams = parse_params(params)?;
     find(ctx.state, &p.session_id)?;
     lifecycle::focus(ctx, &p.session_id)
+}
+
+fn pane_focus_next(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    pane_focus_step(ctx, true)
+}
+
+fn pane_focus_prev(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    pane_focus_step(ctx, false)
+}
+
+/// Focuses the awake session after (or before) the focused one, among those the rail's tab shows,
+/// in sidebar order. With no focused one in that list, forward takes the first and back the last.
+fn pane_focus_step(ctx: &mut Ctx<'_>, forward: bool) -> Reply {
+    let tab = ctx.state.app.ui.rail_tab.clone();
+    let shown: Vec<String> = ctx
+        .state
+        .app
+        .sessions
+        .iter()
+        .filter(|s| !s.is_dormant && tab.as_deref().is_none_or(|t| s.group_id == t))
+        .map(|s| s.id.clone())
+        .collect();
+    let n = shown.len();
+    let at = ctx.state.rt.focused.as_deref().and_then(|f| shown.iter().position(|x| x == f));
+    let to = match (at, forward) {
+        _ if n == 0 => return Ok(ToolOutput::new("No awake session in this view.", json!({"session_id": null}))),
+        (Some(a), true) => (a + 1) % n,
+        (Some(a), false) => (a + n - 1) % n,
+        (None, true) => 0,
+        (None, false) => n - 1,
+    };
+    let Some(id) = shown.get(to).cloned() else {
+        return Ok(ToolOutput::new("No awake session in this view.", json!({"session_id": null})));
+    };
+    lifecycle::focus(ctx, &id)
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

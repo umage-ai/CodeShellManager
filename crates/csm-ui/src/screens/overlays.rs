@@ -128,7 +128,7 @@ fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>
 }
 
 /// Every keyboard shortcut, in one place (`?`, F1, Ctrl+/).
-pub const SHORTCUTS: [(&str, &str); 32] = [
+pub const SHORTCUTS: [(&str, &str); 37] = [
     ("Ctrl K", "Search sessions and commands"),
     ("Ctrl F", "Search all output and notes"),
     ("Ctrl T", "New session"),
@@ -153,6 +153,11 @@ pub const SHORTCUTS: [(&str, &str); 32] = [
     ("F5", "Run the default run command"),
     ("Shift F5", "Stop it"),
     ("F6  Shift F6", "Next or previous keyboard region (Esc: back to the terminal)"),
+    ("F10", "The main menu: every action, by area (or a clean tap of Alt)"),
+    ("Arrows  Home  End", "Move through a list, a menu or a tab strip"),
+    ("Space", "Select the focused session row"),
+    ("Ctrl PageUp  Ctrl PageDown", "Previous or next add-on screen tab"),
+    ("Ctrl Alt PageUp  Ctrl Alt PageDown", "Previous or next rail tab"),
     ("Ctrl ,", "Settings"),
     ("Ctrl =  Ctrl -", "Larger or smaller interface"),
     ("Ctrl 0", "Interface at 100%"),

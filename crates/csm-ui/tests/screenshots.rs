@@ -744,3 +744,39 @@ fn keyboard_recent_menu_screen() {
         },
     );
 }
+
+/// The main menu opened with F10, its first area open: every action, grouped by area.
+#[test]
+fn keyboard_main_menu_screen() {
+    shoot(
+        "menu-main",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press(egui::Key::F10);
+            settle(h);
+            h.key_press(egui::Key::ArrowRight);
+            settle(h);
+            assert!(matches!(h.state().ui.menu, Some(csm_ui::app::Menu::Main { .. })), "F10 opens the main menu");
+        },
+    );
+}
+
+/// The keyboard focus ring on a sidebar row, after the arrow keys moved it down the list.
+#[test]
+fn keyboard_sidebar_focus_screen() {
+    shoot(
+        "focus-sidebar-row",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            let rows: Vec<egui::Id> = h.state().ui.sidebar_nav.iter().filter(|(_, s)| s.is_some()).map(|(id, _)| *id).collect();
+            assert!(rows.len() >= 2, "the demo shows rows to move through");
+            h.ctx.memory_mut(|m| m.request_focus(rows[0]));
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            assert_eq!(h.ctx.memory(|m| m.focused()), Some(rows[1]), "Down moves the focus to the next row");
+        },
+    );
+}

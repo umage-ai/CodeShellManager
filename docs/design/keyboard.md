@@ -243,6 +243,42 @@ closes, the dialog Tab trap and default button, and the context-menu key (egui 0
 it, so only Shift+F10 is bound). Group headers are not focusable yet, so Shift+F10 does not open
 their menu.
 
+**Status of the main menu (branch `kb/navigation`).** `Menu::Main` (`screens/menus.rs`,
+`main_entries`) opens with F10, with a clean tap of Alt, or with the `⋯` button in the title bar
+(the button is the menu's anchor, so a second click closes it). It has eight areas (Session, View /
+Layout, Groups, Run, Git, Add-ons, Settings, Help). Each tool in the registry appears once, by its
+palette title, in the area of its toolset (`main_area`), and runs through the palette's own
+activation (`Action::PaletteTool`), so the palette's special cases apply. The UI's own rows (Settings,
+Keyboard shortcuts, Command palette) and the six layout modes are added by hand. A tool whose input
+needs `session_id` is shown muted (`Entry::Off`, skipped by the keys) while no session is active.
+The keys are the shared menu keys (arrows, Home/End, Right into an area, Enter, Escape, access
+letters). A menu taller than the room below it scrolls, and a key brings its highlighted row into
+view. A clean Alt tap is one that has no key, text, click, scroll or other modifier between Alt
+going down and up (`alt_tap.rs`, pure and tested); losing the window focus cancels it. Alt+letter
+still reaches a focused terminal. F10 is taken even when a terminal has the focus (section 4 lists
+it as free; an F-key, like the other global F-keys). Not yet: typing to filter the list (the access
+letters take the typed keys), a setting to turn the Alt tap off (the setting list is WPF-compatible
+and is shared with other branches, so it waits), and the keymap labels (step 2's table, which the
+hints still copy from `palette::shortcut_for`).
+
+**Status of step 5, lists and tab strips (branch `kb/navigation`).** The arrows move the focus through
+each list, one pure rule set (`list_keys.rs`: clamped Up and Down, Home and End) and one glue function
+that only the focused widget calls. The focused widget keeps the arrows (egui's own arrow
+navigation is locked off it). Sidebar rows: Up, Down, Home and End move; Shift+Up and Shift+Down move
+and extend the selection; Space toggles the row; F2 renames the focused row (the active session only
+when no sidebar item has the focus); Enter focuses the session, as before. Group headers: the same
+moves; Left collapses, Right expands; F2 renames the group. Rail tabs: the arrows move along the rail
+(Up or Left goes back, Down or Right forward), Enter or Space select. Inbox rows: Up and Down; Enter
+opens. Add-on screen tabs and inspector tabs: Left and Right move, Enter or Space select. Chords:
+Ctrl+PgUp and Ctrl+PgDn change the add-on screen tab; Ctrl+Alt+PgUp and Ctrl+Alt+PgDn change the rail
+tab (`rail_tab_prev`, `rail_tab_next`). Tools added: `rail_tab_next`, `rail_tab_prev`,
+`pane_focus_next`, `pane_focus_prev` (the last two pick among awake sessions of the rail's tab, in
+sidebar order). Gaps: `screen_tab_next` and `screen_tab_prev` are not tools. The shown add-on screen
+is UI state, and the engine has no event that carries a step; a new event would need a change to the
+vendored peer protocol (`csm-peer-proto`), so the tab chords call `ScreenFocus` directly for now. Not
+yet: the dialog Tab trap and default button, the grid's keys, the Delete key on a row, and the inbox
+as a focus region (F6 still skips it).
+
 ## 9. Gate and rules for these steps
 
 - Gate per step, in the worktree: `cargo +1.97 test --workspace --no-fail-fast`,

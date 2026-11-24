@@ -68,8 +68,18 @@ fn remote_title(r: &csm_engine::RemoteView) -> String {
     format!("Remote… › {} › {}", r.addon_name, r.label)
 }
 
-/// Keyboard hints for tools that have a shortcut.
-fn shortcut_for(id: &str) -> Option<&'static str> {
+/// Whether the palette and the main menu leave a tool out now: the Claude usage tools (the dashboard
+/// among them) while that add-on is off, and what is on this laptop (or Quit) in a remote window.
+pub fn tool_hidden(app: &CsmApp, id: &str) -> bool {
+    let usage_off = !app.model.claude_usage_on() && USAGE_ADDON_TOOLS.contains(&id);
+    // A remote window hides what is on this laptop, and Quit becomes Disconnect (plus the office's
+    // own quit, asked for first).
+    let remote = app.remote.is_some() && (crate::remote_window::is_local_only(id) || id == "app_quit" || id == "peer_connect_open");
+    usage_off || remote
+}
+
+/// Keyboard hints for tools that have a shortcut (also the main menu's).
+pub fn shortcut_for(id: &str) -> Option<&'static str> {
     match id {
         "inbox_next" => Some("Ctrl J"),
         "session_new" => Some("Ctrl T"),
@@ -180,15 +190,8 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
             }
         }
     }
-    // The Claude usage tools (the dashboard among them) are hidden while the add-on is off.
-    let usage_on = app.model.claude_usage_on();
-    let hidden = |id: &str| !usage_on && USAGE_ADDON_TOOLS.contains(&id);
-    // A remote window hides what is on this laptop, and Quit becomes Disconnect (plus the office's
-    // own quit, asked for first).
-    let remote = app.remote.is_some();
-    let hidden_remote = |id: &str| remote && (crate::remote_window::is_local_only(id) || id == "app_quit" || id == "peer_connect_open");
     let port = app.dispatch.as_ref();
-    out.extend(tool_rows(port, q, commands_only, &|id| hidden(id) || hidden_remote(id)));
+    out.extend(tool_rows(port, q, commands_only, &|id| tool_hidden(app, id)));
     if let Some(r) = app.remote.as_ref() {
         let rows = [
             ("remote_disconnect", format!("Disconnect from {}", r.host_name), "Close this window. The office keeps running."),

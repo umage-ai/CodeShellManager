@@ -139,6 +139,20 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR), pos2(button.max.x, rect.max.y + space::XS));
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR).with("button"), button);
     });
+    // The main menu, for the mouse too (F10 or a clean Alt tap: `app::shortcuts`), left of the
+    // others. Its button is the menu's anchor, so a second click closes the menu rather than
+    // reopening it.
+    let main_open = matches!(app.ui.menu, Some(crate::app::Menu::Main { .. }));
+    let main_button = Rect::from_min_size(pos2(x - side, rect.center().y - side / 2.0), Vec2::splat(side));
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(crate::app::MAIN_ANCHOR), main_button));
+    if widgets::icon_button_at(ui, main_button, ui.id().with("tb-main"), "more", main_open, "Main menu  F10 or Alt").clicked() {
+        actions.push(if main_open {
+            Action::CloseMenu
+        } else {
+            Action::OpenMenu(crate::app::Menu::Main { at: crate::screens::menus::main_menu_at(ui.ctx()) })
+        });
+    }
+    x -= side + space::XXS;
     update_badge(ui, app, rect, mid, x, actions);
 }
 

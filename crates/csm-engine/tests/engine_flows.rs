@@ -984,3 +984,37 @@ fn each_claude_gets_its_own_quit_wait_and_the_board_gets_the_whole_budget() {
     }
     done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
 }
+
+#[test]
+fn rail_tab_and_pane_steps_wrap_round_the_tabs_and_the_awake_sessions() {
+    let h = H::new();
+    let one = h.ok("group_new", json!({"name": "One"})).data["group_id"].as_str().unwrap().to_owned();
+    let two = h.ok("group_new", json!({"name": "Two"})).data["group_id"].as_str().unwrap().to_owned();
+    let a = h.session("pwsh");
+    let b = h.session("pwsh");
+    h.ok("session_move_to_group", json!({"session_id": a, "group_id": one}));
+    h.ok("session_move_to_group", json!({"session_id": b, "group_id": two}));
+    // The rail's tabs are All, One, Two; the steps wrap round them.
+    assert_eq!(h.engine.view().rail_tab, None);
+    h.ok("rail_tab_next", json!({}));
+    assert_eq!(h.engine.view().rail_tab.as_deref(), Some(one.as_str()));
+    h.ok("rail_tab_next", json!({}));
+    h.ok("rail_tab_next", json!({}));
+    assert_eq!(h.engine.view().rail_tab, None, "Next from the last tab wraps to All");
+    h.ok("rail_tab_prev", json!({}));
+    assert_eq!(h.engine.view().rail_tab.as_deref(), Some(two.as_str()), "Previous from All wraps to the last group");
+    // Switching to Two focuses its awake session, so the pane steps stay inside Two.
+    assert_eq!(h.engine.view().focused.as_deref(), Some(b.as_str()));
+    h.ok("pane_focus_next", json!({}));
+    assert_eq!(h.engine.view().focused.as_deref(), Some(b.as_str()), "the only awake session of the tab stays focused");
+    // In All the steps go round both sessions.
+    h.ok("view_set", json!({"rail_tab": "all"}));
+    let first = h.engine.view().focused.clone();
+    h.ok("pane_focus_next", json!({}));
+    let second = h.engine.view().focused.clone();
+    assert_ne!(first, second, "Next moves to the other session");
+    h.ok("pane_focus_next", json!({}));
+    assert_eq!(h.engine.view().focused, first, "and wraps back");
+    h.ok("pane_focus_prev", json!({}));
+    assert_eq!(h.engine.view().focused, second, "Previous goes back");
+}
