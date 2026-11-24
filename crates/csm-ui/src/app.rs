@@ -54,6 +54,9 @@ pub enum Action {
     OpenClaudeReplies(SessionId),
     /// Open the Runs tab with its editor on this session's run commands.
     EditRuns(SessionId),
+    /// Show a run: focus its session, open the inspector on Runs with that run selected (its
+    /// output). `None`: the session's default run. Never starts or stops anything.
+    ShowRun(SessionId, Option<String>),
     /// "New worktree from this branch…": the Git tab on this session with its New worktree
     /// input open (`worktree_new`).
     NewWorktree(SessionId),
@@ -192,6 +195,9 @@ pub enum Overlay {
     /// "Connect to another CodeShellManager…": pair with a link, the paired offices.
     ConnectRemote,
 }
+
+/// A running run asked to restart for longer than this many seconds asks first.
+const RESTART_CONFIRM_AFTER_SECS: u64 = 5;
 
 /// A yes/no question: "Restart now?" after an edit that needs a new process.
 #[derive(Debug, Clone, PartialEq)]
@@ -1520,6 +1526,7 @@ impl CsmApp {
                 }
                 self.run(ctx, Action::Tool("inspector_show", json!({"tab": "runs"})));
             }
+            Action::ShowRun(id, run) => self.show_run(ctx, &id, run.as_deref()),
             Action::NewWorktree(id) => {
                 screens::git::open_new_worktree(ctx);
                 if self.model.active.as_deref() != Some(id.as_str()) {
@@ -1942,6 +1949,59 @@ impl CsmApp {
         }
     }
 
+    /// The run a `run_start` / `run_restart` call names (its `run_id`, else the session's default).
+    fn run_named(&self, params: &Value) -> Option<(SessionId, crate::model::RunView)> {
+        let sid = params.get("session_id").and_then(Value::as_str)?;
+        let s = self.model.session(sid)?;
+        let r = match params.get("run_id").and_then(Value::as_str) {
+            Some(id) => s.runs.iter().find(|r| r.id == id || r.label == id),
+            None => s.default_run(),
+        }?;
+        Some((sid.to_owned(), r.clone()))
+    }
+
+    /// Shows a run: its session, the inspector's Runs tab with the run selected. Starts nothing.
+    fn show_run(&mut self, ctx: &egui::Context, session: &str, run: Option<&str>) {
+        self.ui.menu = None;
+        self.ui.submenu = None;
+        let id = run.map(str::to_owned).or_else(|| self.model.session(session).and_then(|s| s.default_run().map(|r| r.id.clone())));
+        if let Some(id) = id {
+            screens::runs::select(ctx, session, &id);
+        }
+        if self.model.active.as_deref() != Some(session) {
+            self.run(ctx, Action::Tool("session_focus", json!({"session_id": session})));
+        }
+        self.run(ctx, Action::Tool("inspector_show", json!({"tab": "runs"})));
+    }
+
+    /// A running run is never restarted by a click: `run_start` on it shows it, `run_restart`
+    /// asks first once it has been going for a few seconds. `true`: handled here.
+    fn run_guard(&mut self, ctx: &egui::Context, tool: &str, params: &Value) -> bool {
+        let Some((sid, r)) = self.run_named(params) else { return false };
+        if r.state != crate::model::RunState::Running {
+            return false;
+        }
+        if tool == "run_start" {
+            self.show_run(ctx, &sid, Some(&r.id));
+            return true;
+        }
+        if r.elapsed_secs.is_some_and(|s| s <= RESTART_CONFIRM_AFTER_SECS) {
+            return false;
+        }
+        let elapsed = r.detail.split(" · ").nth(1).map_or_else(|| "a while".to_owned(), str::to_owned);
+        self.ui.confirm = Some(ConfirmState {
+            title: format!("Restart {}?", r.label),
+            body: format!("{} has been running for {elapsed}. Restarting stops it and everything it started, then runs it again from the start.", r.label),
+            yes_label: "Restart".into(),
+            no_label: "Keep running".into(),
+            yes: Box::new(Action::ScreenConfirmed { tool: "run_restart".into(), params: params.clone() }),
+            also: Some(("Show it".into(), Box::new(Action::ShowRun(sid, Some(r.id))))),
+        });
+        self.ui.overlay = Overlay::Confirm;
+        ctx.request_repaint();
+        true
+    }
+
     fn tool_action(&mut self, ctx: &egui::Context, id: &str, params: Value) {
         // Opening a menu item closes the menu.
         self.ui.menu = None;
@@ -1955,6 +2015,9 @@ impl CsmApp {
             if id == "open_url" {
                 return self.open_link_in_remote(ctx, &params);
             }
+        }
+        if matches!(id, "run_start" | "run_restart") && self.run_guard(ctx, id, &params) {
+            return;
         }
         if id == "session_sort" {
             // The sort menu shows the field sorted last, which flips when picked again.
@@ -2088,7 +2151,9 @@ impl CsmApp {
             self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
         }
         if let Some(a) = self.model.active.clone() {
-            if self.bound(ctx, "run_stop") {
+            if self.bound(ctx, "run_restart") {
+                self.run(ctx, Action::Tool("run_restart", json!({"session_id": a})));
+            } else if self.bound(ctx, "run_stop") {
                 self.run(ctx, Action::Tool("run_stop", json!({"session_id": a})));
             } else if self.bound(ctx, "run_start") {
                 self.run(ctx, Action::Tool("run_start", json!({"session_id": a})));

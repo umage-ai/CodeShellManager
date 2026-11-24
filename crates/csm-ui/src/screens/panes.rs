@@ -1154,6 +1154,7 @@ pub fn pane(
     // Maximize means nothing in Focus (one pane already fills the canvas) or in its own window.
     let can_max = !o.torn && (o.maximized || o.mode != Some(LayoutMode::Focus));
     let run = if o.mini { None } else { s.default_run() };
+    let run_running = run.is_some_and(|r| r.state == crate::model::RunState::Running);
     let run_label = run.map(|r| r.label.clone()).unwrap_or_default();
     let run_main_w = icon::XS + space::XS + widgets::text_width(ui, &run_label, theme::medium(text::CAPTION)) + space::SM + space::XS + space::XXS;
     let run_caret_w = icon::XS + space::SM;
@@ -1265,12 +1266,17 @@ pub fn pane(
                 p.rect_filled(caret.shrink(size::HAIRLINE), CornerRadius::same(radius::sm().saturating_sub(1)), t.row_sel);
             }
             let ir = Rect::from_min_size(pos2(main.min.x + space::SM - size::HAIRLINE, cy - icon::XS / 2.0), Vec2::splat(icon::XS));
-            icons::paint(ui, ir, "play", icon::XS, t.green);
+            if run_running {
+                icons::paint_status(ui, ir, Status::Working, icon::XS);
+                icons::request_spinner_repaint(ui);
+            } else {
+                icons::paint(ui, ir, "play", icon::XS, t.green);
+            }
             p.text(pos2(ir.max.x + space::XS + size::HAIRLINE, cy), Align2::LEFT_CENTER, &label, theme::medium(text::CAPTION), t.fg2);
             icons::paint(ui, caret, "chevD", icon::XS, t.fg2);
-            named(&rm, WidgetType::Button, format!("Run {label} · {}", s.name));
+            named(&rm, WidgetType::Button, if run_running { format!("Running {label}, show it · {}", s.name) } else { format!("Run {label} · {}", s.name) });
             named(&rc, WidgetType::Button, "All run commands");
-            if rm.on_hover_text("Run the default command  F5").clicked() {
+            if rm.on_hover_text(if run_running { "Running: show its output  F5 (Ctrl+Shift+F5 restarts)" } else { "Run the default command  F5" }).clicked() {
                 actions.push(Action::Tool("run_start", json!({"session_id": s.id})));
             }
             if rc.on_hover_text("All run commands").clicked() {

@@ -578,6 +578,10 @@ pub fn run_from_engine(r: &csm_engine::RunView) -> RunView {
         mode: r.mode.to_string(),
         post_run_url: r.post_run_url.clone(),
         exit_code: r.exit_code,
+        elapsed_secs: match (r.phase, r.started_ms) {
+            (P::Running | P::Starting, Some(a)) => Some(u64::try_from((now - a).max(0) / 1000).unwrap_or(0)),
+            _ => None,
+        },
     }
 }
 

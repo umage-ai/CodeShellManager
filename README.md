@@ -138,8 +138,8 @@ as before. Numbers only; nothing leaves the machine.
 
 ### Run commands beside the agent
 
-Each session has a list of run commands (Test, Build, Dev…). `F5` runs the default one,
-`Shift+F5` stops it, and the output streams into the Runs tab without touching the agent's
+Each session has a list of run commands (Test, Build, Dev…). `F5` runs the default one (or shows it,
+if it is already running), `Shift+F5` stops it, `Ctrl+Shift+F5` restarts it, and the output streams into the Runs tab without touching the agent's
 terminal; one click copies it for the agent. New sessions get commands from their folder: one per
 `package.json` script for Node projects, or the usual ones for .NET, Cargo, Python and Make. A run
 can open a URL when it succeeds, or, for a local dev server, as soon as it starts listening.
@@ -347,7 +347,7 @@ Settings › Keyboard; [docs/keyboard.md](docs/keyboard.md) has the whole list a
 | `Ctrl+.` | The active pane's menu |
 | `Ctrl+Shift+C` | Copy Claude's last reply (in a Claude pane, nothing selected) |
 | `F2` | Rename the active session |
-| `F5` / `Shift+F5` | Run / stop the default run command |
+| `F5` / `Shift+F5` / `Ctrl+Shift+F5` | Run (shows it if running) / stop / restart (asks first) the default run command |
 | `F10` | Main menu: every action, by area |
 | `F6` / `Shift+F6` | Next / previous keyboard region |
 | `Ctrl+Alt+Arrows` | Focus the pane in that direction |

@@ -131,13 +131,24 @@ fn a_non_zero_exit_is_failed_and_a_stop_is_stopped() {
 }
 
 #[test]
-fn starting_a_running_command_restarts_it_and_ignores_the_old_exit() {
+fn starting_a_running_command_does_nothing_and_restart_replaces_it_ignoring_the_old_exit() {
     let (h, _) = rig();
     h.ok("run_start", json!({"session_id": "s"}));
     let first = run_pty(&h, 0);
     wait_phase(&h, "test", RunPhase::Running);
     first.emit(b"old output\n");
-    h.ok("run_start", json!({"session_id": "s"}));
+    // run_start on a running run is a no-op that says so.
+    let again = h.ok("run_start", json!({"session_id": "s"}));
+    assert_eq!(again.data["already_running"], true);
+    assert!(again.message.contains("already running"), "{}", again.message);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!first.killed.load(std::sync::atomic::Ordering::SeqCst), "the running run is not killed");
+    assert_eq!(phase(&h, "test"), RunPhase::Running);
+    assert_eq!(h.ok("run_output", json!({"session_id": "s"})).data["output"], "old output\n");
+
+    // run_restart stops it and starts it again.
+    let r = h.ok("run_restart", json!({"session_id": "s"}));
+    assert_eq!(r.data["restarted"], true);
     assert!(first.killed.load(std::sync::atomic::Ordering::SeqCst), "the previous run is killed");
     let second = run_pty(&h, 1);
     wait_phase(&h, "test", RunPhase::Running);
@@ -149,6 +160,22 @@ fn starting_a_running_command_restarts_it_and_ignores_the_old_exit() {
     assert_eq!(o.data["output"], "new\n", "a fresh buffer per run");
     second.exit(Some(0));
     wait_phase(&h, "test", RunPhase::Ok);
+    // run_restart on a run that is not running just starts it.
+    let r = h.ok("run_restart", json!({"session_id": "s"}));
+    assert_eq!(r.data["restarted"], false);
+    h.engine.shutdown();
+}
+
+#[test]
+fn mcp_clients_are_asked_before_run_restart() {
+    let (h, _) = rig();
+    let ext = || Caller::External { client: "agent".into(), session_id: Some("s".into()) };
+    let events = h.engine.subscribe();
+    let rx = h.engine.submit(ext(), "run_restart", json!({"session_id": "s"}));
+    let request = next_consent(&events);
+    assert_eq!(request["tool"], "run_restart");
+    h.ok("consent_answer", json!({"request_id": request["request_id"], "answer": "deny"}));
+    assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap().is_err(), "denied");
     h.engine.shutdown();
 }
 

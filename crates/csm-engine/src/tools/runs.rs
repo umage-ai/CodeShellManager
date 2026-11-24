@@ -1,4 +1,4 @@
-//! `runs` tools: a session's run commands (`run_list`, `run_start`, `run_stop`, `run_output`,
+//! `runs` tools: a session's run commands (`run_list`, `run_start`, `run_restart`, `run_stop`, `run_output`,
 //! `run_edit`, `run_set`, `run_remove`). The work is in [`crate::runs`].
 //!
 //! The editing tools decide what `run_start` (and F5) will execute, so they declare
@@ -32,10 +32,18 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "run_start",
             "Run",
-            "Start a run command (default: the session's default) in its own background terminal; never types into the session. Restarts it if it is already running.",
+            "Start a run command (default: the session's default) in its own background terminal; never types into the session. If it is already running, does nothing and says so (run_restart restarts it).",
             Effects::LAUNCHES_PROCESS,
             schema_of::<RunParams>,
             run_start,
+        ),
+        t(
+            "run_restart",
+            "Restart run",
+            "Stop a run command (default: the default one) if it is running, with everything it started, and start it again. Discards the running process, so MCP clients are asked first.",
+            Effects::from_bits_truncate(Effects::LAUNCHES_PROCESS.bits() | Effects::MAY_DISCARD_DATA.bits()),
+            schema_of::<RunParams>,
+            run_restart,
         ),
         t(
             "run_stop",
@@ -208,6 +216,15 @@ fn item_for(ctx: &Ctx<'_>, p: &RunParams) -> Result<(csm_core::models::ShellSess
 }
 
 fn run_start(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    launch(ctx, params, false)
+}
+
+fn run_restart(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    launch(ctx, params, true)
+}
+
+/// Checks and launches; `restart` decides what an already running run does.
+fn launch(ctx: &mut Ctx<'_>, params: Value, restart: bool) -> Reply {
     let p: RunParams = parse_params(params)?;
     if ctx.state.rt.shutting_down {
         return Err(ToolError::Refused("the app is closing".into()));
@@ -219,8 +236,17 @@ fn run_start(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if let Some(e) = runs::command_line_error(&item.command_line) {
         return Err(ToolError::Refused(format!("{}: {e}", item.label)));
     }
+    let phase = ctx.state.rt.runs.get(&s.id).and_then(|v| v.iter().find(|r| r.item_id == item.id)).map(|r| r.phase);
+    let running = phase.is_some_and(RunPhase::is_running);
+    if running && !restart {
+        return Ok(ToolOutput::new(
+            format!("{} is already running; nothing was changed. run_restart restarts it, run_stop stops it.", item.label),
+            json!({"session_id": s.id, "run_id": item.id, "already_running": true, "phase": phase}),
+        ));
+    }
     runs::start(ctx, &s, &item);
-    Ok(ToolOutput::new(format!("Started {} in its own background terminal.", item.label), json!({"session_id": s.id, "run_id": item.id})))
+    let msg = if running { format!("Restarted {}.", item.label) } else { format!("Started {} in its own background terminal.", item.label) };
+    Ok(ToolOutput::new(msg, json!({"session_id": s.id, "run_id": item.id, "already_running": false, "restarted": running})))
 }
 
 fn run_stop(ctx: &mut Ctx<'_>, params: Value) -> Reply {

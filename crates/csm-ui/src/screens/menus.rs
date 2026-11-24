@@ -348,7 +348,13 @@ pub fn pane_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
         v.push(item("pin", label, tool(tid, pane.clone())));
     }
     if let Some(run) = s.default_run() {
-        v.push(hinted("play", format!("Run {}", run.label), &chord_hint(keys, "run_start"), tool("run_start", sid.clone())));
+        if run.state == crate::model::RunState::Running {
+            v.push(hinted("monitor", format!("Running: show {}", run.label), &chord_hint(keys, "run_start"), tool("run_start", sid.clone())));
+            v.push(hinted("stop", format!("Stop {}", run.label), &chord_hint(keys, "run_stop"), tool("run_stop", sid.clone())));
+            v.push(hinted("restart", format!("Restart {}…", run.label), &chord_hint(keys, "run_restart"), tool("run_restart", sid.clone())));
+        } else {
+            v.push(hinted("play", format!("Run {}", run.label), &chord_hint(keys, "run_start"), tool("run_start", sid.clone())));
+        }
     }
     v.push(Entry::Sep);
     v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some(chord_hint(keys, "session_close")), danger: true, action: Action::CloseSession(id.to_string()) });
@@ -583,6 +589,20 @@ fn runs_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
     let mut v = vec![Entry::Head("Run commands".into())];
     for r in &s.runs {
         let hint = if r.is_default { format!("{} · {}", chord_hint(keys, "run_start"), r.detail) } else { r.detail.clone() };
+        if r.state == crate::model::RunState::Running {
+            // A running run is shown, not restarted; Stop and Restart are their own rows.
+            v.push(Entry::Item {
+                icon: "monitor",
+                label: format!("{} (running, show)", r.label),
+                hint: Some(hint),
+                danger: false,
+                action: Action::ShowRun(id.to_string(), Some(r.id.clone())),
+            });
+            let rp = json!({"session_id": id, "run_id": r.id});
+            v.push(hinted("stop", format!("Stop {}", r.label), &chord_hint(keys, "run_stop"), tool("run_stop", rp.clone())));
+            v.push(hinted("restart", format!("Restart {}…", r.label), &chord_hint(keys, "run_restart"), tool("run_restart", rp)));
+            continue;
+        }
         v.push(Entry::Item {
             icon: "play",
             label: r.label.clone(),
