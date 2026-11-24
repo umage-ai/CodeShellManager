@@ -146,6 +146,10 @@ fn claude_app() -> (Harness<'static, Ui>, Engine, String, tempfile::TempDir, tem
 #[test]
 fn the_pane_menu_copies_the_last_reply_and_the_picker_a_code_block() {
     let (mut h, engine, id, _root, _folder) = claude_app();
+    // The pane menu is taller than the 800-pixel window the app opens here, so it scrolls; this test
+    // clicks its last rows, so it takes a window that holds the whole menu.
+    h.set_size(vec2(1280.0, 1000.0));
+    h.step();
     let ctx = h.ctx.clone();
     h.state_mut().app.run(&ctx, Action::OpenMenu(Menu::Pane { session: id.clone(), at: pos2(900.0, 120.0) }));
     h.step();

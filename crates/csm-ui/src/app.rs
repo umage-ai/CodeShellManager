@@ -9,6 +9,7 @@ use egui::{Key, Modifiers, Rect, Ui, UiBuilder, ViewportId, pos2};
 use serde_json::{Value, json};
 
 use crate::backend::{Backend, Call, Notice, ToolPort};
+use crate::focus::{self, FocusRegion};
 use crate::model::{GroupId, Scope, SessionId, Status, UiModel};
 use crate::remote_window::{self, ConnectDialog, LinkTarget, RemoteStatus};
 use crate::screens;
@@ -166,6 +167,9 @@ pub enum Menu {
     Recent { at: egui::Pos2 },
     /// "Copy reply…" on a Claude pane: its recent replies and their code blocks.
     ClaudeReplies { session: SessionId, at: egui::Pos2 },
+    /// The main menu: every action, grouped by area (F10, the title bar's button).
+    /// Its top-left corner at `at`.
+    Main { at: egui::Pos2 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -226,6 +230,8 @@ pub enum SettingsSection {
     #[default]
     General,
     Appearance,
+    /// Every keyboard shortcut, with its chords: record, clear, reset (`screens::settings`).
+    Keyboard,
     Groups,
     Mcp,
     /// Add-ons: the folder, enable and disable with consent, reload (`screens::addons`).
@@ -238,9 +244,10 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 8] = [
+    pub const ALL: [SettingsSection; 9] = [
         SettingsSection::General,
         SettingsSection::Appearance,
+        SettingsSection::Keyboard,
         SettingsSection::Groups,
         SettingsSection::Mcp,
         SettingsSection::Addons,
@@ -253,6 +260,7 @@ impl SettingsSection {
         match self {
             SettingsSection::General => "General",
             SettingsSection::Appearance => "Appearance",
+            SettingsSection::Keyboard => "Keyboard",
             SettingsSection::Groups => "Group view",
             SettingsSection::Mcp => "MCP",
             SettingsSection::Addons => "Add-ons",
@@ -266,6 +274,7 @@ impl SettingsSection {
         match self {
             SettingsSection::General => "sliders",
             SettingsSection::Appearance => "sun",
+            SettingsSection::Keyboard => "keyboard",
             SettingsSection::Groups => "layers",
             SettingsSection::Mcp => "server",
             SettingsSection::Addons => "extensions",
@@ -294,6 +303,8 @@ pub struct SettingsState {
     pub usage: crate::screens::backup::UsageState,
     /// Settings → General → Import…: the backup being reviewed before it replaces anything.
     pub import: Option<crate::screens::backup::ImportReview>,
+    /// Settings → Keyboard: the action whose next chord is being recorded (`App::capture_chord`).
+    pub keymap_capture: Option<String>,
     /// Settings → General → Start-up: what `app_autostart_get` last said (`Null` until it answers).
     pub autostart: Value,
 }
@@ -334,6 +345,8 @@ pub struct Prefs {
     pub tray_notice_shown: bool,
     /// `CleanClaudeCopies`: a selection copied from a Claude pane is cleaned up (on by default).
     pub clean_claude_copies: bool,
+    /// The keyboard map: the defaults with the person's overrides (`keymap_*` tools, `csm_core::keymap`).
+    pub keymap: csm_core::keymap::Keymap,
 }
 
 impl Default for Prefs {
@@ -351,6 +364,7 @@ impl Default for Prefs {
             close_action: csm_core::models::CloseAction::Ask,
             tray_notice_shown: false,
             clean_claude_copies: true,
+            keymap: csm_core::keymap::Keymap::default(),
         }
     }
 }
@@ -529,6 +543,18 @@ pub struct UiState {
     pub notes_cache: NotesCache,
     pub search: SearchState,
     pub focus_terminal: Option<SessionId>,
+    /// The keyboard focus region (F6). `None` is the default: the active pane's terminal has the
+    /// keys. A mouse press clears it.
+    pub region: Option<FocusRegion>,
+    /// The regions drawn last frame, with their rects, in the order drawn. F6 cycles over them and
+    /// the focus ring goes round the focused one.
+    pub region_rects: Vec<(FocusRegion, Rect)>,
+    /// The keyboard-focusable items drawn last frame, by region: (region, widget id, selected). F6 enters a
+    /// region at its selected item (else its first); a focus that moves into a region sets `region`.
+    pub region_items: Vec<(FocusRegion, egui::Id, bool)>,
+    /// The panes drawn last frame (live, not minimised), with their rects: Ctrl+Alt+Arrow moves
+    /// between them.
+    pub pane_rects: Vec<(SessionId, Rect)>,
     /// The sessions whose panes this frame draws (`Backend::show_panes` gets them at the frame's end).
     pub shown_panes: Vec<SessionId>,
     /// The last active session seen, to move keyboard focus when it changes.
@@ -559,6 +585,9 @@ pub struct UiState {
     pub selection: csm_core::sidebar_selection::Selection,
     /// The session rows the sidebar drew last frame, top to bottom (Shift-click's range).
     pub sidebar_visible: Vec<SessionId>,
+    /// The sidebar's focus order, top to bottom, as drawn last frame: each session row (with its
+    /// session id) and each group header (`None`). The arrow keys move through it.
+    pub sidebar_nav: Vec<(egui::Id, Option<SessionId>)>,
     /// The last sort applied (`session_sort`): its field shows its direction and flips when
     /// picked again.
     pub sort: Option<(csm_core::session_sort::SortField, bool)>,
@@ -568,8 +597,9 @@ pub struct UiState {
     /// host owns the window handle, so it shows the dialog ([`CsmApp::take_dialog_request`])
     /// and answers with [`CsmApp::dialog_answered`].
     pub dialog_request: Option<DialogRequest>,
-    /// The Recent menu's selected row (Enter picks it).
-    pub recent_sel: usize,
+    /// The highlighted row at each open menu level (the keyboard or the pointer; see `menu_nav`).
+    /// Empty: nothing highlighted. The first entry is the top level, a later one a submenu.
+    pub menu_sel: Vec<usize>,
     /// `task_new` calls whose task is to be assigned (and sent) to a session once it exists:
     /// (the call's params, the session).
     pub pending_assign: Vec<(Value, SessionId)>,
@@ -582,6 +612,14 @@ pub struct UiState {
     pub screens: Arc<Mutex<screens::addon_screen::ScreenUi>>,
     /// The add-on screens open this frame (fetched once per frame).
     pub screen_infos: Vec<csm_engine::ScreenInfo>,
+}
+
+impl UiState {
+    /// Whether the active pane's terminal may take the keyboard: no region has it, or the panes
+    /// region does.
+    pub fn terminal_takes_focus(&self) -> bool {
+        self.region.is_none_or(|r| r == FocusRegion::Panes)
+    }
 }
 
 /// The "Copy reply…" picker's list of a session's replies (`claude_reply_list`).
@@ -1098,7 +1136,49 @@ impl CsmApp {
         if let Some(b) = s.bool("CleanClaudeCopies") {
             p.clean_claude_copies = b;
         }
+        // The keyboard map follows the overrides the engine saved (a damaged entry is left out).
+        if let Some(v) = s.values.get("Keymap") {
+            p.keymap = csm_core::keymap::Keymap::new(&csm_core::keymap::overrides_from_value(v));
+        }
         self.prefs = p;
+    }
+
+    /// Settings → Keyboard: while a chord is being recorded, the next key press is that chord, and
+    /// the shortcuts do not see it. Escape with no modifier, or a click, cancels. Returns whether the
+    /// keys were taken (the shortcuts then stop for this frame).
+    fn capture_chord(&mut self, ctx: &egui::Context) -> bool {
+        // The capture ends with the settings page: a close by any route must not keep the keys.
+        if !self.ui.settings.open {
+            self.ui.settings.keymap_capture = None;
+        }
+        let Some(id) = self.ui.settings.keymap_capture.clone() else { return false };
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            self.ui.settings.keymap_capture = None;
+            return false;
+        }
+        let press = ctx.input_mut(|i| {
+            let mut found = None;
+            i.events.retain(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    found = found.or(Some((*key, *modifiers)));
+                    false
+                }
+                egui::Event::Text(_) => false,
+                _ => true,
+            });
+            found
+        });
+        let Some((key, modifiers)) = press else { return true };
+        if key == Key::Escape && !modifiers.any() {
+            self.ui.settings.keymap_capture = None;
+            return true;
+        }
+        // A key the map cannot name keeps the capture open for the next press.
+        if let Some(chord) = crate::keys::chord_of(key, modifiers) {
+            self.ui.settings.keymap_capture = None;
+            self.run(ctx, Action::Tool("keymap_set", json!({"action": id, "chords": [chord.to_string()]})));
+        }
+        true
     }
 
     /// Poll replies and events; refresh the snapshot.
@@ -1336,7 +1416,7 @@ impl CsmApp {
                     let r = ctx.content_rect();
                     pos2(r.max.x - theme::space::SM, r.min.y + size::TITLE_BAR)
                 });
-                self.ui.recent_sel = 0;
+                self.ui.menu_sel = vec![0];
                 self.ui.menu = Some(Menu::Recent { at });
             }
             Action::OpenQuickOpen { group } => {
@@ -1361,11 +1441,13 @@ impl CsmApp {
             }
             Action::OpenMenu(m) => {
                 self.ui.submenu = None;
+                self.ui.menu_sel.clear();
                 self.ui.menu = if self.ui.menu.as_ref() == Some(&m) { None } else { Some(m) };
             }
             Action::CloseMenu => {
                 self.ui.menu = None;
                 self.ui.submenu = None;
+                self.ui.menu_sel.clear();
             }
             Action::ToggleCollapse(g) => {
                 let collapsed = self.model.group(&g).is_some_and(|x| x.collapsed);
@@ -1426,6 +1508,7 @@ impl CsmApp {
                 self.ui.submenu = None;
                 self.ui.claude_replies = Some(ClaudeReplies { session: session.clone(), rows: None });
                 self.dispatch.submit("claude_reply_list", json!({"session_id": session, "limit": 10}));
+                self.ui.menu_sel.clear();
                 self.ui.menu = Some(Menu::ClaudeReplies { session, at });
             }
             Action::EditRuns(id) => {
@@ -1557,6 +1640,7 @@ impl CsmApp {
             }
             Action::CloseSettings => {
                 self.ui.settings.open = false;
+                self.ui.settings.keymap_capture = None;
                 self.ui.settings.drafts.clear();
                 if let Some(a) = self.model.active.clone() {
                     self.ui.focus_terminal = Some(a);
@@ -1882,22 +1966,68 @@ impl CsmApp {
         ctx.request_repaint();
     }
 
+    /// Whether the keyboard map's chords of `id` were pressed in this frame, taking the key press
+    /// (`keys::consume`). An action with no chords never fires.
+    pub(crate) fn bound(&self, ctx: &egui::Context, id: &str) -> bool {
+        let chords = self.prefs.keymap.chords(id);
+        !chords.is_empty() && ctx.input_mut(|i| chords.iter().any(|c| crate::keys::consume(i, c)))
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let cmd = Modifiers::COMMAND;
-        let pressed = |ctx: &egui::Context, m: Modifiers, k: Key| ctx.input_mut(|i| consume_exact(i, m, k));
-        // The Recent menu is modal from the keyboard: it takes the keys before anything else.
-        if matches!(self.ui.menu, Some(Menu::Recent { .. })) && self.recent_keys(ctx) {
+        // The settings' key capture takes the keys first: the next chord is the one recorded.
+        if self.capture_chord(ctx) {
             return;
         }
-        if pressed(ctx, cmd | Modifiers::SHIFT, Key::E) {
+        self.sync_region_to_focus(ctx);
+        // The main menu: F10 (the keymap's `ui.main_menu`).
+        if self.bound(ctx, "ui.main_menu") {
+            self.toggle_main_menu(ctx);
+        }
+        // An open menu takes its keys before anything else: it is modal from the keyboard
+        // (`screens::menus::menu_keys`). Ctrl chords it does not read still reach the shortcuts.
+        // A dialog press stored by an earlier frame is dropped too: the menu, not the dialog, has the keys.
+        if self.ui.menu.is_some() {
+            screens::overlays::clear_presses(ctx);
+        }
+        if self.ui.menu.is_some()
+            && let Some(actions) = screens::menus::menu_keys(ctx, self)
+        {
+            for a in actions {
+                self.run(ctx, a);
+            }
+            return;
+        }
+        if self.ui.menu.is_some() {
+            screens::menus::drop_plain_keys(ctx);
+        }
+        // A modal dialog reads its own keys first: Tab between its controls, Enter, Space on its
+        // checkbox, and Escape to cancel (`screens::overlays::take_keys`). Other chords still reach
+        // the shortcuts below.
+        if screens::overlays::take_keys(ctx, self) {
+            self.run(ctx, Action::CloseOverlays);
+        }
+        // Shift+F10 opens the menu of the focused item, outside the terminal (which keeps the key
+        // when it has the focus). A region with no menu leaves the key alone.
+        if !self.ui.terminal_takes_focus()
+            && !self.terminal_focused(ctx)
+            && self.ui.overlay == Overlay::None
+            && self.ui.menu.is_none()
+            && self.ui.inline.is_none()
+            && let Some(menu) = self.focused_item_menu(ctx)
+            && self.bound(ctx, "ui.menu_focused")
+        {
+            self.run(ctx, Action::OpenMenu(menu.clone()));
+            self.ui.menu_sel = screens::menus::first_highlight(self, &menu);
+        }
+        if self.bound(ctx, "session_recent") {
             self.run(ctx, Action::OpenRecent);
         }
-        if pressed(ctx, cmd | Modifiers::SHIFT, Key::N) {
+        if self.bound(ctx, "ui.inspector_notes") {
             let tab = if self.model.inspector == Some(crate::model::InspectorTab::Notes) { "hidden" } else { "notes" };
             self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
         }
         if let Some(a) = self.model.active.clone() {
-            if pressed(ctx, cmd | Modifiers::SHIFT, Key::R) {
+            if self.bound(ctx, "session_restart") {
                 self.run(ctx, Action::Tool("session_restart", json!({"session_id": a})));
             }
             // Ctrl+Shift+C: Claude's last reply. A focused terminal gets it as a copy (egui sends
@@ -1905,7 +2035,7 @@ impl CsmApp {
             // this key, or a copy nothing focused takes.
             if self.model.session(&a).is_some_and(crate::model::SessionView::is_claude) {
                 let nothing_focused = ctx.memory(|m| m.focused().is_none());
-                let copy = pressed(ctx, cmd | Modifiers::SHIFT, Key::C)
+                let copy = self.bound(ctx, "claude_reply_get")
                     || (nothing_focused
                         && ctx.input_mut(|i| {
                             let had = i.modifiers.shift && i.events.iter().any(|e| matches!(e, egui::Event::Copy));
@@ -1919,78 +2049,121 @@ impl CsmApp {
                 }
             }
             // Ctrl+.: the active pane's ⋯ menu, where its button was last drawn.
-            if pressed(ctx, cmd, Key::Period) {
+            if self.bound(ctx, "ui.pane_menu") {
                 let at =
                     ctx.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new(("pane-more-at", a.clone())))).unwrap_or_else(|| ctx.content_rect().center());
                 self.run(ctx, Action::OpenMenu(Menu::Pane { session: a, at }));
             }
         }
-        if pressed(ctx, cmd, Key::K) {
+        if self.bound(ctx, "ui.palette") {
             if self.ui.overlay == Overlay::Palette {
                 self.run(ctx, Action::CloseOverlays);
             } else {
                 self.run(ctx, Action::OpenPalette);
             }
         }
-        if pressed(ctx, cmd, Key::F) {
+        if self.bound(ctx, "search_output") {
             if self.ui.overlay == Overlay::Search {
                 self.run(ctx, Action::CloseOverlays);
             } else {
                 self.run(ctx, Action::OpenSearch(String::new()));
             }
         }
-        // One chord each: `consume_exact` matches the modifiers exactly, so Ctrl+T never takes
+        // One chord each: the map matches the modifiers exactly, so Ctrl+T never takes
         // Ctrl+Shift+T or Ctrl+Alt+T.
-        if pressed(ctx, cmd | Modifiers::ALT, Key::T) {
+        if self.bound(ctx, "session_duplicate") {
             if let Some(a) = self.model.active.clone() {
                 self.run(ctx, Action::Tool("session_duplicate", json!({"session_id": a})));
             }
-        } else if pressed(ctx, cmd | Modifiers::SHIFT, Key::T) {
+        } else if self.bound(ctx, "session_reopen_closed") {
             self.run(ctx, Action::Tool("session_reopen_closed", json!({})));
-        } else if pressed(ctx, cmd, Key::T) {
+        } else if self.bound(ctx, "session_new") {
             self.run(ctx, Action::OpenQuickOpen { group: None });
         }
-        if pressed(ctx, cmd, Key::J) {
+        if self.bound(ctx, "inbox_next") {
             self.run(ctx, Action::Tool("inbox_next", json!({})));
         }
-        if pressed(ctx, cmd, Key::I) {
+        if self.bound(ctx, "inspector_show") {
             let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
             self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
         }
         if let Some(a) = self.model.active.clone() {
-            if pressed(ctx, Modifiers::SHIFT, Key::F5) {
+            if self.bound(ctx, "run_stop") {
                 self.run(ctx, Action::Tool("run_stop", json!({"session_id": a})));
-            } else if pressed(ctx, Modifiers::NONE, Key::F5) {
+            } else if self.bound(ctx, "run_start") {
                 self.run(ctx, Action::Tool("run_start", json!({"session_id": a})));
             }
-            if pressed(ctx, cmd, Key::W) {
+            if self.bound(ctx, "session_close") {
                 self.run(ctx, Action::CloseSession(a));
             }
         }
-        // F2 renames the active session in place.
+        // Keyboard focus (docs/design/keyboard.md, sections 2 and 6). A mouse press leaves the
+        // region mode: the mouse takes the focus where it lands. F6 and Ctrl+Alt+Arrow wait while
+        // an overlay, a menu or an inline edit has the keyboard.
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            self.ui.region = None;
+        }
+        if self.ui.overlay == Overlay::None && self.ui.menu.is_none() && self.ui.inline.is_none() {
+            if self.bound(ctx, "ui.region_next") {
+                self.cycle_region(ctx, 1);
+            } else if self.bound(ctx, "ui.region_prev") {
+                self.cycle_region(ctx, -1);
+            }
+            let arrows = [
+                ("ui.pane_left", focus::Dir::Left),
+                ("ui.pane_right", focus::Dir::Right),
+                ("ui.pane_up", focus::Dir::Up),
+                ("ui.pane_down", focus::Dir::Down),
+            ];
+            for (id, dir) in arrows {
+                if self.bound(ctx, id) {
+                    self.move_pane_focus(dir);
+                }
+            }
+        }
+        // F2 renames the active session in place. A focused sidebar row or group header renames
+        // its own item instead (the sidebar takes the key).
         if self.ui.overlay == Overlay::None
             && self.ui.inline.is_none()
             && let Some(a) = self.model.active.clone()
-            && pressed(ctx, Modifiers::NONE, Key::F2)
+            && !self.sidebar_item_focused(ctx)
+            && self.bound(ctx, "session_rename")
         {
             self.run(ctx, Action::StartRename(a));
         }
         // Ctrl+Tab / Ctrl+Shift+Tab: the next / previous live session the panes can show.
-        if pressed(ctx, Modifiers::CTRL | Modifiers::SHIFT, Key::Tab) {
+        if self.bound(ctx, "ui.session_prev") {
             self.cycle(-1);
-        } else if pressed(ctx, Modifiers::CTRL, Key::Tab) {
+        } else if self.bound(ctx, "ui.session_next") {
             self.cycle(1);
         }
         // Ctrl+1…9: the rail's tabs (1 is All).
-        for (n, key) in [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9].into_iter().enumerate() {
-            if pressed(ctx, cmd, key) {
+        for (n, id) in RAIL_TAB_IDS.into_iter().enumerate() {
+            if self.bound(ctx, id) {
                 let tab = if n == 0 { Some(Scope::All) } else { self.model.groups.get(n - 1).map(|g| Scope::Group(g.id.clone())) };
                 if let Some(tab) = tab {
                     self.run(ctx, Action::Tool("view_set", json!({"rail_tab": tab.key()})));
                 }
             }
         }
-        if pressed(ctx, cmd, Key::Comma) {
+        // Ctrl+PgUp / Ctrl+PgDn: the add-on screen tab before / after the shown one. Ctrl+Alt+PgUp /
+        // PgDn: the rail tab before / after (`rail_tab_prev`, `rail_tab_next`). docs/design/keyboard.md, 3.
+        // Only with an add-on screen open (two tabs or more): with none, the chords are the terminal's
+        // (vim's tabprev and tabnext are Ctrl+PgUp and Ctrl+PgDn).
+        let screen_tabs = self.ui.screen_infos.iter().any(|i| !i.popped_out);
+        if screen_tabs && self.bound(ctx, "ui.screen_tab_next") {
+            self.screen_tab_step(ctx, true);
+        }
+        if screen_tabs && self.bound(ctx, "ui.screen_tab_prev") {
+            self.screen_tab_step(ctx, false);
+        }
+        if self.bound(ctx, "rail_tab_next") {
+            self.run(ctx, Action::Tool("rail_tab_next", json!({})));
+        }
+        if self.bound(ctx, "rail_tab_prev") {
+            self.run(ctx, Action::Tool("rail_tab_prev", json!({})));
+        }
+        if self.bound(ctx, "ui.settings") {
             let a = if self.ui.settings.open { Action::CloseSettings } else { Action::OpenSettings };
             self.run(ctx, a);
         }
@@ -2004,12 +2177,19 @@ impl CsmApp {
                 i.events.retain(|e| !is_q(e));
                 had
             });
-        if pressed(ctx, Modifiers::NONE, Key::F1) || pressed(ctx, cmd, Key::Slash) || question {
+        if self.bound(ctx, "ui.help") || question {
             self.run(ctx, Action::ShowHelp);
         }
         let open = self.ui.overlay != Overlay::None || self.ui.menu.is_some();
         if open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseOverlays);
+        } else if self.ui.region.is_some_and(|r| r != FocusRegion::Panes)
+            && self.ui.inline.is_none()
+            && !self.terminal_focused(ctx)
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            // Esc leaves a non-terminal region: the keys go back to the active pane.
+            self.set_region(ctx, None);
         } else if !self.ui.selection.is_empty()
             && self.ui.inline.is_none()
             && !self.terminal_focused(ctx)
@@ -2023,54 +2203,147 @@ impl CsmApp {
         }
     }
 
+    /// Opens the main menu, or closes it when it is open. It opens only over the panes: a dialog
+    /// or an inline edit keeps the keyboard.
+    fn toggle_main_menu(&mut self, ctx: &egui::Context) {
+        if matches!(self.ui.menu, Some(Menu::Main { .. })) {
+            self.run(ctx, Action::CloseMenu);
+        } else if self.ui.overlay == Overlay::None && self.ui.inline.is_none() {
+            let menu = Menu::Main { at: screens::menus::main_menu_at(ctx) };
+            self.run(ctx, Action::OpenMenu(menu.clone()));
+            self.ui.menu_sel = screens::menus::first_highlight(self, &menu);
+        }
+    }
+
+    /// The menu of the focused item, for Shift+F10: the session row that has the keyboard focus
+    /// (or the active session when the sidebar has the region but no row), or the group of the
+    /// active rail tab. `None` where the region has no menu.
+    fn focused_item_menu(&self, ctx: &egui::Context) -> Option<Menu> {
+        match self.ui.region? {
+            FocusRegion::SidebarList => {
+                let focused = ctx.memory(|m| m.focused());
+                // A focused group header opens its group's menu (its anchor is recorded when it is drawn).
+                let header = |g: &GroupId| focused == Some(egui::Id::new(("group-header", g.clone())));
+                if let Some(group) = self.model.groups.iter().map(|g| g.id.clone()).find(|g| header(g)) {
+                    let key = egui::Id::new(("group-menu-at", group.clone()));
+                    let at = ctx.data(|d| d.get_temp::<egui::Pos2>(key)).unwrap_or_else(|| ctx.content_rect().center());
+                    return Some(Menu::Group { group, at });
+                }
+                let session = self
+                    .model
+                    .sessions
+                    .iter()
+                    .find(|s| focused == Some(egui::Id::new(("session-row", s.id.clone()))))
+                    .map(|s| s.id.clone())
+                    .or_else(|| self.model.active.clone())?;
+                let key = egui::Id::new(("row-menu-at", session.clone()));
+                let at = ctx.data(|d| d.get_temp::<egui::Pos2>(key)).unwrap_or_else(|| ctx.content_rect().center());
+                Some(Menu::Row { session, at })
+            }
+            FocusRegion::RailTabs => {
+                let at = self.ui.region_rects.iter().find(|(r, _)| *r == FocusRegion::RailTabs).map(|(_, rect)| rect.left_bottom())?;
+                match self.scope() {
+                    Scope::Group(group) => Some(Menu::Group { group, at }),
+                    Scope::All => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Moves the keyboard focus region. `None` gives the keys back to the active pane's terminal;
+    /// a region other than the panes takes them from a focused terminal.
+    fn set_region(&mut self, ctx: &egui::Context, region: Option<FocusRegion>) {
+        self.ui.region = region;
+        if self.ui.terminal_takes_focus() {
+            self.ui.focus_terminal = self.model.active.clone();
+        } else if self.terminal_focused(ctx)
+            && let Some(focused) = ctx.memory(|m| m.focused())
+        {
+            ctx.memory_mut(|m| m.surrender_focus(focused));
+        }
+        // The keyboard focus goes into the region too, on its entry item (the shown one, else the first),
+        // so its arrow keys work at once.
+        if let Some(r) = region.filter(|r| *r != FocusRegion::Panes) {
+            let of_region: Vec<_> = self.ui.region_items.iter().filter(|(x, _, _)| *x == r).collect();
+            if let Some((_, id, _)) = of_region.iter().find(|(_, _, on)| *on).or(of_region.first()) {
+                ctx.memory_mut(|m| m.request_focus(*id));
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// Keeps `ui.region` in step with the keyboard focus when the keyboard moved it (Tab, a focus
+    /// request), not a mouse press, so F6 cycles from it and the ring follows the focus. A region's
+    /// item sets its region; a terminal is the panes; any other widget (a pane's header button, a
+    /// dialog's field) ends the region, so no ring stays on a list while the keys go elsewhere.
+    fn sync_region_to_focus(&mut self, ctx: &egui::Context) {
+        let frame = ctx.cumulative_pass_nr();
+        let key = egui::Id::new("region-sync");
+        let (prev, last_press): (Option<egui::Id>, u64) = ctx.data(|d| d.get_temp(key)).unwrap_or((None, 0));
+        let press_frame = if ctx.input(|i| i.pointer.any_pressed()) { frame } else { last_press };
+        let focus = ctx.memory(|m| m.focused());
+        if focus != prev
+            && frame.saturating_sub(press_frame) > 1
+            && let Some(f) = focus
+        {
+            let item = self.ui.region_items.iter().find(|(_, id, _)| *id == f).map(|(region, _, _)| *region);
+            self.ui.region = match item {
+                Some(region) => Some(region),
+                // A terminal keeps the keys: the panes (F6 into them) or no region at all.
+                None if self.terminal_focused(ctx) => self.ui.region.filter(|r| *r == FocusRegion::Panes),
+                None => None,
+            };
+        }
+        ctx.data_mut(|d| d.insert_temp(key, (focus, press_frame)));
+    }
+
+    /// F6 (`step` 1) or Shift+F6 (-1): the next region that was drawn last frame, from the current
+    /// one (the panes when none has the ring).
+    fn cycle_region(&mut self, ctx: &egui::Context, step: i32) {
+        let visible: Vec<FocusRegion> = self.ui.region_rects.iter().map(|(r, _)| *r).collect();
+        let current = self.ui.region.unwrap_or(FocusRegion::Panes);
+        if let Some(next) = focus::next_region(&visible, current, step) {
+            self.set_region(ctx, Some(next));
+        }
+    }
+
+    /// Ctrl+Alt+Arrow: focuses the pane nearest the active one in `dir`, by where the panes were
+    /// drawn. The focus goes to that pane's terminal, and any region mode ends.
+    fn move_pane_focus(&mut self, dir: focus::Dir) {
+        let Some(active) = self.model.active.clone() else { return };
+        let Some(from) = self.ui.pane_rects.iter().find(|(id, _)| *id == active).map(|(_, r)| *r) else { return };
+        let others: Vec<(SessionId, Rect)> = self.ui.pane_rects.iter().filter(|(id, _)| *id != active).cloned().collect();
+        let rects: Vec<Rect> = others.iter().map(|(_, r)| *r).collect();
+        let Some((id, _)) = focus::neighbour(from, &rects, dir).and_then(|i| others.get(i)) else { return };
+        self.ui.region = None;
+        self.ui.focus_terminal = Some(id.clone());
+        self.dispatch.submit("session_focus", json!({"session_id": id}));
+    }
+
+    /// Whether a sidebar session row or group header has the keyboard focus (as drawn last frame).
+    fn sidebar_item_focused(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.focused()).is_some_and(|f| self.ui.sidebar_nav.iter().any(|(id, _)| *id == f))
+    }
+
+    /// Ctrl+PgUp / Ctrl+PgDn: shows the add-on screen tab before (or after) the one shown. The
+    /// Sessions tab is first; a screen in its own window is skipped (its tab docks it on a click).
+    fn screen_tab_step(&mut self, ctx: &egui::Context, forward: bool) {
+        let mut tabs: Vec<Option<String>> = vec![None];
+        tabs.extend(self.ui.screen_infos.iter().filter(|i| !i.popped_out).map(|i| Some(i.instance.clone())));
+        let now = lock(&self.ui.screens).active.clone();
+        let n = tabs.len();
+        let at = tabs.iter().position(|t| *t == now).unwrap_or(0);
+        let to = if forward { (at + 1) % n } else { (at + n - 1) % n };
+        if let Some(next) = tabs.get(to).cloned() {
+            self.run(ctx, Action::ScreenFocus(next));
+        }
+    }
+
     /// A terminal pane has keyboard focus: its keys (Esc above all) belong to the program in it.
     fn terminal_focused(&self, ctx: &egui::Context) -> bool {
         let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
         lock(&self.host).views.values().any(|v| v.id() == focused)
-    }
-
-    /// Keys while the Recent menu is open: arrows move, Enter picks the selected row, a digit
-    /// picks a session row, Escape or Ctrl+Shift+E closes it. Every other key is swallowed (the
-    /// menu has the keyboard, as a context menu does), so nothing reaches the terminal. Returns
-    /// true: the frame's other shortcuts are skipped.
-    fn recent_keys(&mut self, ctx: &egui::Context) -> bool {
-        let n = screens::recent::items(&self.model).len();
-        let sessions = screens::recent::items(&self.model).iter().filter(|i| matches!(i, screens::recent::Item::Session(_))).count();
-        let digits = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-        let (close, down, up, enter, digit) = ctx.input_mut(|i| {
-            let close = consume_exact(i, Modifiers::NONE, Key::Escape) || consume_exact(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
-            let down = consume_exact(i, Modifiers::NONE, Key::ArrowDown) || consume_exact(i, Modifiers::NONE, Key::Tab);
-            let up = consume_exact(i, Modifiers::NONE, Key::ArrowUp) || consume_exact(i, Modifiers::SHIFT, Key::Tab);
-            let enter = consume_exact(i, Modifiers::NONE, Key::Enter);
-            let digit = digits.iter().position(|k| consume_exact(i, Modifiers::NONE, *k));
-            // The menu has the keyboard: typed text and other keys go nowhere.
-            i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
-            (close, down, up, enter, digit)
-        });
-        if close {
-            self.run(ctx, Action::CloseMenu);
-            return true;
-        }
-        if n > 0 {
-            if down {
-                self.ui.recent_sel = (self.ui.recent_sel.min(n - 1) + 1) % n;
-            }
-            if up {
-                self.ui.recent_sel = (self.ui.recent_sel.min(n - 1) + n - 1) % n;
-            }
-        }
-        let pick = match (enter, digit) {
-            (_, Some(d)) => Some(screens::recent::index_for_digit(d)).filter(|i| *i < sessions),
-            (true, None) => (n > 0).then(|| self.ui.recent_sel.min(n - 1)),
-            _ => None,
-        };
-        if let Some(a) = pick.and_then(|i| screens::recent::items(&self.model).get(i).map(screens::recent::Item::action)) {
-            self.run(ctx, a);
-        }
-        if down || up || pick.is_some() {
-            ctx.request_repaint();
-        }
-        true
     }
 
     /// Focuses the live session `step` places after (or before) the active one, in the order the
@@ -2117,6 +2390,7 @@ impl CsmApp {
         if self.model.active != self.ui.last_active {
             self.ui.last_active = self.model.active.clone();
             if self.ui.overlay == Overlay::None
+                && self.ui.terminal_takes_focus()
                 && let Some(a) = self.model.active.clone()
             {
                 self.ui.focus_terminal = Some(a);
@@ -2124,6 +2398,9 @@ impl CsmApp {
         }
 
         let t = theme::Tokens::get(&ctx);
+        // The regions drawn this frame (F6 reads them next frame).
+        self.ui.region_rects.clear();
+        self.ui.region_items.clear();
         // The whole window, whatever margin the host gave the root ui.
         let full = ctx.content_rect();
         let mut root = ui.new_child(UiBuilder::new().max_rect(full));
@@ -2134,6 +2411,7 @@ impl CsmApp {
 
         let title = Rect::from_min_max(full.min, pos2(full.max.x, full.min.y + size::TITLE_BAR));
         ui.scope_builder(UiBuilder::new().max_rect(title), |ui| screens::titlebar::show(ui, self, &mut actions));
+        self.ui.region_rects.push((FocusRegion::TitleBar, title));
         let mut body_top = title.max.y;
         if let Some(status) = self.remote.clone() {
             // Always visible in a remote window: the host and address, and the link's state.
@@ -2154,6 +2432,7 @@ impl CsmApp {
         if self.model.group_mode == crate::model::GroupMode::Rail || self.ui.compact {
             let rail = Rect::from_min_max(pos2(x, body.min.y), pos2(x + size::RAIL, body.max.y));
             ui.scope_builder(UiBuilder::new().max_rect(rail), |ui| screens::sidebar::rail(ui, self, &mut actions));
+            self.ui.region_rects.push((FocusRegion::RailTabs, rail));
             x = rail.max.x;
         }
         if let Some(e) = &mut self.ui.inline {
@@ -2163,6 +2442,7 @@ impl CsmApp {
         let side = Rect::from_min_max(pos2(x, body.min.y), pos2(x + sidebar_w, body.max.y));
         if !self.ui.compact {
             ui.scope_builder(UiBuilder::new().max_rect(side), |ui| screens::sidebar::show(ui, self, &mut actions));
+            self.ui.region_rects.push((FocusRegion::SidebarList, side));
         } else {
             self.ui.peek_sidebar &= self.ui.overlay == Overlay::None;
         }
@@ -2189,7 +2469,9 @@ impl CsmApp {
                 work.max.x = insp.min.x;
                 ui.scope_builder(UiBuilder::new().max_rect(insp), |ui| screens::inspector::show(ui, self, &mut actions));
                 inspector_rect = Some((insp, w, max_w));
+                self.ui.region_rects.push((FocusRegion::Inspector, insp));
             }
+            self.ui.region_rects.push((FocusRegion::Panes, work));
             ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::panes::workspace(ui, self, &mut actions));
             // The inspector's left edge drags its width (registered last, so it sits on top of
             // both sides); a double click resets it.
@@ -2233,6 +2515,12 @@ impl CsmApp {
         let active = self.model.active.clone();
         self.backend.show_panes(&shown, active.as_deref());
 
+        // The keyboard focus ring, round the region that has it (none for a mouse user).
+        if let Some(r) = self.ui.region
+            && let Some((_, rect)) = self.ui.region_rects.iter().find(|(x, _)| *x == r)
+        {
+            crate::widgets::focus_ring(ui, *rect, theme::radius::sm());
+        }
         // Overlays, top-most last.
         screens::open_with::show(&ctx, self, &mut actions);
         screens::menus::show(&ctx, self, &mut actions);
@@ -2267,13 +2555,31 @@ impl CsmApp {
 /// Where the title bar's Recent button left the menu's anchor (temp data under this id).
 pub const RECENT_ANCHOR: &str = "recent-anchor";
 
+/// Where the title bar's main menu button is drawn last frame. A press on the button is not
+/// "outside" the menu, so a second click closes the menu rather than reopening it.
+pub const MAIN_ANCHOR: &str = "main-menu-anchor";
+
+/// The rail's tab shortcuts, Ctrl+1 (All) to Ctrl+9, in the order of the rail's tabs.
+const RAIL_TAB_IDS: [&str; 9] = [
+    "ui.rail_tab_1",
+    "ui.rail_tab_2",
+    "ui.rail_tab_3",
+    "ui.rail_tab_4",
+    "ui.rail_tab_5",
+    "ui.rail_tab_6",
+    "ui.rail_tab_7",
+    "ui.rail_tab_8",
+    "ui.rail_tab_9",
+];
+
 /// Consumes a key press with exactly these modifiers (Ctrl and Cmd as egui's `COMMAND`).
 /// egui's `consume_shortcut` ignores extra Shift and Alt, so Ctrl+Shift+T would also be Ctrl+T;
 /// here each binding gets only its own chord.
 ///
 /// A punctuation key (`/`, `.`, `,` …) is the character, not the key cap: on many layouts it
 /// needs Shift (`/` is Shift+7 on Danish and German keyboards), so for those an extra Shift is
-/// ignored and Ctrl+/ still opens the shortcut list there.
+/// ignored and Ctrl+/ still opens the shortcut list there. Minus is not one of them: Ctrl+Shift+-
+/// is Ctrl+_ (the terminal's undo), which must not match the zoom out on Ctrl+-.
 pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
     let symbol = matches!(
         key,
@@ -2282,7 +2588,6 @@ pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
             | Key::Comma
             | Key::Colon
             | Key::Semicolon
-            | Key::Minus
             | Key::Plus
             | Key::Equals
             | Key::Questionmark

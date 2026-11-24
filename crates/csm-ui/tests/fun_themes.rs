@@ -61,6 +61,9 @@ fn out_dir() -> std::path::PathBuf {
 }
 
 fn choose(h: &mut H, mode: ThemeKind, id: &str) {
+    if id.is_empty() {
+        return; // the built-in theme
+    }
     let engine = h.state().dispatch.engine().expect("an engine port");
     let key = if mode == ThemeKind::Mocha { "ThemeDark" } else { "ThemeLight" };
     engine.call(csm_engine::Caller::Ui, "settings_set", serde_json::json!({"key": key, "value": id})).unwrap();
@@ -108,4 +111,46 @@ fn fun_themes_render() {
         shoot(&format!("31-{name}-palette"), mode, id, palette);
         assert!(main > 100, "{name} looks blank");
     }
+}
+
+/// F6 into the title bar, then Right: a title-bar button shows the keyboard focus ring in the
+/// bevel (Windows 98) style as well as the flat one.
+#[test]
+fn fun_themes_titlebar_button_focus() {
+    for (name, mode, id) in [("win98", ThemeKind::Latte, "theme-fun.win98"), ("default", ThemeKind::Mocha, "")] {
+        shoot(&format!("31-{name}-titlebar-focus"), mode, id, |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::TitleBar) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            h.key_press(egui::Key::ArrowRight);
+            settle(h);
+        });
+    }
+}
+
+/// The New session dialog with the keyboard focus on a control, in the bevel style.
+#[test]
+fn fun_themes_new_session_focus() {
+    shoot("31-win98-new-session-focus", ThemeKind::Latte, "theme-fun.win98", |h| {
+        h.state_mut().ui.quick = csm_ui::app::QuickOpenState { focus_input: true, ..Default::default() };
+        h.state_mut().ui.overlay = csm_ui::app::Overlay::QuickOpen;
+        settle(h);
+        for _ in 0..4 {
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        }
+    });
+}
+
+/// The F10 main menu in the bevel style.
+#[test]
+fn fun_themes_main_menu() {
+    shoot("31-win98-main-menu", ThemeKind::Latte, "theme-fun.win98", |h| {
+        h.key_press(egui::Key::F10);
+        settle(h);
+    });
 }

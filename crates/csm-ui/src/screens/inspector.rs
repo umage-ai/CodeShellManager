@@ -59,6 +59,15 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let tabs = Rect::from_min_size(pos2(rect.min.x, head.max.y + space::XS), vec2(rect.width(), size::TAB));
     ui.painter().hline(tabs.x_range(), tabs.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
     let mut x = tabs.min.x + space::SM;
+    // The arrow keys move along the tablist; Enter or Space selects the focused tab (a click).
+    let order: Vec<Id> = shown.iter().map(|tb| Id::new(("insp-tab", tb.id()))).collect();
+    let shown_tab = Id::new(("insp-tab", tab.id()));
+    app.ui.region_items.extend(order.iter().map(|id| (crate::focus::FocusRegion::Inspector, *id, *id == shown_tab)));
+    for id in &order {
+        if crate::list_keys::move_from(ui.ctx(), *id, &order, crate::list_keys::Axis::Horizontal).is_some() {
+            break;
+        }
+    }
     let full_w = |tb: InspectorTab| icon::MD + space::XS + space::XXS + widgets::text_width(ui, tb.label(), theme::medium(text::BODY)) + space::LG;
     // Too narrow for every label: the other tabs show their icon only (the name is the tooltip).
     let all: f32 = shown.iter().map(|tb| full_w(*tb) + space::XXS).sum();
@@ -69,6 +78,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let r = Rect::from_min_size(pos2(x, tabs.min.y), vec2(w, tabs.height()));
         x += w + space::XXS;
         let resp = ui.interact(r, Id::new(("insp-tab", tb.id())), Sense::click());
+        if resp.has_focus() {
+            widgets::focus_ring(ui, r, radius::md());
+        }
         let on = tb == tab;
         let fg = if on || resp.hovered() { t.fg } else { t.muted };
         let ir = Rect::from_min_size(pos2(r.min.x + space::SM, r.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));

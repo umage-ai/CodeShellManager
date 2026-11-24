@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 use crate::engine::{Ctx, Reply};
 use crate::lifecycle;
 use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schema, parse_params, schema_of};
+use super::keymap;
 
 pub(super) fn specs() -> Vec<ToolSpec> {
     let t = |id, title, summary, toolset, effects, input_schema, run| ToolSpec { id, title, summary, toolset, effects, input_schema, run };
@@ -183,6 +184,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("PassSessionNameToClaude").or_insert(json!(s.pass_session_name_to_claude));
         m.entry("ClaudeUsageHistory").or_insert(json!(s.claude_usage_history));
         m.entry("CleanClaudeCopies").or_insert(json!(s.clean_claude_copies));
+        m.entry("Keymap").or_insert(json!(s.keymap));
         m.entry("StartMinimized").or_insert(json!(s.start_minimized));
         m.entry("StartMinimizedToTray").or_insert(json!(s.start_minimized_to_tray));
         m.entry("ThemeDark").or_insert(json!(s.theme_dark));
@@ -259,6 +261,9 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let key = pascal(&p.key);
     if key == "AddonApprovals" {
         return Err(ToolError::Refused("add-ons are enabled and disabled with addon_enable and addon_disable (the person sees what they contribute first)".into()));
+    }
+    if key == keymap::SETTING_KEY {
+        return Err(ToolError::Refused("keyboard shortcuts are changed with keymap_set and keymap_reset (each chord is checked for conflicts)".into()));
     }
     if ctx.caller.is_external() && APP_ONLY_KEYS.contains(&key.as_str()) {
         return Err(ToolError::Refused(format!("`{key}` decides what runs; change it in the app's settings")));

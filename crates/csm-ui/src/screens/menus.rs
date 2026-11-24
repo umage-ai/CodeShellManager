@@ -2,13 +2,15 @@
 //! presets popover, the run list and the quick-open's group picker. Every item is an
 //! [`Action`]; anything that changes state is a tool call.
 
-use egui::{Align2, CornerRadius, Id, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
+use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 use serde_json::json;
 
+use csm_core::keymap::Keymap;
 use csm_core::session_sort::SortField;
 
-use crate::app::{Action, ConfirmState, CsmApp, Menu};
+use crate::app::{Action, ConfirmState, CsmApp, Menu, consume_exact};
 use crate::icons;
+use crate::menu_nav::{self, Keys, Nav, Row};
 use crate::model::{GridPreset, GroupMode, LayoutMode, Scope, Status, UiModel};
 use crate::theme::{self, Tokens, alpha, icon, radius, size, space, text};
 use crate::widgets;
@@ -32,7 +34,7 @@ pub fn hidden_in_remote(entry: &Entry) -> bool {
             _ => false,
         },
         Entry::Sub { label, .. } => label.eq_ignore_ascii_case("Open with"),
-        Entry::Head(_) | Entry::Sep => false,
+        Entry::Head(_) | Entry::Sep | Entry::Off { .. } => false,
     }
 }
 
@@ -60,6 +62,13 @@ pub enum Entry {
         tip: String,
         action: Action,
     },
+    /// A row shown but not offered now (a tool that needs an active session, with none): muted,
+    /// and the keys skip it.
+    Off {
+        icon: &'static str,
+        label: String,
+        hint: Option<String>,
+    },
 }
 
 fn item(icon: &'static str, label: impl Into<String>, action: Action) -> Entry {
@@ -68,6 +77,11 @@ fn item(icon: &'static str, label: impl Into<String>, action: Action) -> Entry {
 
 fn hinted(icon: &'static str, label: impl Into<String>, hint: &str, action: Action) -> Entry {
     Entry::Item { icon, label: label.into(), hint: Some(hint.into()), danger: false, action }
+}
+
+/// The first chord of an action in the keyboard map, as a menu hint ("" when it has none).
+fn chord_hint(keys: &Keymap, id: &str) -> String {
+    keys.label(id).unwrap_or_default()
 }
 
 fn tool(id: &'static str, params: serde_json::Value) -> Action {
@@ -181,12 +195,12 @@ pub fn claude_commands_entry(s: &crate::model::SessionView, presets: &[csm_core:
 /// "Copy last reply" and "Copy reply…" on a Claude pane: Claude's replies from its transcript
 /// (`claude_reply_get`, `claude_reply_list`). A WSL or SSH session's answer says it is not
 /// available there.
-fn claude_copy_entries(s: &crate::model::SessionView) -> Vec<Entry> {
+fn claude_copy_entries(s: &crate::model::SessionView, keys: &Keymap) -> Vec<Entry> {
     if !s.is_claude() || !s.status.is_live() {
         return Vec::new();
     }
     vec![
-        hinted("copy", "Copy last reply", "Ctrl Shift C", Action::CopyClaude("claude_reply_get", json!({"session_id": s.id}))),
+        hinted("copy", "Copy last reply", &chord_hint(keys, "claude_reply_get"), Action::CopyClaude("claude_reply_get", json!({"session_id": s.id}))),
         item("copy", "Copy reply…", Action::OpenClaudeReplies(s.id.clone())),
     ]
 }
@@ -265,15 +279,15 @@ fn demo_status(session: &str) -> Entry {
     }
 }
 
-pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+pub fn pane_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(s) = model.session(id) else { return vec![] };
     let sid = json!({"session_id": id});
     let scope = model.pane_scope().key();
     let insp = |tab: &str| tool("inspector_show", json!({"tab": tab}));
     let mut v = vec![
         Entry::Head("Panels".into()),
-        hinted("note", "Notes", "Ctrl Shift N", insp("notes")),
-        hinted("play", "Runs", "F5 runs default", insp("runs")),
+        hinted("note", "Notes", &chord_hint(keys, "ui.inspector_notes"), insp("notes")),
+        hinted("play", "Runs", &format!("{} runs default", chord_hint(keys, "run_start")), insp("runs")),
         item("branch", "Git", insp("git")),
         Entry::Sep,
     ];
@@ -289,15 +303,15 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     } else {
         v.push(item("copy", "Copy remote path", Action::CopyText(s.folder.clone())));
     }
-    v.extend(claude_copy_entries(s));
+    v.extend(claude_copy_entries(s, keys));
     v.extend(worktree_entries(model, s));
     v.extend([
         Entry::Sep,
         Entry::Head("Session".into()),
         hinted("pencil", "Edit session…", "folder, command", Action::EditSession(id.to_string())),
-        hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
-        hinted("copy", "Duplicate", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
-        hinted("restart", "Restart", "Ctrl Shift R", tool("session_restart", sid.clone())),
+        hinted("tag", "Rename", &chord_hint(keys, "session_rename"), Action::StartRename(id.to_string())),
+        hinted("copy", "Duplicate", &chord_hint(keys, "session_duplicate"), tool("session_duplicate", sid.clone())),
+        hinted("restart", "Restart", &chord_hint(keys, "session_restart"), tool("session_restart", sid.clone())),
         hinted("moon", "Sleep", "keeps it in the sidebar", tool("session_sleep", sid.clone())),
         demo_status(id),
     ]);
@@ -334,16 +348,16 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         v.push(item("pin", label, tool(tid, pane.clone())));
     }
     if let Some(run) = s.default_run() {
-        v.push(hinted("play", format!("Run {}", run.label), "F5", tool("run_start", sid.clone())));
+        v.push(hinted("play", format!("Run {}", run.label), &chord_hint(keys, "run_start"), tool("run_start", sid.clone())));
     }
     v.push(Entry::Sep);
-    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some("Ctrl W".into()), danger: true, action: Action::CloseSession(id.to_string()) });
+    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some(chord_hint(keys, "session_close")), danger: true, action: Action::CloseSession(id.to_string()) });
     v
 }
 
 /// The sidebar row's menu. `targets` is what an action applies to (C# `ResolveActionTargets`):
 /// the whole selection when the row is part of it, else the row alone.
-pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
+pub fn row_menu(model: &UiModel, id: &str, targets: &[String], keys: &Keymap) -> Vec<Entry> {
     if targets.len() > 1 {
         return bulk_menu(model, targets);
     }
@@ -369,10 +383,10 @@ pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
             if pinned { "Unpin from Side by side" } else { "Pin to Side by side" },
             tool(if pinned { "layout_unpin" } else { "layout_pin" }, json!({"session_id": id, "group": scope.key()})),
         ),
-        hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
+        hinted("tag", "Rename", &chord_hint(keys, "session_rename"), Action::StartRename(id.to_string())),
         item("pencil", "Edit session…", Action::EditSession(id.to_string())),
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
-        hinted("copy", "Duplicate session", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
+        hinted("copy", "Duplicate session", &chord_hint(keys, "session_duplicate"), tool("session_duplicate", sid.clone())),
     ];
     if is_local(s) {
         // After "Move to group", as before; an SSH session's folder is on another machine.
@@ -511,7 +525,7 @@ pub fn sort_menu(model: &UiModel, last: Option<(SortField, bool)>) -> Vec<Entry>
     v
 }
 
-pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
+pub fn group_menu(model: &UiModel, gid: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(g) = model.group(gid) else { return vec![] };
     let scope = Scope::Group(gid.to_string());
     let lay = model.layout(&scope);
@@ -520,7 +534,7 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
     let mut v = vec![
         Entry::Head(g.name.clone()),
         item("plus", format!("New session in {}", g.name), Action::OpenQuickOpen { group: Some(gid.to_string()) }),
-        hinted("pencil", "Rename group", "F2", Action::StartGroupRename(gid.to_string())),
+        hinted("pencil", "Rename group", &chord_hint(keys, "session_rename"), Action::StartGroupRename(gid.to_string())),
         Entry::Sub {
             icon: lay.mode.icon(),
             label: "Layout".into(),
@@ -564,11 +578,11 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
     v
 }
 
-fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+fn runs_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(s) = model.session(id) else { return vec![] };
     let mut v = vec![Entry::Head("Run commands".into())];
     for r in &s.runs {
-        let hint = if r.is_default { format!("F5 · {}", r.detail) } else { r.detail.clone() };
+        let hint = if r.is_default { format!("{} · {}", chord_hint(keys, "run_start"), r.detail) } else { r.detail.clone() };
         v.push(Entry::Item {
             icon: "play",
             label: r.label.clone(),
@@ -596,7 +610,9 @@ fn github_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     ]
 }
 
-/// Draws `entries` in an area at `at`; returns the area's rect.
+/// Draws `entries` in an area at `at`; returns the area's rect. The row highlighted at this depth
+/// (`menu_sel`, by the keyboard or the pointer) gets the keyboard highlight, and the pointer over a
+/// row moves the highlight there.
 #[allow(clippy::too_many_arguments)]
 fn menu_area(
     ctx: &egui::Context,
@@ -620,6 +636,8 @@ fn menu_area(
     let screen = ctx.content_rect();
     let mut rects = Vec::new();
     let mut sub: Option<(Pos2, Vec<Entry>, String)> = None;
+    let acc = access_of(entries);
+    let lit = app.ui.menu_sel.get(depth).copied();
     // Keep the menu on screen: flip up/left when it would overflow.
     let est_h: f32 = entries
         .iter()
@@ -630,28 +648,49 @@ fn menu_area(
         })
         .sum::<f32>()
         + space::SM;
+    // The height the menu had last frame (its content, measured below) is the better guess; the estimate
+    // is for the first frame only.
+    let height_key = Id::new(("menu-height", id));
+    let last_h = ctx.data(|d| d.get_temp::<f32>(height_key)).unwrap_or(0.0);
+    let guess_h = if last_h > 0.0 { last_h } else { est_h };
     let mut pos = at;
-    if pos.y + est_h > screen.max.y - space::SM {
-        pos.y = (screen.max.y - space::SM - est_h).max(screen.min.y + space::SM);
+    if pos.y + guess_h > screen.max.y - space::SM {
+        pos.y = (screen.max.y - space::SM - guess_h).max(screen.min.y + space::SM);
     }
     if !right && pos.x + size::MENU_W + space::LG > screen.max.x {
         pos.x = (screen.max.x - size::MENU_W - space::LG).max(screen.min.x);
     }
     let pivot = if right { Align2::RIGHT_TOP } else { Align2::LEFT_TOP };
+    // A menu taller than the room below it scrolls (the main menu's long areas); a key that moves
+    // the highlight brings its row into view (`scroll_to_me` below).
+    let room = (screen.max.y - space::SM - pos.y).max(size::MENU_ROW);
+    let scroll = guess_h > room;
+    // Only a key brings the highlighted row into view: the pointer over a row moves the highlight
+    // too, and scrolling to it would move the menu under the pointer.
+    let by_key = ctx.data(|d| d.get_temp::<bool>(menu_keys_id())).unwrap_or(false);
     let resp = egui::Area::new(id).order(Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
-        widgets::pop_frame(&t).show(ui, |ui| {
+        let mut frame = |ui: &mut egui::Ui| {
+        let body = widgets::pop_frame(&t).show(ui, |ui| {
             // As wide as the widest row, never narrower than the menu width.
             let width = entries.iter().map(|e| row_width(ui, e)).fold(size::MENU_W - space::SM, f32::max);
             ui.set_width(width);
             ui.spacing_mut().item_spacing.y = 0.0;
-            for e in entries {
+            for (idx, e) in entries.iter().enumerate() {
+                let on = lit == Some(idx);
+                let under = acc.get(idx).copied().flatten().map(|(c, _)| c);
                 match e {
                     Entry::Head(h) => widgets::menu_head(ui, h),
                     Entry::Sep => widgets::separator(ui),
                     Entry::Item { icon, label, hint, danger, action } => {
-                        let r = widgets::menu_item(ui, icon, label, hint.as_deref(), *danger);
-                        if r.hovered() && depth == 0 {
-                            app.ui.submenu = None;
+                        let r = widgets::menu_item_at(ui, icon, label, hint.as_deref(), *danger, on, under);
+                        if on && scroll && by_key {
+                            r.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if r.hovered() {
+                            if depth == 0 {
+                                app.ui.submenu = None;
+                            }
+                            highlight(&mut app.ui.menu_sel, depth, idx);
                         }
                         if r.clicked() {
                             actions.push(action.clone());
@@ -662,18 +701,24 @@ fn menu_area(
                         }
                     }
                     Entry::ItemTip { icon, label, hint, tip, action } => {
-                        let r = widgets::menu_item(ui, icon, label, hint.as_deref(), false).on_hover_text(tip.as_str());
-                        if r.hovered() && depth == 0 {
-                            app.ui.submenu = None;
+                        let r = widgets::menu_item_at(ui, icon, label, hint.as_deref(), false, on, under).on_hover_text(tip.as_str());
+                        if r.hovered() {
+                            if depth == 0 {
+                                app.ui.submenu = None;
+                            }
+                            highlight(&mut app.ui.menu_sel, depth, idx);
                         }
                         if r.clicked() {
                             actions.push(action.clone());
                             actions.push(Action::CloseMenu);
                         }
                     }
+                    Entry::Off { icon, label, hint } => {
+                        widgets::menu_item_off(ui, icon, label, hint.as_deref());
+                    }
                     Entry::Sub { icon, label, items } => {
                         let open = app.ui.submenu.as_deref() == Some(label.as_str());
-                        let r = widgets::menu_item(ui, icon, label, None, false);
+                        let r = widgets::menu_item_at(ui, icon, label, None, false, on, under);
                         if open {
                             ui.painter().rect_filled(r.rect, CornerRadius::same(radius::sm() + 1), Tokens::tint(t.row_sel, alpha::ASLEEP));
                         }
@@ -689,6 +734,7 @@ fn menu_area(
                         );
                         if r.hovered() || r.clicked() {
                             app.ui.submenu = Some(label.clone());
+                            highlight(&mut app.ui.menu_sel, depth, idx);
                         }
                         if open || r.hovered() {
                             sub = Some((
@@ -697,10 +743,20 @@ fn menu_area(
                                 label.clone(),
                             ));
                         }
+                        if on && scroll && by_key {
+                            r.scroll_to_me(Some(egui::Align::Center));
+                        }
                     }
                 }
             }
         });
+        ctx.data_mut(|d| d.insert_temp(height_key, body.response.rect.height()));
+        };
+        if scroll {
+            egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room).auto_shrink([false, false]).show(ui, frame);
+        } else {
+            frame(ui);
+        }
     });
     rects.push(resp.response.rect);
     if let Some((p, items, label)) = sub {
@@ -740,62 +796,39 @@ fn with_demo(mut v: Vec<Entry>, demo: bool) -> Vec<Entry> {
     v
 }
 
-pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
-    let Some(menu) = app.ui.menu.clone() else {
-        // Closed: the next opening reads the worktrees again.
-        ctx.data_mut(|d| d.remove_temp::<String>(Id::new("menu-worktrees-asked")));
-        return;
-    };
-    let model = app.model.clone();
+/// A list menu as it is drawn: its area's id and place, and its entries as offered here.
+struct Listing {
+    id: &'static str,
+    at: Pos2,
+    entries: Vec<Entry>,
+}
+
+/// The list a menu shows, or `None` for the menus that are not lists (the grid, Recent).
+fn listing(app: &CsmApp, menu: &Menu) -> Option<Listing> {
+    let model = &app.model;
+    let keys = &app.prefs.keymap;
     let demo = app.dispatch.has_tool("demo_set_status");
-    if let Menu::Pane { session, .. } | Menu::Row { session, .. } = &menu {
-        ask_worktrees(ctx, app, &menu, session);
-    }
-    let rects = match &menu {
+    let (id, at, entries) = match menu {
         Menu::Pane { session, at } => {
-            let mut e = with_demo(pane_menu(&model, session), demo);
+            let mut e = with_demo(pane_menu(model, session, keys), demo);
             if let Some(sub) = model.session(session).and_then(|s| claude_commands_entry(s, &claude_commands(app))) {
                 // At the end of the first block, before the Session section.
-                let at = e.iter().position(|x| matches!(x, Entry::Head(h) if h == "Session")).map_or(e.len(), |i| i.saturating_sub(1));
-                e.insert(at, sub);
+                let idx = e.iter().position(|x| matches!(x, Entry::Head(h) if h == "Session")).map_or(e.len(), |i| i.saturating_sub(1));
+                e.insert(idx, sub);
             }
-            let at = pos2(at.x - size::MENU_W, at.y);
-            menu_area(ctx, app, Id::new("menu-pane"), at, &e, 0, false, actions)
+            ("menu-pane", pos2(at.x - size::MENU_W, at.y), e)
         }
         Menu::Row { session, at } => {
             let order: Vec<&str> = model.sessions.iter().map(|s| s.id.as_str()).collect();
             let targets = app.ui.selection.targets(session, &order);
-            menu_area(
-                ctx,
-                app,
-                Id::new("menu-row"),
-                *at + vec2(space::XS + space::XXS, -space::XS),
-                &with_demo(row_menu(&model, session, &targets), demo),
-                0,
-                false,
-                actions,
-            )
+            ("menu-row", *at + vec2(space::XS + space::XXS, -space::XS), with_demo(row_menu(model, session, &targets, keys), demo))
         }
-        Menu::Sort { at } => {
-            let e = sort_menu(&model, app.ui.sort);
-            menu_area(ctx, app, Id::new("menu-sort"), *at, &e, 0, false, actions)
-        }
-        Menu::Group { group, at } => menu_area(ctx, app, Id::new("menu-group"), *at, &group_menu(&model, group), 0, false, actions),
-        Menu::Runs { session, at } => {
-            menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
-        }
-        Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
-        Menu::GitHub { session, at } => {
-            menu_area(ctx, app, Id::new("menu-github"), pos2(at.x - size::MENU_W, at.y), &github_menu(&model, session), 0, false, actions)
-        }
+        Menu::Sort { at } => ("menu-sort", *at, sort_menu(model, app.ui.sort)),
+        Menu::Group { group, at } => ("menu-group", *at, group_menu(model, group, keys)),
+        Menu::Runs { session, at } => ("menu-runs", pos2(at.x - size::MENU_W, at.y), runs_menu(model, session, keys)),
+        Menu::GitHub { session, at } => ("menu-github", pos2(at.x - size::MENU_W, at.y), github_menu(model, session)),
         Menu::ClaudeReplies { session, at } => {
-            let e = claude_replies_menu(app.ui.claude_replies.as_ref(), session);
-            menu_area(ctx, app, Id::new("menu-claude-replies"), pos2(at.x - size::MENU_W, at.y), &e, 0, false, actions)
-        }
-        Menu::Recent { at } => {
-            let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
-            v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));
-            v
+            ("menu-claude-replies", pos2(at.x - size::MENU_W, at.y), claude_replies_menu(app.ui.claude_replies.as_ref(), session))
         }
         Menu::QuickGroup { at } => {
             let mut e = vec![Entry::Head("Group".into())];
@@ -807,10 +840,363 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 ));
             }
             e.push(item(if app.ui.quick.group.is_none() { "check" } else { "blank" }, "Ungrouped", Action::Toast("quick-group:".into())));
-            menu_area(ctx, app, Id::new("menu-qgroup"), *at, &e, 0, false, actions)
+            ("menu-qgroup", *at, e)
+        }
+        Menu::Main { at } => ("menu-main", *at, main_entries(app)),
+        Menu::Grid { .. } | Menu::Recent { .. } => return None,
+    };
+    Some(Listing { id, at, entries: offered_here(entries, app.remote.is_some()) })
+}
+
+/// The main menu's areas, in the order they are drawn.
+pub const MAIN_AREAS: [&str; 8] = ["Session", "View / Layout", "Groups", "Run", "Git", "Add-ons", "Settings", "Help"];
+
+/// The main menu's area for a tool, by its toolset. Board tasks and the layout tools are the
+/// view's; notes, search and the sessions themselves are the session's.
+pub fn main_area(toolset: csm_engine::Toolset) -> &'static str {
+    use csm_engine::Toolset;
+    match toolset {
+        Toolset::Core | Toolset::Search | Toolset::Notes => "Session",
+        Toolset::Layout | Toolset::Tasks => "View / Layout",
+        Toolset::Groups => "Groups",
+        Toolset::Runs => "Run",
+        Toolset::Git => "Git",
+        Toolset::Addons => "Add-ons",
+        Toolset::App => "Settings",
+    }
+}
+
+/// Whether a tool acts on one session, so it is off while no session is active.
+fn needs_session(schema: &serde_json::Value) -> bool {
+    schema.get("required").and_then(serde_json::Value::as_array).is_some_and(|r| r.iter().any(|v| v.as_str() == Some("session_id")))
+}
+
+/// The main menu: every action the app offers, in areas (`MAIN_AREAS`). The tools come from the
+/// registry, so a new tool appears here without UI work (the palette's list, minus what the
+/// palette hides); the UI's own actions and the layout modes are added by hand. Tools that act on
+/// a session are shown muted while none is active.
+pub fn main_entries(app: &CsmApp) -> Vec<Entry> {
+    let model = &app.model;
+    let keys = &app.prefs.keymap;
+    let has_session = model.active.as_deref().is_some_and(|a| model.session(a).is_some());
+    let mut areas: Vec<Vec<Entry>> = MAIN_AREAS.iter().map(|_| Vec::new()).collect();
+    let mut put = |area: &str, e: Entry| {
+        if let Some(slot) = MAIN_AREAS.iter().position(|a| *a == area).and_then(|i| areas.get_mut(i)) {
+            slot.push(e);
         }
     };
-    // The quick-open's group picker is local state, not a tool: intercept its rows.
+    let hint = |s: &str| keys.label(s);
+    let own = |label: &str, hint: &str, action: Action| Entry::Item {
+        icon: "blank",
+        label: label.into(),
+        hint: Some(hint.into()),
+        danger: false,
+        action,
+    };
+    put("Settings", own("Settings…", &chord_hint(keys, "ui.settings"), Action::OpenSettings));
+    put("Help", own("Keyboard shortcuts…", &chord_hint(keys, "ui.help"), Action::ShowHelp));
+    put("Help", own("Command palette…", &chord_hint(keys, "ui.palette"), Action::OpenPalette));
+    let scope = model.pane_scope().key();
+    for mode in LayoutMode::ALL {
+        put(
+            "View / Layout",
+            Entry::Item {
+                icon: "blank",
+                label: format!("Layout: {}", mode.label()),
+                hint: None,
+                danger: false,
+                action: Action::Tool("layout_set", json!({"group": scope, "mode": mode.id()})),
+            },
+        );
+    }
+    for t in app.dispatch.tools().iter() {
+        // Layout modes have their rows above (the generic layout_set cycles, which a menu does not
+        // need); a consent answer is the consent card's, not a command.
+        if t.id == "consent_answer" || t.id == "layout_set" || crate::screens::palette::tool_hidden(app, &t.id) {
+            continue;
+        }
+        let hint = hint(&t.id);
+        let area = main_area(t.toolset);
+        if needs_session(&t.input_schema) && !has_session {
+            put(area, Entry::Off { icon: "blank", label: t.title.clone(), hint });
+        } else {
+            put(area, Entry::Item { icon: "blank", label: t.title.clone(), hint, danger: false, action: Action::PaletteTool(t.id.clone()) });
+        }
+    }
+    let mut out = Vec::new();
+    for (name, mut items) in MAIN_AREAS.iter().zip(areas) {
+        if items.is_empty() {
+            continue;
+        }
+        // Each area reads alphabetically, so a row is found by its name.
+        items.sort_by(|a, b| sort_label(a).cmp(sort_label(b)));
+        out.push(Entry::Sub { icon: "blank", label: (*name).to_string(), items });
+    }
+    out
+}
+
+/// The title a row sorts by (its label; "" for a row without one).
+fn sort_label(e: &Entry) -> &str {
+    match e {
+        Entry::Item { label, .. } | Entry::ItemTip { label, .. } | Entry::Sub { label, .. } | Entry::Off { label, .. } => label.as_str(),
+        Entry::Head(_) | Entry::Sep => "",
+    }
+}
+
+/// Where the main menu opens: under the title bar's button (right-aligned to it) when that is drawn,
+/// else under the title bar at the left (F10).
+pub fn main_menu_at(ctx: &egui::Context) -> Pos2 {
+    let screen = ctx.content_rect();
+    match ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::MAIN_ANCHOR))) {
+        Some(r) => pos2((r.max.x - size::MENU_W).max(screen.min.x), r.max.y + space::XS),
+        None => screen.min + vec2(space::MD, size::TITLE_BAR),
+    }
+}
+
+/// The entries a remote window offers (recursively into submenus).
+fn offered_here(entries: Vec<Entry>, remote: bool) -> Vec<Entry> {
+    if !remote {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .filter(|e| !hidden_in_remote(e))
+        .map(|e| match e {
+            Entry::Sub { icon, label, items } => Entry::Sub { icon, label, items: offered_here(items, true) },
+            other => other,
+        })
+        .collect()
+}
+
+fn label_of(e: &Entry) -> Option<&str> {
+    match e {
+        Entry::Item { label, .. } | Entry::ItemTip { label, .. } | Entry::Sub { label, .. } => Some(label.as_str()),
+        Entry::Head(_) | Entry::Sep | Entry::Off { .. } => None,
+    }
+}
+
+/// The access letter of each row of a level (see [`menu_nav::access`]).
+fn access_of(entries: &[Entry]) -> Vec<Option<(usize, char)>> {
+    let labels: Vec<Option<&str>> = entries.iter().map(label_of).collect();
+    menu_nav::access(&labels)
+}
+
+/// The rows of a level as the keys see them: what the highlight can rest on, and each access letter.
+fn nav_rows(entries: &[Entry]) -> Vec<Row> {
+    access_of(entries)
+        .into_iter()
+        .zip(entries)
+        .map(|(a, e)| Row { selectable: label_of(e).is_some(), letter: a.map(|(_, c)| c) })
+        .collect()
+}
+
+/// The entries of the level at the end of `chain`: the submenus opened, by their row index.
+fn level<'a>(entries: &'a [Entry], chain: &[usize]) -> Option<&'a [Entry]> {
+    chain.iter().try_fold(entries, |lvl, i| match lvl.get(*i)? {
+        Entry::Sub { items, .. } => Some(items.as_slice()),
+        _ => None,
+    })
+}
+
+/// Highlights row `idx` of the level at `depth`, closing the levels below it (a key or a hover).
+fn highlight(sel: &mut Vec<usize>, depth: usize, idx: usize) {
+    if sel.get(depth) != Some(&idx) {
+        sel.truncate(depth);
+        sel.push(idx);
+    }
+}
+
+/// The highlight a menu opened from the keyboard starts on: its first row (the Recent menu's
+/// first row). Empty when no row can take it.
+pub fn first_highlight(app: &CsmApp, menu: &Menu) -> Vec<usize> {
+    if matches!(menu, Menu::Recent { .. }) {
+        return if crate::screens::recent::items(&app.model).is_empty() { Vec::new() } else { vec![0] };
+    }
+    listing(app, menu).and_then(|l| menu_nav::first(&nav_rows(&l.entries))).map(|i| vec![i]).unwrap_or_default()
+}
+
+/// Every letter key and the letter it types: the access keys.
+const LETTERS: [(Key, char); 26] = [
+    (Key::A, 'a'),
+    (Key::B, 'b'),
+    (Key::C, 'c'),
+    (Key::D, 'd'),
+    (Key::E, 'e'),
+    (Key::F, 'f'),
+    (Key::G, 'g'),
+    (Key::H, 'h'),
+    (Key::I, 'i'),
+    (Key::J, 'j'),
+    (Key::K, 'k'),
+    (Key::L, 'l'),
+    (Key::M, 'm'),
+    (Key::N, 'n'),
+    (Key::O, 'o'),
+    (Key::P, 'p'),
+    (Key::Q, 'q'),
+    (Key::R, 'r'),
+    (Key::S, 's'),
+    (Key::T, 't'),
+    (Key::U, 'u'),
+    (Key::V, 'v'),
+    (Key::W, 'w'),
+    (Key::X, 'x'),
+    (Key::Y, 'y'),
+    (Key::Z, 'z'),
+];
+
+/// The digit keys and the digit they type (the Recent menu's access keys).
+const DIGITS: [(Key, char); 10] = [
+    (Key::Num0, '0'),
+    (Key::Num1, '1'),
+    (Key::Num2, '2'),
+    (Key::Num3, '3'),
+    (Key::Num4, '4'),
+    (Key::Num5, '5'),
+    (Key::Num6, '6'),
+    (Key::Num7, '7'),
+    (Key::Num8, '8'),
+    (Key::Num9, '9'),
+];
+
+/// Reads the menu's keys this frame and consumes them, so neither the terminal nor the shortcuts
+/// take them. Typed text is dropped too: an open menu has the keyboard. `digits`: the digit keys
+/// are access keys as well (Recent).
+fn take_keys(ctx: &egui::Context, digits: bool) -> Keys {
+    ctx.input_mut(|i| {
+        let mut k = Keys {
+            up: consume_exact(i, Modifiers::NONE, Key::ArrowUp) || consume_exact(i, Modifiers::SHIFT, Key::Tab),
+            down: consume_exact(i, Modifiers::NONE, Key::ArrowDown) || consume_exact(i, Modifiers::NONE, Key::Tab),
+            home: consume_exact(i, Modifiers::NONE, Key::Home),
+            end: consume_exact(i, Modifiers::NONE, Key::End),
+            enter: consume_exact(i, Modifiers::NONE, Key::Enter) || consume_exact(i, Modifiers::NONE, Key::Space),
+            forward: consume_exact(i, Modifiers::NONE, Key::ArrowRight),
+            back: consume_exact(i, Modifiers::NONE, Key::ArrowLeft),
+            escape: consume_exact(i, Modifiers::NONE, Key::Escape),
+            letter: None,
+        };
+        k.letter = LETTERS.iter().chain(DIGITS.iter().filter(|_| digits)).find_map(|(key, c)| consume_exact(i, Modifiers::NONE, *key).then_some(*c));
+        i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+        k
+    })
+}
+
+/// An open menu is modal for the plain keys it does not read (Backspace, Delete, the F-keys): they
+/// reach neither the shortcuts nor the focused terminal. Escape (the grid closes with it), and the
+/// Ctrl and Alt chords, go on. Called by the app after `menu_keys` took the keys it reads.
+pub fn drop_plain_keys(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        i.events.retain(|e| {
+            !matches!(e, egui::Event::Key { key, modifiers, .. } if *key != Key::Escape && !modifiers.command && !modifiers.ctrl && !modifiers.alt)
+        });
+    });
+}
+
+/// The temporary flag that a menu key was pressed this frame (`menu_keys` sets it, the menus read it).
+fn menu_keys_id() -> Id {
+    Id::new("menu-keys-pressed")
+}
+
+/// The open menu's keys, when it reads them (every list menu and the Recent menu; the grid does
+/// not, its Escape is the app's). `Some(actions)` when the menu took keys this frame: the caller
+/// runs the actions and skips the frame's other shortcuts. `None` when the keys go on.
+pub fn menu_keys(ctx: &egui::Context, app: &mut CsmApp) -> Option<Vec<Action>> {
+    let menu = app.ui.menu.clone()?;
+    if matches!(menu, Menu::Recent { .. }) {
+        return recent_keys(ctx, app);
+    }
+    let list = listing(app, &menu)?;
+    let keys = take_keys(ctx, false);
+    if keys == Keys::default() {
+        return None;
+    }
+    // A key moved the highlight: this frame the menu brings the highlighted row into view.
+    ctx.data_mut(|d| d.insert_temp(menu_keys_id(), true));
+    // The highlight path: one row index per open level; the last is the level the keys act on.
+    let mut path = app.ui.menu_sel.clone();
+    let depth = path.len().saturating_sub(1);
+    let sel = path.last().copied();
+    let chain: Vec<usize> = path.iter().take(depth).copied().collect();
+    let Some(lvl) = level(&list.entries, &chain) else {
+        app.ui.menu_sel.clear();
+        return Some(Vec::new());
+    };
+    let nav = menu_nav::navigate(keys, sel, &nav_rows(lvl), !chain.is_empty());
+    let activates = matches!(nav, Nav::Activate(_));
+    let mut acts = Vec::new();
+    match nav {
+        Nav::Nothing => {}
+        Nav::Highlight(i) => highlight(&mut path, depth, i),
+        Nav::Activate(i) | Nav::Forward(i) => match lvl.get(i) {
+            Some(Entry::Sub { label, items, .. }) => {
+                highlight(&mut path, depth, i);
+                path.push(menu_nav::first(&nav_rows(items)).unwrap_or(0));
+                app.ui.submenu = Some(label.clone());
+            }
+            Some(Entry::Item { action, .. }) if activates => {
+                acts.push(action.clone());
+                if !matches!(action, Action::OpenClaudeReplies(_)) {
+                    acts.push(Action::CloseMenu);
+                }
+            }
+            Some(Entry::ItemTip { action, .. }) if activates => {
+                acts.push(action.clone());
+                acts.push(Action::CloseMenu);
+            }
+            _ => {}
+        },
+        Nav::Back => {
+            // Left or Escape in a submenu: close it and go back to its row.
+            path.pop();
+            app.ui.submenu = None;
+        }
+        Nav::Close => acts.push(Action::CloseMenu),
+    }
+    app.ui.menu_sel = path;
+    intercept_quick_groups(app, &mut acts);
+    Some(acts)
+}
+
+/// The Recent menu's keys: arrows and Tab move, Enter picks the highlighted row, a digit picks its
+/// session, Escape or Ctrl+Shift+E closes it.
+fn recent_keys(ctx: &egui::Context, app: &mut CsmApp) -> Option<Vec<Action>> {
+    let close = ctx.input_mut(|i| consume_exact(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::E));
+    let keys = take_keys(ctx, true);
+    if close {
+        app.ui.menu_sel.clear();
+        return Some(vec![Action::CloseMenu]);
+    }
+    if keys == Keys::default() {
+        return None;
+    }
+    let list = crate::screens::recent::items(&app.model);
+    let sessions = list.iter().filter(|i| matches!(i, crate::screens::recent::Item::Session(_))).count();
+    let rows: Vec<Row> = (0..list.len())
+        .map(|i| Row {
+            selectable: true,
+            letter: (i < sessions)
+                .then(|| crate::screens::recent::digit_for(i).and_then(|d| u32::try_from(d).ok()).and_then(|d| char::from_digit(d, 10)))
+                .flatten(),
+        })
+        .collect();
+    let sel = app.ui.menu_sel.first().copied();
+    let mut acts = Vec::new();
+    match menu_nav::navigate(keys, sel, &rows, false) {
+        Nav::Highlight(i) => app.ui.menu_sel = vec![i],
+        Nav::Activate(i) => {
+            if let Some(item) = list.get(i) {
+                acts.push(item.action());
+                acts.push(Action::CloseMenu);
+            }
+        }
+        Nav::Close => acts.push(Action::CloseMenu),
+        Nav::Nothing | Nav::Forward(_) | Nav::Back => {}
+    }
+    Some(acts)
+}
+
+/// The quick-open's group picker is local state, not a tool: its rows are taken here.
+fn intercept_quick_groups(app: &mut CsmApp, actions: &mut Vec<Action>) {
     actions.retain(|a| {
         if let Action::Toast(t) = a
             && let Some(g) = t.strip_prefix("quick-group:")
@@ -820,6 +1206,38 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
         true
     });
+}
+
+pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let Some(menu) = app.ui.menu.clone() else {
+        // Closed: the next opening reads the worktrees again.
+        ctx.data_mut(|d| d.remove_temp::<String>(Id::new("menu-worktrees-asked")));
+        return;
+    };
+    if let Menu::Pane { session, .. } | Menu::Row { session, .. } = &menu {
+        ask_worktrees(ctx, app, &menu, session);
+    }
+    let rects = match &menu {
+        Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
+        Menu::Recent { at } => {
+            let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
+            v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));
+            v
+        }
+        _ => {
+            let mut v = match listing(app, &menu) {
+                Some(l) => menu_area(ctx, app, Id::new(l.id), l.at, &l.entries, 0, false, actions),
+                None => Vec::new(),
+            };
+            // The title bar's button is not "outside" the main menu (see `MAIN_ANCHOR`).
+            if matches!(menu, Menu::Main { .. }) {
+                v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::MAIN_ANCHOR))));
+            }
+            v
+        }
+    };
+    ctx.data_mut(|d| d.remove::<bool>(menu_keys_id()));
+    intercept_quick_groups(app, actions);
     // A click anywhere else closes it.
     let clicked_outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rects.iter().any(|r| r.contains(p))));
     if clicked_outside {
@@ -970,7 +1388,7 @@ fn row_width(ui: &egui::Ui, e: &Entry) -> f32 {
     let label = |s: &str| widgets::text_width(ui, s, theme::regular(text::BODY));
     let base = space::SM + icon::LG + space::ROW_X * 2.0;
     match e {
-        Entry::Item { label: l, hint, .. } | Entry::ItemTip { label: l, hint, .. } => {
+        Entry::Item { label: l, hint, .. } | Entry::ItemTip { label: l, hint, .. } | Entry::Off { label: l, hint, .. } => {
             base + label(l) + hint.as_ref().map_or(0.0, |h| widgets::text_width(ui, h, theme::mono(text::TINY)) + space::LG)
         }
         Entry::Sub { label: l, .. } => base + label(l) + icon::MD + space::LG,

@@ -9,6 +9,7 @@ use csm_ui::Action;
 use csm_ui::demo::DemoBackend;
 use csm_ui::model::{InspectorTab, LayoutMode};
 use csm_ui::theme::ThemeKind;
+use egui_kittest::kittest::Queryable;
 
 fn out_dir() -> std::path::PathBuf {
     let d = std::env::var_os("CSM_SCREENS_OUT")
@@ -794,5 +795,257 @@ fn qr_and_status_screens() {
             b.set_addons(vec![a]);
         },
         |_| {},
+    );
+}
+
+/// The keyboard focus ring: F6 walks to the sidebar, so its region ring shows (and the focused
+/// session row, if any, takes the same ring).
+#[test]
+fn keyboard_focus_ring_screen() {
+    shoot(
+        "focus-ring-sidebar",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::SidebarList) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::SidebarList));
+        },
+    );
+}
+
+/// A pane menu opened from the keyboard, its second row highlighted, the access letters underlined.
+#[test]
+fn keyboard_menu_screen() {
+    shoot(
+        "menu-keyboard-pane",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Period);
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            assert!(h.state().ui.menu.is_some(), "Ctrl+. opens the pane menu");
+        },
+    );
+}
+
+/// The Recent menu opened from the keyboard, the highlight moved down one row.
+#[test]
+fn keyboard_recent_menu_screen() {
+    shoot(
+        "menu-keyboard-recent",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::E);
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            assert!(h.state().ui.menu.is_some(), "Ctrl+Shift+E opens Recent");
+        },
+    );
+}
+
+/// The main menu opened with F10, its first area open: every action, grouped by area.
+#[test]
+fn keyboard_main_menu_screen() {
+    shoot(
+        "menu-main",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press(egui::Key::F10);
+            settle(h);
+            h.key_press(egui::Key::ArrowRight);
+            settle(h);
+            assert!(matches!(h.state().ui.menu, Some(csm_ui::app::Menu::Main { .. })), "F10 opens the main menu");
+        },
+    );
+}
+
+/// The keyboard focus ring on a sidebar row, after the arrow keys moved it down the list.
+#[test]
+fn keyboard_sidebar_focus_screen() {
+    shoot(
+        "focus-sidebar-row",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            let rows: Vec<egui::Id> = h.state().ui.sidebar_nav.iter().filter(|(_, s)| s.is_some()).map(|(id, _)| *id).collect();
+            assert!(rows.len() >= 2, "the demo shows rows to move through");
+            h.ctx.memory_mut(|m| m.request_focus(rows[0]));
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            assert_eq!(h.ctx.memory(|m| m.focused()), Some(rows[1]), "Down moves the focus to the next row");
+        },
+    );
+}
+
+/// A confirm dialog after Tab: the focus ring is on "Later", and the yes button keeps the default
+/// ring only while no control has the focus.
+#[test]
+fn keyboard_confirm_dialog_screen() {
+    shoot(
+        "dialog-keyboard-confirm",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.state_mut().ui.confirm = Some(csm_ui::app::ConfirmState {
+                title: "Restart now?".into(),
+                body: "The change needs a new process. Sessions restart with it.".into(),
+                yes_label: "Restart".into(),
+                no_label: "Later".into(),
+                yes: Box::new(csm_ui::Action::CloseOverlays),
+                also: None,
+            });
+            h.state_mut().ui.overlay = csm_ui::app::Overlay::Confirm;
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        },
+    );
+}
+
+/// The one-line prompt after Tab from its field: the focus ring is on OK.
+#[test]
+fn keyboard_prompt_dialog_screen() {
+    shoot(
+        "dialog-keyboard-prompt",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.state_mut().ui.prompt = Some(csm_ui::app::PromptState {
+                kind: csm_ui::app::PromptKind::NewGroup,
+                text: "Client X".into(),
+                focus: true,
+            });
+            h.state_mut().ui.overlay = csm_ui::app::Overlay::Prompt;
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        },
+    );
+}
+
+/// The quick-open after three Tabs from its folder field (Browse, the folder list, the command row): the focus ring is on the command row.
+#[test]
+fn keyboard_quick_open_screen() {
+    shoot(
+        "quick-open-keyboard",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.state_mut().ui.quick = csm_ui::app::QuickOpenState { focus_input: true, ..Default::default() };
+            h.state_mut().ui.overlay = csm_ui::app::Overlay::QuickOpen;
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        },
+    );
+}
+
+/// Settings › Keyboard: every action with its keys (the defaults here), the sidebar's section chosen.
+#[test]
+fn keyboard_settings_screen() {
+    shoot(
+        "settings-keyboard",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+            settle(h);
+            assert!(h.state().ui.settings.open, "Ctrl+, opens settings");
+            h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Keyboard;
+            settle(h);
+        },
+    );
+}
+
+/// F6 into the sidebar: the region ring, and the focus ring on a row (F6 gives the focus to a row,
+/// so the arrows work at once).
+#[test]
+fn keyboard_region_entry_screen() {
+    shoot(
+        "focus-region-sidebar",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::SidebarList) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::SidebarList), "F6 reaches the sidebar");
+            let focused = h.ctx.memory(|m| m.focused());
+            assert!(focused.is_some_and(|f| h.state().ui.sidebar_nav.iter().any(|(id, _)| *id == f)), "F6 focuses a sidebar row: {focused:?}");
+        },
+    );
+}
+
+/// F6 into the title bar, then Right: the focus ring is on a title-bar button (the button itself
+/// shows the ring, not only the region's outline).
+#[test]
+fn keyboard_titlebar_button_focus_screen() {
+    shoot(
+        "focus-titlebar-button",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::TitleBar) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::TitleBar), "F6 reaches the title bar");
+            let first = h.ctx.memory(|m| m.focused());
+            h.key_press(egui::Key::ArrowRight);
+            settle(h);
+            let moved = h.ctx.memory(|m| m.focused());
+            assert!(moved.is_some() && moved != first, "Right moves the focus to the next title-bar button: {first:?} {moved:?}");
+        },
+    );
+}
+
+/// Settings › Keyboard with the focus on the first row's Clear button: the button draws the ring
+/// itself (`widgets::button`).
+#[test]
+fn keyboard_settings_button_focus_screen() {
+    shoot(
+        "focus-settings-button",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+            settle(h);
+            assert!(h.state().ui.settings.open, "Ctrl+, opens settings");
+            h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Keyboard;
+            settle(h);
+            // Tab does not reach the settings from the title bar, so the test gives the focus to the
+            // first row's Clear button, as an accessibility request would.
+            h.get_all_by_label("Clear").next().expect("a Clear button").focus();
+            settle(h);
+            let focused = h.ctx.memory(|m| m.focused());
+            assert!(focused.is_some(), "the Clear button has the focus: {focused:?}");
+        },
     );
 }

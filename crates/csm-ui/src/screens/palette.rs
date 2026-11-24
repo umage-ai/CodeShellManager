@@ -1,13 +1,16 @@
 //! The command palette (Ctrl+K: sessions, live or asleep, and every registered tool by title,
 //! fuzzy), the new-session quick-open (Ctrl+T: recent folders, a typed path or Browse… for the
-//! system's folder dialog, Tab cycles the command, Remote… for SSH and WSL) and the one-line
+//! system's folder dialog, Left and Right on the command row cycle it, Tab moves between the controls, Remote… for SSH and WSL) and the one-line
 //! prompt (rename, new group).
 
 use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use serde_json::json;
 
+use csm_core::keymap::Keymap;
+
 use crate::app::{Action, CsmApp, Menu, Overlay, ProfilePick, PromptKind, QuickOpenState, RemoteKind};
 use crate::backend::{ToolInfo, ToolPort};
+use crate::dialog_keys::{self, Controls, Field, Pressed, Slot};
 use crate::git_model::{WorktreeRow, folder_key};
 use crate::icons;
 use crate::model::{SessionView, Status, UiModel, fuzzy};
@@ -30,7 +33,7 @@ pub enum PalRow {
         title: String,
         summary: String,
         idx: Vec<usize>,
-        hint: Option<&'static str>,
+        hint: Option<String>,
     },
     /// A palette command from an enabled add-on: calls `tool` with its fixed params (`addons.rs`).
     Addon {
@@ -68,22 +71,14 @@ fn remote_title(r: &csm_engine::RemoteView) -> String {
     format!("Remote… › {} › {}", r.addon_name, r.label)
 }
 
-/// Keyboard hints for tools that have a shortcut.
-fn shortcut_for(id: &str) -> Option<&'static str> {
-    match id {
-        "inbox_next" => Some("Ctrl J"),
-        "session_new" => Some("Ctrl T"),
-        "inspector_show" => Some("Ctrl I"),
-        "session_reopen_closed" => Some("Ctrl Shift T"),
-        "session_close" => Some("Ctrl W"),
-        "run_start" => Some("F5"),
-        "run_stop" => Some("Shift F5"),
-        "session_recent" => Some("Ctrl Shift E"),
-        "session_restart" => Some("Ctrl Shift R"),
-        "claude_reply_get" => Some("Ctrl Shift C"),
-        "search_output" => Some("Ctrl F"),
-        _ => None,
-    }
+/// Whether the palette and the main menu leave a tool out now: the Claude usage tools (the dashboard
+/// among them) while that add-on is off, and what is on this laptop (or Quit) in a remote window.
+pub fn tool_hidden(app: &CsmApp, id: &str) -> bool {
+    let usage_off = !app.model.claude_usage_on() && USAGE_ADDON_TOOLS.contains(&id);
+    // A remote window hides what is on this laptop, and Quit becomes Disconnect (plus the office's
+    // own quit, asked for first).
+    let remote = app.remote.is_some() && (crate::remote_window::is_local_only(id) || id == "app_quit" || id == "peer_connect_open");
+    usage_off || remote
 }
 
 /// Tools shown before anything is typed (the mock's command list), in this order.
@@ -106,14 +101,14 @@ const LAYOUT_ROWS: [(&str, &str); 6] = [
 /// `consent_answer` tool is never listed (a consent prompt answers it, not the palette).
 /// `hidden` drops tools that are offered but should not be listed now (the Claude usage tools
 /// while that add-on is off).
-fn tool_rows(port: &dyn ToolPort, query: &str, commands_only: bool, hidden: &dyn Fn(&str) -> bool) -> Vec<PalRow> {
+fn tool_rows(port: &dyn ToolPort, query: &str, commands_only: bool, keymap: &Keymap, hidden: &dyn Fn(&str) -> bool) -> Vec<PalRow> {
     let tools: Vec<ToolInfo> = port.tools().iter().filter(|t| !hidden(&t.id)).cloned().collect();
     let row = |t: &ToolInfo, idx: Vec<usize>| PalRow::Tool {
         id: t.id.clone(),
         title: t.title.clone(),
         summary: t.summary.clone(),
         idx,
-        hint: shortcut_for(&t.id),
+        hint: keymap.label(&t.id),
     };
     let mut out = Vec::new();
     if query.is_empty() {
@@ -180,15 +175,8 @@ pub fn rows(app: &CsmApp, query: &str) -> Vec<PalRow> {
             }
         }
     }
-    // The Claude usage tools (the dashboard among them) are hidden while the add-on is off.
-    let usage_on = app.model.claude_usage_on();
-    let hidden = |id: &str| !usage_on && USAGE_ADDON_TOOLS.contains(&id);
-    // A remote window hides what is on this laptop, and Quit becomes Disconnect (plus the office's
-    // own quit, asked for first).
-    let remote = app.remote.is_some();
-    let hidden_remote = |id: &str| remote && (crate::remote_window::is_local_only(id) || id == "app_quit" || id == "peer_connect_open");
     let port = app.dispatch.as_ref();
-    out.extend(tool_rows(port, q, commands_only, &|id| hidden(id) || hidden_remote(id)));
+    out.extend(tool_rows(port, q, commands_only, &app.prefs.keymap, &|id| tool_hidden(app, id)));
     if let Some(r) = app.remote.as_ref() {
         let rows = [
             ("remote_disconnect", format!("Disconnect from {}", r.host_name), "Close this window. The office keeps running."),
@@ -453,8 +441,9 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), "search", icon::LG, t.muted);
                         let l = format!("Search all output and notes for “{q}”");
                         ui.painter().text(pos2(x + icon::LG + space::ROW_X, cy), Align2::LEFT_CENTER, &l, theme::regular(text::BODY), t.fg);
-                        let kw = widgets::kbd_width(ui, "Ctrl F");
-                        widgets::paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::SM - kw / 2.0, cy), vec2(kw, size::KBD)), "Ctrl F");
+                        let key = app.prefs.keymap.label("search_output").unwrap_or_default();
+                        let kw = widgets::kbd_width(ui, &key);
+                        widgets::paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::SM - kw / 2.0, cy), vec2(kw, size::KBD)), &key);
                         l
                     }
                     PalRow::Addon { title, tool, idx, .. } => {
@@ -905,7 +894,13 @@ fn siblings_list(ui: &mut Ui, sibs: &[WorktreeRow], checked: &mut Vec<String>) {
             let label = format!("Sibling worktree: {}", w.name);
             r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, &label));
             let r = r.on_hover_text(&w.path);
-            if r.changed() {
+            // Tab stop: Enter flips the box the way a click does.
+            let mut changed = r.changed();
+            if qstop(ui, &r, false) && !changed {
+                on = !on;
+                changed = true;
+            }
+            if changed {
                 if on {
                     checked.push(w.path.clone());
                 } else {
@@ -1089,6 +1084,7 @@ fn conn_field(ui: &mut Ui, label: &str, buf: &mut String, hint: &str, w: f32) {
         let r = ui.add(edit);
         let l = label.to_string();
         r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
+        qstop_text(ui, &r);
     });
 }
 
@@ -1102,7 +1098,7 @@ fn remote_row(ui: &mut Ui, remotes: &[csm_engine::RemoteView], picked: &mut Opti
             let resp = chip(ui, &r.label, false, false, max, &tip);
             let l = format!("Remote: {} › {}", r.addon_name, r.label);
             resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
-            if resp.clicked() {
+            if qstop(ui, &resp, false) {
                 *picked = Some((r.addon.clone(), r.id.clone()));
             }
         }
@@ -1166,7 +1162,7 @@ fn form_tabs(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpe
             let session_on = q.new_form.is_none();
             let r = tab(ui, "plus", "Session", session_on, max, "A terminal session in a folder (Alt+1)");
             r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, session_on, "New session: folder and command"));
-            if r.clicked() {
+            if qstop(ui, &r, false) {
                 want = Some(0);
             }
             for (i, f) in forms.iter().take(8).enumerate() {
@@ -1175,7 +1171,7 @@ fn form_tabs(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpe
                 let r = tab(ui, "server", &f.title, on, max, &tip);
                 let l = format!("New session form: {}", f.title);
                 r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
-                if r.clicked() {
+                if qstop(ui, &r, false) {
                     want = Some(i + 1);
                 }
             }
@@ -1222,7 +1218,7 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
                         let resp = chip(ui, &c.label, false, on, max, &tip);
                         let l = format!("{}: {}", f.choice_title, c.label);
                         resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, on, l.clone()));
-                        if resp.clicked() {
+                        if qstop(ui, &resp, false) {
                             q.new_choice = Some(c.id.clone());
                         }
                     }
@@ -1233,7 +1229,8 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
             let msg = f.load_error.clone().unwrap_or_else(|| "The add-on did not answer.".to_owned());
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(msg).font(theme::regular(text::BODY)).color(t.red));
-                if widgets::button(ui, ButtonKind::Secondary, None, "Try again", None).clicked() {
+                let again = widgets::button(ui, ButtonKind::Secondary, None, "Try again", None);
+                if qstop(ui, &again, false) {
                     actions.push(Action::Tool("new_session_load", ident.clone()));
                 }
             });
@@ -1255,13 +1252,14 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
         let resp = ui.add(edit);
         let l = format!("{title} (optional)");
         resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
+        qstop_text(ui, &resp);
     }
     let can = form_can_submit(f, q.new_choice.as_deref());
     let running = f.submit == "running";
     let label = if running { "Starting…" } else { f.submit_label.as_str() };
     ui.horizontal_wrapped(|ui| {
         let resp = ui.add_enabled_ui(can, |ui| widgets::button(ui, ButtonKind::Primary, None, label, None)).inner;
-        if resp.clicked()
+        if qstop(ui, &resp, false)
             && can
             && let Some(args) = form_submit_args(f, q)
         {
@@ -1298,7 +1296,7 @@ fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: b
                     let r = chip(ui, label, false, on, max, tip);
                     let l = format!("Profile: {label}");
                     r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
-                    r.clicked()
+                    qstop(ui, &r, false)
                 };
                 if q.edit.is_some() && has_look && pick(ui, "Keep current", q.profile == ProfilePick::Keep, "Leave this session's look as it is") {
                     q.profile = ProfilePick::Keep;
@@ -1387,12 +1385,151 @@ fn footer_hints(q: &QuickOpenState, in_form: bool, cmd: &str) -> Vec<(&'static s
         vec![("Enter", "create".to_string()), ("Alt 1", "back to the session".to_string()), ("Esc", "close".to_string())]
     } else {
         let short: String = cmd.chars().take(24).collect();
-        let mut v = vec![("Enter", format!("start {short}")), ("Ctrl Enter", "start, keep open".to_string()), ("Tab", "next command".to_string())];
+        let mut v = vec![("Enter", format!("start {short}")), ("Ctrl Enter", "start, keep open".to_string()), ("Tab", "next control".to_string()), ("Left Right", "command".to_string())];
         if !q.remote {
             v.push(("Up Down", "folders".to_string()));
         }
         v.push(("Esc", "close".to_string()));
         v
+    }
+}
+
+/// The id the quick-open's Tab stops are kept under (`dialog_keys`).
+pub const QUICK_ID: &str = "dlg-quick";
+
+fn quick_id() -> Id {
+    Id::new(QUICK_ID)
+}
+
+fn quick_seen_key() -> Id {
+    quick_id().with("seen")
+}
+
+fn quick_init_key() -> Id {
+    quick_id().with("init")
+}
+
+/// Where the folder field was drawn, this frame and last.
+fn quick_field_key() -> Id {
+    quick_id().with("field")
+}
+
+fn quick_field_prev_key() -> Id {
+    quick_id().with("field-prev")
+}
+
+/// The stops drawn last frame, in Tab order: true where Enter starts the session (a text input,
+/// the folder list or the command row) rather than pressing a button. Clears the list for this frame.
+fn quick_stops_prev(ctx: &egui::Context) -> Vec<bool> {
+    let prev = ctx.data(|d| d.get_temp::<Vec<bool>>(quick_seen_key())).unwrap_or_default();
+    ctx.data_mut(|d| {
+        d.insert_temp(quick_seen_key(), Vec::<bool>::new());
+        match d.get_temp::<usize>(quick_field_key()) {
+            Some(i) => {
+                d.insert_temp(quick_field_prev_key(), i);
+            }
+            None => {
+                d.remove::<usize>(quick_field_prev_key());
+            }
+        }
+        d.remove::<usize>(quick_field_key());
+    });
+    prev
+}
+
+/// The index the next stop drawn this frame gets.
+fn quick_seen(ctx: &egui::Context) -> usize {
+    ctx.data(|d| d.get_temp::<Vec<bool>>(quick_seen_key())).map_or(0, |v| v.len())
+}
+
+/// Registers a stop drawn this frame and returns its index.
+fn quick_stop(ctx: &egui::Context, starts: bool) -> usize {
+    quick_reserve(ctx, 1, starts)
+}
+
+/// Reserves `n` consecutive stops and returns the first index. For controls drawn in the opposite
+/// order to how they read (a right-to-left row): each takes `first + its place from the left`, so
+/// Tab follows the order on screen.
+fn quick_reserve(ctx: &egui::Context, n: usize, starts: bool) -> usize {
+    let mut v = ctx.data(|d| d.get_temp::<Vec<bool>>(quick_seen_key())).unwrap_or_default();
+    let first = v.len();
+    v.extend(std::iter::repeat_n(starts, n));
+    ctx.data_mut(|d| d.insert_temp(quick_seen_key(), v));
+    first
+}
+
+fn quick_on(ctx: &egui::Context, idx: usize) -> bool {
+    dialog_keys::current(ctx, quick_id()) == Some(Slot::Button(idx))
+}
+
+/// Forgets the Tab stops and focus of the quick-open (when it closes).
+pub fn release_quick(ctx: &egui::Context) {
+    dialog_keys::forget(ctx, quick_id());
+    ctx.data_mut(|d| {
+        d.remove::<Vec<bool>>(quick_seen_key());
+        d.remove::<bool>(quick_init_key());
+    });
+}
+
+/// A button as a Tab stop of the quick-open (the next one in draw order). It takes the focus ring
+/// while focused, a click moves the focus to it, and Enter on it counts as a click. True when it
+/// was activated.
+fn qstop(ui: &Ui, resp: &egui::Response, starts: bool) -> bool {
+    let idx = quick_stop(ui.ctx(), starts);
+    qstop_at(ui, resp, idx)
+}
+
+/// [`qstop`] for the stop `idx` reserved earlier (`quick_reserve`).
+fn qstop_at(ui: &Ui, resp: &egui::Response, idx: usize) -> bool {
+    let ctx = ui.ctx();
+    if quick_on(ctx, idx) {
+        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::sm());
+    }
+    if resp.clicked() {
+        // A click returns the focus to the folder field, where Enter has always started the session
+        // (with no folder field drawn, to no stop: Enter then starts too).
+        let field = ctx.data(|d| d.get_temp::<usize>(quick_field_prev_key()));
+        dialog_keys::set(ctx, quick_id(), field.map(Slot::Button));
+    }
+    resp.clicked() || dialog_keys::pressed(ctx, quick_id()) == Some(Pressed::Button(idx))
+}
+
+/// The folder list as one Tab stop (Up and Down move in it from anywhere, Enter starts in the
+/// selected folder): the focus ring goes round the selected row.
+fn qstop_list(ui: &Ui, selected: Option<Rect>) {
+    let ctx = ui.ctx();
+    let idx = quick_stop(ctx, true);
+    if let Some(r) = selected
+        && quick_on(ctx, idx)
+    {
+        widgets::focus_ring(ui, r, radius::md());
+    }
+}
+
+/// A text input as a Tab stop of the quick-open: Tab moves into it and out of it (its own egui
+/// focus follows the dialog's), and a click in it makes it the focus. Enter in it starts the
+/// session. Returns the stop's index.
+fn qstop_text(ui: &Ui, resp: &egui::Response) -> usize {
+    let ctx = ui.ctx();
+    let idx = quick_stop(ctx, true);
+    qfocus(ctx, resp, Slot::Button(idx));
+    if quick_on(ctx, idx) {
+        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::sm());
+    }
+    idx
+}
+
+/// Keeps a text input's egui focus and the dialog's focus in step. `mine` is the slot the input is.
+fn qfocus(ctx: &egui::Context, resp: &egui::Response, mine: Slot) {
+    let on = dialog_keys::current(ctx, quick_id()) == Some(mine);
+    // Only a click moves the dialog's focus here. egui's own Tab traversal also moves its focus
+    // (it runs before the dialog reads the key), and that must not overrule the dialog's stop.
+    if resp.clicked() {
+        dialog_keys::set(ctx, quick_id(), Some(mine));
+    } else if on && !resp.has_focus() {
+        resp.request_focus();
+    } else if !on && resp.has_focus() {
+        ctx.memory_mut(|m| m.surrender_focus(resp.id));
     }
 }
 
@@ -1403,9 +1540,14 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     let new_forms = app.model.new_sessions.clone();
     let in_form = editing.is_none() && open_form(&new_forms, &app.ui.quick).is_some();
     let n = if in_form { 0 } else { folder_rows(app, &app.ui.quick.query).len() };
-    let ncmd = commands.len().max(1);
     let tabs_on = editing.is_none() && !new_forms.is_empty();
-    let (down, up, enter, ctrl_enter, tab, shift_tab, alt_tab, alt_group, alt_run) = ctx.input_mut(|i| {
+    // The Tab stops (`dialog_keys`) are the controls drawn last frame, in draw (= reading) order.
+    // Tab and Shift+Tab move between them. Enter presses a button stop; in a text input, the
+    // folder list or the command row it starts the session, as it always did.
+    let prev = quick_stops_prev(ctx);
+    let press = dialog_keys::take(ctx, quick_id(), &Controls { field: Field::None, buttons: prev.len(), default: None });
+    let stop_starts = matches!(press, Some(Pressed::Button(b)) if prev.get(b) == Some(&true));
+    let (down, up, enter, ctrl_enter, alt_tab, alt_group, alt_run) = ctx.input_mut(|i| {
         let mut alt_tab = None;
         for (k, ix) in [(Key::Num1, 0), (Key::Num2, 1), (Key::Num3, 2), (Key::Num4, 3), (Key::Num5, 4), (Key::Num6, 5), (Key::Num7, 6), (Key::Num8, 7), (Key::Num9, 8)] {
             if i.consume_key(Modifiers::ALT, k) && tabs_on {
@@ -1417,14 +1559,12 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             i.consume_key(Modifiers::NONE, Key::ArrowUp),
             i.consume_key(Modifiers::NONE, Key::Enter),
             i.consume_key(Modifiers::COMMAND, Key::Enter),
-            // In a form, Tab keeps its usual job (the next field).
-            !in_form && i.consume_key(Modifiers::NONE, Key::Tab),
-            !in_form && i.consume_key(Modifiers::SHIFT, Key::Tab),
             alt_tab,
             i.consume_key(Modifiers::ALT, Key::G),
             i.consume_key(Modifiers::ALT, Key::R),
         )
     });
+    let enter = enter || stop_starts;
     if let Some(i) = alt_tab {
         select_tab(&mut app.ui.quick, &new_forms, i, actions);
     }
@@ -1442,12 +1582,6 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         app.ui.quick.sel = (app.ui.quick.sel + n - 1) % n;
         app.ui.quick.scroll_to_sel = true;
         app.ui.quick.navigated = true;
-    }
-    if tab {
-        app.ui.quick.cmd = (app.ui.quick.cmd + 1) % ncmd;
-    }
-    if shift_tab {
-        app.ui.quick.cmd = (app.ui.quick.cmd + ncmd - 1) % ncmd;
     }
     if editing.is_some() && (up || down) {
         // Edit: arrows pick a folder into the field (Enter saves, it doesn't start anything).
@@ -1535,6 +1669,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 .vertical_align(egui::Align::Center);
             let r = ui.put(nr, name);
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Session name"));
+            qstop_text(ui, &r);
         } else {
             ui.painter().text(pos2(hr.min.x + PAD, hr.center().y), Align2::LEFT_CENTER, "New session", theme::semibold(text::TITLE), t.fg);
         }
@@ -1559,11 +1694,13 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 |ui| {
                     let max = size::NEW_SESSION_CHIP_MAX_W;
                     ui.spacing_mut().item_spacing.x = space::XS + space::XXS;
+                    // Drawn right to left; Tab reads left to right (This PC, SSH, WSL).
+                    let first = quick_reserve(ui.ctx(), 3, false);
                     for (i, l, tip) in [(2, "WSL", "A Linux distribution under WSL (Alt+R cycles)"), (1, "SSH", "A host over SSH (Alt+R cycles)"), (0, "This PC", "A local folder (Alt+R cycles)")] {
                         let r = chip(ui, l, false, cur == i, max, tip);
                         let label = format!("Run on: {l}");
                         r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, cur == i, label.clone()));
-                        if r.clicked() {
+                        if qstop_at(ui, &r, first + i) {
                             place_pick = Some(i);
                         }
                     }
@@ -1589,8 +1726,16 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             }
                             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder"));
                             changed = resp.changed();
+                            // The folder field is the first thing focused when the dialog opens.
+                            if !ui.ctx().data(|d| d.get_temp::<bool>(quick_init_key())).unwrap_or(false) {
+                                ui.ctx().data_mut(|d| d.insert_temp(quick_init_key(), true));
+                                dialog_keys::set(ui.ctx(), quick_id(), Some(Slot::Button(quick_seen(ui.ctx()))));
+                            }
+                            let field = qstop_text(ui, &resp);
+                            ui.ctx().data_mut(|d| d.insert_temp(quick_field_key(), field));
                             // Browse…: a native folder dialog, shown by the host after this frame.
-                            if widgets::button(ui, ButtonKind::Secondary, Some("folder"), BROWSE, None).on_hover_text("Choose a folder with the system's folder dialog").clicked() {
+                            let browse_btn = widgets::button(ui, ButtonKind::Secondary, Some("folder"), BROWSE, None).on_hover_text("Choose a folder with the system's folder dialog");
+                            if qstop(ui, &browse_btn, false) {
                                 browse = true;
                             }
                         });
@@ -1615,6 +1760,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             );
                         }
                         ui.spacing_mut().item_spacing.y = 0.0;
+                        let mut sel_rect = None;
                         for (i, (fi, idx)) in rows.iter().enumerate() {
                             let Some(f) = model.folders.get(*fi) else { continue };
                             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::FOLDER_ROW), Sense::hover());
@@ -1624,6 +1770,9 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             }
                             if i == q.sel && scroll {
                                 ui.scroll_to_rect(rect, None);
+                            }
+                            if i == q.sel {
+                                sel_rect = Some(rect);
                             }
                             let cy = rect.center().y;
                             let x = rect.min.x + space::SM;
@@ -1672,6 +1821,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                                 }
                             }
                         }
+                        qstop_list(ui, sel_rect);
                         ui.spacing_mut().item_spacing.y = space::SM;
                         if let Some(sibs) = q.siblings_for.as_ref().and_then(|(f, _, _)| sibling_worktrees(&model, f)).filter(|s| !s.is_empty()) {
                             siblings_list(ui, &sibs, &mut q.siblings);
@@ -1703,7 +1853,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                         if q.rkind == RemoteKind::Wsl && !installed.is_empty() {
                             labeled_row(ui, "Installed", |ui| {
                                 for d in &installed {
-                                    if chip(ui, d, false, q.distro == *d, size::NEW_SESSION_CHIP_MAX_W, "").clicked() {
+                                    let distro_chip = chip(ui, d, false, q.distro == *d, size::NEW_SESSION_CHIP_MAX_W, "");
+                                    if qstop(ui, &distro_chip, false) {
                                         q.distro = d.clone();
                                     }
                                 }
@@ -1715,17 +1866,18 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                     }
                 },
             );
-            // COMMAND: Tab cycles; the first is the default.
+            // COMMAND: Left and Right cycle it while the row has the focus; the first is the default.
             section(
                 ui,
                 "Command",
                 |ui| {
                     ui.label(egui::RichText::new("cycles").font(theme::regular(text::CAPTION)).color(t.faint));
-                    widgets::kbd(ui, "Tab").on_hover_text("Tab cycles the command, Shift+Tab goes back");
+                    widgets::kbd(ui, "Left Right").on_hover_text("With the focus on this row, Left and Right change the command (Tab and Shift+Tab move between the controls)");
                 },
                 |ui| {
                     let max = ui.available_width().min(size::NEW_SESSION_CHIP_MAX_W);
-                    ui.horizontal_wrapped(|ui| {
+                    let cmd_stop = quick_stop(ui.ctx(), true);
+                    let row = ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = vec2(space::XS + space::XXS, space::XS + space::XXS);
                         for (i, c) in commands.iter().enumerate() {
                             let on = i == q.cmd;
@@ -1735,9 +1887,23 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, l.clone()));
                             if r.clicked() {
                                 q.cmd = i;
+                                dialog_keys::set(ui.ctx(), quick_id(), Some(Slot::Button(cmd_stop)));
                             }
                         }
                     });
+                    // The row is one Tab stop: with the focus on it Left and Right cycle the command
+                    // (Enter starts the session).
+                    if quick_on(ui.ctx(), cmd_stop) {
+                        widgets::focus_ring(ui, row.response.rect.expand(space::XXS), radius::md());
+                        let (left, right) = ui.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::ArrowLeft), i.consume_key(Modifiers::NONE, Key::ArrowRight)));
+                        let len = commands.len().max(1);
+                        if right {
+                            q.cmd = (q.cmd + 1) % len;
+                        }
+                        if left {
+                            q.cmd = (q.cmd + len - 1) % len;
+                        }
+                    }
                 },
             );
             if import_on || has_look || (q.edit.is_none() && !addon_profiles.is_empty()) {
@@ -1753,7 +1919,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                         ui.horizontal_wrapped(|ui| {
                             let gname = q.group.as_deref().and_then(|g| model.group(g)).map_or_else(|| "Ungrouped".to_string(), |g| g.name.clone());
                             let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None).on_hover_text("The group the new session joins: suggested from the scope; pick another (Alt+G)");
-                            if gr.clicked() || alt_group {
+                            if qstop(ui, &gr, false) || alt_group {
                                 open_group_menu = Some(gr.rect.left_bottom());
                             }
                             ui.label(egui::RichText::new("New sessions join this group in the sidebar.").font(theme::regular(text::CAPTION)).color(t.faint));
@@ -1786,16 +1952,18 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
             if form.is_some() {
                 return;
             }
-            // Right to left: the primary action is the rightmost.
+            // Right to left: the primary action is the rightmost. Tab reads left to right (keep open, then Start).
+            let keep_first = quick_reserve(ui.ctx(), if edit { 1 } else { 2 }, false);
             let go = ui.add_enabled_ui(can_start, |ui| widgets::button(ui, ButtonKind::Primary, None, &start_label, None).on_hover_text(&start_tip)).inner;
-            if go.clicked() && can_start {
+            let go_stop = if edit { keep_first } else { keep_first + 1 };
+            if qstop_at(ui, &go, go_stop) && can_start {
                 start_clicked = true;
             }
             if !edit {
                 let keep = ui
                     .add_enabled_ui(can_start, |ui| widgets::button(ui, ButtonKind::Secondary, None, keep_label, None).on_hover_text("Start it and keep this dialog open for the next one (Ctrl+Enter)"))
                     .inner;
-                if keep.clicked() && can_start {
+                if qstop_at(ui, &keep, keep_first) && can_start {
                     keep_clicked = true;
                 }
             }
@@ -1926,8 +2094,20 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         PromptKind::NewTask { .. } => "Add",
         _ => "Save",
     };
+    // Tab moves between the text field and the buttons (`dialog_keys`); the field takes the
+    // typing only while it has the focus.
     let enter = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
-    let mut submit = enter;
+    let press = crate::screens::overlays::pressed_button(ctx, crate::screens::overlays::PROMPT_ID);
+    let mut submit = enter || press == Some(0);
+    let mut cancel = press == Some(1);
+    let prompt_id = Id::new(crate::screens::overlays::PROMPT_ID);
+    let input = Id::new("prompt-input");
+    let on_field = dialog_keys::current(ctx, prompt_id) == Some(Slot::Field);
+    if on_field && !ctx.memory(|m| m.has_focus(input)) {
+        p.focus = true;
+    } else if !on_field && ctx.memory(|m| m.has_focus(input)) {
+        ctx.memory_mut(|m| m.surrender_focus(input));
+    }
     card(ctx, "prompt", size::DIALOG_W, |ui| {
         let t = Tokens::get(ui.ctx());
         ui.add_space(space::MD);
@@ -1941,16 +2121,19 @@ fn prompt(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
             ui.add_space(space::LG);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(space::LG);
-                if widgets::button(ui, ButtonKind::Primary, None, ok, Some("Enter")).clicked() {
+                if crate::screens::overlays::dialog_button(ui, prompt_id, 0, None, ButtonKind::Primary, ok, Some("Enter")).clicked() {
                     submit = true;
                 }
-                if widgets::button(ui, ButtonKind::Ghost, None, "Cancel", None).clicked() {
-                    actions.push(Action::CloseOverlays);
+                if crate::screens::overlays::dialog_button(ui, prompt_id, 1, None, ButtonKind::Ghost, "Cancel", None).clicked() {
+                    cancel = true;
                 }
             });
         });
         ui.add_space(space::MD);
     });
+    if cancel {
+        actions.push(Action::CloseOverlays);
+    }
     let text_ = p.text.trim().to_string();
     if submit && !text_.is_empty() {
         actions.push(Action::CloseOverlays);
@@ -2048,7 +2231,7 @@ mod tests {
     #[test]
     fn the_palette_lists_a_fake_ports_suggested_tools_with_their_summaries() {
         let port = fake_port();
-        let rows = tool_rows(&port, "", false, &|_| false);
+        let rows = tool_rows(&port, "", false, &Keymap::default(), &|_| false);
         // SUGGESTED order, and only the ones the port offers.
         assert_eq!(tool_ids(&rows), ["inbox_next", "session_new"]);
         let PalRow::Tool { summary, title, .. } = &rows[1] else { panic!("{rows:?}") };
@@ -2059,14 +2242,14 @@ mod tests {
     #[test]
     fn after_a_greater_than_the_palette_lists_every_tool_but_consent() {
         let port = fake_port();
-        let rows = tool_rows(&port, "", true, &|_| false);
+        let rows = tool_rows(&port, "", true, &Keymap::default(), &|_| false);
         assert_eq!(tool_ids(&rows), ["inbox_next", "session_new", "session_list", "git_status"]);
     }
 
     #[test]
     fn a_typed_query_matches_the_fake_ports_titles() {
         let port = fake_port();
-        let rows = tool_rows(&port, "list", false, &|_| false);
+        let rows = tool_rows(&port, "list", false, &Keymap::default(), &|_| false);
         let ids = tool_ids(&rows);
         assert!(ids.contains(&"session_list"), "{ids:?}");
         assert!(!ids.contains(&"consent_answer"), "consent is never a palette command: {ids:?}");

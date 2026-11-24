@@ -100,11 +100,15 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     // quit, set apart from them.
     let mut x = if app.window_controls { window_controls(ui, rect, bar_fg) - space::MD } else { rect.max.x - space::SM };
     let side = size::CONTROL;
+    // The buttons drawn, for the keyboard (`region_items`): F6 enters at the main menu button.
+    let mut ids: Vec<egui::Id> = Vec::new();
     let mut btn = |ui: &mut Ui, name: &str, on: bool, tip: &str| {
         x -= side;
         let r = Rect::from_min_size(pos2(x, rect.center().y - side / 2.0), Vec2::splat(side));
         x -= space::XXS;
-        widgets::icon_button_at_in(ui, r, ui.id().with(("tb", name.to_string())), name, on, tip, own_fg).clicked()
+        let resp = widgets::icon_button_at_in(ui, r, ui.id().with(("tb", name.to_string())), name, on, tip, own_fg);
+        ids.push(resp.id);
+        resp.clicked()
     };
     // A remote window's button disconnects; the office keeps running (see `Action::AskQuit`).
     let power_tip = match &app.remote {
@@ -146,6 +150,36 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR), pos2(button.max.x, rect.max.y + space::XS));
         d.insert_temp(egui::Id::new(crate::app::RECENT_ANCHOR).with("button"), button);
     });
+    // The main menu, for the mouse too (F10: `app::shortcuts`), left of the
+    // others. Its button is the menu's anchor, so a second click closes the menu rather than
+    // reopening it.
+    let main_open = matches!(app.ui.menu, Some(crate::app::Menu::Main { .. }));
+    let main_button = Rect::from_min_size(pos2(x - side, rect.center().y - side / 2.0), Vec2::splat(side));
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(crate::app::MAIN_ANCHOR), main_button));
+    let main_id = ui.id().with("tb-main");
+    app.ui.region_items.extend(ids.iter().map(|id| (crate::focus::FocusRegion::TitleBar, *id, false)));
+    app.ui.region_items.push((crate::focus::FocusRegion::TitleBar, main_id, true));
+    let main_tip = match app.prefs.keymap.label("ui.main_menu") {
+        Some(chord) => format!("Main menu  {chord}"),
+        None => "Main menu".to_owned(),
+    };
+    if widgets::icon_button_at(ui, main_button, main_id, "more", main_open, &main_tip).clicked() {
+        actions.push(if main_open {
+            Action::CloseMenu
+        } else {
+            Action::OpenMenu(crate::app::Menu::Main { at: crate::screens::menus::main_menu_at(ui.ctx()) })
+        });
+    }
+    // Left and Right move the focus along the buttons, left to right: the buttons were drawn right
+    // to left, and the main menu button is the leftmost.
+    let mut order: Vec<egui::Id> = vec![main_id];
+    order.extend(ids.iter().rev().copied());
+    for id in &order {
+        if crate::list_keys::move_from(ui.ctx(), *id, &order, crate::list_keys::Axis::Horizontal).is_some() {
+            break;
+        }
+    }
+    x -= side + space::XXS;
     update_badge(ui, app, rect, mid, x, actions);
 }
 

@@ -9,11 +9,12 @@
 //! naming a new one happen in place.
 
 use csm_core::sidebar_drop::{self, SidebarRow, SidebarRowKind};
-use egui::{Align2, CornerRadius, CursorIcon, Id, Order, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Align2, CornerRadius, CursorIcon, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2};
 use serde_json::json;
 
-use crate::app::{Action, CsmApp, InlineTarget, Menu};
+use crate::app::{Action, CsmApp, InlineTarget, Menu, consume_exact};
 use crate::icons;
+use crate::list_keys::{self, Axis};
 use crate::model::{GroupMode, Kind, Scope, SessionView, Status, UiModel, initials};
 use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
@@ -51,10 +52,20 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let moving: Vec<String> = dragging.as_deref().map(|d| drag_targets(app, d)).unwrap_or_default();
     let released = ui.input(|i| i.pointer.any_released());
     let pointer = ui.ctx().pointer_latest_pos();
+    // The rail's tabs in order (All, then the groups): the arrow keys move along them.
+    let rail_order: Vec<Id> = std::iter::once(Scope::All)
+        .chain(model.groups.iter().map(|g| Scope::Group(g.id.clone())))
+        .map(|s| Id::new(("rail-tab", s.key())))
+        .collect();
+    // The rail tabs for the keyboard: F6 enters at the shown tab.
+    let shown_tab = Id::new(("rail-tab", model.rail.key()));
+    app.ui.region_items.extend(rail_order.iter().map(|id| (crate::focus::FocusRegion::RailTabs, *id, *id == shown_tab)));
     let mut tab = |ui: &mut Ui, scope: Scope, label: String, y: &mut f32| {
         let r = Rect::from_center_size(pos2(cx, *y + size::RAIL_TAB / 2.0), Vec2::splat(size::RAIL_TAB));
         *y += size::RAIL_TAB + space::XS;
         let resp = ui.interact(r, Id::new(("rail-tab", scope.key())), Sense::click());
+        // Up/Down/Left/Right move the focus along the rail; Enter and Space select (a click).
+        list_keys::move_from(ui.ctx(), resp.id, &rail_order, Axis::Both);
         let on = model.rail == scope;
         let p = ui.painter();
         // A dragged session over a group's tab: it moves there on release.
@@ -128,6 +139,9 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             && resp.secondary_clicked()
         {
             actions.push(Action::OpenMenu(Menu::Group { group: g.clone(), at: pos2(r.max.x + space::SM, r.min.y) }));
+        }
+        if resp.has_focus() {
+            widgets::focus_ring(ui, r, radius::md());
         }
     };
     tab(ui, Scope::All, String::new(), &mut y);
@@ -309,6 +323,25 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
     // Shift-click's range runs over the rows as drawn (collapsed groups and other tabs excluded).
     app.ui.sidebar_visible = rows.iter().filter(|r| r.kind != SidebarRowKind::GroupHeader).filter_map(|r| r.id.clone()).collect();
+    // The arrow keys' order: session rows and group headers, top to bottom (the header's id is
+    // its group's; the Ungrouped header has none, so it is skipped).
+    app.ui.sidebar_nav = rows
+        .iter()
+        .filter_map(|r| match r.kind {
+            SidebarRowKind::GroupHeader => r.id.as_ref().map(|g| (Id::new(("group-header", g.clone())), None)),
+            SidebarRowKind::ClusterHeader => None,
+            SidebarRowKind::Session | SidebarRowKind::Dormant => r.id.as_ref().map(|s| (Id::new(("session-row", s.clone())), Some(s.clone()))),
+        })
+        .collect();
+    // F6 enters the list at the active row (`CsmApp::set_region`); a Tab into it sets the region.
+    let active = app.model.active.clone();
+    let items: Vec<_> = app
+        .ui
+        .sidebar_nav
+        .iter()
+        .map(|(id, s)| (crate::focus::FocusRegion::SidebarList, *id, s.is_some() && *s == active))
+        .collect();
+    app.ui.region_items.extend(items);
     drag_ghost(ui.ctx(), app);
 }
 
@@ -552,6 +585,8 @@ fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
     }
     let needs = model.needs_you();
     let unseen = model.unseen();
+    // The rows in the order the arrow keys move through them.
+    let order: Vec<Id> = needs.iter().chain(unseen.iter()).map(|s| Id::new(("inbox-row", s.id.clone()))).collect();
     // Header.
     let head = Rect::from_min_max(pane.min, pos2(pane.max.x, pane.min.y + size::CONTROL + space::SM));
     let cy = head.center().y + space::XXS;
@@ -607,7 +642,7 @@ fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
                 });
             }
             for s in &needs {
-                inbox_row(ui, &model, s, actions);
+                inbox_row(ui, &model, s, &order, actions);
             }
             if !unseen.is_empty() {
                 ui.add_space(space::XS + space::XXS);
@@ -616,19 +651,22 @@ fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
                     ui.label(egui::RichText::new("UNSEEN").font(semibold(text::CAPS)).color(t.faint));
                 });
                 for s in &unseen {
-                    inbox_row(ui, &model, s, actions);
+                    inbox_row(ui, &model, s, &order, actions);
                 }
             }
         });
     });
 }
 
-fn inbox_row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Action>) {
+fn inbox_row(ui: &mut Ui, model: &UiModel, s: &SessionView, order: &[Id], actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
     let (outer, _) = ui.allocate_exact_size(vec2(w, size::INBOX_ROW), Sense::hover());
     let rect = outer.shrink2(vec2(space::XS, space::XXS / 2.0));
     let resp = ui.interact(rect, Id::new(("inbox-row", s.id.clone())), Sense::click());
+    // Up and Down move along the inbox; Enter opens the row (a click).
+    list_keys::move_from(ui.ctx(), resp.id, order, Axis::Vertical);
+    list_keys::follow(ui, &resp);
     let active = model.active.as_deref() == Some(s.id.as_str());
     if active || resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), if active { t.row_sel } else { t.row_hover });
@@ -656,6 +694,9 @@ fn inbox_row(ui: &mut Ui, model: &UiModel, s: &SessionView, actions: &mut Vec<Ac
         t.muted,
         rect.max.x - g.max.x - space::LG,
     );
+    if resp.has_focus() {
+        widgets::focus_ring(ui, rect, radius::md());
+    }
     named(&resp, WidgetType::Button, format!("Inbox: {}", s.name));
     if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(s.status_text()).clicked() {
         actions.push(Action::Tool("session_focus", json!({"session_id": s.id})));
@@ -818,8 +859,26 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
         };
         rows.push(SidebarRow::new(SidebarRowKind::GroupHeader, header_id, f64::from(gap.top()), f64::from(rect.bottom() - gap.top())));
         let resp = ui.interact(rect, Id::new(("group-header", gid.clone())), Sense::click());
+        // The arrows move along the list; Left collapses and Right expands (Enter toggles, as a
+        // click does); F2 renames the group.
+        if resp.has_focus() {
+            // Where Shift+F10 opens this group's menu (`CsmApp::focused_item_menu`).
+            ui.ctx().data_mut(|d| d.insert_temp(Id::new(("group-menu-at", gid.clone())), rect.left_bottom()));
+            nav_keys(ui, app, resp.id, Axis::Vertical, actions);
+            let (left, right) = ui.ctx().input_mut(|i| (consume_exact(i, Modifiers::NONE, Key::ArrowLeft), consume_exact(i, Modifiers::NONE, Key::ArrowRight)));
+            if (left && !collapsed) || (right && collapsed) {
+                actions.push(Action::ToggleCollapse(gid.clone()));
+            }
+            if let Scope::Group(g) = &scope && ui.ctx().input_mut(|i| consume_exact(i, Modifiers::NONE, Key::F2)) {
+                actions.push(Action::StartGroupRename(g.clone()));
+            }
+        }
+        list_keys::follow(ui, &resp);
         if resp.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(radius::sm()), t.row_hover);
+        }
+        if resp.has_focus() {
+            widgets::focus_ring(ui, rect, radius::sm());
         }
         let cy = rect.center().y;
         let ch = Rect::from_min_size(pos2(rect.min.x + space::XXS, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
@@ -900,6 +959,9 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
         {
             actions.push(Action::StartGroupRename(g.clone()));
         }
+        if resp.has_focus() {
+            widgets::focus_ring(ui, rect, radius::sm());
+        }
         if !collapsed {
             section_rows(ui, app, &ss, rows, actions);
             if ss.is_empty() {
@@ -919,6 +981,17 @@ pub fn row(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Act
 }
 
 /// [`row`], indented (with the worktree mark) when `nested` under its repo.
+/// The arrow keys of a focused sidebar item, over the list's order (`app.ui.sidebar_nav`): the focus
+/// moves to the item the keys land on, and Shift+arrows extend the selection to a session row.
+fn nav_keys(ui: &Ui, app: &CsmApp, id: Id, axis: Axis, actions: &mut Vec<Action>) {
+    let order: Vec<Id> = app.ui.sidebar_nav.iter().map(|(i, _)| *i).collect();
+    let Some((to, shift)) = list_keys::move_from(ui.ctx(), id, &order, axis) else { return };
+    let landed = app.ui.sidebar_nav.get(to).and_then(|(_, s)| s.clone());
+    if shift && let Some(s) = landed {
+        actions.push(Action::SelectRange(s));
+    }
+}
+
 fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions: &mut Vec<Action>) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let model = app.model.clone();
@@ -934,7 +1007,12 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
     let asleep = s.status == Status::Asleep;
     // Live rows drag (onto a rail tab, a group header, or between rows); sleeping ones don't.
     let sense = if asleep { Sense::click() } else { Sense::click_and_drag() };
-    let resp = ui.interact(rect, Id::new(("session-row", s.id.clone())), sense);
+    let row_id = Id::new(("session-row", s.id.clone()));
+    // Space toggles the row in the selection. egui would take Space on a focused row for a click,
+    // so it is taken before the row is laid out.
+    let toggle = ui.ctx().memory(|m| m.has_focus(row_id)) && ui.ctx().input_mut(|i| consume_exact(i, Modifiers::NONE, Key::Space));
+    let resp = ui.interact(rect, row_id, sense);
+    list_keys::follow(ui, &resp);
     if resp.drag_started() {
         app.ui.drags.row = Some(s.id.clone());
     }
@@ -956,7 +1034,20 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
         p.rect(rect, CornerRadius::same(radius::sm()), Tokens::tint(t.blue, alpha::PICKED), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
     }
     if resp.has_focus() {
-        p.rect_stroke(rect, CornerRadius::same(radius::sm()), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+        p.rect_stroke(rect, CornerRadius::same(radius::sm()), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
+        // Where Shift+F10 opens this row's menu (`CsmApp::focused_item_menu`).
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new(("row-menu-at", s.id.clone())), rect.left_bottom()));
+    }
+    // The keys of a focused row: arrows and Home/End move the focus (Shift extends the selection),
+    // Space toggles it, F2 renames it.
+    if resp.has_focus() {
+        nav_keys(ui, app, row_id, Axis::Vertical, actions);
+        if ui.ctx().input_mut(|i| consume_exact(i, Modifiers::NONE, Key::F2)) {
+            actions.push(Action::StartRename(s.id.clone()));
+        }
+    }
+    if toggle {
+        actions.push(Action::SelectToggle(s.id.clone()));
     }
     let indent = if nested { space::LG - space::XXS } else { 0.0 };
     let cy = rect.min.y + size::ROW / 2.0;

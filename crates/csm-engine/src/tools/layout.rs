@@ -32,6 +32,22 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             view_set,
         ),
         t(
+            "rail_tab_next",
+            "Next rail tab",
+            "Switch the rail to the next tab: All, then each group in order; wraps round. Focuses a session in the new tab, as view_set does.",
+            Effects::UI,
+            empty_schema,
+            rail_tab_next,
+        ),
+        t(
+            "rail_tab_prev",
+            "Previous rail tab",
+            "Switch the rail to the previous tab (All, then the groups, wrapping round). Focuses a session in the new tab, as view_set does.",
+            Effects::UI,
+            empty_schema,
+            rail_tab_prev,
+        ),
+        t(
             "layout_get",
             "Current layout",
             "A group's layout (default: the one shown now): mode, grid size, pinned sessions.",
@@ -247,16 +263,46 @@ fn view_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         };
     }
     if let Some(tab) = p.rail_tab {
-        ctx.state.app.ui.rail_tab = (tab != "all").then_some(tab.clone());
-        if tab != "all"
-            && let Some(id) = group_tab_focus(ctx.state, &tab)
-        {
-            crate::lifecycle::focus(ctx, &id)?;
-        }
+        set_rail_tab(ctx, &tab)?;
     }
     ctx.state.persist();
     let v = view_json(ctx);
     Ok(ToolOutput::new("View changed.", v))
+}
+
+fn rail_tab_next(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    rail_tab_step(ctx, true)
+}
+
+fn rail_tab_prev(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    rail_tab_step(ctx, false)
+}
+
+/// The rail tab after (or before) the current one: All first, then the groups in order, wrapping
+/// round. Switches to it as `view_set` does.
+fn rail_tab_step(ctx: &mut Ctx<'_>, forward: bool) -> Reply {
+    let tabs: Vec<String> = std::iter::once("all".to_owned()).chain(ctx.state.app.groups.iter().map(|g| g.id.clone())).collect();
+    let now = ctx.state.app.ui.rail_tab.clone().unwrap_or_else(|| "all".to_owned());
+    let n = tabs.len();
+    let at = tabs.iter().position(|t| *t == now).unwrap_or(0);
+    let to = if forward { (at + 1) % n } else { (at + n - 1) % n };
+    let tab = tabs.get(to).cloned().unwrap_or_else(|| "all".to_owned());
+    set_rail_tab(ctx, &tab)?;
+    ctx.state.persist();
+    let v = view_json(ctx);
+    Ok(ToolOutput::new(format!("Rail tab: {tab}."), v))
+}
+
+/// Switches the rail to `tab` (a group id, or `all`), focusing a session in it when one is
+/// awake (see `group_tab_focus`).
+fn set_rail_tab(ctx: &mut Ctx<'_>, tab: &str) -> Result<(), ToolError> {
+    ctx.state.app.ui.rail_tab = (tab != "all").then(|| tab.to_owned());
+    if tab != "all"
+        && let Some(id) = group_tab_focus(ctx.state, tab)
+    {
+        crate::lifecycle::focus(ctx, &id)?;
+    }
+    Ok(())
 }
 
 /// The session to focus when the rail switches to `group` (issue #137): `None` when the focused

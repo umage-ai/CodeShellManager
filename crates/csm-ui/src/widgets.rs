@@ -14,6 +14,13 @@ fn info(resp: &Response, ty: WidgetType, label: &str) {
     resp.widget_info(move || WidgetInfo::labeled(ty, true, label.clone()));
 }
 
+/// The keyboard focus ring around `rect`: `size::RING` wide, inside the rect, in the focus
+/// colour. The caller draws it only where keyboard focus is, never for mouse focus.
+pub fn focus_ring(ui: &Ui, rect: Rect, radius: u8) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_stroke(rect, CornerRadius::same(radius), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
+}
+
 /// Text width with a font, for laying out painted rows.
 pub fn text_width(ui: &Ui, s: &str, font: FontId) -> f32 {
     ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_string(), font, Color32::PLACEHOLDER).size().x)
@@ -144,6 +151,9 @@ fn paint_icon_button(ui: &Ui, rect: Rect, resp: &Response, name: &str, on: bool,
         let sz = if small { icon::MD } else { icon::XL };
         let fg = if sunk || resp.hovered() { t.fg } else { idle_fg.unwrap_or(t.muted) };
         icons::paint(ui, rect.translate(nudge), name, sz, fg);
+        if resp.has_focus() {
+            focus_ring(ui, rect, 0);
+        }
         return;
     }
     let (bg, fg) = if on {
@@ -156,6 +166,9 @@ fn paint_icon_button(ui: &Ui, rect: Rect, resp: &Response, name: &str, on: bool,
     ui.painter().rect_filled(rect, r, bg);
     let sz = if small { icon::MD } else { icon::XL };
     icons::paint(ui, rect, name, sz, fg);
+    if resp.has_focus() {
+        focus_ring(ui, rect, if small { radius::sm() } else { radius::md() });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +236,10 @@ pub fn button(ui: &mut Ui, kind: ButtonKind, icon_name: Option<&str>, label: &st
     if let Some(k) = kbd_text {
         let kw = kbd_width(ui, k);
         paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::ROW_X - kw / 2.0, rect.center().y), vec2(kw, size::KBD)), k);
+    }
+    if resp.has_focus() {
+        // Outside the button, so it shows on a primary (blue) button too.
+        focus_ring(ui, rect.expand(space::XS), radius::md());
     }
     info(&resp, WidgetType::Button, label);
     resp.on_hover_cursor(CursorIcon::PointingHand)
@@ -326,6 +343,36 @@ pub fn caps(ui: &mut Ui, s: &str) -> Response {
 
 /// One row of a menu (`.mi`): icon, label, and a right-aligned hint or tag.
 pub fn menu_item(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>, danger: bool) -> Response {
+    menu_item_at(ui, icon_name, label, hint, danger, false, None)
+}
+
+/// A menu row that cannot run now: drawn muted, with no highlight and no hover. The keys skip it.
+pub fn menu_item_off(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let font = crate::theme::regular(text::BODY);
+    let w = ui.available_width().max(size::MENU_W - space::SM);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, size::MENU_ROW), Sense::hover());
+    let ir = Rect::from_min_size(pos2(rect.min.x + space::SM, rect.center().y - icon::LG / 2.0), Vec2::splat(icon::LG));
+    icons::paint(ui, ir, icon_name, icon::LG, t.muted);
+    ui.painter().text(pos2(ir.max.x + space::ROW_X, rect.center().y), Align2::LEFT_CENTER, label, font, t.muted);
+    if let Some(h) = hint {
+        ui.painter().text(pos2(rect.max.x - space::ROW_X, rect.center().y), Align2::RIGHT_CENTER, h, crate::theme::mono(text::TINY), t.muted);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, false, label));
+    resp
+}
+
+/// A menu row. `selected`: the keyboard highlight (the row fill and the focus ring). `underline`:
+/// the char index of the access letter in `label`, drawn underlined.
+pub fn menu_item_at(
+    ui: &mut Ui,
+    icon_name: &str,
+    label: &str,
+    hint: Option<&str>,
+    danger: bool,
+    selected: bool,
+    underline: Option<usize>,
+) -> Response {
     let t = Tokens::get(ui.ctx());
     let font = crate::theme::regular(text::BODY);
     let hint_font = crate::theme::mono(text::TINY);
@@ -333,22 +380,51 @@ pub fn menu_item(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>, 
     let need = space::SM + icon::LG + space::ROW_X + text_width(ui, label, font.clone()) + hw + space::ROW_X;
     let w = ui.available_width().max(size::MENU_W - space::SM).max(need);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::MENU_ROW), Sense::click());
-    // A 3D menu lights its hovered row in the accent, with the text inverted.
-    let lit = t.style.bevel && resp.hovered();
+    // A 3D menu lights its hovered (or keyboard-selected) row in the accent, with the text inverted.
+    let lit = t.style.bevel && (resp.hovered() || selected);
     if lit {
         ui.painter().rect_filled(rect, 0.0, t.blue);
-    } else if resp.hovered() {
+    } else if resp.hovered() || selected {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::sm() + 1), t.row_sel);
+    }
+    if selected {
+        if lit {
+            // The accent fill hides a blue ring: ring the lit row in the text colour.
+            ui.painter().rect_stroke(rect, 0.0, Stroke::new(size::RING, t.on_accent), StrokeKind::Inside);
+        } else {
+            focus_ring(ui, rect, radius::sm() + 1);
+        }
     }
     let fg = if lit { t.on_accent } else if danger { t.red } else { t.fg };
     let ir = Rect::from_min_size(pos2(rect.min.x + space::SM, rect.center().y - icon::LG / 2.0), Vec2::splat(icon::LG));
     icons::paint(ui, ir, icon_name, icon::LG, if lit { t.on_accent } else if danger { t.red } else { t.muted });
-    ui.painter().text(pos2(ir.max.x + space::ROW_X, rect.center().y), Align2::LEFT_CENTER, label, font, fg);
+    let at = pos2(ir.max.x + space::ROW_X, rect.center().y);
+    match underline {
+        Some(ci) => paint_underlined(ui, at, label, ci, font, fg),
+        None => {
+            ui.painter().text(at, Align2::LEFT_CENTER, label, font, fg);
+        }
+    }
     if let Some(h) = hint {
         ui.painter().text(pos2(rect.max.x - space::ROW_X, rect.center().y), Align2::RIGHT_CENTER, h, hint_font, if lit { t.on_accent } else { t.muted });
     }
     info(&resp, WidgetType::Button, label);
     resp
+}
+
+/// `label` left-aligned at `pos`, its character at char index `ci` underlined (a menu's access letter).
+fn paint_underlined(ui: &Ui, pos: egui::Pos2, label: &str, ci: usize, font: FontId, color: Color32) {
+    let start = label.char_indices().nth(ci).map_or(label.len(), |(b, _)| b);
+    let end = label.get(start..).and_then(|s| s.chars().next()).map_or(start, |c| start + c.len_utf8());
+    let plain = egui::TextFormat { font_id: font, color, ..Default::default() };
+    let under = egui::TextFormat { underline: Stroke::new(size::HAIRLINE, color), ..plain.clone() };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(label.get(..start).unwrap_or(""), 0.0, plain.clone());
+    job.append(label.get(start..end).unwrap_or(""), 0.0, under);
+    job.append(label.get(end..).unwrap_or(""), 0.0, plain);
+    let galley = ui.painter().layout_job(job);
+    let top = pos2(pos.x, pos.y - galley.size().y / 2.0);
+    ui.painter().galley(top, galley, color);
 }
 
 /// A menu's uppercase heading (`.mhead`).
@@ -458,7 +534,7 @@ pub fn toggle(ui: &mut Ui, on: bool, label: &str, hint: Option<&str>) -> Respons
         ui.painter().circle_filled(pos2(kx, cy), r, knob);
     }
     if resp.has_focus() {
-        ui.painter().rect_stroke(track.expand(size::RING), CornerRadius::same(radius::pill()), Stroke::new(size::RING, t.blue), StrokeKind::Outside);
+        ui.painter().rect_stroke(track.expand(size::RING), CornerRadius::same(radius::pill()), Stroke::new(size::RING, t.focus()), StrokeKind::Outside);
     }
     paint_text(ui, pos2(rect.min.x, cy), Align2::LEFT_CENTER, label, crate::theme::regular(text::BODY), t.fg, track.min.x - rect.min.x - space::MD);
     if let Some(g) = hint_galley {

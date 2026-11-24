@@ -71,7 +71,7 @@ pub fn popup(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut Vec<
     let model = app.model.clone();
     let list = items(&model);
     let sessions = list.iter().filter(|i| matches!(i, Item::Session(_))).count();
-    let sel = app.ui.recent_sel.min(list.len().saturating_sub(1));
+    let sel = app.ui.menu_sel.first().copied();
     let resp = egui::Area::new(Id::new("menu-recent")).order(Order::Foreground).pivot(Align2::RIGHT_TOP).fixed_pos(at).show(ctx, |ui| {
         widgets::pop_frame(&t).show(ui, |ui| {
             ui.set_width(size::RECENT_W);
@@ -86,9 +86,9 @@ pub fn popup(ctx: &egui::Context, app: &mut CsmApp, at: Pos2, actions: &mut Vec<
                     widgets::separator(ui);
                     widgets::menu_head(ui, "Recently closed");
                 }
-                let r = row(ui, &t, item, i, i == sel, model.now_ms);
-                if r.hovered() && app.ui.recent_sel != i {
-                    app.ui.recent_sel = i;
+                let r = row(ui, &t, item, i, sel == Some(i), model.now_ms);
+                if r.hovered() && app.ui.menu_sel.first() != Some(&i) {
+                    app.ui.menu_sel = vec![i];
                 }
                 if r.clicked() {
                     actions.push(item.action());
@@ -116,6 +116,9 @@ fn row(ui: &mut egui::Ui, t: &Tokens, item: &Item<'_>, i: usize, selected: bool,
     let p = ui.painter().clone();
     if selected || resp.hovered() {
         p.rect_filled(rect, CornerRadius::same(radius::sm() + 1), t.row_sel);
+    }
+    if selected {
+        widgets::focus_ring(ui, rect, radius::sm() + 1);
     }
     let cy = rect.center().y;
     let mut right = rect.max.x - space::ROW_X;

@@ -1,0 +1,346 @@
+//! Keyboard in the popup menus (`docs/design/keyboard.md`, section 3): arrows, Enter, Escape,
+//! Shift+F10 on the focused item, and the Recent menu's keys through the shared handler. The pure
+//! rules (steps, access letters) are unit-tested in `menu_nav.rs`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod common;
+
+use common::*;
+use csm_ui::app::{Menu, Overlay};
+use csm_ui::focus::FocusRegion;
+use csm_ui::theme::ThemeKind;
+use egui::{Key, Modifiers};
+use egui_kittest::Harness;
+
+fn h() -> Harness<'static, csm_ui::CsmApp> {
+    let mut h = harness(app_with(backend(ThemeKind::Mocha)));
+    settle(&mut h);
+    h
+}
+
+fn tool_ids(h: &Harness<'static, csm_ui::CsmApp>) -> Vec<String> {
+    h.state().submitted().iter().map(|c| c.id.clone()).collect()
+}
+
+fn open_pane_menu(h: &mut Harness<'static, csm_ui::CsmApp>) {
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Period);
+    settle(h);
+    assert!(matches!(h.state().ui.menu, Some(Menu::Pane { .. })), "Ctrl+. opens the pane menu");
+}
+
+#[test]
+fn shift_f10_opens_the_focused_rows_menu_with_its_first_row_highlighted() {
+    let mut h = h();
+    // Shift+F10 belongs to the terminal while it has the focus.
+    h.key_press_modifiers(Modifiers::SHIFT, Key::F10);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "the terminal keeps Shift+F10 when it has the focus");
+    // F6 cycles to the sidebar list.
+    for _ in 0..FocusRegion::ORDER.len() {
+        if h.state().ui.region == Some(FocusRegion::SidebarList) {
+            break;
+        }
+        h.key_press(Key::F6);
+        settle(&mut h);
+    }
+    assert_eq!(h.state().ui.region, Some(FocusRegion::SidebarList), "F6 reaches the sidebar");
+    h.key_press_modifiers(Modifiers::SHIFT, Key::F10);
+    settle(&mut h);
+    assert!(matches!(h.state().ui.menu, Some(Menu::Row { .. })), "Shift+F10 opens the row menu");
+    assert_eq!(h.state().ui.menu_sel.len(), 1, "the first row is highlighted");
+}
+
+#[test]
+fn arrows_move_the_highlight_and_escape_closes() {
+    let mut h = h();
+    open_pane_menu(&mut h);
+    assert!(h.state().ui.menu_sel.is_empty(), "a menu opened with Ctrl+. highlights nothing yet");
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    let first = h.state().ui.menu_sel.clone();
+    assert_eq!(first.len(), 1, "Down highlights the first row");
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    let second = h.state().ui.menu_sel.clone();
+    assert_ne!(first, second, "Down moves to the next row");
+    h.key_press(Key::ArrowUp);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu_sel, first, "Up goes back");
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "Escape closes the menu");
+    assert!(h.state().ui.menu_sel.is_empty(), "closing clears the highlight");
+}
+
+#[test]
+fn enter_runs_the_highlighted_row_and_closes_the_menu() {
+    let mut h = h();
+    open_pane_menu(&mut h);
+    h.key_press(Key::Home);
+    settle(&mut h);
+    let before = tool_ids(&h).len();
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "Enter closes the menu");
+    assert!(tool_ids(&h).len() > before || h.state().ui.overlay != Overlay::None, "Enter runs the row's action");
+}
+
+#[test]
+fn ctrl_period_still_toggles_an_open_pane_menu() {
+    let mut h = h();
+    open_pane_menu(&mut h);
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    // Ctrl+. is a chord the menu does not read: the shortcut still runs and closes the menu.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Period);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "Ctrl+. toggles the open pane menu off as before");
+}
+
+#[test]
+fn f6_does_not_move_while_a_menu_is_open() {
+    let mut h = h();
+    open_pane_menu(&mut h);
+    h.key_press(Key::F6);
+    settle(&mut h);
+    assert_eq!(h.state().ui.region, None);
+    assert!(h.state().ui.menu.is_some(), "F6 leaves the menu open");
+}
+
+#[test]
+fn the_recent_menu_moves_with_arrows_wraps_and_picks_with_enter() {
+    let mut h = h();
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
+    settle(&mut h);
+    assert!(matches!(h.state().ui.menu, Some(Menu::Recent { .. })), "Ctrl+Shift+E opens Recent");
+    assert_eq!(h.state().ui.menu_sel, vec![0], "Recent starts on its first row");
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu_sel, vec![1]);
+    h.key_press(Key::ArrowUp);
+    settle(&mut h);
+    h.key_press(Key::ArrowUp);
+    settle(&mut h);
+    assert_ne!(h.state().ui.menu_sel, vec![0], "Up from the first row wraps to the last");
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "Enter picks the row and closes the menu");
+}
+
+#[test]
+fn a_digit_picks_its_recent_session_and_ctrl_shift_e_closes_recent() {
+    let mut h = h();
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "Ctrl+Shift+E closes Recent");
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
+    settle(&mut h);
+    h.key_press(Key::Num1);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None, "the digit picks the first session and closes the menu");
+    assert!(tool_ids(&h).iter().any(|id| id == "session_focus"), "the pick is the session_focus call");
+}
+
+#[test]
+fn arrows_do_nothing_when_no_menu_is_open() {
+    let mut h = h();
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu, None);
+    assert!(h.state().ui.menu_sel.is_empty());
+}
+
+fn main_open(h: &Harness<'static, csm_ui::CsmApp>) -> bool {
+    matches!(h.state().ui.menu, Some(Menu::Main { .. }))
+}
+
+/// Taps Alt: Alt goes down, then up, with nothing else in between.
+fn tap_alt(h: &mut Harness<'static, csm_ui::CsmApp>) {
+    h.event(egui::Event::ModifiersChanged(Modifiers::ALT));
+    h.step();
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.step();
+    settle(h);
+}
+
+/// Every tool id in the main menu's entries, the submenus included.
+fn main_menu_tools(entries: &[csm_ui::screens::menus::Entry]) -> Vec<String> {
+    use csm_ui::screens::menus::Entry;
+    let mut out = Vec::new();
+    for e in entries {
+        match e {
+            Entry::Sub { items, .. } => out.extend(main_menu_tools(items)),
+            Entry::Item { action: csm_ui::app::Action::PaletteTool(id), .. } => out.push(id.clone()),
+            _ => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn f10_opens_the_main_menu_and_f10_or_escape_closes_it() {
+    let mut h = h();
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(main_open(&h), "F10 opens the main menu");
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(!main_open(&h), "F10 again closes it");
+    h.key_press(Key::F10);
+    settle(&mut h);
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(!main_open(&h), "Escape closes it");
+}
+
+#[test]
+fn an_alt_tap_does_not_open_the_main_menu_and_f10_does() {
+    // The clean Alt tap is not shipped (docs/design/keyboard.md, open question 3): a stray tap must
+    // not take the keys of the terminal, and F10 is the one way in.
+    let mut h = h();
+    tap_alt(&mut h);
+    assert!(!main_open(&h), "an Alt tap does not open the main menu");
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(main_open(&h), "F10 opens the main menu");
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(!main_open(&h), "F10 closes it");
+}
+
+#[test]
+fn the_main_menu_moves_into_help_and_enter_runs_the_palette() {
+    let mut h = h();
+    h.key_press(Key::F10);
+    settle(&mut h);
+    // Help is the last area.
+    h.key_press(Key::End);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu_sel.len(), 1, "End highlights the last area");
+    h.key_press(Key::ArrowRight);
+    settle(&mut h);
+    assert_eq!(h.state().ui.menu_sel.len(), 2, "Right opens Help, its first row highlighted");
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert_eq!(h.state().ui.overlay, Overlay::Palette, "Enter on the first Help row opens the palette");
+    assert!(!main_open(&h), "and the menu closes");
+}
+
+#[test]
+fn the_main_menu_lists_every_tool_the_palette_offers() {
+    let h = h();
+    let app = h.state();
+    assert!(app.model.active.is_some(), "the demo has an active session, so no row is muted");
+    let ids = main_menu_tools(&csm_ui::screens::menus::main_entries(app));
+    for t in app.dispatch.tools().iter() {
+        if t.id == "consent_answer" || t.id == "layout_set" || csm_ui::screens::palette::tool_hidden(app, &t.id) {
+            continue;
+        }
+        assert!(ids.contains(&t.id), "{} is in the main menu", t.id);
+    }
+}
+
+#[test]
+fn every_toolset_has_an_area_in_the_main_menu() {
+    for set in csm_engine::Toolset::ALL {
+        let area = csm_ui::screens::menus::main_area(set);
+        assert!(csm_ui::screens::menus::MAIN_AREAS.contains(&area), "{set:?} maps to a listed area");
+    }
+}
+
+#[test]
+fn tools_that_act_on_a_session_are_muted_without_one() {
+    use csm_ui::screens::menus::Entry;
+    let mut h = h();
+    std::sync::Arc::make_mut(&mut h.state_mut().model).active = None;
+    let entries = csm_ui::screens::menus::main_entries(h.state());
+    let muted = entries.iter().any(|e| match e {
+        Entry::Sub { items, .. } => items.iter().any(|i| matches!(i, Entry::Off { .. })),
+        _ => false,
+    });
+    assert!(muted, "a session tool is shown muted with no active session");
+    let ids = main_menu_tools(&entries);
+    assert!(!ids.is_empty(), "the other tools stay offered");
+}
+
+/// The main menu (F10) has the layout modes under View / Layout, so the board layout is reachable
+/// from the keyboard without a mouse (`docs/design/keyboard.md`, step 5). The Git area is filled
+/// from the engine's registry, which the demo backend does not have, so it is not asserted here.
+#[test]
+fn the_main_menu_reaches_the_layout_by_keys() {
+    use csm_ui::screens::menus::{Entry, main_entries};
+    let mut h = h();
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(main_open(&h), "F10 opens the main menu");
+    let layout: Vec<String> = main_entries(h.state())
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Sub { label, items, .. } if label == "View / Layout" => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| match e {
+            Entry::Item { label, .. } => Some(label),
+            _ => None,
+        })
+        .collect();
+    assert!(layout.iter().any(|l| l.contains("Board")), "the layout modes include the board: {layout:?}");
+}
+
+/// The Git area of the main menu lists the git tools from the registry, so a Git action (status,
+/// branches, the Git tab) is reachable from F10 without a mouse.
+#[test]
+fn the_main_menu_reaches_the_git_actions_by_keys() {
+    use csm_ui::screens::menus::{Entry, main_entries};
+    let mut h = h();
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(main_open(&h), "F10 opens the main menu");
+    let entries = main_entries(h.state());
+    let git: Vec<Entry> = entries
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Sub { label, items, .. } if label == "Git" => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let ids = main_menu_tools(&git);
+    assert!(ids.iter().any(|t| t == "git_status"), "the Git area offers git_status: {ids:?}");
+    assert!(ids.iter().any(|t| t == "git_branches"), "and git_branches: {ids:?}");
+}
+
+#[test]
+fn shift_f10_on_a_focused_group_header_opens_that_groups_menu() {
+    // Group headers are drawn in the list in the headers mode (the rail mode shows one group's rows).
+    let mut b = backend(ThemeKind::Mocha);
+    b.model_mut().group_mode = csm_ui::model::GroupMode::Headers;
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    let groups: Vec<String> = h.state().model.groups.iter().map(|g| g.id.clone()).collect();
+    assert!(!groups.is_empty(), "the demo has a group to focus");
+    for _ in 0..8 {
+        if h.state().ui.region == Some(FocusRegion::SidebarList) {
+            break;
+        }
+        h.key_press(Key::F6);
+        settle(&mut h);
+    }
+    // Walk the sidebar up to the first group header (the demo lists its groups above their rows).
+    let target = egui::Id::new(("group-header", groups[0].clone()));
+    for _ in 0..80 {
+        if h.ctx.memory(|m| m.focused()) == Some(target) {
+            break;
+        }
+        h.key_press(Key::ArrowUp);
+        settle(&mut h);
+    }
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(target), "the arrows reach the group header");
+    h.key_press_modifiers(Modifiers::SHIFT, Key::F10);
+    settle(&mut h);
+    let opened = matches!(&h.state().ui.menu, Some(Menu::Group { group, .. }) if *group == groups[0]);
+    assert!(opened, "Shift+F10 opens the group's menu: {:?}", h.state().ui.menu);
+}

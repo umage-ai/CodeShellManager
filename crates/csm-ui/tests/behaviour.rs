@@ -316,7 +316,12 @@ fn quick_open_starts_a_session_with_the_cycled_command() {
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
     settle(&mut h);
-    h.key_press(egui::Key::Tab); // claude → pwsh
+    // The dialog opens in the folder field; Tab goes Browse, the folder list, the command row.
+    for _ in 0..3 {
+        h.key_press(egui::Key::Tab);
+        h.step();
+    }
+    h.key_press(egui::Key::ArrowRight); // claude → pwsh
     h.step();
     h.get_by_label("Folder: Odulodo.Admin").click();
     settle(&mut h);
@@ -597,7 +602,12 @@ fn edit_session_fills_the_new_session_panel_and_saves_with_session_edit() {
     }
     assert!(has(&h, "Session name"));
     h.state_mut().ui.quick.name = "Web (brand facet)".into();
-    h.key_press(egui::Key::Tab); // claude → pwsh
+    // Edit: Tab goes from the folder to the name, Browse, then the command row.
+    for _ in 0..3 {
+        h.key_press(egui::Key::Tab);
+        h.step();
+    }
+    h.key_press(egui::Key::ArrowRight); // claude → pwsh
     h.step();
     h.key_press(egui::Key::Enter);
     settle(&mut h);
@@ -756,15 +766,15 @@ fn the_help_overlay_lists_the_shortcuts() {
     let mut h = h();
     h.key_press(egui::Key::F1);
     settle(&mut h);
-    assert!(has(&h, "Shortcut: Ctrl K: Search sessions and commands"));
+    assert!(has(&h, "Shortcut: Ctrl+K: Command palette"));
     assert!(has(&h, "Shortcut: F2: Rename the active session"));
     h.key_press(egui::Key::Escape);
     settle(&mut h);
-    assert!(!has(&h, "Shortcut: Ctrl K: Search sessions and commands"));
+    assert!(!has(&h, "Shortcut: Ctrl+K: Command palette"));
     // The title bar's ? button too.
     h.get_by_label_contains("Keyboard shortcuts").click();
     settle(&mut h);
-    assert!(has(&h, "Shortcut: Ctrl T: New session"));
+    assert!(has(&h, "Shortcut: Ctrl+T: New session"));
 }
 
 #[test]

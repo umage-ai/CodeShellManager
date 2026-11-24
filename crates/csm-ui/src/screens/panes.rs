@@ -315,6 +315,13 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let active = screen.as_ref().map(|i| i.instance.clone());
         drop(st);
         super::addon_screen::strip(ui, strip, &infos, active.as_deref(), actions);
+        app.ui.region_rects.push((crate::focus::FocusRegion::ScreenStrip, strip));
+        let shown_tab = match active.as_deref() {
+            Some(a) => Id::new(("view-screen", a)),
+            None => Id::new("view-sessions"),
+        };
+        let tabs = std::iter::once(Id::new("view-sessions")).chain(infos.iter().map(|i| Id::new(("view-screen", &i.instance))));
+        app.ui.region_items.extend(tabs.map(|id| (crate::focus::FocusRegion::ScreenStrip, id, id == shown_tab)));
         top = strip.max.y;
     }
     let area = Rect::from_min_max(pos2(rect.min.x, top), rect.max);
@@ -323,6 +330,8 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let tree = app.backend.screen_tree(&info.instance);
         let mut st = lock(&app.ui.screens);
         super::addon_screen::show(ui, area.shrink(space::PANE_GAP), &info, tree.as_ref(), &mut st, false, actions);
+        // No panes under the add-on screen: nothing for Ctrl+Alt+Arrow to move between.
+        app.ui.pane_rects.clear();
         return;
     }
     let inner = area.shrink(space::PANE_GAP);
@@ -436,12 +445,18 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     drop_panes.extend(
         planned.iter().filter(|(id, _, o)| !o.mini && model.session(id).is_some_and(|s| s.status.is_live())).map(|(id, r, _)| (id.clone(), *r)),
     );
+    // The panes Ctrl+Alt+Arrow moves between (`app.rs`, `move_pane_focus`).
+    app.ui.pane_rects.clear();
+    app.ui.pane_rects.extend(
+        planned.iter().filter(|(id, _, o)| !o.mini && model.session(id).is_some_and(|s| s.status.is_live())).map(|(id, r, _)| (id.clone(), *r)),
+    );
     let focus = app.ui.focus_terminal.clone();
+    let terminal_may_take_focus = app.ui.terminal_takes_focus();
     let host = app.host.clone();
     {
         let mut host = lock(&host);
         for (id, r, mut o) in planned.iter().cloned() {
-            o.focus = focus.as_deref() == Some(id.as_str()) && !o.mini;
+            o.focus = terminal_may_take_focus && focus.as_deref() == Some(id.as_str()) && !o.mini;
             if o.focus {
                 app.ui.focus_terminal = None;
             }

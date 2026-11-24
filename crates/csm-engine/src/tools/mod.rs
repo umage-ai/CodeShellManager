@@ -10,6 +10,7 @@ mod claude_replies;
 mod docs;
 pub(crate) mod git;
 mod groups;
+mod keymap;
 mod layout;
 pub(crate) mod look;
 pub mod open;
@@ -45,6 +46,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(bulk::specs());
     v.extend(layout::specs());
     v.extend(app::specs());
+    v.extend(keymap::specs());
     v.extend(storage::specs());
     v.extend(update::specs());
     v.extend(autostart::specs());
