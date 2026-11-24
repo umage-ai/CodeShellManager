@@ -135,6 +135,7 @@ file drop; Claude slash-command menu; `--clean`.
 - Development (dispatch) builds are signed and verified like release builds.
 - **A slashed zero in the terminal**: at small sizes the dot inside the default font's `0` filled in and
   it read as an `8`. The default terminal font now draws `0` with a slash through it. A font you
+- **A Sleep button in the pane header**, left of Minimize: ends the process and keeps the session in the sidebar (`session_sleep`). A header too narrow for it leaves Sleep to the Actions menu.
 - **Starting a run that is already running shows it instead of restarting it.** Clicking a running run in the pane header, its dropdown, the Runs tab, the menus or the palette, or pressing `F5`, opens its output and leaves it running (the Run button reads "Running"). **Restart** is separate (`run_restart`, `Ctrl+Shift+F5`, a Restart row beside Stop) and asks first when the run has been going for more than a few seconds; the `run_start` tool no longer kills a running run.
   chose yourself (`--font`) is drawn as designed.
 

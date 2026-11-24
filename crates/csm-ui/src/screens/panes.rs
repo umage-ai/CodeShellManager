@@ -1176,6 +1176,9 @@ pub fn pane(
     let actions_w = space::SM + widgets::text_width(ui, "Actions", actions_font.clone()) + space::XS + icon::XS + space::SM;
     let actions_labelled = !o.mini && take_room(&mut room, actions_w - size::CONTROL_SM);
     let editor_on = editor.is_some() && take_room(&mut room, icon_w);
+    // Sleep (moon), beside Minimize: the last optional control to keep its room. A header too
+    // narrow for it leaves Sleep to the Actions menu.
+    let sleep_on = !o.mini && s.status.is_live() && take_room(&mut room, icon_w);
 
     // The window bar.
     if ctl(ui, "x", false, "Close session", &mut x) {
@@ -1190,6 +1193,9 @@ pub fn pane(
     }
     if !o.torn && ctl(ui, "min", false, "Minimize", &mut x) {
         actions.push(Action::Tool("pane_minimize", json!({"session_id": s.id, "group": scope.key()})));
+    }
+    if sleep_on && ctl(ui, "moon", false, "Sleep — end the process, keep it in the sidebar", &mut x) {
+        actions.push(Action::Tool("session_sleep", json!({"session_id": s.id})));
     }
     x -= space::XS;
     if head_resp.double_clicked() && can_max && !o.mini {
@@ -1267,8 +1273,8 @@ pub fn pane(
             }
             let ir = Rect::from_min_size(pos2(main.min.x + space::SM - size::HAIRLINE, cy - icon::XS / 2.0), Vec2::splat(icon::XS));
             if run_running {
-                icons::paint_status(ui, ir, Status::Working, icon::XS);
-                icons::request_spinner_repaint(ui);
+                // A still dot, not a spinner: a running run must not keep an idle window repainting.
+                p.circle_filled(ir.center(), icon::XS / 4.0, t.blue);
             } else {
                 icons::paint(ui, ir, "play", icon::XS, t.green);
             }
