@@ -36,7 +36,7 @@ Notable components:
 | `conpty.dll`, `OpenConsole.exe` (Windows) | MIT ([microsoft/terminal](https://github.com/microsoft/terminal)) | Microsoft's ConPTY package `Microsoft.Windows.Console.ConPTY` from nuget.org, Microsoft-signed; fetched at build time by `scripts/get-conpty.ps1`, never committed |
 | JetBrains Mono (terminal font) | SIL OFL 1.1 | `crates/csm-ui/assets/fonts/OFL-JetBrainsMono.txt` |
 | Figtree (UI font) | SIL OFL 1.1 | `crates/csm-ui/assets/fonts/OFL-Figtree.txt` |
-| W95FA (the Windows 98 sample theme's UI font, `samples/addons/theme-fun/fonts`) | SIL OFL 1.1 | by Alina Sava ([FontsArena](https://fontsarena.com/w95fa-by-alina-sava/)); `OFL-W95FA.txt` beside it. Converted from WOFF to OpenType, glyphs unchanged |
+| W95FA (the Windows 98 sample theme's UI font, `samples/addons/theme-fun/fonts`) | SIL OFL 1.1 | by Alina Sava, published by [FontsArena](https://fontsarena.com/w95fa-by-alina-sava/) for free personal and commercial use; the unmodified `W95FA.otf` from the author's download, with `OFL-W95FA.txt` beside it (no copyright string or Reserved Font Name is declared) |
 | Varela Round (the Blossom sample theme's UI font, same folder) | SIL OFL 1.1 | The Varela Round Project Authors; `OFL-VarelaRound.txt` beside it, unmodified |
 | The umage.ai logo | © umage.ai | shown on the About page; not covered by the MIT licence |
 

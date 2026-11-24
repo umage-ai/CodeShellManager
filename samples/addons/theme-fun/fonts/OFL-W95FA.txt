@@ -1,6 +1,13 @@
-W95FA, by Alina Sava (https://fontsarena.com/w95fa-by-alina-sava/): font name table says "SIL OpenFont License".
-The licence text below is the one the Fontsource package ships for it. This file is that package's WOFF
-converted to OpenType (the same CFF outlines, no changes to the glyphs).
+W95FA, version 1.002, by Alina Sava, published by FontsArena.com
+(https://fontsarena.com/w95fa-by-alina-sava/), "offered for free personal and commercial use under
+SIL OpenFont license".
+
+W95FA.otf beside this file is the unmodified W95FA.otf from the author's download
+(https://fontsarena.com/wp-content/uploads/2020/01/W95FA.zip). The font's own name table names the
+designer (Alina Sava), the vendor (FontsArena.com) and the licence (SIL OpenFont License,
+http://scripts.sil.org/OFL). It carries no copyright string, and the OFL.txt in that download has its
+copyright and Reserved Font Name lines left as the blank template, so no Reserved Font Name is
+declared. The licence text below is that download's OFL.txt with the blank template lines left out.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
