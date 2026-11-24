@@ -108,6 +108,7 @@ file drop; Claude slash-command menu; `--clean`.
 
 ### Changed
 
+- **Quitting closes Claude sessions several at a time** (Settings > General > "Claude sessions closed at once when quitting", `QuitClaudeConcurrency`, default 4, 1 to 8). With about 70 Claude sessions a quit took 5 to 8 minutes; it now takes around a minute and a half. Claude rewrites `~/.claude.json` as it exits, so the quit keeps a copy of it first and restores that copy if the file is left unreadable (some individual updates to it can still be lost); set the number to 1 for the old one-at-a-time quit. The shutdown board says how many close at once and shows several rows closing together. See docs/quit.md.
 - The relay server (`csm-relay`) and the Phone remote add-on moved out of this repository to the private
   `umage-ai/csm-relay` repository, until they are released. The wire protocol CSM uses for its own
   peer link is vendored in `vendor/csm-remote-proto`. CSM ships no phone add-on sample any more.

@@ -472,19 +472,24 @@ impl DemoBackend {
     }
 
     /// As the engine runs it: everything that is not Claude is stopped at once, then the Claude
-    /// sessions one at a time (2.3-4.5 s each, `gw` wedged until its 15 s wait runs out) with the
-    /// 2 s launch stagger after each clean exit. Rows stay in sidebar order; the board sorts them.
+    /// sessions `SLOTS` at a time (2.3-4.5 s each, `gw` wedged until its 15 s wait runs out), a
+    /// start every `STAGGER / SLOTS`, the next one starting as a slot frees. Rows stay in sidebar
+    /// order; the board sorts them.
     fn board_at(&self, t: f32) -> ShutdownBoard {
         const WAIT: f32 = 15.0;
         const STAGGER: f32 = 2.0;
+        const SLOTS: usize = 4;
+        let gap = STAGGER / SLOTS as f32;
         let live: Vec<_> = self.model.sessions.iter().filter(|s| s.status.is_live()).collect();
         let mut rows = Vec::new();
-        let mut clock = 0.0;
         for s in live.iter().filter(|s| !s.is_claude()) {
             rows.push(ShutdownRow { session: s.id.clone(), state: ShutdownRowState::Clean, elapsed_s: 0.0 });
         }
+        let mut free_at = [0.0f32; SLOTS];
+        let mut last_start = -gap;
         for (i, s) in live.iter().filter(|s| s.is_claude()).enumerate() {
-            let start = clock;
+            let (slot, free) = free_at.iter().copied().enumerate().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or((0, 0.0));
+            let start = free.max(last_start + gap);
             let forced = s.id == "gw";
             let dur = if forced { WAIT } else { 2.3 + (i % 3) as f32 * 1.1 };
             let (state, elapsed) = if t < start {
@@ -495,13 +500,16 @@ impl DemoBackend {
                 (ShutdownRowState::Closing, 0.0)
             };
             rows.push(ShutdownRow { session: s.id.clone(), state, elapsed_s: elapsed });
-            clock = start + dur + if forced { 0.0 } else { STAGGER };
+            if let Some(f) = free_at.get_mut(slot) {
+                *f = start + dur;
+            }
+            last_start = start;
         }
         let order: Vec<&String> = live.iter().map(|s| &s.id).collect();
         rows.sort_by_key(|r| order.iter().position(|id| **id == r.session));
-        let claudes = live.iter().filter(|s| s.is_claude()).count().max(1) as f32;
-        let budget = claudes * (WAIT + STAGGER);
-        ShutdownBoard { rows, budget_used_s: t.min(budget), budget_s: budget }
+        let claudes = live.iter().filter(|s| s.is_claude()).count().max(1);
+        let budget = claudes.div_ceil(SLOTS) as f32 * WAIT + claudes as f32 * gap;
+        ShutdownBoard { rows, budget_used_s: t.min(budget), budget_s: budget, claude_slots: SLOTS as u32 }
     }
 
     /// The theme mode setting (`dark`, `light`, `system`; `mocha` and `latte` too).

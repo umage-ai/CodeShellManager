@@ -797,9 +797,29 @@ pub struct ShutdownBoard {
     pub rows: Vec<ShutdownRow>,
     pub budget_used_s: f32,
     pub budget_s: f32,
+    /// How many Claude sessions close at once (`QuitClaudeConcurrency`); 0 until known, read as 1.
+    pub claude_slots: u32,
 }
 
 impl ShutdownBoard {
+    /// Claude sessions closing at once, at least 1.
+    pub fn slots(&self) -> usize {
+        self.claude_slots.max(1) as usize
+    }
+
+    /// The queued Claude sessions that start next, in the engine's order: as many as there are
+    /// free slots (at least the first one). `is_claude` says which rows are Claude sessions.
+    pub fn next_up(&self, is_claude: impl Fn(&SessionId) -> bool) -> Vec<&SessionId> {
+        let closing = self.rows.iter().filter(|r| r.state == ShutdownRowState::Closing).count();
+        let free = self.slots().saturating_sub(closing).max(1);
+        self.ordered(&is_claude)
+            .into_iter()
+            .filter(|r| r.state == ShutdownRowState::Pending && is_claude(&r.session))
+            .take(free)
+            .map(|r| &r.session)
+            .collect()
+    }
+
     /// Rows that have finished (exited cleanly or were forced).
     pub fn done(&self) -> usize {
         self.rows.iter().filter(|r| matches!(r.state, ShutdownRowState::Clean | ShutdownRowState::Forced)).count()
@@ -1069,10 +1089,36 @@ mod tests {
             ],
             budget_used_s: 0.0,
             budget_s: 1.0,
+            claude_slots: 0,
         };
         let ids: Vec<&str> = board.ordered(|id| id != "shell").iter().map(|r| r.session.as_str()).collect();
         assert_eq!(ids, ["now", "f", "shell", "q1", "q2", "c1", "c2"]);
         assert_eq!(board.done(), 3);
+    }
+
+    #[test]
+    fn the_board_names_as_many_next_as_there_are_free_slots() {
+        let row = |id: &str, state| ShutdownRow { session: id.into(), state, elapsed_s: 0.0 };
+        let mut board = ShutdownBoard {
+            rows: vec![
+                row("a", ShutdownRowState::Closing),
+                row("b", ShutdownRowState::Closing),
+                row("c", ShutdownRowState::Pending),
+                row("d", ShutdownRowState::Pending),
+                row("e", ShutdownRowState::Pending),
+                row("x", ShutdownRowState::Clean),
+            ],
+            budget_used_s: 0.0,
+            budget_s: 1.0,
+            claude_slots: 4,
+        };
+        let all = |_: &SessionId| true;
+        assert_eq!(board.next_up(all), ["c", "d"]);
+        board.claude_slots = 3;
+        assert_eq!(board.next_up(all), ["c"]);
+        // Never fewer than one, and a missing count reads as one at a time.
+        board.claude_slots = 0;
+        assert_eq!((board.slots(), board.next_up(all)), (1, vec![&"c".to_owned()]));
     }
 
     #[test]

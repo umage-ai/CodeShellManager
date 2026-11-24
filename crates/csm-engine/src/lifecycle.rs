@@ -30,6 +30,7 @@ use serde_json::json;
 
 use crate::engine::{Ctx, Engine, ParkedReply};
 use crate::events::Event;
+use crate::quit_pool::PoolOptions;
 use crate::session::{Phase, SessionIo, SessionRt, StartedCb, now_ms};
 use crate::snapshot;
 use crate::state::{Progress, State};
@@ -455,6 +456,7 @@ fn publish_step(state: &mut State, engine: &Engine) {
         || prev.restart != snap.restart
         || prev.quit != snap.quit
         || prev.quit_budget_ms != snap.quit_budget_ms
+        || prev.quit_slots != snap.quit_slots
         || prev.sessions.iter().map(|s| &s.id).ne(snap.sessions.iter().map(|s| &s.id));
     if layout_changed {
         events.emit(Event::LayoutChanged);
@@ -912,26 +914,6 @@ pub(crate) fn retire(pty: Arc<dyn Pty>, graceful: bool, wait: Duration) {
 }
 
 /// Waits (on a worker) until the process has exited or `wait` passed. True when it exited.
-/// [`wait_exit`] that also gives up as soon as `stop()` says so (a forced quit).
-fn wait_exit_unless(pty: &dyn Pty, wait: Duration, stop: &dyn Fn() -> bool) -> bool {
-    let deadline = Instant::now() + wait;
-    while !pty.has_exited() {
-        if Instant::now() >= deadline || stop() {
-            return pty.has_exited();
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    true
-}
-
-/// Sleeps up to `d`, waking early when `stop()` says so.
-fn sleep_unless(d: Duration, stop: &dyn Fn() -> bool) {
-    let deadline = Instant::now() + d;
-    while Instant::now() < deadline && !stop() {
-        thread::sleep(Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now())));
-    }
-}
-
 pub(crate) fn wait_exit(pty: &dyn Pty, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     while !pty.has_exited() {
@@ -1281,11 +1263,12 @@ fn relaunch_after_restart(ctx: &mut Ctx<'_>, id: &str, was_focused: bool, then: 
 
 // ── Quit ─────────────────────────────────────────────────────────────────────────────────
 
-/// The quit sequence: Claude sessions are closed one after another, each given up to
+/// The quit sequence: everything that is not Claude is killed at once; Claude sessions close in a
+/// bounded pool (`QuitClaudeConcurrency` at a time, `quit_pool`), each given up to
 /// `shutdown_budget` (15 s; busy sessions were measured exiting in 2.3-4.7 s, see
-/// docs/wpf/lessons.md) to exit by itself, with the flat settle between them, so one stuck session
-/// never eats the others' time; everything else is killed at once. The whole budget (per session
-/// times the Claude sessions) is in the snapshot for the board. Sessions stay in the state (they restore next time).
+/// docs/wpf/lessons.md) to exit by itself, so one stuck session never eats the others' time.
+/// `~/.claude.json` is copied first and checked after (`claude_config`). The whole budget and the
+/// slot count are in the snapshot for the board. Sessions stay in the state (they restore next time).
 /// Ends with the state saved and [`Event::QuitReady`].
 pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     if ctx.state.rt.shutting_down {
@@ -1315,52 +1298,63 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
             targets.push((id, p, claude));
         }
     }
-    // Claude sessions first in sidebar order is fine; non-Claude ones are instant.
+    // Claude sessions last: the non-Claude ones are instant.
     targets.sort_by_key(|(_, _, claude)| *claude);
     let total = targets.len();
-    // Claude sessions close one after another, so each gets its own wait (`shutdown_budget`)
-    // and the whole quit may take that times their number, plus the stagger between them.
-    let per_session = ctx.state.options.shutdown_budget;
-    let settle = Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0));
-    let claudes = u32::try_from(targets.iter().filter(|(_, _, c)| *c).count()).unwrap_or(u32::MAX);
-    let budget = per_session.saturating_add(settle).saturating_mul(claudes.max(1));
+    // Claude sessions close `slots` at a time (`QuitClaudeConcurrency`), each with its own wait
+    // (`shutdown_budget`); the budget the board shows is the waves of those waits plus the pauses.
+    let pool = PoolOptions { slots: ctx.state.app.settings.quit_slots(), per_session: ctx.state.options.shutdown_budget, settle: Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0)) };
+    let claudes = targets.iter().filter(|(_, _, c)| *c).count();
+    let budget = pool.budget(claudes);
     ctx.state.rt.quit = Some(Progress { done: 0, total });
     ctx.state.rt.quit_budget_ms = Some(u64::try_from(budget.as_millis()).unwrap_or(u64::MAX));
+    ctx.state.rt.quit_slots = Some(u32::try_from(pool.slots).unwrap_or(1));
     ctx.state.touch();
     let events = ctx.events.clone();
     let engine = ctx.engine.clone();
     let forced = ctx.state.rt.quit_force.clone();
+    // Claude's own config files, copied before the first Claude is asked to exit and checked after
+    // the last one has (`claude_config`). Never with --clean or without a data folder.
+    let configs = if ctx.state.options.saves() { ctx.state.options.claude_configs.clone() } else { crate::claude_config::ClaudeConfigs::None };
+    let backup_dir = ctx.state.options.save_path.as_deref().and_then(std::path::Path::parent).map(|d| d.join(crate::claude_config::DIR));
     let worker = move || {
         let forced_now = || forced.load(std::sync::atomic::Ordering::Acquire);
-        for (id, pty, claude) in targets {
-            let t0 = Instant::now();
-            let ms = |t: Instant| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let exited = pty.has_exited();
-            if !claude || exited || forced_now() {
-                // Decide before the kill: after it, every PTY has exited. A non-Claude session is
-                // simply ended (that's its clean close); a live Claude that "Force close now" (or
-                // a forced quit) reached before its turn was forced, not clean.
-                pty.kill();
-                let phase = if !claude || exited { "clean" } else { "forced" };
-                events.emit(Event::QuitProgress { session_id: id, phase: phase.into(), elapsed_ms: ms(t0) });
-            } else {
-                events.emit(Event::QuitProgress { session_id: id.clone(), phase: "closing".into(), elapsed_ms: 0 });
-                pty.close();
-                let clean = wait_exit_unless(pty.as_ref(), per_session, &forced_now);
-                pty.kill();
-                let phase = if clean { "clean" } else { "forced" };
-                log::info!("quit: {id} {phase} exit={}ms", ms(t0));
-                events.emit(Event::QuitProgress { session_id: id, phase: phase.into(), elapsed_ms: ms(t0) });
-                if clean && !forced_now() {
-                    sleep_unless(settle, &forced_now);
-                }
-            }
+        let done = |engine: &Engine| {
             engine.post(Box::new(|ctx| {
                 if let Some(p) = &mut ctx.state.rt.quit {
                     p.done = (p.done + 1).min(p.total);
                 }
                 ctx.state.touch();
             }));
+        };
+        let (claude_targets, others): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(_, _, claude)| *claude);
+        for (id, pty, _) in others {
+            let t0 = Instant::now();
+            pty.kill();
+            events.emit(Event::QuitProgress { session_id: id, phase: "clean".into(), elapsed_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX) });
+            done(&engine);
+        }
+        let guard = match (&backup_dir, claude_targets.is_empty()) {
+            (Some(dir), false) => {
+                let files = configs.resolve();
+                (!files.is_empty()).then(|| crate::claude_config::take(&files, dir, now_ms()))
+            }
+            _ => None,
+        };
+        let pool_targets: Vec<(String, Arc<dyn Pty>)> = claude_targets.into_iter().map(|(id, pty, _)| (id, pty)).collect();
+        crate::quit_pool::close_all(pool_targets, pool, &forced_now, &|id, phase, elapsed_ms| {
+            events.emit(Event::QuitProgress { session_id: id.to_owned(), phase: phase.to_owned(), elapsed_ms });
+            if phase != "closing" {
+                done(&engine);
+            }
+        });
+        // Every Claude has exited: only now is the config file safe to look at.
+        if let Some(g) = guard {
+            for (file, outcome) in g.verify() {
+                if outcome != crate::claude_config::Outcome::Fine {
+                    log::warn!("quit: {}: {outcome:?}", file.display());
+                }
+            }
         }
         engine.post(Box::new(move |ctx| {
             after_step(ctx.state, ctx.engine);

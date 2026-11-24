@@ -180,6 +180,8 @@ pub struct Snapshot {
     pub quit: Option<Progress>,
     /// The whole quit's wait budget (the per-session wait times the Claude sessions to close).
     pub quit_budget_ms: Option<u64>,
+    /// How many Claude sessions the running quit closes at once.
+    pub quit_slots: Option<u32>,
     /// The Open with list (the editor in Settings).
     pub open_with: Vec<crate::tools::open::OpenWithView>,
     /// Open with entries from CodeShellManager 0.x waiting for the person's answer (the consent
@@ -428,6 +430,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         restart: state.rt.restart,
         quit: state.rt.quit,
         quit_budget_ms: state.rt.quit_budget_ms,
+        quit_slots: state.rt.quit_slots,
         port_forwards: {
             crate::port_forward::prune(&mut state.rt.forwards);
             crate::port_forward::live_views(&state.rt.forwards)
