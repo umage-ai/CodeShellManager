@@ -280,11 +280,7 @@ fn card(ctx: &egui::Context, id: &str, w: f32, body: impl FnOnce(&mut Ui)) {
     let screen = ctx.content_rect();
     let pos = pos2(screen.center().x - w / 2.0, screen.min.y + size::PALETTE_TOP);
     egui::Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::new()
-            .fill(t.pop)
-            .stroke(Stroke::new(size::HAIRLINE, t.surface1))
-            .corner_radius(CornerRadius::same(radius::XL))
-            .shadow(egui::Shadow { offset: [0, 16], blur: 40, spread: 0, color: t.shadow })
+        crate::widgets::overlay_frame(&t)
             .show(ui, |ui| {
                 ui.set_width(w);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -411,7 +407,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 let rect = outer.shrink2(vec2(space::XS + space::XXS, 0.0));
                 let r = ui.interact(rect, Id::new(("pal-row", i)), Sense::click());
                 if i == sel || r.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                    ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                 }
                 if i == sel && scroll {
                     ui.scroll_to_rect(rect, None);
@@ -423,7 +419,7 @@ fn palette(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         let Some(s) = model.session(id) else { continue };
                         ui.painter().rect_filled(
                             Rect::from_center_size(pos2(x + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
-                            CornerRadius::same(radius::SM / 2),
+                            CornerRadius::same(radius::sm() / 2),
                             t.accent(s.accent),
                         );
                         x += size::STRIPE + space::ROW_X;
@@ -1023,7 +1019,7 @@ fn chip(ui: &mut Ui, label: &str, mono: bool, on: bool, max_w: f32, tip: &str) -
     } else {
         (t.crust, t.surface0, t.fg2)
     };
-    ui.painter().rect(rect, CornerRadius::same(radius::MD), fill, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, CornerRadius::same(radius::md()), fill, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
     widgets::paint_text(ui, rect.center(), Align2::CENTER_CENTER, label, font, fg, w - space::ROW_X * 2.0);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
@@ -1046,7 +1042,7 @@ fn tab(ui: &mut Ui, icon_name: &str, label: &str, on: bool, max_w: f32, tip: &st
     icons::paint(ui, Rect::from_min_size(pos2(rect.min.x + space::ROW_X, rect.center().y - icon::LG / 2.0), Vec2::splat(icon::LG)), icon_name, icon::LG, fg);
     widgets::paint_text(ui, pos2(rect.min.x + space::ROW_X + iw, rect.center().y), Align2::LEFT_CENTER, label, font, fg, w - space::ROW_X * 2.0 - iw);
     if on {
-        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - space::XXS), rect.max), CornerRadius::same(radius::SM / 2), t.blue);
+        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - space::XXS), rect.max), CornerRadius::same(radius::sm() / 2), t.blue);
     }
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
@@ -1519,14 +1515,14 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         let t = Tokens::get(ui.ctx());
         // Header: the title (or, editing, the session's name field) and the Esc key cap.
         let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::MD), Sense::hover());
-        ui.painter().rect_filled(hr, CornerRadius { nw: radius::XL, ne: radius::XL, sw: 0, se: 0 }, t.mantle);
+        ui.painter().rect_filled(hr, CornerRadius { nw: radius::xl(), ne: radius::xl(), sw: 0, se: 0 }, t.mantle);
         ui.painter().hline(hr.x_range(), hr.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
         let kw = widgets::kbd_width(ui, "Esc");
         widgets::paint_kbd(ui, Rect::from_center_size(pos2(hr.max.x - PAD - kw / 2.0, hr.center().y), vec2(kw, size::KBD)), "Esc");
         if let Some(id) = &q.edit {
             let accent = model.session(id).map_or(t.blue, |s| t.accent(s.accent));
             let stripe = Rect::from_center_size(pos2(hr.min.x + PAD + size::STRIPE / 2.0, hr.center().y), vec2(size::STRIPE, space::LG));
-            ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), accent);
+            ui.painter().rect_filled(stripe, CornerRadius::same(radius::sm() / 2), accent);
             let tr = ui.painter().text(pos2(stripe.max.x + space::SM, hr.center().y), Align2::LEFT_CENTER, "Edit session", theme::semibold(text::TITLE), t.fg);
             let nr = Rect::from_min_max(
                 pos2(tr.max.x + space::LG, hr.min.y + space::XS + space::XXS),
@@ -1624,7 +1620,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::FOLDER_ROW), Sense::hover());
                             let r = ui.interact(rect, Id::new(("qo-row", i)), Sense::click());
                             if (i == q.sel && !path_wins) || r.hovered() {
-                                ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                                ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                             }
                             if i == q.sel && scroll {
                                 ui.scroll_to_rect(rect, None);
@@ -1828,7 +1824,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         ui.painter().hline(sep.x_range(), sep.center().y, Stroke::new(size::HAIRLINE, t.surface0));
         egui::Frame::NONE
             .fill(t.mantle)
-            .corner_radius(CornerRadius { nw: 0, ne: 0, sw: radius::XL, se: radius::XL })
+            .corner_radius(CornerRadius { nw: 0, ne: 0, sw: radius::xl(), se: radius::xl() })
             .inner_margin(egui::Margin::symmetric(PAD as i8, space::SM as i8 + 2))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());

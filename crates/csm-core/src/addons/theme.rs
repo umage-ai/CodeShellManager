@@ -104,6 +104,152 @@ pub struct ThemeSpec {
     /// Terminal colour ([`TERMINAL_KEYS`]) → colour.
     #[serde(default)]
     pub terminal: BTreeMap<String, String>,
+    /// `[theme.style]`: corners, borders, title bar colours and fonts. Defaults draw today's look.
+    #[serde(default)]
+    pub style: ThemeStyle,
+}
+
+/// Corner roundness (`corners`): every corner radius token is scaled by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Corners {
+    /// The app's own radii (4 to 10 px). The default.
+    #[default]
+    Rounded,
+    /// No rounding at all.
+    Square,
+    /// One and a half times the usual radii.
+    Soft,
+}
+
+impl Corners {
+    pub fn parse(s: &str) -> Option<Corners> {
+        match s {
+            "rounded" => Some(Corners::Rounded),
+            "square" => Some(Corners::Square),
+            "soft" => Some(Corners::Soft),
+            _ => None,
+        }
+    }
+}
+
+/// Edge drawing (`borders`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Borders {
+    /// One hairline. The default.
+    #[default]
+    Flat,
+    /// The classic 3D look: raised buttons and panels, sunken fields, terminal and lists.
+    Bevel,
+}
+
+impl Borders {
+    pub fn parse(s: &str) -> Option<Borders> {
+        match s {
+            "flat" => Some(Borders::Flat),
+            "bevel" => Some(Borders::Bevel),
+            _ => None,
+        }
+    }
+}
+
+/// A font a theme asks for (`ui_font`, `terminal_font`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FontChoice {
+    /// The app's own: Figtree for the UI, JetBrains Mono for the terminal. The default.
+    #[default]
+    Default,
+    /// The bundled monospace font (JetBrains Mono); for the terminal that is the default too.
+    Mono,
+    /// A font file inside the add-on's folder (a path with `/`, ending in .ttf or .otf).
+    File(String),
+}
+
+/// The title bar's colours, as normalised hex. Missing: the theme's own surface and text.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TitleStyle {
+    pub background: Option<String>,
+    pub text: Option<String>,
+    pub inactive_background: Option<String>,
+    pub inactive_text: Option<String>,
+}
+
+/// Largest font file a theme may bring, in bytes.
+pub const MAX_FONT_BYTES: u64 = 4 * 1024 * 1024;
+/// The `ui_font_scale` range, in percent.
+pub const FONT_SCALE_PCT: std::ops::RangeInclusive<u16> = 50..=200;
+
+/// `[theme.style]`: how the theme draws beyond its colours. Every field has a default that is
+/// today's look, so a theme without the table is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThemeStyle {
+    #[serde(default)]
+    pub corners: Corners,
+    #[serde(default)]
+    pub borders: Borders,
+    #[serde(default)]
+    pub titlebar: TitleStyle,
+    #[serde(default)]
+    pub ui_font: FontChoice,
+    /// The UI font's size, in percent of the app's (a pixel font wants its native size).
+    #[serde(default = "hundred")]
+    pub ui_font_scale: u16,
+    #[serde(default)]
+    pub terminal_font: FontChoice,
+}
+
+fn hundred() -> u16 {
+    100
+}
+
+impl Default for ThemeStyle {
+    fn default() -> Self {
+        ThemeStyle {
+            corners: Corners::default(),
+            borders: Borders::default(),
+            titlebar: TitleStyle::default(),
+            ui_font: FontChoice::default(),
+            ui_font_scale: 100,
+            terminal_font: FontChoice::default(),
+        }
+    }
+}
+
+impl ThemeStyle {
+    /// The font files this style names (relative paths), UI font first.
+    pub fn font_files(&self) -> Vec<&str> {
+        [&self.ui_font, &self.terminal_font]
+            .into_iter()
+            .filter_map(|f| match f {
+                FontChoice::File(p) => Some(p.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Whether `rel` is a font path a theme may name: relative, with `/` separators, no `..`, no drive
+/// or root, ending in `.ttf` or `.otf`. Checked again, against the disk, where the file is read.
+pub fn check_font_path(rel: &str) -> Result<(), String> {
+    if rel.is_empty() || rel.len() > 200 {
+        return Err("the path must be 1 to 200 characters".into());
+    }
+    if rel.chars().any(|c| c.is_control() || matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')) {
+        return Err("the path may use only `/` as a separator (no `\\`, drive letters or wildcards)".into());
+    }
+    if rel.starts_with('/') {
+        return Err("the path must be relative to the add-on's folder".into());
+    }
+    if rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+        return Err("the path may not contain `..`, `.` or empty parts".into());
+    }
+    let lower = rel.to_ascii_lowercase();
+    if !(lower.ends_with(".ttf") || lower.ends_with(".otf")) {
+        return Err("the font must be a .ttf or .otf file".into());
+    }
+    Ok(())
 }
 
 impl ThemeSpec {
@@ -177,15 +323,87 @@ pub(crate) fn parse_theme(t: &Table) -> Result<(ThemeSpec, Vec<Problem>), String
     let description = t.get("description").and_then(Value::as_str).map(|d| clean_text(d, MAX_DESCRIPTION)).unwrap_or_default();
     let mut problems = Vec::new();
     for key in t.keys() {
-        if !matches!(key.as_str(), "id" | "name" | "base" | "description" | "colors" | "terminal") {
+        if !matches!(key.as_str(), "id" | "name" | "base" | "description" | "colors" | "terminal" | "style") {
             problems.push(Problem { scope: scope.clone(), message: format!("unknown key `{}`; ignored", clean_text(key, 40)) });
         }
     }
     let colors = color_table(t, "colors", &PALETTE_KEYS, &scope, &mut problems);
     let terminal = color_table(t, "terminal", &TERMINAL_KEYS, &scope, &mut problems);
-    let spec = ThemeSpec { id: id.to_owned(), name, base, description, colors, terminal };
+    let style = parse_style(t, &scope, &mut problems);
+    let spec = ThemeSpec { id: id.to_owned(), name, base, description, colors, terminal, style };
     problems.extend(contrast_warnings(&spec).into_iter().map(|message| Problem { scope: scope.clone(), message }));
     Ok((spec, problems))
+}
+
+/// `[theme.style]`: each key checked on its own; a bad one is reported and keeps its default.
+fn parse_style(t: &Table, scope: &str, problems: &mut Vec<Problem>) -> ThemeStyle {
+    let mut style = ThemeStyle::default();
+    let items = match t.get("style") {
+        None => return style,
+        Some(Value::Table(items)) => items,
+        Some(_) => {
+            problems.push(Problem { scope: scope.to_owned(), message: "`style` must be a table; ignored".into() });
+            return style;
+        }
+    };
+    let mut bad = |key: &str, message: String| problems.push(Problem { scope: scope.to_owned(), message: format!("`style.{key}` {message}") });
+    for (key, value) in items {
+        let shown = clean_text(key, 40);
+        match key.as_str() {
+            "corners" => match value.as_str().and_then(Corners::parse) {
+                Some(c) => style.corners = c,
+                None => bad(&shown, "must be \"rounded\", \"square\" or \"soft\"; rounded is used".into()),
+            },
+            "borders" => match value.as_str().and_then(Borders::parse) {
+                Some(b) => style.borders = b,
+                None => bad(&shown, "must be \"flat\" or \"bevel\"; flat is used".into()),
+            },
+            "ui_font" | "terminal_font" => {
+                let choice = match value.as_str() {
+                    Some("default") => Ok(FontChoice::Default),
+                    Some("mono") => Ok(FontChoice::Mono),
+                    Some(path) => check_font_path(path).map(|()| FontChoice::File(path.to_owned())),
+                    None => Err("is not text".to_owned()),
+                };
+                match choice {
+                    Ok(c) if key == "ui_font" => style.ui_font = c,
+                    Ok(c) => style.terminal_font = if c == FontChoice::Mono { FontChoice::Default } else { c },
+                    Err(why) => bad(&shown, format!("cannot be used ({why}); use \"default\", \"mono\" or a font file in the add-on's folder; the default font is used")),
+                }
+            }
+            "ui_font_scale" => {
+                let v = value.as_float().or_else(|| value.as_integer().map(|n| n as f64));
+                match v.filter(|v| v.is_finite()).map(|v| (v * 100.0).round()).filter(|p| (0.0..=f64::from(u16::MAX)).contains(p)) {
+                    Some(p) if FONT_SCALE_PCT.contains(&(p as u16)) => style.ui_font_scale = p as u16,
+                    _ => bad(&shown, "must be a number from 0.5 to 2.0; 1.0 is used".into()),
+                }
+            }
+            "titlebar" => match value {
+                Value::Table(colors) => {
+                    for (ck, cv) in colors {
+                        let cshown = clean_text(ck, 40);
+                        let slot = match ck.as_str() {
+                            "background" => &mut style.titlebar.background,
+                            "text" => &mut style.titlebar.text,
+                            "inactive_background" => &mut style.titlebar.inactive_background,
+                            "inactive_text" => &mut style.titlebar.inactive_text,
+                            _ => {
+                                bad(&format!("titlebar.{cshown}"), "is not a title bar key; ignored".into());
+                                continue;
+                            }
+                        };
+                        match cv.as_str().and_then(parse_hex) {
+                            Some(c) => *slot = Some(to_hex(c)),
+                            None => bad(&format!("titlebar.{cshown}"), "must be \"#rrggbb\" or \"#rrggbbaa\"; the theme's own colour is used".into()),
+                        }
+                    }
+                }
+                _ => bad(&shown, "must be a table of colours; ignored".into()),
+            },
+            _ => bad(&shown, "is not a style key; ignored".into()),
+        }
+    }
+    style
 }
 
 /// A `[theme.<table>]` of colours: known keys with valid hex only; the rest reported.
@@ -263,8 +481,63 @@ mod tests {
     #[test]
     fn the_built_in_palettes_pass_their_own_contrast_checks() {
         for base in [ThemeBase::Dark, ThemeBase::Light] {
-            let spec = ThemeSpec { id: "x".into(), name: "x".into(), base, description: String::new(), colors: BTreeMap::new(), terminal: BTreeMap::new() };
+            let spec = ThemeSpec { id: "x".into(), name: "x".into(), base, description: String::new(), colors: BTreeMap::new(), terminal: BTreeMap::new(), style: ThemeStyle::default() };
             assert!(contrast_warnings(&spec).is_empty(), "{base:?}: {:?}", contrast_warnings(&spec));
+        }
+    }
+    fn parse(toml_text: &str) -> (ThemeSpec, Vec<Problem>) {
+        let t: Table = toml_text.parse().unwrap();
+        parse_theme(&t).unwrap()
+    }
+
+    const HEAD: &str = "id = \"x\"\nname = \"X\"\nbase = \"light\"\n";
+
+    #[test]
+    fn a_theme_without_style_has_the_default_style() {
+        let (spec, problems) = parse(HEAD);
+        assert_eq!(spec.style, ThemeStyle::default());
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn a_valid_style_table_is_read() {
+        let (spec, problems) = parse(&format!(
+            "{HEAD}[style]\ncorners = \"square\"\nborders = \"bevel\"\nui_font = \"fonts/W95FA.otf\"\nui_font_scale = 1.25\nterminal_font = \"mono\"\n[style.titlebar]\nbackground = \"#000080\"\ntext = \"#FFFFFF\"\ninactive_background = \"#808080\"\n"
+        ));
+        assert!(problems.is_empty(), "{problems:?}");
+        let s = spec.style;
+        assert_eq!((s.corners, s.borders), (Corners::Square, Borders::Bevel));
+        assert_eq!(s.ui_font, FontChoice::File("fonts/W95FA.otf".into()));
+        assert_eq!(s.terminal_font, FontChoice::Default, "mono is the terminal's own font");
+        assert_eq!(s.ui_font_scale, 125);
+        assert_eq!(s.titlebar.background.as_deref(), Some("#000080"));
+        assert_eq!(s.titlebar.text.as_deref(), Some("#ffffff"));
+        assert_eq!(s.titlebar.inactive_text, None);
+        assert_eq!(s.font_files(), vec!["fonts/W95FA.otf"]);
+    }
+
+    #[test]
+    fn bad_style_values_and_unknown_keys_are_problems_not_failures() {
+        let (spec, problems) = parse(&format!(
+            "{HEAD}[style]\ncorners = \"pointy\"\nborders = 3\nui_font = \"../x.ttf\"\nterminal_font = \"C:/Windows/Fonts/a.ttf\"\nui_font_scale = 9\nsparkle = true\ntitlebar = {{ background = \"navy\", glow = \"#fff\" }}\n"
+        ));
+        assert_eq!(spec.style, ThemeStyle::default());
+        let text: Vec<&str> = problems.iter().map(|p| p.message.as_str()).collect();
+        for key in ["style.corners", "style.borders", "style.ui_font`", "style.terminal_font", "style.ui_font_scale", "style.sparkle", "style.titlebar.background", "style.titlebar.glow"] {
+            assert!(text.iter().any(|m| m.contains(key)), "{key} in {text:?}");
+        }
+        let (spec, problems) = parse(&format!("{HEAD}style = 3\n"));
+        assert_eq!(spec.style, ThemeStyle::default());
+        assert!(problems.iter().any(|p| p.message.contains("`style` must be a table")));
+    }
+
+    #[test]
+    fn font_paths_must_stay_inside_the_add_on() {
+        for ok in ["fonts/a.ttf", "A.OTF", "a/b/c.otf"] {
+            assert!(check_font_path(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "/a.ttf", "../a.ttf", "a/../b.ttf", "a/./b.ttf", "a//b.ttf", r"a\b.ttf", "C:/a.ttf", "a.woff", "a.ttf.exe", "fonts/", "a\0.ttf"] {
+            assert!(check_font_path(bad).is_err(), "{bad}");
         }
     }
 }

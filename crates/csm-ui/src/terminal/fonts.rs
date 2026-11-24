@@ -103,6 +103,8 @@ pub struct RasterGlyph {
 
 pub struct FontSet {
     primary: Face,
+    /// The face the app started with, while a theme's own is the primary.
+    original: Option<Face>,
     fallbacks: Vec<Face>,
     pub size_pt: f32,
     pub ligatures: bool,
@@ -124,6 +126,7 @@ impl FontSet {
     pub fn new(primary: Face, fallbacks: Vec<Face>, size_pt: f32, ligatures: bool) -> Self {
         Self {
             primary,
+            original: None,
             fallbacks,
             size_pt,
             ligatures,
@@ -135,6 +138,24 @@ impl FontSet {
             metrics: HashMap::new(),
             shaped_runs: 0,
         }
+    }
+
+    /// Makes a theme's face the primary one (`Some`), or brings back the one the app started
+    /// with (`None`). Everything keyed by the old face is dropped; the caller clears the atlas.
+    pub fn use_theme_face(&mut self, face: Option<Face>) {
+        match face {
+            Some(f) => {
+                let old = std::mem::replace(&mut self.primary, f);
+                self.original.get_or_insert(old);
+            }
+            None => match self.original.take() {
+                Some(o) => self.primary = o,
+                None => return,
+            },
+        }
+        self.lookup.clear();
+        self.shape_cache.clear();
+        self.metrics.clear();
     }
 
     pub fn describe(&self) -> String {

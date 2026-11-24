@@ -36,6 +36,8 @@ Notable components:
 | `conpty.dll`, `OpenConsole.exe` (Windows) | MIT ([microsoft/terminal](https://github.com/microsoft/terminal)) | Microsoft's ConPTY package `Microsoft.Windows.Console.ConPTY` from nuget.org, Microsoft-signed; fetched at build time by `scripts/get-conpty.ps1`, never committed |
 | JetBrains Mono (terminal font) | SIL OFL 1.1 | `crates/csm-ui/assets/fonts/OFL-JetBrainsMono.txt` |
 | Figtree (UI font) | SIL OFL 1.1 | `crates/csm-ui/assets/fonts/OFL-Figtree.txt` |
+| W95FA (the Windows 98 sample theme's UI font, `samples/addons/theme-fun/fonts`) | SIL OFL 1.1 | by Alina Sava ([FontsArena](https://fontsarena.com/w95fa-by-alina-sava/)); `OFL-W95FA.txt` beside it. Converted from WOFF to OpenType, glyphs unchanged |
+| Varela Round (the Blossom sample theme's UI font, same folder) | SIL OFL 1.1 | The Varela Round Project Authors; `OFL-VarelaRound.txt` beside it, unmodified |
 | The umage.ai logo | © umage.ai | shown on the About page; not covered by the MIT licence |
 
 The colour themes follow the [Catppuccin](https://github.com/catppuccin/catppuccin) palette (MIT). The sample Themes pack (`samples/addons/themes`) carries the official Catppuccin Frappé and Macchiato palettes from [catppuccin/palette](https://github.com/catppuccin/palette) (MIT License, Copyright (c) 2021 Catppuccin); its High contrast theme is our own.

@@ -457,7 +457,7 @@ fn cached(cx: &mut Cx<'_>, key: &str, id: u64, build: impl FnOnce() -> Model) ->
 /// "Too large", "empty": a CSM-drawn notice in place of the view.
 fn notice(ui: &mut Ui, cx: &Cx<'_>, w: &Withheld) {
     let t = cx.t;
-    egui::Frame::new().fill(t.mantle).stroke(Stroke::new(size::HAIRLINE, t.surface0)).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::same(space::MD as i8)).show(ui, |ui| {
+    egui::Frame::new().fill(t.mantle).stroke(Stroke::new(size::HAIRLINE, t.surface0)).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::same(space::MD as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let r = ui.add(egui::Label::new(egui::RichText::new(&w.0).font(theme::regular(text::BODY)).color(t.muted)).wrap());
         r.widget_info({
@@ -939,7 +939,7 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
                 let total = widths.iter().sum::<f32>() + space::XS * (widths.len().saturating_sub(1)) as f32 + space::XS * 2.0;
                 let bar = Rect::from_min_size(pos2((content.max.x - total - space::LG).max(content.min.x), by), vec2(total, size::CONTROL + space::XS * 2.0));
                 if bar.max.y >= vis.min.y && bar.min.y <= vis.max.y {
-                    painter.rect(bar, CornerRadius::same(radius::MD), t.pop, Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
+                    painter.rect(bar, CornerRadius::same(radius::md()), t.pop, Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
                     let mut x = bar.min.x + space::XS;
                     for (a, aw) in overlay.range_actions.iter().zip(&widths) {
                         let r = Rect::from_min_size(pos2(x, bar.min.y + space::XS), vec2(*aw, size::CONTROL));
@@ -1004,7 +1004,7 @@ fn show(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, m: &Arc<Model>, overlay: &Overl
         if resp.dragged() && track.width() > thumb_w {
             hscroll = (hscroll + resp.drag_delta().x * max_h / (track.width() - thumb_w)).clamp(0.0, max_h);
         }
-        inner.painter().rect_filled(thumb, CornerRadius::same(radius::SM), if resp.hovered() || resp.dragged() { t.surface2 } else { t.surface1 });
+        inner.painter().rect_filled(thumb, CornerRadius::same(radius::sm()), if resp.hovered() || resp.dragged() { t.surface2 } else { t.surface1 });
         resp.widget_info(|| WidgetInfo::labeled(WidgetType::Slider, true, "Scroll sideways"));
     }
     cx.st.view.hscroll.insert(vkey.clone(), hscroll);
@@ -1041,7 +1041,7 @@ fn marks_and_badges(ui: &Ui, painter: &egui::Painter, t: &Tokens, geo: &Geo, sid
             match mk.count {
                 Some(n) => {
                     let label = n.to_string();
-                    painter.rect_filled(Rect::from_center_size(pos2(x + space::XS, cell.center().y), vec2(size::MARK_COUNT, size::MARK_COUNT)), CornerRadius::same(radius::PILL), Tokens::tint(c, alpha::MARK));
+                    painter.rect_filled(Rect::from_center_size(pos2(x + space::XS, cell.center().y), vec2(size::MARK_COUNT, size::MARK_COUNT)), CornerRadius::same(radius::pill()), Tokens::tint(c, alpha::MARK));
                     painter.text(pos2(x + space::XS, cell.center().y), Align2::CENTER_CENTER, label, theme::medium(text::TINY), c);
                 }
                 None => {
@@ -1063,7 +1063,7 @@ fn badge(ui: &mut Ui, painter: &egui::Painter, t: &Tokens, geo: &Geo, side: Side
     let r = Rect::from_center_size(cell.center(), vec2(size::THREAD_BADGE_W, size::THREAD_BADGE_H));
     let resp = ui.interact(r, id, Sense::click());
     let c = t.thread_bar;
-    painter.rect(r, CornerRadius::same(radius::PILL), Tokens::tint(c, if resp.hovered() { alpha::THREAD_BADGE_HOVER } else { alpha::THREAD_BADGE }), Stroke::new(size::HAIRLINE, c), egui::StrokeKind::Inside);
+    painter.rect(r, CornerRadius::same(radius::pill()), Tokens::tint(c, if resp.hovered() { alpha::THREAD_BADGE_HOVER } else { alpha::THREAD_BADGE }), Stroke::new(size::HAIRLINE, c), egui::StrokeKind::Inside);
     painter.text(r.center(), Align2::CENTER_CENTER, count.to_string(), theme::medium(text::TINY), t.fg);
     resp.widget_info({
         let l = format!("Open thread ({count})");

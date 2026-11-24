@@ -211,9 +211,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, actions: &mut Vec<Ac
 fn run_row(ui: &mut Ui, t: &Tokens, s: &SessionView, r: &RunView, on: bool, actions: &mut Vec<Action>) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG + space::LG), Sense::click());
     if on {
-        ui.painter().rect(rect, CornerRadius::same(radius::MD), t.field, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+        ui.painter().rect(rect, CornerRadius::same(radius::md()), t.field, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_hover);
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Run command: {}", r.label)));
     let running = r.state == RunState::Running;
@@ -237,7 +237,7 @@ fn run_row(ui: &mut Ui, t: &Tokens, s: &SessionView, r: &RunView, on: bool, acti
             pos2(lr.max.x + space::XS + space::XXS, b.center().y - space::SM + space::XXS),
             vec2(space::LG + space::XS + space::XXS, space::LG - space::XXS),
         );
-        ui.painter().rect_stroke(dr, CornerRadius::same(radius::SM - 1), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+        ui.painter().rect_stroke(dr, CornerRadius::same(radius::sm().saturating_sub(1)), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
         ui.painter().text(dr.center(), Align2::CENTER_CENTER, "F5", theme::medium(text::CAPS), t.muted);
     }
     let (c, ic) = match r.state {
@@ -250,7 +250,7 @@ fn run_row(ui: &mut Ui, t: &Tokens, s: &SessionView, r: &RunView, on: bool, acti
     let chip =
         Rect::from_min_size(pos2(rect.max.x - space::SM - dw, b.center().y - space::SM - space::XXS / 2.0), vec2(dw, space::LG + size::HAIRLINE));
     if r.state != RunState::NotRun {
-        ui.painter().rect_filled(chip, CornerRadius::same(radius::PILL), Tokens::tint(c, alpha::PILL));
+        ui.painter().rect_filled(chip, CornerRadius::same(radius::pill()), Tokens::tint(c, alpha::PILL));
     }
     let ir = Rect::from_min_size(pos2(chip.min.x + space::XS + space::XXS, chip.center().y - icon::XS / 2.0), Vec2::splat(icon::XS));
     if running {
@@ -296,7 +296,7 @@ fn output(ui: &mut Ui, app: &mut CsmApp, t: &Tokens, s: &SessionView, r: &RunVie
     egui::Frame::new()
         .fill(t.term_bg)
         .stroke(Stroke::new(size::HAIRLINE, t.surface0))
-        .corner_radius(CornerRadius::same(radius::MD))
+        .corner_radius(CornerRadius::same(radius::md()))
         .inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::SM as i8))
         .show(ui, |ui| {
             ui.set_min_size(vec2(ui.available_width(), h));

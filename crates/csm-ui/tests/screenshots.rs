@@ -569,6 +569,7 @@ fn themes_pack() -> csm_engine::addons::AddonSummary {
         process_calls: vec![],
         process: None,
         themes: parsed.themes,
+        theme_fonts: Vec::new(),
         problems: vec![],
     }
 }

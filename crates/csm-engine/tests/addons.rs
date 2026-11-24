@@ -424,3 +424,60 @@ fn an_enabled_theme_reloads_when_its_file_changes_and_stays_enabled() {
     h.wait_until("off again", |s| s.addons.first().is_some_and(|a| a.state == csm_engine::addons::AddonState::Disabled));
     h.engine.shutdown();
 }
+
+const FONT_THEMES: &str = r##"
+[addon]
+id = "fonts"
+name = "Fonts"
+version = "0.1.0"
+api = 1
+kind = "pack"
+
+[[theme]]
+id = "good"
+name = "Good"
+base = "light"
+[theme.style]
+ui_font = "fonts/good.otf"
+
+[[theme]]
+id = "broken"
+name = "Broken"
+base = "light"
+[theme.style]
+ui_font = "fonts/broken.ttf"
+terminal_font = "fonts/missing.ttf"
+
+[[theme]]
+id = "escape"
+name = "Escape"
+base = "light"
+[theme.style]
+ui_font = "../outside.ttf"
+"##;
+
+#[test]
+fn theme_fonts_load_on_the_scan_and_bad_ones_are_reported_not_fatal() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    let root = dir.path().join("addons");
+    write_addon(&root, "fonts", FONT_THEMES);
+    fs::create_dir_all(root.join("fonts").join("fonts")).unwrap();
+    let font = include_bytes!("../../../samples/addons/theme-fun/fonts/W95FA.otf");
+    fs::write(root.join("fonts").join("fonts").join("good.otf"), font).unwrap();
+    fs::write(root.join("fonts").join("fonts").join("broken.ttf"), b"not a font").unwrap();
+    let h = start(&state);
+    h.wait_until("add-ons", |s| s.addons.len() == 1);
+    let snap = h.engine.view();
+    let a = snap.addons.iter().find(|a| a.id == "fonts").unwrap();
+    assert_eq!(a.theme_fonts.len(), 1, "only the good font loaded: {:?}", a.theme_fonts);
+    assert_eq!((a.theme_fonts[0].0.as_str(), a.theme_fonts[0].1.0.len()), ("fonts/good.otf", font.len()));
+    let problems = a.problems.join("\n");
+    assert!(problems.contains("broken") && problems.contains("not a TrueType or OpenType font"), "{problems}");
+    assert!(problems.contains("fonts/missing.ttf") && problems.contains("no such file"), "{problems}");
+    assert!(problems.contains("style.ui_font") && problems.contains("`..`"), "the escaping path is refused at parse: {problems}");
+    assert!(problems.contains("the default font is used"), "{problems}");
+    // The themes themselves still load.
+    assert_eq!(a.themes.len(), 3);
+    h.engine.shutdown();
+}

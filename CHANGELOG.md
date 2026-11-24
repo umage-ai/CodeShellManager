@@ -37,6 +37,16 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 
 ### New
 
+- **Fun themes sample add-on** (`theme-fun`, Settings > Add-ons > Install samples): Emacs (dark),
+  Windows 98 and Blossom (light), original themes that also change how the window draws.
+- **Themes can style the window, not only colour it** (`[theme.style]`, docs/addons.md, Themes):
+  `corners` (rounded, square, soft), `borders` (flat or a 3D `bevel`), title bar colours, and
+  `ui_font` / `terminal_font` (the bundled fonts, or a font file the theme add-on brings: read on
+  a worker, at most 4 MiB, inside the add-on's folder). Invalid values are listed as problems;
+  a theme without the table looks as before. The sample themes use it: Windows 98 has bevels, a
+  navy title bar and the open-licensed W95FA pixel font, Emacs a monospace UI, Blossom soft corners
+  and Varela Round.
+
 - **One status vocabulary**: every session is Working, Needs you (approval or question), Done,
   Idle, Asleep or Error, shown the same way in the sidebar, pane header, palette and tray. OSC 7501
   Program Status drives it when the program reports; screen detection fills in when it doesn't.

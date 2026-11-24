@@ -633,6 +633,8 @@ pub struct CsmApp {
     /// Actions raised inside torn-off windows, drained by the main frame.
     pub remote_actions: Arc<Mutex<Vec<Action>>>,
     theme_applied: Option<theme::Palette>,
+    /// The theme's `[theme.style]` look as last applied (corners, borders, title bar, fonts).
+    look_applied: Option<theme::ThemeLook>,
     fonts_installed: bool,
     /// `app_quit` finished: the window may close now.
     pub quit_ready: bool,
@@ -699,6 +701,7 @@ impl CsmApp {
             model,
             remote_actions: Arc::new(Mutex::new(Vec::new())),
             theme_applied: None,
+            look_applied: None,
             fonts_installed: false,
             quit_ready: false,
             prefs: Prefs::default(),
@@ -1164,14 +1167,25 @@ impl CsmApp {
         // The chosen theme for this mode; an add-on theme arrives with the snapshot (and again
         // when its file changes), so this follows it without reading anything here.
         let (palette, _) = self.theme_palette(kind);
-        if self.theme_applied != Some(palette) {
-            theme::apply_palette(ctx, &palette);
+        let look = self.theme_look(kind);
+        let mut host = lock(&self.host);
+        if self.theme_applied != Some(palette) || self.look_applied.as_ref() != Some(&look) {
+            theme::apply_look(ctx, &palette, &look);
+            // The terminal's font follows the theme's (the face is built from bytes already in
+            // memory; glyphs made with the old one leave the atlas).
+            if self.look_applied.as_ref().map(|l| &l.terminal_font) != Some(&look.terminal_font) {
+                let face = look.terminal_font.as_ref().and_then(|b| crate::terminal::fonts::face_from_bytes(b.0.as_ref().clone(), 0, "theme font".to_owned()));
+                host.renderer.fonts.use_theme_face(face);
+                if let Some(atlas) = host.renderer.atlas.as_mut() {
+                    atlas.clear();
+                }
+            }
             self.theme_applied = Some(palette);
+            self.look_applied = Some(look);
         }
         // Terminal glyph weight follows the theme (measured against egui's text: see
         // `tests/text_weight.rs`); glyphs already in the atlas were made with the old curve.
         let want = crate::terminal::fonts::Coverage::for_dark_theme(kind == ThemeKind::Mocha);
-        let mut host = lock(&self.host);
         let size = self.prefs.terminal_font_size.unwrap_or(host.base_font_size);
         if (host.renderer.fonts.size_pt - size).abs() > f32::EPSILON {
             // Cell metrics and glyphs are keyed by pixel size: nothing else to invalidate.
@@ -1193,6 +1207,12 @@ impl CsmApp {
     pub fn theme_palette(&self, kind: ThemeKind) -> (theme::Palette, Option<String>) {
         let id = if kind == ThemeKind::Mocha { &self.prefs.theme_dark } else { &self.prefs.theme_light };
         theme::resolve(kind, id, &self.model.addons)
+    }
+
+    /// The `[theme.style]` look drawn in `kind`'s mode (the built-in look when the chosen theme is not available).
+    pub fn theme_look(&self, kind: ThemeKind) -> theme::ThemeLook {
+        let id = if kind == ThemeKind::Mocha { &self.prefs.theme_dark } else { &self.prefs.theme_light };
+        theme::resolve_look(kind, id, &self.model.addons)
     }
 
     /// The theme to draw: the snapshot's, or the OS's when the setting is `system`.

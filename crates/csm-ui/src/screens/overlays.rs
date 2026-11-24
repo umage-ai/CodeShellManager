@@ -269,7 +269,7 @@ fn open_with_offer(ctx: &egui::Context, app: &CsmApp, actions: &mut Vec<Action>)
                     )
                     .wrap(),
                 );
-                egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::same(space::SM as i8)).show(
+                egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::same(space::SM as i8)).show(
                     ui,
                     |ui| {
                         ui.set_width(ui.available_width());
@@ -347,7 +347,7 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
                     if !params.is_empty() {
                         egui::Frame::new()
                             .fill(t.crust)
-                            .corner_radius(CornerRadius::same(radius::MD))
+                            .corner_radius(CornerRadius::same(radius::md()))
                             .inner_margin(egui::Margin::same(space::SM as i8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -415,7 +415,7 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
                     let cy = r.center().y;
                     ui.painter().rect_filled(
                         Rect::from_center_size(pos2(r.min.x + space::MD + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
-                        CornerRadius::same(radius::SM / 2),
+                        CornerRadius::same(radius::sm() / 2),
                         t.accent(s.accent),
                     );
                     ui.painter().text(
@@ -574,7 +574,7 @@ fn shutdown_row(ui: &mut Ui, t: &Tokens, row: &crate::model::ShutdownRow, s: &cr
     }
     ui.painter().rect_filled(
         Rect::from_center_size(pos2(g.max.x + space::ROW_X, cy), vec2(size::STRIPE, icon::MD)),
-        CornerRadius::same(radius::SM / 2),
+        CornerRadius::same(radius::sm() / 2),
         t.accent(s.accent),
     );
     let claude = s.is_claude();

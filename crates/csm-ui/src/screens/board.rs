@@ -259,7 +259,7 @@ pub fn show(ui: &mut Ui, area: Rect, model: &UiModel, scope: &Scope, last_line: 
     {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("board-drag")));
         let r = Rect::from_min_size(pos + vec2(space::SM, space::SM), vec2(col_w - space::LG, size::BOARD_LINE + space::SM * 2.0));
-        painter.rect(r, CornerRadius::same(radius::MD), t.pop, Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
+        painter.rect(r, CornerRadius::same(radius::md()), t.pop, Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
         let g = ui.ctx().fonts_mut(|f| {
             let mut job = egui::text::LayoutJob::simple_singleline(task.title.clone(), theme::medium(text::SMALL), t.fg);
             job.wrap = egui::text::TextWrapping::truncate_at_width(r.width() - space::MD * 2.0);
@@ -283,7 +283,7 @@ fn column(
     actions: &mut Vec<Action>,
 ) {
     let t = Tokens::get(ui.ctx());
-    ui.painter().rect_filled(r, CornerRadius::same(radius::LG), t.mantle);
+    ui.painter().rect_filled(r, CornerRadius::same(radius::lg()), t.mantle);
     let cards = p.column(c);
     let count = cards.len() + if c == Column::Idle { p.asleep.len() } else { 0 } + if c == Column::Done { p.done_more } else { 0 };
     let head = Rect::from_min_size(r.min, vec2(r.width(), size::CONTROL + space::SM));
@@ -365,10 +365,10 @@ fn agent_card(
     } else {
         Stroke::new(size::HAIRLINE, t.surface0)
     };
-    let cr = CornerRadius::same(radius::MD);
+    let cr = CornerRadius::same(radius::md());
     ui.painter().rect(rect, cr, t.bg, stroke, StrokeKind::Inside);
     let stripe = Rect::from_min_size(rect.min, vec2(size::STRIPE, rect.height()));
-    ui.painter().rect_filled(stripe, CornerRadius { nw: radius::MD, sw: radius::MD, ne: 0, se: 0 }, t.accent(s.accent));
+    ui.painter().rect_filled(stripe, CornerRadius { nw: radius::md(), sw: radius::md(), ne: 0, se: 0 }, t.accent(s.accent));
     let x0 = rect.min.x + space::SM + size::STRIPE;
     let x1 = rect.max.x - space::SM;
     let line = |i: f32| rect.min.y + space::SM + size::BOARD_LINE * (i + 0.5);
@@ -388,7 +388,7 @@ fn agent_card(
         let br = Rect::from_min_size(pos2(x1 - bw, line(1.0) - size::BOARD_LINE / 2.0), vec2(bw, size::BOARD_LINE));
         let b = ui.interact(br, Id::new(("board-add-task", s.id.as_str())), Sense::click());
         named(&b, WidgetType::Button, format!("New task for {}", s.name));
-        ui.painter().rect_filled(br, CornerRadius::same(radius::SM), if b.hovered() { t.row_sel } else { t.field });
+        ui.painter().rect_filled(br, CornerRadius::same(radius::sm()), if b.hovered() { t.row_sel } else { t.field });
         ui.painter().text(br.center(), Align2::CENTER_CENTER, label, theme::medium(text::CAPTION), t.fg2);
         if b.clicked() {
             actions.push(Action::NewTaskPrompt { project: s.project.clone(), assign_to: Some(s.id.clone()) });
@@ -456,7 +456,7 @@ fn task_card(ui: &mut Ui, w: f32, model: &UiModel, task: &Task, c: Column, actio
     let being_dragged = egui::DragAndDrop::payload::<TaskDrag>(ui.ctx()).is_some_and(|d| d.0 == task.id);
     let fill = if being_dragged { Tokens::tint(t.bg, alpha::ASLEEP) } else { t.bg };
     let stroke = if resp.hovered() { t.surface2 } else { t.surface0 };
-    ui.painter().rect(rect, CornerRadius::same(radius::MD), fill, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, CornerRadius::same(radius::md()), fill, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
     let x0 = rect.min.x + space::SM;
     let x1 = rect.max.x - space::SM;
     let line = |i: f32| rect.min.y + space::SM + size::BOARD_LINE * (i + 0.5);
@@ -487,7 +487,7 @@ fn task_card(ui: &mut Ui, w: f32, model: &UiModel, task: &Task, c: Column, actio
             let b = ui.interact(br, Id::new((label, task.id.as_str())), Sense::click());
             named(&b, WidgetType::Button, format!("{label} {}", task.id));
             let (bg, fg) = if primary { (t.blue, t.on_accent) } else { (if b.hovered() { t.row_sel } else { t.field }, t.fg) };
-            ui.painter().rect(br, CornerRadius::same(radius::MD), bg, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+            ui.painter().rect(br, CornerRadius::same(radius::md()), bg, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
             ui.painter().text(br.center(), Align2::CENTER_CENTER, label, theme::medium(text::SMALL), fg);
             if b.clicked() {
                 actions.push(Action::Tool(tool, json!({"task_id": task.id})));
@@ -524,7 +524,7 @@ fn asleep_row(ui: &mut Ui, w: f32, asleep: &[&SessionView], scope: &Scope, actio
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::BOARD_LINE + space::SM), Sense::click());
     named(&resp, WidgetType::Button, format!("{} asleep", asleep.len()));
     if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_hover);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::sm()), t.row_hover);
     }
     icons::paint(
         ui,
@@ -548,7 +548,7 @@ fn asleep_row(ui: &mut Ui, w: f32, asleep: &[&SessionView], scope: &Scope, actio
             let (r, row) = ui.allocate_exact_size(vec2(w, size::BOARD_LINE), Sense::click());
             named(&row, WidgetType::Button, format!("Agent: {}", s.name));
             if row.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(radius::SM), t.row_hover);
+                ui.painter().rect_filled(r, CornerRadius::same(radius::sm()), t.row_hover);
             }
             icons::paint_status(
                 ui,
