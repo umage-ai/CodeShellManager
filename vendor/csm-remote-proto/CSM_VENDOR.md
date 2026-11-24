@@ -9,7 +9,8 @@ access to its source repository, which is private for now.
   only where workspace inheritance cannot work, because `vendor/*` is outside the CSM workspace:
   - `version`, `edition`, `license`, `rust-version` and `publish` are written out as literal values
     (the same values as the csm-relay workspace).
-  - `[lints] workspace = true` is replaced by the same `unsafe_code` and clippy denies written out.
+  - `[lints] workspace = true` is replaced by the workspace's lint levels written out (`unsafe_code` deny,
+    the clippy lints warn).
   - The `[dev-dependencies]` section (`snow`) is removed, and `tests/` is omitted: the vector tests read
     `phone/test/fixtures/` from the csm-relay repository, which CSM does not have. The vector tests stay
     in csm-relay, where they run against this same code.

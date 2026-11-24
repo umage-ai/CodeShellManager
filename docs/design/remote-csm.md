@@ -539,7 +539,7 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 |---|---|---|
 | **WireGuard or Tailscale** (primary) | Best | Direct TCP to the VPN address. Tailscale works the same way: bind to the `100.x` address. |
 | **SSH tunnel** | Good for power users | `ssh -L 47300:127.0.0.1:47300 office`, with the server bound to loopback. The Noise layer stays. |
-| **csm-relay** | For people with no VPN | E2E Noise already exists, and the relay sees ciphertext only. It needs: a peer client endpoint (today `/v1/client` is phone-shaped, with a browser `Origin` check); higher per-channel limits (256 KiB/s and 50 frames/s, `limits.rs:16-17`; 16 channels per host); and backpressure that tolerates bursts. A self-hosted relay is fine; umage's relay is for umage only (`relay/README.md`). |
+| **csm-relay** | For people with no VPN | E2E Noise already exists, and the relay sees ciphertext only. It needs: a peer client endpoint (today `/v1/client` is phone-shaped, with a browser `Origin` check); higher per-channel limits (256 KiB/s and 50 frames/s, `limits.rs:16-17`; 16 channels per host); and backpressure that tolerates bursts. A self-hosted relay is fine; umage's relay is for umage only (the csm-relay repository's `README.md`). |
 | **Direct public port with TLS** | Not recommended | It exposes the shell port to the internet. If someone insists: Noise is still required, plus rate limits as on the relay. |
 
 ---
