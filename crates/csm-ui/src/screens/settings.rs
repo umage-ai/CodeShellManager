@@ -49,6 +49,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         resp.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label.clone()));
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.ui.settings.section = sec;
+            app.ui.settings.keymap_capture = None;
             if sec == SettingsSection::Usage {
                 app.ui.settings.usage = crate::screens::backup::UsageState::default();
                 app.ui.usage.summary_asked = false;

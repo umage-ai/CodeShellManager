@@ -196,23 +196,18 @@ fn f10_opens_the_main_menu_and_f10_or_escape_closes_it() {
 }
 
 #[test]
-fn a_clean_alt_tap_opens_the_main_menu_and_alt_with_a_key_does_not() {
+fn an_alt_tap_does_not_open_the_main_menu_and_f10_does() {
+    // The clean Alt tap is not shipped (docs/design/keyboard.md, open question 3): a stray tap must
+    // not take the keys of the terminal, and F10 is the one way in.
     let mut h = h();
     tap_alt(&mut h);
-    assert!(main_open(&h), "a clean Alt tap opens the main menu");
-    tap_alt(&mut h);
-    assert!(!main_open(&h), "a second tap closes it");
-    // Alt+F is a chord: its key goes to the terminal, and the release is no tap.
-    h.key_press_modifiers(Modifiers::ALT, Key::F);
+    assert!(!main_open(&h), "an Alt tap does not open the main menu");
+    h.key_press(Key::F10);
     settle(&mut h);
-    assert!(!main_open(&h), "Alt with a key is not a tap");
-    // Ctrl with Alt is a chord too.
-    h.event(egui::Event::ModifiersChanged(Modifiers::ALT | Modifiers::CTRL));
-    h.step();
-    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
-    h.step();
+    assert!(main_open(&h), "F10 opens the main menu");
+    h.key_press(Key::F10);
     settle(&mut h);
-    assert!(!main_open(&h), "Ctrl+Alt is not a tap");
+    assert!(!main_open(&h), "F10 closes it");
 }
 
 #[test]

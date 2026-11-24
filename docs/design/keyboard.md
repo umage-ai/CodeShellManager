@@ -47,7 +47,7 @@ the focused widget or the active terminal.
 | `TitleBar` | title buttons: Recent, Grid, clock, Settings, zoom | F6 cycle |
 | `RailTabs` | rail tabs (All, groups) | F6 cycle; Ctrl+Alt+PgUp/PgDn change tab |
 | `SidebarList` | session rows and group headers | F6 cycle |
-| `InboxPanel` | "needs you" list | F6 cycle |
+| `InboxPanel` | "needs you" list | not a region yet (drawn inside the sidebar), so F6 skips it |
 | `ScreenStrip` | add-on screen tab strip | F6 cycle |
 | `Panes` | one terminal per visible session | F6 cycle; click; Ctrl+Alt+Arrow |
 | `Inspector` | inspector tab strip and its body | F6 cycle; Ctrl+I opens it |
@@ -99,8 +99,8 @@ Anything not in this table keeps its mouse behaviour only and is listed as a gap
 Views, Layout, Runs, Git, Notes, Settings, Help). It is built from the tool registry plus the UI-only
 actions, so a new tool appears without UI work. Each row shows its current chord from the keymap.
 Typing filters the list; it is not a second command palette, and Ctrl+K stays the palette. Alt
-on its own is an optional later alias (step 6); Alt is the terminal's meta prefix, so a bare Alt
-tap is fragile and is not used in step 1.
+on its own does nothing: a clean Alt tap is not shipped (open question 3). Alt is the terminal's meta
+prefix, so a bare Alt tap is fragile.
 
 **Dialogs (confirm and text dialogs, `screens/overlays.rs`).**
 
@@ -110,7 +110,7 @@ tap is fragile and is not used in step 1.
 
 **Tab strips.**
 
-- Add-on screens: Ctrl+PgUp/PgDn switch tabs (tool `screen_tab_next` / `screen_tab_prev`).
+- Add-on screens: Ctrl+PgUp/PgDn switch tabs (keymap action `ui.screen_tab_next` / `ui.screen_tab_prev`).
 - Inspector tabs: arrows inside the tablist (UI only).
 - Rail tabs: Ctrl+Alt+PgUp/PgDn (tool `rail_tab_next` / `rail_tab_prev`), plus the existing
   Ctrl+1..9.
@@ -126,7 +126,7 @@ section 1 and the terminal key list. "Risk" lists known OS or app conflicts.
 | Shift+F6 | Previous focus region | UI | free |
 | Esc | Back to active terminal / close topmost | UI | existing Esc, extended |
 | Ctrl+Alt+Left/Right/Up/Down | Focus pane by geometry | UI + `session_focus` | free. Risk: Intel graphics drivers bind Ctrl+Alt+Arrow to screen rotation; the keymap lets the user rebind it |
-| Ctrl+PgUp / Ctrl+PgDn | Screen tab prev / next (`screen_tab_prev`, `screen_tab_next`) | tool | free; PgUp/PgDn are only sent to the pty when no chord matches |
+| Ctrl+PgUp / Ctrl+PgDn | Screen tab prev / next (`ui.screen_tab_prev`, `ui.screen_tab_next`), taken only while an add-on screen is open | UI | free; PgUp/PgDn are sent to the pty otherwise |
 | Ctrl+Alt+PgUp / Ctrl+Alt+PgDn | Rail tab prev / next (`rail_tab_prev`, `rail_tab_next`) | tool | free |
 | F10 | Main actions menu | UI | free. Windows reserves F10 only for a native menu bar, which CSM does not have |
 | Shift+F10 | Menu of the focused item (outside terminal) | UI | free; the terminal keeps it when focused |
@@ -188,7 +188,7 @@ Tools are added only where the action changes app state and makes sense outside 
 
 | Tool | Effect | Notes |
 |---|---|---|
-| `screen_tab_next` / `screen_tab_prev` | switch the add-on screen tab | state change; exposed to CLI and MCP |
+| `ui.screen_tab_next` / `ui.screen_tab_prev` | switch the add-on screen tab | UI keymap actions, not tools yet (see step 5) |
 | `rail_tab_next` / `rail_tab_prev` | switch the rail tab | state change; `view_set` already exists, so these are thin wrappers that compute the next tab |
 | `pane_focus_next` / `pane_focus_prev` | focus the next / previous visible pane | state change; wraps `session_focus` |
 
@@ -214,13 +214,13 @@ of them push.
 4. **Menus and dialogs.** Shared key handler in `menu_area` for all `Menu` variants (arrows,
    Enter, Esc, access letters, Shift+F10 and menu key). Dialog Tab trap and default button.
    Screenshot case: an open menu with keyboard focus.
-5. **Tools and tab strips.** `screen_tab_*`, `rail_tab_*`, `pane_focus_*` in `csm-engine`;
+5. **Tools and tab strips.** `rail_tab_*`, `pane_focus_*` in `csm-engine` (the screen tab chords are keymap actions);
    Ctrl+PgUp/PgDn and Ctrl+Alt+PgUp/PgDn bound; inspector tablist arrows. `docs/tools.md` regenerated
    by `cargo xtask tools`. Tests for each tool (state and effect declared).
 6. **Main actions menu, keymap settings and labels.** F10 menu built from the tool registry plus UI
    actions; Keyboard section in settings with capture, conflict messages and reset; help overlay,
-   palette hints and menu labels read the keymap; the old hand tables are deleted. Optional: Alt
-   tap alias, if it proves reliable on Windows. Docs: a keyboard section in `docs/`.
+   palette hints and menu labels read the keymap; the old hand tables are deleted. The Alt tap alias is
+   dropped until open question 3 is answered. Docs: a keyboard section in `docs/`.
 
 **Status (branch `kb/navigation`).** Step 3's focus model is in: `FocusRegion` and the F6 /
 Shift+F6 cycle over the regions drawn last frame (`crates/csm-ui/src/focus.rs`), Esc back to the
@@ -244,7 +244,7 @@ it, so only Shift+F10 is bound). Group headers are not focusable yet, so Shift+F
 their menu.
 
 **Status of the main menu (branch `kb/navigation`).** `Menu::Main` (`screens/menus.rs`,
-`main_entries`) opens with F10, with a clean tap of Alt, or with the `⋯` button in the title bar
+`main_entries`) opens with F10 or with the `⋯` button in the title bar
 (the button is the menu's anchor, so a second click closes it). It has eight areas (Session, View /
 Layout, Groups, Run, Git, Add-ons, Settings, Help). Each tool in the registry appears once, by its
 palette title, in the area of its toolset (`main_area`), and runs through the palette's own
@@ -253,12 +253,10 @@ Keyboard shortcuts, Command palette) and the six layout modes are added by hand.
 needs `session_id` is shown muted (`Entry::Off`, skipped by the keys) while no session is active.
 The keys are the shared menu keys (arrows, Home/End, Right into an area, Enter, Escape, access
 letters). A menu taller than the room below it scrolls, and a key brings its highlighted row into
-view. A clean Alt tap is one that has no key, text, click, scroll or other modifier between Alt
-going down and up (`alt_tap.rs`, pure and tested); losing the window focus cancels it. Alt+letter
-still reaches a focused terminal. F10 is taken even when a terminal has the focus (section 4 lists
+view. A clean Alt tap is not shipped: a stray tap would open the menu under a focused terminal, and
+its letters would then run tools (open question 3). Alt+letter still reaches a focused terminal. F10 is taken even when a terminal has the focus (section 4 lists
 it as free; an F-key, like the other global F-keys). Not yet: typing to filter the list (the access
-letters take the typed keys), a setting to turn the Alt tap off (the setting list is WPF-compatible
-and is shared with other branches, so it waits), and the keymap labels (step 2's table, which the
+letters take the typed keys), and the keymap labels (step 2's table, which the
 hints still copy from `palette::shortcut_for`).
 
 **Status of step 5, lists and tab strips (branch `kb/navigation`).** The arrows move the focus through
@@ -273,7 +271,7 @@ opens. Add-on screen tabs and inspector tabs: Left and Right move, Enter or Spac
 Ctrl+PgUp and Ctrl+PgDn change the add-on screen tab; Ctrl+Alt+PgUp and Ctrl+Alt+PgDn change the rail
 tab (`rail_tab_prev`, `rail_tab_next`). Tools added: `rail_tab_next`, `rail_tab_prev`,
 `pane_focus_next`, `pane_focus_prev` (the last two pick among awake sessions of the rail's tab, in
-sidebar order). Gaps: `screen_tab_next` and `screen_tab_prev` are not tools. The shown add-on screen
+sidebar order). Gaps: `ui.screen_tab_next` and `ui.screen_tab_prev` are not tools. The shown add-on screen
 is UI state, and the engine has no event that carries a step; a new event would need a change to the
 vendored peer protocol (`csm-peer-proto`), so the tab chords call `ScreenFocus` directly for now. Not
 yet: the dialog Tab trap and default button, the grid's keys, the Delete key on a row, and the inbox
@@ -312,8 +310,7 @@ chord another action uses and names it; a conflict in a hand-edited file keeps t
 except the Ctrl+Plus zoom alias and the `?` key). The help list (`shortcut_rows`), the palette hints
 and every menu hint read the same map; `SHORTCUTS` and `shortcut_for` are gone. Tools: `keymap_list`,
 `keymap_set`, `keymap_reset` (MUTATES_STATE; `settings_set` refuses `Keymap`). Settings › Keyboard
-records a chord on click (Escape cancels), with Clear, Reset and Reset all. Not done: the Alt-tap
-alias and a filter in the F10 menu, and per-scope bindings (menus and dialogs keep their own keys).
+records a chord on click (Escape cancels), with Clear, Reset and Reset all. Not done: a filter in the F10 menu, and per-scope bindings (menus and dialogs keep their own keys).
 User docs: `docs/keyboard.md`.
 
 ## 9. Gate and rules for these steps
@@ -333,4 +330,7 @@ User docs: `docs/keyboard.md`.
 1. Ctrl+W in the terminal (section 4): keep closing the session, or only outside the terminal?
 2. Ctrl+Alt+Arrow may clash with Intel graphics rotation on some machines. Accept the risk with
    a rebind path, or use Alt+Shift+Arrow as the default instead?
-3. F10 for the main actions menu, with the Alt tap as an optional alias later: agreed?
+3. F10 for the main actions menu, with the Alt tap as an optional alias later: agreed? Until the owner answers, the Alt tap is not shipped.
+4. Quick-open: Tab on the command row moves the focus (before this branch it cycled the command, and
+   Left and Right still do). Keeping Tab on the row would trap the focus there, since Remote, Group and
+   the New session controls are reached by Tab only. Owner: keep this, or find another key for the cycle?

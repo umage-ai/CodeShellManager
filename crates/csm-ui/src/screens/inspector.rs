@@ -61,6 +61,8 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let mut x = tabs.min.x + space::SM;
     // The arrow keys move along the tablist; Enter or Space selects the focused tab (a click).
     let order: Vec<Id> = shown.iter().map(|tb| Id::new(("insp-tab", tb.id()))).collect();
+    let shown_tab = Id::new(("insp-tab", tab.id()));
+    app.ui.region_items.extend(order.iter().map(|id| (crate::focus::FocusRegion::Inspector, *id, *id == shown_tab)));
     for id in &order {
         if crate::list_keys::move_from(ui.ctx(), *id, &order, crate::list_keys::Axis::Horizontal).is_some() {
             break;

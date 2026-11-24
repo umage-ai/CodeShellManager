@@ -127,3 +127,26 @@ fn a_mouse_press_ends_the_region_mode() {
     settle(&mut h);
     assert_eq!(h.state().ui.region, None);
 }
+
+#[test]
+fn f6_into_the_sidebar_focuses_a_row_and_the_arrows_move_it() {
+    let mut h = h();
+    // F6 until the sidebar list has the region. Entering it puts the keyboard focus on a row.
+    for _ in 0..8 {
+        if h.state().ui.region == Some(FocusRegion::SidebarList) {
+            break;
+        }
+        h.key_press(Key::F6);
+        settle(&mut h);
+    }
+    assert_eq!(h.state().ui.region, Some(FocusRegion::SidebarList));
+    let rows: Vec<egui::Id> = h.state().ui.sidebar_nav.iter().map(|(id, _)| *id).collect();
+    let before = h.ctx.memory(|m| m.focused());
+    assert!(before.is_some_and(|f| rows.contains(&f)), "F6 gives the sidebar a row: {before:?} of {rows:?}");
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    let after = h.ctx.memory(|m| m.focused());
+    assert_ne!(before, after, "ArrowDown moves the focus to the next row");
+    assert!(after.is_some_and(|f| rows.contains(&f)), "the focus stays on a sidebar row");
+    assert_eq!(h.state().ui.region, Some(FocusRegion::SidebarList), "the region stays the sidebar");
+}

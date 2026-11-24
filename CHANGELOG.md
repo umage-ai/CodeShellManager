@@ -37,8 +37,8 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 - **Needs you inbox** at the top of the sidebar, oldest first; `Ctrl+J` jumps to the next one. It
   can be hidden and resized.
 - **Keyboard**: `F6` cycles the focus between the regions of the window and `Ctrl+Alt+Arrow` moves
-  between panes. Menus take arrows, Enter, Escape and access letters. **Main menu** (`F10`, a
-  clean tap of Alt, or the `⋯` in the title bar) lists every action by area, with its shortcut;
+  between panes. Menus take arrows, Enter, Escape and access letters. **Main menu** (`F10`, or the `⋯`
+  in the title bar) lists every action by area, with its shortcut;
   an action that needs a session is shown muted until one is active.
 - **Dialogs by keyboard**: in the confirm, close and one-line prompt dialogs, Tab and Shift+Tab move
   between the controls, Enter presses the focused button (or the default one), Space toggles the
@@ -53,7 +53,7 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 - **Lists by keyboard**: the arrows move through the sidebar rows, group headers, the rail tabs, the
   inbox, the add-on screen tabs and the inspector tabs; Space selects a row, Shift+arrows extend the
   selection, F2 renames the focused row or group, Left and Right collapse and expand a group.
-  `Ctrl+PgUp`/`Ctrl+PgDn` switch the add-on screen tab and `Ctrl+Alt+PgUp`/`Ctrl+Alt+PgDn` the rail tab.
+  `Ctrl+PgUp`/`Ctrl+PgDn` switch the add-on screen tab (with one open) and `Ctrl+Alt+PgUp`/`Ctrl+Alt+PgDn` the rail tab.
 - **Layouts per group**: Focus, Side by side (pins), Overview (every live session as a live
   mini-terminal), Board, Grid (presets or custom up to 6×6) and Free (split tree with draggable
   dividers, floating panes, panes torn off into their own window).

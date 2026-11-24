@@ -944,7 +944,7 @@ fn sort_label(e: &Entry) -> &str {
 }
 
 /// Where the main menu opens: under the title bar's button (right-aligned to it) when that is drawn,
-/// else under the title bar at the left (F10 and the Alt tap).
+/// else under the title bar at the left (F10).
 pub fn main_menu_at(ctx: &egui::Context) -> Pos2 {
     let screen = ctx.content_rect();
     match ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::MAIN_ANCHOR))) {

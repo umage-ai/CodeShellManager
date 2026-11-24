@@ -57,6 +57,9 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         .chain(model.groups.iter().map(|g| Scope::Group(g.id.clone())))
         .map(|s| Id::new(("rail-tab", s.key())))
         .collect();
+    // The rail tabs for the keyboard: F6 enters at the shown tab.
+    let shown_tab = Id::new(("rail-tab", model.rail.key()));
+    app.ui.region_items.extend(rail_order.iter().map(|id| (crate::focus::FocusRegion::RailTabs, *id, *id == shown_tab)));
     let mut tab = |ui: &mut Ui, scope: Scope, label: String, y: &mut f32| {
         let r = Rect::from_center_size(pos2(cx, *y + size::RAIL_TAB / 2.0), Vec2::splat(size::RAIL_TAB));
         *y += size::RAIL_TAB + space::XS;
@@ -330,6 +333,15 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             SidebarRowKind::Session | SidebarRowKind::Dormant => r.id.as_ref().map(|s| (Id::new(("session-row", s.clone())), Some(s.clone()))),
         })
         .collect();
+    // F6 enters the list at the active row (`CsmApp::set_region`); a Tab into it sets the region.
+    let active = app.model.active.clone();
+    let items: Vec<_> = app
+        .ui
+        .sidebar_nav
+        .iter()
+        .map(|(id, s)| (crate::focus::FocusRegion::SidebarList, *id, s.is_some() && *s == active))
+        .collect();
+    app.ui.region_items.extend(items);
     drag_ghost(ui.ctx(), app);
 }
 

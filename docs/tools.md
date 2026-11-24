@@ -463,8 +463,8 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `session_get` | core | read | no | One session in full: its launch settings and its status, including the program-status message and whether Claude Code Remote Control is on (with its claude.ai link). |
 | `session_new` | core | state, launch | asks | Open a session: a folder and a command (default: the configured one, usually claude), locally, over SSH or in WSL. It starts when its pane is measured, or after 1.5 s headless. |
 | `session_focus` | core | ui, launch | asks | Bring a session to the front (switches the rail tab to its group, wakes it when asleep) and mark its results seen. |
-| `pane_focus_next` | core | ui, launch | asks | Focus the next awake session in the rail's tab (or in All), in sidebar order, wrapping round. Does nothing when no session is awake. |
-| `pane_focus_prev` | core | ui, launch | asks | Focus the previous awake session in the rail's tab (or in All), in sidebar order, wrapping round. Does nothing when no session is awake. |
+| `pane_focus_next` | core | ui | no | Focus the next awake session in the rail's tab (or in All), in sidebar order, wrapping round. Does nothing when no session is awake. |
+| `pane_focus_prev` | core | ui | no | Focus the previous awake session in the rail's tab (or in All), in sidebar order, wrapping round. Does nothing when no session is awake. |
 | `session_rename` | core | state | no | Give a session a new name. |
 | `session_edit` | core | state, launch, discard | asks | Change a session's folder, command, arguments, kind or connection. Changes that need a new process apply at the next start, or now with restart: true. |
 | `session_close` | core | state, discard | asks | End a session's process and remove it (it goes to Recently closed). Refuses a busy session unless force is true. |

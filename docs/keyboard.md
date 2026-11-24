@@ -20,7 +20,7 @@ date with your own settings.
 | `Ctrl+Shift+E` | Recent sessions (Enter: the previous one) |
 | `Ctrl+1` … `Ctrl+9` | Rail tabs (1 is All) |
 | `Ctrl+Alt+PgUp` / `Ctrl+Alt+PgDn` | Previous / next rail tab |
-| `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next add-on screen tab |
+| `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next add-on screen tab (while one is open) |
 | `Ctrl+Alt+Arrows` | Focus the pane in that direction |
 | `Ctrl+F` | Search all output and notes |
 | `Ctrl+I` | Show or hide the inspector |
@@ -30,9 +30,9 @@ date with your own settings.
 | `F5` / `Shift+F5` | Run / stop the default run command |
 | `Ctrl+,` | Settings |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Larger / smaller / 100% interface |
-| `F10` | Main menu: every action, by area (or a clean tap of Alt) |
+| `F10` | Main menu: every action, by area |
 | `Shift+F10` | Menu of the focused item (outside the terminal) |
-| `F6` / `Shift+F6` | Next / previous keyboard region (title bar, rail, sidebar, inbox, screen tabs, panes, inspector) |
+| `F6` / `Shift+F6` | Next / previous keyboard region (title bar, rail, sidebar, screen tabs, panes, inspector); the focus goes to the region's shown item |
 | `Esc` | Close a menu, panel or dialog; from a region, back to the terminal |
 | `F1`, `Ctrl+/`, `?` | The keyboard list |
 
@@ -50,6 +50,17 @@ from a Claude pane as shown.
   Space selects the focused row, Enter focuses its session.
 - Dialogs: Tab moves between the controls, Enter presses the focused button (or the default one),
   Esc cancels.
+- F6 moves the focus into a region and the arrows then work in it: the sidebar moves between
+  rows, the rail and the inspector between their tabs, the screen strip between its tabs.
+
+## Terminals and these keys
+
+F6, F10 and Ctrl+Alt+Arrows are taken even when a terminal has the focus, and so are Ctrl+1 to
+Ctrl+9, Ctrl+Tab and Ctrl+J. Programs that use the same keys (Midnight Commander and htop use F6
+and F10, for instance) lose them while CodeShellManager is in front: rebind them in Settings ›
+Keyboard. Ctrl+PgUp and Ctrl+PgDn go to the screen tabs only while an add-on screen is open; with
+none, a terminal keeps them (vim uses them for its tabs). Plain keys, Tab, Esc and the arrows
+are never taken from a terminal.
 
 ## Changing a key
 

@@ -864,3 +864,26 @@ fn keyboard_settings_screen() {
         },
     );
 }
+
+/// F6 into the sidebar: the region ring, and the focus ring on a row (F6 gives the focus to a row,
+/// so the arrows work at once).
+#[test]
+fn keyboard_region_entry_screen() {
+    shoot(
+        "focus-region-sidebar",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::SidebarList) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::SidebarList), "F6 reaches the sidebar");
+            let focused = h.ctx.memory(|m| m.focused());
+            assert!(focused.is_some_and(|f| h.state().ui.sidebar_nav.iter().any(|(id, _)| *id == f)), "F6 focuses a sidebar row: {focused:?}");
+        },
+    );
+}

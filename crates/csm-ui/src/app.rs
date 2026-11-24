@@ -167,7 +167,7 @@ pub enum Menu {
     Recent { at: egui::Pos2 },
     /// "Copy reply…" on a Claude pane: its recent replies and their code blocks.
     ClaudeReplies { session: SessionId, at: egui::Pos2 },
-    /// The main menu: every action, grouped by area (F10, a clean Alt tap, the title bar's button).
+    /// The main menu: every action, grouped by area (F10, the title bar's button).
     /// Its top-left corner at `at`.
     Main { at: egui::Pos2 },
 }
@@ -549,6 +549,9 @@ pub struct UiState {
     /// The regions drawn last frame, with their rects, in the order drawn. F6 cycles over them and
     /// the focus ring goes round the focused one.
     pub region_rects: Vec<(FocusRegion, Rect)>,
+    /// The keyboard-focusable items drawn last frame, by region: (region, widget id, selected). F6 enters a
+    /// region at its selected item (else its first); a focus that moves into a region sets `region`.
+    pub region_items: Vec<(FocusRegion, egui::Id, bool)>,
     /// The panes drawn last frame (live, not minimised), with their rects: Ctrl+Alt+Arrow moves
     /// between them.
     pub pane_rects: Vec<(SessionId, Rect)>,
@@ -1141,6 +1144,10 @@ impl CsmApp {
     /// the shortcuts do not see it. Escape with no modifier, or a click, cancels. Returns whether the
     /// keys were taken (the shortcuts then stop for this frame).
     fn capture_chord(&mut self, ctx: &egui::Context) -> bool {
+        // The capture ends with the settings page: a close by any route must not keep the keys.
+        if !self.ui.settings.open {
+            self.ui.settings.keymap_capture = None;
+        }
         let Some(id) = self.ui.settings.keymap_capture.clone() else { return false };
         if ctx.input(|i| i.pointer.any_pressed()) {
             self.ui.settings.keymap_capture = None;
@@ -1613,6 +1620,7 @@ impl CsmApp {
             }
             Action::CloseSettings => {
                 self.ui.settings.open = false;
+                self.ui.settings.keymap_capture = None;
                 self.ui.settings.drafts.clear();
                 if let Some(a) = self.model.active.clone() {
                     self.ui.focus_terminal = Some(a);
@@ -1950,10 +1958,9 @@ impl CsmApp {
         if self.capture_chord(ctx) {
             return;
         }
-        // The main menu: F10, or a clean Alt tap (`alt_tap`). The tap is read first, before any
-        // key is taken: a key used with Alt is not a tap, so Alt+letter still reaches the terminal.
-        let tapped = self.alt_tap_fired(ctx);
-        if self.bound(ctx, "ui.main_menu") || tapped {
+        self.sync_region_to_focus(ctx);
+        // The main menu: F10 (the keymap's `ui.main_menu`).
+        if self.bound(ctx, "ui.main_menu") {
             self.toggle_main_menu(ctx);
         }
         // An open menu takes its keys before anything else: it is modal from the keyboard
@@ -2117,10 +2124,13 @@ impl CsmApp {
         }
         // Ctrl+PgUp / Ctrl+PgDn: the add-on screen tab before / after the shown one. Ctrl+Alt+PgUp /
         // PgDn: the rail tab before / after (`rail_tab_prev`, `rail_tab_next`). docs/design/keyboard.md, 3.
-        if self.bound(ctx, "screen_tab_next") {
+        // Only with an add-on screen open (two tabs or more): with none, the chords are the terminal's
+        // (vim's tabprev and tabnext are Ctrl+PgUp and Ctrl+PgDn).
+        let screen_tabs = self.ui.screen_infos.iter().any(|i| !i.popped_out);
+        if screen_tabs && self.bound(ctx, "ui.screen_tab_next") {
             self.screen_tab_step(ctx, true);
         }
-        if self.bound(ctx, "screen_tab_prev") {
+        if screen_tabs && self.bound(ctx, "ui.screen_tab_prev") {
             self.screen_tab_step(ctx, false);
         }
         if self.bound(ctx, "rail_tab_next") {
@@ -2166,22 +2176,6 @@ impl CsmApp {
         } else if self.ui.usage_page.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseUsage);
         }
-    }
-
-    /// Whether a clean Alt tap ended this frame (`alt_tap`). Reads this frame's input only.
-    fn alt_tap_fired(&self, ctx: &egui::Context) -> bool {
-        let id = egui::Id::new("alt-tap-state");
-        let (alt, other, focused) = ctx.input(|i| {
-            let m = i.modifiers;
-            // Another key, text, a click or a scroll, or Ctrl/Shift/Command, makes it a chord.
-            let typed = i.events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::PointerButton { .. }));
-            let other = typed || i.pointer.any_pressed() || i.smooth_scroll_delta != egui::Vec2::ZERO || m.ctrl || m.shift || m.command || m.mac_cmd;
-            (m.alt, other, i.focused)
-        });
-        let mut state: crate::alt_tap::AltTap = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
-        let tapped = state.update(alt, other, focused);
-        ctx.data_mut(|d| d.insert_temp(id, state));
-        tapped
     }
 
     /// Opens the main menu, or closes it when it is open. It opens only over the panes: a dialog
@@ -2236,7 +2230,33 @@ impl CsmApp {
         {
             ctx.memory_mut(|m| m.surrender_focus(focused));
         }
+        // The keyboard focus goes into the region too, on its entry item (the shown one, else the first),
+        // so its arrow keys work at once.
+        if let Some(r) = region.filter(|r| *r != FocusRegion::Panes) {
+            let of_region: Vec<_> = self.ui.region_items.iter().filter(|(x, _, _)| *x == r).collect();
+            if let Some((_, id, _)) = of_region.iter().find(|(_, _, on)| *on).or(of_region.first()) {
+                ctx.memory_mut(|m| m.request_focus(*id));
+            }
+        }
         ctx.request_repaint();
+    }
+
+    /// Keeps `ui.region` on the region of the focused item when the keyboard moved the focus there (Tab,
+    /// a focus request), not a mouse press, so F6 cycles from it and the ring follows the focus.
+    fn sync_region_to_focus(&mut self, ctx: &egui::Context) {
+        let frame = ctx.cumulative_pass_nr();
+        let key = egui::Id::new("region-sync");
+        let (prev, last_press): (Option<egui::Id>, u64) = ctx.data(|d| d.get_temp(key)).unwrap_or((None, 0));
+        let press_frame = if ctx.input(|i| i.pointer.any_pressed()) { frame } else { last_press };
+        let focus = ctx.memory(|m| m.focused());
+        if focus != prev
+            && frame.saturating_sub(press_frame) > 1
+            && let Some(f) = focus
+            && let Some((region, _, _)) = self.ui.region_items.iter().find(|(_, id, _)| *id == f).copied()
+        {
+            self.ui.region = Some(region);
+        }
+        ctx.data_mut(|d| d.insert_temp(key, (focus, press_frame)));
     }
 
     /// F6 (`step` 1) or Shift+F6 (-1): the next region that was drawn last frame, from the current
@@ -2341,6 +2361,7 @@ impl CsmApp {
         let t = theme::Tokens::get(&ctx);
         // The regions drawn this frame (F6 reads them next frame).
         self.ui.region_rects.clear();
+        self.ui.region_items.clear();
         // The whole window, whatever margin the host gave the root ui.
         let full = ctx.content_rect();
         let mut root = ui.new_child(UiBuilder::new().max_rect(full));

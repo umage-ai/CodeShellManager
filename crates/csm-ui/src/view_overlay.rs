@@ -60,8 +60,9 @@ pub const MODELLED_UI: &[&str] = &[
 ];
 
 /// UI tools the engine answers for itself: the rail tab steps pick the next group tab from the engine's
-/// group list, so the client forwards them, as it forwards `view_set` with a rail tab.
-const FORWARDED_UI: &[&str] = &["rail_tab_next", "rail_tab_prev"];
+/// group list, and the pane steps pick the next awake session, so the client forwards them, as it forwards
+/// `view_set` with a rail tab.
+const FORWARDED_UI: &[&str] = &["rail_tab_next", "rail_tab_prev", "pane_focus_next", "pane_focus_prev"];
 
 /// The window-placement size limit, in physical pixels (the engine's own).
 const MAX_WINDOW_PX: i32 = 1 << 16;
@@ -784,7 +785,7 @@ mod tests {
     ];
     /// UI-effect tools that the client forwards: those that also launch or mutate, and the rail tab
     /// steps (`FORWARDED_UI`). `remote_window_open` launches a process, so it is not UI-only; the app
-    /// starts it before any port sees the call. The pane steps launch a session, so they are not UI-only.
+    /// starts it before any port sees the call. The pane steps are UI-only and forwarded (`FORWARDED_UI`).
     const FIXED_FORWARD: &[&str] = &["inbox_next", "remote_window_open", "rail_tab_next", "rail_tab_prev", "pane_focus_next", "pane_focus_prev"];
     const FIXED_NOT_MODELLED: &[&str] = &[
         // The connect dialog belongs to the laptop's own window: a remote window never offers it,

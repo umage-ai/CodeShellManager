@@ -316,6 +316,12 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         drop(st);
         super::addon_screen::strip(ui, strip, &infos, active.as_deref(), actions);
         app.ui.region_rects.push((crate::focus::FocusRegion::ScreenStrip, strip));
+        let shown_tab = match active.as_deref() {
+            Some(a) => Id::new(("view-screen", a)),
+            None => Id::new("view-sessions"),
+        };
+        let tabs = std::iter::once(Id::new("view-sessions")).chain(infos.iter().map(|i| Id::new(("view-screen", &i.instance))));
+        app.ui.region_items.extend(tabs.map(|id| (crate::focus::FocusRegion::ScreenStrip, id, id == shown_tab)));
         top = strip.max.y;
     }
     let area = Rect::from_min_max(pos2(rect.min.x, top), rect.max);

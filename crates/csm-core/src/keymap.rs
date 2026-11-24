@@ -230,8 +230,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { id: "ui.rail_tab_7", name: "Rail tab 7", defaults: &["Ctrl+7"] },
     Binding { id: "ui.rail_tab_8", name: "Rail tab 8", defaults: &["Ctrl+8"] },
     Binding { id: "ui.rail_tab_9", name: "Rail tab 9", defaults: &["Ctrl+9"] },
-    Binding { id: "screen_tab_prev", name: "Previous add-on screen tab", defaults: &["Ctrl+PgUp"] },
-    Binding { id: "screen_tab_next", name: "Next add-on screen tab", defaults: &["Ctrl+PgDn"] },
+    Binding { id: "ui.screen_tab_prev", name: "Previous add-on screen tab", defaults: &["Ctrl+PgUp"] },
+    Binding { id: "ui.screen_tab_next", name: "Next add-on screen tab", defaults: &["Ctrl+PgDn"] },
     Binding { id: "rail_tab_prev", name: "Previous rail tab", defaults: &["Ctrl+Alt+PgUp"] },
     Binding { id: "rail_tab_next", name: "Next rail tab", defaults: &["Ctrl+Alt+PgDn"] },
     Binding { id: "ui.settings", name: "Settings", defaults: &["Ctrl+,"] },
@@ -474,7 +474,9 @@ pub fn overrides_from_value(v: &Value) -> Overrides {
     map.iter()
         .filter_map(|(id, list)| {
             let Value::Array(items) = list else { return None };
-            let texts: Vec<String> = items.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect();
+            // A non-string item becomes its JSON text, which never parses as a chord: it is reported as
+            // skipped (`Keymap::skipped`) rather than dropped unseen.
+            let texts: Vec<String> = items.iter().map(|s| s.as_str().map_or_else(|| s.to_string(), str::to_owned)).collect();
             Some((id.clone(), texts))
         })
         .collect()
@@ -590,7 +592,7 @@ mod tests {
         assert_eq!(map.label("ui.help").as_deref(), Some("F1"));
         assert_eq!(map.label("session_new").as_deref(), Some("Ctrl+T"), "a damaged entry keeps the default");
         assert_eq!(map.unknown(), ["from.a.newer.build".to_owned()]);
-        assert_eq!(map.skipped().len(), 2, "{:?}", map.skipped());
+        assert_eq!(map.skipped().len(), 4, "{:?}", map.skipped());
         assert!(overrides_from_value(&Value::Null).is_empty());
         assert!(overrides_from_value(&serde_json::json!([1, 2])).is_empty());
     }
