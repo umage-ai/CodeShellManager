@@ -708,3 +708,39 @@ fn keyboard_focus_ring_screen() {
         },
     );
 }
+
+/// A pane menu opened from the keyboard, its second row highlighted, the access letters underlined.
+#[test]
+fn keyboard_menu_screen() {
+    shoot(
+        "menu-keyboard-pane",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Period);
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            assert!(h.state().ui.menu.is_some(), "Ctrl+. opens the pane menu");
+        },
+    );
+}
+
+/// The Recent menu opened from the keyboard, the highlight moved down one row.
+#[test]
+fn keyboard_recent_menu_screen() {
+    shoot(
+        "menu-keyboard-recent",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::E);
+            settle(h);
+            h.key_press(egui::Key::ArrowDown);
+            settle(h);
+            assert!(h.state().ui.menu.is_some(), "Ctrl+Shift+E opens Recent");
+        },
+    );
+}

@@ -233,6 +233,20 @@ pub fn caps(ui: &mut Ui, s: &str) -> Response {
 
 /// One row of a menu (`.mi`): icon, label, and a right-aligned hint or tag.
 pub fn menu_item(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>, danger: bool) -> Response {
+    menu_item_at(ui, icon_name, label, hint, danger, false, None)
+}
+
+/// A menu row. `selected`: the keyboard highlight (the row fill and the focus ring). `underline`:
+/// the char index of the access letter in `label`, drawn underlined.
+pub fn menu_item_at(
+    ui: &mut Ui,
+    icon_name: &str,
+    label: &str,
+    hint: Option<&str>,
+    danger: bool,
+    selected: bool,
+    underline: Option<usize>,
+) -> Response {
     let t = Tokens::get(ui.ctx());
     let font = crate::theme::regular(text::BODY);
     let hint_font = crate::theme::mono(text::TINY);
@@ -240,18 +254,42 @@ pub fn menu_item(ui: &mut Ui, icon_name: &str, label: &str, hint: Option<&str>, 
     let need = space::SM + icon::LG + space::ROW_X + text_width(ui, label, font.clone()) + hw + space::ROW_X;
     let w = ui.available_width().max(size::MENU_W - space::SM).max(need);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::MENU_ROW), Sense::click());
-    if resp.hovered() {
+    if resp.hovered() || selected {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::SM + 1), t.row_sel);
+    }
+    if selected {
+        focus_ring(ui, rect, radius::SM + 1);
     }
     let fg = if danger { t.red } else { t.fg };
     let ir = Rect::from_min_size(pos2(rect.min.x + space::SM, rect.center().y - icon::LG / 2.0), Vec2::splat(icon::LG));
     icons::paint(ui, ir, icon_name, icon::LG, if danger { t.red } else { t.muted });
-    ui.painter().text(pos2(ir.max.x + space::ROW_X, rect.center().y), Align2::LEFT_CENTER, label, font, fg);
+    let at = pos2(ir.max.x + space::ROW_X, rect.center().y);
+    match underline {
+        Some(ci) => paint_underlined(ui, at, label, ci, font, fg),
+        None => {
+            ui.painter().text(at, Align2::LEFT_CENTER, label, font, fg);
+        }
+    }
     if let Some(h) = hint {
         ui.painter().text(pos2(rect.max.x - space::ROW_X, rect.center().y), Align2::RIGHT_CENTER, h, hint_font, t.muted);
     }
     info(&resp, WidgetType::Button, label);
     resp
+}
+
+/// `label` left-aligned at `pos`, its character at char index `ci` underlined (a menu's access letter).
+fn paint_underlined(ui: &Ui, pos: egui::Pos2, label: &str, ci: usize, font: FontId, color: Color32) {
+    let start = label.char_indices().nth(ci).map_or(label.len(), |(b, _)| b);
+    let end = label.get(start..).and_then(|s| s.chars().next()).map_or(start, |c| start + c.len_utf8());
+    let plain = egui::TextFormat { font_id: font, color, ..Default::default() };
+    let under = egui::TextFormat { underline: Stroke::new(size::HAIRLINE, color), ..plain.clone() };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(label.get(..start).unwrap_or(""), 0.0, plain.clone());
+    job.append(label.get(start..end).unwrap_or(""), 0.0, under);
+    job.append(label.get(end..).unwrap_or(""), 0.0, plain);
+    let galley = ui.painter().layout_job(job);
+    let top = pos2(pos.x, pos.y - galley.size().y / 2.0);
+    ui.painter().galley(top, galley, color);
 }
 
 /// A menu's uppercase heading (`.mhead`).

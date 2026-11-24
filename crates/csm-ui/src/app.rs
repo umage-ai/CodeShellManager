@@ -578,8 +578,9 @@ pub struct UiState {
     /// host owns the window handle, so it shows the dialog ([`CsmApp::take_dialog_request`])
     /// and answers with [`CsmApp::dialog_answered`].
     pub dialog_request: Option<DialogRequest>,
-    /// The Recent menu's selected row (Enter picks it).
-    pub recent_sel: usize,
+    /// The highlighted row at each open menu level (the keyboard or the pointer; see `menu_nav`).
+    /// Empty: nothing highlighted. The first entry is the top level, a later one a submenu.
+    pub menu_sel: Vec<usize>,
     /// `task_new` calls whose task is to be assigned (and sent) to a session once it exists:
     /// (the call's params, the session).
     pub pending_assign: Vec<(Value, SessionId)>,
@@ -1334,7 +1335,7 @@ impl CsmApp {
                     let r = ctx.content_rect();
                     pos2(r.max.x - theme::space::SM, r.min.y + size::TITLE_BAR)
                 });
-                self.ui.recent_sel = 0;
+                self.ui.menu_sel = vec![0];
                 self.ui.menu = Some(Menu::Recent { at });
             }
             Action::OpenQuickOpen { group } => {
@@ -1359,11 +1360,13 @@ impl CsmApp {
             }
             Action::OpenMenu(m) => {
                 self.ui.submenu = None;
+                self.ui.menu_sel.clear();
                 self.ui.menu = if self.ui.menu.as_ref() == Some(&m) { None } else { Some(m) };
             }
             Action::CloseMenu => {
                 self.ui.menu = None;
                 self.ui.submenu = None;
+                self.ui.menu_sel.clear();
             }
             Action::ToggleCollapse(g) => {
                 let collapsed = self.model.group(&g).is_some_and(|x| x.collapsed);
@@ -1424,6 +1427,7 @@ impl CsmApp {
                 self.ui.submenu = None;
                 self.ui.claude_replies = Some(ClaudeReplies { session: session.clone(), rows: None });
                 self.dispatch.submit("claude_reply_list", json!({"session_id": session, "limit": 10}));
+                self.ui.menu_sel.clear();
                 self.ui.menu = Some(Menu::ClaudeReplies { session, at });
             }
             Action::EditRuns(id) => {
@@ -1883,9 +1887,27 @@ impl CsmApp {
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = Modifiers::COMMAND;
         let pressed = |ctx: &egui::Context, m: Modifiers, k: Key| ctx.input_mut(|i| consume_exact(i, m, k));
-        // The Recent menu is modal from the keyboard: it takes the keys before anything else.
-        if matches!(self.ui.menu, Some(Menu::Recent { .. })) && self.recent_keys(ctx) {
+        // An open menu takes its keys before anything else: it is modal from the keyboard
+        // (`screens::menus::menu_keys`). Ctrl chords it does not read still reach the shortcuts.
+        if self.ui.menu.is_some()
+            && let Some(actions) = screens::menus::menu_keys(ctx, self)
+        {
+            for a in actions {
+                self.run(ctx, a);
+            }
             return;
+        }
+        // Shift+F10 opens the menu of the focused item, outside the terminal (which keeps the key
+        // when it has the focus). A region with no menu leaves the key alone.
+        if !self.ui.terminal_takes_focus()
+            && self.ui.overlay == Overlay::None
+            && self.ui.menu.is_none()
+            && self.ui.inline.is_none()
+            && let Some(menu) = self.focused_item_menu(ctx)
+            && ctx.input_mut(|i| consume_exact(i, Modifiers::SHIFT, Key::F10))
+        {
+            self.run(ctx, Action::OpenMenu(menu.clone()));
+            self.ui.menu_sel = screens::menus::first_highlight(self, &menu);
         }
         if pressed(ctx, cmd | Modifiers::SHIFT, Key::E) {
             self.run(ctx, Action::OpenRecent);
@@ -2051,6 +2073,35 @@ impl CsmApp {
         }
     }
 
+    /// The menu of the focused item, for Shift+F10: the session row that has the keyboard focus
+    /// (or the active session when the sidebar has the region but no row), or the group of the
+    /// active rail tab. `None` where the region has no menu.
+    fn focused_item_menu(&self, ctx: &egui::Context) -> Option<Menu> {
+        match self.ui.region? {
+            FocusRegion::SidebarList => {
+                let focused = ctx.memory(|m| m.focused());
+                let session = self
+                    .model
+                    .sessions
+                    .iter()
+                    .find(|s| focused == Some(egui::Id::new(("session-row", s.id.clone()))))
+                    .map(|s| s.id.clone())
+                    .or_else(|| self.model.active.clone())?;
+                let key = egui::Id::new(("row-menu-at", session.clone()));
+                let at = ctx.data(|d| d.get_temp::<egui::Pos2>(key)).unwrap_or_else(|| ctx.content_rect().center());
+                Some(Menu::Row { session, at })
+            }
+            FocusRegion::RailTabs => {
+                let at = self.ui.region_rects.iter().find(|(r, _)| *r == FocusRegion::RailTabs).map(|(_, rect)| rect.left_bottom())?;
+                match self.scope() {
+                    Scope::Group(group) => Some(Menu::Group { group, at }),
+                    Scope::All => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Moves the keyboard focus region. `None` gives the keys back to the active pane's terminal;
     /// a region other than the panes takes them from a focused terminal.
     fn set_region(&mut self, ctx: &egui::Context, region: Option<FocusRegion>) {
@@ -2092,50 +2143,6 @@ impl CsmApp {
     fn terminal_focused(&self, ctx: &egui::Context) -> bool {
         let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
         lock(&self.host).views.values().any(|v| v.id() == focused)
-    }
-
-    /// Keys while the Recent menu is open: arrows move, Enter picks the selected row, a digit
-    /// picks a session row, Escape or Ctrl+Shift+E closes it. Every other key is swallowed (the
-    /// menu has the keyboard, as a context menu does), so nothing reaches the terminal. Returns
-    /// true: the frame's other shortcuts are skipped.
-    fn recent_keys(&mut self, ctx: &egui::Context) -> bool {
-        let n = screens::recent::items(&self.model).len();
-        let sessions = screens::recent::items(&self.model).iter().filter(|i| matches!(i, screens::recent::Item::Session(_))).count();
-        let digits = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-        let (close, down, up, enter, digit) = ctx.input_mut(|i| {
-            let close = consume_exact(i, Modifiers::NONE, Key::Escape) || consume_exact(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
-            let down = consume_exact(i, Modifiers::NONE, Key::ArrowDown) || consume_exact(i, Modifiers::NONE, Key::Tab);
-            let up = consume_exact(i, Modifiers::NONE, Key::ArrowUp) || consume_exact(i, Modifiers::SHIFT, Key::Tab);
-            let enter = consume_exact(i, Modifiers::NONE, Key::Enter);
-            let digit = digits.iter().position(|k| consume_exact(i, Modifiers::NONE, *k));
-            // The menu has the keyboard: typed text and other keys go nowhere.
-            i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
-            (close, down, up, enter, digit)
-        });
-        if close {
-            self.run(ctx, Action::CloseMenu);
-            return true;
-        }
-        if n > 0 {
-            if down {
-                self.ui.recent_sel = (self.ui.recent_sel.min(n - 1) + 1) % n;
-            }
-            if up {
-                self.ui.recent_sel = (self.ui.recent_sel.min(n - 1) + n - 1) % n;
-            }
-        }
-        let pick = match (enter, digit) {
-            (_, Some(d)) => Some(screens::recent::index_for_digit(d)).filter(|i| *i < sessions),
-            (true, None) => (n > 0).then(|| self.ui.recent_sel.min(n - 1)),
-            _ => None,
-        };
-        if let Some(a) = pick.and_then(|i| screens::recent::items(&self.model).get(i).map(screens::recent::Item::action)) {
-            self.run(ctx, a);
-        }
-        if down || up || pick.is_some() {
-            ctx.request_repaint();
-        }
-        true
     }
 
     /// Focuses the live session `step` places after (or before) the active one, in the order the

@@ -954,6 +954,8 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
     }
     if resp.has_focus() {
         p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
+        // Where Shift+F10 opens this row's menu (`CsmApp::focused_item_menu`).
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new(("row-menu-at", s.id.clone())), rect.left_bottom()));
     }
     let indent = if nested { space::LG - space::XXS } else { 0.0 };
     let cy = rect.min.y + size::ROW / 2.0;

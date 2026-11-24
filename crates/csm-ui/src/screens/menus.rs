@@ -2,13 +2,14 @@
 //! presets popover, the run list and the quick-open's group picker. Every item is an
 //! [`Action`]; anything that changes state is a tool call.
 
-use egui::{Align2, CornerRadius, Id, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
+use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 use serde_json::json;
 
 use csm_core::session_sort::SortField;
 
-use crate::app::{Action, ConfirmState, CsmApp, Menu};
+use crate::app::{Action, ConfirmState, CsmApp, Menu, consume_exact};
 use crate::icons;
+use crate::menu_nav::{self, Keys, Nav, Row};
 use crate::model::{GridPreset, GroupMode, LayoutMode, Scope, Status, UiModel};
 use crate::theme::{self, Tokens, alpha, icon, radius, size, space, text};
 use crate::widgets;
@@ -596,7 +597,9 @@ fn github_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     ]
 }
 
-/// Draws `entries` in an area at `at`; returns the area's rect.
+/// Draws `entries` in an area at `at`; returns the area's rect. The row highlighted at this depth
+/// (`menu_sel`, by the keyboard or the pointer) gets the keyboard highlight, and the pointer over a
+/// row moves the highlight there.
 #[allow(clippy::too_many_arguments)]
 fn menu_area(
     ctx: &egui::Context,
@@ -620,6 +623,8 @@ fn menu_area(
     let screen = ctx.content_rect();
     let mut rects = Vec::new();
     let mut sub: Option<(Pos2, Vec<Entry>, String)> = None;
+    let acc = access_of(entries);
+    let lit = app.ui.menu_sel.get(depth).copied();
     // Keep the menu on screen: flip up/left when it would overflow.
     let est_h: f32 = entries
         .iter()
@@ -644,14 +649,19 @@ fn menu_area(
             let width = entries.iter().map(|e| row_width(ui, e)).fold(size::MENU_W - space::SM, f32::max);
             ui.set_width(width);
             ui.spacing_mut().item_spacing.y = 0.0;
-            for e in entries {
+            for (idx, e) in entries.iter().enumerate() {
+                let on = lit == Some(idx);
+                let under = acc.get(idx).copied().flatten().map(|(c, _)| c);
                 match e {
                     Entry::Head(h) => widgets::menu_head(ui, h),
                     Entry::Sep => widgets::separator(ui),
                     Entry::Item { icon, label, hint, danger, action } => {
-                        let r = widgets::menu_item(ui, icon, label, hint.as_deref(), *danger);
-                        if r.hovered() && depth == 0 {
-                            app.ui.submenu = None;
+                        let r = widgets::menu_item_at(ui, icon, label, hint.as_deref(), *danger, on, under);
+                        if r.hovered() {
+                            if depth == 0 {
+                                app.ui.submenu = None;
+                            }
+                            highlight(&mut app.ui.menu_sel, depth, idx);
                         }
                         if r.clicked() {
                             actions.push(action.clone());
@@ -662,9 +672,12 @@ fn menu_area(
                         }
                     }
                     Entry::ItemTip { icon, label, hint, tip, action } => {
-                        let r = widgets::menu_item(ui, icon, label, hint.as_deref(), false).on_hover_text(tip.as_str());
-                        if r.hovered() && depth == 0 {
-                            app.ui.submenu = None;
+                        let r = widgets::menu_item_at(ui, icon, label, hint.as_deref(), false, on, under).on_hover_text(tip.as_str());
+                        if r.hovered() {
+                            if depth == 0 {
+                                app.ui.submenu = None;
+                            }
+                            highlight(&mut app.ui.menu_sel, depth, idx);
                         }
                         if r.clicked() {
                             actions.push(action.clone());
@@ -673,7 +686,7 @@ fn menu_area(
                     }
                     Entry::Sub { icon, label, items } => {
                         let open = app.ui.submenu.as_deref() == Some(label.as_str());
-                        let r = widgets::menu_item(ui, icon, label, None, false);
+                        let r = widgets::menu_item_at(ui, icon, label, None, false, on, under);
                         if open {
                             ui.painter().rect_filled(r.rect, CornerRadius::same(radius::SM + 1), Tokens::tint(t.row_sel, alpha::ASLEEP));
                         }
@@ -689,6 +702,7 @@ fn menu_area(
                         );
                         if r.hovered() || r.clicked() {
                             app.ui.submenu = Some(label.clone());
+                            highlight(&mut app.ui.menu_sel, depth, idx);
                         }
                         if open || r.hovered() {
                             sub = Some((
@@ -740,62 +754,38 @@ fn with_demo(mut v: Vec<Entry>, demo: bool) -> Vec<Entry> {
     v
 }
 
-pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
-    let Some(menu) = app.ui.menu.clone() else {
-        // Closed: the next opening reads the worktrees again.
-        ctx.data_mut(|d| d.remove_temp::<String>(Id::new("menu-worktrees-asked")));
-        return;
-    };
-    let model = app.model.clone();
+/// A list menu as it is drawn: its area's id and place, and its entries as offered here.
+struct Listing {
+    id: &'static str,
+    at: Pos2,
+    entries: Vec<Entry>,
+}
+
+/// The list a menu shows, or `None` for the menus that are not lists (the grid, Recent).
+fn listing(app: &CsmApp, menu: &Menu) -> Option<Listing> {
+    let model = &app.model;
     let demo = app.dispatch.has_tool("demo_set_status");
-    if let Menu::Pane { session, .. } | Menu::Row { session, .. } = &menu {
-        ask_worktrees(ctx, app, &menu, session);
-    }
-    let rects = match &menu {
+    let (id, at, entries) = match menu {
         Menu::Pane { session, at } => {
-            let mut e = with_demo(pane_menu(&model, session), demo);
+            let mut e = with_demo(pane_menu(model, session), demo);
             if let Some(sub) = model.session(session).and_then(|s| claude_commands_entry(s, &claude_commands(app))) {
                 // At the end of the first block, before the Session section.
-                let at = e.iter().position(|x| matches!(x, Entry::Head(h) if h == "Session")).map_or(e.len(), |i| i.saturating_sub(1));
-                e.insert(at, sub);
+                let idx = e.iter().position(|x| matches!(x, Entry::Head(h) if h == "Session")).map_or(e.len(), |i| i.saturating_sub(1));
+                e.insert(idx, sub);
             }
-            let at = pos2(at.x - size::MENU_W, at.y);
-            menu_area(ctx, app, Id::new("menu-pane"), at, &e, 0, false, actions)
+            ("menu-pane", pos2(at.x - size::MENU_W, at.y), e)
         }
         Menu::Row { session, at } => {
             let order: Vec<&str> = model.sessions.iter().map(|s| s.id.as_str()).collect();
             let targets = app.ui.selection.targets(session, &order);
-            menu_area(
-                ctx,
-                app,
-                Id::new("menu-row"),
-                *at + vec2(space::XS + space::XXS, -space::XS),
-                &with_demo(row_menu(&model, session, &targets), demo),
-                0,
-                false,
-                actions,
-            )
+            ("menu-row", *at + vec2(space::XS + space::XXS, -space::XS), with_demo(row_menu(model, session, &targets), demo))
         }
-        Menu::Sort { at } => {
-            let e = sort_menu(&model, app.ui.sort);
-            menu_area(ctx, app, Id::new("menu-sort"), *at, &e, 0, false, actions)
-        }
-        Menu::Group { group, at } => menu_area(ctx, app, Id::new("menu-group"), *at, &group_menu(&model, group), 0, false, actions),
-        Menu::Runs { session, at } => {
-            menu_area(ctx, app, Id::new("menu-runs"), pos2(at.x - size::MENU_W, at.y), &runs_menu(&model, session), 0, false, actions)
-        }
-        Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
-        Menu::GitHub { session, at } => {
-            menu_area(ctx, app, Id::new("menu-github"), pos2(at.x - size::MENU_W, at.y), &github_menu(&model, session), 0, false, actions)
-        }
+        Menu::Sort { at } => ("menu-sort", *at, sort_menu(model, app.ui.sort)),
+        Menu::Group { group, at } => ("menu-group", *at, group_menu(model, group)),
+        Menu::Runs { session, at } => ("menu-runs", pos2(at.x - size::MENU_W, at.y), runs_menu(model, session)),
+        Menu::GitHub { session, at } => ("menu-github", pos2(at.x - size::MENU_W, at.y), github_menu(model, session)),
         Menu::ClaudeReplies { session, at } => {
-            let e = claude_replies_menu(app.ui.claude_replies.as_ref(), session);
-            menu_area(ctx, app, Id::new("menu-claude-replies"), pos2(at.x - size::MENU_W, at.y), &e, 0, false, actions)
-        }
-        Menu::Recent { at } => {
-            let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
-            v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));
-            v
+            ("menu-claude-replies", pos2(at.x - size::MENU_W, at.y), claude_replies_menu(app.ui.claude_replies.as_ref(), session))
         }
         Menu::QuickGroup { at } => {
             let mut e = vec![Entry::Head("Group".into())];
@@ -807,10 +797,239 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 ));
             }
             e.push(item(if app.ui.quick.group.is_none() { "check" } else { "blank" }, "Ungrouped", Action::Toast("quick-group:".into())));
-            menu_area(ctx, app, Id::new("menu-qgroup"), *at, &e, 0, false, actions)
+            ("menu-qgroup", *at, e)
         }
+        Menu::Grid { .. } | Menu::Recent { .. } => return None,
     };
-    // The quick-open's group picker is local state, not a tool: intercept its rows.
+    Some(Listing { id, at, entries: offered_here(entries, app.remote.is_some()) })
+}
+
+/// The entries a remote window offers (recursively into submenus).
+fn offered_here(entries: Vec<Entry>, remote: bool) -> Vec<Entry> {
+    if !remote {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .filter(|e| !hidden_in_remote(e))
+        .map(|e| match e {
+            Entry::Sub { icon, label, items } => Entry::Sub { icon, label, items: offered_here(items, true) },
+            other => other,
+        })
+        .collect()
+}
+
+fn label_of(e: &Entry) -> Option<&str> {
+    match e {
+        Entry::Item { label, .. } | Entry::ItemTip { label, .. } | Entry::Sub { label, .. } => Some(label.as_str()),
+        Entry::Head(_) | Entry::Sep => None,
+    }
+}
+
+/// The access letter of each row of a level (see [`menu_nav::access`]).
+fn access_of(entries: &[Entry]) -> Vec<Option<(usize, char)>> {
+    let labels: Vec<Option<&str>> = entries.iter().map(label_of).collect();
+    menu_nav::access(&labels)
+}
+
+/// The rows of a level as the keys see them: what the highlight can rest on, and each access letter.
+fn nav_rows(entries: &[Entry]) -> Vec<Row> {
+    access_of(entries)
+        .into_iter()
+        .zip(entries)
+        .map(|(a, e)| Row { selectable: label_of(e).is_some(), letter: a.map(|(_, c)| c) })
+        .collect()
+}
+
+/// The entries of the level at the end of `chain`: the submenus opened, by their row index.
+fn level<'a>(entries: &'a [Entry], chain: &[usize]) -> Option<&'a [Entry]> {
+    chain.iter().try_fold(entries, |lvl, i| match lvl.get(*i)? {
+        Entry::Sub { items, .. } => Some(items.as_slice()),
+        _ => None,
+    })
+}
+
+/// Highlights row `idx` of the level at `depth`, closing the levels below it (a key or a hover).
+fn highlight(sel: &mut Vec<usize>, depth: usize, idx: usize) {
+    if sel.get(depth) != Some(&idx) {
+        sel.truncate(depth);
+        sel.push(idx);
+    }
+}
+
+/// The highlight a menu opened from the keyboard starts on: its first row (the Recent menu's
+/// first row). Empty when no row can take it.
+pub fn first_highlight(app: &CsmApp, menu: &Menu) -> Vec<usize> {
+    if matches!(menu, Menu::Recent { .. }) {
+        return if crate::screens::recent::items(&app.model).is_empty() { Vec::new() } else { vec![0] };
+    }
+    listing(app, menu).and_then(|l| menu_nav::first(&nav_rows(&l.entries))).map(|i| vec![i]).unwrap_or_default()
+}
+
+/// Every letter key and the letter it types: the access keys.
+const LETTERS: [(Key, char); 26] = [
+    (Key::A, 'a'),
+    (Key::B, 'b'),
+    (Key::C, 'c'),
+    (Key::D, 'd'),
+    (Key::E, 'e'),
+    (Key::F, 'f'),
+    (Key::G, 'g'),
+    (Key::H, 'h'),
+    (Key::I, 'i'),
+    (Key::J, 'j'),
+    (Key::K, 'k'),
+    (Key::L, 'l'),
+    (Key::M, 'm'),
+    (Key::N, 'n'),
+    (Key::O, 'o'),
+    (Key::P, 'p'),
+    (Key::Q, 'q'),
+    (Key::R, 'r'),
+    (Key::S, 's'),
+    (Key::T, 't'),
+    (Key::U, 'u'),
+    (Key::V, 'v'),
+    (Key::W, 'w'),
+    (Key::X, 'x'),
+    (Key::Y, 'y'),
+    (Key::Z, 'z'),
+];
+
+/// The digit keys and the digit they type (the Recent menu's access keys).
+const DIGITS: [(Key, char); 10] = [
+    (Key::Num0, '0'),
+    (Key::Num1, '1'),
+    (Key::Num2, '2'),
+    (Key::Num3, '3'),
+    (Key::Num4, '4'),
+    (Key::Num5, '5'),
+    (Key::Num6, '6'),
+    (Key::Num7, '7'),
+    (Key::Num8, '8'),
+    (Key::Num9, '9'),
+];
+
+/// Reads the menu's keys this frame and consumes them, so neither the terminal nor the shortcuts
+/// take them. Typed text is dropped too: an open menu has the keyboard. `digits`: the digit keys
+/// are access keys as well (Recent).
+fn take_keys(ctx: &egui::Context, digits: bool) -> Keys {
+    ctx.input_mut(|i| {
+        let mut k = Keys {
+            up: consume_exact(i, Modifiers::NONE, Key::ArrowUp) || consume_exact(i, Modifiers::SHIFT, Key::Tab),
+            down: consume_exact(i, Modifiers::NONE, Key::ArrowDown) || consume_exact(i, Modifiers::NONE, Key::Tab),
+            home: consume_exact(i, Modifiers::NONE, Key::Home),
+            end: consume_exact(i, Modifiers::NONE, Key::End),
+            enter: consume_exact(i, Modifiers::NONE, Key::Enter) || consume_exact(i, Modifiers::NONE, Key::Space),
+            forward: consume_exact(i, Modifiers::NONE, Key::ArrowRight),
+            back: consume_exact(i, Modifiers::NONE, Key::ArrowLeft),
+            escape: consume_exact(i, Modifiers::NONE, Key::Escape),
+            letter: None,
+        };
+        k.letter = LETTERS.iter().chain(DIGITS.iter().filter(|_| digits)).find_map(|(key, c)| consume_exact(i, Modifiers::NONE, *key).then_some(*c));
+        i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+        k
+    })
+}
+
+/// The open menu's keys, when it reads them (every list menu and the Recent menu; the grid does
+/// not, its Escape is the app's). `Some(actions)` when the menu took keys this frame: the caller
+/// runs the actions and skips the frame's other shortcuts. `None` when the keys go on.
+pub fn menu_keys(ctx: &egui::Context, app: &mut CsmApp) -> Option<Vec<Action>> {
+    let menu = app.ui.menu.clone()?;
+    if matches!(menu, Menu::Recent { .. }) {
+        return recent_keys(ctx, app);
+    }
+    let list = listing(app, &menu)?;
+    let keys = take_keys(ctx, false);
+    if keys == Keys::default() {
+        return None;
+    }
+    // The highlight path: one row index per open level; the last is the level the keys act on.
+    let mut path = app.ui.menu_sel.clone();
+    let depth = path.len().saturating_sub(1);
+    let sel = path.last().copied();
+    let chain: Vec<usize> = path.iter().take(depth).copied().collect();
+    let Some(lvl) = level(&list.entries, &chain) else {
+        app.ui.menu_sel.clear();
+        return Some(Vec::new());
+    };
+    let nav = menu_nav::navigate(keys, sel, &nav_rows(lvl), !chain.is_empty());
+    let activates = matches!(nav, Nav::Activate(_));
+    let mut acts = Vec::new();
+    match nav {
+        Nav::Nothing => {}
+        Nav::Highlight(i) => highlight(&mut path, depth, i),
+        Nav::Activate(i) | Nav::Forward(i) => match lvl.get(i) {
+            Some(Entry::Sub { label, items, .. }) => {
+                highlight(&mut path, depth, i);
+                path.push(menu_nav::first(&nav_rows(items)).unwrap_or(0));
+                app.ui.submenu = Some(label.clone());
+            }
+            Some(Entry::Item { action, .. }) if activates => {
+                acts.push(action.clone());
+                if !matches!(action, Action::OpenClaudeReplies(_)) {
+                    acts.push(Action::CloseMenu);
+                }
+            }
+            Some(Entry::ItemTip { action, .. }) if activates => {
+                acts.push(action.clone());
+                acts.push(Action::CloseMenu);
+            }
+            _ => {}
+        },
+        Nav::Back => {
+            // Left or Escape in a submenu: close it and go back to its row.
+            path.pop();
+            app.ui.submenu = None;
+        }
+        Nav::Close => acts.push(Action::CloseMenu),
+    }
+    app.ui.menu_sel = path;
+    intercept_quick_groups(app, &mut acts);
+    Some(acts)
+}
+
+/// The Recent menu's keys: arrows and Tab move, Enter picks the highlighted row, a digit picks its
+/// session, Escape or Ctrl+Shift+E closes it.
+fn recent_keys(ctx: &egui::Context, app: &mut CsmApp) -> Option<Vec<Action>> {
+    let close = ctx.input_mut(|i| consume_exact(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::E));
+    let keys = take_keys(ctx, true);
+    if close {
+        app.ui.menu_sel.clear();
+        return Some(vec![Action::CloseMenu]);
+    }
+    if keys == Keys::default() {
+        return None;
+    }
+    let list = crate::screens::recent::items(&app.model);
+    let sessions = list.iter().filter(|i| matches!(i, crate::screens::recent::Item::Session(_))).count();
+    let rows: Vec<Row> = (0..list.len())
+        .map(|i| Row {
+            selectable: true,
+            letter: (i < sessions)
+                .then(|| crate::screens::recent::digit_for(i).and_then(|d| u32::try_from(d).ok()).and_then(|d| char::from_digit(d, 10)))
+                .flatten(),
+        })
+        .collect();
+    let sel = app.ui.menu_sel.first().copied();
+    let mut acts = Vec::new();
+    match menu_nav::navigate(keys, sel, &rows, false) {
+        Nav::Highlight(i) => app.ui.menu_sel = vec![i],
+        Nav::Activate(i) => {
+            if let Some(item) = list.get(i) {
+                acts.push(item.action());
+                acts.push(Action::CloseMenu);
+            }
+        }
+        Nav::Close => acts.push(Action::CloseMenu),
+        Nav::Nothing | Nav::Forward(_) | Nav::Back => {}
+    }
+    Some(acts)
+}
+
+/// The quick-open's group picker is local state, not a tool: its rows are taken here.
+fn intercept_quick_groups(app: &mut CsmApp, actions: &mut Vec<Action>) {
     actions.retain(|a| {
         if let Action::Toast(t) = a
             && let Some(g) = t.strip_prefix("quick-group:")
@@ -820,6 +1039,30 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
         true
     });
+}
+
+pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let Some(menu) = app.ui.menu.clone() else {
+        // Closed: the next opening reads the worktrees again.
+        ctx.data_mut(|d| d.remove_temp::<String>(Id::new("menu-worktrees-asked")));
+        return;
+    };
+    if let Menu::Pane { session, .. } | Menu::Row { session, .. } = &menu {
+        ask_worktrees(ctx, app, &menu, session);
+    }
+    let rects = match &menu {
+        Menu::Grid { at } => vec![grid_popover(ctx, app, *at, actions)],
+        Menu::Recent { at } => {
+            let mut v = vec![crate::screens::recent::popup(ctx, app, *at, actions)];
+            v.extend(ctx.data(|d| d.get_temp::<Rect>(Id::new(crate::app::RECENT_ANCHOR).with("button"))));
+            v
+        }
+        _ => match listing(app, &menu) {
+            Some(l) => menu_area(ctx, app, Id::new(l.id), l.at, &l.entries, 0, false, actions),
+            None => Vec::new(),
+        },
+    };
+    intercept_quick_groups(app, actions);
     // A click anywhere else closes it.
     let clicked_outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rects.iter().any(|r| r.contains(p))));
     if clicked_outside {

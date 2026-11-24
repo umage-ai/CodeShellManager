@@ -227,8 +227,21 @@ Shift+F6 cycle over the regions drawn last frame (`crates/csm-ui/src/focus.rs`),
 terminal, Ctrl+Alt+Arrow pane movement by geometry (`session_focus`, no new tool), and the focus
 ring from `Tokens::focus()` through `widgets::focus_ring`. Not yet: the arrow keys inside each
 region (sidebar, rail, inbox, title bar, screen strip), the Inspector and Inbox regions' own
-keys, the ring on buttons and switches, and the dialog and menu keys (step 4). The inbox panel is
-not a region yet (it is drawn inside the sidebar).
+keys, the ring on buttons and switches, and the dialog keys (step 4). The inbox panel is not a
+region yet (it is drawn inside the sidebar).
+
+**Status of step 4, menus (branch `kb/navigation`).** Every list menu (`Menu` except the grid) and
+the Recent menu read their keys through one handler (`screens/menus.rs`, `menu_keys`) and one pure
+rule set (`menu_nav.rs`: steps that skip rows, Home/End, Enter, Right/Left into submenus, Escape
+back or close, access letters). An open menu takes its keys before the shortcuts and the terminal;
+Ctrl chords it does not read still run. A menu opened from the keyboard (Shift+F10) highlights its
+first row; a pointer over a row moves the highlight. Access letters are the first free letter of
+each label, drawn underlined, not the fixed letters the table above implies. Shift+F10 opens the
+menu of the focused session row, or the active group's menu from the rail, outside the terminal.
+Not yet: the grid's keys (its Escape stays the app's), focus returning to the opener when a menu
+closes, the dialog Tab trap and default button, and the context-menu key (egui 0.36 has no key for
+it, so only Shift+F10 is bound). Group headers are not focusable yet, so Shift+F10 does not open
+their menu.
 
 ## 9. Gate and rules for these steps
 
