@@ -4,9 +4,12 @@
      See docs/release.md for every identity below and why it has the value it has.
 
      Channel=stable (rc and final releases): THE CodeShellManager. It carries the WPF app's
-       (0.x) UpgradeCode, product name, folder, shortcut names and registry key, so it
-       major-upgrades an installed WPF CodeShellManager in place (MSI, winget and Chocolatey
-       upgrades all go through this), and it also removes a "CodeShellManager Beta" install.
+       (0.x) UpgradeCode, product name and shortcut names, so it major-upgrades an installed WPF
+       CodeShellManager (MSI, winget and Chocolatey upgrades all go through this), and it also
+       removes a "CodeShellManager Beta" install. The install folder is NOT the WPF app's: version
+       2 installs under C:\Program Files\umage.ai\ (the company name reads "umage.ai" everywhere),
+       a clean break from C:\Program Files\umage\ where 0.x and 2.0 betas lived. The old product is
+       removed first, taking its files, and the empty old folders are cleaned up below.
      Both channels' exes are built with CSM_CHANNEL set to the channel: a beta keeps its own
        data folders (CodeShellManager2-Beta) and IPC app id (codeshell-beta).
      Channel=beta: "CodeShellManager Beta", installed BESIDE the WPF app with its own
@@ -27,14 +30,14 @@
          it is what lets this MSI, `winget upgrade` and `choco upgrade` replace the WPF app. -->
     <?define UpgradeCode = "3F7A9B1C-2D5E-4F8A-B0C3-6E1D9A4F2B7E" ?>
     <?define FolderName = "CodeShellManager" ?>
-    <?define RegistryKey = "Software\umage\CodeShellManager" ?>
+    <?define RegistryKey = "Software\umage.ai\CodeShellManager" ?>
     <!-- Must match the codeshell.aumid file the workflow writes into PublishDir. -->
     <?define AppUserModelId = "UmageAI.CodeShellManager" ?>
   <?elseif $(var.Channel) = "beta" ?>
     <?define ProductName = "CodeShellManager Beta" ?>
     <?define UpgradeCode = "$(var.BetaUpgradeCode)" ?>
     <?define FolderName = "CodeShellManager Beta" ?>
-    <?define RegistryKey = "Software\umage\CodeShellManager2Beta" ?>
+    <?define RegistryKey = "Software\umage.ai\CodeShellManager2Beta" ?>
     <?define AppUserModelId = "UmageAI.CodeShellManager.Beta" ?>
   <?else?>
     <?error Channel must be "stable" or "beta" ?>
@@ -52,7 +55,8 @@
          so a same-version upgrade must replace the old build rather than install a second copy.
          The WPF app's versions (0.x) are always lower, so they are always upgraded. The old
          product is removed before the new one is installed (the default schedule), so the WPF
-         app's files (CodeShellManager.exe, Assets\) leave the folder; its data does not. -->
+         app's files (CodeShellManager.exe, Assets\) leave its folder (C:\Program Files\umage\...,
+         not this product's); its data does not. -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Please uninstall it first." />
 
@@ -107,7 +111,11 @@
   <!-- ── Directory layout ──────────────────────────────────────────────────── -->
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="ManufacturerFolder" Name="umage">
+      <!-- Where 0.x and the 2.0 betas lived (see the cleanup components below). Never installed into. -->
+      <Directory Id="OldManufacturerFolder" Name="umage">
+        <Directory Id="OldInstallFolder" Name="$(var.FolderName)" />
+      </Directory>
+      <Directory Id="ManufacturerFolder" Name="umage.ai">
         <Directory Id="INSTALLFOLDER" Name="$(var.FolderName)">
           <!-- Sample add-ons. Settings > Add-ons > "Install samples" copies them into the
                person's own add-ons folder; they stay disabled until enabled there. -->
@@ -139,16 +147,20 @@
         <File Id="CodeShellExe" Source="$(var.PublishDir)\codeshell.exe" KeyPath="yes" />
       </Component>
 
-      <?if $(var.Channel) = "stable" ?>
-      <!-- CodeShellManager.exe: the WPF app's (0.x) exe name in this same folder, now a tiny
-           launcher (apps/csm-legacy-launcher) that starts codeshell.exe beside it with the same
-           arguments and exits. Taskbar pins, Start tiles, people's own shortcuts and scripts that
-           name the old exe keep working after the upgrade. Our own shortcuts point at
-           codeshell.exe. Stable only: a beta folder never held 0.x. -->
-      <Component Directory="INSTALLFOLDER" Guid="*">
-        <File Id="LegacyLauncherExe" Source="$(var.PublishDir)\CodeShellManager.exe" KeyPath="yes" />
+      <!-- The pre-umage.ai folders. 0.x and the 2.0 betas installed to
+           C:\Program Files\umage\<FolderName>; the major upgrade removes that product (and its
+           files) first. The Directory table names the old folders so that, once they are empty,
+           they go too: RemoveFolder (never RemoveFolderEx) deletes a folder only when it is
+           empty, so another product's files, a user's own files, or a 0.x copy installed beside
+           a beta are never touched. Nothing is created: no CreateFolder here. -->
+      <Component Directory="OldInstallFolder" Guid="*">
+        <RemoveFolder Id="RemoveOldInstallFolder" On="install" />
+        <RegistryValue Root="HKCU" Key="$(var.RegistryKey)" Name="OldInstallFolderChecked" Type="integer" Value="1" KeyPath="yes" />
       </Component>
-      <?endif?>
+      <Component Directory="OldManufacturerFolder" Guid="*">
+        <RemoveFolder Id="RemoveOldManufacturerFolder" On="install" />
+        <RegistryValue Root="HKCU" Key="$(var.RegistryKey)" Name="OldManufacturerFolderChecked" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
 
       <!-- The CLI and MCP server (`csm`, `csm mcp`). Its folder goes on the system PATH so
            `csm setup` / an agent's MCP config can name it without a full path. -->

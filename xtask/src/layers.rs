@@ -28,7 +28,6 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-cli", 6),
     ("csm-session-summary", 6),
     ("csm-review", 6),
-    ("csm-legacy-launcher", 6), // CodeShellManager.exe: the 0.x exe name, starts codeshell.exe
     ("term-spike", 6),
 ];
 

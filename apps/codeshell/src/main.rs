@@ -425,6 +425,36 @@ fn import_wpf_on_first_run(engine: &Engine, state_json: PathBuf) {
     }
 }
 
+/// The agent-app registrations `csm setup` wrote name `csm.exe` by full path. When the install
+/// folder moved (2.0 installs under `C:\Program Files\umage.ai\`), entries that still name the old
+/// folder are pointed at the `csm.exe` beside this exe: only entries setup added, comments kept,
+/// a backup made (`csm_setup::repair_moved`). On a worker thread, Windows only, once per start.
+fn repair_moved_registrations() {
+    if !cfg!(windows) {
+        return;
+    }
+    let worker = || {
+        // Only the installed app (`...\umage.ai\<name>\codeshell.exe`): a development build must
+        // not take over the installed app's registrations.
+        let Some(csm) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+            .filter(|d| d.parent().and_then(|p| p.file_name()).is_some_and(|n| n.eq_ignore_ascii_case("umage.ai")))
+            .map(|d| d.join("csm.exe"))
+            .filter(|p| p.is_file())
+        else {
+            return;
+        };
+        let command = vec![csm.to_string_lossy().into_owned(), "mcp".to_owned()];
+        for r in csm_setup::repair_moved(&csm_setup::Host::current(), &command) {
+            log::info!("agent registration: {} {:?} (backup {:?})", r.config.display(), r.outcome, r.backup);
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("csm-repair-mcp".into()).spawn(worker) {
+        log::warn!("agent registration: could not start the repair: {e}");
+    }
+}
+
 /// What the laptop's window does to start a remote window (`remote_window_open`): this exe, by argv,
 /// `--remote <host-id>`, with the same state folder. The child starts on a thread of its own, never
 /// on the UI thread; the call returns once that thread is started.
@@ -640,6 +670,9 @@ fn main() {
             && let Some(line) = options_autostart.refresh(cfg!(debug_assertions))
         {
             log::info!("autostart: {line}");
+        }
+        if !args.clean && args.config_dir.is_none() && std::env::var_os("CSM_CONFIG_DIR").is_none() {
+            repair_moved_registrations();
         }
         match (&report.path, args.clean) {
             (_, true) => log::info!("state: --clean, starting empty and saving nothing"),

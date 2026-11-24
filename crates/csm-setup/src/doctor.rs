@@ -13,7 +13,7 @@ use csm_mcp::{Backend, RemoteBackend, RemoteOptions};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::clients::{Host, SERVER_NAME, clients};
+use crate::clients::{Client, Host, SERVER_NAME, clients};
 use crate::plan::{ActionKind, inspect_client};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -244,6 +244,12 @@ fn check_clients(host: &Host) -> Vec<Check> {
                 ActionKind::Unchanged => Check::new(name, CheckStatus::Ok, format!("{} is connected ({}).", c.display, c.config.display())),
                 ActionKind::Blocked => Check::new(name, CheckStatus::Warn, format!("{}: {}", c.display, a.reason.unwrap_or_default()))
                     .fix(format!("Fix the file, then run: csm setup --client {}", c.id)),
+                ActionKind::Update if points_at_old_folder(c, a.before.as_deref(), &command) => Check::new(
+                    name,
+                    CheckStatus::Warn,
+                    format!("{} points {SERVER_NAME} at csm in the old install folder (from before the move to umage.ai).", c.display),
+                )
+                .fix(format!("Run: csm setup --client {}  (CodeShellManager also repairs this when it starts)", c.id)),
                 ActionKind::Update => Check::new(name, CheckStatus::Warn, format!("{} points {SERVER_NAME} at a different csm.", c.display))
                     .fix(format!("Run: csm setup --client {}", c.id)),
                 ActionKind::Create | ActionKind::Add => {
@@ -332,4 +338,12 @@ pub fn mcp_self_test(program: &str, args: &[String], timeout: Duration) -> Check
         return Check::new(name, CheckStatus::Fail, "The MCP server's tool list is missing session_list.").fix("Update csm and the app together.");
     }
     Check::new(name, CheckStatus::Ok, format!("MCP server answered (protocol {protocol}, {} tools listed).", tools.len()))
+}
+
+/// Whether the entry in `before` is one setup wrote that names the pre-2.0 install folder.
+fn points_at_old_folder(c: &Client, before: Option<&str>, command: &[String]) -> bool {
+    let Some(program) = command.first() else { return false };
+    before
+        .and_then(|t| crate::config::read_entry(c, t).ok().flatten())
+        .is_some_and(|e| crate::clients::is_moved_entry(&e, Path::new(program)))
 }

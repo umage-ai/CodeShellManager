@@ -214,3 +214,29 @@ pub fn is_owned_entry(entry: &Value) -> bool {
     let first_arg = entry.get("args").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str);
     stem.eq_ignore_ascii_case("csm") && first_arg == Some("mcp")
 }
+
+/// The folder the Windows install lived in before 2.0 moved the company folder to `umage.ai`:
+/// `...\umage\CodeShellManager` (stable) or `...\umage\CodeShellManager Beta`. Lowercase, with
+/// backslashes, as [`is_moved_entry`] compares.
+const OLD_INSTALL_TAILS: [&str; 2] = [r"\umage\codeshellmanager", r"\umage\codeshellmanager beta"];
+
+/// Whether `entry` is one setup wrote whose `csm` lives in a pre-2.0 install folder
+/// (`...\umage\CodeShellManager[ Beta]\csm.exe`), and should now point at `new_csm`.
+///
+/// Only the old folder shape counts (never a hand-made path or `csm` on PATH), and only when the
+/// entry is ours ([`is_owned_entry`]). A beta's entry moves to the beta, a stable's to the stable;
+/// an entry of the other channel moves too when its old program is gone (an upgrade removed it).
+pub fn is_moved_entry(entry: &Value, new_csm: &std::path::Path) -> bool {
+    if !is_owned_entry(entry) {
+        return false;
+    }
+    let Some(command) = entry.get("command").and_then(Value::as_str) else { return false };
+    let norm = command.replace('/', "\\").to_lowercase();
+    let Some((dir, _)) = norm.rsplit_once('\\') else { return false };
+    if !OLD_INSTALL_TAILS.iter().any(|t| dir.ends_with(t)) {
+        return false;
+    }
+    let new_dir = new_csm.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_lowercase());
+    let old_dir = dir.rsplit('\\').next().map(str::to_owned);
+    old_dir == new_dir || !std::path::Path::new(command).exists()
+}
