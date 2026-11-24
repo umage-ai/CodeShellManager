@@ -111,6 +111,11 @@ pub struct FontSet {
     /// How glyph coverage becomes alpha (hinting and the coverage curve). Changing it after glyphs
     /// were rasterised needs an atlas clear.
     pub coverage: Coverage,
+    /// Draws a slash through the primary face's `0`. At terminal sizes a `0` is about 6x8 pixels
+    /// and its own mark (a dot or short stroke inside) fills in, leaving a shape that reads as an
+    /// `8`; a stroke across the whole glyph survives. Changing it after glyphs were rasterised
+    /// needs an atlas clear.
+    pub slashed_zero: bool,
     lookup: HashMap<char, Option<(u8, u16)>>,
     shape_ctx: ShapeContext,
     scale_ctx: ScaleContext,
@@ -131,6 +136,7 @@ impl FontSet {
             size_pt,
             ligatures,
             coverage: Coverage::default(),
+            slashed_zero: true,
             lookup: HashMap::new(),
             shape_ctx: ShapeContext::new(),
             scale_ctx: ScaleContext::new(),
@@ -278,9 +284,12 @@ impl FontSet {
                 // A face without a weight axis gets a synthetic bold: the mask smeared right by
                 // a pixel or two (swash's outline embolden distorts thin glyphs such as `i`).
                 let smear = if style.bold && !real_bold { ((px / 20.0).round() as usize).max(1) } else { 0 };
-                let src: Vec<u8> = img.data.iter().take(w * h).copied().collect();
+                let mut src: Vec<u8> = img.data.iter().take(w * h).copied().collect();
                 if src.len() != w * h {
                     return None;
+                }
+                if self.slashed_zero && face_idx == 0 && gid == self.primary.font().charmap().map('0') {
+                    slash(&mut src, w, h, px);
                 }
                 let ow = w + smear;
                 let mut v = Vec::with_capacity(ow * h * 4);
@@ -316,6 +325,31 @@ impl FontSet {
 
     pub fn face_name(&self, idx: u8) -> &str {
         &self.face(idx).name
+    }
+}
+
+/// Adds a `/` stroke from the bottom-left to the top-right of a glyph's ink box, antialiased and
+/// merged with the outline by `max`. The stroke is at least one pixel wide.
+fn slash(mask: &mut [u8], w: usize, h: usize, px: f32) {
+    if w < 4 || h < 4 {
+        return;
+    }
+    let thickness = (px / 11.0).max(1.0);
+    // Ends sit just inside the outline so the stroke joins it.
+    let (x0, y0) = (1.0f32, h as f32 - 1.0);
+    let (x1, y1) = (w as f32 - 1.0, 1.0f32);
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let len2 = dx * dx + dy * dy;
+    for y in 0..h {
+        for x in 0..w {
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let t = (((cx - x0) * dx + (cy - y0) * dy) / len2).clamp(0.0, 1.0);
+            let dist = ((cx - (x0 + t * dx)).powi(2) + (cy - (y0 + t * dy)).powi(2)).sqrt();
+            let cov = (thickness / 2.0 + 0.5 - dist).clamp(0.0, 1.0);
+            if let Some(m) = mask.get_mut(y * w + x) {
+                *m = (*m).max((cov * 255.0).round() as u8);
+            }
+        }
     }
 }
 

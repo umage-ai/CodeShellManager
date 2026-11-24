@@ -613,7 +613,9 @@ fn main() {
     };
     let (_, fallback_paths) = default_paths();
     let fallbacks = fallback_paths.iter().filter_map(|(p, i)| load_face(p, *i).ok()).collect();
-    let fonts = FontSet::new(primary, fallbacks, size, true);
+    let mut fonts = FontSet::new(primary, fallbacks, size, true);
+    // A font the user picked is drawn as designed; the default one gets a slashed zero.
+    fonts.slashed_zero = args.font.is_none();
 
     // A window onto a paired office: no engine here, only the connection to the office.
     if let Some(host_id) = args.remote.clone() {
