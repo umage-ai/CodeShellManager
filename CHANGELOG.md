@@ -31,6 +31,9 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 
 ### New
 
+- **Fun themes sample add-on** (`theme-fun`, Settings > Add-ons > Install samples): Emacs (dark),
+  Windows 98 and Blossom (light), original colour themes.
+
 - **One status vocabulary**: every session is Working, Needs you (approval or question), Done,
   Idle, Asleep or Error, shown the same way in the sidebar, pane header, palette and tray. OSC 7501
   Program Status drives it when the program reports; screen detection fills in when it doesn't.

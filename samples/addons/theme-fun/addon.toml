@@ -1,0 +1,195 @@
+# Sample add-on: three colour themes for fun, nothing else (no programs, no commands).
+#
+# Shipped with CodeShellManager under <install dir>\samples\addons\. Settings > Add-ons >
+# "Install samples" copies it into your add-ons folder; it stays off until you Enable it. Then
+# Settings > Appearance lists its themes: the dark ones under Dark theme, the light ones under
+# Light theme. See docs/addons.md, "Themes".
+#
+# All three are original palettes, inspired by old machines and programs, not copies of any
+# third-party theme file:
+# - "Emacs": the classic dark look of GNU Emacs' font-lock faces (wheat text, cyan keywords,
+#   firebrick comments, aquamarine constants, a grey modeline and a violet accent).
+# - "Windows 98": the 3D-face grey, white fields, navy title and selection, teal desktop, and the
+#   16-colour VGA palette for the terminal. The terminal is light, so the bright ANSI colours that
+#   vanish on white are darkened a little (noted beside them); the rest are the VGA values.
+# - "Blossom": blush, lavender, peach and mint on a creamy pink, with plum text.
+#
+# Every colour is optional: a missing one is the base theme's (Mocha for "dark", Latte for
+# "light"). Edit this file while the add-on is enabled and the window follows within a second.
+
+[addon]
+id = "theme-fun"
+name = "Fun themes"
+version = "0.1.0"
+description = "Emacs (dark), Windows 98 and Blossom (light): original colour themes."
+api = 1
+kind = "pack"
+author = "CodeShellManager samples"
+
+[[theme]]
+id = "emacs"
+name = "Emacs"
+base = "dark"
+description = "Classic dark Emacs font-lock colours on a charcoal background."
+
+[theme.colors]
+rosewater = "#ffdab9"   # peach puff
+flamingo = "#ffa07a"    # light salmon
+pink = "#ff8bd1"
+mauve = "#c586ff"       # the violet accent
+red = "#ff6c6b"
+maroon = "#b22222"      # firebrick (comments are dim too)
+peach = "#f4a460"       # sandy brown
+yellow = "#eedc82"      # light goldenrod
+green = "#98fb98"       # pale green (types)
+teal = "#7fffd4"        # aquamarine (constants)
+sky = "#87cefa"         # light sky blue (function names)
+sapphire = "#4fb8ff"    # keywords
+blue = "#56b6ff"
+lavender = "#b0c4de"    # light steel blue
+text = "#f5deb3"        # wheat
+subtext1 = "#dcc79f"
+subtext0 = "#bfae88"
+overlay2 = "#9a9a9a"
+overlay1 = "#7a7a7a"
+overlay0 = "#666666"
+surface2 = "#4f4f4f"
+surface1 = "#3c3c3c"    # modeline grey
+surface0 = "#2e2e2e"
+base = "#1e1e1e"
+mantle = "#181818"
+crust = "#111111"
+
+[theme.terminal]
+foreground = "#f5deb3"
+background = "#1e1e1e"
+cursor = "#f5deb3"
+selection = "#3a4a6b"
+black = "#2b2b2b"
+red = "#ff6c6b"
+green = "#98fb98"
+yellow = "#eedc82"
+blue = "#56b6ff"
+magenta = "#c586ff"
+cyan = "#7fffd4"
+white = "#d8c59c"
+bright_black = "#6a6a6a"
+bright_red = "#ff8a80"
+bright_green = "#b9f5b9"
+bright_yellow = "#ffe98a"
+bright_blue = "#8fd0ff"
+bright_magenta = "#dcaaff"
+bright_cyan = "#b0ffe6"
+bright_white = "#f5deb3"
+
+[[theme]]
+id = "win98"
+name = "Windows 98"
+base = "light"
+description = "3D-face grey, white fields, navy and teal, and the VGA palette."
+
+[theme.colors]
+rosewater = "#c0c0c0"
+flamingo = "#a04040"
+pink = "#800080"
+mauve = "#800080"       # VGA magenta
+red = "#b00000"
+maroon = "#800000"      # VGA maroon
+peach = "#9c4a00"
+yellow = "#7a5c00"
+green = "#007a00"
+teal = "#008080"        # the desktop teal
+sky = "#006a8a"
+sapphire = "#0000a0"
+blue = "#000080"        # the navy title and selection
+lavender = "#4a4ab0"
+text = "#000000"
+subtext1 = "#1a1a1a"
+subtext0 = "#333333"
+overlay2 = "#666666"
+overlay1 = "#707070"
+overlay0 = "#808080"
+surface2 = "#585858"
+surface1 = "#808080"    # the shadow grey
+surface0 = "#ffffff"    # white fields
+base = "#c0c0c0"        # 3D face
+mantle = "#b5b5b5"
+crust = "#a0a0a0"
+
+[theme.terminal]
+foreground = "#000000"
+background = "#ffffff"
+cursor = "#000000"
+selection = "#000080"
+black = "#000000"
+red = "#800000"
+green = "#008000"
+yellow = "#808000"
+blue = "#000080"
+magenta = "#800080"
+cyan = "#008080"
+white = "#808080"       # VGA's #c0c0c0 is lost on white: darkened
+bright_black = "#808080"
+bright_red = "#c00000"  # VGA #ff0000, darkened for a white background
+bright_green = "#008000"
+bright_yellow = "#8a6d00"
+bright_blue = "#0000c0"
+bright_magenta = "#c000c0"
+bright_cyan = "#008b8b"
+bright_white = "#606060"
+
+[[theme]]
+id = "blossom"
+name = "Blossom"
+base = "light"
+description = "Soft pastel blush, lavender, peach and mint on a creamy pink."
+
+[theme.colors]
+rosewater = "#f8c8d4"
+flamingo = "#f4a7b9"
+pink = "#e8779f"
+mauve = "#d64f7e"       # the rose accent
+red = "#c62848"
+maroon = "#a3324f"
+peach = "#c25e2c"
+yellow = "#8a6000"
+green = "#2e7d4f"
+teal = "#2f8a80"
+sky = "#3d7fb0"
+sapphire = "#3c6fb0"
+blue = "#4f6fc0"
+lavender = "#7a5cb0"
+text = "#4a1d3d"        # plum
+subtext1 = "#6b3a5e"
+subtext0 = "#7d5673"
+overlay2 = "#8f6c86"
+overlay1 = "#a88a9f"
+overlay0 = "#bfa6b5"
+surface2 = "#e8c9d6"
+surface1 = "#f7dbe3"
+surface0 = "#fdf6f3"
+base = "#fde8e1"        # creamy pink
+mantle = "#f9d8d0"
+crust = "#f4c9c3"
+
+[theme.terminal]
+foreground = "#4a1d3d"
+background = "#fde8e1"
+cursor = "#d64f7e"
+selection = "#f2c4d6"
+black = "#4a1d3d"
+red = "#c62848"
+green = "#2e7d4f"
+yellow = "#8a6000"
+blue = "#4f6fc0"
+magenta = "#9a4fb0"
+cyan = "#2f8a80"
+white = "#b08aa0"
+bright_black = "#8f6c86"
+bright_red = "#e0506f"
+bright_green = "#3f9c6b"
+bright_yellow = "#a87a10"
+bright_blue = "#6a8ad6"
+bright_magenta = "#b070c8"
+bright_cyan = "#3fa39a"
+bright_white = "#7d5673"

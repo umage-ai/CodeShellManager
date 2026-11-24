@@ -165,7 +165,7 @@ jobs:
           }
           # Sample add-ons (disabled until the person installs and enables them). They sit under
           # samples/addons beside the exes: the app copies them on "Install samples".
-          $samples = @('codex-cli', 'gemini-cli', 'review', 'session-summary', 'themes')
+          $samples = @('codex-cli', 'gemini-cli', 'review', 'session-summary', 'themes', 'theme-fun')
           foreach ($s in $samples) {
             New-Item -ItemType Directory -Force "publish/samples/addons/$s" | Out-Null
             Copy-Item "samples/addons/$s/addon.toml" "publish/samples/addons/$s/"

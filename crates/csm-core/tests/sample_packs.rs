@@ -86,3 +86,15 @@ fn the_themes_pack_has_three_dark_themes_with_full_palettes_and_no_warnings() {
     assert_eq!(p.themes[1].colors["base"], "#24273a");
     assert_eq!(p.themes[2].terminal["background"], "#000000");
 }
+
+#[test]
+fn the_fun_themes_pack_has_two_dark_and_light_themes_with_full_palettes_and_no_warnings() {
+    let p = pack("theme-fun", include_str!("../../../samples/addons/theme-fun/addon.toml"));
+    assert!(p.profiles.is_empty() && p.commands.is_empty() && p.slash.is_empty(), "colours only");
+    let ids: Vec<(&str, csm_core::addons::ThemeBase)> = p.themes.iter().map(|t| (t.id.as_str(), t.base)).collect();
+    assert_eq!(ids, vec![("emacs", csm_core::addons::ThemeBase::Dark), ("win98", csm_core::addons::ThemeBase::Light), ("blossom", csm_core::addons::ThemeBase::Light)]);
+    for t in &p.themes {
+        assert_eq!(t.colors.len(), 26, "{}: every palette slot", t.id);
+        assert_eq!(t.terminal.len(), 20, "{}: 16 ANSI colours plus foreground, background, cursor, selection", t.id);
+    }
+}

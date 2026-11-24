@@ -1023,7 +1023,7 @@ Claude Code token and API-equivalent cost accounting from Claude's own transcrip
 
 ## Samples that ship with the app
 
-`samples/addons/` holds five add-ons, staged by the release workflow into
+`samples/addons/` holds six add-ons, staged by the release workflow into
 `<install dir>\samples\addons\` (MSI and portable zip alike):
 
 | id | kind | what |
@@ -1033,6 +1033,7 @@ Claude Code token and API-equivalent cost accounting from Claude's own transcrip
 | `review` | process | the Review add-on above: changed files, diffs and comment threads that agents answer (first-party, with a screen) |
 | `session-summary` | process | the Session summary plugin above |
 | `themes` | pack | three dark themes: Catppuccin Frappé and Macchiato (official palette, MIT) and an original High contrast |
+| `theme-fun` | pack | three original colour themes: Emacs (dark), Windows 98 and Blossom (light) |
 
 The MSI installs per machine and add-ons live per user, so nothing is enabled or copied at install
 time. **Settings > Add-ons > Install samples** (`addon_install_samples`) copies each sample folder
