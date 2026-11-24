@@ -122,7 +122,9 @@
           <Directory Id="SamplesFolder" Name="samples">
             <Directory Id="SamplesAddonsFolder" Name="addons">
               <Directory Id="SampleCodexCli" Name="codex-cli" />
+              <Directory Id="SampleCopilotCli" Name="copilot-cli" />
               <Directory Id="SampleGeminiCli" Name="gemini-cli" />
+              <Directory Id="SampleOpenCode" Name="opencode" />
               <Directory Id="SampleReview" Name="review" />
               <Directory Id="SampleSessionSummary" Name="session-summary" />
               <Directory Id="SampleThemes" Name="themes" />
@@ -199,8 +201,14 @@
       <Component Directory="SampleCodexCli" Guid="*">
         <File Source="$(var.PublishDir)\samples\addons\codex-cli\addon.toml" KeyPath="yes" />
       </Component>
+      <Component Directory="SampleCopilotCli" Guid="*">
+        <File Source="$(var.PublishDir)\samples\addons\copilot-cli\addon.toml" KeyPath="yes" />
+      </Component>
       <Component Directory="SampleGeminiCli" Guid="*">
         <File Source="$(var.PublishDir)\samples\addons\gemini-cli\addon.toml" KeyPath="yes" />
+      </Component>
+      <Component Directory="SampleOpenCode" Guid="*">
+        <File Source="$(var.PublishDir)\samples\addons\opencode\addon.toml" KeyPath="yes" />
       </Component>
       <Component Directory="SampleReview" Guid="*">
         <File Source="$(var.PublishDir)\samples\addons\review\addon.toml" KeyPath="yes" />
