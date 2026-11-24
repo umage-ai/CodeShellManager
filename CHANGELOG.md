@@ -86,6 +86,13 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   Drag a task onto an agent to send it (after a confirm showing the exact prompt), accept or reopen
   it in Review. Each Claude session's card lists its subagents and workflow runs.
 - **Command palette** (`Ctrl+K`) over every command and every session.
+- **Files and images into a remote session.** In a remote window, dropping files onto a pane, or
+  pasting an image (Ctrl+V with an image on the laptop's clipboard), uploads them to the office over
+  the encrypted link and pastes their office paths into the session, quoted for its shell. A progress
+  card shows each drop, with Cancel. Files go to the session's folder under the office's app data,
+  never into a project; folders are refused. Limits: 64 MB a file, 32 MB an image, 256 MB and 20 files
+  a drop. Uploads older than 7 days are removed when the office starts and every hour; the uploads folder holds at most 1 GB. A new office tool,
+  `session_drop_paths`, does the paste for local and remote drops alike.
 - **New session dialog** (`Ctrl+T`): type a folder, press Enter. A **This PC / SSH / WSL** selector
   replaces *Remote…*; up to eight recent folders, wrapping command chips, a profile and group, form
   tabs from add-ons (New NEXUS agent), **Start** and **Start and keep open**, `Alt+1…9`, `Alt+R`,

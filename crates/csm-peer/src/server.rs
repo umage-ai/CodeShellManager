@@ -33,7 +33,7 @@ use csm_engine::{
 use csm_peer_proto::addr::{PeerAddr, check_bind};
 use csm_peer_proto::codec::{CodecError, Frame};
 use csm_peer_proto::ids::{PAIRING_ID_LEN, PSK_LEN};
-use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, check_term_versions, valid_name};
+use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, UploadKind, UploadRefused, check_term_versions, valid_name};
 use csm_peer_proto::noise::{MAX_PAIR_ATTEMPTS, Route, check_code, route};
 use csm_peer_proto::pairing::{DenyReason, PairMsg, PeerOffer, SLOT_SECS};
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,7 @@ use crate::relay_pump::{AllowList, HostRoute, HostStatus, OnChannel, RelayHost, 
 use csm_engine::{RelayInfo, RelaySetRequest};
 use csm_remote_proto::ids::{b64_decode_fixed, b64_encode};
 use crate::transport::Stream;
+use crate::uploads::{self, Plan, UploadHub};
 use csm_peer_proto::pairing::RelayRoute;
 use csm_remote_proto::relay::HostToRelay;
 use crate::link::{Established, Io, Link, LinkError, Reader, respond};
@@ -193,6 +194,12 @@ struct Inner {
     next_conn: AtomicU64,
     unauth: AtomicUsize,
     in_flight: Arc<AtomicUsize>,
+    /// Uploads open across every link (at most `UPLOAD_ACTIVE_TOTAL`).
+    uploads_active: Arc<AtomicUsize>,
+    /// The bytes the uploads folder holds, across every link (at most `UPLOAD_FOLDER_QUOTA`).
+    upload_quota: Arc<uploads::Quota>,
+    /// Dropping it (with the server) ends the hourly upload cleanup.
+    housekeeping: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     /// The relay this server is also reachable through, when the person set one up.
     relay: Mutex<Option<RelayState>>,
     /// The keychain (or a test store): the relay secrets live here, never in a file.
@@ -229,6 +236,7 @@ impl PeerServer {
             pending: None,
             conns: HashMap::new(),
         };
+        let upload_quota = Arc::new(uploads::Quota::with_root(uploads::root_in(&dir)));
         Self {
             token: Arc::new(()),
             inner: Arc::new(Inner {
@@ -242,6 +250,9 @@ impl PeerServer {
                 next_conn: AtomicU64::new(1),
                 unauth: AtomicUsize::new(0),
                 in_flight: Arc::new(AtomicUsize::new(0)),
+                uploads_active: Arc::new(AtomicUsize::new(0)),
+                upload_quota,
+                housekeeping: Mutex::new(None),
                 relay: Mutex::new(None),
                 secrets: OnceLock::new(),
             }),
@@ -253,6 +264,12 @@ impl PeerServer {
     pub fn attach(&self, engine: Engine) {
         if self.inner.engine.set(engine.clone()).is_err() {
             return;
+        }
+        // Old uploads go on a background thread, never before the window shows.
+        let root = uploads::root_in(&self.inner.dir);
+        match uploads::spawn_housekeeping(root, self.inner.upload_quota.clone(), uploads::HOUSEKEEPING_EVERY) {
+            Ok(stop) => *self.inner.housekeeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stop),
+            Err(e) => log::warn!("remote access: could not start the upload cleanup: {e}"),
         }
         let inner = self.inner.clone();
         let rx = engine.subscribe();
@@ -732,14 +749,17 @@ impl Inner {
         let mut last_ping = Instant::now();
         let mut ping_n: u64 = 0;
         let tick = tick_of(self.cfg.ping_every, self.cfg.dead_after);
+        // The uploads of this link. Dropped when the loop ends: their partial files go with them.
+        let mut uploads = UploadHub::new(self.uploads_active.clone(), self.audit.clone(), self.upload_quota.clone());
         loop {
             if link.is_closed() {
                 return "closed";
             }
+            uploads.expire_stalled(Instant::now());
             match reader.recv(tick) {
                 Ok(Some(frame)) => {
                     last_rx = Instant::now();
-                    if let Some(why) = self.handle_frame(frame, link, device, serving) {
+                    if let Some(why) = self.handle_frame(frame, link, device, serving, &mut uploads) {
                         return why;
                     }
                 }
@@ -766,7 +786,7 @@ impl Inner {
     }
 
     /// `Some(reason)` ends the connection.
-    fn handle_frame(&self, frame: Frame, link: &Arc<Link>, device: &Device, serving: Option<&Arc<Serving>>) -> Option<&'static str> {
+    fn handle_frame(&self, frame: Frame, link: &Arc<Link>, device: &Device, serving: Option<&Arc<Serving>>, uploads: &mut UploadHub) -> Option<&'static str> {
         if let Some(s) = serving
             && s.on_frame(&frame)
         {
@@ -779,6 +799,18 @@ impl Inner {
             Frame::Control(Msg::Bye { .. }) => return Some("client left"),
             Frame::Control(Msg::Call { id, tool, params }) => self.spawn_call(link, device, id, tool, params),
             Frame::Control(Msg::ConsentAnswer { request_id, allow }) => self.spawn_consent(link, device, request_id, allow),
+            Frame::Control(Msg::UploadBegin { id, session, name, size, kind }) => self.upload_begin(uploads, link, device, id, &session, &name, size, kind),
+            Frame::Control(Msg::UploadEnd { id, sha256 }) => {
+                if let Err(reason) = uploads.end(id, sha256) {
+                    refuse_upload(link, id, reason);
+                }
+            }
+            Frame::Control(Msg::UploadCancel { id }) => uploads.cancel(id),
+            Frame::UploadChunk { id, offset, bytes } => {
+                if let Err(reason) = uploads.chunk(id, offset, bytes) {
+                    refuse_upload(link, id, reason);
+                }
+            }
             // Terminal messages reach here only when no engine is attached: say no, not nothing.
             Frame::Control(Msg::TermSubscribe { stream, .. }) => {
                 let _ = link.send_msg(Msg::TermClosed { stream, reason: csm_peer_proto::msg::TermClosedReason::Forbidden });
@@ -786,6 +818,55 @@ impl Inner {
             _ => {}
         }
         None
+    }
+
+    /// Checks an upload's begin and starts it. Every refusal is logged by reason, never with the
+    /// contents, and the link stays up.
+    #[allow(clippy::too_many_arguments)]
+    fn upload_begin(&self, uploads: &mut UploadHub, link: &Arc<Link>, device: &Device, id: u64, session: &str, name: &str, size: u64, kind: UploadKind) {
+        let refuse = |reason: UploadRefused| {
+            refuse_upload(link, id, reason);
+            self.audit.record("upload_refused", json!({"session": clean(session), "device": device.id, "reason": uploads::reason_name(reason)}));
+        };
+        if !device.level.allows(Level::Full) {
+            return refuse(UploadRefused::Forbidden);
+        }
+        let shell = if uploads::is_folder_id(session) { self.session_kind(session) } else { None };
+        let Some(shell) = shell else {
+            return refuse(UploadRefused::NoSession);
+        };
+        // An SSH session's shell runs on another machine: a path on the office means nothing there.
+        if shell == "ssh" {
+            return refuse(UploadRefused::NotSupported);
+        }
+        if size > kind.limit() {
+            return refuse(UploadRefused::TooLarge);
+        }
+        let stamp_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let plan = Plan {
+            id,
+            kind,
+            size,
+            session: session.to_owned(),
+            device: device.id.clone(),
+            name: uploads::sanitise_name(name, kind),
+            dir: uploads::root_in(&self.dir).join(session),
+            stamp_ms,
+        };
+        let (shown, bytes) = (plan.name.clone(), plan.size);
+        match uploads.begin(plan, link) {
+            Ok(()) => self.audit.record(
+                "upload_begin",
+                json!({"session": clean(session), "device": device.id, "name": clean(&shown), "size": bytes, "kind": if kind == UploadKind::Image { "image" } else { "file" }}),
+            ),
+            Err(reason) => refuse(reason),
+        }
+    }
+
+    /// The shell kind of the session with that id right now (`local`, `wsl`, `ssh`), or `None` when
+    /// there is no such session.
+    fn session_kind(&self, session: &str) -> Option<&'static str> {
+        self.engine.get()?.view().sessions.iter().find(|s| s.id == session).map(|s| s.kind)
     }
 
     fn caller(device: &Device) -> Caller {
@@ -923,6 +1004,12 @@ fn err_outcome(kind: ErrorKind, message: &str) -> Outcome {
 /// The message of an error as the wire allows it: no control characters but newline and tab.
 fn wire_text(s: &str) -> String {
     s.chars().map(|c| if c.is_control() && c != '\n' && c != '\t' { ' ' } else { c }).collect()
+}
+
+/// Tells the laptop an upload was refused. The link stays up, so a refusal that cannot be sent
+/// is not worth a close.
+fn refuse_upload(link: &Link, id: u64, reason: UploadRefused) {
+    let _ = link.send_msg(Msg::UploadRefused { id, reason });
 }
 
 fn outcome_of(e: &ToolError) -> Outcome {

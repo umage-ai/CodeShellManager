@@ -21,6 +21,8 @@ serde_json = "1"
 # The Noise protocol (a normal dependency here; csm-peer-proto only tests against it). Pure Rust,
 # MIT OR Apache-2.0; its RustCrypto dependencies were already in Cargo.lock through the dev-dependency.
 snow = "0.10"
+# The digest of an upload, computed while the bytes are written (the same crate csm-peer-proto uses).
+sha2 = "0.10"
 getrandom = "0.3"
 # This machine's interfaces and addresses, for the address picker (a read-only system query). MIT OR BSD-3-Clause.
 if-addrs = "0.15"

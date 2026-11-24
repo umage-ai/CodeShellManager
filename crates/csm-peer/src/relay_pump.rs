@@ -44,6 +44,14 @@ use tungstenite::{Message, WebSocket};
 
 use crate::transport::{Consumed, Out, QueueSink, RELAY_QUEUE, RelayStream, Sink, Stream};
 
+/// The laptop's bulk (upload chunk) rate on a relay channel, in bytes a second. The relay closes a
+/// peer channel that goes over its bucket (the peer defaults: 8 MiB/s with a two-second burst), and a
+/// client's `Ready` does not announce the caps, so the laptop paces to half the defaults. The other
+/// half is the margin for control, terminal input and acks, which share the same bucket.
+pub const CLIENT_BULK_BYTES_PER_SECOND: u32 = PEER_BYTES_PER_SECOND_PER_CHANNEL / 2;
+/// As [`CLIENT_BULK_BYTES_PER_SECOND`], in frames a second.
+pub const CLIENT_BULK_FRAMES_PER_SECOND: u32 = PEER_FRAMES_PER_SECOND_PER_CHANNEL / 2;
+
 /// How long a relay WebSocket waits for one read before the pump looks at its queue again.
 const POLL: Duration = Duration::from_millis(5);
 /// A Ping this often keeps the relay from calling an idle host silent.
@@ -222,7 +230,10 @@ pub fn dial(url: &str, host_id: &str, cred: ClientCred) -> Result<Stream, RelayE
         .name("csm-peer-relay-client".into())
         .spawn(move || client_pump(ws, &out_rx, &in_tx, &closing, &pump_consumed))
         .map_err(|e| RelayErr::Failed(e.to_string()))?;
-    Ok(Stream::Relay(RelayStream::with_counter(in_rx, Arc::new(sink), consumed)))
+    // The laptop paces its own writes to the relay's peer caps, with margin for control and terminal
+    // input, which share the same bucket. A client's `Ready` does not announce the caps.
+    let pacer = Pacer::with_rates(CLIENT_BULK_FRAMES_PER_SECOND, CLIENT_BULK_BYTES_PER_SECOND, Instant::now());
+    Ok(Stream::Relay(RelayStream::paced(in_rx, Arc::new(sink), consumed, pacer)))
 }
 
 /// The credential a laptop presents on its relay channel.
@@ -940,9 +951,10 @@ impl Bucket {
     }
 }
 
-/// The office's pacing for one channel: the relay's per-channel caps (frames and bytes a second),
-/// so the office never sends faster than the relay lets a channel through.
-struct Pacer {
+/// A channel's pacing: the relay's per-channel caps (frames and bytes a second). The office uses it
+/// so it never sends faster than the relay lets a channel through; a laptop uses it for its bulk
+/// writes (see [`CLIENT_BULK_BYTES_PER_SECOND`]).
+pub(crate) struct Pacer {
     frames: Bucket,
     bytes: Bucket,
 }
@@ -953,22 +965,40 @@ impl Pacer {
         Self::with_rates(PEER_FRAMES_PER_SECOND_PER_CHANNEL, PEER_BYTES_PER_SECOND_PER_CHANNEL, now)
     }
 
-    fn with_rates(frames: u32, bytes: u32, now: Instant) -> Self {
+    pub(crate) fn with_rates(frames: u32, bytes: u32, now: Instant) -> Self {
         Self { frames: Bucket::new(frames, now), bytes: Bucket::new(bytes, now) }
     }
 
     /// Takes one frame with `len` payload bytes if both caps have room. Takes nothing otherwise.
     fn try_take(&mut self, len: usize, now: Instant) -> bool {
+        self.take_or_wait(len, now).is_ok()
+    }
+
+    /// Takes one frame with `len` payload bytes if both caps have room; otherwise takes nothing and
+    /// says how long until they will (at most a second, so a stalled clock cannot park a writer).
+    pub(crate) fn take_or_wait(&mut self, len: usize, now: Instant) -> Result<(), Duration> {
         self.frames.refill(now);
         self.bytes.refill(now);
         let n = f64::from(u32::try_from(len).unwrap_or(u32::MAX));
         if self.frames.tokens >= 1.0 && self.bytes.tokens >= n {
             self.frames.tokens -= 1.0;
             self.bytes.tokens -= n;
-            true
-        } else {
-            false
+            return Ok(());
         }
+        let frames = (1.0 - self.frames.tokens).max(0.0) / self.frames.rate;
+        let bytes = (n - self.bytes.tokens).max(0.0) / self.bytes.rate;
+        let secs = frames.max(bytes);
+        Err(if secs.is_finite() { Duration::from_secs_f64(secs.min(1.0)) } else { Duration::from_secs(1) })
+    }
+
+    /// Records a frame that goes whatever the caps say (control and terminal input). The bucket may
+    /// go negative, so the bulk writes behind it wait until the refill brings it back.
+    pub(crate) fn take_now(&mut self, len: usize, now: Instant) {
+        self.frames.refill(now);
+        self.bytes.refill(now);
+        let n = f64::from(u32::try_from(len).unwrap_or(u32::MAX));
+        self.frames.tokens -= 1.0;
+        self.bytes.tokens -= n;
     }
 }
 
@@ -1004,6 +1034,7 @@ fn wait_welcome(ws: &mut Ws) -> Result<LimitsInfo, RelayErr> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use csm_peer_proto::limits::UPLOAD_CHUNK;
     use std::io::Write;
     use std::net::{Shutdown, TcpListener};
 
@@ -1038,6 +1069,43 @@ mod tests {
         let frames_left = p.frames.tokens;
         assert!(!p.try_take(1024, t0));
         assert!((p.frames.tokens - frames_left).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn bulk_waits_for_the_bucket_and_control_is_debited_without_waiting() {
+        let t0 = Instant::now();
+        // 100 frames and 1000 bytes a second, with two seconds of burst.
+        let mut p = Pacer::with_rates(100, 1000, t0);
+        assert!(p.take_or_wait(1000, t0).is_ok());
+        assert!(p.take_or_wait(1000, t0).is_ok());
+        assert!(p.take_or_wait(1000, t0).is_err(), "the burst is spent");
+        // Control and terminal input go whatever the bucket says, and they count.
+        let t1 = t0 + Duration::from_secs(1);
+        p.take_now(500, t1);
+        let wait = p.take_or_wait(1000, t1).unwrap_err();
+        assert!(wait >= Duration::from_millis(490) && wait <= Duration::from_millis(500), "the bulk frame waits for the 500 missing bytes: {wait:?}");
+        assert!(p.take_or_wait(1000, t1 + Duration::from_millis(1500)).is_ok(), "the refill brings the room back");
+    }
+
+    #[test]
+    fn a_paced_bulk_stream_stays_inside_the_laptops_rate_over_ten_seconds() {
+        // Chunk-sized frames, taken as fast as the pacer allows, over ten seconds: never more than the
+        // rate plus the burst, and not much less than that either.
+        let t0 = Instant::now();
+        let mut p = Pacer::with_rates(CLIENT_BULK_FRAMES_PER_SECOND, CLIENT_BULK_BYTES_PER_SECOND, t0);
+        let frame = UPLOAD_CHUNK;
+        let mut sent = 0u64;
+        for ms in 0..=10_000u64 {
+            let now = t0 + Duration::from_millis(ms);
+            while p.take_or_wait(frame, now).is_ok() {
+                sent += 1;
+            }
+        }
+        let bytes = sent * u64::try_from(frame).unwrap_or(0);
+        let allowed = u64::from(CLIENT_BULK_BYTES_PER_SECOND) * (10 + u64::from(BURST_FACTOR));
+        assert!(bytes <= allowed, "{bytes} bytes in 10 s, allowed {allowed}");
+        assert!(bytes * 10 >= allowed * 9, "the pacer does not hold back more than it must: {bytes} of {allowed}");
+        assert!(u64::from(CLIENT_BULK_BYTES_PER_SECOND) * 2 <= u64::from(PEER_BYTES_PER_SECOND_PER_CHANNEL), "bulk is at most half the relay's rate");
     }
 
     #[test]

@@ -13,7 +13,9 @@ use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use crate::relay_pump::Pacer;
 
 /// Bytes per relay data frame on a write. The relay's frame cap is 64 KiB including its header.
 pub const RELAY_CHUNK: usize = 16 * 1024;
@@ -72,6 +74,9 @@ struct Chan {
     read_timeout: Mutex<Option<Duration>>,
     sink: Arc<dyn Sink>,
     consumed: Arc<Consumed>,
+    /// The laptop's own pacing on this channel (its relay caps, with margin). `None` on the office,
+    /// whose pacing is in its relay pump.
+    pace: Option<Mutex<Pacer>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -86,7 +91,15 @@ impl RelayStream {
 
     /// As [`RelayStream::new`], counting what the reader takes into `consumed`.
     pub fn with_counter(incoming: Receiver<Vec<u8>>, sink: Arc<dyn Sink>, consumed: Arc<Consumed>) -> Self {
-        Self { inner: Arc::new(Chan { incoming: Mutex::new(incoming), pending: Mutex::new(VecDeque::new()), read_timeout: Mutex::new(None), sink, consumed }) }
+        Self { inner: Arc::new(Chan { incoming: Mutex::new(incoming), pending: Mutex::new(VecDeque::new()), read_timeout: Mutex::new(None), sink, consumed, pace: None }) }
+    }
+
+    /// As [`RelayStream::with_counter`], for a laptop: every write is counted against `pacer`, and
+    /// a bulk write (an upload chunk) waits until the pacer has room. See [`RelayStream::write_bytes`].
+    pub(crate) fn paced(incoming: Receiver<Vec<u8>>, sink: Arc<dyn Sink>, consumed: Arc<Consumed>, pacer: Pacer) -> Self {
+        Self {
+            inner: Arc::new(Chan { incoming: Mutex::new(incoming), pending: Mutex::new(VecDeque::new()), read_timeout: Mutex::new(None), sink, consumed, pace: Some(Mutex::new(pacer)) }),
+        }
     }
 
     fn set_read_timeout(&self, d: Option<Duration>) {
@@ -125,13 +138,41 @@ impl RelayStream {
         Ok(n)
     }
 
-    fn write_bytes(&self, buf: &[u8]) -> io::Result<usize> {
+    /// Writes `buf` as relay frames. `bulk` marks upload chunks: on a paced channel they wait for the
+    /// pacer, and every other write is counted but never waits.
+    ///
+    /// The wait happens here, under the link's writer lock, and not in the pump. The relay carries a
+    /// Noise session as one byte stream, and the messages must reach it in the order they were
+    /// encrypted: a frame that overtook another would break the stream. So a keystroke waits for at
+    /// most the pacing of one chunk, the same bound the design gives.
+    fn write_bytes(&self, buf: &[u8], bulk: bool) -> io::Result<usize> {
         let mut sent = 0;
         for chunk in buf.chunks(RELAY_CHUNK) {
+            self.pace(chunk.len(), bulk);
             self.inner.sink.send(Out::Data(chunk.to_vec()))?;
             sent += chunk.len();
         }
         Ok(sent)
+    }
+
+    fn pace(&self, len: usize, bulk: bool) {
+        let Some(pace) = &self.inner.pace else { return };
+        loop {
+            let wait = {
+                let mut p = lock(pace);
+                let now = Instant::now();
+                if bulk {
+                    p.take_or_wait(len, now).err()
+                } else {
+                    p.take_now(len, now);
+                    None
+                }
+            };
+            match wait {
+                Some(d) => std::thread::sleep(d),
+                None => return,
+            }
+        }
     }
 
     fn close(&self) {
@@ -205,11 +246,29 @@ impl Read for Stream {
     }
 }
 
+impl Stream {
+    /// Writes all of `buf` as bulk bytes: an upload chunk's frame. On a paced relay channel it waits
+    /// for the pacer; on TCP it is an ordinary write.
+    pub fn write_all_bulk(&mut self, buf: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Tcp(s) => s.write_all(buf),
+            Self::Relay(r) => {
+                let mut rest = buf;
+                while !rest.is_empty() {
+                    let n = r.write_bytes(rest, true)?;
+                    rest = rest.get(n..).unwrap_or_default();
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Self::Tcp(s) => s.write(buf),
-            Self::Relay(r) => r.write_bytes(buf),
+            Self::Relay(r) => r.write_bytes(buf, false),
         }
     }
 

@@ -68,9 +68,8 @@ command line, from an agent or from another paired device.
 - Closing a remote window (its ✕ or Alt+F4) disconnects the same way. A window that has lost its host shows its last
   picture greyed out, with the strip saying it is reconnecting.
 - Some things stay on the office or are refused in a remote window, because they would act on the
-  laptop's machine: opening a folder or a file in an editor, the native folder picker, backup export
-  and import, dropping files onto a pane (you get a toast) and pasting an image (you get a toast).
-  Paste text instead, or copy the file to the office first.
+  laptop's machine: opening a folder or a file in an editor, the native folder picker and backup
+  export and import. Files and images are not refused: they are uploaded (see *Uploads* below).
 - **Links.** Ctrl+click opens a web link in the laptop's browser after the same http/https check. A
   `localhost` or `127.0.0.1` link warns first: it points to the office, not to the laptop.
 
@@ -110,9 +109,42 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 | "This office is not paired with this laptop any more" | Forget and pair again. |
 | The office's address is missing (an adapter is down) | The office keeps retrying in the background and listens nowhere else. Bring the adapter up. |
 
+## Uploads
+
+- **Dropping files** onto a pane of a remote window uploads them to the office. **Pasting an image**
+  (Ctrl+V with an image on the laptop's clipboard) uploads the image as `clipboard.png`. When every
+  file is on the office, its path is pasted into the session, quoted for that session's shell (native
+  for a local session, POSIX for WSL), as a local drop is: a bracketed paste, never followed by Enter.
+  Claude Code reads the image from that path. In a WSL session the path is the Linux one
+  (`/mnt/c/...`), so the program inside WSL can open it.
+- **SSH sessions cannot take uploads yet.** The file would sit on the office, where the remote host
+  cannot read it, so the laptop says so and nothing is sent.
+- A progress card shows each drop. **Cancel** stops it: the office deletes the partial file and nothing
+  is pasted. If one file fails, nothing from that drop is pasted.
+- **Folders are refused** with a message: drop the files in them, or copy the folder to the office.
+- **Limits:** 64 MB a file, 32 MB an image, 256 MB and 20 files a drop. The office refuses an upload
+  when remote access is off, when the device has been removed, or when the device may not type into
+  sessions. Several uploads may be running at once: at most two from each laptop. The uploads folder
+  holds at most 1 GB in all. When an upload would go past that, the office first removes the oldest
+  finished uploads (only inside the uploads folder) to make room; if that is not enough, the upload is
+  refused with "The office's uploads folder is full; files older than 7 days are removed
+  automatically". An upload larger than the limits above is refused as too large.
+- **Where the files go:** `<office data folder>\peer\uploads\<session id>\<time in ms>-<name>`, for
+  example `...\peer\uploads\<session id>\1795800000123-report.pdf`. Never in a project folder. The name
+  is the laptop's, cleaned up: no folders, no `..`, no reserved Windows names, at most 120 bytes.
+  A partial file is written as `<name>.part` and renamed only when the whole file has arrived and its
+  checksum matches.
+- **Cleanup:** when the office starts and then every hour while it runs, uploads older than 7 days are
+  deleted (partial files older than a day), and their space counts as free again. Nothing outside the
+  uploads folder is touched.
+- **Logging:** `remote-access.log` records an upload's start, end, refusal or cancel, with the file's
+  name, size, session and device. An upload that ends because the link closed is logged as cancelled
+  with the reason `link_closed`. It never records the contents.
+- A link that drops during an upload ends it: nothing is pasted, and the laptop says so. Drop the
+  files again once the link is back.
+
 ## Limits (for now)
 
-- Pasting an image into a remote session is refused, and file drops are refused. Uploads are planned.
 - A remote session's links and run URLs open in the laptop's browser; port forwarding is planned.
 - There is one office per window; several offices are shown as several windows.
 - Only the "Full" level exists: a paired laptop can do everything the office's own window can do.

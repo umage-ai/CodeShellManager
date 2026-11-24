@@ -30,3 +30,26 @@ pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_ID_BYTES: usize = 128;
 /// The longest pairing link or offer text accepted.
 pub const MAX_OFFER_CHARS: usize = 1024;
+
+/// Upload chunk: one binary frame, one Noise message (the same as a terminal chunk).
+pub const UPLOAD_CHUNK: usize = MAX_TERM_CHUNK;
+/// Chunks the laptop may have sent but not yet acknowledged, per upload.
+pub const UPLOAD_CREDIT: usize = 8;
+/// The office acknowledges after this many written chunks (and at `UploadEnd`).
+pub const UPLOAD_ACK_EVERY: usize = 4;
+/// Uploads active at once across all devices.
+pub const UPLOAD_ACTIVE_TOTAL: usize = 8;
+/// Bytes in one file upload.
+pub const MAX_UPLOAD_FILE: u64 = 64 * 1024 * 1024;
+/// Bytes in one image upload.
+pub const MAX_UPLOAD_IMAGE: u64 = 32 * 1024 * 1024;
+/// Files in one drop.
+pub const MAX_UPLOAD_FILES_PER_DROP: usize = 20;
+/// Bytes in one drop, all files together.
+pub const MAX_UPLOAD_DROP: u64 = 256 * 1024 * 1024;
+/// A session id, as it is used as a folder name: `[A-Za-z0-9_-]`, 1 to 64 bytes.
+pub const MAX_UPLOAD_SESSION_ID: usize = 64;
+/// A sanitised upload name, in bytes (the extension is kept).
+pub const MAX_UPLOAD_NAME_BYTES: usize = 120;
+/// The laptop's name for an upload is a label of at most this many bytes on the wire.
+pub const MAX_UPLOAD_LABEL_BYTES: usize = 512;

@@ -112,4 +112,20 @@ impl Backend for RemoteView {
     fn remote(&self) -> Option<csm_ui::remote_window::RemoteStatus> {
         self.inner.borrow().remote()
     }
+
+    fn upload_files(&mut self, session: &str, paths: Vec<String>) -> Result<u64, String> {
+        self.inner.borrow_mut().upload_files(session, paths)
+    }
+
+    fn upload_clipboard_image(&mut self, session: &str) -> Result<u64, String> {
+        self.inner.borrow_mut().upload_clipboard_image(session)
+    }
+
+    fn upload_cancel(&mut self, drop: u64) {
+        self.inner.borrow_mut().upload_cancel(drop);
+    }
+
+    fn upload_events(&mut self) -> Vec<csm_ui::UploadEvent> {
+        self.inner.borrow_mut().upload_events()
+    }
 }

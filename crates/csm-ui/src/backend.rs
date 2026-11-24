@@ -156,6 +156,39 @@ pub trait Backend {
     /// Called once a frame, after the panes are drawn. A remote window subscribes the terminals
     /// shown here and drops the others; the engine has nothing to do.
     fn show_panes(&mut self, _visible: &[String], _driver: Option<&str>) {}
+    /// Starts uploading local files into the folder of `session` on the host. Only a remote window
+    /// has a host; the rest refuse. Returns the drop's id at once: the work (reading the files,
+    /// sending them) runs on the link's thread, and its progress comes back through
+    /// [`Backend::upload_events`]. Nothing is pasted here: the UI pastes when the drop is done.
+    fn upload_files(&mut self, _session: &str, _paths: Vec<String>) -> Result<u64, String> {
+        Err("Uploads go to a remote window's office; this window has none.".into())
+    }
+    /// Starts uploading the image on the laptop's clipboard, as a file, into the folder of
+    /// `session` (remote windows only). The clipboard is read off the UI thread. A clipboard with
+    /// no image reports as a failed drop.
+    fn upload_clipboard_image(&mut self, _session: &str) -> Result<u64, String> {
+        Err("Pasting an image needs a remote window.".into())
+    }
+    /// Cancels a drop: its partial files are deleted on the host and nothing is pasted.
+    fn upload_cancel(&mut self, _drop: u64) {}
+    /// What happened to the uploads since the last call, in order. Called once a frame.
+    fn upload_events(&mut self) -> Vec<UploadEvent> {
+        Vec::new()
+    }
+}
+
+/// What an upload is doing, as the UI shows it. A drop is one or more files sent to one session's
+/// folder on the host; the paste into the session is the UI's job once [`UploadEvent::Done`] comes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadEvent {
+    /// Bytes written on the host so far, across the drop. `file` is the file now being sent.
+    Progress { drop: u64, sent: u64, total: u64, files_done: usize, files_total: usize, file: String },
+    /// Every file is in place on the host, in drop order. The UI pastes `paths` into `session`.
+    Done { drop: u64, session: SessionId, paths: Vec<String> },
+    /// Nothing was kept: `message` says why, in words for the person.
+    Failed { drop: u64, message: String },
+    /// Cancelled by the person; the host deleted the partial files.
+    Cancelled { drop: u64 },
 }
 
 /// The engine as a [`ToolPort`]: submits to the engine as `Caller::Ui`, and polls the replies and

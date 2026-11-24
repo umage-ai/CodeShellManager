@@ -7,6 +7,7 @@
 //! | `03` | `term_attach` | `stream u32, instance u64, cols u16, rows u16, offset u64, more u8, vt` |
 //! | `04` | `term_input` | `stream u32, input kind u8, payload` |
 //! | `05` | control fragment | `last u8 (0 or 1), bytes`: part of a JSON message too big for one message |
+//! | `06` | `upload_chunk` | `id u64, offset u64, bytes` (1 to [`UPLOAD_CHUNK`] bytes), laptop to office only |
 //!
 //! Integers are big endian. A control message above one Noise message is sent as consecutive
 //! fragments (kind `05`); nothing else may come between them, and the joined JSON is at most
@@ -18,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use crate::limits::{MAX_ATTACH_BYTES, MAX_CONTROL_BYTES, MAX_INPUT_BYTES, MAX_PLAINTEXT, MAX_TERM_CHUNK, MAX_TERM_DIM};
+use crate::limits::{MAX_ATTACH_BYTES, MAX_CONTROL_BYTES, MAX_INPUT_BYTES, MAX_PLAINTEXT, MAX_TERM_CHUNK, MAX_TERM_DIM, UPLOAD_CHUNK};
 use crate::msg::Msg;
 
 const KIND_CONTROL: u8 = 0x01;
@@ -26,6 +27,7 @@ const KIND_TERM_DATA: u8 = 0x02;
 const KIND_TERM_ATTACH: u8 = 0x03;
 const KIND_TERM_INPUT: u8 = 0x04;
 const KIND_FRAGMENT: u8 = 0x05;
+const KIND_UPLOAD_CHUNK: u8 = 0x06;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
@@ -81,6 +83,8 @@ pub enum Frame {
     /// (the offset the grid describes), in the size the chunks give.
     TermAttach { stream: u32, instance: u64, cols: u16, rows: u16, offset: u64, more: bool, vt: Vec<u8> },
     TermInput { stream: u32, input: Input },
+    /// Bytes of an upload, laptop to office. `offset` is where they go in the file.
+    UploadChunk { id: u64, offset: u64, bytes: Vec<u8> },
 }
 
 impl Frame {
@@ -159,6 +163,17 @@ impl Frame {
                 out.extend_from_slice(&stream.to_be_bytes());
                 out.push(kind);
                 out.extend_from_slice(&payload);
+                Ok(vec![out])
+            }
+            Self::UploadChunk { id, offset, bytes } => {
+                if bytes.is_empty() || bytes.len() > UPLOAD_CHUNK {
+                    return Err(CodecError::Invalid("upload chunk length"));
+                }
+                let mut out = Vec::with_capacity(17 + bytes.len());
+                out.push(KIND_UPLOAD_CHUNK);
+                out.extend_from_slice(&id.to_be_bytes());
+                out.extend_from_slice(&offset.to_be_bytes());
+                out.extend_from_slice(bytes);
                 Ok(vec![out])
             }
         }
@@ -267,7 +282,7 @@ impl Decoder {
             (Role::Any, _) => true,
             (Role::Server, Frame::Control(m)) => m.from_client(),
             (Role::Client, Frame::Control(m)) => m.from_server(),
-            (Role::Server, Frame::TermInput { .. }) => true,
+            (Role::Server, Frame::TermInput { .. } | Frame::UploadChunk { .. }) => true,
             (Role::Client, Frame::TermData { .. } | Frame::TermAttach { .. }) => true,
             _ => false,
         }
@@ -367,6 +382,15 @@ impl Decoder {
                     _ => return Err(CodecError::Malformed("input kind")),
                 };
                 Ok(Some(Frame::TermInput { stream, input }))
+            }
+            KIND_UPLOAD_CHUNK => {
+                let id = r.u64()?;
+                let offset = r.u64()?;
+                let bytes = r.rest();
+                if bytes.is_empty() || bytes.len() > UPLOAD_CHUNK {
+                    return Err(CodecError::Invalid("upload chunk length"));
+                }
+                Ok(Some(Frame::UploadChunk { id, offset, bytes: bytes.to_vec() }))
             }
             other => Err(CodecError::UnknownKind(other)),
         }
@@ -473,6 +497,7 @@ mod tests {
             Frame::TermInput { stream: 1, input: Input::Focus(true) },
             Frame::TermInput { stream: 1, input: Input::Focus(false) },
             Frame::TermInput { stream: 1, input: Input::Paste("line one\nline two é".into()) },
+            Frame::UploadChunk { id: 4, offset: 1 << 40, bytes: b"chunk\x00bytes".to_vec() },
         ];
         for f in &frames {
             assert_eq!(&round(f), f);
@@ -578,6 +603,7 @@ mod tests {
             Frame::Control(Msg::TermUnsubscribe { stream: 1 }),
             Frame::Control(Msg::TermResync { stream: 1 }),
             Frame::TermInput { stream: 1, input: Input::Key(vec![b'a']) },
+            Frame::UploadChunk { id: 1, offset: 0, bytes: vec![b'a'] },
         ];
         let to_client = [
             Frame::Control(Msg::Delta { delta: Delta { from: 1, to: 2, ops: vec![] } }),
@@ -610,7 +636,7 @@ mod tests {
         assert_eq!(d.decode(&vec![0x01; MAX_PLAINTEXT + 1]), Err(CodecError::TooLarge));
         assert_eq!(d.decode(&[KIND_CONTROL]), Err(CodecError::Json));
         assert_eq!(d.decode(b"\x01{\"t\":\"nope\"}"), Err(CodecError::Json));
-        assert_eq!(d.decode(b"\x01{\"t\":\"hello\",\"protocol\":2,\"client\":\"c\",\"app_version\":\"1\",\"term_version\":\"2.0.0\"}"), Err(CodecError::Version(2)));
+        assert_eq!(d.decode(b"\x01{\"t\":\"hello\",\"protocol\":1,\"client\":\"c\",\"app_version\":\"1\",\"term_version\":\"2.0.0\"}"), Err(CodecError::Version(1)));
         assert_eq!(d.decode(&[KIND_TERM_DATA, 0, 0, 0, 1]), Err(CodecError::Malformed("truncated")));
         let mut empty_data = vec![KIND_TERM_DATA];
         empty_data.extend_from_slice(&[0; 20]);

@@ -61,6 +61,19 @@ fn mins(m: u64) -> u64 {
 /// pane shrinks.
 const TRANSCRIPT: GridSize = GridSize { cols: 100, rows: 48, cell_width: 1, cell_height: 1 };
 
+/// A stand-in for a remote window's link, for uploads (UI tests). What the window asks is recorded
+/// here; what the link reports is pushed onto `events` and handed out once a frame.
+#[derive(Debug, Default)]
+pub struct FakeUploadLink {
+    /// Each drop asked for: its id, the session, and the paths (`clipboard.png` for an image).
+    pub asked: Vec<(u64, SessionId, Vec<String>)>,
+    /// Drops cancelled, by id.
+    pub cancelled: Vec<u64>,
+    /// Events for the window, oldest first.
+    pub events: std::collections::VecDeque<crate::backend::UploadEvent>,
+    next: u64,
+}
+
 pub struct DemoBackend {
     opts: DemoOptions,
     model: UiModel,
@@ -75,6 +88,8 @@ pub struct DemoBackend {
     quitting: Option<Instant>,
     /// Restore rail animation (`--demo-restore`).
     restoring: Option<Instant>,
+    /// The stand-in link for uploads, when a test gives one (`set_fake_upload_link`).
+    upload_link: Option<Arc<Mutex<FakeUploadLink>>>,
     /// The session last focused per group, as the engine's `UiState::group_focus` (#137).
     group_focus: HashMap<String, SessionId>,
     /// Add-on screens as a test or a screenshot set them up (see [`DemoBackend::screens_handle`]).
@@ -425,6 +440,7 @@ impl DemoBackend {
             screens: Arc::default(),
             remote: None,
             panes: Arc::default(),
+            upload_link: None,
         };
         let ids: Vec<SessionId> = b.model.sessions.iter().filter(|s| s.status.is_live()).map(|s| s.id.clone()).collect();
         for id in ids {
@@ -1384,6 +1400,32 @@ impl Backend for DemoBackend {
         self.snap.clone()
     }
 
+    fn upload_files(&mut self, session: &str, paths: Vec<String>) -> Result<u64, String> {
+        let link = self.upload_link.clone().ok_or_else(|| "Uploads go to a remote window's office; this window has none.".to_owned())?;
+        let mut l = link.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        l.next += 1;
+        let drop = l.next;
+        l.asked.push((drop, session.to_owned(), paths));
+        Ok(drop)
+    }
+
+    fn upload_clipboard_image(&mut self, session: &str) -> Result<u64, String> {
+        self.upload_files(session, vec!["clipboard.png".to_owned()])
+    }
+
+    fn upload_cancel(&mut self, drop: u64) {
+        if let Some(link) = &self.upload_link {
+            link.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancelled.push(drop);
+        }
+    }
+
+    fn upload_events(&mut self) -> Vec<crate::backend::UploadEvent> {
+        match &self.upload_link {
+            Some(link) => link.lock().unwrap_or_else(std::sync::PoisonError::into_inner).events.drain(..).collect(),
+            None => Vec::new(),
+        }
+    }
+
     fn remote(&self) -> Option<crate::remote_window::RemoteStatus> {
         self.remote.clone()
     }
@@ -1513,6 +1555,12 @@ impl DemoBackend {
         self.model.stale = matches!(status, Some(crate::remote_window::RemoteStatus { link: crate::remote_window::RemoteLink::Offline, .. }));
         self.remote = status;
         self.snap = Arc::new(self.model.clone());
+    }
+
+    /// Gives this remote stand-in a fake upload link: the uploads asked for are recorded on it, and
+    /// the events a test pushes onto it are handed to the window (UI tests of the upload flow).
+    pub fn set_fake_upload_link(&mut self, link: Arc<Mutex<FakeUploadLink>>) {
+        self.upload_link = Some(link);
     }
 
     /// The panes the UI last reported through `Backend::show_panes` (a test reads it; `None` before

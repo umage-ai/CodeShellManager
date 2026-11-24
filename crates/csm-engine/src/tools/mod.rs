@@ -76,7 +76,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 /// Rules that hold whatever the person would answer, checked before a consent card is shown
 /// (and again after it is answered).
 pub(crate) fn precheck(id: &str, caller: &Caller, params: &Value, state: &State) -> Option<ToolError> {
-    if matches!(id, "session_send_text" | "session_send_command")
+    if matches!(id, "session_send_text" | "session_send_command" | "session_drop_paths")
         && let Caller::External { session_id: Some(own), .. } = caller
         && params.get("session_id").and_then(Value::as_str) == Some(own.as_str())
     {

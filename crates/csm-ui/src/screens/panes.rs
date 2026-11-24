@@ -1090,7 +1090,9 @@ pub fn pane(
             actions.push(Action::Tool("open_url", json!({"url": url, "session_id": s.id})));
         }
         if vr.image_paste {
-            actions.push(Action::Toast("An image cannot be pasted into a remote window: Claude reads the office's clipboard, not this laptop's. Save the image on the office first.".into()));
+            // Claude reads the office's clipboard, not this laptop's: the image is uploaded, and its
+            // office path is pasted (`upload_card`).
+            actions.push(Action::PasteImage(s.id.clone()));
         }
         if vr.copy_reply {
             actions.push(Action::CopyClaude("claude_reply_get", json!({"session_id": s.id})));

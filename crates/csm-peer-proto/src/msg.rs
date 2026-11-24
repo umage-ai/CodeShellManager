@@ -14,12 +14,12 @@ use serde_json::Value;
 
 use crate::codec::CodecError;
 use crate::delta::Delta;
-use crate::limits::{MAX_ID_BYTES, MAX_NAME_CHARS, MAX_TERM_DIM};
+use crate::limits::{MAX_ID_BYTES, MAX_NAME_CHARS, MAX_TERM_DIM, MAX_UPLOAD_FILE, MAX_UPLOAD_IMAGE, MAX_UPLOAD_LABEL_BYTES};
 use crate::{Event, Snapshot};
 
 /// The version of the message set. A `Hello` or `Welcome` of another value is refused at decode.
 /// (The Noise prologue carries the wire generation; this one allows a friendly `Bye`.)
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// What a device may do. The server enforces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -114,6 +114,57 @@ pub enum ByeReason {
     Replaced,
 }
 
+/// What an upload is for. An image has its own limit and its own name rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadKind {
+    File,
+    Image,
+}
+
+impl UploadKind {
+    /// The largest file of this kind, in bytes.
+    pub fn limit(self) -> u64 {
+        match self {
+            Self::File => MAX_UPLOAD_FILE,
+            Self::Image => MAX_UPLOAD_IMAGE,
+        }
+    }
+}
+
+/// Why the office refused an upload. Refusing never drops the link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadRefused {
+    /// Over the size limit for the kind.
+    TooLarge,
+    /// Too many uploads are active.
+    TooMany,
+    /// Server mode is off, the device is revoked, or its level is below Full.
+    Forbidden,
+    /// No session of that id, or the id is not a usable folder name.
+    NoSession,
+    /// The name cannot be used (the office never trusts it).
+    BadName,
+    /// An image upload that does not start with the magic bytes of a supported image.
+    NotAnImage,
+    /// A chunk beyond the credit, out of order, or of an upload that is not open.
+    Overrun,
+    /// The disk is full.
+    DiskFull,
+    /// The bytes do not match the declared size or hash.
+    Corrupt,
+    /// No chunk arrived for too long.
+    Stalled,
+    /// Any other write or file error.
+    Failed,
+    /// The session cannot take uploads (an SSH session: the file would sit on the office, where
+    /// the remote host cannot read it).
+    NotSupported,
+    /// The office's uploads folder is full (its quota) and nothing old enough could be removed.
+    FolderFull,
+}
+
 /// A control message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -169,6 +220,21 @@ pub enum Msg {
     ConsentAnswer { request_id: u64, allow: bool },
     /// S to C: what became of `ConsentAnswer`.
     ConsentAck { request_id: u64, outcome: ConsentOutcome },
+    /// C to S: start an upload into the folder of `session`. `name` is a label only; the office
+    /// sanitises it. Chunks follow only after `UploadAccepted`.
+    UploadBegin { id: u64, session: String, name: String, size: u64, kind: UploadKind },
+    /// C to S: all chunks are sent. `sha256` is the hex digest of the whole file.
+    UploadEnd { id: u64, sha256: String },
+    /// C to S: stop this upload and delete its partial file. The office sends no reply.
+    UploadCancel { id: u64 },
+    /// S to C: `UploadBegin` passed the checks; the laptop may send chunks.
+    UploadAccepted { id: u64 },
+    /// S to C: `received` bytes are on disk. The only credit for the chunk window.
+    UploadAck { id: u64, received: u64 },
+    /// S to C: the file is in place at `path` (the office's absolute path).
+    UploadDone { id: u64, path: String },
+    /// S to C: the upload is over and nothing was kept.
+    UploadRefused { id: u64, reason: UploadRefused },
     Ping { n: u64 },
     Pong { n: u64 },
     Bye { reason: ByeReason },
@@ -196,6 +262,9 @@ fn is_format_char(c: char) -> bool {
         | 0x110BD | 0x110CD | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A
         | 0xE0001 | 0xE0020..=0xE007F)
 }
+
+/// The longest absolute path the office reports back.
+const MAX_UPLOAD_PATH_BYTES: usize = 4096;
 
 /// 1 to 64 characters, no control or invisible format characters, not only whitespace: a device
 /// or host name (the person reads it on the Allow screen, so it must not be able to spoof).
@@ -236,6 +305,9 @@ impl Msg {
                 | Self::TermResize { .. }
                 | Self::ConsentAnswer { .. }
                 | Self::SnapshotRequest
+                | Self::UploadBegin { .. }
+                | Self::UploadEnd { .. }
+                | Self::UploadCancel { .. }
                 | Self::Ping { .. }
                 | Self::Pong { .. }
                 | Self::Bye { .. }
@@ -254,6 +326,9 @@ impl Msg {
                 | Self::TermResize { .. }
                 | Self::ConsentAnswer { .. }
                 | Self::SnapshotRequest
+                | Self::UploadBegin { .. }
+                | Self::UploadEnd { .. }
+                | Self::UploadCancel { .. }
         )
     }
 
@@ -302,10 +377,27 @@ impl Msg {
                 }
             }
             Self::Reply { outcome: Outcome::Err { message, .. }, .. } if !no_control_text(message) => return bad("error message"),
+            Self::UploadBegin { session, name, .. } => {
+                if !valid_text(session, MAX_ID_BYTES) {
+                    return bad("session id");
+                }
+                if !valid_text(name, MAX_UPLOAD_LABEL_BYTES) {
+                    return bad("upload name");
+                }
+                // The size limit is the office's to enforce (`UploadRefused::TooLarge`): a refusal
+                // must not drop the link, and a codec error does.
+            }
+            Self::UploadEnd { sha256, .. } if !is_hex_digest(sha256) => return bad("upload digest"),
+            Self::UploadDone { path, .. } if !valid_text(path, MAX_UPLOAD_PATH_BYTES) => return bad("upload path"),
             _ => {}
         }
         Ok(())
     }
+}
+
+/// A sha256 digest as 64 hex digits.
+pub fn is_hex_digest(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Error and message texts may hold newlines and tabs, but no other control characters.
@@ -366,7 +458,7 @@ mod tests {
 
     #[test]
     fn direction_is_by_variant() {
-        let hello = Msg::Hello { protocol: 1, client: "c".into(), app_version: "2".into(), term_version: "2.0.0".into() };
+        let hello = Msg::Hello { protocol: PROTOCOL_VERSION, client: "c".into(), app_version: "2".into(), term_version: "2.0.0".into() };
         assert!(hello.from_client() && !hello.from_server());
         let ping = Msg::Ping { n: 1 };
         assert!(ping.from_client() && ping.from_server());

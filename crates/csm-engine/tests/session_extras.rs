@@ -246,3 +246,36 @@ fn without_an_index_usage_stats_say_so() {
     let h = H::new();
     assert!(matches!(h.ui("usage_stats", json!({})), Err(ToolError::Refused(_))));
 }
+
+// ── session_drop_paths ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn drop_paths_are_quoted_pasted_and_never_submitted_even_while_the_session_works() {
+    let h = H::new();
+    let id = h.session("claude");
+    let pty = h.pty(0);
+    pty.emit(b"\x1b[?2004h");
+    pty.emit(&osc7501("state=working"));
+    h.wait_status(&id, csm_engine::Status::Working);
+    let path = if cfg!(windows) { r"C:\Users\alice\My Documents\notes.txt" } else { "/home/alice/My Documents/notes.txt" };
+    h.ok("session_drop_paths", json!({"session_id": id, "paths": [path]}));
+    let w = wait_written(&pty, "notes.txt");
+    assert!(w.contains("\x1b[200~"), "a bracketed paste: {w:?}");
+    assert!(w.contains("My Documents"), "the path is quoted for the shell: {w:?}");
+    assert!(!w.ends_with('\r'), "never followed by Enter: {w:?}");
+}
+
+#[test]
+fn drop_paths_refuse_nothing_to_paste_too_many_and_unsafe_paths_and_a_session_pasting_into_itself() {
+    let h = H::new();
+    let id = h.session("claude");
+    let pty = h.pty(0);
+    assert!(matches!(h.ui("session_drop_paths", json!({"session_id": id, "paths": []})), Err(ToolError::InvalidParams(_))));
+    let many: Vec<String> = (0..21).map(|i| format!("/tmp/f{i}")).collect();
+    assert!(matches!(h.ui("session_drop_paths", json!({"session_id": id, "paths": many})), Err(ToolError::InvalidParams(_))));
+    let unsafe_path = h.ui("session_drop_paths", json!({"session_id": id, "paths": ["/tmp/a\nrm -rf ~"]}));
+    assert!(matches!(unsafe_path, Err(ToolError::Refused(_))), "{unsafe_path:?}");
+    let own = h.engine.call(ext(Some(&id)), "session_drop_paths", json!({"session_id": id, "paths": ["/tmp/x"]}));
+    assert!(matches!(own, Err(ToolError::Refused(_))), "{own:?}");
+    assert!(!pty.written_text().contains("rm -rf"), "nothing unsafe reaches the session");
+}
