@@ -117,6 +117,10 @@ pub struct PluginRuntime {
     /// The supervisor that reported this; a newer one wins.
     #[serde(skip)]
     pub(crate) generation: u64,
+    /// The `csm/status` the add-on last set, shown by the indicator. Never serialized (it is not
+    /// part of the status tools' answers) and never kept after the process stops.
+    #[serde(skip)]
+    pub status: Option<csm_core::addons::status::AddonStatus>,
 }
 
 impl PluginRuntime {
@@ -137,6 +141,7 @@ impl PluginRuntime {
             subscriptions: Vec::new(),
             stderr_tail: String::new(),
             generation,
+            status: None,
         }
     }
 }
@@ -747,6 +752,55 @@ fn intern_in(table: &mut HashSet<&'static str>, cap: usize, s: &str) -> Option<&
     Some(leaked)
 }
 
+/// `csm/status` is shown at most once per this long per add-on. The latest one wins: a status that
+/// comes inside the window is held and shown when the window opens.
+pub const STATUS_GAP: Duration = Duration::from_millis(500);
+
+/// The most refused `csm/status` lines kept in an add-on's problems.
+const MAX_STATUS_PROBLEMS: usize = 20;
+
+/// Coalesces one add-on's `csm/status` notifications to [`STATUS_GAP`]. Pure: the caller passes
+/// the time, so the rule is tested without a clock.
+#[derive(Debug, Default)]
+pub(crate) struct StatusGate {
+    last_shown: Option<Instant>,
+    held: Option<csm_core::addons::status::AddonStatus>,
+}
+
+impl StatusGate {
+    fn open_at(&self, now: Instant) -> bool {
+        self.last_shown.is_none_or(|t| now.saturating_duration_since(t) >= STATUS_GAP)
+    }
+
+    /// A new status. `Some` when it may be shown now; `None` when it is held (it replaces any held one).
+    pub(crate) fn offer(&mut self, now: Instant, status: csm_core::addons::status::AddonStatus) -> Option<csm_core::addons::status::AddonStatus> {
+        if self.open_at(now) {
+            self.last_shown = Some(now);
+            self.held = None;
+            Some(status)
+        } else {
+            self.held = Some(status);
+            None
+        }
+    }
+
+    /// The held status, once its window has opened.
+    pub(crate) fn due(&mut self, now: Instant) -> Option<csm_core::addons::status::AddonStatus> {
+        if self.held.is_some() && self.open_at(now) {
+            self.last_shown = Some(now);
+            self.held.take()
+        } else {
+            None
+        }
+    }
+}
+
+/// Sets the add-on's indicator text and tells the engine thread (which marks the UI dirty).
+fn show_status(env: &Env, rt: &mut PluginRuntime, status: csm_core::addons::status::AddonStatus) {
+    rt.status = Some(status);
+    env.report(rt);
+}
+
 /// Whether one wire line fits the protocol's cap. A line over it would make the plugin stop
 /// reading, so CSM refuses to send it instead.
 fn fits_line(line: &str) -> bool {
@@ -764,6 +818,8 @@ fn supervise(spec: PluginSpec, ctl: Receiver<Ctl>, env: Env) {
         let started = Instant::now();
         let exit = run_once(&spec, &ctl, &env, &mut rt);
         rt.pid = None;
+        // The indicator text lives only while the process does: a stopped add-on shows nothing.
+        rt.status = None;
         rt.tools.clear();
         env.apply_tools(Vec::new());
         env.clear_contributions();
@@ -909,6 +965,7 @@ fn drive(
     link: &mut Option<Arc<Link>>,
 ) -> Exit {
     let init_id: u64 = 1;
+    let mut status_gate = StatusGate::default();
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     // The data folder is made when the process starts (on demand, never for an add-on that did
     // not declare `stores_data`). If it cannot be made the plugin is told there is none.
@@ -940,6 +997,9 @@ fn drive(
         if let Some(l) = link.as_ref() {
             env.screens.flush();
             plugin_screens::flush_held(&env.screens, l, &env.addon);
+        }
+        if let Some(held) = status_gate.due(Instant::now()) {
+            show_status(env, rt, held);
         }
         match in_rx.recv_timeout(POLL) {
             Ok(Inbound::TooLong) => return Exit::Failed(format!("sent a message over {} bytes; stopped", proto::MAX_LINE_BYTES)),
@@ -1008,6 +1068,22 @@ fn drive(
                         } else if method == "csm/log" {
                             let text = params.get("message").and_then(Value::as_str).map(|s| clean_text(s, 300)).unwrap_or_default();
                             log::info!("add-on {}: {text}", env.addon);
+                        } else if method == "csm/status" {
+                            match csm_core::addons::status::parse(&params) {
+                                Ok(status) => {
+                                    if let Some(now) = status_gate.offer(Instant::now(), status) {
+                                        show_status(env, rt, now);
+                                    }
+                                }
+                                Err(e) => {
+                                    // Dropped, and listed in the add-on's problems (bounded).
+                                    if rt.problems.len() < MAX_STATUS_PROBLEMS {
+                                        rt.problems.push(e.to_string());
+                                    }
+                                    env.report(rt);
+                                    log::warn!("add-on {}: {e}", env.addon);
+                                }
+                            }
                         }
                     }
                 }
@@ -1204,6 +1280,49 @@ pub(crate) fn owner_of(id: &str) -> Option<&str> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use csm_core::addons::status::{AddonStatus, Tone};
+
+    fn st(text: &str) -> AddonStatus {
+        AddonStatus { text: text.into(), tone: Tone::Ok }
+    }
+
+    #[test]
+    fn a_status_shows_at_once_then_the_latest_inside_the_gap_is_held_and_shown_when_it_opens() {
+        let t0 = Instant::now();
+        let mut g = StatusGate::default();
+        assert_eq!(g.offer(t0, st("a")), Some(st("a")), "the first one shows at once");
+        assert_eq!(g.offer(t0 + Duration::from_millis(100), st("b")), None, "inside the gap it is held");
+        assert_eq!(g.offer(t0 + Duration::from_millis(200), st("c")), None, "the latest held one wins");
+        assert_eq!(g.due(t0 + Duration::from_millis(400)), None, "the gap is not over yet");
+        assert_eq!(g.due(t0 + STATUS_GAP), Some(st("c")), "the held one shows when the window opens");
+        assert_eq!(g.due(t0 + STATUS_GAP * 3), None, "shown once, nothing is left held");
+    }
+
+    #[test]
+    fn a_status_after_the_gap_is_not_held() {
+        let t0 = Instant::now();
+        let mut g = StatusGate::default();
+        assert!(g.offer(t0, st("a")).is_some());
+        assert_eq!(g.offer(t0 + STATUS_GAP, st("b")), Some(st("b")));
+    }
+
+    #[test]
+    fn a_flood_of_statuses_shows_at_most_one_per_gap() {
+        let t0 = Instant::now();
+        let mut g = StatusGate::default();
+        let mut shown = 0;
+        for i in 0..1000u64 {
+            let now = t0 + Duration::from_millis(i);
+            if g.offer(now, st("x")).is_some() {
+                shown += 1;
+            }
+            if g.due(now).is_some() {
+                shown += 1;
+            }
+        }
+        // One per 500 ms over one second: at most three.
+        assert!(shown <= 3, "shown {shown} times in one second");
+    }
 
     #[test]
     fn the_data_folder_is_beside_the_state_file_and_absent_when_clean_or_isolated() {

@@ -31,6 +31,8 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-legacy-launcher", 6), // CodeShellManager.exe: the 0.x exe name, starts codeshell.exe
     ("term-spike", 6),
     ("csm-relay", 6), // relay/: self-hostable phone-remote relay; speaks only csm-remote-proto
+    ("csm-phone", 6), // apps/csm-phone: the phone remote add-on (host side); speaks csm-remote-proto, no csm-core
+    ("csm-phone-it", 7), // apps/csm-phone-it: test-only; the phone remote's integration tests against the real relay (ships no code)
 ];
 
 /// Crates allowed to depend on egui.

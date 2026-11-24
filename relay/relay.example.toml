@@ -22,7 +22,8 @@ log_format = "text"
 # A relay for yourself or a private network: admit every host.
 open = false
 
-# Admit these host ids (shown in CSM: Settings > Add-ons > Phone remote).
+# Admit these host ids. Each PC's id is shown read-only on its Phone remote settings screen
+# (Settings > Add-ons > Phone remote). This is how the add-on's PCs are admitted.
 allowed_hosts = []
 
 # Or a file with one host id per line (# comments). Re-read at every host connection: add a line,
@@ -31,6 +32,7 @@ allowed_hosts = []
 
 # Or enrolment tokens: whoever has the secret can connect as a host. Each entry is the secret
 # (16+ characters, no spaces) or sha256:<hex>; `csm-relay enrol-token <secret>` prints that form.
+# The Phone remote add-on cannot present a token yet, so a PC needs allowed_hosts instead.
 enrol_tokens = []
 
 [limits]

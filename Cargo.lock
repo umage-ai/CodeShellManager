@@ -1204,6 +1204,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -1239,6 +1240,7 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "pulldown-cmark",
+ "qrcodegen",
  "regex",
  "schemars",
  "semver",
@@ -1335,6 +1337,41 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "snow",
+]
+
+[[package]]
+name = "csm-phone"
+version = "0.0.1"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "csm-remote-proto",
+ "getrandom 0.3.4",
+ "hkdf",
+ "p256",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "snow",
+ "tempfile",
+ "toml",
+ "tungstenite",
+ "webpki-roots 1.0.12",
+]
+
+[[package]]
+name = "csm-phone-it"
+version = "0.0.1"
+dependencies = [
+ "csm-phone",
+ "csm-relay",
+ "csm-remote-proto",
+ "serde_json",
+ "snow",
+ "tempfile",
+ "tokio",
+ "tungstenite",
 ]
 
 [[package]]
@@ -1477,7 +1514,6 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "log",
- "qrcodegen",
  "schemars",
  "serde",
  "serde_json",
@@ -1555,6 +1591,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
 dependencies = [
  "const-oid",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -1853,7 +1890,9 @@ dependencies = [
  "digest 0.11.3",
  "ff",
  "group",
+ "hkdf",
  "hybrid-array",
+ "pem-rfc7468",
  "pkcs8",
  "rand_core 0.10.1",
  "sec1",
@@ -3792,6 +3831,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem-rfc7468"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
+dependencies = [
+ "base64ct",
+]
+
+[[package]]
 name = "peniko"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4187,6 +4235,15 @@ checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+dependencies = [
+ "getrandom 0.2.17",
 ]
 
 [[package]]

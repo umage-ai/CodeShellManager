@@ -1,0 +1,20 @@
+{
+  "name": "csm-phone-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeShellManager phone remote: the phone web app (static files, no runtime dependencies).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "serve": "node tools/serve.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3"
+  }
+}

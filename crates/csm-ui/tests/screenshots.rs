@@ -618,3 +618,72 @@ fn remote_window_screens() {
         },
     );
 }
+
+/// The `qr` node in a screen, and the title-bar status dot, in both themes (looked at, not compared).
+#[test]
+fn qr_and_status_screens() {
+    use csm_core::addons::status::{AddonStatus, Tone};
+    use csm_engine::{DeclaredScreen, PluginRuntime, RunState, ScreenInfo, ScreenPhase};
+    use csm_core::addons::screen::{ScreenScope, ScreenTree};
+    use serde_json::json;
+
+    let root = json!({"type": "column", "gap": "md", "children": [
+        {"type": "text", "style": "title", "text": "Pair a phone"},
+        {"type": "text", "text": "Scan this code with the phone, or open the link on it."},
+        {"type": "qr", "key": "offer", "text": "https://phone.example.org/v/0.1.0/#p=eyJ2IjoxLCJyIjoid3NzOi8vcmVsYXkuZXhhbXBsZS5vcmcvZm9vIn0", "label": "Scan with the phone", "size": "md"},
+        {"type": "text", "style": "mono", "text": "https://phone.example.org/v/0.1.0/#p=eyJ2IjoxLCJyIjoid3NzOi8vcmVsYXkuZXhhbXBsZS5vcmcvZm9vIn0"},
+        {"type": "text", "style": "caption", "text": "Expires in 9:42 · the code can be used once"}
+    ]});
+    for (name, theme) in [("qr-pairing-mocha", ThemeKind::Mocha), ("qr-pairing-latte", ThemeKind::Latte)] {
+        let root = root.clone();
+        shoot(
+            name,
+            theme,
+            move |b| {
+                let handle = b.screens_handle();
+                let mut g = handle.lock().unwrap();
+                g.declared = vec![DeclaredScreen {
+                    addon: "phone-remote".into(),
+                    addon_name: "Phone remote".into(),
+                    id: "phone-remote.pair".into(),
+                    title: "Pair a phone".into(),
+                    icon: "phone".into(),
+                    scope: ScreenScope::Global,
+                    summary: String::new(),
+                }];
+                g.instances = vec![ScreenInfo {
+                    instance: "i1".into(),
+                    addon: "phone-remote".into(),
+                    addon_name: "Phone remote".into(),
+                    screen: "phone-remote.pair".into(),
+                    title: "Pair a phone".into(),
+                    icon: "phone".into(),
+                    scope: ScreenScope::Global,
+                    phase: ScreenPhase::Ready,
+                    popped_out: false,
+                    error: None,
+                    rev: 1,
+                    context: Default::default(),
+                }];
+                g.trees.insert("i1".into(), std::sync::Arc::new(ScreenTree::from_render(&json!({"rev": 1, "root": root}), "phone-remote", None).unwrap()));
+            },
+            |h| {
+                csm_ui::terminal::lock(&h.state().ui.screens).active = Some("i1".into());
+            },
+        );
+    }
+    // The title-bar dot with a warning from a running add-on, over the sessions view.
+    shoot(
+        "qr-status-dot",
+        ThemeKind::Mocha,
+        |b| {
+            let mut a = csm_ui::demo::demo_claude_usage(true);
+            let mut rt = PluginRuntime::starting();
+            rt.state = RunState::Running;
+            rt.status = Some(AddonStatus { text: "Connected to relay, 2 phones".into(), tone: Tone::Warn });
+            a.process = Some(rt);
+            b.set_addons(vec![a]);
+        },
+        |_| {},
+    );
+}

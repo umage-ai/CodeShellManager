@@ -774,3 +774,43 @@ fn initialize_gives_a_data_folder_only_to_an_add_on_that_stores_data() {
     assert!(!dir.path().join("addon-data").exists());
     h.engine.shutdown();
 }
+
+/// `csm/status` (docs/addons.md): a plugin's indicator text is cleaned and capped, a bad one is
+/// refused and listed in the add-on's problems, the latest of a burst wins once the gap opens, it is
+/// kept out of `plugin_status`, and it goes when the process stops.
+#[test]
+fn a_plugin_status_is_cleaned_coalesced_kept_out_of_plugin_status_and_cleared_when_it_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = start(&fixture(dir.path(), "ok"));
+    h.wait_until("the add-on folder", |s| s.addons.len() == 1);
+    enable(&h);
+    running(&h);
+    let status_of = |s: &csm_engine::Snapshot| s.addons.iter().find(|a| a.id == "echo-test").and_then(|a| a.process.as_ref()).and_then(|p| p.status.clone());
+    let problems_of = |s: &csm_engine::Snapshot| s.addons.iter().find(|a| a.id == "echo-test").and_then(|a| a.process.as_ref()).map(|p| p.problems.clone()).unwrap_or_default();
+
+    h.ok(
+        "echo-test.status",
+        json!({"statuses": [
+            {"text": "Connected\u{202E}\u{200B} to relay\n", "tone": "ok"},
+            {"text": "wrong tone", "tone": "loud"},
+            {"text": "\u{200B}\n", "tone": "warn"},
+        ]}),
+    );
+    let snap = h.wait_until("the first status and its refusals", |s| status_of(s).is_some() && problems_of(s).iter().any(|p| p.contains("empty")));
+    let shown = status_of(&snap).unwrap();
+    assert_eq!((shown.text.as_str(), shown.tone), ("Connected to relay", csm_core::addons::status::Tone::Ok), "cleaned: {shown:?}");
+    let problems = problems_of(&snap);
+    assert!(problems.iter().any(|p| p.contains("tone")) && problems.iter().any(|p| p.contains("empty")), "refused ones are listed: {problems:?}");
+
+    // The text is never in plugin_status (its answer has no indicator text).
+    assert!(!process(&h).unwrap().to_string().contains("Connected"), "{:?}", process(&h));
+
+    // A burst inside the gap: the last one wins once the gap has passed.
+    h.ok("echo-test.status", json!({"statuses": [{"text": "first", "tone": "warn"}, {"text": "second", "tone": "error"}]}));
+    h.wait_until("the latest of the burst", |s| status_of(s).is_some_and(|x| x.text == "second" && x.tone == csm_core::addons::status::Tone::Error));
+
+    // Stopping the add-on clears the indicator.
+    h.ok("addon_disable", json!({"id": "echo-test"}));
+    h.wait_until("the status is cleared", |s| s.addons.iter().find(|a| a.id == "echo-test").and_then(|a| a.process.as_ref()).is_none_or(|p| p.status.is_none()));
+    h.engine.shutdown();
+}

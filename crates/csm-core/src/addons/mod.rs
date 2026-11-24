@@ -5,6 +5,7 @@
 pub mod manifest;
 pub mod protocol;
 pub mod screen;
+pub mod status;
 pub mod theme;
 
 pub use manifest::{

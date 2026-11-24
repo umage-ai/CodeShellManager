@@ -30,6 +30,10 @@
       "routing_token": "i5KZoKeutbzDytHY3-bt9PsCCRAXHiUsMzpBSE9WXWQ",
       "t": "accept"
     },
+    "confirm": {
+      "check": "0420",
+      "t": "confirm"
+    },
     "deny": {
       "reason": "denied",
       "t": "deny"

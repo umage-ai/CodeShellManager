@@ -1500,6 +1500,12 @@ impl DemoBackend {
         self.panes.clone()
     }
 
+    /// Replaces the add-on list the demo shows (for tests and screenshots of add-on state, such as
+    /// a `csm/status` dot). Takes effect at the next `publish`.
+    pub fn set_addons(&mut self, addons: Vec<csm_engine::addons::AddonSummary>) {
+        self.model.addons = addons;
+    }
+
     /// The handle to the demo's add-on screens.
     pub fn screens_handle(&self) -> Arc<std::sync::Mutex<DemoScreens>> {
         self.screens.clone()

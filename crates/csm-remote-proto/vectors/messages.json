@@ -96,6 +96,18 @@
     {
       "ev": "bye",
       "reason": "revoked"
+    },
+    {
+      "ev": "remote_control",
+      "ok": true,
+      "session": "s1"
+    },
+    {
+      "code": "busy",
+      "ev": "remote_control",
+      "message": "busy",
+      "ok": false,
+      "session": "s1"
     }
   ],
   "hello_data": {

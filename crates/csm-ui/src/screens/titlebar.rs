@@ -78,8 +78,16 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         }
     }
 
-    // Remote access, while it is on: between the brand and the search field.
-    crate::screens::remote::indicator(ui, app, brand.max.x + space::LG, mid.min.x - space::MD, rect.center().y, actions);
+    // The add-on status dot (the worst `csm/status` of the running add-ons), just after the brand.
+    // Remote access, while it is on, follows it between the brand and the search field.
+    let addon_status = crate::screens::addons::worst_status(&app.model.addons);
+    let dot_room = if let Some((tone, text)) = &addon_status {
+        crate::screens::addons::title_dot(ui, *tone, text, brand.max.x + space::SM, rect.center().y, actions);
+        size::STATUS_DOT + space::SM
+    } else {
+        0.0
+    };
+    crate::screens::remote::indicator(ui, app, brand.max.x + space::LG + dot_room, mid.min.x - space::MD, rect.center().y, actions);
 
     // Right: the window's own buttons (frameless only), then recent, inspector, theme, settings,
     // quit, set apart from them.

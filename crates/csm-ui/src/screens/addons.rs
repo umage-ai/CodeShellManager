@@ -3,14 +3,87 @@
 //! `addon_disable`); enabling goes through a consent dialog that lists what the add-on contributes
 //! before `addon_enable` runs.
 
+use csm_core::addons::status::{AddonStatus, Tone};
 use csm_engine::addons::{AddonState, AddonSummary};
-use egui::Ui;
+use egui::{Rect, Sense, Ui, Vec2, pos2};
 use serde_json::json;
 
 use crate::app::{Action, CsmApp};
 use crate::screens::settings::{caption, section};
-use crate::theme::{self, Tokens, space, text};
+use crate::theme::{self, Tokens, size, space, text};
 use crate::widgets::{self, ButtonKind};
+
+/// The most serious `csm/status` among the add-ons, with its text. `None` when no running add-on
+/// set one, or every one is `idle` (the title-bar dot is then hidden). Stopped add-ons have no
+/// status: the engine clears it when the process stops.
+pub fn worst_status(addons: &[AddonSummary]) -> Option<(Tone, String)> {
+    worst_of(addons.iter().filter_map(|a| a.process.as_ref().and_then(|p| p.status.as_ref())))
+}
+
+/// The worst of some statuses (see [`worst_status`]).
+pub fn worst_of<'a>(statuses: impl IntoIterator<Item = &'a AddonStatus>) -> Option<(Tone, String)> {
+    statuses.into_iter().filter(|s| s.tone != Tone::Idle).max_by_key(|s| s.tone).map(|s| (s.tone, s.text.clone()))
+}
+
+fn tone_color(t: &Tokens, tone: Tone) -> egui::Color32 {
+    match tone {
+        Tone::Idle => t.muted,
+        Tone::Ok => t.green,
+        Tone::Warn => t.yellow,
+        Tone::Error => t.red,
+    }
+}
+
+/// The title bar's dot for the worst add-on status, at `x`, centred on `cy`. A click opens
+/// Settings > Add-ons; the text is the tooltip and the accessible name.
+pub fn title_dot(ui: &Ui, tone: Tone, text: &str, x: f32, cy: f32, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let d = size::STATUS_DOT;
+    let rect = Rect::from_min_size(pos2(x, cy - d), Vec2::new(d, d * 2.0));
+    let resp = ui.interact(rect, ui.id().with("tb-addon-status"), Sense::click());
+    ui.painter().circle_filled(pos2(x + d / 2.0, cy), d / 2.0, tone_color(&t, tone));
+    let label = format!("Add-on status: {text}");
+    resp.widget_info({
+        let label = label.clone();
+        move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+    });
+    if resp.on_hover_text(&label).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        actions.push(Action::OpenAddonSettings);
+    }
+}
+
+/// One status line in an add-on's row: its tone's dot, then the text (plain text, never markup).
+fn status_line(ui: &mut Ui, s: &AddonStatus) {
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        let d = size::STATUS_DOT;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(d), Sense::hover());
+        ui.painter().circle_filled(rect.center(), d / 2.0, tone_color(&t, s.tone));
+        caption(ui, &format!("Status: {}", s.text));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(tone: Tone, text: &str) -> AddonStatus {
+        AddonStatus { text: text.into(), tone }
+    }
+
+    #[test]
+    fn the_dot_shows_the_worst_tone_and_its_text() {
+        let list = [st(Tone::Ok, "fine"), st(Tone::Error, "relay down"), st(Tone::Warn, "slow")];
+        assert_eq!(worst_of(&list), Some((Tone::Error, "relay down".into())));
+    }
+
+    #[test]
+    fn the_dot_is_hidden_when_nothing_is_set_or_all_are_idle() {
+        let none: [AddonStatus; 0] = [];
+        assert_eq!(worst_of(&none), None, "no status set");
+        assert_eq!(worst_of(&[st(Tone::Idle, "quiet"), st(Tone::Idle, "also quiet")]), None, "idle hides it");
+    }
+}
 
 /// The Settings page for add-ons.
 pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
@@ -72,6 +145,9 @@ fn row(ui: &mut Ui, a: &AddonSummary, actions: &mut Vec<Action>) {
             line.push_str(&format!(" · {} tool(s)", rt.tools.len()));
         }
         caption(ui, &line);
+        if let Some(s) = &rt.status {
+            status_line(ui, s);
+        }
         if let Some(e) = &rt.last_error {
             caption(ui, &format!("Last error: {e}"));
         }
@@ -168,7 +244,7 @@ pub fn consent_body(a: &AddonSummary) -> String {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
+mod dot_tests {
     use super::*;
     use csm_engine::addons::{CommandSummary, ProfileSummary, RunTemplateSummary};
 

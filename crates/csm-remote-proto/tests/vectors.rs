@@ -27,16 +27,27 @@ fn path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vectors").join(format!("{name}.json"))
 }
 
+/// The phone web app reads the same vectors from `phone/test/fixtures/` (a copy, so its tests run
+/// with Node alone). The copy is written with the vectors and checked against them here.
+fn phone_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("phone").join("test").join("fixtures").join(format!("{name}.json"))
+}
+
 fn check(name: &str, value: &Value) {
     let text = format!("{}\n", serde_json::to_string_pretty(value).unwrap());
     let p = path(name);
     if std::env::var_os("CSM_UPDATE_VECTORS").is_some() {
         std::fs::write(&p, &text).unwrap();
+        std::fs::create_dir_all(phone_fixture(name).parent().unwrap()).unwrap();
+        std::fs::write(phone_fixture(name), &text).unwrap();
         return;
     }
     let on_disk = std::fs::read_to_string(&p).unwrap_or_else(|_| panic!("{} is missing; run with CSM_UPDATE_VECTORS=1", p.display()));
     let parsed: Value = serde_json::from_str(&on_disk).unwrap();
     assert_eq!(&parsed, value, "{name}.json is out of date; run with CSM_UPDATE_VECTORS=1 and review the diff");
+    // The phone's copy must be byte for byte the vector file, so the JS tests read what Rust checks.
+    let copy = std::fs::read_to_string(phone_fixture(name)).unwrap_or_default();
+    assert_eq!(copy, on_disk, "phone/test/fixtures/{name}.json is not a copy of vectors/{name}.json; run with CSM_UPDATE_VECTORS=1");
 }
 
 fn bytes(seed: u8, n: usize) -> Vec<u8> {
@@ -129,6 +140,7 @@ fn pairing_vectors() {
     let offer = PairingOffer::new("wss://relay.example.test", &hid, &arr::<32>(10), &arr::<16>(6), &arr::<32>(11));
     let enc = offer.encode();
     let pair_msgs = json!({
+        "confirm": serde_json::to_value(PairMsg::Confirm { check: "0420".into() }).unwrap(),
         "hello": serde_json::to_value(PairMsg::Hello { v: 1, name: "Pixel 9".into() }).unwrap(),
         "accept": serde_json::to_value(PairMsg::Accept { routing_token: b64_encode(&arr::<32>(3)), level: Level::Operator, device_id: "d1".into() }).unwrap(),
         "deny": serde_json::to_value(PairMsg::Deny { reason: DenyReason::Denied }).unwrap(),
@@ -219,6 +231,8 @@ fn messages_vectors() {
         serde_json::to_value(Event::Delta { seq: 2, upserts: vec![session("s1", PhoneStatus::Working)], removed: vec!["s9".into()] }).unwrap(),
         serde_json::to_value(Event::Inbox { seq: 3, unread: 0 }).unwrap(),
         serde_json::to_value(Event::Bye { reason: ByeReason::Revoked }).unwrap(),
+        serde_json::to_value(Event::RemoteControl { session: "s1".into(), ok: true, code: None, message: None }).unwrap(),
+        serde_json::to_value(Event::RemoteControl { session: "s1".into(), ok: false, code: Some(ErrorCode::Busy), message: Some("busy".into()) }).unwrap(),
     ];
     let data = json!({
         "inbox_item": serde_json::to_value(InboxItem { id: "i1".into(), title: "api needs you".into(), session_id: Some("s1".into()), ts: 1_760_000_100 }).unwrap(),

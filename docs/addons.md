@@ -358,6 +358,22 @@ error (`{"code":"refused","message":"..."}`). At most 8 `csm/call`s run at once 
 `csm/log` with `{"message": "..."}` is written to the app log. Any other method is answered with
 `-32601`.
 
+**`csm/status` (the indicator).** `csm/status` with `{"text": "...", "tone": "ok"}` sets the add-on's
+one-line state in CSM. `tone` is `ok`, `warn`, `error` or `idle`; `text` is plain text (never markup),
+1 to 80 characters after cleaning. CSM removes control characters (line breaks included), invisible
+and bidi-control characters, and collapses runs of spaces; a text that is empty after that, a tone
+that is not one of the four, or params that are not an object are dropped, and the reason is listed
+in the add-on's `problems`. Latest wins: CSM shows at most one status per add-on every 500 ms, and a
+status that comes inside that gap is held and shown when the gap opens. The text is held in memory
+only (not in `state.json`, not in `plugin_status`, not in any tool's answer), and it is cleared when
+the add-on's process stops. No tool exposes it to an MCP caller: it is output, not a tool.
+
+Where it shows: the add-on's row in Settings > Add-ons (a dot in its tone and the text), and the title
+bar, as one dot for the most serious tone of the running add-ons (`error` over `warn` over `ok`). The
+dot's tooltip is the text, and a click opens Settings > Add-ons. The dot is hidden when no running
+add-on set a status, or every one is `idle`. An add-on does not need the capability to send it; the
+`initialize` answer lists `"status": 1` in `capabilities`, so an add-on can check that CSM shows it.
+
 **Standing consent (`calls`).** `[process] calls` lists core tools that this add-on may run through
 `csm/call` **without a consent card**, for exactly that list:
 
@@ -851,6 +867,7 @@ required child, a duplicate key or a cap breach refuses the tree. `tone` is
 | `select`, `segmented` | `key`, `options: [{value, label}]` (up to 200), `selected` |
 | `list` | `key`, `items: [{key, title, subtitle?, icon?, badges?}]` (up to 20,000, virtualised), `selected?` |
 | `file_list` | `key`, `files: [{path, status?: M A D R C U ?, old_path?, badges?}]` (up to 20,000), `view: "tree"` (default) or `"flat"`, `selected?`: CSM builds the folder tree from the paths; folders fold locally |
+| `qr` | `text` (1 to 1024 bytes, no control characters: the code is drawn from it and the text is not kept), `label?` (the caption under the code and its accessible name), `size?` (`sm`, `md` (default) or `lg`). A bad `text` draws a notice in the code's place; the rest of the screen is unaffected. The code is at least medium error correction, dark on light in both themes, with its quiet zone drawn |
 
 ### Code and diff
 

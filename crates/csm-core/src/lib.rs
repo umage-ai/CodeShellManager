@@ -26,6 +26,7 @@ pub mod look;
 pub mod models;
 pub mod notify_rules;
 pub mod probe_gate;
+pub mod qr;
 pub mod program_status_payload;
 pub mod program_status_records;
 pub mod recent_sessions;

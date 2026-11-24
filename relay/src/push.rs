@@ -97,16 +97,10 @@ fn write_private(path: &Path, text: &str) -> Result<(), PushError> {
     f.write_all(text.as_bytes()).map_err(|e| PushError(format!("cannot write {}: {e}", path.display())))
 }
 
-/// The host part of an `https://` endpoint, lowercase; `None` for anything else (other schemes,
-/// userinfo, ports other than 443, odd characters).
+/// The host part of an `https://` endpoint, lowercase; `None` for anything else. The rule is shared
+/// with the add-on (`csm_remote_proto::endpoint`), so both refuse the same endpoints.
 pub fn endpoint_host(endpoint: &str) -> Option<String> {
-    let rest = endpoint.strip_prefix("https://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.strip_suffix(":443").unwrap_or(authority);
-    if host.is_empty() || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') || host.starts_with('.') || host.ends_with('.') {
-        return None;
-    }
-    Some(host.to_ascii_lowercase())
+    csm_remote_proto::endpoint::push_endpoint_host(endpoint)
 }
 
 /// Is the endpoint's host on the allow list? `*.example.com` matches subdomains only.
