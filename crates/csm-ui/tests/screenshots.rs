@@ -67,6 +67,19 @@ fn shoot_host(
     assert!(distinct.len() > 100, "{name} looks blank");
 }
 
+/// `n` more live Claude sessions, copies of the demo's first live Claude one.
+fn add_claude_sessions(b: &mut DemoBackend, n: usize) {
+    let m = b.model_mut();
+    let base = m.sessions.iter().find(|s| s.is_claude() && s.status.is_live()).cloned().expect("a live Claude session");
+    for i in 0..n {
+        let mut s = base.clone();
+        s.id = format!("many-{i}");
+        s.name = format!("project-{i:02}");
+        s.accent = csm_ui::model::Accent::Palette((i % 12) as u8);
+        m.sessions.push(s);
+    }
+}
+
 #[test]
 fn screens() {
     shoot("01-main", ThemeKind::Mocha, |_| {}, |_| {});
@@ -216,6 +229,19 @@ fn screens() {
     );
     shoot("10-restore", ThemeKind::Mocha, |b| b.set_restore(3), |_| {});
     shoot("10-shutdown", ThemeKind::Mocha, |b| b.set_shutdown(9.0), |_| {});
+    // ~70 sessions in a short window: the header and Force close now stay in view, the rows scroll.
+    for (name, size) in [("10-shutdown-many", egui::vec2(1000.0, 560.0)), ("10-shutdown-many-short", egui::vec2(760.0, 320.0))] {
+        shoot_sized(
+            name,
+            ThemeKind::Mocha,
+            size,
+            |b| {
+                add_claude_sessions(b, 64);
+                b.set_shutdown(40.0);
+            },
+            |_| {},
+        );
+    }
     shoot(
         "10-busy",
         ThemeKind::Mocha,

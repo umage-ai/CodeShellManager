@@ -799,6 +799,30 @@ pub struct ShutdownBoard {
     pub budget_s: f32,
 }
 
+impl ShutdownBoard {
+    /// Rows that have finished (exited cleanly or were forced).
+    pub fn done(&self) -> usize {
+        self.rows.iter().filter(|r| matches!(r.state, ShutdownRowState::Clean | ShutdownRowState::Forced)).count()
+    }
+
+    /// The rows in the order the board lists them: the one closing now, then any that were
+    /// forced, then the queue in the order the engine closes it (everything that is not Claude
+    /// first, then the Claude sessions one at a time in sidebar order), then the ones that
+    /// exited. `is_claude` says which rows are Claude sessions.
+    pub fn ordered(&self, is_claude: impl Fn(&SessionId) -> bool) -> Vec<&ShutdownRow> {
+        let rank = |r: &ShutdownRow| match r.state {
+            ShutdownRowState::Closing => 0,
+            ShutdownRowState::Forced => 1,
+            ShutdownRowState::Pending if !is_claude(&r.session) => 2,
+            ShutdownRowState::Pending => 3,
+            ShutdownRowState::Clean => 4,
+        };
+        let mut rows: Vec<&ShutdownRow> = self.rows.iter().collect();
+        rows.sort_by_key(|r| rank(r));
+        rows
+    }
+}
+
 /// Everything the screens draw.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiModel {
@@ -1029,6 +1053,27 @@ pub fn fuzzy(query: &str, text: &str) -> Option<(f32, Vec<usize>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shutdown_board_lists_closing_then_queue_then_done() {
+        let row = |id: &str, state| ShutdownRow { session: id.into(), state, elapsed_s: 0.0 };
+        let board = ShutdownBoard {
+            rows: vec![
+                row("c1", ShutdownRowState::Clean),
+                row("q1", ShutdownRowState::Pending),
+                row("shell", ShutdownRowState::Pending),
+                row("now", ShutdownRowState::Closing),
+                row("q2", ShutdownRowState::Pending),
+                row("f", ShutdownRowState::Forced),
+                row("c2", ShutdownRowState::Clean),
+            ],
+            budget_used_s: 0.0,
+            budget_s: 1.0,
+        };
+        let ids: Vec<&str> = board.ordered(|id| id != "shell").iter().map(|r| r.session.as_str()).collect();
+        assert_eq!(ids, ["now", "f", "shell", "q1", "q2", "c1", "c2"]);
+        assert_eq!(board.done(), 3);
+    }
 
     #[test]
     fn initials_follow_the_mock() {

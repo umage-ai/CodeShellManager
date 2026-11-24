@@ -471,30 +471,37 @@ impl DemoBackend {
         self.publish();
     }
 
+    /// As the engine runs it: everything that is not Claude is stopped at once, then the Claude
+    /// sessions one at a time (2.3-4.5 s each, `gw` wedged until its 15 s wait runs out) with the
+    /// 2 s launch stagger after each clean exit. Rows stay in sidebar order; the board sorts them.
     fn board_at(&self, t: f32) -> ShutdownBoard {
-        let rows = self
-            .model
-            .sessions
-            .iter()
-            .filter(|s| s.status.is_live())
-            .enumerate()
-            .map(|(i, s)| {
-                let start = i as f32 * 1.6;
-                let dur = if s.is_claude() { 2.3 + (i % 3) as f32 * 1.1 } else { 0.4 };
-                let forced = s.id == "gw";
-                let (state, elapsed) = if t < start {
-                    (ShutdownRowState::Pending, 0.0)
-                } else if forced && t >= start + 10.0 {
-                    (ShutdownRowState::Forced, 10.0)
-                } else if !forced && t >= start + dur {
-                    (ShutdownRowState::Clean, dur)
-                } else {
-                    (ShutdownRowState::Closing, t - start)
-                };
-                ShutdownRow { session: s.id.clone(), state, elapsed_s: elapsed }
-            })
-            .collect();
-        ShutdownBoard { rows, budget_used_s: t.min(30.0), budget_s: 30.0 }
+        const WAIT: f32 = 15.0;
+        const STAGGER: f32 = 2.0;
+        let live: Vec<_> = self.model.sessions.iter().filter(|s| s.status.is_live()).collect();
+        let mut rows = Vec::new();
+        let mut clock = 0.0;
+        for s in live.iter().filter(|s| !s.is_claude()) {
+            rows.push(ShutdownRow { session: s.id.clone(), state: ShutdownRowState::Clean, elapsed_s: 0.0 });
+        }
+        for (i, s) in live.iter().filter(|s| s.is_claude()).enumerate() {
+            let start = clock;
+            let forced = s.id == "gw";
+            let dur = if forced { WAIT } else { 2.3 + (i % 3) as f32 * 1.1 };
+            let (state, elapsed) = if t < start {
+                (ShutdownRowState::Pending, 0.0)
+            } else if t >= start + dur {
+                (if forced { ShutdownRowState::Forced } else { ShutdownRowState::Clean }, dur)
+            } else {
+                (ShutdownRowState::Closing, 0.0)
+            };
+            rows.push(ShutdownRow { session: s.id.clone(), state, elapsed_s: elapsed });
+            clock = start + dur + if forced { 0.0 } else { STAGGER };
+        }
+        let order: Vec<&String> = live.iter().map(|s| &s.id).collect();
+        rows.sort_by_key(|r| order.iter().position(|id| **id == r.session));
+        let claudes = live.iter().filter(|s| s.is_claude()).count().max(1) as f32;
+        let budget = claudes * (WAIT + STAGGER);
+        ShutdownBoard { rows, budget_used_s: t.min(budget), budget_s: budget }
     }
 
     /// The theme mode setting (`dark`, `light`, `system`; `mocha` and `latte` too).
@@ -1435,9 +1442,11 @@ impl Backend for DemoBackend {
         let mut out = Vec::new();
         if let Some(t0) = self.quitting {
             let t = t0.elapsed().as_secs_f32() * 2.0;
-            self.model.shutdown = Some(self.board_at(t));
+            let board = self.board_at(t);
+            let all_done = board.done() == board.rows.len();
+            self.model.shutdown = Some(board);
             self.publish();
-            if t > 24.0 {
+            if all_done {
                 self.quitting = None;
                 out.push(Notice::QuitReady);
             } else {
