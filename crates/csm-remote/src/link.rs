@@ -23,11 +23,13 @@ use csm_peer_proto::codec::{Frame, Input};
 use csm_peer_proto::ids::KEY_LEN;
 use csm_peer_proto::msg::{ByeReason, ErrorKind, Level, Msg, Outcome};
 use csm_term::{GridSize, ReplySink, TermConfig, Terminal};
+use csm_ui::UploadEvent;
 use csm_ui::backend::ToolInfo;
 use serde_json::{Value, json};
 
 use crate::map;
 use crate::terminal::{ENDED, RUNNING, STALE, lock};
+use crate::upload::{self, Pumped, Uploads, Wire};
 
 /// The call key the worker uses for its own `tool_list` at connect. The UI's keys start at 1.
 const TOOLS_KEY: u64 = 0;
@@ -61,6 +63,11 @@ pub enum Cmd {
     /// The pane's size. `driver` says this client is the one typing.
     Resize { stream: u32, cols: u16, rows: u16, driver: bool },
     Input { stream: u32, input: Input },
+    /// Upload local files, or the clipboard's image, into a session's folder on the office. The
+    /// progress comes back as [`Up::Upload`] under the request's drop id.
+    Upload(upload::Request),
+    /// Cancel a drop: its files are removed on the office and nothing is pasted.
+    UploadCancel { drop: u64 },
     /// Close the window's connection and end the worker.
     Stop,
 }
@@ -75,6 +82,8 @@ pub enum Up {
     Snapshot,
     Event(WireEvent),
     Reply { key: u64, outcome: Outcome },
+    /// An upload's progress, or how it ended.
+    Upload(UploadEvent),
 }
 
 /// The newest mirrored snapshot, waiting for the window. Only the latest is kept: a chatty office
@@ -200,11 +209,34 @@ struct Worker {
     notices: Limiter,
     streams: HashMap<u32, Stream>,
     pending: HashMap<u64, mpsc::Receiver<Outcome>>,
+    uploads: Uploads,
+}
+
+/// The live connection as the uploads' wire.
+struct Live<'a>(&'a Connection);
+
+impl Wire for Live<'_> {
+    fn send(&mut self, msg: Msg) -> Result<(), ()> {
+        self.0.send(msg).map_err(|_| ())
+    }
+
+    fn send_frame(&mut self, frame: &Frame) -> Result<(), ()> {
+        self.0.send_frame(frame).map_err(|_| ())
+    }
 }
 
 impl Worker {
     fn new(up: Sender<Up>, latest: Arc<Latest>) -> Self {
-        Self { up, latest, mirror: None, resyncing: false, notices: Limiter::new(Instant::now()), streams: HashMap::new(), pending: HashMap::new() }
+        Self {
+            up,
+            latest,
+            mirror: None,
+            resyncing: false,
+            notices: Limiter::new(Instant::now()),
+            streams: HashMap::new(),
+            pending: HashMap::new(),
+            uploads: Uploads::new(),
+        }
     }
 
     /// The mirror as the window sees it: the newest copy is kept for the window, and it is woken
@@ -324,9 +356,30 @@ impl Worker {
                 self.streams.remove(&stream);
             }
             Cmd::Resize { .. } | Cmd::Input { .. } => {}
+            Cmd::Upload(req) => {
+                let drop = req.drop;
+                self.send(Up::Upload(UploadEvent::Failed { drop, message: "not connected to the office right now; the files were not sent. Drop them again when it is back.".into() }));
+            }
+            // Nothing is in flight without a link: every upload ended when the link did.
+            Cmd::UploadCancel { .. } => {}
             Cmd::Stop => return true,
         }
         false
+    }
+
+    /// Sends the next upload frame, if one may go. `Err` when the link is gone. Returns whether a
+    /// frame went out, so the caller does not wait for the office before the next one.
+    fn pump_uploads(&mut self, conn: &Connection) -> Result<bool, End> {
+        let mut events = Vec::new();
+        let pumped = self.uploads.pump(&mut Live(conn), Instant::now(), &mut events);
+        for ev in events {
+            self.send(Up::Upload(ev));
+        }
+        match pumped {
+            Pumped::Sent => Ok(true),
+            Pumped::Idle => Ok(false),
+            Pumped::Lost => Err(End::Lost { bye: None, why: "the connection closed during an upload".into() }),
+        }
     }
 
     /// Serves one connection until it ends.
@@ -355,7 +408,13 @@ impl Worker {
                     Err(TryRecvError::Disconnected) => break 'serve End::Stop,
                 }
             }
-            match conn.recv_timeout(Duration::from_millis(10)) {
+            // One upload frame per turn: a keystroke queued meanwhile goes out before the next chunk.
+            let sent = match self.pump_uploads(conn) {
+                Ok(sent) => sent,
+                Err(end) => break 'serve end,
+            };
+            let wait = if sent { Duration::ZERO } else { Duration::from_millis(10) };
+            match conn.recv_timeout(wait) {
                 Some(Incoming::Frame(frame)) => {
                     if let Some(end) = self.frame(conn, &frame) {
                         break 'serve end;
@@ -370,6 +429,9 @@ impl Worker {
             }
         };
         self.fail_pending();
+        for ev in self.uploads.lost() {
+            self.send(Up::Upload(ev));
+        }
         end
     }
 
@@ -400,6 +462,16 @@ impl Worker {
             Cmd::Input { stream, input } => {
                 if self.streams.contains_key(&stream) {
                     let _ = conn.input(stream, input);
+                }
+            }
+            Cmd::Upload(req) => {
+                for ev in self.uploads.enqueue(req) {
+                    self.send(Up::Upload(ev));
+                }
+            }
+            Cmd::UploadCancel { drop } => {
+                for ev in self.uploads.cancel(drop, &mut Live(conn)) {
+                    self.send(Up::Upload(ev));
                 }
             }
             Cmd::Stop => return Some(End::Stop),
@@ -444,6 +516,12 @@ impl Worker {
             Frame::Control(Msg::ConsentCard { request }) => self.send(Up::Event(WireEvent::ConsentRequested { request: request.clone() })),
             Frame::TermAttach { .. } | Frame::TermData { .. } | Frame::Control(Msg::TermResized { .. } | Msg::TermClosed { .. }) => {
                 self.term_frame(conn, frame);
+            }
+            Frame::Control(m @ (Msg::UploadAccepted { .. } | Msg::UploadAck { .. } | Msg::UploadDone { .. } | Msg::UploadRefused { .. })) => {
+                let events = self.uploads.office(m, Instant::now(), &mut Live(conn));
+                for ev in events {
+                    self.send(Up::Upload(ev));
+                }
             }
             _ => {}
         }

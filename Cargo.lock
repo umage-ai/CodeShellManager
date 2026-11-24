@@ -1263,6 +1263,7 @@ dependencies = [
 name = "csm-remote"
 version = "0.0.1"
 dependencies = [
+ "arboard",
  "csm-core",
  "csm-engine",
  "csm-peer",
@@ -1270,8 +1271,10 @@ dependencies = [
  "csm-pty",
  "csm-term",
  "csm-ui",
+ "image",
  "log",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
 ]
 

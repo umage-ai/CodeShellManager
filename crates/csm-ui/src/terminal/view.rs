@@ -148,7 +148,7 @@ pub struct ViewResponse {
     /// copies Claude's last reply (`claude_reply_get`).
     pub copy_reply: bool,
     /// Ctrl+V found an image and no text in a remote window's pane: nothing was sent (the office
-    /// cannot read this laptop's clipboard). The caller says so.
+    /// cannot read this laptop's clipboard). The caller uploads the image instead.
     pub image_paste: bool,
 }
 

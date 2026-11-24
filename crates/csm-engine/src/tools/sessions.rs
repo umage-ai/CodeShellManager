@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use csm_core::dropped_paths::{Quoting, build_dropped_paths_payload};
 use csm_core::models::{RunCommandItem, SessionKind, SessionStatus, ShellSession};
 use csm_core::program_status_records::ProgramStatusRecords;
 use csm_core::time::Timestamp;
@@ -152,6 +153,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             effects: Effects::SENDS_INPUT,
             input_schema: schema_of::<SendParams>,
             run: session_send_text,
+        },
+        ToolSpec {
+            id: "session_drop_paths",
+            title: "Paste dropped paths",
+            summary: "Paste the paths of files into a session, quoted for that session's shell, as a file drop does: bracketed paste, never followed by Enter, and pasted even while the session works (the person dropped them on purpose). Refused into the caller's own session.",
+            toolset: Toolset::Core,
+            effects: Effects::SENDS_INPUT,
+            input_schema: schema_of::<DropParams>,
+            run: session_drop_paths,
         },
         ToolSpec {
             id: "session_read_screen",
@@ -905,6 +915,47 @@ fn session_send_text(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     ))
 }
 
+/// The most paths one `session_drop_paths` call takes (a drop is at most this many files).
+pub(super) const MAX_DROP_PATHS: usize = 20;
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DropParams {
+    session_id: String,
+    /// Absolute paths of files on the machine that runs the session, in drop order.
+    paths: Vec<String>,
+}
+
+fn session_drop_paths(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    let p: DropParams = parse_params(params)?;
+    if let Caller::External { session_id: Some(own), .. } = ctx.caller
+        && *own == p.session_id
+    {
+        return Err(ToolError::Refused("a session cannot send input to itself".into()));
+    }
+    if p.paths.is_empty() || p.paths.len() > MAX_DROP_PATHS {
+        return Err(ToolError::InvalidParams(format!("give between 1 and {MAX_DROP_PATHS} paths")));
+    }
+    let i = find(ctx.state, &p.session_id)?;
+    let kind = ctx.state.app.sessions.get(i).map_or(SessionKind::Local, |s| s.kind);
+    let text = build_dropped_paths_payload(&p.paths, drop_quoting(kind));
+    if text.is_empty() {
+        return Err(ToolError::Refused("nothing was inserted: those paths have characters that can't be typed safely at a prompt".into()));
+    }
+    let name = paste_into(ctx, &p.session_id, &text, false, true)?;
+    let what = if p.paths.len() == 1 { "a path".to_owned() } else { format!("{} paths", p.paths.len()) };
+    Ok(ToolOutput::new(format!("Pasted {what} into {name}."), json!({"session_id": p.session_id})))
+}
+
+/// The quoting a drop uses for a session's shell: the platform's for a local session, POSIX for
+/// WSL and SSH (their shell is bash-like whatever the office runs on).
+pub(super) fn drop_quoting(kind: SessionKind) -> Quoting {
+    match kind {
+        SessionKind::Local => Quoting::native(),
+        SessionKind::Ssh | SessionKind::Wsl => Quoting::Posix,
+    }
+}
+
 /// Pastes `text` into one live session (bracketed paste; `submit` presses Enter after it, as its
 /// own write) and returns the session's name. Refuses an asleep, starting or exited session, and
 /// one that is mid-turn unless `force`. The caller checks the size and the self rule.
@@ -1088,5 +1139,17 @@ fn inbox_next(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
     match next {
         Some(id) => lifecycle::focus(ctx, &id),
         None => Ok(ToolOutput::message("Nothing needs you.")),
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    #[test]
+    fn a_drop_quotes_for_the_session_shell_wsl_and_ssh_being_posix() {
+        assert!(matches!(drop_quoting(SessionKind::Wsl), Quoting::Posix));
+        assert!(matches!(drop_quoting(SessionKind::Ssh), Quoting::Posix));
+        assert_eq!(matches!(drop_quoting(SessionKind::Local), Quoting::Windows), cfg!(windows));
     }
 }

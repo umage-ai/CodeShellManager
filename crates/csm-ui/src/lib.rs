@@ -44,7 +44,7 @@ pub mod widgets;
 pub mod zoom;
 
 pub use app::{Action, CsmApp};
-pub use backend::{Backend, Call, EnginePort, Notice, ToolInfo, ToolPort};
+pub use backend::{Backend, Call, EnginePort, Notice, ToolInfo, ToolPort, UploadEvent};
 
 pub use engine_backend::{EngineBackend, EngineOptions};
 

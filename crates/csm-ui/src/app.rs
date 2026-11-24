@@ -106,6 +106,13 @@ pub enum Action {
     RunSearch,
     /// Pane divider drag finished in Free mode, or a float moved: persist the layout.
     Toast(String),
+    /// A remote window: upload these local files into `session`'s folder on the office, then paste
+    /// their office paths into it (`upload_card`). The files are read on the link's thread.
+    UploadFiles { session: SessionId, paths: Vec<String> },
+    /// A remote window: upload the image on the laptop's clipboard, then paste its office path.
+    PasteImage(SessionId),
+    /// A remote window: cancel an upload (the card's Cancel button).
+    UploadCancel(u64),
     /// Sidebar multi-select (widget state, not a tool): Ctrl-click toggles a row,
     /// Shift-click selects the visible range from the anchor, Esc clears.
     SelectToggle(SessionId),
@@ -536,6 +543,8 @@ pub struct UiState {
     /// The submenu open inside the current menu (by label).
     pub submenu: Option<String>,
     pub toasts: Vec<Toast>,
+    /// Uploads to a remote window's office that are running (the progress card).
+    pub uploads: Vec<screens::upload_card::UploadRow>,
     pub consents: Vec<Value>,
     pub drags: Drags,
     /// Notes being edited, by folder (saved with `note_set` after a pause).
@@ -1221,6 +1230,11 @@ impl CsmApp {
             let n = self.backend.on_event(&e);
             self.notices(ctx, n);
         }
+        for ev in self.backend.upload_events() {
+            for action in screens::upload_card::apply(&mut self.ui.uploads, ev) {
+                self.run(ctx, action);
+            }
+        }
         let n = self.backend.tick(ctx);
         self.notices(ctx, n);
         self.model = self.backend.model();
@@ -1591,6 +1605,21 @@ impl CsmApp {
                 self.run(ctx, Action::Tool("consent_answer", json!({"request_id": request_id, "answer": answer})));
             }
             Action::Toast(t) => self.toast(ctx, t),
+            Action::UploadFiles { session, paths } => {
+                let name = self.model.session(&session).map(|s| s.name.clone()).unwrap_or_default();
+                match self.backend.upload_files(&session, paths) {
+                    Ok(drop) => screens::upload_card::start(&mut self.ui.uploads, drop, session, name),
+                    Err(why) => self.toast(ctx, why),
+                }
+            }
+            Action::PasteImage(session) => {
+                let name = self.model.session(&session).map(|s| s.name.clone()).unwrap_or_default();
+                match self.backend.upload_clipboard_image(&session) {
+                    Ok(drop) => screens::upload_card::start(&mut self.ui.uploads, drop, session, name),
+                    Err(why) => self.toast(ctx, why),
+                }
+            }
+            Action::UploadCancel(drop) => self.backend.upload_cancel(drop),
             Action::SelectToggle(id) => {
                 self.ui.menu = None;
                 self.ui.selection.toggle(&id);

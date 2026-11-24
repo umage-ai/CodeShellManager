@@ -1,11 +1,15 @@
 //! Files dropped on a pane insert their paths, quoted, at the prompt (WPF
 //! `TerminalBridge.BuildDroppedPathsPayload`).
 //!
-//! The paths are untrusted text: `csm_core::dropped_paths` rejects any with a control or
-//! invisible format character (a newline in a "filename" would be Enter) and quotes the rest for
-//! the platform's shells, and the result goes in through `session_send_text`: a bracketed paste,
-//! never typed, never followed by Enter. While files are dragged over the window the pane that
-//! will receive them shows a drop overlay.
+//! The paths are untrusted text. The office's `session_drop_paths` tool quotes them for the
+//! session's shell (`csm_core::dropped_paths` rejects any with a control or invisible format
+//! character: a newline in a "filename" would be Enter) and pastes them: a bracketed paste, never
+//! typed, never followed by Enter. The same tool serves a local window and a remote one.
+//!
+//! In a remote window the paths are on this laptop, which the office cannot read. So the files are
+//! uploaded first (`Action::UploadFiles`, see `upload_card`), and the office's paths are pasted when
+//! every file is there. While files are dragged over the window the pane that will receive them
+//! shows a drop overlay.
 //!
 //! Which pane: the one under the pointer. During an OS drag the window may not get pointer
 //! moves (winit reports hovered files without a position), so when the last known pointer
@@ -17,7 +21,6 @@ use serde_json::json;
 use crate::app::Action;
 use crate::model::{SessionId, UiModel};
 use crate::theme::{self, Tokens, alpha, radius, size, space, text};
-use csm_core::dropped_paths::{Quoting, build_dropped_paths_payload};
 
 /// The pane a drop goes to: the first of `panes` (top-most first) under the pointer, else the
 /// active session's pane when it is one of them.
@@ -25,18 +28,23 @@ pub fn target(pointer: Option<egui::Pos2>, panes: &[(SessionId, Rect)], active: 
     pointer.and_then(|p| panes.iter().find(|(_, r)| r.contains(p))).or_else(|| active.and_then(|a| panes.iter().find(|(id, _)| id == a))).cloned()
 }
 
-/// What a drop of `paths` onto `session` does: paste the quoted paths, or say why nothing was
-/// inserted.
+/// What a drop of `paths` onto `session` does in a window whose engine is on this machine: the
+/// engine quotes the paths for the session's shell and pastes them (`session_drop_paths`). It
+/// refuses, with a reason, what cannot be typed safely.
 pub fn drop_actions(session: &str, paths: &[String]) -> Vec<Action> {
-    let payload = build_dropped_paths_payload(paths, Quoting::native());
-    if payload.is_empty() {
-        return vec![Action::Toast("Nothing was inserted: those paths have characters that can't be typed safely at a prompt.".into())];
+    if paths.is_empty() {
+        return Vec::new();
     }
-    vec![
-        // The person dropped it on purpose: like typing, it goes in even while the session works.
-        Action::Tool("session_send_text", json!({"session_id": session, "text": payload, "force": true})),
-        Action::FocusTerminal(session.to_string()),
-    ]
+    vec![Action::Tool("session_drop_paths", json!({"session_id": session, "paths": paths})), Action::FocusTerminal(session.to_string())]
+}
+
+/// What a drop onto a remote window does: the files go up to the office first. The paste follows
+/// from the upload card once every file is there.
+pub fn remote_drop_actions(session: &str, paths: &[String]) -> Vec<Action> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    vec![Action::UploadFiles { session: session.to_string(), paths: paths.to_vec() }]
 }
 
 /// Draws the drop overlay over the target pane while files hover, and turns a drop into
@@ -54,12 +62,12 @@ pub fn show(ui: &Ui, model: &UiModel, panes: &[(SessionId, Rect)], actions: &mut
     if !dropped.is_empty() {
         // A path that isn't valid Unicode can't be shown or quoted faithfully: left out.
         let paths: Vec<String> = dropped.into_iter().flatten().collect();
+        // A remote window's paths are on this laptop: they are uploaded, not pasted as they are.
         if model.remote {
-            // Those paths are on this laptop; the office cannot read them (design section 6).
-            actions.push(Action::Toast("A dropped file is not sent to a remote window: its path is on this laptop. Copy it to the office first.".into()));
-            return;
+            actions.extend(remote_drop_actions(&id, &paths));
+        } else {
+            actions.extend(drop_actions(&id, &paths));
         }
-        actions.extend(drop_actions(&id, &paths));
         return;
     }
     let t = Tokens::get(ctx);
@@ -107,14 +115,19 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_pastes_quoted_paths_and_never_presses_enter() {
+    fn a_local_drop_pastes_the_paths_through_the_office_tool_and_never_presses_enter() {
         let p = if cfg!(windows) { r"C:\Program Files\a.txt" } else { "/tmp/my file.txt" };
         let a = drop_actions("s1", &[p.to_string(), "evil\nrm -rf ~".to_string()]);
-        let Some(Action::Tool(id, params)) = a.first() else { panic!("{a:?}") };
-        assert_eq!(*id, "session_send_text");
-        let want = if cfg!(windows) { "\"C:\\Program Files\\a.txt\"" } else { "'/tmp/my file.txt'" };
-        assert_eq!(params["text"], want, "the hostile path is left out, the good one quoted");
-        assert!(params.get("submit").is_none(), "no Enter");
-        assert!(matches!(drop_actions("s1", &["a\u{202E}b".to_string()]).first(), Some(Action::Toast(_))));
+        // The engine quotes for the session's shell and drops what cannot be typed (its own tests).
+        assert_eq!(a[0], Action::Tool("session_drop_paths", json!({"session_id": "s1", "paths": [p, "evil\nrm -rf ~"]})));
+        assert_eq!(a[1], Action::FocusTerminal("s1".into()));
+        assert!(drop_actions("s1", &[]).is_empty(), "nothing dropped, nothing pasted");
+    }
+
+    #[test]
+    fn a_remote_drop_uploads_the_files_and_pastes_nothing_itself() {
+        let paths = vec![r"C:\Users\me\report.pdf".to_string(), "/home/me/a b.txt".to_string()];
+        assert_eq!(remote_drop_actions("s1", &paths), vec![Action::UploadFiles { session: "s1".into(), paths: paths.clone() }]);
+        assert!(remote_drop_actions("s1", &[]).is_empty());
     }
 }

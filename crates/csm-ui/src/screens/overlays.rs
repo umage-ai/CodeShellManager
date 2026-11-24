@@ -25,6 +25,7 @@ pub fn restore_rail(ui: &Ui, rect: Rect, r: &RestoreProgress) {
 
 pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     toasts(ctx, app);
+    super::upload_card::show(ctx, &app.ui.uploads, actions);
     let above = open_with_offer(ctx, app, actions);
     consent_cards(ctx, app, actions, above);
     if app.ui.overlay == Overlay::Busy {

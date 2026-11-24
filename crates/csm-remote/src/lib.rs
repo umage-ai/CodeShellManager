@@ -18,6 +18,7 @@
 
 pub mod attach;
 mod backend;
+mod upload;
 pub mod connect;
 mod link;
 pub mod map;

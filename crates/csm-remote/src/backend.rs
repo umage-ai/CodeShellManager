@@ -8,10 +8,13 @@
 //! - State: the mirrored snapshot is rebuilt into a [`UiModel`] whenever it or the overlay changes.
 //! - Terminals: [`RemoteBackend::show_terminals`] subscribes the panes the UI shows and drops the
 //!   others.
-//! - Local-only features (open folder, open with, file drop, image paste, native pickers, backup,
-//!   app quit) are not routed here: the UI hides or refuses them for a remote window.
+//! - Local-only features (open folder, open with, native pickers, backup, app quit) are not routed
+//!   here: the UI hides or refuses them for a remote window.
+//! - File drops and image paste are uploads: the files go over the link to the office (`upload`),
+//!   and the office's paths are pasted with `session_drop_paths` once every file is there.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,6 +25,9 @@ use csm_peer::identity::Identity;
 use csm_peer_proto::Snapshot as WireSnapshot;
 use csm_peer_proto::addr::PeerAddr;
 use csm_peer_proto::ids::KEY_LEN;
+use csm_peer_proto::limits::MAX_UPLOAD_IMAGE;
+use csm_peer_proto::msg::UploadKind;
+use csm_ui::UploadEvent;
 use csm_ui::backend::{Backend, Call, Notice, ToolInfo, ToolPort};
 use csm_ui::docs_model::DocsDetails;
 use csm_ui::git_model::GitDetails;
@@ -36,6 +42,7 @@ use serde_json::Value;
 use crate::link::{self, Cmd, Latest, LinkState, Params, Up};
 use crate::map;
 use crate::terminal::RemoteTerminal;
+use crate::upload::{Request, Source};
 
 /// How many forwarded calls are remembered for [`ToolPort::submitted`].
 const LOG_MAX: usize = 256;
@@ -91,6 +98,12 @@ pub struct RemoteBackend {
     /// The host's name and address as the window shows them (`describe`).
     host_name: String,
     address: String,
+    /// The link's channel, kept for the clipboard thread (`upload_clipboard_image`).
+    up_tx: Sender<Up>,
+    /// The id of the next drop this window starts.
+    next_drop: u64,
+    /// Upload events the link reported and the UI has not taken yet.
+    upload_out: Vec<UploadEvent>,
 }
 
 /// The name a window shows until the host's own is known.
@@ -109,6 +122,7 @@ impl RemoteBackend {
     pub fn connect(p: ConnectParams) -> Result<Self, String> {
         let (up_tx, up_rx) = mpsc::channel();
         let latest = Arc::new(Latest::default());
+        let window_tx = up_tx.clone();
         let cmds = link::spawn(Params { addr: p.addr, relay: p.relay, host_public: p.host_public, identity: p.identity, cfg: p.cfg }, up_tx, latest.clone())
             .map_err(|e| format!("could not start the connection thread: {e}"))?;
         let seeded = p.overlay.is_some();
@@ -139,6 +153,9 @@ impl RemoteBackend {
             docs: DocsDetails { live: true, ..Default::default() },
             host_name: UNNAMED_HOST.to_owned(),
             address: String::new(),
+            up_tx: window_tx,
+            next_drop: 0,
+            upload_out: Vec::new(),
         };
         b.rebuild();
         Ok(b)
@@ -188,6 +205,17 @@ impl RemoteBackend {
         for (id, t) in &self.terms {
             t.set_driver(driver == Some(id.as_str()));
         }
+    }
+
+    /// A fresh drop id for this window.
+    fn take_drop_id(&mut self) -> u64 {
+        self.next_drop = self.next_drop.wrapping_add(1);
+        self.next_drop
+    }
+
+    /// Hands a drop to the link's worker. The worker checks it and reports how it goes.
+    fn send_upload(&self, req: Request) -> Result<(), String> {
+        self.cmds.send(Cmd::Upload(req)).map_err(|_| "the remote window is not connected".to_owned())
     }
 
     /// Ends the connection (a remote window's Quit): the worker closes the link and stops.
@@ -275,6 +303,7 @@ impl RemoteBackend {
                 self.dirty = true;
             }
             Up::Event(e) => events.extend(map::event(&e)),
+            Up::Upload(ev) => self.upload_out.push(ev),
             Up::Reply { key, outcome } => {
                 let Some(call) = self.pending.remove(&key) else { return };
                 let reply = map::reply(outcome);
@@ -406,6 +435,44 @@ impl Backend for RemoteBackend {
         RemoteBackend::show_panes(self, visible, driver);
     }
 
+    /// The files go to the link's worker, which reads and sends them. Nothing is read here.
+    fn upload_files(&mut self, session: &str, paths: Vec<String>) -> Result<u64, String> {
+        let drop = self.take_drop_id();
+        let files = paths.into_iter().map(|p| Source::File(PathBuf::from(p))).collect();
+        self.send_upload(Request { drop, session: session.to_owned(), kind: UploadKind::File, files })?;
+        Ok(drop)
+    }
+
+    /// The clipboard is read and encoded on its own thread; the link's worker sends the bytes. A
+    /// clipboard with no usable image is reported as a failed drop, so the card says why.
+    fn upload_clipboard_image(&mut self, session: &str) -> Result<u64, String> {
+        let drop = self.take_drop_id();
+        let cmds = self.cmds.clone();
+        let up = self.up_tx.clone();
+        let session = session.to_owned();
+        std::thread::Builder::new()
+            .name("csm-remote-clipboard".into())
+            .spawn(move || match clipboard_png() {
+                Ok(data) => {
+                    let files = vec![Source::Memory { name: "clipboard.png".into(), data }];
+                    let _ = cmds.send(Cmd::Upload(Request { drop, session, kind: UploadKind::Image, files }));
+                }
+                Err(message) => {
+                    let _ = up.send(Up::Upload(UploadEvent::Failed { drop, message }));
+                }
+            })
+            .map_err(|e| format!("could not read the clipboard: {e}"))?;
+        Ok(drop)
+    }
+
+    fn upload_cancel(&mut self, drop: u64) {
+        let _ = self.cmds.send(Cmd::UploadCancel { drop });
+    }
+
+    fn upload_events(&mut self) -> Vec<UploadEvent> {
+        std::mem::take(&mut self.upload_out)
+    }
+
     /// The host applied the effect. Errors are shown; so are the results of calls that start or
     /// discard something (the same rule as the office's own window).
     fn on_reply(&mut self, call: &Call, reply: &Reply, _port: &dyn ToolPort) -> Vec<Notice> {
@@ -438,6 +505,26 @@ impl Backend for RemoteBackend {
             _ => Vec::new(),
         }
     }
+}
+
+/// The clipboard's image as PNG bytes, within the image limit. Runs on its own thread: the clipboard
+/// is an OS call, and an image is large to encode.
+fn clipboard_png() -> Result<Vec<u8>, String> {
+    let mut board = arboard::Clipboard::new().map_err(|e| format!("the clipboard is not available: {e}"))?;
+    let img = board.get_image().map_err(|_| "there is no image on the clipboard to paste".to_owned())?;
+    // Bound the work before encoding: raw pixels far beyond the limit are not worth reading.
+    if img.bytes.len() as u64 > 4 * MAX_UPLOAD_IMAGE {
+        return Err("the image on the clipboard is too large to send (over 32 MB)".into());
+    }
+    let (width, height) = (u32::try_from(img.width).unwrap_or(u32::MAX), u32::try_from(img.height).unwrap_or(u32::MAX));
+    let rgba = image::RgbaImage::from_raw(width, height, img.bytes.into_owned()).ok_or_else(|| "the image on the clipboard is damaged".to_owned())?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    rgba.write_to(&mut out, image::ImageFormat::Png).map_err(|e| format!("could not encode the clipboard image: {e}"))?;
+    let png = out.into_inner();
+    if png.len() as u64 > MAX_UPLOAD_IMAGE {
+        return Err("the image is larger than 32 MB as a PNG; copy a smaller part of it".into());
+    }
+    Ok(png)
 }
 
 fn now_ms() -> i64 {

@@ -460,8 +460,8 @@ One base, two profiles:
 | Open with (editor) | `open_with` (`docs/tools.md:500`) | A **client-side** Open with list per remote host, with templates such as `code --remote ssh-remote+office {path}` or a VS Code Remote Tunnels URI. MVP: hidden. |
 | Ctrl+click link | `open_url` (`docs/tools.md:501`) | Open in the **client's** browser after the same http/https check. For `localhost` or `127.0.0.1` links, warn "this points to OFFICE's localhost". Later: offer a port forward over the peer channel (as VS Code does). |
 | Run ready URL | `post_run_url` with a loopback target (`runs/mod.rs:297`) | Same as links: client browser, with a port-forward offer later. |
-| File drop onto a pane | Paths are pasted with `session_send_text` (`screens/file_drop.rs:1-12`) | The client's paths mean nothing on the server. MVP: refuse with a toast. Later: upload to a temp or project folder on the server, then paste the server paths. Design: "Uploads: file drops and image paste" (end of this file). |
-| Image paste (Ctrl+V with an image) | Sends raw `^V` so Claude reads the clipboard itself (`terminal/view.rs:506-511`) | Claude reads the **office** clipboard, so the image is lost. Later: upload the image and paste its path; Claude Code accepts image paths. MVP: toast "image paste is not supported remotely". Design: "Uploads: file drops and image paste" (end of this file). |
+| File drop onto a pane | Paths are pasted with `session_send_text` (`screens/file_drop.rs:1-12`) | The client's paths mean nothing on the server, so the files are uploaded to the office and their office paths pasted. Built: see "Uploads: file drops and image paste" (end of this file). |
+| Image paste (Ctrl+V with an image) | Sends raw `^V` so Claude reads the clipboard itself (`terminal/view.rs:506-511`) | Claude reads the **office** clipboard, so the image is lost. A remote window now uploads the clipboard's image and pastes its office path, which Claude Code accepts. Built: see "Uploads: file drops and image paste" (end of this file). |
 | OSC 52 copy | `Engine::take_clipboard` → `Notice::Clipboard` (`engine_backend.rs:276`) | Send only to the driving client. Do not change the office clipboard while a peer drives it. |
 | Text paste | `TerminalSource::paste` (bracketed) | Text from the client clipboard, bracketed by the server (untrusted rule). |
 | New-session folder picker | Native dialog (`apps/codeshell/src/main.rs:170`) | That would browse the laptop. Replace it with a server-side folder browser: a new read tool `fs_list_dir` (folders only, consent for MCP), plus recent and pinned folders. |
@@ -1200,8 +1200,23 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
 
 ## Uploads: file drops and image paste (P3, `csm-peer-proto`, `csm-peer`, `csm-remote`, `csm-engine`, `csm-ui`)
 
-Status: design only (step 0). Nothing below is built yet. The rows for file drop and image paste in
+Status: steps 1 to 3 are built. The office side (`csm-peer` uploads, the `session_drop_paths` tool),
+the laptop side (`csm-remote/src/upload.rs`, run by the link's worker) and the UI (the upload card,
+file drops and image paste in a remote window) are in. The rows for file drop and image paste in
 section 6 point here.
+
+Where the build differs from the text below, the build is right and this note is the record:
+- **No three-lane writer.** The laptop's worker sends one upload frame per turn of its loop, and it
+  drains the window's commands (keystrokes included) before each turn. A keystroke therefore waits
+  for at most one chunk, the same bound the lanes give, without a second writer.
+- **No laptop-side pacing for relays.** The relay queues and paces frames it forwards, and the
+  credit window (8 unacknowledged chunks per file) bounds what is ever in flight, so the laptop does
+  not add its own rate. A relayed 64 MB file is slow, not unbounded.
+- **Local drops also paste through `session_drop_paths`.** Its quoting follows the session's shell
+  kind (native for a local session, POSIX for WSL and SSH), and it refuses drops of more than 20
+  paths and drops that cannot be typed safely.
+- **The upload itself is not a tool.** It is a laptop action (it reads the laptop's files and
+  clipboard), so only the paste is a tool, as the rule for files on the laptop requires.
 
 **Goal.** A remote window (laptop, showing an office's sessions) can drop files onto a pane and paste
 an image (Ctrl+V with an image on the laptop's clipboard). The laptop uploads the bytes over the

@@ -88,6 +88,13 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 - **Command palette** (`Ctrl+K`) over every command and every session.
 - **Quick-open for new sessions** (`Ctrl+T`): type a folder, press Enter; SSH and WSL under
   *Remote…*.
+- **Files and images into a remote session.** In a remote window, dropping files onto a pane, or
+  pasting an image (Ctrl+V with an image on the laptop's clipboard), uploads them to the office over
+  the encrypted link and pastes their office paths into the session, quoted for its shell. A progress
+  card shows each drop, with Cancel. Files go to the session's folder under the office's app data,
+  never into a project; folders are refused. Limits: 64 MB a file, 32 MB an image, 256 MB and 20 files
+  a drop. Uploads older than 7 days are removed when the office starts. A new office tool,
+  `session_drop_paths`, does the paste for local and remote drops alike.
 - **The `csm` command line**: every action in the app is a tool, and every tool is a `csm`
   subcommand. `csm setup`, `csm doctor` and `csm uninstall` connect `csm mcp` to Claude Code,
   Claude Desktop, Codex and Cursor.
