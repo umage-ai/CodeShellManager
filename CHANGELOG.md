@@ -86,8 +86,13 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   Drag a task onto an agent to send it (after a confirm showing the exact prompt), accept or reopen
   it in Review. Each Claude session's card lists its subagents and workflow runs.
 - **Command palette** (`Ctrl+K`) over every command and every session.
-- **Quick-open for new sessions** (`Ctrl+T`): type a folder, press Enter; SSH and WSL under
-  *Remote…*.
+- **New session dialog** (`Ctrl+T`): type a folder, press Enter. A **This PC / SSH / WSL** selector
+  replaces *Remote…*; up to eight recent folders, wrapping command chips, a profile and group, form
+  tabs from add-ons (New NEXUS agent), **Start** and **Start and keep open**, `Alt+1…9`, `Alt+R`,
+  `Alt+G`.
+- **Remote access (CSM to CSM)**: Settings › Remote access turns it on, pairs devices and can reach
+  the office through a relay; remote windows and `csm attach`. Off until you switch it on. See
+  docs/remote-access.md.
 - **The `csm` command line**: every action in the app is a tool, and every tool is a `csm`
   subcommand. `csm setup`, `csm doctor` and `csm uninstall` connect `csm mcp` to Claude Code,
   Claude Desktop, Codex and Cursor.
@@ -125,6 +130,9 @@ closed (`Ctrl+Shift+T`) and Recent sessions (`Ctrl+Shift+E`); `.csm` backup expo
 file drop; Claude slash-command menu; `--clean`.
 
 ### Changed
+- **Restored sessions do not notify** (popups or screen-text alerts) until you have addressed them.
+- **`csm doctor`** reports its channel, the app id it looks for and which apps are published.
+- Development (dispatch) builds are signed and verified like release builds.
 - **A slashed zero in the terminal**: at small sizes the dot inside the default font's `0` filled in and
   it read as an `8`. The default terminal font now draws `0` with a slash through it. A font you
   chose yourself (`--font`) is drawn as designed.
