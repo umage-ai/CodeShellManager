@@ -131,7 +131,7 @@ fn excerpt_job(ui: &Ui, excerpt: &str, matches: &[[usize; 2]], max_w: f32) -> eg
 fn scrim(ctx: &egui::Context, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new("search-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("search-scrim")).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
         if resp.clicked() {
