@@ -96,8 +96,10 @@ pub fn clear_presses(ctx: &egui::Context) {
 pub fn dialog_button(ui: &mut Ui, id: Id, idx: usize, default: Option<usize>, kind: ButtonKind, label: &str, kbd: Option<&str>) -> egui::Response {
     let resp = widgets::button(ui, kind, None, label, kbd);
     let focus = dialog_keys::current(ui.ctx(), id);
-    if focus == Some(Slot::Button(idx)) || (focus.is_none() && default == Some(idx)) {
-        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::SM);
+    // `widgets::button` draws the ring once egui gives the button the focus; this covers the
+    // dialog's own focus and the default button at rest.
+    if !resp.has_focus() && (focus == Some(Slot::Button(idx)) || (focus.is_none() && default == Some(idx))) {
+        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::MD);
     }
     resp
 }

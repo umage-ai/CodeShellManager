@@ -9,6 +9,7 @@ use csm_ui::Action;
 use csm_ui::demo::DemoBackend;
 use csm_ui::model::{InspectorTab, LayoutMode};
 use csm_ui::theme::ThemeKind;
+use egui_kittest::kittest::Queryable;
 
 fn out_dir() -> std::path::PathBuf {
     let d = std::env::var_os("CSM_SCREENS_OUT")
@@ -884,6 +885,56 @@ fn keyboard_region_entry_screen() {
             assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::SidebarList), "F6 reaches the sidebar");
             let focused = h.ctx.memory(|m| m.focused());
             assert!(focused.is_some_and(|f| h.state().ui.sidebar_nav.iter().any(|(id, _)| *id == f)), "F6 focuses a sidebar row: {focused:?}");
+        },
+    );
+}
+
+/// F6 into the title bar, then Right: the focus ring is on a title-bar button (the button itself
+/// shows the ring, not only the region's outline).
+#[test]
+fn keyboard_titlebar_button_focus_screen() {
+    shoot(
+        "focus-titlebar-button",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::TitleBar) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::TitleBar), "F6 reaches the title bar");
+            let first = h.ctx.memory(|m| m.focused());
+            h.key_press(egui::Key::ArrowRight);
+            settle(h);
+            let moved = h.ctx.memory(|m| m.focused());
+            assert!(moved.is_some() && moved != first, "Right moves the focus to the next title-bar button: {first:?} {moved:?}");
+        },
+    );
+}
+
+/// Settings › Keyboard with the focus on the first row's Clear button: the button draws the ring
+/// itself (`widgets::button`).
+#[test]
+fn keyboard_settings_button_focus_screen() {
+    shoot(
+        "focus-settings-button",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+            settle(h);
+            assert!(h.state().ui.settings.open, "Ctrl+, opens settings");
+            h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Keyboard;
+            settle(h);
+            // Tab does not reach the settings from the title bar, so the test gives the focus to the
+            // first row's Clear button, as an accessibility request would.
+            h.get_all_by_label("Clear").next().expect("a Clear button").focus();
+            settle(h);
+            let focused = h.ctx.memory(|m| m.focused());
+            assert!(focused.is_some(), "the Clear button has the focus: {focused:?}");
         },
     );
 }

@@ -859,6 +859,8 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
         // The arrows move along the list; Left collapses and Right expands (Enter toggles, as a
         // click does); F2 renames the group.
         if resp.has_focus() {
+            // Where Shift+F10 opens this group's menu (`CsmApp::focused_item_menu`).
+            ui.ctx().data_mut(|d| d.insert_temp(Id::new(("group-menu-at", gid.clone())), rect.left_bottom()));
             nav_keys(ui, app, resp.id, Axis::Vertical, actions);
             let (left, right) = ui.ctx().input_mut(|i| (consume_exact(i, Modifiers::NONE, Key::ArrowLeft), consume_exact(i, Modifiers::NONE, Key::ArrowRight)));
             if (left && !collapsed) || (right && collapsed) {
@@ -871,6 +873,9 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
         list_keys::follow(ui, &resp);
         if resp.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_hover);
+        }
+        if resp.has_focus() {
+            widgets::focus_ring(ui, rect, radius::SM);
         }
         let cy = rect.center().y;
         let ch = Rect::from_min_size(pos2(rect.min.x + space::XXS, cy - icon::MD / 2.0), Vec2::splat(icon::MD));

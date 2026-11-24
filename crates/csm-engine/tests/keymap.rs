@@ -120,3 +120,17 @@ fn a_saved_override_is_read_back_at_start() {
     let h = H::start(app, |_| {});
     assert_eq!(chords_of(&h.ok("keymap_list", json!({})).data, "ui.palette"), ["Ctrl+P"]);
 }
+
+#[test]
+fn a_ctrl_letter_the_terminal_needs_cannot_be_rebound_to_another_action() {
+    let h = H::start(test_app(), |_| {});
+    for chord in ["Ctrl+C", "Ctrl+D", "Ctrl+R"] {
+        match h.ui("keymap_set", json!({"action": "run_start", "chords": [chord]})).err() {
+            Some(ToolError::Refused(m)) => assert!(m.contains("terminal needs"), "{m}"),
+            other => panic!("{chord}: expected a refusal, got {other:?}"),
+        }
+    }
+    assert_eq!(chords_of(&h.ok("keymap_list", json!({})).data, "run_start"), ["F5"]);
+    // The default stays where it is: Ctrl+W closes the session.
+    assert_eq!(chords_of(&h.ok("keymap_list", json!({})).data, "session_close"), ["Ctrl+W"]);
+}

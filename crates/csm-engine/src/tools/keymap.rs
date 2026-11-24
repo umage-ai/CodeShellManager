@@ -2,8 +2,10 @@
 //! as the app uses them. The rules are in `csm_core::keymap`; this module reads and writes the
 //! person's overrides in the settings (`AppSettings::keymap`), persists them and tells the UI.
 //!
-//! Changing a chord changes what a keystroke does in the app, so the tools are `MUTATES_STATE` (an
-//! MCP caller asks first, like any setting). Nothing here starts a process or reaches the terminal.
+//! Changing a chord changes what a later keystroke starts, so the tools declare `LAUNCHES_PROCESS` as
+//! well as `MUTATES_STATE`: an MCP caller asks the person first (`Effects::needs_consent`), like any
+//! change that decides what runs. Nothing here starts a process or reaches the terminal, and
+//! `csm_core::keymap::set` refuses the Ctrl+letter chords a terminal program needs.
 
 use csm_core::keymap::{self, Keymap, Overrides, SetError};
 use serde::Deserialize;
@@ -16,7 +18,7 @@ use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, empty_schem
 pub const SETTING_KEY: &str = "Keymap";
 
 pub(super) fn specs() -> Vec<ToolSpec> {
-    let changes = Effects::MUTATES_STATE.union(Effects::IDEMPOTENT);
+    let changes = Effects::MUTATES_STATE.union(Effects::LAUNCHES_PROCESS).union(Effects::IDEMPOTENT);
     vec![
         ToolSpec {
             id: "keymap_list",
@@ -30,7 +32,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "keymap_set",
             title: "Change a keyboard shortcut…",
-            summary: "Set the chords of one action, e.g. [\"Ctrl+Shift+P\"]; an empty list removes its chords. Refused when a chord is used by another action, cannot be read, or needs Ctrl, Alt or a function key. Setting the defaults removes the person's override.",
+            summary: "Set the chords of one action, e.g. [\"Ctrl+Shift+P\"]; an empty list removes its chords. Refused when a chord is used by another action, cannot be read, needs Ctrl or a function key, or is a Ctrl+letter the terminal needs (Ctrl+A, C, D, E, L, R, U, W, Z). Setting the defaults removes the person's override.",
             toolset: Toolset::App,
             effects: changes,
             input_schema: schema_of::<SetParams>,
@@ -103,7 +105,7 @@ fn keymap_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let updated = keymap::set(&ctx.state.app.settings.keymap, &p.action, &p.chords).map_err(|e| match e {
         SetError::UnknownAction(_) => ToolError::NotFound(e.to_string()),
         SetError::BadChord(_) => ToolError::InvalidParams(e.to_string()),
-        SetError::InUse { .. } => ToolError::Refused(e.to_string()),
+        SetError::InUse { .. } | SetError::Reserved(_) => ToolError::Refused(e.to_string()),
     })?;
     store(ctx, updated);
     let shown: Vec<String> = current(ctx).chords(&p.action).iter().map(ToString::to_string).collect();

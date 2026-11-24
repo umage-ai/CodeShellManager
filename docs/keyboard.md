@@ -1,8 +1,9 @@
 # Keyboard
 
-Everything in CodeShellManager can be done from the keyboard. This page lists the keys and how to
-change them. The list in the app (`F1`, `Ctrl+/` or `?`) is the same table, and it is always up to
-date with your own settings.
+Most of CodeShellManager can be driven from the keyboard, and the keys can be changed. This page
+lists them and how to change them. The list in the app (`F1`, `Ctrl+/` or `?`) is the same table,
+and it is always up to date with your own settings. Some parts still need the mouse (the Grid menu,
+for one); `docs/design/keyboard.md` has the current list of gaps.
 
 ## Keys
 
@@ -60,7 +61,9 @@ Ctrl+9, Ctrl+Tab and Ctrl+J. Programs that use the same keys (Midnight Commander
 and F10, for instance) lose them while CodeShellManager is in front: rebind them in Settings ›
 Keyboard. Ctrl+PgUp and Ctrl+PgDn go to the screen tabs only while an add-on screen is open; with
 none, a terminal keeps them (vim uses them for its tabs). Plain keys, Tab, Esc and the arrows
-are never taken from a terminal.
+are never taken from a terminal. When Tab moves the focus into a terminal, the focus ring leaves the
+list or bar it was on, so the keys you type go where the ring is. While a menu is open, the plain
+keys it does not use (Backspace, Delete, the F-keys) are not passed on to the terminal either.
 
 ## Changing a key
 
@@ -72,10 +75,12 @@ Open **Settings › Keyboard**. It lists every action with its keys.
 
 Two rules keep the keyboard usable:
 
-- A key needs Ctrl or Alt, or be a function key (F1 to F12). Plain letters, digits, Tab and the
-  arrows are never shortcuts, so typing and the terminal keep them.
+- A key needs Ctrl, or be a function key (F1 to F12). Plain letters, digits, Tab, Alt+letter and
+  the arrows are never shortcuts, so typing and the terminal keep them.
 - A key can belong to one action only. If you record a key another action uses, the change is
   refused and the message names that action. Clear it there first.
+- The Ctrl+letter keys a shell or Claude Code needs (Ctrl+A, C, D, E, L, R, U, Z, and Ctrl+W, which
+  closes the session by default) cannot be given to another action.
 
 The same is available to agents and scripts: `keymap_list` shows every action with its keys,
 conflicts and skipped entries; `keymap_set` sets an action's keys (an empty list clears them);

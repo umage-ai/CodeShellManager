@@ -150,14 +150,27 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let main_button = Rect::from_min_size(pos2(x - side, rect.center().y - side / 2.0), Vec2::splat(side));
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(crate::app::MAIN_ANCHOR), main_button));
     let main_id = ui.id().with("tb-main");
-    app.ui.region_items.extend(ids.into_iter().map(|id| (crate::focus::FocusRegion::TitleBar, id, false)));
+    app.ui.region_items.extend(ids.iter().map(|id| (crate::focus::FocusRegion::TitleBar, *id, false)));
     app.ui.region_items.push((crate::focus::FocusRegion::TitleBar, main_id, true));
-    if widgets::icon_button_at(ui, main_button, ui.id().with("tb-main"), "more", main_open, "Main menu  F10 or Alt").clicked() {
+    let main_tip = match app.prefs.keymap.label("ui.main_menu") {
+        Some(chord) => format!("Main menu  {chord}"),
+        None => "Main menu".to_owned(),
+    };
+    if widgets::icon_button_at(ui, main_button, main_id, "more", main_open, &main_tip).clicked() {
         actions.push(if main_open {
             Action::CloseMenu
         } else {
             Action::OpenMenu(crate::app::Menu::Main { at: crate::screens::menus::main_menu_at(ui.ctx()) })
         });
+    }
+    // Left and Right move the focus along the buttons, left to right: the buttons were drawn right
+    // to left, and the main menu button is the leftmost.
+    let mut order: Vec<egui::Id> = vec![main_id];
+    order.extend(ids.iter().rev().copied());
+    for id in &order {
+        if crate::list_keys::move_from(ui.ctx(), *id, &order, crate::list_keys::Axis::Horizontal).is_some() {
+            break;
+        }
     }
     x -= side + space::XXS;
     update_badge(ui, app, rect, mid, x, actions);

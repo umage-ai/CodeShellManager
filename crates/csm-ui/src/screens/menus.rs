@@ -1081,6 +1081,17 @@ fn take_keys(ctx: &egui::Context, digits: bool) -> Keys {
     })
 }
 
+/// An open menu is modal for the plain keys it does not read (Backspace, Delete, the F-keys): they
+/// reach neither the shortcuts nor the focused terminal. Escape (the grid closes with it), and the
+/// Ctrl and Alt chords, go on. Called by the app after `menu_keys` took the keys it reads.
+pub fn drop_plain_keys(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        i.events.retain(|e| {
+            !matches!(e, egui::Event::Key { key, modifiers, .. } if *key != Key::Escape && !modifiers.command && !modifiers.ctrl && !modifiers.alt)
+        });
+    });
+}
+
 /// The temporary flag that a menu key was pressed this frame (`menu_keys` sets it, the menus read it).
 fn menu_keys_id() -> Id {
     Id::new("menu-keys-pressed")

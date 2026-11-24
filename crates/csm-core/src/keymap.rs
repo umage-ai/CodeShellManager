@@ -6,9 +6,10 @@
 //! label (the help list, the palette's hints, the menus) reads the resolved [`Keymap`], so there is
 //! one source for them all.
 //!
-//! Damaged input never fails: an override that is not a list of chord strings, or a chord that
-//! does not parse, is left out and reported ([`Keymap::skipped`]); an action id this build does not
-//! know is kept in the settings (a newer build may own it) and reported ([`Keymap::unknown`]).
+//! Damaged input never fails: an override whose entry is not a list of strings is dropped when the
+//! settings are read (so a save does not keep it), a chord that does not parse is left out and
+//! reported ([`Keymap::skipped`]), and an action id this build does not know is kept in the settings
+//! (a newer build may own it) and reported ([`Keymap::unknown`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -160,9 +161,9 @@ impl Chord {
         Ok(Chord { ctrl, alt, shift, key })
     }
 
-    /// Whether a chord may be bound. Text keys need Ctrl or Alt, so typing is never taken
-    /// (Shift alone with a letter is a capital, and Alt with a letter is the terminal's meta
-    /// prefix). Function keys may stand alone or carry modifiers.
+    /// Whether a chord may be bound. A text key needs Ctrl, so typing is never taken (Shift alone
+    /// with a letter is a capital, and Alt with a letter is the terminal's meta prefix). Function
+    /// keys may stand alone or carry modifiers.
     pub fn is_bindable(&self) -> bool {
         matches!(self.key, Key::F(_)) || self.ctrl
     }
@@ -247,7 +248,7 @@ fn parse_chords(texts: &[String]) -> Result<Vec<Chord>, (String, ChordError)> {
     for text in texts {
         let chord = Chord::parse(text).map_err(|e| (text.clone(), e))?;
         if !chord.is_bindable() {
-            return Err((text.clone(), ChordError(format!("`{text}` needs Ctrl or Alt, or be a function key"))));
+            return Err((text.clone(), ChordError(format!("`{text}` needs Ctrl, or be a function key"))));
         }
         if !out.contains(&chord) {
             out.push(chord);
@@ -344,7 +345,7 @@ impl Keymap {
                             ok.push(c);
                         }
                     }
-                    Ok(_) => skipped.push(Skipped { id: id.clone(), chord: text.clone(), reason: "needs Ctrl or Alt, or be a function key".into() }),
+                    Ok(_) => skipped.push(Skipped { id: id.clone(), chord: text.clone(), reason: "needs Ctrl, or be a function key".into() }),
                     Err(e) => skipped.push(Skipped { id: id.clone(), chord: text.clone(), reason: e.0 }),
                 }
             }
@@ -421,6 +422,8 @@ pub enum SetError {
     BadChord(String),
     /// The chord already belongs to another action; the message names it.
     InUse { chord: Chord, owner: &'static str },
+    /// A Ctrl+letter that a shell or Claude Code needs in the terminal (see [`is_terminal_key`]).
+    Reserved(Chord),
 }
 
 impl fmt::Display for SetError {
@@ -429,17 +432,34 @@ impl fmt::Display for SetError {
             SetError::UnknownAction(id) => write!(f, "there is no action named `{id}`"),
             SetError::BadChord(why) => f.write_str(why),
             SetError::InUse { chord, owner } => write!(f, "{chord} is already used by {owner}; clear that one first"),
+            SetError::Reserved(chord) => {
+                write!(f, "{chord} is a key the terminal needs (the shell and Claude Code use it), so it cannot be a shortcut")
+            }
         }
     }
 }
 
+/// The Ctrl+letter chords a shell or Claude Code needs in the terminal: interrupt (C), end of input
+/// (D), suspend (Z), history search (R), line start and end (A, E), kill line (U), clear screen (L),
+/// and delete word (W). Only their defaults may use them (Ctrl+W closes the session by default).
+const TERMINAL_CTRL_LETTERS: [char; 9] = ['A', 'C', 'D', 'E', 'L', 'R', 'U', 'W', 'Z'];
+
+/// Whether a chord is one a terminal program needs (Ctrl+letter, no Alt or Shift). A rebinding
+/// to one would take the key from the program that has the focus.
+pub fn is_terminal_key(chord: &Chord) -> bool {
+    chord.ctrl && !chord.alt && !chord.shift && matches!(chord.key, Key::Letter(c) if TERMINAL_CTRL_LETTERS.contains(&c))
+}
+
 /// The overrides after setting `chords` for `id`. Refused when a chord belongs to another action
-/// (nothing is stolen silently), when a chord cannot be read or bound, or when the id is unknown.
-/// Setting an action back to its defaults removes its override.
+/// (nothing is stolen silently), when a chord cannot be read or bound, when it is a key the terminal
+/// needs, or when the id is unknown. Setting an action back to its defaults removes its override.
 pub fn set(overrides: &Overrides, id: &str, chords: &[String]) -> Result<Overrides, SetError> {
     let before = Keymap::new(overrides);
     let entry = before.entries().iter().find(|e| e.id == id).ok_or_else(|| SetError::UnknownAction(id.to_owned()))?;
     let parsed = parse_chords(chords).map_err(|(text, e)| SetError::BadChord(format!("`{text}`: {}", e.0)))?;
+    if let Some(chord) = parsed.iter().find(|c| is_terminal_key(c) && !entry.default.contains(c)) {
+        return Err(SetError::Reserved(*chord));
+    }
     for chord in &parsed {
         let other = before.entries().iter().find(|e| e.id != entry.id && e.chords.contains(chord));
         if let Some(other) = other {
@@ -613,6 +633,23 @@ mod tests {
         assert!(back.is_empty());
         // Setting a chord the action already has is fine.
         assert!(set(&Overrides::new(), "session_new", &["Ctrl+T".into()]).is_ok());
+    }
+
+    #[test]
+    fn set_refuses_the_ctrl_letters_a_terminal_needs_unless_they_are_the_default() {
+        for text in ["Ctrl+C", "Ctrl+D", "Ctrl+Z", "Ctrl+R", "Ctrl+A", "Ctrl+E", "Ctrl+U", "Ctrl+L"] {
+            assert!(is_terminal_key(&chord(text)), "{text}");
+            let err = set(&Overrides::new(), "ui.palette", &[text.into()]).err();
+            assert!(matches!(err, Some(SetError::Reserved(_))), "{text}: {err:?}");
+        }
+        // Ctrl+W is the close-session default, so that action keeps it; another action may not take it.
+        assert!(set(&Overrides::new(), "session_close", &["Ctrl+W".into()]).is_ok());
+        assert!(matches!(set(&Overrides::new(), "ui.palette", &["Ctrl+W".into()]), Err(SetError::Reserved(_))));
+        // With Shift or Alt, or any other letter, the chord is allowed.
+        for text in ["Ctrl+Shift+P", "Ctrl+Alt+C", "Ctrl+P", "F7"] {
+            assert!(!is_terminal_key(&chord(text)), "{text}");
+            assert!(set(&Overrides::new(), "ui.palette", &[text.into()]).is_ok(), "{text}");
+        }
     }
 
     #[test]

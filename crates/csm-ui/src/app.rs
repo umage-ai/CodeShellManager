@@ -1977,6 +1977,9 @@ impl CsmApp {
             }
             return;
         }
+        if self.ui.menu.is_some() {
+            screens::menus::drop_plain_keys(ctx);
+        }
         // A modal dialog reads its own keys first: Tab between its controls, Enter, Space on its
         // checkbox, and Escape to cancel (`screens::overlays::take_keys`). Other chords still reach
         // the shortcuts below.
@@ -1986,6 +1989,7 @@ impl CsmApp {
         // Shift+F10 opens the menu of the focused item, outside the terminal (which keeps the key
         // when it has the focus). A region with no menu leaves the key alone.
         if !self.ui.terminal_takes_focus()
+            && !self.terminal_focused(ctx)
             && self.ui.overlay == Overlay::None
             && self.ui.menu.is_none()
             && self.ui.inline.is_none()
@@ -2161,6 +2165,7 @@ impl CsmApp {
             self.run(ctx, Action::CloseOverlays);
         } else if self.ui.region.is_some_and(|r| r != FocusRegion::Panes)
             && self.ui.inline.is_none()
+            && !self.terminal_focused(ctx)
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
         {
             // Esc leaves a non-terminal region: the keys go back to the active pane.
@@ -2197,6 +2202,13 @@ impl CsmApp {
         match self.ui.region? {
             FocusRegion::SidebarList => {
                 let focused = ctx.memory(|m| m.focused());
+                // A focused group header opens its group's menu (its anchor is recorded when it is drawn).
+                let header = |g: &GroupId| focused == Some(egui::Id::new(("group-header", g.clone())));
+                if let Some(group) = self.model.groups.iter().map(|g| g.id.clone()).find(|g| header(g)) {
+                    let key = egui::Id::new(("group-menu-at", group.clone()));
+                    let at = ctx.data(|d| d.get_temp::<egui::Pos2>(key)).unwrap_or_else(|| ctx.content_rect().center());
+                    return Some(Menu::Group { group, at });
+                }
                 let session = self
                     .model
                     .sessions
@@ -2241,8 +2253,10 @@ impl CsmApp {
         ctx.request_repaint();
     }
 
-    /// Keeps `ui.region` on the region of the focused item when the keyboard moved the focus there (Tab,
-    /// a focus request), not a mouse press, so F6 cycles from it and the ring follows the focus.
+    /// Keeps `ui.region` in step with the keyboard focus when the keyboard moved it (Tab, a focus
+    /// request), not a mouse press, so F6 cycles from it and the ring follows the focus. A region's
+    /// item sets its region; a terminal is the panes; any other widget (a pane's header button, a
+    /// dialog's field) ends the region, so no ring stays on a list while the keys go elsewhere.
     fn sync_region_to_focus(&mut self, ctx: &egui::Context) {
         let frame = ctx.cumulative_pass_nr();
         let key = egui::Id::new("region-sync");
@@ -2252,9 +2266,14 @@ impl CsmApp {
         if focus != prev
             && frame.saturating_sub(press_frame) > 1
             && let Some(f) = focus
-            && let Some((region, _, _)) = self.ui.region_items.iter().find(|(_, id, _)| *id == f).copied()
         {
-            self.ui.region = Some(region);
+            let item = self.ui.region_items.iter().find(|(_, id, _)| *id == f).map(|(region, _, _)| *region);
+            self.ui.region = match item {
+                Some(region) => Some(region),
+                // A terminal keeps the keys: the panes (F6 into them) or no region at all.
+                None if self.terminal_focused(ctx) => self.ui.region.filter(|r| *r == FocusRegion::Panes),
+                None => None,
+            };
         }
         ctx.data_mut(|d| d.insert_temp(key, (focus, press_frame)));
     }

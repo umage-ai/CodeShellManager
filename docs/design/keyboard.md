@@ -222,96 +222,56 @@ of them push.
    palette hints and menu labels read the keymap; the old hand tables are deleted. The Alt tap alias is
    dropped until open question 3 is answered. Docs: a keyboard section in `docs/`.
 
-**Status (branch `kb/navigation`).** Step 3's focus model is in: `FocusRegion` and the F6 /
-Shift+F6 cycle over the regions drawn last frame (`crates/csm-ui/src/focus.rs`), Esc back to the
-terminal, Ctrl+Alt+Arrow pane movement by geometry (`session_focus`, no new tool), and the focus
-ring from `Tokens::focus()` through `widgets::focus_ring`. Not yet: the arrow keys inside each
-region (sidebar, rail, inbox, title bar, screen strip), the Inspector and Inbox regions' own
-keys, the ring on buttons and switches, and the dialog keys (step 4). The inbox panel is not a
-region yet (it is drawn inside the sidebar).
+**Status (one list, branch `kb/navigation`, after the final review round).** This replaces the
+per-step status notes that used to sit here.
 
-**Status of step 4, menus (branch `kb/navigation`).** Every list menu (`Menu` except the grid) and
-the Recent menu read their keys through one handler (`screens/menus.rs`, `menu_keys`) and one pure
-rule set (`menu_nav.rs`: steps that skip rows, Home/End, Enter, Right/Left into submenus, Escape
-back or close, access letters). An open menu takes its keys before the shortcuts and the terminal;
-Ctrl chords it does not read still run. A menu opened from the keyboard (Shift+F10) highlights its
-first row; a pointer over a row moves the highlight. Access letters are the first free letter of
-each label, drawn underlined, not the fixed letters the table above implies. Shift+F10 opens the
-menu of the focused session row, or the active group's menu from the rail, outside the terminal.
-Not yet: the grid's keys (its Escape stays the app's), focus returning to the opener when a menu
-closes, the dialog Tab trap and default button, and the context-menu key (egui 0.36 has no key for
-it, so only Shift+F10 is bound). Group headers are not focusable yet, so Shift+F10 does not open
-their menu.
+Done:
 
-**Status of the main menu (branch `kb/navigation`).** `Menu::Main` (`screens/menus.rs`,
-`main_entries`) opens with F10 or with the `⋯` button in the title bar
-(the button is the menu's anchor, so a second click closes it). It has eight areas (Session, View /
-Layout, Groups, Run, Git, Add-ons, Settings, Help). Each tool in the registry appears once, by its
-palette title, in the area of its toolset (`main_area`), and runs through the palette's own
-activation (`Action::PaletteTool`), so the palette's special cases apply. The UI's own rows (Settings,
-Keyboard shortcuts, Command palette) and the six layout modes are added by hand. A tool whose input
-needs `session_id` is shown muted (`Entry::Off`, skipped by the keys) while no session is active.
-The keys are the shared menu keys (arrows, Home/End, Right into an area, Enter, Escape, access
-letters). A menu taller than the room below it scrolls, and a key brings its highlighted row into
-view. A clean Alt tap is not shipped: a stray tap would open the menu under a focused terminal, and
-its letters would then run tools (open question 3). Alt+letter still reaches a focused terminal. F10 is taken even when a terminal has the focus (section 4 lists
-it as free; an F-key, like the other global F-keys). Not yet: typing to filter the list (the access
-letters take the typed keys), and the keymap labels (step 2's table, which the
-hints still copy from `palette::shortcut_for`).
+- **Keymap.** One table, `csm_core::keymap::BINDINGS`, read by the dispatch, the help list, the
+  palette hints, the menu hints and the F10 menu. Overrides are `AppSettings::keymap`. A chord
+  needs Ctrl, or be a function key. `keymap::set` refuses a chord another action uses, and a
+  Ctrl+letter a terminal program needs (Ctrl+A, C, D, E, L, R, U, W, Z; Ctrl+W stays the default of
+  `session_close`). Settings › Keyboard records, clears and resets.
+- **Tools.** `keymap_list`, `keymap_set`, `keymap_reset` (`MUTATES_STATE`, `LAUNCHES_PROCESS`: a
+  rebinding decides what a later keystroke starts, so an MCP caller asks first). `rail_tab_next`,
+  `rail_tab_prev`, `pane_focus_next`, `pane_focus_prev`. `session_focus`, `view_set`, `layout_set`
+  and `screen_open` are unchanged.
+- **Regions.** F6 and Shift+F6 cycle the drawn regions; Esc returns to the terminal; Ctrl+Alt+Arrow
+  moves between panes by geometry. `ui.region` follows the keyboard focus: a region's item sets its
+  region, a terminal is the panes (or none), and any other widget ends the region. So Tab from the
+  sidebar into a pane's header button or a terminal leaves no ring on the sidebar, and Esc, Shift+F10
+  and the other keys go to the terminal (`app.rs` `sync_region_to_focus`).
+- **Focus ring.** `widgets::focus_ring` in `Tokens::focus()`, drawn when a widget has the egui focus:
+  text buttons (outside the button, so it shows on a primary button), icon buttons (title bar, pane
+  and inspector headers), switches, sidebar rows and group headers, the rail, inbox rows, the inspector
+  and screen tabs, menu rows, and dialog buttons and fields. Screenshots: `focus-titlebar-button`,
+  `focus-settings-button`, `focus-sidebar-row`, `focus-region-sidebar`.
+- **Lists.** Arrows in the sidebar (rows and group headers; Left and Right collapse and expand a
+  group), the rail, the inbox, the title bar (Left and Right, left to right), the screen strip and the
+  inspector tabs. Home and End in lists.
+- **Menus.** One key handler, `screens/menus.rs` `menu_keys`, for every list menu and the Recent
+  menu, with the rules in `menu_nav.rs`. Shift+F10 opens the focused session row's menu or the
+  focused group header's menu. While a menu is open, the plain keys it does not read (Backspace,
+  Delete, F-keys) are dropped: they reach neither the shortcuts nor the terminal. Esc and the Ctrl or
+  Alt chords go on.
+- **Dialogs.** Tab and Shift+Tab move between the controls, Enter presses the focused button (or the
+  default), Space toggles the close dialog's checkbox, Esc cancels. The quick-open (Ctrl+T) and New
+  session take Tab across their controls.
+- **Main menu.** F10 opens it; its tooltip reads the keymap label.
 
-**Status of step 5, lists and tab strips (branch `kb/navigation`).** The arrows move the focus through
-each list, one pure rule set (`list_keys.rs`: clamped Up and Down, Home and End) and one glue function
-that only the focused widget calls. The focused widget keeps the arrows (egui's own arrow
-navigation is locked off it). Sidebar rows: Up, Down, Home and End move; Shift+Up and Shift+Down move
-and extend the selection; Space toggles the row; F2 renames the focused row (the active session only
-when no sidebar item has the focus); Enter focuses the session, as before. Group headers: the same
-moves; Left collapses, Right expands; F2 renames the group. Rail tabs: the arrows move along the rail
-(Up or Left goes back, Down or Right forward), Enter or Space select. Inbox rows: Up and Down; Enter
-opens. Add-on screen tabs and inspector tabs: Left and Right move, Enter or Space select. Chords:
-Ctrl+PgUp and Ctrl+PgDn change the add-on screen tab; Ctrl+Alt+PgUp and Ctrl+Alt+PgDn change the rail
-tab (`rail_tab_prev`, `rail_tab_next`). Tools added: `rail_tab_next`, `rail_tab_prev`,
-`pane_focus_next`, `pane_focus_prev` (the last two pick among awake sessions of the rail's tab, in
-sidebar order). Gaps: `ui.screen_tab_next` and `ui.screen_tab_prev` are not tools. The shown add-on screen
-is UI state, and the engine has no event that carries a step; a new event would need a change to the
-vendored peer protocol (`csm-peer-proto`), so the tab chords call `ScreenFocus` directly for now. Not
-yet: the dialog Tab trap and default button, the grid's keys, the Delete key on a row, and the inbox
-as a focus region (F6 still skips it).
+Not yet (follow-ups, in rough order of value):
 
-**Status of the dialogs (branch `kb/navigation`).** The confirm, close and one-line prompt dialogs
-read their keys before the shortcuts and the terminal (`screens::overlays::take_keys`, called from
-`CsmApp::shortcuts`). The rules are in `dialog_keys.rs`: `step` (pure, wraps, a stale position
-starts again) and `take`, which stores what Tab, Enter, Space and Escape did for the draw code
-(`current`, `pressed`). Tab and Shift+Tab cycle the controls (the prompt's text field first, then OK
-and Cancel; the close dialog's checkbox first, then Keep and Quit). Enter presses the focused
-button, or the default one (yes, Keep running) when no control has the focus; in the prompt, Enter
-in the field still submits the text. Space toggles the checkbox, and Escape cancels. A focused
-button, or the default with no focus, takes the ring from `widgets::focus_ring`, drawn outside the
-button so it shows on the blue primary button too. A dialog forgets its focus when it closes. The
-help list adds Ctrl+Alt+Arrows and the dialog keys. The main menu reaches the layout modes and the Git tools (tests: the Git area lists `git_status` and
-`git_branches`). The quick-open (Ctrl+T) and New session keep their keys and get Tab traversal across
-their controls, each with the focus ring: the folder field, Browse, the command row, Remote, Group,
-the saved remotes, the connection fields, the New session forms, their choices, name and submit.
-Tab and Shift+Tab move between them; Enter presses the focused button, or starts the session on a
-text field or the command row; Escape closes. A click on a button returns the focus to the folder
-field. Change of an existing key: Tab used to cycle the command. It now moves focus, and Left and
-Right cycle the command on its row (the help list says so; the Tab tests were moved to that route).
-The menu, when open, drops a dialog press stored by an earlier frame. Not yet: Space does not press
-a focused button (it toggles only the close dialog checkbox); the grid's keys; the Delete key on a
-row; the inbox as a focus region; the folder list is reached with Up and Down from any control, not
-by Tab.
-
-**Status of step 6, the keymap (branch `kb/navigation`).** The table is `csm_core::keymap::BINDINGS`
-(ids, names, default chords; all bindings are global, and the menu, dialog and list keys stay fixed).
-`Chord` parses and formats one spelling (`Ctrl+Alt+PgUp`); a chord must have Ctrl, or be a function
-key. Overrides are `AppSettings::keymap` (`Keymap` in `state.json`, only the ones that differ from the
-defaults); a damaged entry is skipped and an unknown id is kept, both reported. `keymap::set` refuses a
-chord another action uses and names it; a conflict in a hand-edited file keeps the override's claim.
-`CsmApp::shortcuts` matches each action's chords with `CsmApp::bound` (no literal chord left there,
-except the Ctrl+Plus zoom alias and the `?` key). The help list (`shortcut_rows`), the palette hints
-and every menu hint read the same map; `SHORTCUTS` and `shortcut_for` are gone. Tools: `keymap_list`,
-`keymap_set`, `keymap_reset` (MUTATES_STATE; `settings_set` refuses `Keymap`). Settings › Keyboard
-records a chord on click (Escape cancels), with Clear, Reset and Reset all. Not done: a filter in the F10 menu, and per-scope bindings (menus and dialogs keep their own keys).
-User docs: `docs/keyboard.md`.
+- Tab does not reach Settings' controls from the title bar: egui's Tab order stays in the title bar's
+  layer. Settings can be reached by the mouse only for focus. Needs a key that moves the focus into
+  the open Settings panel.
+- Space does not press a focused dialog button (only the close dialog's checkbox).
+- The Grid menu has no keys (its Escape is the app's). It should take `menu_keys`.
+- The inbox panel is not an F6 region (it is drawn inside the sidebar).
+- Delete on a focused row (close, with confirm) is not bound.
+- The context-menu key is not bound (egui 0.36 has no key for it); Shift+F10 only.
+- The F10 menu does not filter by typing (the access letters take the typed keys).
+- Per-scope bindings: menus and dialogs keep their own keys, so the keymap cannot rebind them.
+- Quick-open: the folder list is reached with Up and Down from any control, not by Tab.
 
 ## 9. Gate and rules for these steps
 

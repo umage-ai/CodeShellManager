@@ -150,3 +150,34 @@ fn f6_into_the_sidebar_focuses_a_row_and_the_arrows_move_it() {
     assert!(after.is_some_and(|f| rows.contains(&f)), "the focus stays on a sidebar row");
     assert_eq!(h.state().ui.region, Some(FocusRegion::SidebarList), "the region stays the sidebar");
 }
+
+#[test]
+fn tab_out_of_the_sidebar_ends_its_region_and_the_terminal_keeps_escape() {
+    let mut h = h();
+    for _ in 0..8 {
+        if h.state().ui.region == Some(FocusRegion::SidebarList) {
+            break;
+        }
+        h.key_press(Key::F6);
+        settle(&mut h);
+    }
+    assert_eq!(h.state().ui.region, Some(FocusRegion::SidebarList));
+    // Tab leaves the list (its arrows are locked, Tab is not). Keep pressing until the focus has
+    // reached a terminal, or no widget at all: the region must never stay the sidebar meanwhile.
+    for _ in 0..40 {
+        h.key_press(Key::Tab);
+        settle(&mut h);
+        assert_ne!(h.state().ui.region, Some(FocusRegion::SidebarList), "a widget outside the list has the focus");
+        let focused = h.ctx.memory(|m| m.focused());
+        if focused.is_some() && matches!(h.state().ui.region, None | Some(FocusRegion::Panes)) {
+            break;
+        }
+    }
+    // With the keys in a terminal (or no region), Escape is not the UI's: no region or overlay changes.
+    let region = h.state().ui.region;
+    assert!(matches!(region, None | Some(FocusRegion::Panes)), "{region:?}");
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert_eq!(h.state().ui.region, region, "Escape is left to the focused program");
+    assert_eq!(h.state().ui.overlay, Overlay::None);
+}

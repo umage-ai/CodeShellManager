@@ -86,6 +86,9 @@ fn paint_icon_button(ui: &Ui, rect: Rect, resp: &Response, name: &str, on: bool)
     ui.painter().rect_filled(rect, r, bg);
     let sz = if small { icon::MD } else { icon::XL };
     icons::paint(ui, rect, name, sz, fg);
+    if resp.has_focus() {
+        focus_ring(ui, rect, if small { radius::SM } else { radius::MD });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +133,10 @@ pub fn button(ui: &mut Ui, kind: ButtonKind, icon_name: Option<&str>, label: &st
     if let Some(k) = kbd_text {
         let kw = kbd_width(ui, k);
         paint_kbd(ui, Rect::from_center_size(pos2(rect.max.x - space::ROW_X - kw / 2.0, rect.center().y), vec2(kw, size::KBD)), k);
+    }
+    if resp.has_focus() {
+        // Outside the button, so it shows on a primary (blue) button too.
+        focus_ring(ui, rect.expand(space::XS), radius::MD);
     }
     info(&resp, WidgetType::Button, label);
     resp.on_hover_cursor(CursorIcon::PointingHand)
@@ -377,7 +384,7 @@ pub fn toggle(ui: &mut Ui, on: bool, label: &str, hint: Option<&str>) -> Respons
     let kx = if on { track.max.x - r - space::XXS } else { track.min.x + r + space::XXS };
     ui.painter().circle_filled(pos2(kx, cy), r, knob);
     if resp.has_focus() {
-        ui.painter().rect_stroke(track.expand(size::RING), CornerRadius::same(radius::PILL), Stroke::new(size::RING, t.blue), StrokeKind::Outside);
+        ui.painter().rect_stroke(track.expand(size::RING), CornerRadius::same(radius::PILL), Stroke::new(size::RING, t.focus()), StrokeKind::Outside);
     }
     paint_text(ui, pos2(rect.min.x, cy), Align2::LEFT_CENTER, label, crate::theme::regular(text::BODY), t.fg, track.min.x - rect.min.x - space::MD);
     if let Some(g) = hint_galley {

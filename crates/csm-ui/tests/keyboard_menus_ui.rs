@@ -312,3 +312,35 @@ fn the_main_menu_reaches_the_git_actions_by_keys() {
     assert!(ids.iter().any(|t| t == "git_status"), "the Git area offers git_status: {ids:?}");
     assert!(ids.iter().any(|t| t == "git_branches"), "and git_branches: {ids:?}");
 }
+
+#[test]
+fn shift_f10_on_a_focused_group_header_opens_that_groups_menu() {
+    // Group headers are drawn in the list in the headers mode (the rail mode shows one group's rows).
+    let mut b = backend(ThemeKind::Mocha);
+    b.model_mut().group_mode = csm_ui::model::GroupMode::Headers;
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    let groups: Vec<String> = h.state().model.groups.iter().map(|g| g.id.clone()).collect();
+    assert!(!groups.is_empty(), "the demo has a group to focus");
+    for _ in 0..8 {
+        if h.state().ui.region == Some(FocusRegion::SidebarList) {
+            break;
+        }
+        h.key_press(Key::F6);
+        settle(&mut h);
+    }
+    // Walk the sidebar up to the first group header (the demo lists its groups above their rows).
+    let target = egui::Id::new(("group-header", groups[0].clone()));
+    for _ in 0..80 {
+        if h.ctx.memory(|m| m.focused()) == Some(target) {
+            break;
+        }
+        h.key_press(Key::ArrowUp);
+        settle(&mut h);
+    }
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(target), "the arrows reach the group header");
+    h.key_press_modifiers(Modifiers::SHIFT, Key::F10);
+    settle(&mut h);
+    let opened = matches!(&h.state().ui.menu, Some(Menu::Group { group, .. }) if *group == groups[0]);
+    assert!(opened, "Shift+F10 opens the group's menu: {:?}", h.state().ui.menu);
+}

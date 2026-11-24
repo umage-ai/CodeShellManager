@@ -109,7 +109,7 @@ fn keyboard(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let customised = map.entries().iter().any(|e| e.customised());
     match recording.as_deref().and_then(|id| map.entries().iter().find(|e| e.id() == id)) {
         Some(e) => caption(ui, &format!("Press the new keys for {}. Escape cancels.", e.name())),
-        None => caption(ui, "Click a shortcut to record a new one. A shortcut needs Ctrl/Alt or a function key."),
+        None => caption(ui, "Click a shortcut to record a new one. A shortcut uses the Control key or a function key."),
     }
     if customised && widgets::button(ui, ButtonKind::Ghost, Some("restart"), "Reset all", None).clicked() {
         actions.push(Action::Tool("keymap_reset", json!({})));
