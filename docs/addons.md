@@ -452,8 +452,8 @@ app supplies the session.
 **Remotes (`csm/remotes_changed`).** The plugin tells CSM what it can open a session on. The message
 is a notification carrying the *complete* current list (an empty list withdraws everything), at most
 200 entries; send it again whenever the list changes. The entries show up in the palette (type `>`
-or part of the name) as `Remote… › <add-on name> › <label>` and as chips in the New session dialog's
-Remote… row. They go away when the add-on stops or is disabled.
+or part of the name) as `Remote… › <add-on name> › <label>` and as saved-remote chips in the New session dialog (under SSH and
+WSL). They go away when the add-on stops or is disabled.
 
 ```
 -> (plugin) {"jsonrpc":"2.0","method":"csm/remotes_changed","params":{"remotes":[
