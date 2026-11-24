@@ -1,6 +1,6 @@
 # Phone remote: design note
 
-Status: **step 1 built on the host side** (branch `phone/addon`, fix round 6) and **step 2 built: the phone web app in `phone/`** (section 18.7). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, Web Push with RFC 8291 encryption, the three screens (pairing, phones, settings), the `csm/status` line, and the `remote_control` wait for `session.new`, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). Section 18.6 says what the screens do. Section 18.1 lists what is not built (the web app, step 2, and the end-to-end task, step 3) and section 18.2 where the code deviates from this plan.
+Status: **step 1 built on the host side** (branch `phone/addon`, fix round 6), **step 2 built: the phone web app in `phone/`** (section 18.7) and **step 3 built: the end-to-end test and the user docs** (`docs/phone-remote.md`, section 18.8). The host core is in `apps/csm-phone/`: device store, config, ops mapping, pairing with key confirmation, Noise channels, the relay client (`wss://` and loopback `ws://`), the session tracker with deltas and snapshots, Web Push with RFC 8291 encryption, the three screens (pairing, phones, settings), the `csm/status` line, and the `remote_control` wait for `session.new`, all tested. The CSM-side additions (the `qr` node, the `csm/status` indicator, the `phone` and `devices` icons) are **built** (section 18.5). Section 18.6 says what the screens do. Step 3 (the end-to-end test, `phone-e2e`, and the user docs) is built (section 18.8). Section 18.1 lists what is not built and section 18.2 where the code deviates from this plan.
 Revision 3: fixes the first review round (indicator, add-on effects and caller rules, host-wide push
 tracker, CSP and self-hosting, settings screen, QR length, storage first run, attacker-facing rules,
 facts) and the second (launch rate limits and a live-session cap, the in-flight slot for waits, dev CSP,
@@ -1159,7 +1159,7 @@ brief requires.
 
 ---
 
-## 18. Build status (step 1, host side; fix round 6)
+## 18. Build status (steps 1 to 3; step 3 in 18.8)
 
 Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `DENY_ROOTS`), the manifest
 `samples/addons/phone-remote/addon.toml`, and the integration tests in `apps/csm-phone-it/` (test-only, layer 7; see
@@ -1227,21 +1227,22 @@ Tests (all pass with `cargo +1.97 test`):
   an expired offer (a 2 s window) refused by the relay, with the host ending the pairing; revoke closes the live channel
   and the relay refuses the phone after; a relay restart on the same port and the paired phone connects again.
 
-### 18.1 Not built (step 1 still open)
+### 18.1 Not built (after step 3)
 
 - **The enrolment token has no field and no transport.** The relay connection sends no access token (`Hello.access` is
   `None`), and the settings screen says so. The `addon_secret_*` tools are still not used (18.2). Decision 2 is
   applied: the "Use the umage relay" button is not drawn until the owner gives the URL.
 - **The browser smoke test** (a Playwright pass of the real page against the local relay and add-on, section 16 step 2). The web app's own tests are built (18.7).
-- **The end-to-end task and the docs** (step 3): `cargo xtask phone-e2e`, the `docs/addons.md` section, the dev setup in
-  `relay/README.md`, the `xtask ci` check for `phone/`.
+- **The `docs/addons.md` section for the phone remote** is not written: the user docs are `docs/phone-remote.md` (18.8).
+  The end-to-end task, the dev setup in `relay/README.md` and the `xtask ci` check for `phone/` are built (18.8).
+- **Not built after step 3:** a Playwright smoke test of the real page (section 11), the browser X25519 check (18.7),
+  the enrolment token transport (above), the umage relay button (decision 2), and the `copy` button (section 8.4).
 - **The `copy` button** (section 8.4) is not built; the design makes it optional.
 - **The OS keychain: not built; a decision for the owner (section 13, decision 4).** The host secret is a file, protected by
   the Windows access list and the Unix mode (18.2). The `addon_secret_*` tools are not used: their answer shape is not
   verified. Until the owner decides, the file is what ships.
 - **Rekeying** is tested: `the_channel_rekeys_on_both_ends_at_the_same_count` lowers the interval to 3 (`Host::rekey_every`)
   and runs ten requests in each direction, the snapshot included. The product count is `REKEY_INTERVAL` (10 000).
-- The end-to-end task (step 3): not started. The web app is built (18.7); its xtask check is part of step 3.
 
 ### 18.2 Deviations from this plan, with the reason
 
@@ -1433,8 +1434,36 @@ Deviations, with the reason:
 - **No Playwright run, no browser X25519 check.** The floor (X25519 in WebCrypto: Chrome and Edge 133+, Firefox 130+,
   Safari 17+) is the design's figure and is not yet measured in a browser; the smoke test is the next step.
 - **Dependencies.** `typescript` 6.0.3 and `@types/node` 22.20.5, both exact and in `package-lock.json`.
-- **The app's check is not in `xtask ci` yet.** Step 3 adds the `phone/` check (tsc and `npm test`) when `phone/` exists.
+- **The app's check is in `xtask ci`** (step 3): `cargo xtask ci` runs `npm test` and `npm run typecheck` in `phone/`
+  when that folder exists (`xtask/src/phone.rs`). It needs `npm ci` in `phone/` once.
 
-Not built: the browser smoke test; the end-to-end harness (step 3); the `xtask` check for `phone/`; the
-store module's IndexedDB path (no test runs IndexedDB in Node; the store's failure path is a plain message, not tested
-against a real refusing browser); the `copy` button (8.4). Every other requirement of section 10 is built.
+Not built: the browser smoke test; the store module's IndexedDB path (no test runs IndexedDB in Node; the store's failure
+path is a plain message, not tested against a real refusing browser); the `copy` button (8.4). Every other requirement of
+section 10 is built.
+
+### 18.8 The end-to-end test and the docs (step 3)
+
+- **`cargo xtask phone-e2e`** runs `apps/csm-phone-it/tests/e2e.rs` (ignored by `cargo test`, so `cargo test --workspace`
+  and `xtask ci` do not need Node; `xtask ci` runs the web app's checks instead). The test starts `csm-relay` in process on
+  an ephemeral 127.0.0.1 port (open access, push off), starts the add-on's host (`relay_client::run`) with a stateful fake
+  CSM (one session, `session_wake` changes it), and starts `phone/test/e2e/driver.mjs` under Node (`CSM_NODE` names the
+  binary; Node 22 or later). The driver runs the phone app's own modules (`js/pairing.js`, `js/client.js`, `js/crypto.js`)
+  one JSON command per line. The Rust side answers each pairing's check with an Allow at the level asked for.
+- **What it checks:** a viewer pairs and reads the list; the viewer is refused `session.wake` with `forbidden`; an operator
+  pairs, wakes the session, and both phones see `idle` through the tracker's delta; the operator's push subscription is
+  kept (the device view says `push`), and an endpoint off the push host list is refused with `bad_request`; revoking the
+  operator ends its channel with `revoked`, the relay refuses a reconnect, and the viewer still answers.
+- **Deviation: no push delivery.** The plan says "a push (against a local fake push endpoint ... that checks the RFC 8291
+  decryption)". Not built that way, with the reason: the host sends a push through the relay, and the relay POSTs only to
+  `https` endpoints on its allow list of push services (`relay/README.md`, "Web Push"); it refuses localhost. A loopback fake cannot receive a push without changing those rules. The test subscribes with a fake
+  endpoint on an allowed host and triggers no "needs you" episode, so no push service is contacted. The RFC 8291 encryption
+  is checked against the RFC's own example in `apps/csm-phone/src/push.rs` (unit tests). Owner decision if a loopback push
+  test is wanted: a test-only relay setting that allows an `http` loopback endpoint.
+- **Deviation: the fake CSM is in the test, not a fixture file**, and it has one session. A real CSM is not started.
+- **Dev setup:** `relay/relay.dev.toml` (loopback, open access, push off; never deploy it), the `relay/README.md` section
+  "Develop locally", and `docs/phone-remote.md` for the user docs (enable, relay, pairing, levels, hiding names, revoke, what
+  the relay can see, what the owner must provide).
+- **Not built:** the Playwright smoke test of the real page (section 11); a second end-to-end scenario with a denied pairing
+  or a relay restart (the relay tests and `relay_it.rs` cover them without Node).
+- **Settled decisions (section 13)** are recorded in that section ("Settled: recommended option"); this step builds on them
+  and changed none.

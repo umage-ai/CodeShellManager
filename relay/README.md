@@ -29,6 +29,19 @@ CSM connect to `wss://<your relay>/v1/...`.
 Then, in CSM, point the Phone remote add-on at your relay (relay URL, plus the host's enrolment
 token if you use one) and pair a phone.
 
+### Develop locally (no hosted service)
+
+`relay/relay.dev.toml` admits every host on `127.0.0.1:8787` with push off. Use it only on loopback:
+
+```sh
+cargo run -p csm-relay -- --config relay/relay.dev.toml
+node phone/tools/serve.mjs                # the phone app on http://127.0.0.1:8080
+```
+
+Point the add-on at `ws://127.0.0.1:8787` and its `app_origin` at `http://127.0.0.1:8080`. The
+end-to-end test runs all of this in process on ephemeral loopback ports: `cargo xtask phone-e2e`
+(docs/phone-remote.md, "Testing").
+
 ### Endpoints
 
 | Path | What |
