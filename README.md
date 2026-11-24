@@ -206,7 +206,7 @@ Add-ons extend the app: launch profiles for other agents (with status rules), ru
 slash-command presets and palette commands, or a separate program that adds its own tools and
 screens. Nothing runs until you enable it, and enabling shows what the add-on adds and asks.
 Claude usage is built in and listed there too. **Settings → Add-ons → Install samples** adds the ones that ship with the app: Codex CLI, Gemini
-CLI, Review (changed files, diffs and line comments that agents answer), Session summary, Themes
+CLI, OpenCode, GitHub Copilot CLI, Review (changed files, diffs and line comments that agents answer), Session summary, Themes
 and Fun themes.
 Themes come from add-on packs too: a pack lists colours (no code) and Settings → Appearance picks
 the dark and the light theme. A theme can also style the window (`[theme.style]`: corners, bevelled
