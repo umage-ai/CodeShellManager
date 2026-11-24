@@ -896,7 +896,7 @@ fn siblings_list(ui: &mut Ui, sibs: &[WorktreeRow], checked: &mut Vec<String>) {
             let r = r.on_hover_text(&w.path);
             // Tab stop: Enter flips the box the way a click does.
             let mut changed = r.changed();
-            if qstop(ui, &r, false) && !changed {
+            if qstop(ui, &r, false, ("ws", &w.path)) && !changed {
                 on = !on;
                 changed = true;
             }
@@ -1084,7 +1084,7 @@ fn conn_field(ui: &mut Ui, label: &str, buf: &mut String, hint: &str, w: f32) {
         let r = ui.add(edit);
         let l = label.to_string();
         r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
-        qstop_text(ui, &r);
+        qstop_text(ui, &r, ("field", label));
     });
 }
 
@@ -1098,7 +1098,7 @@ fn remote_row(ui: &mut Ui, remotes: &[csm_engine::RemoteView], picked: &mut Opti
             let resp = chip(ui, &r.label, false, false, max, &tip);
             let l = format!("Remote: {} › {}", r.addon_name, r.label);
             resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.clone()));
-            if qstop(ui, &resp, false) {
+            if qstop(ui, &resp, false, ("remote", &r.addon, &r.id)) {
                 *picked = Some((r.addon.clone(), r.id.clone()));
             }
         }
@@ -1162,7 +1162,7 @@ fn form_tabs(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpe
             let session_on = q.new_form.is_none();
             let r = tab(ui, "plus", "Session", session_on, max, "A terminal session in a folder (Alt+1)");
             r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, session_on, "New session: folder and command"));
-            if qstop(ui, &r, false) {
+            if qstop(ui, &r, false, "tab-session") {
                 want = Some(0);
             }
             for (i, f) in forms.iter().take(8).enumerate() {
@@ -1171,7 +1171,7 @@ fn form_tabs(ui: &mut Ui, forms: &[csm_engine::NewSessionView], q: &mut QuickOpe
                 let r = tab(ui, "server", &f.title, on, max, &tip);
                 let l = format!("New session form: {}", f.title);
                 r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
-                if qstop(ui, &r, false) {
+                if qstop(ui, &r, false, ("tab-form", &f.addon_name, &f.title)) {
                     want = Some(i + 1);
                 }
             }
@@ -1218,7 +1218,7 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
                         let resp = chip(ui, &c.label, false, on, max, &tip);
                         let l = format!("{}: {}", f.choice_title, c.label);
                         resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::RadioButton, on, l.clone()));
-                        if qstop(ui, &resp, false) {
+                        if qstop(ui, &resp, false, ("choice", &c.id)) {
                             q.new_choice = Some(c.id.clone());
                         }
                     }
@@ -1230,7 +1230,7 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(msg).font(theme::regular(text::BODY)).color(t.red));
                 let again = widgets::button(ui, ButtonKind::Secondary, None, "Try again", None);
-                if qstop(ui, &again, false) {
+                if qstop(ui, &again, false, "try-again") {
                     actions.push(Action::Tool("new_session_load", ident.clone()));
                 }
             });
@@ -1252,14 +1252,14 @@ fn new_session_panel(ui: &mut Ui, f: &csm_engine::NewSessionView, q: &mut QuickO
         let resp = ui.add(edit);
         let l = format!("{title} (optional)");
         resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, l.clone()));
-        qstop_text(ui, &resp);
+        qstop_text(ui, &resp, ("opt-field", title));
     }
     let can = form_can_submit(f, q.new_choice.as_deref());
     let running = f.submit == "running";
     let label = if running { "Starting…" } else { f.submit_label.as_str() };
     ui.horizontal_wrapped(|ui| {
         let resp = ui.add_enabled_ui(can, |ui| widgets::button(ui, ButtonKind::Primary, None, label, None)).inner;
-        if qstop(ui, &resp, false)
+        if qstop(ui, &resp, false, "submit")
             && can
             && let Some(args) = form_submit_args(f, q)
         {
@@ -1296,7 +1296,7 @@ fn profile_row(ui: &mut Ui, q: &mut QuickOpenState, has_look: bool, import_on: b
                     let r = chip(ui, label, false, on, max, tip);
                     let l = format!("Profile: {label}");
                     r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, l.clone()));
-                    qstop(ui, &r, false)
+                    qstop(ui, &r, false, ("profile", label))
                 };
                 if q.edit.is_some() && has_look && pick(ui, "Keep current", q.profile == ProfilePick::Keep, "Leave this session's look as it is") {
                     q.profile = ProfilePick::Keep;
@@ -1405,6 +1405,22 @@ fn quick_seen_key() -> Id {
     quick_id().with("seen")
 }
 
+/// The keys of the stops drawn this frame, parallel to the `starts` list.
+fn quick_keys_key() -> Id {
+    quick_id().with("keys")
+}
+
+/// The keys of the stops drawn last frame.
+fn quick_keys_prev_key() -> Id {
+    quick_id().with("keys-prev")
+}
+
+/// The key of the stop that has the focus: a stop's place in Tab order shifts when a control
+/// appears above it (an add-on form arriving late), its key does not.
+fn quick_focus_key() -> Id {
+    quick_id().with("focus-key")
+}
+
 fn quick_init_key() -> Id {
     quick_id().with("init")
 }
@@ -1423,6 +1439,9 @@ fn quick_field_prev_key() -> Id {
 fn quick_stops_prev(ctx: &egui::Context) -> Vec<bool> {
     let prev = ctx.data(|d| d.get_temp::<Vec<bool>>(quick_seen_key())).unwrap_or_default();
     ctx.data_mut(|d| {
+        let keys = d.get_temp::<Vec<Id>>(quick_keys_key()).unwrap_or_default();
+        d.insert_temp(quick_keys_prev_key(), keys);
+        d.insert_temp(quick_keys_key(), Vec::<Id>::new());
         d.insert_temp(quick_seen_key(), Vec::<bool>::new());
         match d.get_temp::<usize>(quick_field_key()) {
             Some(i) => {
@@ -1437,24 +1456,59 @@ fn quick_stops_prev(ctx: &egui::Context) -> Vec<bool> {
     prev
 }
 
+/// Notes which stop has the focus, by key. Call after the dialog has taken this frame's Tab.
+fn quick_note_focus(ctx: &egui::Context) {
+    let key = match dialog_keys::current(ctx, quick_id()) {
+        Some(Slot::Button(i)) => ctx.data(|d| d.get_temp::<Vec<Id>>(quick_keys_prev_key())).and_then(|k| k.get(i).copied()),
+        _ => None,
+    };
+    ctx.data_mut(|d| match key {
+        Some(k) => {
+            d.insert_temp(quick_focus_key(), k);
+        }
+        None => d.remove::<Id>(quick_focus_key()),
+    });
+}
+
+/// Moves the dialog's focus on purpose (a click, the first focus). The focused key is worked out
+/// again at the start of the next frame.
+fn quick_focus_set(ctx: &egui::Context, slot: Option<Slot>) {
+    dialog_keys::set(ctx, quick_id(), slot);
+    ctx.data_mut(|d| d.remove::<Id>(quick_focus_key()));
+}
+
 /// The index the next stop drawn this frame gets.
 fn quick_seen(ctx: &egui::Context) -> usize {
     ctx.data(|d| d.get_temp::<Vec<bool>>(quick_seen_key())).map_or(0, |v| v.len())
 }
 
 /// Registers a stop drawn this frame and returns its index.
-fn quick_stop(ctx: &egui::Context, starts: bool) -> usize {
-    quick_reserve(ctx, 1, starts)
+fn quick_stop(ctx: &egui::Context, starts: bool, key: impl std::hash::Hash + std::fmt::Debug) -> usize {
+    quick_reserve(ctx, 1, starts, key)
 }
 
 /// Reserves `n` consecutive stops and returns the first index. For controls drawn in the opposite
 /// order to how they read (a right-to-left row): each takes `first + its place from the left`, so
 /// Tab follows the order on screen.
-fn quick_reserve(ctx: &egui::Context, n: usize, starts: bool) -> usize {
+fn quick_reserve(ctx: &egui::Context, n: usize, starts: bool, key: impl std::hash::Hash + std::fmt::Debug) -> usize {
     let mut v = ctx.data(|d| d.get_temp::<Vec<bool>>(quick_seen_key())).unwrap_or_default();
+    let mut keys = ctx.data(|d| d.get_temp::<Vec<Id>>(quick_keys_key())).unwrap_or_default();
     let first = v.len();
+    let base = quick_id().with(("stop", key));
     v.extend(std::iter::repeat_n(starts, n));
-    ctx.data_mut(|d| d.insert_temp(quick_seen_key(), v));
+    keys.extend((0..n).map(|i| base.with(i)));
+    let focused = ctx.data(|d| d.get_temp::<Id>(quick_focus_key()));
+    ctx.data_mut(|d| {
+        d.insert_temp(quick_seen_key(), v);
+        d.insert_temp(quick_keys_key(), keys);
+    });
+    // The focused control moved to another place in the order: the focus goes with it.
+    if let Some(f) = focused
+        && let Some(i) = (0..n).find(|i| base.with(*i) == f)
+        && dialog_keys::current(ctx, quick_id()) != Some(Slot::Button(first + i))
+    {
+        dialog_keys::set(ctx, quick_id(), Some(Slot::Button(first + i)));
+    }
     first
 }
 
@@ -1467,6 +1521,9 @@ pub fn release_quick(ctx: &egui::Context) {
     dialog_keys::forget(ctx, quick_id());
     ctx.data_mut(|d| {
         d.remove::<Vec<bool>>(quick_seen_key());
+        d.remove::<Vec<Id>>(quick_keys_key());
+        d.remove::<Vec<Id>>(quick_keys_prev_key());
+        d.remove::<Id>(quick_focus_key());
         d.remove::<bool>(quick_init_key());
     });
 }
@@ -1474,8 +1531,8 @@ pub fn release_quick(ctx: &egui::Context) {
 /// A button as a Tab stop of the quick-open (the next one in draw order). It takes the focus ring
 /// while focused, a click moves the focus to it, and Enter on it counts as a click. True when it
 /// was activated.
-fn qstop(ui: &Ui, resp: &egui::Response, starts: bool) -> bool {
-    let idx = quick_stop(ui.ctx(), starts);
+fn qstop(ui: &Ui, resp: &egui::Response, starts: bool, key: impl std::hash::Hash + std::fmt::Debug) -> bool {
+    let idx = quick_stop(ui.ctx(), starts, key);
     qstop_at(ui, resp, idx)
 }
 
@@ -1489,7 +1546,7 @@ fn qstop_at(ui: &Ui, resp: &egui::Response, idx: usize) -> bool {
         // A click returns the focus to the folder field, where Enter has always started the session
         // (with no folder field drawn, to no stop: Enter then starts too).
         let field = ctx.data(|d| d.get_temp::<usize>(quick_field_prev_key()));
-        dialog_keys::set(ctx, quick_id(), field.map(Slot::Button));
+        quick_focus_set(ctx, field.map(Slot::Button));
     }
     resp.clicked() || dialog_keys::pressed(ctx, quick_id()) == Some(Pressed::Button(idx))
 }
@@ -1498,7 +1555,7 @@ fn qstop_at(ui: &Ui, resp: &egui::Response, idx: usize) -> bool {
 /// selected folder): the focus ring goes round the selected row.
 fn qstop_list(ui: &Ui, selected: Option<Rect>) {
     let ctx = ui.ctx();
-    let idx = quick_stop(ctx, true);
+    let idx = quick_stop(ctx, true, "list");
     if let Some(r) = selected
         && quick_on(ctx, idx)
     {
@@ -1509,9 +1566,9 @@ fn qstop_list(ui: &Ui, selected: Option<Rect>) {
 /// A text input as a Tab stop of the quick-open: Tab moves into it and out of it (its own egui
 /// focus follows the dialog's), and a click in it makes it the focus. Enter in it starts the
 /// session. Returns the stop's index.
-fn qstop_text(ui: &Ui, resp: &egui::Response) -> usize {
+fn qstop_text(ui: &Ui, resp: &egui::Response, key: impl std::hash::Hash + std::fmt::Debug) -> usize {
     let ctx = ui.ctx();
-    let idx = quick_stop(ctx, true);
+    let idx = quick_stop(ctx, true, key);
     qfocus(ctx, resp, Slot::Button(idx));
     if quick_on(ctx, idx) {
         widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::sm());
@@ -1525,7 +1582,7 @@ fn qfocus(ctx: &egui::Context, resp: &egui::Response, mine: Slot) {
     // Only a click moves the dialog's focus here. egui's own Tab traversal also moves its focus
     // (it runs before the dialog reads the key), and that must not overrule the dialog's stop.
     if resp.clicked() {
-        dialog_keys::set(ctx, quick_id(), Some(mine));
+        quick_focus_set(ctx, Some(mine));
     } else if on && !resp.has_focus() {
         resp.request_focus();
     } else if !on && resp.has_focus() {
@@ -1546,6 +1603,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     // folder list or the command row it starts the session, as it always did.
     let prev = quick_stops_prev(ctx);
     let press = dialog_keys::take(ctx, quick_id(), &Controls { field: Field::None, buttons: prev.len(), default: None });
+    quick_note_focus(ctx);
     let stop_starts = matches!(press, Some(Pressed::Button(b)) if prev.get(b) == Some(&true));
     let (down, up, enter, ctrl_enter, alt_tab, alt_group, alt_run) = ctx.input_mut(|i| {
         let mut alt_tab = None;
@@ -1669,7 +1727,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 .vertical_align(egui::Align::Center);
             let r = ui.put(nr, name);
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Session name"));
-            qstop_text(ui, &r);
+            qstop_text(ui, &r, "session-name");
         } else {
             ui.painter().text(pos2(hr.min.x + PAD, hr.center().y), Align2::LEFT_CENTER, "New session", theme::semibold(text::TITLE), t.fg);
         }
@@ -1695,7 +1753,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                     let max = size::NEW_SESSION_CHIP_MAX_W;
                     ui.spacing_mut().item_spacing.x = space::XS + space::XXS;
                     // Drawn right to left; Tab reads left to right (This PC, SSH, WSL).
-                    let first = quick_reserve(ui.ctx(), 3, false);
+                    let first = quick_reserve(ui.ctx(), 3, false, "where");
                     for (i, l, tip) in [(2, "WSL", "A Linux distribution under WSL (Alt+R cycles)"), (1, "SSH", "A host over SSH (Alt+R cycles)"), (0, "This PC", "A local folder (Alt+R cycles)")] {
                         let r = chip(ui, l, false, cur == i, max, tip);
                         let label = format!("Run on: {l}");
@@ -1729,13 +1787,13 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             // The folder field is the first thing focused when the dialog opens.
                             if !ui.ctx().data(|d| d.get_temp::<bool>(quick_init_key())).unwrap_or(false) {
                                 ui.ctx().data_mut(|d| d.insert_temp(quick_init_key(), true));
-                                dialog_keys::set(ui.ctx(), quick_id(), Some(Slot::Button(quick_seen(ui.ctx()))));
+                                quick_focus_set(ui.ctx(), Some(Slot::Button(quick_seen(ui.ctx()))));
                             }
-                            let field = qstop_text(ui, &resp);
+                            let field = qstop_text(ui, &resp, "folder");
                             ui.ctx().data_mut(|d| d.insert_temp(quick_field_key(), field));
                             // Browse…: a native folder dialog, shown by the host after this frame.
                             let browse_btn = widgets::button(ui, ButtonKind::Secondary, Some("folder"), BROWSE, None).on_hover_text("Choose a folder with the system's folder dialog");
-                            if qstop(ui, &browse_btn, false) {
+                            if qstop(ui, &browse_btn, false, "browse") {
                                 browse = true;
                             }
                         });
@@ -1854,7 +1912,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                             labeled_row(ui, "Installed", |ui| {
                                 for d in &installed {
                                     let distro_chip = chip(ui, d, false, q.distro == *d, size::NEW_SESSION_CHIP_MAX_W, "");
-                                    if qstop(ui, &distro_chip, false) {
+                                    if qstop(ui, &distro_chip, false, ("distro", d)) {
                                         q.distro = d.clone();
                                     }
                                 }
@@ -1876,7 +1934,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 },
                 |ui| {
                     let max = ui.available_width().min(size::NEW_SESSION_CHIP_MAX_W);
-                    let cmd_stop = quick_stop(ui.ctx(), true);
+                    let cmd_stop = quick_stop(ui.ctx(), true, "command");
                     let row = ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = vec2(space::XS + space::XXS, space::XS + space::XXS);
                         for (i, c) in commands.iter().enumerate() {
@@ -1919,7 +1977,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                         ui.horizontal_wrapped(|ui| {
                             let gname = q.group.as_deref().and_then(|g| model.group(g)).map_or_else(|| "Ungrouped".to_string(), |g| g.name.clone());
                             let gr = widgets::button(ui, ButtonKind::Secondary, Some("layers"), &gname, None).on_hover_text("The group the new session joins: suggested from the scope; pick another (Alt+G)");
-                            if qstop(ui, &gr, false) || alt_group {
+                            if qstop(ui, &gr, false, "group") || alt_group {
                                 open_group_menu = Some(gr.rect.left_bottom());
                             }
                             ui.label(egui::RichText::new("New sessions join this group in the sidebar.").font(theme::regular(text::CAPTION)).color(t.faint));
@@ -1953,7 +2011,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                 return;
             }
             // Right to left: the primary action is the rightmost. Tab reads left to right (keep open, then Start).
-            let keep_first = quick_reserve(ui.ctx(), if edit { 1 } else { 2 }, false);
+            let keep_first = quick_reserve(ui.ctx(), if edit { 1 } else { 2 }, false, "buttons");
             let go = ui.add_enabled_ui(can_start, |ui| widgets::button(ui, ButtonKind::Primary, None, &start_label, None).on_hover_text(&start_tip)).inner;
             let go_stop = if edit { keep_first } else { keep_first + 1 };
             if qstop_at(ui, &go, go_stop) && can_start {
@@ -2302,6 +2360,31 @@ mod new_session_form_tests {
 #[cfg(test)]
 mod new_session_layout_tests {
     use super::*;
+
+    /// One frame of stops: `keys` are drawn in order; returns the stop index of each.
+    fn stops_frame(ctx: &egui::Context, keys: &[&str]) -> Vec<usize> {
+        let _ = quick_stops_prev(ctx);
+        quick_note_focus(ctx);
+        keys.iter().map(|k| quick_stop(ctx, true, *k)).collect()
+    }
+
+    #[test]
+    fn a_stop_added_above_the_folder_field_keeps_the_focus_on_the_field() {
+        let ctx = egui::Context::default();
+        let idx = stops_frame(&ctx, &["tab", "folder", "browse"]);
+        quick_focus_set(&ctx, Some(Slot::Button(idx[1])));
+        let idx = stops_frame(&ctx, &["tab", "folder", "browse"]);
+        assert!(quick_on(&ctx, idx[1]));
+        // Two add-on form tabs arrive above the field.
+        let idx = stops_frame(&ctx, &["tab", "form-a", "form-b", "folder", "browse"]);
+        assert_eq!(idx[3], 3);
+        assert!(quick_on(&ctx, idx[3]), "the field still has the focus");
+        let idx = stops_frame(&ctx, &["tab", "form-a", "form-b", "folder", "browse"]);
+        assert!(quick_on(&ctx, idx[3]) && !quick_on(&ctx, idx[1]));
+        // And when they go again.
+        let idx = stops_frame(&ctx, &["tab", "folder", "browse"]);
+        assert!(quick_on(&ctx, idx[1]));
+    }
 
     #[test]
     fn a_long_path_is_cut_in_the_middle_and_keeps_its_ends() {

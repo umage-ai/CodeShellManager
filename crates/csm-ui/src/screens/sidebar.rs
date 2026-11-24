@@ -869,7 +869,7 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
             if (left && !collapsed) || (right && collapsed) {
                 actions.push(Action::ToggleCollapse(gid.clone()));
             }
-            if let Scope::Group(g) = &scope && ui.ctx().input_mut(|i| consume_exact(i, Modifiers::NONE, Key::F2)) {
+            if let Scope::Group(g) = &scope && app.bound(ui.ctx(), "session_rename") {
                 actions.push(Action::StartGroupRename(g.clone()));
             }
         }
@@ -1042,7 +1042,7 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
     // Space toggles it, F2 renames it.
     if resp.has_focus() {
         nav_keys(ui, app, row_id, Axis::Vertical, actions);
-        if ui.ctx().input_mut(|i| consume_exact(i, Modifiers::NONE, Key::F2)) {
+        if app.bound(ui.ctx(), "session_rename") {
             actions.push(Action::StartRename(s.id.clone()));
         }
     }

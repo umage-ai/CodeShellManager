@@ -135,6 +135,12 @@ pub fn chord_of(key: egui::Key, m: Modifiers) -> Option<Chord> {
 /// never takes Ctrl+Shift+T). Returns whether it did. Ctrl arrives as `command` or as `ctrl`
 /// depending on the input (egui sets both on Windows), so either one is accepted.
 pub fn consume(i: &mut InputState, c: &Chord) -> bool {
+    // Ctrl+Alt is AltGr on Windows. When the OS made a character of the press (AltGr+2 is @ on a
+    // Danish keyboard), the character is what was meant: no shortcut runs, and the text goes on to
+    // the terminal or the field.
+    if c.ctrl && c.alt && c.key.types_text() && typed_text(i) {
+        return false;
+    }
     let key = egui_key(c.key);
     let base = Modifiers { alt: c.alt, shift: c.shift, ..Modifiers::NONE };
     if c.ctrl {
@@ -144,9 +150,50 @@ pub fn consume(i: &mut InputState, c: &Chord) -> bool {
     }
 }
 
+/// Whether this frame's input has a typed character (not a control character).
+fn typed_text(i: &InputState) -> bool {
+    i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.is_empty() && t.chars().all(|c| !c.is_control())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn press(key: egui::Key, text: Option<&str>) -> egui::RawInput {
+        let m = Modifiers { ctrl: true, alt: true, command: true, ..Modifiers::NONE };
+        let mut events = vec![egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: m }];
+        if let Some(t) = text {
+            events.push(egui::Event::Text(t.into()));
+        }
+        egui::RawInput { events, ..Default::default() }
+    }
+
+    fn consumed(raw: egui::RawInput, chord: &Chord) -> (bool, bool) {
+        let ctx = egui::Context::default();
+        let mut got = (false, false);
+        let mut out = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx().clone();
+            got.0 = ctx.input_mut(|i| consume(i, chord));
+            got.1 = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
+        });
+        out.textures_delta.clear();
+        got
+    }
+
+    #[test]
+    fn an_altgr_character_is_not_a_shortcut_and_its_text_goes_on() {
+        let chord = Chord { ctrl: true, alt: true, shift: false, key: Key::Digit(2) };
+        let (took, text_left) = consumed(press(egui::Key::Num2, Some("@")), &chord);
+        assert!(!took, "AltGr+2 that typed @ is not a shortcut");
+        assert!(text_left, "the @ is still there for the terminal or the field");
+        let (took, _) = consumed(press(egui::Key::Num2, None), &chord);
+        assert!(took, "the same chord with no character is a shortcut");
+        let dup = Chord { ctrl: true, alt: true, shift: false, key: Key::Letter('T') };
+        assert!(consumed(press(egui::Key::T, None), &dup).0, "Ctrl+Alt+T types nothing: the shortcut runs");
+        assert!(!consumed(press(egui::Key::T, Some("t")), &dup).0, "but not if a layout makes a character of it");
+        let arrow = Chord { ctrl: true, alt: true, shift: false, key: Key::Left };
+        assert!(consumed(press(egui::Key::ArrowLeft, Some("x")), &arrow).0, "arrows are never AltGr characters");
+    }
 
     #[test]
     fn every_bindable_map_key_has_an_egui_key_and_back() {

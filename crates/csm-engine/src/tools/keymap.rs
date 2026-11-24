@@ -32,7 +32,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "keymap_set",
             title: "Change a keyboard shortcut…",
-            summary: "Set the chords of one action, e.g. [\"Ctrl+Shift+P\"]; an empty list removes its chords. Refused when a chord is used by another action, cannot be read, needs Ctrl or a function key, or is a Ctrl+letter the terminal needs (Ctrl+A, C, D, E, L, R, U, W, Z). Setting the defaults removes the person's override.",
+            summary: "Set the chords of one action, e.g. [\"Ctrl+Shift+P\"]; an empty list removes its chords. Refused when a chord is used by another action, cannot be read, needs Ctrl or a function key, is Ctrl+Alt with a letter, digit or punctuation key (AltGr on many keyboards), or is a Ctrl+letter the terminal needs (Ctrl+A, C, D, E, L, R, U, W, Z). Setting the defaults removes the person's override.",
             toolset: Toolset::App,
             effects: changes,
             input_schema: schema_of::<SetParams>,
