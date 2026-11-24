@@ -13,7 +13,7 @@ use csm_services::autostart::{APPROVED_KEY, ENTRY_NAME, MemValue, MemoryRegistry
 use serde_json::json;
 
 fn exe() -> PathBuf {
-    if cfg!(windows) { PathBuf::from(r"C:\Program Files\umage\CodeShellManager\codeshell.exe") } else { PathBuf::from("/opt/Code Shell/codeshell") }
+    if cfg!(windows) { PathBuf::from(r"C:\Program Files\umage.ai\CodeShellManager\codeshell.exe") } else { PathBuf::from("/opt/Code Shell/codeshell") }
 }
 
 /// An engine whose autostart entry is a Run key in memory; the registry is returned for checks.

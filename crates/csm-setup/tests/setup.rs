@@ -234,3 +234,33 @@ fn doctor_without_an_app_says_how_to_fix_each_problem() {
     }
     assert!(report.render().contains("fix:"));
 }
+
+#[test]
+fn repair_moved_rewrites_only_our_entries_in_the_old_install_folder() {
+    let (_d, h) = host();
+    let new = vec![r"C:\Program Files\umage.ai\CodeShellManager\csm.exe".to_owned(), "mcp".to_owned()];
+    let old = |dir: &str| {
+        let dir = dir.replace('\\', "\\\\");
+        format!("// keep\n{{\n  \"mcpServers\": {{\n    \"{SERVER_NAME}\": {{\"type\": \"stdio\", \"command\": \"{dir}\", \"args\": [\"mcp\"]}}\n  }}\n}}\n")
+    };
+    // Claude Code: ours, in the old folder (odd case and slashes). Cursor: ours, but hand-placed elsewhere.
+    // Claude Desktop: an entry setup did not write, even though it names the old folder.
+    let cc = config_of(&h, "claude_code");
+    let cur = config_of(&h, "cursor");
+    let cd = config_of(&h, "claude_desktop");
+    write(&cc, &old(r"C:\program files\UMAGE\codeshellmanager\csm.exe"));
+    write(&cur, &old(r"D:\tools\csm.exe"));
+    let hand = old(r"C:\Program Files\umage\CodeShellManager\other.exe").replace("\"mcp\"", "\"serve\"");
+    write(&cd, &hand);
+    let cur_before = fs::read_to_string(&cur).unwrap();
+    let r = csm_setup::repair_moved(&h, &new);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0].outcome, Outcome::Written, "{r:?}");
+    assert!(r[0].backup.is_some(), "a backup is made, as setup does");
+    let after = fs::read_to_string(&cc).unwrap();
+    assert!(after.contains("// keep") && after.contains("umage.ai"), "{after}");
+    assert_eq!(fs::read_to_string(&cur).unwrap(), cur_before, "a path outside the old folder is not ours to move");
+    assert_eq!(fs::read_to_string(&cd).unwrap(), hand, "an entry setup did not write is left alone");
+    // Nothing left to repair, and a client with no entry is never given one.
+    assert!(csm_setup::repair_moved(&h, &new).is_empty());
+}

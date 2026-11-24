@@ -23,8 +23,14 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   tick it. A 2.0 export can be read by 0.x's Import.
 - Not carried over: 0.x's search history (`output.db` output). 2.0 starts a new index.
 - No WebView2 runtime or .NET is needed any more.
-- Taskbar pins, shortcuts and scripts that start `CodeShellManager.exe` keep working: the
-  installer keeps a small `CodeShellManager.exe` beside the new `codeshell.exe` that starts it.
+- **CodeShellManager 2 installs under `C:\Program Files\umage.ai\`** (`umage.ai\CodeShellManager`;
+  the beta in `umage.ai\CodeShellManager Beta`), so the company name reads "umage.ai" everywhere.
+  It is a clean break: the upgrade removes 0.x (and any older 2.x or beta) from
+  `C:\Program Files\umage\` and leaves nothing there. **Taskbar pins to the old app need
+  re-pinning**; Start menu and desktop shortcuts are re-created. The sign-in entry and the PATH
+  entry follow the app, and the agent registrations `csm setup` wrote (Claude Code, Claude
+  Desktop, Codex, Cursor) are repaired to the new `csm.exe` when CodeShellManager starts (comments
+  kept, a `.csm-backup` made; `csm doctor` reports any still naming the old folder).
 - **Check for updates**, as in 0.x: once a day the app asks GitHub whether a newer release is
   out and shows "Update available" in the title bar, which opens the release page. Nothing is
   downloaded. Settings › General › Updates turns it off and has *Check now*.
