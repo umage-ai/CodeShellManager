@@ -156,7 +156,7 @@ impl EngineBackend {
             // The engine's budget for this quit (per-session wait times the Claude sessions).
             let budget = view.quit_budget_ms.map_or(self.opts.shutdown_budget_s, |ms| ms as f32 / 1000.0).max(1.0);
             let used = q.started.elapsed().as_secs_f32().min(budget);
-            m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: budget });
+            m.shutdown = Some(ShutdownBoard { rows: q.rows.clone(), budget_used_s: used, budget_s: budget, claude_slots: view.quit_slots.unwrap_or(0) });
         }
         self.snap = Arc::new(m);
     }

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::app::{Action, CsmApp, Overlay};
 use crate::icons;
-use crate::model::{RestoreProgress, ShutdownRowState, Status};
+use crate::model::{RestoreProgress, SessionId, ShutdownRowState, Status};
 use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
@@ -486,7 +486,7 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
     };
     let is_claude = |id: &String| app.model.session(id).is_some_and(|s| s.is_claude());
     let rows: Vec<_> = board.ordered(is_claude).into_iter().filter_map(|r| app.model.session(&r.session).map(|s| (r, s))).collect();
-    let next_claude = rows.iter().find(|(r, s)| r.state == ShutdownRowState::Pending && s.is_claude()).map(|(r, _)| r.session.clone());
+    let next_claude: Vec<SessionId> = board.next_up(is_claude).into_iter().cloned().collect();
 
     let pad = space::LG + space::XS;
     let width = size::BOARD_W.min(screen.width() - 2.0 * (space::LG + pad)).max(size::MENU_W);
@@ -511,9 +511,7 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
             widgets::bar(ui, done as f32 / total.max(1) as f32, t.blue, size::BAR);
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(
-                        "Claude sessions exit one at a time, so each saves its config before the next starts. Everything else stops at once.",
-                    )
+                    egui::RichText::new(board_explanation(board.slots()))
                     .font(theme::regular(text::CAPTION))
                     .color(t.muted),
                 )
@@ -530,7 +528,7 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
                 rows.len(),
                 |ui, range| {
                     for (row, s) in rows.iter().skip(range.start).take(range.len()) {
-                        shutdown_row(ui, &t, row, s, next_claude.as_ref() == Some(&row.session));
+                        shutdown_row(ui, &t, row, s, next_claude.contains(&row.session));
                     }
                 },
             );
@@ -553,6 +551,17 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
             ctx.data_mut(|d| d.insert_temp(footer_id, fh));
         });
     });
+}
+
+/// The board's explanation line: how Claude sessions exit, and what keeps their config safe.
+pub(crate) fn board_explanation(slots: usize) -> String {
+    if slots <= 1 {
+        "Claude sessions exit one at a time, so each saves its config before the next starts. Everything else stops at once.".into()
+    } else {
+        format!(
+            "Claude sessions exit {slots} at a time, a moment apart, so each can save its config; ~/.claude.json is backed up first and checked after. Everything else stops at once."
+        )
+    }
 }
 
 /// One row of the shutdown board: state glyph, accent, name, what it is doing or waiting for, and
@@ -601,5 +610,20 @@ fn shutdown_row(ui: &mut Ui, t: &Tokens, row: &crate::model::ShutdownRow, s: &cr
     ui.painter().text(pos2(word_x, cy), Align2::LEFT_CENTER, word, theme::regular(text::CAPTION), wc);
     if claude && matches!(row.state, ShutdownRowState::Clean | ShutdownRowState::Forced) && !instant {
         ui.painter().text(pos2(r.max.x, cy), Align2::RIGHT_CENTER, format!("{:.1}s", row.elapsed_s), theme::mono(text::MONO), t.muted);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::board_explanation;
+
+    #[test]
+    fn the_board_explains_how_many_claude_sessions_exit_at_once() {
+        assert!(board_explanation(1).contains("one at a time"));
+        assert!(board_explanation(0).contains("one at a time"), "an unknown count reads as one");
+        let four = board_explanation(4);
+        assert!(four.contains("exit 4 at a time"), "{four}");
+        assert!(four.contains("~/.claude.json"), "{four}");
+        assert!(!four.contains("one at a time"));
     }
 }

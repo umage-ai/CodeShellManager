@@ -71,7 +71,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "app_quit",
             "Quit",
-            "Close every session (Claude ones get time to exit cleanly), save, then signal the app to exit. Sessions restore next time. force: true skips the exit waits (also while a quit is already running).",
+            "Close every session (Claude ones get time to exit cleanly, QuitClaudeConcurrency at a time; see docs/quit.md), save, then signal the app to exit. Sessions restore next time. force: true skips the exit waits (also while a quit is already running).",
             Toolset::App,
             Effects::MAY_DISCARD_DATA,
             schema_of::<QuitParams>,
@@ -190,6 +190,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("CheckForUpdates").or_insert(json!(s.check_for_updates));
         m.entry("IndexMaxMb").or_insert(json!(s.index_max_mb));
         m.entry("ClaudeUsageRetentionDays").or_insert(json!(s.claude_usage_retention_days));
+        m.entry("QuitClaudeConcurrency").or_insert(json!(s.quit_claude_concurrency));
     }
     Ok(v)
 }
@@ -282,6 +283,9 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     if key == "ClaudeUsageRetentionDays" && !csm_core::models::USAGE_RETENTION_DAYS_RANGE.contains(&updated.claude_usage_retention_days) {
         return Err(ToolError::InvalidParams("ClaudeUsageRetentionDays is from 0 (keep all) to 3650".into()));
+    }
+    if key == "QuitClaudeConcurrency" && !csm_core::models::QUIT_CLAUDE_CONCURRENCY_RANGE.contains(&updated.quit_claude_concurrency) {
+        return Err(ToolError::InvalidParams("QuitClaudeConcurrency is from 1 (one after another) to 8".into()));
     }
     ctx.state.app.settings = updated;
     ctx.state.persist();

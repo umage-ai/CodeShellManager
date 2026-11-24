@@ -9,6 +9,7 @@ it, the feature tour and the keyboard shortcuts.
 |---|---|
 | [comparison.md](comparison.md) | How CodeShellManager compares with other multi-agent tools on Windows |
 | [ssh-ports.md](ssh-ports.md) | Links to localhost on an SSH session's remote host, and port forwards: what opens and why |
+| [quit.md](quit.md) | What quitting does: the bounded pool of Claude exits (`QuitClaudeConcurrency`), the `~/.claude.json` backup and restore, force close |
 | [shell-integration.md](shell-integration.md) | OSC 9001 (accent colour, branch, title) and OSC 7501 (program status) for programs running in a session |
 | [tools.md](tools.md) | Every tool: what the app, `csm <tool>` and `csm mcp` can do, the consent rules for MCP clients, toolsets |
 | [remote-access.md](remote-access.md) | Show an office CodeShellManager on a laptop: turning remote access on, pairing, remote windows, `csm attach` |

@@ -279,6 +279,11 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     );
     number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
     caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
+    number_setting(ui, app, "QuitClaudeConcurrency", "Claude sessions closed at once when quitting", 1..=8, "", actions);
+    caption(
+        ui,
+        "Higher is faster, but Claude rewrites ~/.claude.json as it exits, so some updates can be lost; it is backed up first and restored if damaged. 1 closes them one at a time.",
+    );
     crate::screens::startup::show(ui, app, actions);
     crate::screens::claude_commands::show(ui, app, actions);
     crate::screens::backup::general(ui, app, actions);

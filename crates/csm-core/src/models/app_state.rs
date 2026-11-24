@@ -250,6 +250,12 @@ pub struct AppSettings {
     /// when changed from the default.
     #[serde(skip_serializing_if = "is_default_usage_days")]
     pub claude_usage_retention_days: i32,
+    /// How many Claude sessions a quit closes at the same time (1 to 8; 1 is one after another).
+    /// Claude rewrites `~/.claude.json` unlocked on exit, so more at once can lose each other's
+    /// updates; the quit backs the file up and restores it if a race corrupts it. Written only
+    /// when changed from the default.
+    #[serde(skip_serializing_if = "is_default_quit_concurrency")]
+    pub quit_claude_concurrency: i32,
     /// A selection copied from a Claude Code pane is cleaned up: Claude's markers, frames and
     /// indentation go and the lines it wrapped are joined again (Alt while copying gives the raw
     /// text). On by default; written only when turned off.
@@ -273,6 +279,22 @@ pub const INDEX_MAX_MB_RANGE: std::ops::RangeInclusive<i32> = 100..=102_400;
 pub const DEFAULT_USAGE_RETENTION_DAYS: i32 = 400;
 /// The range `ClaudeUsageRetentionDays` accepts (0 keeps everything).
 pub const USAGE_RETENTION_DAYS_RANGE: std::ops::RangeInclusive<i32> = 0..=3650;
+
+/// `QuitClaudeConcurrency` by default.
+pub const DEFAULT_QUIT_CLAUDE_CONCURRENCY: i32 = 4;
+/// The range `QuitClaudeConcurrency` accepts; a stored value outside it is clamped when used.
+pub const QUIT_CLAUDE_CONCURRENCY_RANGE: std::ops::RangeInclusive<i32> = 1..=8;
+
+fn is_default_quit_concurrency(v: &i32) -> bool {
+    *v == DEFAULT_QUIT_CLAUDE_CONCURRENCY
+}
+
+impl AppSettings {
+    /// How many Claude sessions a quit closes at once, clamped to 1..=8.
+    pub fn quit_slots(&self) -> usize {
+        usize::try_from(self.quit_claude_concurrency.clamp(*QUIT_CLAUDE_CONCURRENCY_RANGE.start(), *QUIT_CLAUDE_CONCURRENCY_RANGE.end())).unwrap_or(1)
+    }
+}
 
 fn is_default_index_mb(v: &i32) -> bool {
     *v == DEFAULT_INDEX_MAX_MB
@@ -374,6 +396,7 @@ impl Default for AppSettings {
             check_for_updates: t(),
             index_max_mb: DEFAULT_INDEX_MAX_MB,
             claude_usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
+            quit_claude_concurrency: DEFAULT_QUIT_CLAUDE_CONCURRENCY,
         }
     }
 }
@@ -565,6 +588,19 @@ mod tests {
         assert!(json.contains(r#""ProgramStatusProbe":2"#), "{json}");
         let back: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.program_status_probe, ProgramStatusProbeMode::Off);
+    }
+
+    #[test]
+    fn quit_concurrency_defaults_to_four_clamps_and_is_written_only_when_changed() {
+        let s: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!((s.quit_claude_concurrency, s.quit_slots()), (4, 4));
+        assert!(!serde_json::to_string(&s).unwrap().contains("QuitClaudeConcurrency"));
+        let at = |n: i32| AppSettings { quit_claude_concurrency: n, ..Default::default() };
+        assert_eq!((at(0).quit_slots(), at(-3).quit_slots(), at(1).quit_slots(), at(8).quit_slots(), at(99).quit_slots()), (1, 1, 1, 8, 8));
+        let json = serde_json::to_string(&at(2)).unwrap();
+        assert!(json.contains(r#""QuitClaudeConcurrency":2"#), "{json}");
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.quit_claude_concurrency, 2);
     }
 
     #[test]
