@@ -33,7 +33,30 @@ fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize) -> Vec<(Stri
 /// selection in a Claude pane as shown (tested in claude_copy_ui.rs).
 /// Ctrl+PageUp and Ctrl+PageDown change the add-on screen tab: with none open they change nothing
 /// (the tab tests in keyboard_lists_ui.rs open one).
-const IN_PANEL: [&str; 7] = ["Ctrl+Enter", "Shift+Tab", "Ctrl+click", "Shift+click", "Ctrl+Alt+C", "Ctrl+PageUp", "Ctrl+PageDown"];
+/// The keyboard map's chords that need a panel or more state than this demo has: the add-on screen
+/// tabs (none open), the group tabs 3 to 9 (the demo has fewer groups), the pane moves (one pane),
+/// and Shift+F10 (needs a focused item). Their own tests press them.
+const IN_PANEL: [&str; 19] = [
+    "Ctrl+Enter",
+    "Shift+Tab",
+    "Ctrl+click",
+    "Shift+click",
+    "Ctrl+Alt+C",
+    "Ctrl+PgUp",
+    "Ctrl+PgDn",
+    "Ctrl+3",
+    "Ctrl+4",
+    "Ctrl+5",
+    "Ctrl+6",
+    "Ctrl+7",
+    "Ctrl+8",
+    "Ctrl+9",
+    "Ctrl+Alt+Left",
+    "Ctrl+Alt+Right",
+    "Ctrl+Alt+Up",
+    "Ctrl+Alt+Down",
+    "Shift+F10",
+];
 
 /// Every chord shown in a string literal in `src/` (tooltips, menu hints, the palette, the help
 /// list, toasts), normalised to `Ctrl+Shift+T`. A chord is one or more of Ctrl / Shift / Alt
@@ -49,6 +72,13 @@ fn displayed_chords() -> BTreeSet<String> {
                 chords_in(&lit, &mut out);
             }
         }
+    }
+    // The keyboard map's defaults are shown through `csm_core::keymap` (the help list, the hints),
+    // not as literals in this crate, so its table is read too.
+    let keymap = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../csm-core/src/keymap.rs")).unwrap();
+    let table = keymap.split("pub const BINDINGS").nth(1).and_then(|t| t.split("\n];").next()).unwrap_or_default();
+    for lit in literals(table) {
+        chords_in(&lit, &mut out);
     }
     out
 }
@@ -128,10 +158,27 @@ fn parse(chord: &str) -> (Modifiers, Vec<Key>) {
             other => panic!("modifier {other} in {chord}"),
         };
     }
+    // The keyboard map's spellings (csm_core::keymap) where egui's names differ.
+    let named = match *key {
+        "PgUp" => Some(Key::PageUp),
+        "PgDn" => Some(Key::PageDown),
+        "Left" => Some(Key::ArrowLeft),
+        "Right" => Some(Key::ArrowRight),
+        "Up" => Some(Key::ArrowUp),
+        "Down" => Some(Key::ArrowDown),
+        "Del" => Some(Key::Delete),
+        "Ins" => Some(Key::Insert),
+        "," => Some(Key::Comma),
+        "." => Some(Key::Period),
+        "/" => Some(Key::Slash),
+        "-" => Some(Key::Minus),
+        "=" => Some(Key::Equals),
+        _ => None,
+    };
     let keys = if *key == "1…9" {
         vec![Key::Num1, Key::Num2]
     } else {
-        vec![Key::from_name(key).unwrap_or_else(|| panic!("`{chord}` is shown as a shortcut but `{key}` is not a key"))]
+        vec![named.or_else(|| Key::from_name(key)).unwrap_or_else(|| panic!("`{chord}` is shown as a shortcut but `{key}` is not a key"))]
     };
     (m, keys)
 }

@@ -255,6 +255,11 @@ pub struct AppSettings {
     /// text). On by default; written only when turned off.
     #[serde(skip_serializing_if = "is_true")]
     pub clean_claude_copies: bool,
+    /// The person's keyboard overrides (`csm_core::keymap`): action id to chords. Changed by the
+    /// `keymap_*` tools; written only while some binding differs from its default. A damaged entry
+    /// is dropped on load, entry by entry.
+    #[serde(default, deserialize_with = "crate::keymap::deserialize_overrides", skip_serializing_if = "BTreeMap::is_empty")]
+    pub keymap: crate::keymap::Overrides,
 }
 
 /// The values `UiZoomPercent` may take.
@@ -369,6 +374,7 @@ impl Default for AppSettings {
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
             clean_claude_copies: t(),
+            keymap: crate::keymap::Overrides::new(),
             start_minimized: false,
             start_minimized_to_tray: false,
             check_for_updates: t(),

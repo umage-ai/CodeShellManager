@@ -405,7 +405,7 @@ fn the_window_bar_tools_are_in_the_palette_and_the_pane_menu() {
         let spec = h.state().dispatch.tool(id).unwrap_or_else(|| panic!("{id} registered"));
         assert_eq!(spec.effects, csm_engine::Effects::UI, "{id}: UI state only");
     }
-    let menu = csm_ui::screens::menus::pane_menu(&h.state().model, "web");
+    let menu = csm_ui::screens::menus::pane_menu(&h.state().model, "web", &h.state().prefs.keymap);
     let labels: Vec<String> = menu
         .iter()
         .filter_map(|e| match e {

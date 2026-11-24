@@ -296,7 +296,8 @@ A file named `portable` next to `codeshell.exe` keeps all data in a `data` folde
 
 ## Keyboard shortcuts
 
-`F1` (or `Ctrl+/`, or `?`) shows the full list in the app.
+`F1` (or `Ctrl+/`, or `?`) shows the full list in the app. Every key can be changed in
+Settings › Keyboard; [docs/keyboard.md](docs/keyboard.md) has the whole list and the rules.
 
 | Key | Action |
 |---|---|

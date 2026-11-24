@@ -81,6 +81,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             match app.ui.settings.section {
                 SettingsSection::General => general(ui, app, actions),
                 SettingsSection::Appearance => appearance(ui, app, actions),
+                SettingsSection::Keyboard => keyboard(ui, app, actions),
                 SettingsSection::Groups => groups(ui, app, actions),
                 SettingsSection::Mcp => mcp(ui, app, actions),
                 SettingsSection::Addons => crate::screens::addons::show(ui, app, actions),
@@ -94,6 +95,54 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             ui.add_space(space::XL);
         });
     });
+}
+
+/// Settings → Keyboard: every action with its chords, from the keyboard map. A chord button records
+/// the next key press (Escape cancels); Clear removes the action's chords, Reset puts them back,
+/// and Reset all does it for every action. Each change is a `keymap_set` or `keymap_reset` call: the
+/// engine checks it (a chord another action uses, or one that cannot be bound) and says why in a toast.
+fn keyboard(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let map = app.prefs.keymap.clone();
+    let recording = app.ui.settings.keymap_capture.clone();
+    let customised = map.entries().iter().any(|e| e.customised());
+    match recording.as_deref().and_then(|id| map.entries().iter().find(|e| e.id() == id)) {
+        Some(e) => caption(ui, &format!("Press the new keys for {}. Escape cancels.", e.name())),
+        None => caption(ui, "Click a shortcut to record a new one. A shortcut needs Ctrl/Alt or a function key."),
+    }
+    if customised && widgets::button(ui, ButtonKind::Ghost, Some("restart"), "Reset all", None).clicked() {
+        actions.push(Action::Tool("keymap_reset", json!({})));
+    }
+    if !map.conflicts().is_empty() {
+        let list: Vec<String> = map.conflicts().iter().map(|c| format!("{} ({})", c.chord, c.dropped)).collect();
+        caption(ui, &format!("Two actions share a chord; the first claim is kept: {}.", list.join(", ")));
+    }
+    for e in map.entries() {
+        ui.add_space(space::XXS);
+        ui.horizontal(|ui| {
+            let name = egui::RichText::new(e.name()).font(theme::regular(text::BODY)).color(t.fg2);
+            ui.add(egui::Label::new(name).truncate());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if e.customised() && widgets::button(ui, ButtonKind::Ghost, None, "Reset", None).clicked() {
+                    actions.push(Action::Tool("keymap_set", json!({"action": e.id(), "chords": e.default_chords().iter().map(ToString::to_string).collect::<Vec<_>>()})));
+                }
+                if !e.chords().is_empty() && widgets::button(ui, ButtonKind::Ghost, None, "Clear", None).clicked() {
+                    actions.push(Action::Tool("keymap_set", json!({"action": e.id(), "chords": []})));
+                }
+                let shown = if recording.as_deref() == Some(e.id()) {
+                    "Press keys…".to_owned()
+                } else {
+                    let all: Vec<String> = e.chords().iter().map(ToString::to_string).collect();
+                    if all.is_empty() { "None".to_owned() } else { all.join(" or ") }
+                };
+                if widgets::button(ui, ButtonKind::Secondary, None, &shown, None).clicked() {
+                    app.ui.settings.keymap_capture = Some(e.id().to_owned());
+                }
+            });
+        });
+    }
+    ui.add_space(space::SM);
+    caption(ui, "The same keys work in the help list (F1), the command palette and the menus, which read this list.");
 }
 
 pub(crate) fn caption(ui: &mut Ui, s: &str) {

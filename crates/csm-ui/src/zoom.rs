@@ -48,17 +48,15 @@ pub fn apply(ctx: &egui::Context, percent: i32) {
     }
 }
 
-/// Ctrl+= (or Ctrl+Plus, where `+` has its own key), Ctrl+- and Ctrl+0. Ctrl+- is taken only
-/// without Shift, so Ctrl+_ still reaches the terminal. Each press is a `settings_set` call; the
-/// preference moves at once, so a second press before the reply steps on from the first.
+/// The zoom chords (`ui.zoom_in`, `ui.zoom_out`, `ui.zoom_reset` in the keyboard map: Ctrl+=, Ctrl+-
+/// and Ctrl+0 by default). Ctrl+Plus (the numpad's plus) also zooms in, always. Each press is a
+/// `settings_set` call; the preference moves at once, so a second press before the reply steps on
+/// from the first.
 pub(crate) fn shortcuts(app: &mut CsmApp, ctx: &egui::Context) {
-    let cmd = Modifiers::COMMAND;
-    let (zoom_in, zoom_out, reset) = ctx.input_mut(|i| {
-        let zin = crate::app::consume_exact(i, cmd, Key::Equals) || crate::app::consume_exact(i, cmd, Key::Plus);
-        let zout = consume_without_shift(i, Key::Minus);
-        let reset = crate::app::consume_exact(i, cmd, Key::Num0);
-        (zin, zout, reset)
-    });
+    let plus = ctx.input_mut(|i| crate::app::consume_exact(i, Modifiers::COMMAND, Key::Plus));
+    let zoom_in = app.bound(ctx, "ui.zoom_in") || plus;
+    let zoom_out = app.bound(ctx, "ui.zoom_out");
+    let reset = app.bound(ctx, "ui.zoom_reset");
     let cur = app.prefs.ui_zoom_percent;
     let next = if reset {
         UI_ZOOM_DEFAULT
@@ -73,18 +71,6 @@ pub(crate) fn shortcuts(app: &mut CsmApp, ctx: &egui::Context) {
     // Always a call, even at the end of the range or already at 100%: the shortcut visibly does
     // something (the toast-free reply), and the setting is written once more.
     app.run(ctx, Action::Tool("settings_set", json!({"key": "UiZoomPercent", "value": next})));
-}
-
-/// Command and the key, with neither Shift nor Alt.
-fn consume_without_shift(i: &mut egui::InputState, key: Key) -> bool {
-    let mut hit = false;
-    i.events.retain(|e| {
-        let take = matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. }
-            if *k == key && modifiers.command && !modifiers.shift && !modifiers.alt);
-        hit |= take;
-        !take
-    });
-    hit
 }
 
 #[cfg(test)]

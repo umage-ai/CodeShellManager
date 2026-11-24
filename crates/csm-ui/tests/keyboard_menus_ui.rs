@@ -269,3 +269,51 @@ fn tools_that_act_on_a_session_are_muted_without_one() {
     let ids = main_menu_tools(&entries);
     assert!(!ids.is_empty(), "the other tools stay offered");
 }
+
+/// The main menu (F10) has the layout modes under View / Layout, so the board layout is reachable
+/// from the keyboard without a mouse (`docs/design/keyboard.md`, step 5). The Git area is filled
+/// from the engine's registry, which the demo backend does not have, so it is not asserted here.
+#[test]
+fn the_main_menu_reaches_the_layout_by_keys() {
+    use csm_ui::screens::menus::{Entry, main_entries};
+    let mut h = h();
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(main_open(&h), "F10 opens the main menu");
+    let layout: Vec<String> = main_entries(h.state())
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Sub { label, items, .. } if label == "View / Layout" => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| match e {
+            Entry::Item { label, .. } => Some(label),
+            _ => None,
+        })
+        .collect();
+    assert!(layout.iter().any(|l| l.contains("Board")), "the layout modes include the board: {layout:?}");
+}
+
+/// The Git area of the main menu lists the git tools from the registry, so a Git action (status,
+/// branches, the Git tab) is reachable from F10 without a mouse.
+#[test]
+fn the_main_menu_reaches_the_git_actions_by_keys() {
+    use csm_ui::screens::menus::{Entry, main_entries};
+    let mut h = h();
+    h.key_press(Key::F10);
+    settle(&mut h);
+    assert!(main_open(&h), "F10 opens the main menu");
+    let entries = main_entries(h.state());
+    let git: Vec<Entry> = entries
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Sub { label, items, .. } if label == "Git" => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let ids = main_menu_tools(&git);
+    assert!(ids.iter().any(|t| t == "git_status"), "the Git area offers git_status: {ids:?}");
+    assert!(ids.iter().any(|t| t == "git_branches"), "and git_branches: {ids:?}");
+}

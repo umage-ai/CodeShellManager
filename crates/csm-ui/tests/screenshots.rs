@@ -780,3 +780,87 @@ fn keyboard_sidebar_focus_screen() {
         },
     );
 }
+
+/// A confirm dialog after Tab: the focus ring is on "Later", and the yes button keeps the default
+/// ring only while no control has the focus.
+#[test]
+fn keyboard_confirm_dialog_screen() {
+    shoot(
+        "dialog-keyboard-confirm",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.state_mut().ui.confirm = Some(csm_ui::app::ConfirmState {
+                title: "Restart now?".into(),
+                body: "The change needs a new process. Sessions restart with it.".into(),
+                yes_label: "Restart".into(),
+                no_label: "Later".into(),
+                yes: Box::new(csm_ui::Action::CloseOverlays),
+                also: None,
+            });
+            h.state_mut().ui.overlay = csm_ui::app::Overlay::Confirm;
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        },
+    );
+}
+
+/// The one-line prompt after Tab from its field: the focus ring is on OK.
+#[test]
+fn keyboard_prompt_dialog_screen() {
+    shoot(
+        "dialog-keyboard-prompt",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.state_mut().ui.prompt = Some(csm_ui::app::PromptState {
+                kind: csm_ui::app::PromptKind::NewGroup,
+                text: "Client X".into(),
+                focus: true,
+            });
+            h.state_mut().ui.overlay = csm_ui::app::Overlay::Prompt;
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        },
+    );
+}
+
+/// The quick-open after two Tabs from its folder field: the focus ring is on the command row.
+#[test]
+fn keyboard_quick_open_screen() {
+    shoot(
+        "quick-open-keyboard",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.state_mut().ui.quick = csm_ui::app::QuickOpenState { focus_input: true, ..Default::default() };
+            h.state_mut().ui.overlay = csm_ui::app::Overlay::QuickOpen;
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+            h.key_press(egui::Key::Tab);
+            settle(h);
+        },
+    );
+}
+
+/// Settings › Keyboard: every action with its keys (the defaults here), the sidebar's section chosen.
+#[test]
+fn keyboard_settings_screen() {
+    shoot(
+        "settings-keyboard",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+            settle(h);
+            assert!(h.state().ui.settings.open, "Ctrl+, opens settings");
+            h.state_mut().ui.settings.section = csm_ui::app::SettingsSection::Keyboard;
+            settle(h);
+        },
+    );
+}

@@ -3,9 +3,11 @@
 //! the restore rail. A native renderer can draw these over live panes; WebView2 never could.
 
 use egui::{Align2, CornerRadius, Id, Order, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use csm_core::keymap::Keymap;
 use serde_json::{Value, json};
 
 use crate::app::{Action, CsmApp, Overlay};
+use crate::dialog_keys::{self, Controls, Field, Pressed, Slot};
 use crate::icons;
 use crate::model::{RestoreProgress, ShutdownRowState, Status};
 use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
@@ -35,7 +37,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         close_dialog(ctx, app, actions);
     }
     if app.ui.overlay == Overlay::Help {
-        help(ctx, actions);
+        help(ctx, &app.prefs.keymap, actions);
     }
     if app.ui.overlay == Overlay::ConnectRemote {
         crate::screens::connect_remote::show(ctx, app, actions);
@@ -45,7 +47,71 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     }
 }
 
-/// A yes/no question ("Restart now?"). Enter answers yes; Esc and the scrim answer no.
+/// The keys of the confirm, close and prompt dialogs (`dialog_keys`), kept under these ids.
+pub const CONFIRM_ID: &str = "dlg-confirm";
+pub const CLOSE_ID: &str = "dlg-close";
+pub const PROMPT_ID: &str = "dlg-prompt";
+
+/// The controls of the open modal dialog (`Overlay::Confirm`, `CloseAsk` or `Prompt`), with the
+/// id its keys are kept under. Buttons are numbered in the order the dialog draws them.
+pub fn dialog_controls(app: &CsmApp) -> Option<(Id, Controls)> {
+    match app.ui.overlay {
+        Overlay::Confirm => {
+            let c = app.ui.confirm.as_ref()?;
+            Some((Id::new(CONFIRM_ID), Controls { field: Field::None, buttons: 2 + usize::from(c.also.is_some()), default: Some(0) }))
+        }
+        Overlay::CloseAsk => Some((Id::new(CLOSE_ID), Controls { field: Field::Checkbox, buttons: 2, default: Some(0) })),
+        Overlay::Prompt => app.ui.prompt.as_ref().map(|_| (Id::new(PROMPT_ID), Controls { field: Field::Text, buttons: 2, default: None })),
+        _ => None,
+    }
+}
+
+/// Reads the keys of the open modal dialog before the shortcuts and the terminal see them, and
+/// forgets the focus of the dialogs that are not open. True when Escape cancels the dialog.
+pub fn take_keys(ctx: &egui::Context, app: &CsmApp) -> bool {
+    let open = dialog_controls(app);
+    for id in [CONFIRM_ID, CLOSE_ID, PROMPT_ID] {
+        if open.as_ref().is_none_or(|(o, _)| *o != Id::new(id)) {
+            dialog_keys::forget(ctx, Id::new(id));
+        }
+    }
+    if app.ui.overlay != Overlay::QuickOpen {
+        crate::screens::palette::release_quick(ctx);
+    }
+    let Some((id, c)) = open else { return false };
+    dialog_keys::take(ctx, id, &c) == Some(Pressed::Cancel)
+}
+
+/// Forgets the presses of the dialogs for this frame. An open menu takes the keys, so a press a
+/// dialog stored earlier must not reach the dialog.
+pub fn clear_presses(ctx: &egui::Context) {
+    for id in [CONFIRM_ID, CLOSE_ID, PROMPT_ID] {
+        dialog_keys::clear_pressed(ctx, Id::new(id));
+    }
+}
+
+/// A dialog button. It takes the focus ring while it has the keyboard focus, and the default
+/// button keeps the ring while no control has it. The ring sits outside the button, so it shows
+/// on a primary (blue) button too.
+pub fn dialog_button(ui: &mut Ui, id: Id, idx: usize, default: Option<usize>, kind: ButtonKind, label: &str, kbd: Option<&str>) -> egui::Response {
+    let resp = widgets::button(ui, kind, None, label, kbd);
+    let focus = dialog_keys::current(ui.ctx(), id);
+    if focus == Some(Slot::Button(idx)) || (focus.is_none() && default == Some(idx)) {
+        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::SM);
+    }
+    resp
+}
+
+/// The button a dialog's keys pressed this frame, if any.
+pub fn pressed_button(ctx: &egui::Context, id: &str) -> Option<usize> {
+    match dialog_keys::pressed(ctx, Id::new(id)) {
+        Some(Pressed::Button(b)) => Some(b),
+        _ => None,
+    }
+}
+
+/// A yes/no question ("Restart now?"). Enter answers yes; Esc and the scrim answer no. Tab moves
+/// between the buttons, and the yes button is the default.
 fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let Some(c) = app.ui.confirm.clone() else {
         actions.push(Action::CloseOverlays);
@@ -53,14 +119,9 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
     };
     let t = Tokens::get(ctx);
     scrim(ctx, "confirm-scrim");
-    let yes = |actions: &mut Vec<Action>| {
-        actions.push(Action::CloseOverlays);
-        actions.push((*c.yes).clone());
-    };
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-        yes(actions);
-        return;
-    }
+    let id = Id::new(CONFIRM_ID);
+    let no = 1 + usize::from(c.also.is_some());
+    let mut picked = pressed_button(ctx, CONFIRM_ID);
     let screen = ctx.content_rect();
     egui::Area::new(Id::new("confirm")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
         widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
@@ -69,31 +130,46 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
             ui.label(egui::RichText::new(&c.title).font(semibold(text::TITLE)).color(t.fg));
             ui.add(egui::Label::new(egui::RichText::new(&c.body).font(theme::regular(text::BODY)).color(t.fg2)).wrap());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::button(ui, ButtonKind::Primary, None, &c.yes_label, Some("Enter")).clicked() {
-                    yes(actions);
+                if dialog_button(ui, id, 0, Some(0), ButtonKind::Primary, &c.yes_label, Some("Enter")).clicked() {
+                    picked = Some(0);
                 }
-                if let Some((label, act)) = &c.also
-                    && widgets::button(ui, ButtonKind::Secondary, None, label, None).clicked()
+                if let Some((label, _)) = &c.also
+                    && dialog_button(ui, id, 1, Some(0), ButtonKind::Secondary, label, None).clicked()
                 {
-                    actions.push(Action::CloseOverlays);
-                    actions.push((**act).clone());
+                    picked = Some(1);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, None, &c.no_label, Some("Esc")).clicked() {
-                    actions.push(Action::CloseOverlays);
+                if dialog_button(ui, id, no, Some(0), ButtonKind::Ghost, &c.no_label, Some("Esc")).clicked() {
+                    picked = Some(no);
                 }
             });
         });
     });
+    match picked {
+        Some(0) => {
+            actions.push(Action::CloseOverlays);
+            actions.push((*c.yes).clone());
+        }
+        Some(b) if b == no => actions.push(Action::CloseOverlays),
+        Some(_) => {
+            if let Some((_, act)) = &c.also {
+                actions.push(Action::CloseOverlays);
+                actions.push((**act).clone());
+            }
+        }
+        None => {}
+    }
 }
 
 /// Closing the window with `CloseAction` Ask: keep running in the tray (Enter) or quit. Esc
-/// cancels (the window stays). "Remember my choice" makes the answer the setting.
+/// cancels (the window stays). "Remember my choice" makes the answer the setting; Space on it
+/// toggles it.
 fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     scrim(ctx, "close-scrim");
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-        actions.push(Action::CloseAnswer { tray: true, remember: app.ui.close_remember });
-        return;
+    let id = Id::new(CLOSE_ID);
+    let mut picked = pressed_button(ctx, CLOSE_ID);
+    if dialog_keys::pressed(ctx, id) == Some(Pressed::Toggle) {
+        app.ui.close_remember = !app.ui.close_remember;
     }
     let screen = ctx.content_rect();
     egui::Area::new(Id::new("close-ask")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
@@ -112,63 +188,74 @@ fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>
                     &mut app.ui.close_remember,
                     egui::RichText::new("Remember my choice").font(theme::regular(text::BODY)).color(t.fg2),
                 ));
+                if dialog_keys::current(ctx, id) == Some(Slot::Field) {
+                    widgets::focus_ring(ui, cr.rect, radius::SM);
+                }
                 cr.on_hover_text("Settings › General › When I close the window changes it later.");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, ButtonKind::Primary, None, "Keep running in tray", Some("Enter")).clicked() {
-                        actions.push(Action::CloseAnswer { tray: true, remember: app.ui.close_remember });
+                    if dialog_button(ui, id, 0, Some(0), ButtonKind::Primary, "Keep running in tray", Some("Enter")).clicked() {
+                        picked = Some(0);
                     }
-                    if widgets::button(ui, ButtonKind::Secondary, None, "Quit", None).clicked() {
-                        actions.push(Action::CloseAnswer { tray: false, remember: app.ui.close_remember });
+                    if dialog_button(ui, id, 1, Some(0), ButtonKind::Secondary, "Quit", None).clicked() {
+                        picked = Some(1);
                     }
                 });
             });
             ui.label(egui::RichText::new("Esc keeps the window open.").font(theme::regular(text::CAPTION)).color(t.muted));
         });
     });
+    match picked {
+        Some(0) => actions.push(Action::CloseAnswer { tray: true, remember: app.ui.close_remember }),
+        Some(1) => actions.push(Action::CloseAnswer { tray: false, remember: app.ui.close_remember }),
+        _ => {}
+    }
 }
 
-/// Every keyboard shortcut, in one place (`?`, F1, Ctrl+/).
-pub const SHORTCUTS: [(&str, &str); 37] = [
-    ("Ctrl K", "Search sessions and commands"),
-    ("Ctrl F", "Search all output and notes"),
-    ("Ctrl T", "New session"),
-    ("Ctrl Shift T", "Reopen the last closed session"),
-    ("Ctrl Alt T", "Duplicate the active session"),
+/// Keys the keyboard map does not hold: the mouse, the dialogs, the lists and the terminal. Tokens
+/// are separated by two spaces, one key cap each.
+pub const FIXED_SHORTCUTS: [(&str, &str); 12] = [
     ("Ctrl click", "Select sessions in the sidebar"),
     ("Shift click", "Select a range of sessions"),
-    ("Ctrl Shift E", "Recent sessions (Enter: the previous one)"),
-    ("Ctrl J", "Next session that needs you"),
-    ("Ctrl Tab", "Next session in this group"),
-    ("Ctrl Shift Tab", "Previous session"),
-    ("Ctrl 1…9", "Rail tabs (1 is All)"),
-    ("Ctrl I", "Show or hide the inspector"),
-    ("Ctrl Shift N", "Notes for the active session"),
-    ("Ctrl .", "The active pane's menu"),
-    ("Ctrl Shift R", "Restart the active session"),
-    ("Ctrl W", "Close the active session"),
     ("Ctrl click", "Open a link in a terminal"),
-    ("Ctrl Shift C", "Copy Claude's last reply (nothing selected)"),
     ("Ctrl Alt C", "Copy a selection from Claude as shown"),
-    ("F2", "Rename the active session"),
-    ("F5", "Run the default run command"),
-    ("Shift F5", "Stop it"),
-    ("F6  Shift F6", "Next or previous keyboard region (Esc: back to the terminal)"),
-    ("F10", "The main menu: every action, by area (or a clean tap of Alt)"),
     ("Arrows  Home  End", "Move through a list, a menu or a tab strip"),
     ("Space", "Select the focused session row"),
-    ("Ctrl PageUp  Ctrl PageDown", "Previous or next add-on screen tab"),
-    ("Ctrl Alt PageUp  Ctrl Alt PageDown", "Previous or next rail tab"),
-    ("Ctrl ,", "Settings"),
-    ("Ctrl =  Ctrl -", "Larger or smaller interface"),
-    ("Ctrl 0", "Interface at 100%"),
-    ("F1  ?  Ctrl /", "This list"),
-    ("Esc", "Close a menu, panel or dialog"),
-    ("Enter", "Open or run the selected row"),
-    ("Tab", "New session: the next command"),
+    ("Left  Right", "On the quick-open command row: the previous or next command"),
+    ("Tab  Shift Tab", "Next or previous control in a dialog or the quick-open"),
     ("Ctrl Enter", "New session: start and keep the panel open"),
+    ("Esc", "Close a menu, panel or dialog, or return to the terminal"),
+    ("Enter", "Open or run the selected row"),
+    ("?", "This list, when nothing takes typing"),
 ];
 
-fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
+/// The help list's rows: every action of the keyboard map with its chords (the rail's nine tab
+/// chords are one row), then the fixed keys. Each row is (key caps, what it does).
+pub fn shortcut_rows(map: &Keymap) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for e in map.entries() {
+        let chords: Vec<String> = e.chords().iter().map(ToString::to_string).collect();
+        if chords.is_empty() {
+            continue;
+        }
+        if e.id().starts_with("ui.rail_tab_") && e.id() != "ui.rail_tab_1" {
+            continue;
+        }
+        let keys = if e.id() == "ui.rail_tab_1" {
+            match (map.label("ui.rail_tab_1"), map.label("ui.rail_tab_9")) {
+                (Some(first), Some(last)) => format!("{first} to {last}"),
+                _ => chords.join("  "),
+            }
+        } else {
+            chords.join("  ")
+        };
+        let what = if e.id() == "ui.rail_tab_1" { "Rail tabs (1 is All)".to_owned() } else { e.name().to_owned() };
+        rows.push((keys, what));
+    }
+    rows.extend(FIXED_SHORTCUTS.iter().map(|(k, w)| ((*k).to_owned(), (*w).to_owned())));
+    rows
+}
+
+fn help(ctx: &egui::Context, keymap: &Keymap, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     egui::Area::new(Id::new("help-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
@@ -194,14 +281,14 @@ fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
             let max_h = (ctx.content_rect().height() - size::PALETTE_TOP * 2.0).max(size::MENU_W);
             egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
                 egui::Grid::new("help-keys").num_columns(2).spacing(vec2(space::LG, space::XS + space::XXS)).show(ui, |ui| {
-                    for (keys, what) in SHORTCUTS {
+                    for (keys, what) in shortcut_rows(keymap) {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = space::XS;
                             for k in keys.split("  ") {
                                 widgets::kbd(ui, k);
                             }
                         });
-                        let r = ui.label(egui::RichText::new(what).font(theme::regular(text::BODY)).color(t.fg2));
+                        let r = ui.label(egui::RichText::new(&what).font(theme::regular(text::BODY)).color(t.fg2));
                         let label = format!("Shortcut: {keys}: {what}");
                         r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone()));
                         ui.end_row();
@@ -209,7 +296,11 @@ fn help(ctx: &egui::Context, actions: &mut Vec<Action>) {
                 });
             });
             ui.add_space(space::SM);
-            ui.label(egui::RichText::new("Every command is also in Ctrl+K, by name.").font(theme::regular(text::CAPTION)).color(t.muted));
+            ui.label(
+                egui::RichText::new("Every command is also in Ctrl+K, by name. Change a chord in Settings, Keyboard.")
+                    .font(theme::regular(text::CAPTION))
+                    .color(t.muted),
+            );
         });
     });
 }

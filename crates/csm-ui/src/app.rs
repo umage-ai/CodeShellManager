@@ -230,6 +230,8 @@ pub enum SettingsSection {
     #[default]
     General,
     Appearance,
+    /// Every keyboard shortcut, with its chords: record, clear, reset (`screens::settings`).
+    Keyboard,
     Groups,
     Mcp,
     /// Add-ons: the folder, enable and disable with consent, reload (`screens::addons`).
@@ -242,9 +244,10 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 8] = [
+    pub const ALL: [SettingsSection; 9] = [
         SettingsSection::General,
         SettingsSection::Appearance,
+        SettingsSection::Keyboard,
         SettingsSection::Groups,
         SettingsSection::Mcp,
         SettingsSection::Addons,
@@ -257,6 +260,7 @@ impl SettingsSection {
         match self {
             SettingsSection::General => "General",
             SettingsSection::Appearance => "Appearance",
+            SettingsSection::Keyboard => "Keyboard",
             SettingsSection::Groups => "Group view",
             SettingsSection::Mcp => "MCP",
             SettingsSection::Addons => "Add-ons",
@@ -270,6 +274,7 @@ impl SettingsSection {
         match self {
             SettingsSection::General => "sliders",
             SettingsSection::Appearance => "sun",
+            SettingsSection::Keyboard => "keyboard",
             SettingsSection::Groups => "layers",
             SettingsSection::Mcp => "server",
             SettingsSection::Addons => "extensions",
@@ -298,6 +303,8 @@ pub struct SettingsState {
     pub usage: crate::screens::backup::UsageState,
     /// Settings → General → Import…: the backup being reviewed before it replaces anything.
     pub import: Option<crate::screens::backup::ImportReview>,
+    /// Settings → Keyboard: the action whose next chord is being recorded (`App::capture_chord`).
+    pub keymap_capture: Option<String>,
     /// Settings → General → Start-up: what `app_autostart_get` last said (`Null` until it answers).
     pub autostart: Value,
 }
@@ -338,6 +345,8 @@ pub struct Prefs {
     pub tray_notice_shown: bool,
     /// `CleanClaudeCopies`: a selection copied from a Claude pane is cleaned up (on by default).
     pub clean_claude_copies: bool,
+    /// The keyboard map: the defaults with the person's overrides (`keymap_*` tools, `csm_core::keymap`).
+    pub keymap: csm_core::keymap::Keymap,
 }
 
 impl Default for Prefs {
@@ -355,6 +364,7 @@ impl Default for Prefs {
             close_action: csm_core::models::CloseAction::Ask,
             tray_notice_shown: false,
             clean_claude_copies: true,
+            keymap: csm_core::keymap::Keymap::default(),
         }
     }
 }
@@ -1120,7 +1130,45 @@ impl CsmApp {
         if let Some(b) = s.bool("CleanClaudeCopies") {
             p.clean_claude_copies = b;
         }
+        // The keyboard map follows the overrides the engine saved (a damaged entry is left out).
+        if let Some(v) = s.values.get("Keymap") {
+            p.keymap = csm_core::keymap::Keymap::new(&csm_core::keymap::overrides_from_value(v));
+        }
         self.prefs = p;
+    }
+
+    /// Settings → Keyboard: while a chord is being recorded, the next key press is that chord, and
+    /// the shortcuts do not see it. Escape with no modifier, or a click, cancels. Returns whether the
+    /// keys were taken (the shortcuts then stop for this frame).
+    fn capture_chord(&mut self, ctx: &egui::Context) -> bool {
+        let Some(id) = self.ui.settings.keymap_capture.clone() else { return false };
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            self.ui.settings.keymap_capture = None;
+            return false;
+        }
+        let press = ctx.input_mut(|i| {
+            let mut found = None;
+            i.events.retain(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    found = found.or(Some((*key, *modifiers)));
+                    false
+                }
+                egui::Event::Text(_) => false,
+                _ => true,
+            });
+            found
+        });
+        let Some((key, modifiers)) = press else { return true };
+        if key == Key::Escape && !modifiers.any() {
+            self.ui.settings.keymap_capture = None;
+            return true;
+        }
+        // A key the map cannot name keeps the capture open for the next press.
+        if let Some(chord) = crate::keys::chord_of(key, modifiers) {
+            self.ui.settings.keymap_capture = None;
+            self.run(ctx, Action::Tool("keymap_set", json!({"action": id, "chords": [chord.to_string()]})));
+        }
+        true
     }
 
     /// Poll replies and events; refresh the snapshot.
@@ -1890,17 +1938,30 @@ impl CsmApp {
         ctx.request_repaint();
     }
 
+    /// Whether the keyboard map's chords of `id` were pressed in this frame, taking the key press
+    /// (`keys::consume`). An action with no chords never fires.
+    pub(crate) fn bound(&self, ctx: &egui::Context, id: &str) -> bool {
+        let chords = self.prefs.keymap.chords(id);
+        !chords.is_empty() && ctx.input_mut(|i| chords.iter().any(|c| crate::keys::consume(i, c)))
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let cmd = Modifiers::COMMAND;
-        let pressed = |ctx: &egui::Context, m: Modifiers, k: Key| ctx.input_mut(|i| consume_exact(i, m, k));
+        // The settings' key capture takes the keys first: the next chord is the one recorded.
+        if self.capture_chord(ctx) {
+            return;
+        }
         // The main menu: F10, or a clean Alt tap (`alt_tap`). The tap is read first, before any
         // key is taken: a key used with Alt is not a tap, so Alt+letter still reaches the terminal.
         let tapped = self.alt_tap_fired(ctx);
-        if pressed(ctx, Modifiers::NONE, Key::F10) || tapped {
+        if self.bound(ctx, "ui.main_menu") || tapped {
             self.toggle_main_menu(ctx);
         }
         // An open menu takes its keys before anything else: it is modal from the keyboard
         // (`screens::menus::menu_keys`). Ctrl chords it does not read still reach the shortcuts.
+        // A dialog press stored by an earlier frame is dropped too: the menu, not the dialog, has the keys.
+        if self.ui.menu.is_some() {
+            screens::overlays::clear_presses(ctx);
+        }
         if self.ui.menu.is_some()
             && let Some(actions) = screens::menus::menu_keys(ctx, self)
         {
@@ -1909,6 +1970,12 @@ impl CsmApp {
             }
             return;
         }
+        // A modal dialog reads its own keys first: Tab between its controls, Enter, Space on its
+        // checkbox, and Escape to cancel (`screens::overlays::take_keys`). Other chords still reach
+        // the shortcuts below.
+        if screens::overlays::take_keys(ctx, self) {
+            self.run(ctx, Action::CloseOverlays);
+        }
         // Shift+F10 opens the menu of the focused item, outside the terminal (which keeps the key
         // when it has the focus). A region with no menu leaves the key alone.
         if !self.ui.terminal_takes_focus()
@@ -1916,20 +1983,20 @@ impl CsmApp {
             && self.ui.menu.is_none()
             && self.ui.inline.is_none()
             && let Some(menu) = self.focused_item_menu(ctx)
-            && ctx.input_mut(|i| consume_exact(i, Modifiers::SHIFT, Key::F10))
+            && self.bound(ctx, "ui.menu_focused")
         {
             self.run(ctx, Action::OpenMenu(menu.clone()));
             self.ui.menu_sel = screens::menus::first_highlight(self, &menu);
         }
-        if pressed(ctx, cmd | Modifiers::SHIFT, Key::E) {
+        if self.bound(ctx, "session_recent") {
             self.run(ctx, Action::OpenRecent);
         }
-        if pressed(ctx, cmd | Modifiers::SHIFT, Key::N) {
+        if self.bound(ctx, "ui.inspector_notes") {
             let tab = if self.model.inspector == Some(crate::model::InspectorTab::Notes) { "hidden" } else { "notes" };
             self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
         }
         if let Some(a) = self.model.active.clone() {
-            if pressed(ctx, cmd | Modifiers::SHIFT, Key::R) {
+            if self.bound(ctx, "session_restart") {
                 self.run(ctx, Action::Tool("session_restart", json!({"session_id": a})));
             }
             // Ctrl+Shift+C: Claude's last reply. A focused terminal gets it as a copy (egui sends
@@ -1937,7 +2004,7 @@ impl CsmApp {
             // this key, or a copy nothing focused takes.
             if self.model.session(&a).is_some_and(crate::model::SessionView::is_claude) {
                 let nothing_focused = ctx.memory(|m| m.focused().is_none());
-                let copy = pressed(ctx, cmd | Modifiers::SHIFT, Key::C)
+                let copy = self.bound(ctx, "claude_reply_get")
                     || (nothing_focused
                         && ctx.input_mut(|i| {
                             let had = i.modifiers.shift && i.events.iter().any(|e| matches!(e, egui::Event::Copy));
@@ -1951,51 +2018,51 @@ impl CsmApp {
                 }
             }
             // Ctrl+.: the active pane's ⋯ menu, where its button was last drawn.
-            if pressed(ctx, cmd, Key::Period) {
+            if self.bound(ctx, "ui.pane_menu") {
                 let at =
                     ctx.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new(("pane-more-at", a.clone())))).unwrap_or_else(|| ctx.content_rect().center());
                 self.run(ctx, Action::OpenMenu(Menu::Pane { session: a, at }));
             }
         }
-        if pressed(ctx, cmd, Key::K) {
+        if self.bound(ctx, "ui.palette") {
             if self.ui.overlay == Overlay::Palette {
                 self.run(ctx, Action::CloseOverlays);
             } else {
                 self.run(ctx, Action::OpenPalette);
             }
         }
-        if pressed(ctx, cmd, Key::F) {
+        if self.bound(ctx, "search_output") {
             if self.ui.overlay == Overlay::Search {
                 self.run(ctx, Action::CloseOverlays);
             } else {
                 self.run(ctx, Action::OpenSearch(String::new()));
             }
         }
-        // One chord each: `consume_exact` matches the modifiers exactly, so Ctrl+T never takes
+        // One chord each: the map matches the modifiers exactly, so Ctrl+T never takes
         // Ctrl+Shift+T or Ctrl+Alt+T.
-        if pressed(ctx, cmd | Modifiers::ALT, Key::T) {
+        if self.bound(ctx, "session_duplicate") {
             if let Some(a) = self.model.active.clone() {
                 self.run(ctx, Action::Tool("session_duplicate", json!({"session_id": a})));
             }
-        } else if pressed(ctx, cmd | Modifiers::SHIFT, Key::T) {
+        } else if self.bound(ctx, "session_reopen_closed") {
             self.run(ctx, Action::Tool("session_reopen_closed", json!({})));
-        } else if pressed(ctx, cmd, Key::T) {
+        } else if self.bound(ctx, "session_new") {
             self.run(ctx, Action::OpenQuickOpen { group: None });
         }
-        if pressed(ctx, cmd, Key::J) {
+        if self.bound(ctx, "inbox_next") {
             self.run(ctx, Action::Tool("inbox_next", json!({})));
         }
-        if pressed(ctx, cmd, Key::I) {
+        if self.bound(ctx, "inspector_show") {
             let tab = if self.model.inspector.is_some() { "hidden" } else { "notes" };
             self.run(ctx, Action::Tool("inspector_show", json!({"tab": tab})));
         }
         if let Some(a) = self.model.active.clone() {
-            if pressed(ctx, Modifiers::SHIFT, Key::F5) {
+            if self.bound(ctx, "run_stop") {
                 self.run(ctx, Action::Tool("run_stop", json!({"session_id": a})));
-            } else if pressed(ctx, Modifiers::NONE, Key::F5) {
+            } else if self.bound(ctx, "run_start") {
                 self.run(ctx, Action::Tool("run_start", json!({"session_id": a})));
             }
-            if pressed(ctx, cmd, Key::W) {
+            if self.bound(ctx, "session_close") {
                 self.run(ctx, Action::CloseSession(a));
             }
         }
@@ -2006,19 +2073,19 @@ impl CsmApp {
             self.ui.region = None;
         }
         if self.ui.overlay == Overlay::None && self.ui.menu.is_none() && self.ui.inline.is_none() {
-            if pressed(ctx, Modifiers::NONE, Key::F6) {
+            if self.bound(ctx, "ui.region_next") {
                 self.cycle_region(ctx, 1);
-            } else if pressed(ctx, Modifiers::SHIFT, Key::F6) {
+            } else if self.bound(ctx, "ui.region_prev") {
                 self.cycle_region(ctx, -1);
             }
             let arrows = [
-                (Key::ArrowLeft, focus::Dir::Left),
-                (Key::ArrowRight, focus::Dir::Right),
-                (Key::ArrowUp, focus::Dir::Up),
-                (Key::ArrowDown, focus::Dir::Down),
+                ("ui.pane_left", focus::Dir::Left),
+                ("ui.pane_right", focus::Dir::Right),
+                ("ui.pane_up", focus::Dir::Up),
+                ("ui.pane_down", focus::Dir::Down),
             ];
-            for (key, dir) in arrows {
-                if pressed(ctx, cmd | Modifiers::ALT, key) {
+            for (id, dir) in arrows {
+                if self.bound(ctx, id) {
                     self.move_pane_focus(dir);
                 }
             }
@@ -2029,19 +2096,19 @@ impl CsmApp {
             && self.ui.inline.is_none()
             && let Some(a) = self.model.active.clone()
             && !self.sidebar_item_focused(ctx)
-            && pressed(ctx, Modifiers::NONE, Key::F2)
+            && self.bound(ctx, "session_rename")
         {
             self.run(ctx, Action::StartRename(a));
         }
         // Ctrl+Tab / Ctrl+Shift+Tab: the next / previous live session the panes can show.
-        if pressed(ctx, Modifiers::CTRL | Modifiers::SHIFT, Key::Tab) {
+        if self.bound(ctx, "ui.session_prev") {
             self.cycle(-1);
-        } else if pressed(ctx, Modifiers::CTRL, Key::Tab) {
+        } else if self.bound(ctx, "ui.session_next") {
             self.cycle(1);
         }
         // Ctrl+1…9: the rail's tabs (1 is All).
-        for (n, key) in [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9].into_iter().enumerate() {
-            if pressed(ctx, cmd, key) {
+        for (n, id) in RAIL_TAB_IDS.into_iter().enumerate() {
+            if self.bound(ctx, id) {
                 let tab = if n == 0 { Some(Scope::All) } else { self.model.groups.get(n - 1).map(|g| Scope::Group(g.id.clone())) };
                 if let Some(tab) = tab {
                     self.run(ctx, Action::Tool("view_set", json!({"rail_tab": tab.key()})));
@@ -2050,16 +2117,19 @@ impl CsmApp {
         }
         // Ctrl+PgUp / Ctrl+PgDn: the add-on screen tab before / after the shown one. Ctrl+Alt+PgUp /
         // PgDn: the rail tab before / after (`rail_tab_prev`, `rail_tab_next`). docs/design/keyboard.md, 3.
-        for (key, forward) in [(Key::PageDown, true), (Key::PageUp, false)] {
-            if pressed(ctx, cmd, key) {
-                self.screen_tab_step(ctx, forward);
-            }
-            if pressed(ctx, cmd | Modifiers::ALT, key) {
-                let tool = if forward { "rail_tab_next" } else { "rail_tab_prev" };
-                self.run(ctx, Action::Tool(tool, json!({})));
-            }
+        if self.bound(ctx, "screen_tab_next") {
+            self.screen_tab_step(ctx, true);
         }
-        if pressed(ctx, cmd, Key::Comma) {
+        if self.bound(ctx, "screen_tab_prev") {
+            self.screen_tab_step(ctx, false);
+        }
+        if self.bound(ctx, "rail_tab_next") {
+            self.run(ctx, Action::Tool("rail_tab_next", json!({})));
+        }
+        if self.bound(ctx, "rail_tab_prev") {
+            self.run(ctx, Action::Tool("rail_tab_prev", json!({})));
+        }
+        if self.bound(ctx, "ui.settings") {
             let a = if self.ui.settings.open { Action::CloseSettings } else { Action::OpenSettings };
             self.run(ctx, a);
         }
@@ -2073,7 +2143,7 @@ impl CsmApp {
                 i.events.retain(|e| !is_q(e));
                 had
             });
-        if pressed(ctx, Modifiers::NONE, Key::F1) || pressed(ctx, cmd, Key::Slash) || question {
+        if self.bound(ctx, "ui.help") || question {
             self.run(ctx, Action::ShowHelp);
         }
         let open = self.ui.overlay != Overlay::None || self.ui.menu.is_some();
@@ -2429,13 +2499,27 @@ pub const RECENT_ANCHOR: &str = "recent-anchor";
 /// "outside" the menu, so a second click closes the menu rather than reopening it.
 pub const MAIN_ANCHOR: &str = "main-menu-anchor";
 
+/// The rail's tab shortcuts, Ctrl+1 (All) to Ctrl+9, in the order of the rail's tabs.
+const RAIL_TAB_IDS: [&str; 9] = [
+    "ui.rail_tab_1",
+    "ui.rail_tab_2",
+    "ui.rail_tab_3",
+    "ui.rail_tab_4",
+    "ui.rail_tab_5",
+    "ui.rail_tab_6",
+    "ui.rail_tab_7",
+    "ui.rail_tab_8",
+    "ui.rail_tab_9",
+];
+
 /// Consumes a key press with exactly these modifiers (Ctrl and Cmd as egui's `COMMAND`).
 /// egui's `consume_shortcut` ignores extra Shift and Alt, so Ctrl+Shift+T would also be Ctrl+T;
 /// here each binding gets only its own chord.
 ///
 /// A punctuation key (`/`, `.`, `,` …) is the character, not the key cap: on many layouts it
 /// needs Shift (`/` is Shift+7 on Danish and German keyboards), so for those an extra Shift is
-/// ignored and Ctrl+/ still opens the shortcut list there.
+/// ignored and Ctrl+/ still opens the shortcut list there. Minus is not one of them: Ctrl+Shift+-
+/// is Ctrl+_ (the terminal's undo), which must not match the zoom out on Ctrl+-.
 pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
     let symbol = matches!(
         key,
@@ -2444,7 +2528,6 @@ pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
             | Key::Comma
             | Key::Colon
             | Key::Semicolon
-            | Key::Minus
             | Key::Plus
             | Key::Equals
             | Key::Questionmark

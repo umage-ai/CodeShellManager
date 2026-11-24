@@ -105,7 +105,7 @@ fn the_local_only_items_are_not_offered_by_a_remote_window() {
 
     // The menus: what the laptop would offer for a session, and which of it a remote window drops.
     let sid = h.state().model.sessions.first().expect("the demo has sessions").id.clone();
-    let entries = menus::pane_menu(&h.state().model, &sid);
+    let entries = menus::pane_menu(&h.state().model, &sid, &h.state().prefs.keymap);
     let hidden: Vec<&menus::Entry> = entries.iter().filter(|e| hidden_in_remote(e)).collect();
     assert!(!hidden.is_empty(), "the pane menu has laptop-only items (open folder, open with)");
     assert!(

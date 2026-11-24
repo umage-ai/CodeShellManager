@@ -5,6 +5,7 @@
 use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 use serde_json::json;
 
+use csm_core::keymap::Keymap;
 use csm_core::session_sort::SortField;
 
 use crate::app::{Action, ConfirmState, CsmApp, Menu, consume_exact};
@@ -76,6 +77,11 @@ fn item(icon: &'static str, label: impl Into<String>, action: Action) -> Entry {
 
 fn hinted(icon: &'static str, label: impl Into<String>, hint: &str, action: Action) -> Entry {
     Entry::Item { icon, label: label.into(), hint: Some(hint.into()), danger: false, action }
+}
+
+/// The first chord of an action in the keyboard map, as a menu hint ("" when it has none).
+fn chord_hint(keys: &Keymap, id: &str) -> String {
+    keys.label(id).unwrap_or_default()
 }
 
 fn tool(id: &'static str, params: serde_json::Value) -> Action {
@@ -189,12 +195,12 @@ pub fn claude_commands_entry(s: &crate::model::SessionView, presets: &[csm_core:
 /// "Copy last reply" and "Copy reply…" on a Claude pane: Claude's replies from its transcript
 /// (`claude_reply_get`, `claude_reply_list`). A WSL or SSH session's answer says it is not
 /// available there.
-fn claude_copy_entries(s: &crate::model::SessionView) -> Vec<Entry> {
+fn claude_copy_entries(s: &crate::model::SessionView, keys: &Keymap) -> Vec<Entry> {
     if !s.is_claude() || !s.status.is_live() {
         return Vec::new();
     }
     vec![
-        hinted("copy", "Copy last reply", "Ctrl Shift C", Action::CopyClaude("claude_reply_get", json!({"session_id": s.id}))),
+        hinted("copy", "Copy last reply", &chord_hint(keys, "claude_reply_get"), Action::CopyClaude("claude_reply_get", json!({"session_id": s.id}))),
         item("copy", "Copy reply…", Action::OpenClaudeReplies(s.id.clone())),
     ]
 }
@@ -273,15 +279,15 @@ fn demo_status(session: &str) -> Entry {
     }
 }
 
-pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+pub fn pane_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(s) = model.session(id) else { return vec![] };
     let sid = json!({"session_id": id});
     let scope = model.pane_scope().key();
     let insp = |tab: &str| tool("inspector_show", json!({"tab": tab}));
     let mut v = vec![
         Entry::Head("Panels".into()),
-        hinted("note", "Notes", "Ctrl Shift N", insp("notes")),
-        hinted("play", "Runs", "F5 runs default", insp("runs")),
+        hinted("note", "Notes", &chord_hint(keys, "ui.inspector_notes"), insp("notes")),
+        hinted("play", "Runs", &format!("{} runs default", chord_hint(keys, "run_start")), insp("runs")),
         item("branch", "Git", insp("git")),
         Entry::Sep,
     ];
@@ -297,15 +303,15 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
     } else {
         v.push(item("copy", "Copy remote path", Action::CopyText(s.folder.clone())));
     }
-    v.extend(claude_copy_entries(s));
+    v.extend(claude_copy_entries(s, keys));
     v.extend(worktree_entries(model, s));
     v.extend([
         Entry::Sep,
         Entry::Head("Session".into()),
         hinted("pencil", "Edit session…", "folder, command", Action::EditSession(id.to_string())),
-        hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
-        hinted("copy", "Duplicate", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
-        hinted("restart", "Restart", "Ctrl Shift R", tool("session_restart", sid.clone())),
+        hinted("tag", "Rename", &chord_hint(keys, "session_rename"), Action::StartRename(id.to_string())),
+        hinted("copy", "Duplicate", &chord_hint(keys, "session_duplicate"), tool("session_duplicate", sid.clone())),
+        hinted("restart", "Restart", &chord_hint(keys, "session_restart"), tool("session_restart", sid.clone())),
         hinted("moon", "Sleep", "keeps it in the sidebar", tool("session_sleep", sid.clone())),
         demo_status(id),
     ]);
@@ -342,16 +348,16 @@ pub fn pane_menu(model: &UiModel, id: &str) -> Vec<Entry> {
         v.push(item("pin", label, tool(tid, pane.clone())));
     }
     if let Some(run) = s.default_run() {
-        v.push(hinted("play", format!("Run {}", run.label), "F5", tool("run_start", sid.clone())));
+        v.push(hinted("play", format!("Run {}", run.label), &chord_hint(keys, "run_start"), tool("run_start", sid.clone())));
     }
     v.push(Entry::Sep);
-    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some("Ctrl W".into()), danger: true, action: Action::CloseSession(id.to_string()) });
+    v.push(Entry::Item { icon: "x", label: "Close".into(), hint: Some(chord_hint(keys, "session_close")), danger: true, action: Action::CloseSession(id.to_string()) });
     v
 }
 
 /// The sidebar row's menu. `targets` is what an action applies to (C# `ResolveActionTargets`):
 /// the whole selection when the row is part of it, else the row alone.
-pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
+pub fn row_menu(model: &UiModel, id: &str, targets: &[String], keys: &Keymap) -> Vec<Entry> {
     if targets.len() > 1 {
         return bulk_menu(model, targets);
     }
@@ -377,10 +383,10 @@ pub fn row_menu(model: &UiModel, id: &str, targets: &[String]) -> Vec<Entry> {
             if pinned { "Unpin from Side by side" } else { "Pin to Side by side" },
             tool(if pinned { "layout_unpin" } else { "layout_pin" }, json!({"session_id": id, "group": scope.key()})),
         ),
-        hinted("tag", "Rename", "F2", Action::StartRename(id.to_string())),
+        hinted("tag", "Rename", &chord_hint(keys, "session_rename"), Action::StartRename(id.to_string())),
         item("pencil", "Edit session…", Action::EditSession(id.to_string())),
         Entry::Sub { icon: "layers", label: "Move to group".into(), items: groups },
-        hinted("copy", "Duplicate session", "Ctrl Alt T", tool("session_duplicate", sid.clone())),
+        hinted("copy", "Duplicate session", &chord_hint(keys, "session_duplicate"), tool("session_duplicate", sid.clone())),
     ];
     if is_local(s) {
         // After "Move to group", as before; an SSH session's folder is on another machine.
@@ -519,7 +525,7 @@ pub fn sort_menu(model: &UiModel, last: Option<(SortField, bool)>) -> Vec<Entry>
     v
 }
 
-pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
+pub fn group_menu(model: &UiModel, gid: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(g) = model.group(gid) else { return vec![] };
     let scope = Scope::Group(gid.to_string());
     let lay = model.layout(&scope);
@@ -528,7 +534,7 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
     let mut v = vec![
         Entry::Head(g.name.clone()),
         item("plus", format!("New session in {}", g.name), Action::OpenQuickOpen { group: Some(gid.to_string()) }),
-        hinted("pencil", "Rename group", "F2", Action::StartGroupRename(gid.to_string())),
+        hinted("pencil", "Rename group", &chord_hint(keys, "session_rename"), Action::StartGroupRename(gid.to_string())),
         Entry::Sub {
             icon: lay.mode.icon(),
             label: "Layout".into(),
@@ -572,11 +578,11 @@ pub fn group_menu(model: &UiModel, gid: &str) -> Vec<Entry> {
     v
 }
 
-fn runs_menu(model: &UiModel, id: &str) -> Vec<Entry> {
+fn runs_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(s) = model.session(id) else { return vec![] };
     let mut v = vec![Entry::Head("Run commands".into())];
     for r in &s.runs {
-        let hint = if r.is_default { format!("F5 · {}", r.detail) } else { r.detail.clone() };
+        let hint = if r.is_default { format!("{} · {}", chord_hint(keys, "run_start"), r.detail) } else { r.detail.clone() };
         v.push(Entry::Item {
             icon: "play",
             label: r.label.clone(),
@@ -800,10 +806,11 @@ struct Listing {
 /// The list a menu shows, or `None` for the menus that are not lists (the grid, Recent).
 fn listing(app: &CsmApp, menu: &Menu) -> Option<Listing> {
     let model = &app.model;
+    let keys = &app.prefs.keymap;
     let demo = app.dispatch.has_tool("demo_set_status");
     let (id, at, entries) = match menu {
         Menu::Pane { session, at } => {
-            let mut e = with_demo(pane_menu(model, session), demo);
+            let mut e = with_demo(pane_menu(model, session, keys), demo);
             if let Some(sub) = model.session(session).and_then(|s| claude_commands_entry(s, &claude_commands(app))) {
                 // At the end of the first block, before the Session section.
                 let idx = e.iter().position(|x| matches!(x, Entry::Head(h) if h == "Session")).map_or(e.len(), |i| i.saturating_sub(1));
@@ -814,11 +821,11 @@ fn listing(app: &CsmApp, menu: &Menu) -> Option<Listing> {
         Menu::Row { session, at } => {
             let order: Vec<&str> = model.sessions.iter().map(|s| s.id.as_str()).collect();
             let targets = app.ui.selection.targets(session, &order);
-            ("menu-row", *at + vec2(space::XS + space::XXS, -space::XS), with_demo(row_menu(model, session, &targets), demo))
+            ("menu-row", *at + vec2(space::XS + space::XXS, -space::XS), with_demo(row_menu(model, session, &targets, keys), demo))
         }
         Menu::Sort { at } => ("menu-sort", *at, sort_menu(model, app.ui.sort)),
-        Menu::Group { group, at } => ("menu-group", *at, group_menu(model, group)),
-        Menu::Runs { session, at } => ("menu-runs", pos2(at.x - size::MENU_W, at.y), runs_menu(model, session)),
+        Menu::Group { group, at } => ("menu-group", *at, group_menu(model, group, keys)),
+        Menu::Runs { session, at } => ("menu-runs", pos2(at.x - size::MENU_W, at.y), runs_menu(model, session, keys)),
         Menu::GitHub { session, at } => ("menu-github", pos2(at.x - size::MENU_W, at.y), github_menu(model, session)),
         Menu::ClaudeReplies { session, at } => {
             ("menu-claude-replies", pos2(at.x - size::MENU_W, at.y), claude_replies_menu(app.ui.claude_replies.as_ref(), session))
@@ -870,6 +877,7 @@ fn needs_session(schema: &serde_json::Value) -> bool {
 /// a session are shown muted while none is active.
 pub fn main_entries(app: &CsmApp) -> Vec<Entry> {
     let model = &app.model;
+    let keys = &app.prefs.keymap;
     let has_session = model.active.as_deref().is_some_and(|a| model.session(a).is_some());
     let mut areas: Vec<Vec<Entry>> = MAIN_AREAS.iter().map(|_| Vec::new()).collect();
     let mut put = |area: &str, e: Entry| {
@@ -877,7 +885,7 @@ pub fn main_entries(app: &CsmApp) -> Vec<Entry> {
             slot.push(e);
         }
     };
-    let hint = |s: &str| crate::screens::palette::shortcut_for(s).map(str::to_string);
+    let hint = |s: &str| keys.label(s);
     let own = |label: &str, hint: &str, action: Action| Entry::Item {
         icon: "blank",
         label: label.into(),
@@ -885,9 +893,9 @@ pub fn main_entries(app: &CsmApp) -> Vec<Entry> {
         danger: false,
         action,
     };
-    put("Settings", own("Settings…", "Ctrl ,", Action::OpenSettings));
-    put("Help", own("Keyboard shortcuts…", "F1", Action::ShowHelp));
-    put("Help", own("Command palette…", "Ctrl K", Action::OpenPalette));
+    put("Settings", own("Settings…", &chord_hint(keys, "ui.settings"), Action::OpenSettings));
+    put("Help", own("Keyboard shortcuts…", &chord_hint(keys, "ui.help"), Action::ShowHelp));
+    put("Help", own("Command palette…", &chord_hint(keys, "ui.palette"), Action::OpenPalette));
     let scope = model.pane_scope().key();
     for mode in LayoutMode::ALL {
         put(

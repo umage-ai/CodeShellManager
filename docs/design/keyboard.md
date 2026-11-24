@@ -279,6 +279,43 @@ vendored peer protocol (`csm-peer-proto`), so the tab chords call `ScreenFocus` 
 yet: the dialog Tab trap and default button, the grid's keys, the Delete key on a row, and the inbox
 as a focus region (F6 still skips it).
 
+**Status of the dialogs (branch `kb/navigation`).** The confirm, close and one-line prompt dialogs
+read their keys before the shortcuts and the terminal (`screens::overlays::take_keys`, called from
+`CsmApp::shortcuts`). The rules are in `dialog_keys.rs`: `step` (pure, wraps, a stale position
+starts again) and `take`, which stores what Tab, Enter, Space and Escape did for the draw code
+(`current`, `pressed`). Tab and Shift+Tab cycle the controls (the prompt's text field first, then OK
+and Cancel; the close dialog's checkbox first, then Keep and Quit). Enter presses the focused
+button, or the default one (yes, Keep running) when no control has the focus; in the prompt, Enter
+in the field still submits the text. Space toggles the checkbox, and Escape cancels. A focused
+button, or the default with no focus, takes the ring from `widgets::focus_ring`, drawn outside the
+button so it shows on the blue primary button too. A dialog forgets its focus when it closes. The
+help list adds Ctrl+Alt+Arrows and the dialog keys. The main menu reaches the layout modes and the Git tools (tests: the Git area lists `git_status` and
+`git_branches`). The quick-open (Ctrl+T) and New session keep their keys and get Tab traversal across
+their controls, each with the focus ring: the folder field, Browse, the command row, Remote, Group,
+the saved remotes, the connection fields, the New session forms, their choices, name and submit.
+Tab and Shift+Tab move between them; Enter presses the focused button, or starts the session on a
+text field or the command row; Escape closes. A click on a button returns the focus to the folder
+field. Change of an existing key: Tab used to cycle the command. It now moves focus, and Left and
+Right cycle the command on its row (the help list says so; the Tab tests were moved to that route).
+The menu, when open, drops a dialog press stored by an earlier frame. Not yet: Space does not press
+a focused button (it toggles only the close dialog checkbox); the grid's keys; the Delete key on a
+row; the inbox as a focus region; the folder list is reached with Up and Down from any control, not
+by Tab.
+
+**Status of step 6, the keymap (branch `kb/navigation`).** The table is `csm_core::keymap::BINDINGS`
+(ids, names, default chords; all bindings are global, and the menu, dialog and list keys stay fixed).
+`Chord` parses and formats one spelling (`Ctrl+Alt+PgUp`); a chord must have Ctrl, or be a function
+key. Overrides are `AppSettings::keymap` (`Keymap` in `state.json`, only the ones that differ from the
+defaults); a damaged entry is skipped and an unknown id is kept, both reported. `keymap::set` refuses a
+chord another action uses and names it; a conflict in a hand-edited file keeps the override's claim.
+`CsmApp::shortcuts` matches each action's chords with `CsmApp::bound` (no literal chord left there,
+except the Ctrl+Plus zoom alias and the `?` key). The help list (`shortcut_rows`), the palette hints
+and every menu hint read the same map; `SHORTCUTS` and `shortcut_for` are gone. Tools: `keymap_list`,
+`keymap_set`, `keymap_reset` (MUTATES_STATE; `settings_set` refuses `Keymap`). Settings › Keyboard
+records a chord on click (Escape cancels), with Clear, Reset and Reset all. Not done: the Alt-tap
+alias and a filter in the F10 menu, and per-scope bindings (menus and dialogs keep their own keys).
+User docs: `docs/keyboard.md`.
+
 ## 9. Gate and rules for these steps
 
 - Gate per step, in the worktree: `cargo +1.97 test --workspace --no-fail-fast`,

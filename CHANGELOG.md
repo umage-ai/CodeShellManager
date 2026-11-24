@@ -40,6 +40,16 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   between panes. Menus take arrows, Enter, Escape and access letters. **Main menu** (`F10`, a
   clean tap of Alt, or the `⋯` in the title bar) lists every action by area, with its shortcut;
   an action that needs a session is shown muted until one is active.
+- **Dialogs by keyboard**: in the confirm, close and one-line prompt dialogs, Tab and Shift+Tab move
+  between the controls, Enter presses the focused button (or the default one), Space toggles the
+  "Remember my choice" box, and Escape cancels. The default button keeps a focus ring until a
+  control takes the focus.
+- **Quick-open by keyboard**: Tab and Shift+Tab move through the folder field, Browse, the command row, Remote, Group and the New session controls, each with a focus ring. Left and Right change the command on its row, which Tab used to cycle; Enter starts the session from the field or the row.
+- **Keyboard shortcuts you can change**: Settings › Keyboard lists every action with its keys. Click
+  a key and press the new one; Clear, Reset and Reset all put them back. A key another action uses
+  is refused, and the message names it. The help list (F1), the palette and the menus show the same
+  keys. Tools `keymap_list`, `keymap_set` and `keymap_reset` do the same for agents. See
+  [docs/keyboard.md](docs/keyboard.md).
 - **Lists by keyboard**: the arrows move through the sidebar rows, group headers, the rail tabs, the
   inbox, the add-on screen tabs and the inspector tabs; Space selects a row, Shift+arrows extend the
   selection, F2 renames the focused row or group, Left and Right collapse and expand a group.

@@ -193,12 +193,16 @@ impl Rig {
     }
 
     /// Opens the quick-open from the empty screen and starts the folder's session with the
-    /// command at `cmd_index` (Tab cycles it).
+    /// command at `cmd_index` (Tab reaches the command row, Right cycles it).
     fn new_session(&mut self, tabs: usize) -> String {
         self.empty_screen_new_session().click();
         self.until("the quick-open", |r| r.has_contains("Folder: "));
-        for _ in 0..tabs {
+        for _ in 0..2 {
             self.h.key_press(egui::Key::Tab);
+            self.h.step();
+        }
+        for _ in 0..tabs {
+            self.h.key_press(egui::Key::ArrowRight);
             self.h.step();
         }
         self.h.key_press(egui::Key::Enter);
@@ -400,7 +404,12 @@ fn editing_a_live_session_asks_restart_now_and_restarts_it() {
     r.until("the edit panel, filled in", |r| r.h.state().ui.quick.loaded);
     assert_eq!(r.h.state().ui.quick.cmd, 1, "pwsh -NoLogo is the second launch command");
     assert_eq!(r.h.state().ui.quick.query, r.folder);
-    r.h.key_press(egui::Key::Tab); // → claude: a new command needs a new process
+    // Edit: Tab goes from the folder to the name, Browse, then the command row; Right → claude.
+    for _ in 0..3 {
+        r.h.key_press(egui::Key::Tab);
+        r.h.step();
+    }
+    r.h.key_press(egui::Key::ArrowRight); // a new command needs a new process
     r.h.step();
     r.h.key_press(egui::Key::Enter);
     r.until("the question", |r| r.has("Restart now"));
