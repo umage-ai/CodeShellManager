@@ -20,6 +20,7 @@ pub mod backend;
 pub mod background;
 pub mod demo;
 pub mod docs_model;
+pub mod focus;
 pub mod engine_backend;
 pub mod git_model;
 mod icon_data;

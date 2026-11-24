@@ -335,6 +335,12 @@ impl Tokens {
         color.gamma_multiply(alpha)
     }
 
+    /// The keyboard focus ring's colour: every ring (`widgets::focus_ring`, a focused row) takes
+    /// it from here, so a theme changes the one place.
+    pub fn focus(&self) -> Color32 {
+        self.blue
+    }
+
     /// The terminal palette for this theme: the emulator's default ANSI colours for Mocha, and
     /// Latte's for the light theme.
     pub fn terminal_style(&self) -> crate::terminal::TermStyle {

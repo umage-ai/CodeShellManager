@@ -953,7 +953,7 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
         p.rect(rect, CornerRadius::same(radius::SM), Tokens::tint(t.blue, alpha::PICKED), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
     }
     if resp.has_focus() {
-        p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+        p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
     }
     let indent = if nested { space::LG - space::XXS } else { 0.0 };
     let cy = rect.min.y + size::ROW / 2.0;

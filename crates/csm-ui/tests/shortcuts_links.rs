@@ -138,7 +138,7 @@ fn parse(chord: &str) -> (Modifiers, Vec<Key>) {
 /// start a rename.
 fn fingerprint(h: &Harness<'static, csm_ui::CsmApp>) -> String {
     let a = h.state();
-    format!("{} {:?} {:?} {} {}", a.submitted().len(), a.ui.overlay, a.ui.menu.is_some(), a.ui.settings.open, a.ui.inline.is_some())
+    format!("{} {:?} {:?} {} {} {:?}", a.submitted().len(), a.ui.overlay, a.ui.menu.is_some(), a.ui.settings.open, a.ui.inline.is_some(), a.ui.region)
 }
 
 #[test]

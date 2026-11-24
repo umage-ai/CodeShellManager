@@ -9,6 +9,7 @@ use egui::{Key, Modifiers, Rect, Ui, UiBuilder, ViewportId, pos2};
 use serde_json::{Value, json};
 
 use crate::backend::{Backend, Call, Notice, ToolPort};
+use crate::focus::{self, FocusRegion};
 use crate::model::{GroupId, Scope, SessionId, Status, UiModel};
 use crate::remote_window::{self, ConnectDialog, LinkTarget, RemoteStatus};
 use crate::screens;
@@ -529,6 +530,15 @@ pub struct UiState {
     pub notes_cache: NotesCache,
     pub search: SearchState,
     pub focus_terminal: Option<SessionId>,
+    /// The keyboard focus region (F6). `None` is the default: the active pane's terminal has the
+    /// keys. A mouse press clears it.
+    pub region: Option<FocusRegion>,
+    /// The regions drawn last frame, with their rects, in the order drawn. F6 cycles over them and
+    /// the focus ring goes round the focused one.
+    pub region_rects: Vec<(FocusRegion, Rect)>,
+    /// The panes drawn last frame (live, not minimised), with their rects: Ctrl+Alt+Arrow moves
+    /// between them.
+    pub pane_rects: Vec<(SessionId, Rect)>,
     /// The sessions whose panes this frame draws (`Backend::show_panes` gets them at the frame's end).
     pub shown_panes: Vec<SessionId>,
     /// The last active session seen, to move keyboard focus when it changes.
@@ -582,6 +592,14 @@ pub struct UiState {
     pub screens: Arc<Mutex<screens::addon_screen::ScreenUi>>,
     /// The add-on screens open this frame (fetched once per frame).
     pub screen_infos: Vec<csm_engine::ScreenInfo>,
+}
+
+impl UiState {
+    /// Whether the active pane's terminal may take the keyboard: no region has it, or the panes
+    /// region does.
+    pub fn terminal_takes_focus(&self) -> bool {
+        self.region.is_none_or(|r| r == FocusRegion::Panes)
+    }
 }
 
 /// The "Copy reply…" picker's list of a session's replies (`claude_reply_list`).
@@ -1947,6 +1965,30 @@ impl CsmApp {
                 self.run(ctx, Action::CloseSession(a));
             }
         }
+        // Keyboard focus (docs/design/keyboard.md, sections 2 and 6). A mouse press leaves the
+        // region mode: the mouse takes the focus where it lands. F6 and Ctrl+Alt+Arrow wait while
+        // an overlay, a menu or an inline edit has the keyboard.
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            self.ui.region = None;
+        }
+        if self.ui.overlay == Overlay::None && self.ui.menu.is_none() && self.ui.inline.is_none() {
+            if pressed(ctx, Modifiers::NONE, Key::F6) {
+                self.cycle_region(ctx, 1);
+            } else if pressed(ctx, Modifiers::SHIFT, Key::F6) {
+                self.cycle_region(ctx, -1);
+            }
+            let arrows = [
+                (Key::ArrowLeft, focus::Dir::Left),
+                (Key::ArrowRight, focus::Dir::Right),
+                (Key::ArrowUp, focus::Dir::Up),
+                (Key::ArrowDown, focus::Dir::Down),
+            ];
+            for (key, dir) in arrows {
+                if pressed(ctx, cmd | Modifiers::ALT, key) {
+                    self.move_pane_focus(dir);
+                }
+            }
+        }
         // F2 renames the active session in place.
         if self.ui.overlay == Overlay::None
             && self.ui.inline.is_none()
@@ -1990,6 +2032,12 @@ impl CsmApp {
         let open = self.ui.overlay != Overlay::None || self.ui.menu.is_some();
         if open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseOverlays);
+        } else if self.ui.region.is_some_and(|r| r != FocusRegion::Panes)
+            && self.ui.inline.is_none()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            // Esc leaves a non-terminal region: the keys go back to the active pane.
+            self.set_region(ctx, None);
         } else if !self.ui.selection.is_empty()
             && self.ui.inline.is_none()
             && !self.terminal_focused(ctx)
@@ -2001,6 +2049,43 @@ impl CsmApp {
         } else if self.ui.usage_page.open && self.ui.inline.is_none() && !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.run(ctx, Action::CloseUsage);
         }
+    }
+
+    /// Moves the keyboard focus region. `None` gives the keys back to the active pane's terminal;
+    /// a region other than the panes takes them from a focused terminal.
+    fn set_region(&mut self, ctx: &egui::Context, region: Option<FocusRegion>) {
+        self.ui.region = region;
+        if self.ui.terminal_takes_focus() {
+            self.ui.focus_terminal = self.model.active.clone();
+        } else if self.terminal_focused(ctx)
+            && let Some(focused) = ctx.memory(|m| m.focused())
+        {
+            ctx.memory_mut(|m| m.surrender_focus(focused));
+        }
+        ctx.request_repaint();
+    }
+
+    /// F6 (`step` 1) or Shift+F6 (-1): the next region that was drawn last frame, from the current
+    /// one (the panes when none has the ring).
+    fn cycle_region(&mut self, ctx: &egui::Context, step: i32) {
+        let visible: Vec<FocusRegion> = self.ui.region_rects.iter().map(|(r, _)| *r).collect();
+        let current = self.ui.region.unwrap_or(FocusRegion::Panes);
+        if let Some(next) = focus::next_region(&visible, current, step) {
+            self.set_region(ctx, Some(next));
+        }
+    }
+
+    /// Ctrl+Alt+Arrow: focuses the pane nearest the active one in `dir`, by where the panes were
+    /// drawn. The focus goes to that pane's terminal, and any region mode ends.
+    fn move_pane_focus(&mut self, dir: focus::Dir) {
+        let Some(active) = self.model.active.clone() else { return };
+        let Some(from) = self.ui.pane_rects.iter().find(|(id, _)| *id == active).map(|(_, r)| *r) else { return };
+        let others: Vec<(SessionId, Rect)> = self.ui.pane_rects.iter().filter(|(id, _)| *id != active).cloned().collect();
+        let rects: Vec<Rect> = others.iter().map(|(_, r)| *r).collect();
+        let Some((id, _)) = focus::neighbour(from, &rects, dir).and_then(|i| others.get(i)) else { return };
+        self.ui.region = None;
+        self.ui.focus_terminal = Some(id.clone());
+        self.dispatch.submit("session_focus", json!({"session_id": id}));
     }
 
     /// A terminal pane has keyboard focus: its keys (Esc above all) belong to the program in it.
@@ -2097,6 +2182,7 @@ impl CsmApp {
         if self.model.active != self.ui.last_active {
             self.ui.last_active = self.model.active.clone();
             if self.ui.overlay == Overlay::None
+                && self.ui.terminal_takes_focus()
                 && let Some(a) = self.model.active.clone()
             {
                 self.ui.focus_terminal = Some(a);
@@ -2104,6 +2190,8 @@ impl CsmApp {
         }
 
         let t = theme::Tokens::get(&ctx);
+        // The regions drawn this frame (F6 reads them next frame).
+        self.ui.region_rects.clear();
         // The whole window, whatever margin the host gave the root ui.
         let full = ctx.content_rect();
         let mut root = ui.new_child(UiBuilder::new().max_rect(full));
@@ -2114,6 +2202,7 @@ impl CsmApp {
 
         let title = Rect::from_min_max(full.min, pos2(full.max.x, full.min.y + size::TITLE_BAR));
         ui.scope_builder(UiBuilder::new().max_rect(title), |ui| screens::titlebar::show(ui, self, &mut actions));
+        self.ui.region_rects.push((FocusRegion::TitleBar, title));
         let mut body_top = title.max.y;
         if let Some(status) = self.remote.clone() {
             // Always visible in a remote window: the host and address, and the link's state.
@@ -2134,6 +2223,7 @@ impl CsmApp {
         if self.model.group_mode == crate::model::GroupMode::Rail || self.ui.compact {
             let rail = Rect::from_min_max(pos2(x, body.min.y), pos2(x + size::RAIL, body.max.y));
             ui.scope_builder(UiBuilder::new().max_rect(rail), |ui| screens::sidebar::rail(ui, self, &mut actions));
+            self.ui.region_rects.push((FocusRegion::RailTabs, rail));
             x = rail.max.x;
         }
         if let Some(e) = &mut self.ui.inline {
@@ -2143,6 +2233,7 @@ impl CsmApp {
         let side = Rect::from_min_max(pos2(x, body.min.y), pos2(x + sidebar_w, body.max.y));
         if !self.ui.compact {
             ui.scope_builder(UiBuilder::new().max_rect(side), |ui| screens::sidebar::show(ui, self, &mut actions));
+            self.ui.region_rects.push((FocusRegion::SidebarList, side));
         } else {
             self.ui.peek_sidebar &= self.ui.overlay == Overlay::None;
         }
@@ -2169,7 +2260,9 @@ impl CsmApp {
                 work.max.x = insp.min.x;
                 ui.scope_builder(UiBuilder::new().max_rect(insp), |ui| screens::inspector::show(ui, self, &mut actions));
                 inspector_rect = Some((insp, w, max_w));
+                self.ui.region_rects.push((FocusRegion::Inspector, insp));
             }
+            self.ui.region_rects.push((FocusRegion::Panes, work));
             ui.scope_builder(UiBuilder::new().max_rect(work), |ui| screens::panes::workspace(ui, self, &mut actions));
             // The inspector's left edge drags its width (registered last, so it sits on top of
             // both sides); a double click resets it.
@@ -2213,6 +2306,12 @@ impl CsmApp {
         let active = self.model.active.clone();
         self.backend.show_panes(&shown, active.as_deref());
 
+        // The keyboard focus ring, round the region that has it (none for a mouse user).
+        if let Some(r) = self.ui.region
+            && let Some((_, rect)) = self.ui.region_rects.iter().find(|(x, _)| *x == r)
+        {
+            crate::widgets::focus_ring(ui, *rect, theme::radius::SM);
+        }
         // Overlays, top-most last.
         screens::open_with::show(&ctx, self, &mut actions);
         screens::menus::show(&ctx, self, &mut actions);

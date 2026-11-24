@@ -14,6 +14,13 @@ fn info(resp: &Response, ty: WidgetType, label: &str) {
     resp.widget_info(move || WidgetInfo::labeled(ty, true, label.clone()));
 }
 
+/// The keyboard focus ring around `rect`: `size::RING` wide, inside the rect, in the focus
+/// colour. The caller draws it only where keyboard focus is, never for mouse focus.
+pub fn focus_ring(ui: &Ui, rect: Rect, radius: u8) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_stroke(rect, CornerRadius::same(radius), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
+}
+
 /// Text width with a font, for laying out painted rows.
 pub fn text_width(ui: &Ui, s: &str, font: FontId) -> f32 {
     ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_string(), font, Color32::PLACEHOLDER).size().x)

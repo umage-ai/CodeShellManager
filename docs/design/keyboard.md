@@ -222,6 +222,14 @@ of them push.
    palette hints and menu labels read the keymap; the old hand tables are deleted. Optional: Alt
    tap alias, if it proves reliable on Windows. Docs: a keyboard section in `docs/`.
 
+**Status (branch `kb/navigation`).** Step 3's focus model is in: `FocusRegion` and the F6 /
+Shift+F6 cycle over the regions drawn last frame (`crates/csm-ui/src/focus.rs`), Esc back to the
+terminal, Ctrl+Alt+Arrow pane movement by geometry (`session_focus`, no new tool), and the focus
+ring from `Tokens::focus()` through `widgets::focus_ring`. Not yet: the arrow keys inside each
+region (sidebar, rail, inbox, title bar, screen strip), the Inspector and Inbox regions' own
+keys, the ring on buttons and switches, and the dialog and menu keys (step 4). The inbox panel is
+not a region yet (it is drawn inside the sidebar).
+
 ## 9. Gate and rules for these steps
 
 - Gate per step, in the worktree: `cargo +1.97 test --workspace --no-fail-fast`,

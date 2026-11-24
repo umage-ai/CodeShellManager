@@ -687,3 +687,24 @@ fn qr_and_status_screens() {
         |_| {},
     );
 }
+
+/// The keyboard focus ring: F6 walks to the sidebar, so its region ring shows (and the focused
+/// session row, if any, takes the same ring).
+#[test]
+fn keyboard_focus_ring_screen() {
+    shoot(
+        "focus-ring-sidebar",
+        ThemeKind::Mocha,
+        |_| {},
+        |h| {
+            for _ in 0..8 {
+                if h.state().ui.region == Some(csm_ui::focus::FocusRegion::SidebarList) {
+                    break;
+                }
+                h.key_press(egui::Key::F6);
+                settle(h);
+            }
+            assert_eq!(h.state().ui.region, Some(csm_ui::focus::FocusRegion::SidebarList));
+        },
+    );
+}
