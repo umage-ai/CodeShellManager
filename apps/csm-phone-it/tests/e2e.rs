@@ -238,9 +238,9 @@ impl Driver {
     /// Pairs a phone: the phone sends its check and name, the PC allows it at `level`.
     fn pair(&mut self, host: &HostRig, name: &str, link: &str, level: Level) -> Value {
         self.send(&json!({"do": "pair", "name": name, "offer": link}));
-        let Out::Pending { name: shown, .. } = host.wait_out(|o| matches!(o, Out::Pending { .. })) else { unreachable!() };
+        let Out::Pending { name: shown, check } = host.wait_out(|o| matches!(o, Out::Pending { .. })) else { unreachable!() };
         assert_eq!(shown, name, "the PC shows the name the phone sent");
-        host.cmd.send(Command::Decide(Some(level))).unwrap();
+        host.cmd.send(Command::Decide { check, allow: Some(level) }).unwrap();
         self.recv()
     }
 }

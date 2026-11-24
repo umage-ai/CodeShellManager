@@ -259,6 +259,11 @@ These hold whatever the relay, a phone or the UI does.
   never appear in a tool result, a `csm/log` line, `plugin_status`, a `csm/status` text or any file
   except the screen tree sent to CSM for the pairing screen. Step 1 checks that no core tool that
   reads screen trees is open to MCP callers; if one is, the QR node is hidden from it.
+- **A decision names the code it answers.** Allow and Deny are buttons whose keys carry the check code they were drawn
+  with (`allow:<code>`, `deny:<code>`). The screen sends a decision only when that code is the one waiting now, and
+  `Host::decide` refuses one whose code is not the waiting phone's, so a channel that dropped and was taken by another
+  phone cannot be approved on the old code. The `pair_decide` tool takes the `check` argument for the same reason.
+  The test is `an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing` (protocol and relay).
 - **Revoke and level changes close channels on the host.** Revoke removes the device from
   `devices.json`, sends the new `Allow` to the relay and sends `Bye { revoked }` on each open channel
   of that device, then closes those channels itself. A level change does the same with
@@ -564,8 +569,9 @@ Level:  [ Viewer | Operator ]                (segmented, key "level")
   generic text). The PC's pending request keeps its own device name and check code. If the add-on itself sees
   a second pairing channel on its relay connection (a hostile relay forwarding one), it closes that channel
   with `not_allowed` and does not run Noise on it. A distinct relay code and a PC count line would need a relay
-  change, which v1 does not make (section 13, decision 15).- The check code is `check_code(handshake_hash)` on both sides. The screen says: "If the digits differ,
-  press Deny." That is the whole defence against a swapped QR.
+  change, which v1 does not make (section 13, decision 15).- The check code is `check_code(handshake_hash)` on both sides. The PC screen says: "Read the same four digits on the phone.
+  If they differ, press Deny." The phone shows its digits only after its send, once the PC can show the same ones.
+  That comparison, made before Allow, is the whole defence against a swapped QR.
 - The offer URL and PSK go only into the screen tree (section 4.1). They are never in a log or a result.
 
 **Devices screen** (`phone-remote.devices`): a `list` of devices (`title` = name, `subtitle` = level,
@@ -820,9 +826,12 @@ Checks the implementation must pass (step 2):
 
 1. **Pair.** "Scan the code on your PC" (BarcodeDetector when available, camera permission asked here), or
    "Paste the link" (a text field; the link or the bare payload, `PairingOffer.decode` accepts both). Then
-   "Connecting…", the device name the phone sends (default: the browser's name, editable), the check code
-   on the phone ("Read the four digits on the PC; if they differ, do not continue"), and "Waiting for the PC
-   to allow this phone". Denied and expired are plain messages.
+   "Connecting…", the device name the phone sends (default: the browser's name, editable), and the first
+   action, "Send to the PC", which sends `Confirm` and the name. The PC shows its check code only after that,
+   so the phone never asks for a comparison the PC cannot show yet. Then the phone shows its own four digits
+   ("Check that the PC shows these same four digits, then press Allow on the PC") and waits. Denied and expired
+   are plain messages. (Fix round 7: the order was "digits match" before the send, which asked for digits the PC
+   did not show; `phone/test/ui.test.js` holds the order.)
 2. **Sessions** (the default screen once paired). Connection state at the top ("Connected", "Connecting…",
    "Offline: showing the last list from 14:02"). Groups: "Needs you" first (approval, then question), then
    "Working", "Idle or done", "Asleep", "Exited". Each row: name, folder's last path segment, status word,
@@ -1166,7 +1175,7 @@ Built in `apps/csm-phone/` (lib `csm_phone`, program `csm-phone`; layer 6; in `D
 18.2 for why that crate exists and why it is not a general exception).
 
 - `shell.rs`: the stdio JSON-RPC shell CSM starts. `initialize` (API 1, seven tools whose effects are declared in the
-  manifest); `tools/call` with the person-only check (`caller.kind` is `ui` or `cli`; agents and other add-ons are
+  manifest); `tools/call` with the person-only check (`caller.kind` is `ui` only, the CLI included, as section 4.1 says; agents and other add-ons are
   refused before any command). `csm/call` goes out through `StdioCsm`; its answers are routed off the reader thread.
   Problems go to `csm/log`. Threads: a reader, the main loop (answers tools, never calls CSM), the host thread (relay
   loop and Noise, never calls CSM) and the ops worker (section 18.3).
@@ -1245,6 +1254,14 @@ Tests (all pass with `cargo +1.97 test`):
   and runs ten requests in each direction, the snapshot included. The product count is `REKEY_INTERVAL` (10 000).
 
 ### 18.2 Deviations from this plan, with the reason
+
+- **Fix round 7 (final review).** The person-only tools accept `ui` only, the CLI included, as sections 3, 4.1 and 17
+  say; the first build had let `cli` through, which the review found. `pair_decide` takes a `check` argument (a
+  deviation from the table, which lists no arguments): an answer is tied to the code shown, so a phone that replaced the
+  waiting one cannot be approved on the old code (section 4.1). The pairing order on the phone is the protocol's: the
+  first action sends the confirmation and name, and the PC shows its code after that (sections 8 and 10.5). The relay
+  connection limits each WebSocket message to one Noise message plus the frame header (`MAX_RELAY_MESSAGE`), where
+  tungstenite's default allows 64 MiB; a larger message ends the read.
 
 - Threads: the relay client uses one thread with a 100 ms read timeout instead of a reader and a writer thread. One
   owner of the socket is simpler to reason about. The host thread owns the `Host`; the tools reach it through `Command`
@@ -1426,8 +1443,9 @@ Deviations, with the reason:
   two requests in flight cannot share a nonce or reach the PC out of order. A request is sealed and sent in the order it
   was made.
 - **The confirmation waits for the person.** The phone sends `Confirm` and its name only after the person presses
-  "The digits match" (the PC's Allow is then the second step). The host protocol allows either order; this one matches
-  the screen text of 10.5.
+  "Send to the PC", the first action on the pairing screen. The PC then shows the check code and the person compares
+  the digits there before Allow (the PC's Allow is the gate). The phone shows its own digits only in the waiting
+  stage (fix round 7; `phone/test/ui.test.js`).
 - **The pairing name** is checked before anything is sent (1 to 64 characters, no control characters), as `PairMsg`.
 - **Session list in memory only.** Offline, the last list received is shown with its time. It is not kept in
   IndexedDB or the service worker (10.2, "never cache session data").
@@ -1467,3 +1485,37 @@ section 10 is built.
   or a relay restart (the relay tests and `relay_it.rs` cover them without Node).
 - **Settled decisions (section 13)** are recorded in that section ("Settled: recommended option"); this step builds on them
   and changed none.
+
+### 18.9 Final review, fix round 7
+
+The final review found four issues (two major, two minor). Each is fixed, with a test that would have caught it:
+
+- **Pairing order on the phone (major).** The phone asked the person to compare digits before the PC could show them.
+  The first action is now "Send to the PC" (`Confirm` and the name); the PC shows its code after that and the phone shows
+  its own digits in the waiting stage. Test: `phone/test/ui.test.js` (the check stage asks for no digits). Sections 8, 10.5
+  and 18.7 and `docs/phone-remote.md` ("Pair a phone") say the same.
+- **The person-only tools accepted the CLI (major).** `is_person` is `ui` only again. Test: `tests/shell.rs`
+  (`an_agent_cannot_pair_decide_or_revoke_and_nothing_is_started` refuses `cli` too) and `shell.rs`'s unit test.
+- **An answer could approve a phone the person did not compare (minor).** Allow and Deny carry the code they were drawn
+  with; `Host::decide` refuses a code that is not the waiting phone's. Tests:
+  `an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing` (protocol, `tests/protocol.rs`, and relay,
+  `csm-phone-it/tests/relay_it.rs`) and `a_press_for_a_code_that_is_no_longer_shown_sends_nothing` (`screens.rs`).
+- **The relay WebSocket accepted 64 MiB messages (minor).** `connect` sets `MAX_RELAY_MESSAGE` (one Noise message plus the
+  frame header) as the message and frame limit. Test: `an_oversize_relay_message_ends_the_read_and_is_not_buffered`
+  (`relay_client.rs`, over a loopback socket).
+
+The status tool's `pending` (the waiting phone's name and check code) now goes to the person's UI only, as the device
+names do (section 3).
+
+### 18.10 Final review, fix round 8
+
+- **The work is committed.** Fix round 7 and the test-only changes of this round were uncommitted; they are now in the
+  branch's history with this section.
+- **A flaky assertion (minor).** `an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing` asserted that the two
+  4-digit check codes differ. Two independent handshakes can show the same code by chance, about 1 time in 10,000, and
+  the test then failed. The second phone's handshake is now retried when its code equals the first one, so the stale
+  answer always names a code that is no longer waiting.
+- **Residual limit (from the 4-digit design, not this change).** Two codes can collide, so an answer for an old code
+  could, by chance, match the waiting phone's code. The check is a human comparison of 4 digits; the collision chance
+  for an attacker who controls a second phone is about 1 in 10,000 per attempt. Accepted for step 1; a longer code
+  would remove it, and is a design change for the owner.

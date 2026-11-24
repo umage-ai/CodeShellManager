@@ -176,6 +176,11 @@ fn data_frame(ch: u32, payload: &[u8]) -> Vec<u8> {
     encode_frame(FrameKind::Data, ch, payload)
 }
 
+/// The relay says a channel is over, with no refusal code.
+fn close_frame(ch: u32) -> Vec<u8> {
+    encode_frame(FrameKind::Close, ch, &[0, 0])
+}
+
 /// Opens and completes a pairing on channel `ch` the way the phone does: message 1 (no payload),
 /// read the host's message 2, then `Confirm` (the check code), then `Hello` (the name). Returns the
 /// phone's transport, the check code the phone computed, and what the host sent for the `Hello`
@@ -205,7 +210,7 @@ fn accepted_device(host: &mut Host, phone: &Phone, level: Level) -> (String, [u8
     let psk = host.slot.as_ref().unwrap().psk;
     let (mut t, check, outs) = pair_until_waiting(host, phone, 1, "Pixel 9", &psk);
     assert!(outs.iter().any(|o| matches!(o, Out::Pending { check: c, name } if *c == check && name == "Pixel 9")), "the PC shows the same code the phone computed");
-    let outs = host.decide(NOW, Some(level));
+    let outs = host.decide(NOW, &check, Some(level));
     let accept = data_on(&outs, 1);
     let plain = open_msg(&mut t, accept.first().unwrap()).unwrap();
     let PairMsg::Accept { routing_token, level: got, device_id } = serde_json::from_slice(&plain).unwrap() else { panic!("expected Accept") };
@@ -292,13 +297,45 @@ fn pairing_deny_sends_denied_and_saves_nothing() {
     host.start_pairing(NOW, "0.1.0").unwrap();
     let psk = host.slot.as_ref().unwrap().psk;
     let phone = new_phone();
-    let (mut t, _check, _) = pair_until_waiting(&mut host, &phone, 1, "Phone", &psk);
-    let outs = host.decide(NOW, None);
+    let (mut t, check, _) = pair_until_waiting(&mut host, &phone, 1, "Phone", &psk);
+    let outs = host.decide(NOW, &check, None);
     let plain = open_msg(&mut t, &data_on(&outs, 1)[0]).unwrap();
     assert_eq!(serde_json::from_slice::<PairMsg>(&plain).unwrap(), PairMsg::Deny { reason: DenyReason::Denied });
     assert!(outs.iter().any(|o| matches!(o, Out::Control(HostToRelay::PairingClose))));
     assert!(host.devices.is_empty());
     assert!(store::open(dir.path()).unwrap().devices.is_empty());
+}
+
+/// The person compared the code on the screen for the first phone. Its channel then closed (the relay
+/// dropped it), and a second phone took the same offer. The answer the person gave for the first code
+/// must not allow the second phone: nothing is saved, and the second phone is still the one to allow.
+#[test]
+fn an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut host, _calls) = host_in(dir.path(), config());
+    host.start_pairing(NOW, "0.1.0").unwrap();
+    let psk = host.slot.as_ref().unwrap().psk;
+
+    let first = new_phone();
+    let (_t1, check1, outs) = pair_until_waiting(&mut host, &first, 1, "First", &psk);
+    assert!(outs.iter().any(|o| matches!(o, Out::Pending { check, .. } if *check == check1)));
+    host.on_frame(&close_frame(1), NOW);
+
+    let second = new_phone();
+    let (mut t2, check2, outs) = pair_until_waiting(&mut host, &second, 2, "Second", &psk);
+    assert_ne!(check1, check2, "two handshakes, two codes");
+    assert!(outs.iter().any(|o| matches!(o, Out::Pending { check, name } if *check == check2 && name == "Second")));
+
+    let outs = host.decide(NOW, &check1, Some(Level::Viewer));
+    assert!(outs.iter().any(|o| matches!(o, Out::Notice(n) if n.contains("Nothing was decided"))), "{outs:?}");
+    assert!(data_on(&outs, 2).is_empty(), "no Accept or Deny goes to the waiting phone");
+    assert!(host.devices.is_empty(), "the old answer saves nothing");
+
+    let outs = host.decide(NOW, &check2, Some(Level::Operator));
+    let plain = open_msg(&mut t2, &data_on(&outs, 2)[0]).unwrap();
+    assert!(matches!(serde_json::from_slice::<PairMsg>(&plain).unwrap(), PairMsg::Accept { level: Level::Operator, .. }));
+    assert_eq!(host.devices.len(), 1);
+    assert_eq!(host.devices[0].name, "Second");
 }
 
 #[test]

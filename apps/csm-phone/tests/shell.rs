@@ -111,9 +111,12 @@ fn an_agent_cannot_pair_decide_or_revoke_and_nothing_is_started() {
     .into_iter()
     .enumerate()
     {
-        let r = p.call(10 + i as u64, name, "external", args);
+        let r = p.call(10 + i as u64, name, "external", args.clone());
         assert!(r.get("error").is_some(), "{name} must be refused for an agent: {r}");
         assert!(r["error"]["message"].as_str().unwrap().contains("only the person"));
+        // The CLI is refused too (design section 4.1): only the app's own UI is the person here.
+        let r = p.call(30 + i as u64, name, "cli", args);
+        assert!(r["error"]["message"].as_str().unwrap_or_default().contains("only the person"), "{name} must be refused for the CLI: {r}");
     }
 }
 
@@ -124,10 +127,12 @@ fn the_person_gets_no_link_without_a_relay_and_an_empty_device_list() {
     p.initialize(json!(dir.path().to_string_lossy()));
     let r = p.call(20, "phone-remote.pair_start", "ui", json!({}));
     assert!(r["error"]["message"].as_str().unwrap().contains("no relay"), "{r}");
-    let r = p.call(21, "phone-remote.device_list", "cli", json!({}));
+    let r = p.call(21, "phone-remote.device_list", "ui", json!({}));
     assert_eq!(r["result"]["data"]["devices"], json!([]));
-    let r = p.call(22, "phone-remote.pair_decide", "ui", json!({"allow": true}));
+    let r = p.call(22, "phone-remote.pair_decide", "ui", json!({"check": "8216", "allow": true}));
     assert!(r["error"]["message"].as_str().unwrap().contains("level"), "an allow needs a level: {r}");
+    let r = p.call(23, "phone-remote.pair_decide", "ui", json!({"allow": true, "level": "viewer"}));
+    assert!(r["error"]["message"].as_str().unwrap().contains("check"), "a decision names the code it answers: {r}");
 }
 
 #[test]

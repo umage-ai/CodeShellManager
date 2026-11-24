@@ -403,11 +403,16 @@ impl Host {
     }
 
     /// The person's decision on the waiting phone: `Some(level)` allows it at that level, `None`
-    /// denies it. Allow saves the device before the phone is told.
-    pub fn decide(&mut self, now: u64, allow: Option<Level>) -> Vec<Out> {
+    /// denies it. `check` is the code the person compared; when it is not the code of the phone that
+    /// is waiting now, nothing changes (the phone on the screen may not be the one answering). Allow
+    /// saves the device before the phone is told.
+    pub fn decide(&mut self, now: u64, check: &str, allow: Option<Level>) -> Vec<Out> {
         let Some(ch) = self.waiting_channel() else {
             return vec![Out::Notice("No phone is waiting for an answer.".into())];
         };
+        if self.waiting_check() != Some(check) {
+            return vec![Out::Notice("The phone waiting now is not the one whose code was shown. Nothing was decided; check the code on the screen again.".into())];
+        }
         let Some(level) = allow else {
             return self.end_pairing(now, Some(DenyReason::Denied));
         };
@@ -1114,6 +1119,14 @@ impl Host {
 
     fn waiting_channel(&self) -> Option<u32> {
         self.chans.iter().find(|(_, c)| matches!(c.state, ChanState::PairWait { .. })).map(|(k, _)| *k)
+    }
+
+    /// The check code of the phone that is waiting, if one is.
+    fn waiting_check(&self) -> Option<&str> {
+        self.chans.values().find_map(|c| match &c.state {
+            ChanState::PairWait { check, .. } => Some(check.as_str()),
+            _ => None,
+        })
     }
 
     /// Encrypts a pairing-channel message (Deny) for `ch`, when that channel is waiting.

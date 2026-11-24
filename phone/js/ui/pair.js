@@ -1,7 +1,8 @@
 // @ts-check
 // The pairing screen (design 10.5, 1). Paste the link, or scan the PC's code where the browser can
-// read QR codes. Then the check code: the person reads the same four digits on the PC, and only
-// then confirms. The PC shows the request; this screen waits for its answer.
+// read QR codes. The order follows the protocol: this phone sends its confirmation and name first;
+// the PC then shows the check code, and the person compares it with the digits this phone shows
+// while it waits, and allows there. The digits are never asked for before the PC can show them.
 
 import { el, field } from "./dom.js";
 
@@ -15,6 +16,37 @@ let draftName = "";
  * @type {{ stream: MediaStream, timer: ReturnType<typeof setInterval> } | null}
  */
 let scanning = null;
+
+/**
+ * What the pairing screen says at each stage, as data, so the order is testable without a DOM.
+ * `digits` is set only in the waiting stage, after `Confirm` and `Hello` have reached the PC.
+ * @param {{ stage: string, check?: string, error?: string } | null} pairing
+ * @returns {{ lines: string[], digits: string | null, action: "send" | null, error: boolean }}
+ */
+export function pairPrompt(pairing) {
+  if (!pairing) return { lines: [], digits: null, action: null, error: false };
+  if (pairing.stage === "connecting") return { lines: ["Connecting to the PC…"], digits: null, action: null, error: false };
+  if (pairing.stage === "check") {
+    return {
+      lines: [
+        "The PC is waiting. Press Send to the PC to send this phone's name.",
+        "The PC then shows a four-digit check code. Compare it with the digits on the PC, and press Allow there only when they match.",
+      ],
+      digits: null,
+      action: "send",
+      error: false,
+    };
+  }
+  if (pairing.stage === "waiting") {
+    return {
+      lines: ["Check that the PC shows these same four digits, then press Allow on the PC."],
+      digits: pairing.check ?? null,
+      action: null,
+      error: false,
+    };
+  }
+  return { lines: [pairing.error ?? "Pairing failed."], digits: null, action: null, error: true };
+}
 
 /**
  * The name the phone is paired with by default: the browser's platform, not a personal name.
@@ -42,30 +74,30 @@ export function renderPair(out, ctx) {
     out.push(formView(ctx));
     return;
   }
-  if (pairing.stage === "connecting") {
-    out.push(el("p", { text: "Connecting to the PC…", attrs: { role: "status" } }));
+  const prompt = pairPrompt(pairing);
+  if (prompt.error) {
+    out.push(el("p", { className: "error", text: prompt.lines[0], attrs: { role: "alert" } }));
+    out.push(el("div", { className: "actions" }, el("button", { className: "primary", text: "Try again", on: { click: () => ctx.pairCancel() } })));
     return;
   }
-  if (pairing.stage === "check") {
-    out.push(el("p", { text: "Read these four digits on the PC. If they differ, do not continue." }));
-    out.push(el("p", { className: "check-code", text: pairing.check ?? "", attrs: { "aria-label": `Check code ${(pairing.check ?? "").split("").join(" ")}` } }));
+  if (pairing.stage === "connecting") {
+    out.push(el("p", { text: prompt.lines[0], attrs: { role: "status" } }));
+    return;
+  }
+  for (const line of prompt.lines) out.push(el("p", { text: line, attrs: prompt.digits === null ? {} : { role: "status" } }));
+  if (prompt.digits !== null) {
+    out.push(el("p", { className: "check-code", text: prompt.digits, attrs: { "aria-label": `Check code ${prompt.digits.split("").join(" ")}` } }));
+  }
+  if (prompt.action === "send") {
     out.push(
       el(
         "div",
         { className: "actions" },
-        el("button", { className: "primary", text: "The digits match", on: { click: () => void ctx.pairConfirm() } }),
+        el("button", { className: "primary", text: "Send to the PC", on: { click: () => void ctx.pairConfirm() } }),
         el("button", { text: "Cancel", on: { click: () => ctx.pairCancel() } }),
       ),
     );
-    return;
   }
-  if (pairing.stage === "waiting") {
-    out.push(el("p", { text: "Waiting for the PC to allow this phone. Check the PC.", attrs: { role: "status" } }));
-    if (pairing.check) out.push(el("p", { className: "muted", text: `Check code ${pairing.check}` }));
-    return;
-  }
-  out.push(el("p", { className: "error", text: pairing.error ?? "Pairing failed.", attrs: { role: "alert" } }));
-  out.push(el("div", { className: "actions" }, el("button", { className: "primary", text: "Try again", on: { click: () => ctx.pairCancel() } })));
 }
 
 /**
@@ -110,7 +142,7 @@ function formView(ctx) {
       canScan ? el("button", { text: scanning ? "Stop scanning" : "Scan the code", on: { click: () => (scanning ? stopScan(ctx) : void startScan(ctx)) } }) : null,
     ),
     canScan ? video : null,
-    el("p", { className: "muted", text: "The code is good for ten minutes and works once. Nothing is sent to the PC until you confirm the digits." }),
+    el("p", { className: "muted", text: "The code is good for ten minutes and works once. Nothing but the secure handshake is sent until you press Send to the PC." }),
   );
 }
 

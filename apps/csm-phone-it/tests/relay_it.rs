@@ -169,8 +169,9 @@ impl HostRig {
         rx.recv_timeout(WAIT).expect("the host answers").expect("pairing opens")
     }
 
-    fn decide(&self, allow: Option<Level>) {
-        self.cmd.send(Command::Decide(allow)).unwrap();
+    /// Answers the waiting phone for the code the test saw (`check`).
+    fn decide(&self, check: &str, allow: Option<Level>) {
+        self.cmd.send(Command::Decide { check: check.to_owned(), allow }).unwrap();
     }
 
     fn revoke(&self, device_id: &str) {
@@ -360,7 +361,7 @@ fn pair_with_offer(host: &HostRig, relay: &RelayRig, offer: &PairingOffer, phone
     let Out::Pending { check, name: shown_name } = shown else { unreachable!() };
     assert_eq!(check, phone_check, "the PC shows the code the phone computed");
     assert_eq!(shown_name, name);
-    host.decide(Some(level));
+    host.decide(&check, Some(level));
     let accept = read_binary(&mut ws).expect("the accept arrives before the close");
     let PairMsg::Accept { routing_token, level: got, device_id } = serde_json::from_slice(&open(&mut t, &accept)).unwrap() else {
         panic!("expected Accept")
@@ -433,13 +434,84 @@ fn deny_tells_the_phone_and_saves_nothing() {
     let phone = Phone::new();
     let mut ws = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
     let (mut t, _check) = pairing_exchange(&mut ws, &phone, &offer, &psk, "Pixel 9");
-    host.wait_out(|o| matches!(o, Out::Pending { .. }));
-    host.decide(None);
+    let Out::Pending { check, .. } = host.wait_out(|o| matches!(o, Out::Pending { .. })) else { unreachable!() };
+    host.decide(&check, None);
     let deny = read_binary(&mut ws).expect("the deny arrives");
     let PairMsg::Deny { reason } = serde_json::from_slice(&open(&mut t, &deny)).unwrap() else { panic!("expected Deny") };
     assert_eq!(reason, DenyReason::Denied);
     assert!(read_binary(&mut ws).is_none(), "the pairing socket closes after the deny");
     assert!(host.devices().is_empty(), "a denied phone is not saved");
+    relay.stop();
+}
+
+/// The exchange as `pairing_exchange`, but a refused or dropped attempt gives `None` instead of a panic:
+/// the host admits a pairing channel only once the previous one has ended, so a retry may be needed.
+fn try_pairing_exchange(ws: &mut Sock, phone: &Phone, offer: &PairingOffer, psk: &[u8; 32], name: &str) -> Option<(TransportState, String)> {
+    let host_pub = offer.host_pub()?;
+    let mut hs = phone.pairing_initiator(&host_pub, &offer.h, psk);
+    let mut buf = vec![0u8; 1024];
+    let n = hs.write_message(&[], &mut buf).ok()?;
+    ws.send(Message::Binary(buf[..n].to_vec().into())).ok()?;
+    let answer = read_binary(ws)?;
+    let mut payload = vec![0u8; 1024];
+    hs.read_message(&answer, &mut payload).ok()?;
+    let check = check_code(hs.get_handshake_hash());
+    let mut t = hs.into_transport_mode().ok()?;
+    let confirm = serde_json::to_vec(&PairMsg::Confirm { check: check.clone() }).ok()?;
+    ws.send(Message::Binary(seal(&mut t, &confirm).into())).ok()?;
+    let hello = serde_json::to_vec(&PairMsg::Hello { v: PROTOCOL_VERSION, name: name.into() }).ok()?;
+    ws.send(Message::Binary(seal(&mut t, &hello).into())).ok()?;
+    Some((t, check))
+}
+
+/// The person compared the code on the screen (for the first phone), then that phone's channel dropped
+/// and a second phone took the same offer. The old answer must not allow the second phone: the host
+/// refuses it, nothing is saved, and the second phone is still the one the person can allow.
+#[test]
+fn an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing() {
+    let relay = RelayRig::start(0);
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(relay.port(), dir.path());
+    let offer = parse_offer(&host.start_pairing());
+    let psk = offer.psk().unwrap();
+
+    let first = Phone::new();
+    let mut ws_a = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
+    let (_t_a, check_a) = pairing_exchange(&mut ws_a, &first, &offer, &psk, "First phone");
+    let Out::Pending { check: shown_a, .. } = host.wait_out(|o| matches!(o, Out::Pending { .. })) else { unreachable!() };
+    assert_eq!(shown_a, check_a, "the screen shows the first phone's code");
+    drop(ws_a);
+
+    let second = Phone::new();
+    let deadline = Instant::now() + WAIT;
+    // The 4-digit codes of two independent handshakes can collide (about 1 in 10,000). A
+    // collision retries the second handshake, so the stale answer below always names a code
+    // that is no longer waiting.
+    let (mut ws_b, mut t_b, check_b) = loop {
+        let mut ws = pairing_socket(relay.addr, &offer.h, &offer.pairing_id().unwrap());
+        match try_pairing_exchange(&mut ws, &second, &offer, &psk, "Second phone") {
+            Some((t, check)) if check != check_a => break (ws, t, check),
+            _ => {}
+        }
+        assert!(Instant::now() < deadline, "the second phone never got a fresh code");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_ne!(check_a, check_b, "two handshakes, two codes");
+    host.wait_out(|o| matches!(o, Out::Pending { check, .. } if *check == check_b));
+
+    // The person's answer, for the code that was on the screen before the swap.
+    host.decide(&check_a, Some(Level::Viewer));
+    host.wait_out(|o| matches!(o, Out::Notice(n) if n.contains("Nothing was decided")));
+    assert!(host.devices().is_empty(), "the old answer saves nothing");
+
+    // The answer for the code that is waiting now works.
+    host.decide(&check_b, Some(Level::Operator));
+    let accept = read_binary(&mut ws_b).expect("the second phone gets its Accept");
+    let PairMsg::Accept { level, .. } = serde_json::from_slice(&open(&mut t_b, &accept)).unwrap() else { panic!("expected Accept") };
+    assert_eq!(level, Level::Operator);
+    let devices = host.devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].name, "Second phone");
     relay.stop();
 }
 
@@ -697,7 +769,7 @@ fn the_pairing_screen_pairs_a_phone_through_its_buttons() {
     assert!(screen.tree(screens::PAIR).contains(&check), "the check code is drawn");
 
     screen.event(screens::PAIR, "level", "select", json!({"value": "operator"}));
-    screen.event(screens::PAIR, "allow", "click", Value::Null);
+    screen.event(screens::PAIR, &format!("allow:{check}"), "click", Value::Null);
     let accept = read_binary(&mut ws).expect("the accept arrives");
     let PairMsg::Accept { level, .. } = serde_json::from_slice(&open(&mut t, &accept)).unwrap() else {
         panic!("expected Accept")
@@ -727,7 +799,8 @@ fn the_pairing_screen_denies_a_phone_and_saves_nothing() {
     let _ = pairing_exchange(&mut ws, &phone, &offer, &psk, "Stranger");
     screen.wait_for("the waiting phone", |l| l.pending.is_some());
 
-    screen.event(screens::PAIR, "deny", "click", Value::Null);
+    let shown = screen.live.pending.clone().unwrap().0;
+    screen.event(screens::PAIR, &format!("deny:{shown}"), "click", Value::Null);
     screen.wait_for("the pairing to end", |l| l.offer.is_none());
     assert_eq!(screen.live.notice.as_deref(), Some("Pairing stopped."));
     assert!(host.devices().is_empty(), "a denied phone is not saved");

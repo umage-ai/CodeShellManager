@@ -262,7 +262,8 @@ fn pair_tree(view: &View, ui: &Ui) -> Value {
                     kids.push(text(&format!("Device: {name}      Check code: {check}")));
                     kids.push(text("Read the same four digits on the phone. If they differ, press Deny."));
                     kids.push(level_segmented("level", ui.level));
-                    kids.push(row(vec![button("allow", "Allow", "primary"), button("deny", "Deny", "danger")]));
+                    // The keys name the code drawn here, so a press answers the phone the person saw.
+                    kids.push(row(vec![button(&format!("allow:{check}"), "Allow", "primary"), button(&format!("deny:{check}"), "Deny", "danger")]));
                 }
                 None => kids.push(text("Waiting for a phone to scan the code.")),
             }
@@ -456,11 +457,23 @@ fn pair_event(view: &View, ui: &mut Ui, key: &str, kind: &str, value: &Value) ->
             }
             Vec::new()
         }
-        // Allow and Deny only mean something while a phone waits for an answer.
-        ("allow", "click") if view.live.pending.is_some() => vec![Command::Decide(Some(ui.level))],
-        ("deny", "click") if view.live.pending.is_some() => vec![Command::Decide(None)],
-        _ => Vec::new(),
+        _ => match (key.split_once(':'), kind) {
+            // Allow and Deny only mean something while a phone waits, and only for the code the
+            // button was drawn with: a phone that replaced it since is not what the person compared.
+            (Some(("allow", check)), "click") if shown_check(view) == Some(check) => {
+                vec![Command::Decide { check: check.to_owned(), allow: Some(ui.level) }]
+            }
+            (Some(("deny", check)), "click") if shown_check(view) == Some(check) => {
+                vec![Command::Decide { check: check.to_owned(), allow: None }]
+            }
+            _ => Vec::new(),
+        },
     }
+}
+
+/// The check code of the phone waiting now, if one is.
+fn shown_check<'a>(view: &View<'a>) -> Option<&'a str> {
+    view.live.pending.as_ref().map(|(check, _)| check.as_str())
 }
 
 fn devices_event(ui: &mut Ui, key: &str, kind: &str, value: &Value) -> Vec<Command> {
@@ -687,18 +700,31 @@ mod tests {
         let mut ui = Ui::default();
         let cmds = event(PAIR, &view(&live), &mut ui, "level", "select", &json!({"value": "operator"}));
         assert!(cmds.is_empty());
-        let cmds = event(PAIR, &view(&live), &mut ui, "allow", "click", &Value::Null);
-        assert!(matches!(cmds.as_slice(), [Command::Decide(Some(Level::Operator))]), "{cmds:?}");
-        let cmds = event(PAIR, &view(&live), &mut ui, "deny", "click", &Value::Null);
-        assert!(matches!(cmds.as_slice(), [Command::Decide(None)]));
+        let cmds = event(PAIR, &view(&live), &mut ui, "allow:8216", "click", &Value::Null);
+        assert!(matches!(cmds.as_slice(), [Command::Decide { check, allow: Some(Level::Operator) }] if check == "8216"), "{cmds:?}");
+        let cmds = event(PAIR, &view(&live), &mut ui, "deny:8216", "click", &Value::Null);
+        assert!(matches!(cmds.as_slice(), [Command::Decide { check, allow: None }] if check == "8216"), "{cmds:?}");
+    }
+
+    #[test]
+    fn a_press_for_a_code_that_is_no_longer_shown_sends_nothing() {
+        // The button was drawn for 8216; a different phone now waits with 5530. The press must not
+        // answer the phone that is waiting now.
+        let mut live = live_with_host(Config { relay: "wss://relay.example/".into(), ..Config::default() }, Vec::new());
+        live.offer = Some("https://phone.example/v/0.1.0/#p=x".into());
+        live.pending = Some(("5530".into(), "Other phone".into()));
+        let mut ui = Ui::default();
+        assert!(event(PAIR, &view(&live), &mut ui, "allow:8216", "click", &Value::Null).is_empty());
+        assert!(event(PAIR, &view(&live), &mut ui, "deny:8216", "click", &Value::Null).is_empty());
+        assert!(event(PAIR, &view(&live), &mut ui, "allow", "click", &Value::Null).is_empty(), "a bare key is not a decision");
     }
 
     #[test]
     fn allow_and_deny_do_nothing_without_a_waiting_phone() {
         let live = live_with_host(Config { relay: "wss://relay.example/".into(), ..Config::default() }, Vec::new());
         let mut ui = Ui::default();
-        assert!(event(PAIR, &view(&live), &mut ui, "allow", "click", &Value::Null).is_empty());
-        assert!(event(PAIR, &view(&live), &mut ui, "deny", "click", &Value::Null).is_empty());
+        assert!(event(PAIR, &view(&live), &mut ui, "allow:8216", "click", &Value::Null).is_empty());
+        assert!(event(PAIR, &view(&live), &mut ui, "deny:8216", "click", &Value::Null).is_empty());
     }
 
     #[test]

@@ -236,7 +236,8 @@ async function pairStart(text, name) {
 }
 
 /**
- * The person read the digits on the PC and they match: confirm and wait for the PC.
+ * The person pressed "Send to the PC": send the confirmation and the name, then wait for the PC's Allow.
+ * The PC shows its digits only after this, so the phone never asks for a comparison earlier.
  */
 async function pairConfirm() {
   const p = state.pairing;

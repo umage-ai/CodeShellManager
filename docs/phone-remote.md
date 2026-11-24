@@ -66,12 +66,16 @@ supplied Caddy setup provides). A `ws://` relay is accepted only on `127.0.0.1` 
 
 1. Open the add-on's **Pairing** screen (from the command palette, or Settings > Add-ons) and press
    **Start pairing**. The screen shows a QR code and a link, and the time left (ten minutes).
-2. On the phone, open the link or scan the code. The phone asks for a name and shows a **check code**
-   (four digits). The PC shows the same check code while the phone is waiting.
-3. If the two codes match, press **The digits match** on the phone. The phone then waits for the PC.
-4. On the PC, the Pairing screen shows the name the phone sent. Choose the level and press **Allow**,
-   or press **Deny**. Do not allow a phone whose code differs from the one on the phone: a different
-   code means something else is in the middle of the pairing.
+2. On the phone, open the link or scan the code, and give the phone a name. Press **Send to the PC**.
+   The phone sends its name and its confirmation. Nothing is compared yet, and the PC does not show a
+   code until this press.
+3. On the PC, the Pairing screen now shows the name the phone sent and a four-digit **check code**. The
+   phone waits and shows the same four digits, with the words "Check that the PC shows these same four
+   digits, then press Allow on the PC."
+4. Compare the digits on the PC with the digits on the phone. Choose the level and press **Allow** on the
+   PC only when they match. If they differ, press **Deny**. A different code means something else is in
+   the middle of the pairing. Each button answers only the code printed beside it. If the waiting phone changed, the
+   screen shows the new code and the old buttons no longer apply: compare again.
 
 One phone pairs at a time. A second phone that tries while a slot is open is refused by the relay;
 it can try again once the first is done or the time has run out.

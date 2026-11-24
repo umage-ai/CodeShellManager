@@ -8,8 +8,8 @@
 //! - the host thread owns the [`Host`] (pairing, devices, the relay connection). It makes the CSM
 //!   calls its ops need (through [`StdioCsm`]) and receives the person's commands over a channel.
 //!
-//! The person-only tools (pairing, decisions, devices) refuse every caller whose `kind` is not `ui`
-//! or `cli`, so an agent or another add-on cannot pair a phone or revoke one. The screens are the
+//! The person-only tools (pairing, decisions, devices) refuse every caller whose `kind` is not `ui`,
+//! the CLI included, so an agent or another add-on cannot pair a phone or revoke one. The screens are the
 //! person's own: their events come from the person's clicks, and each one is checked in
 //! [`crate::screens`] before it becomes a command.
 
@@ -83,8 +83,8 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         spec(
             TOOL_PAIR_DECIDE,
             "Allow or deny",
-            "Allow the waiting phone at a level, or deny it. Person only.",
-            json!({"type": "object", "properties": {"allow": {"type": "boolean"}, "level": level_schema()}, "required": ["allow"]}),
+            "Allow the waiting phone at a level, or deny it, for the check code the person compared. Person only.",
+            json!({"type": "object", "properties": {"check": {"type": "string", "maxLength": 8}, "allow": {"type": "boolean"}, "level": level_schema()}, "required": ["check", "allow"]}),
             vec!["accesses_network"],
         ),
         spec(TOOL_DEVICE_LIST, "Paired phones", "The paired phones: name, level and times. Person only.", json!({"type": "object"}), vec![]),
@@ -307,9 +307,11 @@ fn parse_level(v: Option<&Value>) -> Option<Level> {
     }
 }
 
-/// Whether the caller is the person (the app's UI or `csm <tool>`). Everything else is refused.
+/// Whether the caller is the person's own UI. Everything else is refused, the CLI included: the
+/// design's rule for these tools (section 4.1), so an agent running in a CSM shell cannot approve a
+/// phone or change a level.
 fn is_person(params: &Value) -> bool {
-    matches!(params.pointer("/caller/kind").and_then(Value::as_str), Some("ui" | "cli"))
+    matches!(params.pointer("/caller/kind").and_then(Value::as_str), Some("ui"))
 }
 
 fn not_running(session: &Session) -> (i64, String) {
@@ -338,7 +340,8 @@ fn devices_count(session: &Session) -> Result<usize, (i64, String)> {
 fn tool(session: &Session, name: &str, params: &Value) -> ToolResult {
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     if name == TOOL_STATUS {
-        let pending = lock(&session.shared).pending.clone();
+        // The waiting phone's name and check code go to the person's UI only (section 3: names are for `ui`).
+        let pending = if is_person(params) { lock(&session.shared).pending.clone() } else { None };
         let pending = pending.map(|(check, who)| json!({"check": check, "name": who}));
         let devices = if session.commands.is_some() { devices_count(session)? } else { 0 };
         return Ok(("Phone remote status.".into(), json!({"enabled": session.enabled, "relay_set": session.relay_set, "devices": devices, "pending": pending, "problem": session.problem})));
@@ -358,13 +361,14 @@ fn tool(session: &Session, name: &str, params: &Value) -> ToolResult {
             Ok(("Pairing stopped.".into(), json!({})))
         }
         TOOL_PAIR_DECIDE => {
+            let check = args.get("check").and_then(Value::as_str).ok_or((-32602, "check must be the code the phone shows".to_owned()))?;
             let allow = args.get("allow").and_then(Value::as_bool).ok_or((-32602, "allow must be true or false".to_owned()))?;
             let level = if allow {
                 Some(parse_level(args.get("level")).ok_or((-32602, "level must be viewer or operator to allow a phone".to_owned()))?)
             } else {
                 None
             };
-            send(session, Command::Decide(level))?;
+            send(session, Command::Decide { check: check.to_owned(), allow: level })?;
             Ok(("Answer sent.".into(), json!({})))
         }
         TOOL_DEVICE_LIST => {
@@ -562,13 +566,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn person_check_is_only_ui_and_cli() {
+    fn person_check_is_only_ui() {
         assert!(is_person(&json!({"caller": {"kind": "ui"}})));
-        assert!(is_person(&json!({"caller": {"kind": "cli"}})));
+        assert!(!is_person(&json!({"caller": {"kind": "cli"}})), "the CLI is refused: section 4.1");
+        assert!(!is_person(&json!({"caller": {"kind": "peer"}})));
         assert!(!is_person(&json!({"caller": {"kind": "external", "client": "claude-code"}})));
         assert!(!is_person(&json!({"caller": {"kind": "addon"}})));
         assert!(!is_person(&json!({"arguments": {"caller": {"kind": "ui"}}})), "an argument named caller does not count");
         assert!(!is_person(&json!({})));
+    }
+
+    #[test]
+    fn the_waiting_phone_is_shown_to_the_person_only() {
+        let session = Session::idle(None);
+        lock(&session.shared).pending = Some(("8216".into(), "Pixel 9".into()));
+        let person = tool(&session, TOOL_STATUS, &json!({"caller": {"kind": "ui"}})).unwrap();
+        assert_eq!(person.1["pending"]["check"], "8216");
+        assert_eq!(person.1["pending"]["name"], "Pixel 9");
+        let agent = tool(&session, TOOL_STATUS, &json!({"caller": {"kind": "external", "client": "claude-code"}})).unwrap();
+        assert!(agent.1["pending"].is_null(), "an agent does not see the waiting phone: {}", agent.1);
     }
 
     #[test]
@@ -612,10 +628,13 @@ mod tests {
     #[test]
     fn a_decision_without_a_host_is_an_error_not_a_panic() {
         let session = Session::idle(None);
-        let params = json!({"caller": {"kind": "ui"}, "arguments": {"allow": true}});
+        let params = json!({"caller": {"kind": "ui"}, "arguments": {"check": "8216", "allow": true}});
         let err = tool(&session, TOOL_PAIR_DECIDE, &params).expect_err("no level for an allow");
         assert_eq!(err.0, -32602);
         let params = json!({"caller": {"kind": "ui"}, "arguments": {"allow": false}});
+        let err = tool(&session, TOOL_PAIR_DECIDE, &params).expect_err("no code named");
+        assert_eq!(err.0, -32602);
+        let params = json!({"caller": {"kind": "ui"}, "arguments": {"check": "8216", "allow": false}});
         let err = tool(&session, TOOL_PAIR_DECIDE, &params).expect_err("no host");
         assert!(err.1.contains("not running") || err.1.contains("no data folder") || err.1.contains("initialised"), "{}", err.1);
     }

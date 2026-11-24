@@ -1,8 +1,9 @@
 // @ts-check
 // Pairing (design section 8 and pairing.rs). The phone reads the offer from the link or the QR code,
 // opens the one pairing channel with the offer's slot id, runs Noise IKpsk2 (the PSK comes from the
-// offer), and shows the check code. The person reads the same four digits on the PC. Only then does
-// the phone send `Confirm` and its name; the PC shows the request and the person allows or denies it.
+// offer), and computes the check code. The phone sends `Confirm` and its name on the person's first
+// press ("Send to the PC"). The PC then shows the same four digits; the person compares them there and
+// allows or denies. The PC's Allow is the gate; the phone's digits are shown only while it waits.
 
 import { b64urlDecode, b64urlFixed, concat, utf8 } from "./bytes.js";
 import { sha256 } from "./crypto.js";
@@ -101,7 +102,7 @@ export function decodeOffer(input) {
 
 /**
  * A pairing in progress: the handshake is done and the check code is known. `confirm` sends the
- * confirmation and the name, then waits for the PC's answer.
+ * confirmation and the name (the first action the person takes), then waits for the PC's answer.
  */
 export class PairingSession {
   /**

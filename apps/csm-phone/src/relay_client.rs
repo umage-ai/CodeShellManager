@@ -20,8 +20,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use csm_remote_proto::limits::FRAME_HEADER_BYTES;
 use csm_remote_proto::msg::Level;
+use csm_remote_proto::noise::MAX_NOISE_MESSAGE;
 use csm_remote_proto::relay::{HostToRelay, RelayToHost, to_text};
+use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Connector, Message, WebSocket};
 
@@ -48,8 +51,10 @@ pub enum Command {
     StartPairing { app_version: String, reply: Sender<Result<String, String>> },
     /// Close the slot; a waiting phone is denied.
     StopPairing,
-    /// The person's answer for the waiting phone: `Some(level)` allows it, `None` denies it.
-    Decide(Option<Level>),
+    /// The person's answer for the waiting phone: `Some(level)` allows it, `None` denies it. `check` is
+    /// the code the person saw when they answered; the host refuses the answer when another phone is
+    /// waiting now (a channel that dropped and was taken by a different phone).
+    Decide { check: String, allow: Option<Level> },
     Revoke(String),
     SetLevel(String, Level),
     /// The paired devices, for the devices screen and `phone-remote.status`.
@@ -153,6 +158,11 @@ fn tls_connector() -> Result<Connector, String> {
     Ok(Connector::Rustls(Arc::new(config)))
 }
 
+/// The largest message the relay sends: a binary data frame (its header and one Noise message). Text
+/// control messages are smaller (`MAX_CONTROL_BYTES`). The WebSocket layer refuses anything bigger while
+/// it reads, so a hostile relay cannot make the host buffer more (tungstenite's default is 64 MiB).
+pub const MAX_RELAY_MESSAGE: usize = FRAME_HEADER_BYTES + MAX_NOISE_MESSAGE;
+
 /// The TCP connect with a timeout, then the WebSocket handshake (TLS first for `wss://`) with the
 /// same timeout. Only `wss://` and loopback `ws://` URLs get here (checked by the caller).
 fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
@@ -172,7 +182,8 @@ fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
     // `wss://` gets the TLS connector (certificates checked against the bundled public roots); `ws://`
     // (loopback only) is a plain WebSocket handshake.
     let connector = if tls { Some(tls_connector()?) } else { None };
-    let (mut ws, _response) = tungstenite::client_tls_with_config(url, tcp, None, connector).map_err(|e| format!("the relay did not complete the handshake: {e}"))?;
+    let limits = WebSocketConfig::default().max_message_size(Some(MAX_RELAY_MESSAGE)).max_frame_size(Some(MAX_RELAY_MESSAGE));
+    let (mut ws, _response) = tungstenite::client_tls_with_config(url, tcp, Some(limits), connector).map_err(|e| format!("the relay did not complete the handshake: {e}"))?;
     let read = Duration::from_millis(POLL_MS);
     match ws.get_mut() {
         MaybeTlsStream::Plain(tcp) => tcp.set_read_timeout(Some(read)),
@@ -267,7 +278,7 @@ fn apply(host: &mut Host, cmd: &Command, now: u64, on_out: &mut dyn FnMut(&Out))
             }
         },
         Command::StopPairing => host.stop_pairing(now),
-        Command::Decide(level) => host.decide(now, *level),
+        Command::Decide { check, allow } => host.decide(now, check, *allow),
         Command::Revoke(device_id) => host.revoke(device_id),
         Command::SetLevel(device_id, level) => host.set_level(device_id, *level),
         Command::Devices(reply) => {
@@ -459,5 +470,42 @@ mod tests {
             assert!(seen.iter().any(|o| matches!(o, Out::Problem(_))), "{url} must be refused: {seen:?}");
             assert!(host.slot.is_none());
         }
+    }
+
+    /// One read, retried while the socket's short poll timeout passes with nothing to read.
+    fn read_until_message(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> tungstenite::Result<Message> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match ws.read() {
+                Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) && Instant::now() < deadline => {}
+                other => return other,
+            }
+        }
+    }
+
+    /// The relay's messages are bounded. A binary message at the limit is read whole; one byte over
+    /// ends the read with a capacity error, so the host never holds more than the protocol allows.
+    #[test]
+    fn an_oversize_relay_message_ends_the_read_and_is_not_buffered() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let relay = std::thread::spawn(move || {
+            for size in [MAX_RELAY_MESSAGE, MAX_RELAY_MESSAGE + 1] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut ws = tungstenite::accept(stream).unwrap();
+                let _ = ws.send(Message::Binary(vec![7u8; size].into()));
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        let url = format!("ws://127.0.0.1:{port}/relay");
+        let mut at_limit = connect(&url).unwrap();
+        match read_until_message(&mut at_limit) {
+            Ok(Message::Binary(b)) => assert_eq!(b.len(), MAX_RELAY_MESSAGE),
+            other => panic!("a message at the limit is read whole, got {other:?}"),
+        }
+        let mut over = connect(&url).unwrap();
+        let err = read_until_message(&mut over).expect_err("a message over the limit is refused");
+        assert!(matches!(err, tungstenite::Error::Capacity(_)), "{err:?}");
+        relay.join().unwrap();
     }
 }
