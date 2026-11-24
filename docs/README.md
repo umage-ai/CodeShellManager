@@ -9,6 +9,7 @@ it, the feature tour and the keyboard shortcuts.
 |---|---|
 | [comparison.md](comparison.md) | How CodeShellManager compares with other multi-agent tools on Windows |
 | [ssh-ports.md](ssh-ports.md) | Links to localhost on an SSH session's remote host, and port forwards: what opens and why |
+| [keyboard.md](keyboard.md) | Keyboard control: every key, menus, lists, dialogs, F6 regions, and rebinding in Settings › Keyboard |
 | [quit.md](quit.md) | What quitting does: the bounded pool of Claude exits (`QuitClaudeConcurrency`), the `~/.claude.json` backup and restore, force close |
 | [shell-integration.md](shell-integration.md) | OSC 9001 (accent colour, branch, title) and OSC 7501 (program status) for programs running in a session |
 | [tools.md](tools.md) | Every tool: what the app, `csm <tool>` and `csm mcp` can do, the consent rules for MCP clients, toolsets |
@@ -33,6 +34,8 @@ it, the feature tour and the keyboard shortcuts.
 |---|---|
 | [../.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) | Building, the checks a change must pass, the rules |
 | [../.github/SECURITY.md](../.github/SECURITY.md) | Reporting a vulnerability; the security model |
+| [design/keyboard.md](design/keyboard.md) | Design of the keyboard navigation and the rebindable keymap |
+| [design/remote-csm.md](design/remote-csm.md) | Design of CSM-to-CSM remote access, the peer link and the relay path |
 | [plan.md](plan.md) | The 2.0 rewrite: architecture, crate layers, design decisions and their reasons (a historical plan; some sections describe the work as it was planned) |
 | [phase0-spike.md](phase0-spike.md) | The terminal-rendering spike that decided the stack (historical) |
 | [wpf/](wpf/) | The 0.x WPF app: its README, its comparison, and `lessons.md`, the record of hard-won behaviour (ConPTY, git, quoting, restart and shutdown races) that 2.0 carries over |

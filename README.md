@@ -158,12 +158,16 @@ can read and update their own tasks over MCP.
 
 ### New session in a keystroke
 
-`Ctrl+T` opens a quick-open: type a folder name (recent folders and git repositories are listed),
-press Enter, and Claude starts there. Pick another command (a shell, a preset, an add-on profile)
-from the row underneath, or choose **Remote…** for SSH (your own `ssh` and its config) or a WSL
-distribution.
+`Ctrl+T` opens the New session dialog: type a folder name (up to eight recent folders and git
+repositories are listed), press Enter, and Claude starts there. Pick another command (a shell, a
+preset, an add-on profile) from the chips underneath, and a profile and group if you want them.
+A **This PC / SSH / WSL** selector chooses where it runs: SSH uses your own `ssh` and its config,
+WSL one of your distributions. **Start and keep open** (`Ctrl+Enter`) starts one and leaves the
+dialog up for the next. `Alt+1…9` switch tabs, `Alt+R` cycles the location, `Alt+G` picks the
+group, and Tab moves through every control. Add-ons can add tabs with a form of their own, such as
+**New NEXUS agent**.
 
-![The new-session quick-open with the Remote… options](docs/screens/08-new-session-remote.png)
+![The New session dialog with the This PC / SSH / WSL selector](docs/screens/08-new-session.png)
 
 ### Command palette and search
 
@@ -202,9 +206,22 @@ Add-ons extend the app: launch profiles for other agents (with status rules), ru
 slash-command presets and palette commands, or a separate program that adds its own tools and
 screens. Nothing runs until you enable it, and enabling shows what the add-on adds and asks.
 Claude usage is built in and listed there too. **Settings → Add-ons → Install samples** adds the ones that ship with the app: Codex CLI, Gemini
-CLI, Review (changed files, diffs and line comments that agents answer), Session summary and Themes.
-Themes come from add-on packs too: a pack lists colours (no code) and Settings → Appearance picks the dark and the light theme.
+CLI, Review (changed files, diffs and line comments that agents answer), Session summary, Themes
+and Fun themes.
+Themes come from add-on packs too: a pack lists colours (no code) and Settings → Appearance picks
+the dark and the light theme. A theme can also style the window (`[theme.style]`: corners, bevelled
+borders, title bar colours, and UI and terminal fonts the pack ships); **Fun themes** has Emacs,
+Windows 98 and Blossom.
 Write your own: [docs/addons.md](docs/addons.md).
+
+### Remote access
+
+Show an office CodeShellManager's sessions on another machine: **Settings → Remote access** turns
+it on and pairs a device, over a private network (WireGuard, Tailscale) or through a relay when
+there is no VPN. The remote window types into the sessions and answers their consent cards, and
+`csm attach` does the same from a terminal. Off until you switch it on, and only the person at the
+app can. See [docs/remote-access.md](docs/remote-access.md). The relay server and a phone add-on
+live in the separate, private `umage-ai/csm-relay` repository.
 
 ### And more
 
@@ -213,7 +230,11 @@ Write your own: [docs/addons.md](docs/addons.md).
 - **Restore on start.** Sessions come back when the app starts, Claude ones with `--resume`,
   launched in a stagger so Claude's shared config isn't corrupted.
 - **Close warning.** Closing a busy session, or the app, lists what's still working and asks first;
-  `Ctrl+Shift+T` reopens what you closed.
+  `Ctrl+Shift+T` reopens what you closed. Quitting closes Claude sessions four at a time (Settings
+  → General) and keeps a safety copy of `~/.claude.json`: [docs/quit.md](docs/quit.md).
+- **Keyboard control.** Everything works without the mouse: `F6` moves between regions,
+  `Ctrl+Alt+Arrow` between panes, `F10` opens the main menu, `Shift+F10` a context menu, and every
+  key is rebindable. See [docs/keyboard.md](docs/keyboard.md).
 - **Recent sessions.** `Ctrl+Shift+E` lists the sessions you used last.
 - **Send to all.** Paste the same prompt into every live session of a group.
 - **Open with…** VS Code (and Insiders), Cursor, Windsurf, VSCodium, Visual Studio, JetBrains IDEs,
@@ -225,7 +246,8 @@ Write your own: [docs/addons.md](docs/addons.md).
   Program Status Protocol (Claude Code does this out of the box).
 - **Backup.** Export your whole setup to a `.csm` file and import it on another machine.
 - **Tray and notifications.** A tray icon with the Needs you count, system notifications, and the
-  option to keep running in the tray when the window closes.
+  option to keep running in the tray when the window closes. A restored session stays quiet until
+  you have looked at it.
 - **Start at sign-in.** Settings → General → Start-up starts the app when you sign in (Windows,
   macOS, Linux), optionally minimized or hidden in the tray, with your sessions restored.
 - **Drop files** on a pane to paste their paths, quoted for the session's shell.
@@ -233,7 +255,8 @@ Write your own: [docs/addons.md](docs/addons.md).
   pane's menu copy a reply or one of its code blocks exactly as Claude wrote it, from the transcript;
   a selection copied from a Claude pane loses Claude's markers and wrapping (`Ctrl+Alt+C` copies it
   as shown).
-- **Light and dark themes** (Catppuccin Latte and Mocha) and interface zoom.
+- **Themes and zoom.** Catppuccin Latte and Mocha, more from theme add-ons, and interface zoom.
+  The default terminal font draws `0` with a slash, so it never reads as `8`.
 
 ## Requirements
 
@@ -268,6 +291,13 @@ Update with `choco upgrade codeshellmanager` (or `choco upgrade all`).
    - `CodeShellManager-x.y.z-Setup.msi`: the installer (Start menu shortcut, uninstall from Apps &
      Features)
    - `CodeShellManager-x.y.z-win-x64.zip`: portable; extract and run `codeshell.exe`
+
+The installer puts the app in `C:\Program Files\umage.ai\CodeShellManager`. That is a clean break
+from 0.x, which lived under `C:\Program Files\umage\`: the upgrade removes the old folder, so
+**taskbar pins to the old app need re-pinning**. Release and development builds are code-signed.
+If something looks wrong afterwards, `csm doctor` reports the install (its channel and which apps
+are published), and agent registrations that `csm setup` wrote and that still name the old folder
+are repaired when the app starts.
 
 Both include `csm.exe`, the command line and MCP server. How releases are built and published:
 [docs/release.md](docs/release.md) and [docs/distribution.md](docs/distribution.md).
@@ -318,6 +348,9 @@ Settings › Keyboard; [docs/keyboard.md](docs/keyboard.md) has the whole list a
 | `Ctrl+Shift+C` | Copy Claude's last reply (in a Claude pane, nothing selected) |
 | `F2` | Rename the active session |
 | `F5` / `Shift+F5` | Run / stop the default run command |
+| `F10` | Main menu: every action, by area |
+| `F6` / `Shift+F6` | Next / previous keyboard region |
+| `Ctrl+Alt+Arrows` | Focus the pane in that direction |
 | `Ctrl+,` | Settings |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset |
 
@@ -359,8 +392,9 @@ usage, subagents). Codex CLI and Gemini CLI have sample add-ons with launch prof
 rules. Anything else runs as a plain terminal.
 
 **Does anything leave my machine?** No account, no telemetry. The only listener is a loopback
-connection for `csm` and `csm mcp`, authenticated with a token per launch. Git fetch and SSH go
-where you point them.
+connection for `csm` and `csm mcp`, authenticated with a token per launch, unless you switch on
+[remote access](docs/remote-access.md), which is off by default. Git fetch and SSH go where you
+point them.
 
 **What happens to running agents when I close the window?** By default, closing quits: busy
 sessions are listed first, and every session gets a moment to exit. With *Keep running in the tray
