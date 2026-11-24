@@ -1464,6 +1464,8 @@ section 10 is built.
 
 ### 18.8 The end-to-end test and the docs (step 3)
 
+- **CI:** `.github/workflows/ci.yml` installs Node 22 and runs `npm ci` in `phone/` before `cargo xtask ci`, which needs
+  `phone/node_modules` (fix round 9, see 18.11).
 - **`cargo xtask phone-e2e`** runs `apps/csm-phone-it/tests/e2e.rs` (ignored by `cargo test`, so `cargo test --workspace`
   and `xtask ci` do not need Node; `xtask ci` runs the web app's checks instead). The test starts `csm-relay` in process on
   an ephemeral 127.0.0.1 port (open access, push off), starts the add-on's host (`relay_client::run`) with a stateful fake

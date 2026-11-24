@@ -306,9 +306,6 @@ fn pairing_deny_sends_denied_and_saves_nothing() {
     assert!(store::open(dir.path()).unwrap().devices.is_empty());
 }
 
-/// The person compared the code on the screen for the first phone. Its channel then closed (the relay
-/// dropped it), and a second phone took the same offer. The answer the person gave for the first code
-/// must not allow the second phone: nothing is saved, and the second phone is still the one to allow.
 /// A phone that waits and then leaves (its channel closes) before the person decides: the host says
 /// so, so the screen drops the code and Allow and Deny. The pairing slot stays open for the next phone.
 #[test]
@@ -326,6 +323,9 @@ fn a_waiting_phone_that_leaves_is_reported_as_cleared() {
     assert!(host.slot.as_ref().is_some_and(|s| !s.active), "the slot is free for the next phone");
 }
 
+/// The person compared the code on the screen for the first phone. Its channel then closed (the relay
+/// dropped it), and a second phone took the same offer. The answer the person gave for the first code
+/// must not allow the second phone: nothing is saved, and the second phone is still the one to allow.
 #[test]
 fn an_answer_for_a_code_that_is_no_longer_waiting_decides_nothing() {
     let dir = tempfile::tempdir().unwrap();
