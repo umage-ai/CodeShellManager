@@ -92,6 +92,9 @@ file drop; Claude slash-command menu; `--clean`.
 
 ### Changed
 
+- The relay server (`csm-relay`) and the Phone remote add-on moved out of this repository to the private
+  `umage-ai/csm-relay` repository, until they are released. The wire protocol CSM uses for its own
+  peer link is vendored in `vendor/csm-remote-proto`. CSM ships no phone add-on sample any more.
 - The fixed 1–18 pane layouts become the Grid layout; the default is Side by side.
 - The pane toolbar becomes a slim header with one Actions menu.
 - Imported sessions arrive asleep (0.x started them).

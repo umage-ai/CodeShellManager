@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use crate::{Findings, layers, phone, policy, secrets, tools_doc};
+use crate::{Findings, layers, policy, secrets, tools_doc};
 
 fn cargo(name: &str, args: &[&str]) -> bool {
     println!("==== {name}: cargo {}", args.join(" "));
@@ -51,25 +51,6 @@ pub fn run(skip_tests: bool, skip_cargo: bool) -> bool {
         quick("tools --check", tools_doc::run(true)),
         quick("secrets", secrets::check(false)),
     ];
-    match phone::web_checks() {
-        Ok(problems) if problems.is_empty() => {
-            if crate::root().join("phone").is_dir() {
-                println!("ok   phone web app (npm test, typecheck)");
-            }
-            results.push(true);
-        }
-        Ok(problems) => {
-            println!("FAIL phone web app");
-            for p in problems {
-                println!("  {p}");
-            }
-            results.push(false);
-        }
-        Err(e) => {
-            println!("FAIL phone web app: {e}");
-            results.push(false);
-        }
-    }
     if !skip_cargo {
         results.push(cargo("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]));
         if !skip_tests {

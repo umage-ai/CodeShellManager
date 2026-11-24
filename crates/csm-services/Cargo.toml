@@ -34,7 +34,7 @@ sha2 = "0.10"
 keyring = "4"
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy"] }
-# The update check's one HTTPS GET (update.rs). Already in the tree (relay/); MIT OR Apache-2.0.
+# The update check's one HTTPS GET (update.rs). Already in the tree (csm-relay); MIT OR Apache-2.0.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # The current user's Run key (start at sign-in). Already in the tree (portable-pty); MIT.

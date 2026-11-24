@@ -1,12 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! A CSM peer through the relay, in one process: the real relay on 127.0.0.1, the real peer server
-//! (the office) and the real client (the laptop). Both reach the relay outbound only. The direct
-//! address in the offer is made unreachable, so the laptop can only get in through the relay.
+//! A CSM peer through a relay, in one process: the real relay binary on 127.0.0.1, the real peer
+//! server (the office) and the real client (the laptop). Both reach the relay outbound only. The
+//! direct address in the offer is made unreachable, so the laptop can only get in through the relay.
 //! The terminal is a fake PTY (as in csm-peer's stream tests); everything else is the real thing.
+//!
+//! The relay is `csm-relay`, built from the private repository `umage-ai/csm-relay`. It is not a
+//! dependency of CSM: point `CSM_RELAY_BIN` at its binary. The tests are `#[ignore]`d, so the
+//! normal `cargo test` never needs it; run them with `--ignored` (see `docs/design/remote-csm.md`).
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -20,12 +25,7 @@ use csm_peer_proto::codec::{Frame, Input};
 use csm_peer_proto::msg::{Level, Outcome};
 use csm_peer_proto::pairing::{PeerOffer, RelayRoute};
 use csm_pty::{Backend, ExitCallback, OutputSink, Pty, PtySize, SpawnOptions};
-use csm_relay::config::Config;
-use csm_relay::{Relay, serve};
-use csm_remote_proto::relay::{ClientToRelay, HostToRelay, RelayToClient, RelayToHost, to_text};
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 
 const WAIT: Duration = Duration::from_secs(20);
 const STREAM: u32 = 1;
@@ -33,35 +33,80 @@ const STREAM: u32 = 1;
 const OFFICE_RELAY_SECRET: [u8; 32] = [0x42; 32];
 /// A port nothing listens on: the direct address the laptop cannot reach.
 const DEAD_DIRECT: &str = "tcp://127.0.0.1:9";
+/// The environment variable that names the csm-relay binary.
+const RELAY_BIN_VAR: &str = "CSM_RELAY_BIN";
 
-/// The relay on an ephemeral loopback port, served on its own runtime thread.
+/// The dev configuration of the relay: loopback, admits every host, no push. The limits are raised
+/// so a test's connections are never refused by the rate limits.
+fn dev_config(port: u16) -> String {
+    format!(
+        "bind = \"127.0.0.1:{port}\"\n\
+         [access]\nopen = true\n\
+         [limits]\nnew_connections_per_ip_per_minute = 1000\nmax_sockets_per_ip = 1000\n\
+         [push]\nenabled = false\n"
+    )
+}
+
+/// The relay binary from `CSM_RELAY_BIN`. Panics with the fix when it is not set.
+fn relay_bin() -> PathBuf {
+    match std::env::var_os(RELAY_BIN_VAR) {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => panic!(
+            "{RELAY_BIN_VAR} is not set: build csm-relay (repository umage-ai/csm-relay, `cargo build -p csm-relay`) \
+             and set {RELAY_BIN_VAR} to the csm-relay binary, then run these tests with --ignored"
+        ),
+    }
+}
+
+/// A free loopback port: bind port 0, read it, release it.
+fn free_port() -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+/// The relay process on a loopback port, started from the dev config and stopped on drop.
 struct RelayRig {
     addr: SocketAddr,
-    _stop: mpsc::Sender<()>,
-    _relay: Arc<Relay>,
+    child: Child,
+    _tmp: tempfile::TempDir,
+}
+
+impl Drop for RelayRig {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 fn start_relay() -> RelayRig {
-    let mut c = Config::default();
-    c.access.open = true;
-    c.limits.new_connections_per_ip_per_minute = 1000;
-    c.limits.max_sockets_per_ip = 1000;
-    let relay = Relay::new(c.into_settings().unwrap(), None);
-    let (addr_tx, addr_rx) = mpsc::channel();
-    let (stop, stop_rx) = mpsc::channel::<()>();
-    let r = relay.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        rt.block_on(async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            addr_tx.send(listener.local_addr().unwrap()).unwrap();
-            let _ = serve(listener, r, async move {
-                let _ = tokio::task::spawn_blocking(move || stop_rx.recv()).await;
-            })
-            .await;
-        });
-    });
-    RelayRig { addr: addr_rx.recv().unwrap(), _stop: stop, _relay: relay }
+    let bin = relay_bin();
+    let tmp = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let config = tmp.path().join("relay.toml");
+    std::fs::write(&config, dev_config(port)).unwrap();
+    let child = Command::new(&bin)
+        .arg("--config")
+        .arg(&config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("could not start {}: {e}", bin.display()));
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let mut rig = RelayRig { addr, child, _tmp: tmp };
+    // The relay is up once its port accepts a connection (it exits at once if the config is bad).
+    let end = Instant::now() + WAIT;
+    loop {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            break;
+        }
+        if let Ok(Some(status)) = rig.child.try_wait() {
+            panic!("csm-relay exited before it listened: {status}");
+        }
+        assert!(Instant::now() < end, "csm-relay did not listen on {addr}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    rig
 }
 
 // ---- a fake PTY (the terminal under test) ---------------------------------------------------------
@@ -254,6 +299,7 @@ fn read_until(conn: &Connection, marker: &str) -> Option<String> {
 }
 
 #[test]
+#[ignore = "needs CSM_RELAY_BIN: the csm-relay binary (umage-ai/csm-relay)"]
 fn a_laptop_pairs_and_works_through_the_relay_only() {
     let relay = start_relay();
     let office = office(&relay);
@@ -278,6 +324,7 @@ fn a_laptop_pairs_and_works_through_the_relay_only() {
 }
 
 #[test]
+#[ignore = "needs CSM_RELAY_BIN: the csm-relay binary (umage-ai/csm-relay)"]
 fn attach_and_typing_work_through_the_relay() {
     let relay = start_relay();
     let office = office(&relay);
@@ -306,6 +353,7 @@ fn attach_and_typing_work_through_the_relay() {
 }
 
 #[test]
+#[ignore = "needs CSM_RELAY_BIN: the csm-relay binary (umage-ai/csm-relay)"]
 fn a_burst_of_output_crosses_the_relay_without_ending_the_channel() {
     let relay = start_relay();
     let office = office(&relay);
@@ -330,6 +378,7 @@ fn a_burst_of_output_crosses_the_relay_without_ending_the_channel() {
 }
 
 #[test]
+#[ignore = "needs CSM_RELAY_BIN: the csm-relay binary (umage-ai/csm-relay)"]
 fn a_direct_address_that_answers_is_used_before_the_relay() {
     let relay = start_relay();
     let office = office(&relay);
@@ -347,64 +396,8 @@ fn a_direct_address_that_answers_is_used_before_the_relay() {
     assert!(client::connect_saved(Some(&dead_direct), Some(&route(&host)), &host.host_public, &me, &ClientConfig::new("Laptop")).is_ok());
 }
 
-// ---- phone and peer channels are separate -----------------------------------------------------------
-
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-async fn open(addr: SocketAddr, path: &str) -> Ws {
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}{path}")).await.unwrap();
-    ws
-}
-
-async fn reply_to_client(ws: &mut Ws) -> Option<RelayToClient> {
-    let next = tokio::time::timeout(WAIT, ws.next()).await.ok()??;
-    match next.ok()? {
-        Message::Text(t) => serde_json::from_str(t.as_str()).ok(),
-        _ => None,
-    }
-}
-
-async fn send_client_hello(ws: &mut Ws, host_id: &str, token: Option<[u8; 32]>) {
-    let hello = ClientToRelay::Hello {
-        v: csm_remote_proto::PROTOCOL_VERSION,
-        host_id: host_id.to_owned(),
-        token: token.map(|t| csm_remote_proto::ids::b64_encode(&t)),
-        pairing_id: None,
-    };
-    ws.send(Message::Text(to_text(&hello).into())).await.unwrap();
-}
-
 #[test]
-fn a_phone_cannot_open_a_peer_channel_and_a_peer_cannot_open_a_phone_channel() {
-    let relay = start_relay();
-    let office = office(&relay);
-    let office_id = csm_remote_proto::ids::host_id(&OFFICE_RELAY_SECRET);
-    // A phone host on the phone namespace, with its own id.
-    let phone_secret = [0x24u8; 32];
-    let phone_id = csm_remote_proto::ids::host_id(&phone_secret);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let mut phone_host = open(relay.addr, "/v1/host").await;
-        let hello = HostToRelay::Hello { v: csm_remote_proto::PROTOCOL_VERSION, host_id: phone_id.clone(), host_secret: csm_remote_proto::ids::b64_encode(&phone_secret), access: None };
-        phone_host.send(Message::Text(to_text(&hello).into())).await.unwrap();
-        let welcome = tokio::time::timeout(WAIT, phone_host.next()).await.unwrap().unwrap().unwrap();
-        assert!(matches!(welcome, Message::Text(t) if serde_json::from_str::<RelayToHost>(t.as_str()).is_ok_and(|m| matches!(m, RelayToHost::Welcome { .. }))));
-
-        // The office's id is a peer host: a phone (`/v1/client`) asking for it is refused.
-        let mut phone = open(relay.addr, "/v1/client").await;
-        send_client_hello(&mut phone, &office_id, Some([7; 32])).await;
-        assert!(matches!(reply_to_client(&mut phone).await, Some(RelayToClient::Error { .. })), "a phone cannot reach the office's peer host");
-
-        // The phone host's id is a phone host: a peer client (`/v1/peer-client`) asking for it is refused.
-        let mut peer = open(relay.addr, "/v1/peer-client").await;
-        send_client_hello(&mut peer, &phone_id, Some([7; 32])).await;
-        assert!(matches!(reply_to_client(&mut peer).await, Some(RelayToClient::Error { .. })), "a peer cannot reach a phone host");
-        drop(phone_host);
-    });
-    drop(office);
-}
-
-#[test]
+#[ignore = "needs CSM_RELAY_BIN: the csm-relay binary (umage-ai/csm-relay)"]
 fn a_slow_laptop_reader_keeps_the_link_and_the_final_screen() {
     let relay = start_relay();
     let office = office(&relay);

@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 csm-engine = { path = "../csm-engine" }
 csm-peer-proto = { path = "../csm-peer-proto" }
-csm-remote-proto = { path = "../csm-remote-proto" }
+csm-remote-proto = { path = "../../vendor/csm-remote-proto" }
 csm-services = { path = "../csm-services" }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }

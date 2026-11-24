@@ -64,20 +64,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # The phone web app's checks (`npm test` and `npm run typecheck` in phone/) run inside `xtask ci`,
-      # and xtask requires phone/node_modules, so the dependencies are installed first. Node 22 is the
-      # version the web app is written for.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: phone/package-lock.json
-
-      - name: Web app dependencies
-        working-directory: phone
-        run: npm ci
-
-      # Layers, source policy, the generated tool catalogue, secrets and the web app's checks. Clippy and
+      # Layers, source policy, the generated tool catalogue and secrets. Clippy and
       # the tests ran above, so skip them here.
       - name: xtask ci
         run: cargo xtask ci --skip-cargo

@@ -406,7 +406,7 @@ pub enum Kind {
     Code(Box<CodeView>),
     /// A unified patch, as unified or side-by-side.
     Diff(Box<DiffView>),
-    /// A QR code of a short text (`docs/design/phone-remote.md`, section 8.2). The text itself is
+    /// A QR code of a short text (the phone remote design note in umage-ai/csm-relay, section 8.2). The text itself is
     /// not kept: only its matrix, computed when the tree is parsed. `code` is `None` when the text
     /// was refused, and the node then draws a notice in its place.
     Qr { label: String, size: QrSize, code: Option<Matrix> },

@@ -7,6 +7,3 @@
 /publish
 .vs/
 .claude/
-/relay/relay.toml
-/relay/vapid.key
-/phone/node_modules/

@@ -1,0 +1,25 @@
+[package]
+name = "csm-remote-proto"
+description = "Pure wire protocol of the CSM phone remote: relay frames, Noise parameters, pairing payload, phone/add-on messages, test vectors."
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.97"
+publish = false
+
+# Written out, not inherited: vendor/* is outside the CSM workspace. See CSM_VENDOR.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

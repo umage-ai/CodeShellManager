@@ -7,8 +7,7 @@
 //! | `tools [--check]` | regenerate (or verify) the catalogue table in `docs/tools.md` |
 //! | `secrets [--staged]` | token patterns in tracked (or staged) files |
 //! | `mcp-size` | bytes and estimated tokens of the MCP tool definitions per toolset |
-//! | `ci [--skip-tests] [--skip-cargo]` | all of the above, plus `cargo test --workspace` and `cargo clippy -D warnings`, and the phone web app checks when `phone/` exists |
-//! | `phone-e2e` | the phone remote end to end: the web app under Node against the real relay and host on 127.0.0.1 (needs Node 22+) |
+//! | `ci [--skip-tests] [--skip-cargo]` | all of the above, plus `cargo test --workspace` and `cargo clippy -D warnings` |
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -16,7 +15,6 @@
 mod ci;
 mod layers;
 mod mcp_size;
-mod phone;
 mod policy;
 mod secrets;
 mod tools_doc;
@@ -68,11 +66,10 @@ fn main() -> ExitCode {
                 false
             }
         },
-        Some("phone-e2e") => phone::e2e(),
         Some("ci") => ci::run(flag("--skip-tests"), flag("--skip-cargo")),
         _ => {
             eprintln!(
-                "usage: cargo xtask <layers | policy | tools [--check] | secrets [--staged] | mcp-size [--markdown] | phone-e2e | ci [--skip-tests] [--skip-cargo]>"
+                "usage: cargo xtask <layers | policy | tools [--check] | secrets [--staged] | mcp-size [--markdown] | ci [--skip-tests] [--skip-cargo]>"
             );
             return ExitCode::from(2);
         }

@@ -55,7 +55,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("copy", r#"<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>"#),
     ("download", r#"<path d="M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5"/>"#),
     ("monitor", r#"<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>"#),
-    // The phone remote (docs/design/phone-remote.md, section 8): a phone, and several devices.
+    // The phone remote (the design note in umage-ai/csm-relay, section 8): a phone, and several devices.
     ("phone", r#"<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>"#),
     ("devices", r#"<rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6M9 14v4"/><rect x="18" y="8" width="4" height="12" rx="1"/>"#),
     ("trash", r#"<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>"#),

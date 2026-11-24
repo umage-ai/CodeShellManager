@@ -1,9 +1,0 @@
-# Production headers for the static host (Netlify/Cloudflare style; design section 10.1).
-# The app runs on the umage static domain. The relay can be any wss:// host, so connect-src allows
-# wss: and https: (decision 11). Nothing third-party: no script, style or font from another origin.
-/*
-  Content-Security-Policy: default-src 'self'; connect-src 'self' wss: https:; img-src 'self' data:; style-src 'self'; script-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
-  X-Content-Type-Options: nosniff
-  Referrer-Policy: no-referrer
-  Permissions-Policy: camera=(self), geolocation=(), microphone=()
-  Cache-Control: no-cache

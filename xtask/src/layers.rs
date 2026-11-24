@@ -12,7 +12,7 @@ use crate::Findings;
 /// ends over the engine (MCP bridge, egui UI); L5 what only programs use (`csm-setup`); L6 programs.
 pub const LAYERS: &[(&str, u8)] = &[
     ("csm-core", 0),
-    ("csm-remote-proto", 0), // phone remote wire protocol: pure, no csm-core dependency
+    ("csm-remote-proto", 0), // CSM_VENDOR: vendor/csm-remote-proto, the pure wire protocol (no csm-core dependency)
     ("csm-peer-proto", 0),   // peer protocol: owned wire DTOs of the read model and events; pure
     ("csm-pty", 1),
     ("csm-term", 1),
@@ -30,9 +30,6 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("csm-review", 6),
     ("csm-legacy-launcher", 6), // CodeShellManager.exe: the 0.x exe name, starts codeshell.exe
     ("term-spike", 6),
-    ("csm-relay", 6), // relay/: self-hostable phone-remote relay; speaks only csm-remote-proto
-    ("csm-phone", 6), // apps/csm-phone: the phone remote add-on (host side); speaks csm-remote-proto, no csm-core
-    ("csm-phone-it", 7), // apps/csm-phone-it: test-only; the phone remote's integration tests against the real relay (ships no code)
 ];
 
 /// Crates allowed to depend on egui.

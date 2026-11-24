@@ -122,7 +122,7 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 ## Through a relay (no VPN)
 
 A direct address needs the laptop to reach the office: the same LAN, or a VPN such as WireGuard. A
-relay removes that need. Both machines connect **outbound** to a relay (`relay/`, `csm-relay`), which
+relay removes that need. Both machines connect **outbound** to a relay (`csm-relay`, in the private `umage-ai/csm-relay` repository, self-hosted from there), which
 copies the encrypted frames between them. The relay never holds a key that matters and cannot read a
 frame; the session is the same end-to-end session as on the direct address.
 

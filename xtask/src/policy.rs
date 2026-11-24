@@ -32,18 +32,15 @@ use crate::Findings;
 /// `apps/csm-legacy-launcher/` is `CodeShellManager.exe`, whose whole job is to start the
 /// `codeshell.exe` beside it (full path, argv passed through, no shell) and exit.
 ///
-/// `apps/csm-phone/src/acl.rs` is the phone add-on's one process start: `icacls` by its System32
-/// path, argv only, for the add-on's own data files. The add-on is a separate program and must not
-/// depend on `csm-engine`, so it cannot use `csm_engine::proc`. Its only caller is `store.rs`.
 const PROCESS_ALLOWED: &[&str] =
-    &["crates/csm-engine/src/proc.rs", "crates/csm-pty/", "crates/csm-setup/src/", "crates/csm-services/src/git/run.rs", "apps/csm-legacy-launcher/", "apps/csm-phone/src/acl.rs", "xtask/"];
+    &["crates/csm-engine/src/proc.rs", "crates/csm-pty/", "crates/csm-setup/src/", "crates/csm-services/src/git/run.rs", "apps/csm-legacy-launcher/", "xtask/"];
 /// Where `unsafe` may appear.
 const UNSAFE_ALLOWED: &[&str] = &["crates/csm-pty/src/conpty.rs", "crates/csm-pty/src/conpty/"];
 /// UI frame code: nothing here may touch the disk, spawn, or wait.
 const UI_FRAME: &[&str] =
     &["crates/csm-ui/src/screens/", "crates/csm-ui/src/widgets.rs", "crates/csm-ui/src/terminal/view.rs", "crates/csm-ui/src/terminal/render.rs"];
 /// Crate roots that must carry the clippy denies. Extend as each crate is cleaned up.
-const DENY_ROOTS: &[&str] = &["crates/csm-remote-proto/", "crates/csm-peer-proto/", "crates/csm-peer/", "crates/csm-remote/", "relay/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "apps/csm-review/", "apps/csm-phone/", "apps/csm-legacy-launcher/", "crates/csm-pty/", "xtask/"];
+const DENY_ROOTS: &[&str] = &["vendor/csm-remote-proto/", "crates/csm-peer-proto/", "crates/csm-peer/", "crates/csm-remote/", "crates/csm-mcp/", "crates/csm-setup/", "apps/csm-cli/", "apps/csm-session-summary/", "apps/csm-review/", "apps/csm-legacy-launcher/", "crates/csm-pty/", "xtask/"];
 const DENY_LINTS: &[&str] = &["unwrap_used", "expect_used", "panic", "unimplemented", "todo", "unreachable"];
 
 pub fn check() -> Result<Findings, String> {
@@ -58,8 +55,8 @@ pub fn check() -> Result<Findings, String> {
         }
     }
     walk(&root.join("xtask").join("src"), &root, &mut problems);
-    // relay/ is a top-level app: one crate whose sources are checked like any other.
-    walk(&root.join("relay").join("src"), &root, &mut problems);
+    // vendor/csm-remote-proto is outside the workspace (vendor/*) but its sources are checked like CSM's own.
+    walk(&root.join("vendor").join("csm-remote-proto").join("src"), &root, &mut problems);
     Ok(problems)
 }
 

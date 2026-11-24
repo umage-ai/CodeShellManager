@@ -24,7 +24,7 @@ it, the feature tour and the keyboard shortcuts.
 | [distribution.md](distribution.md) | winget, Chocolatey, the MSI and the portable zip |
 | [third-party-notices.md](third-party-notices.md) | Third-party components and their licences |
 | [third-party-syntaxes.md](third-party-syntaxes.md) | The syntax-highlighting crates and grammars |
-| [../relay/README.md](../relay/README.md) | `csm-relay`, a self-hostable relay server (for a phone remote that is not released yet) |
+| The relay server (`csm-relay`) and the Phone remote add-on | Not in this repository any more: they live in the private `umage-ai/csm-relay` repository. See [design/remote-csm.md](design/remote-csm.md) |
 
 ## Contributing and design
 

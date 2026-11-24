@@ -33,7 +33,7 @@ caller can turn it on. See section 4.1.
   (today the bytes go only to the emulator and the search index, `csm-engine/src/session.rs:256-287`)
   and a **grid-to-VT serializer** in `csm-term` so a client can attach mid-session.
 - **Reuse from the phone-remote work:** the Noise parameters, prologue, check code, pairing flow
-  and device allow-list ideas from `crates/csm-remote-proto`. Do **not** reuse its message set:
+  and device allow-list ideas from `csm-remote-proto` (now in the private csm-relay repository, vendored here). Do **not** reuse its message set:
   that set has no terminal access by design (`msg.rs:1-13`). Add a second profile ("peer") over
   the same handshake and pairing base. The relay is not needed for WireGuard. Its rate limits
   (256 KiB/s and 50 frames/s per channel, `limits.rs:16-17`) are also too tight for terminal
@@ -269,7 +269,7 @@ stream id.
 ### 3.3 Reconnect and resume
 
 - The client reconnects with backoff (1-2-5-10-30 s, as the relay's hosts do,
-  `relay/README.md` "Operating notes").
+  the csm-relay repository's `README.md` ("Operating notes")).
 - State: a full snapshot after every reconnect. It is small: tens of KB for 50 sessions.
 - Terminals: the client sends `(session, instance, last_offset)`. If `instance` matches and the
   offset is still in the ring, the server replays the gap. Otherwise it sends a fresh
@@ -419,7 +419,7 @@ One base, two profiles:
 - **Shared:** Noise parameters, check code, the pairing UX (link, QR, check code, Allow/Deny,
   level), the device list, revocation and the indicator.
 - **Different:** the phone has a fixed op set with no terminal access, through a process add-on
-  and the relay (`msg.rs:1-13`, `relay/README.md`). The peer has the full tool set and terminal
+  and the relay (`msg.rs:1-13`; the csm-relay repository's `README.md`). The peer has the full tool set and terminal
   streams, in core, direct over TCP.
 - Keep the profiles separate in the protocol (prologue, op sets) and in the device list (a
   "kind" column). Then a phone can never get peer powers through a bug in level mapping. The
@@ -490,7 +490,7 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 
 ### Tests
 
-- **Protocol vectors** (as `csm-remote-proto/tests/vectors.rs`): frames, the peer prologue,
+- **Protocol vectors** (as `csm-remote-proto/tests/vectors.rs` in the csm-relay repository): frames, the peer prologue,
   handshakes with fixed keys, the offer with `tcp://`, refusals.
 - **Serializer property tests:** random VT streams (SGR, wide characters, scroll regions, alt
   screen, OSC 8 links); serialize then replay gives an equal grid, cursor and modes. Include
@@ -503,7 +503,7 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 - **Default-off test:** a fresh state, a migrated WPF state and an imported `.csm` all have no
   listener. Check that the socket is not bound, not just that the setting is false.
 - **Integration (in-process):** server and client on 127.0.0.1 with an ephemeral port, as
-  `relay/tests/relay.rs` does: attach, type, resize, drop the connection mid-stream, resume,
+  the csm-relay repository's `tests/relay.rs` does: attach, type, resize, drop the connection mid-stream, resume,
   overflow → resync, server restart → new instance.
 - **UI (kittest):** a remote window shows the indicator bar, hides the local-only items, and
   Quit disconnects.
@@ -1046,11 +1046,20 @@ checks are still open.
 
 ## P2: remote over the relay (`csm-relay`, `csm-peer`, `csm-remote`, `csm-engine`)
 
+> **Where the relay lives.** The relay server (`csm-relay`) and the Phone remote add-on are in the private
+> `umage-ai/csm-relay` repository. CSM does not build the relay. CSM keeps a vendored copy of the wire
+> protocol in `vendor/csm-remote-proto` (see `vendor/csm-remote-proto/CSM_VENDOR.md`).
+>
+> **Testing through a real relay.** `crates/csm-peer/tests/peer_relay.rs` runs a CSM peer through the
+> real relay binary. Build the relay from `umage-ai/csm-relay` (`cargo build -p csm-relay`), then run:
+> `CSM_RELAY_BIN=<path to csm-relay.exe> cargo test -p csm-peer --test peer_relay -- --ignored`.
+> Without `CSM_RELAY_BIN` the tests panic with the same instruction, so they never pass by accident.
+
 Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
 
 - **Relay: a peer namespace.** Hosts and channels are keyed by `(Kind, host id)`, `Phone` or `Peer`. `/v1/peer-host` and
   `/v1/peer-client` are the peer endpoints; a phone can never reach a peer host and the reverse (tests in
-  `relay/tests/relay.rs`). Both refuse any `Origin` header. The peer caps (`peer_*` in `[limits]`, defaults in
+  the csm-relay repository's `tests/relay.rs`). Both refuse any `Origin` header. The peer caps (`peer_*` in `[limits]`, defaults in
   `csm-remote-proto::limits`) are higher than the phone's, with a 1024-frame client queue for bursts.
 - **Transport.** `csm-peer::transport::Stream` is TCP or a relay channel; the Noise link, the server and the client use it
   unchanged. A relay channel is a byte stream over relay frames (writes cut into 16 KiB frames; the write side is a bounded

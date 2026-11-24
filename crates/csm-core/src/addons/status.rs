@@ -2,7 +2,7 @@
 //! add-on's row in Settings and a dot in the title bar). Pure: parsing and cleaning. The engine
 //! rate-limits it and holds it in memory (`csm-engine::plugins`); the UI draws it as plain text.
 //!
-//! See `docs/addons.md` ("csm/status") and `docs/design/phone-remote.md`, section 8.3.
+//! See `docs/addons.md` ("csm/status") and the phone remote design note in umage-ai/csm-relay, section 8.3.
 
 use serde_json::Value;
 

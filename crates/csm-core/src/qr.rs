@@ -6,7 +6,7 @@
 use qrcodegen::{QrCode, QrCodeEcc};
 
 /// The longest text a `qr` node accepts, in bytes. The worst pairing link the phone remote can
-/// offer is 615 bytes (`docs/design/phone-remote.md`, section 8.2), so 1024 leaves room.
+/// offer is 615 bytes (the phone remote design note in umage-ai/csm-relay, section 8.2), so 1024 leaves room.
 pub const MAX_QR_TEXT: usize = 1024;
 
 /// The error correction a code is asked for. The encoder may raise the level when the text fits,
