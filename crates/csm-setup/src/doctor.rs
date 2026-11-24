@@ -13,7 +13,7 @@ use csm_mcp::{Backend, RemoteBackend, RemoteOptions};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::clients::{Host, SERVER_NAME, clients};
+use crate::clients::{Client, Host, SERVER_NAME, clients};
 use crate::plan::{ActionKind, inspect_client};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -103,8 +103,25 @@ pub fn doctor(host: &Host, req: &DoctorRequest) -> DoctorReport {
     DoctorReport { checks }
 }
 
+/// What this csm looks for: its channel and the app id that names the discovery record and the
+/// pipe (`craft-<user>-<app id>-<pid>`), plus what is actually published.
+fn channel_note(remote: &RemoteOptions) -> String {
+    let ch = csm_engine::channel::CURRENT;
+    let mut note = format!("{} channel, looking for app id {} (pipe craft-<user>-{}-<pid>)", ch.id(), ch.ipc_app_id(), ch.ipc_app_id());
+    match csm_mcp::published_apps(remote.runtime.as_ref()) {
+        Ok(apps) if apps.is_empty() => note.push_str("; no CodeShellManager is published"),
+        Ok(apps) => {
+            let list: Vec<String> = apps.iter().map(|(a, p)| format!("{a} (pid {p})")).collect();
+            note.push_str(&format!("; published: {}", list.join(", ")));
+        }
+        Err(e) => note.push_str(&format!("; could not list the published apps: {e}")),
+    }
+    note
+}
+
 fn check_app(remote: &RemoteOptions) -> Check {
     let name = "app";
+    let note = channel_note(remote);
     let options = RemoteOptions { start: false, ..remote.clone() };
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("csm-doctor-app".into()).spawn(move || {
@@ -114,8 +131,8 @@ fn check_app(remote: &RemoteOptions) -> Check {
         return Check::new(name, CheckStatus::Fail, "could not start the check");
     }
     match rx.recv_timeout(Duration::from_secs(8)) {
-        Ok(Ok(tools)) => Check::new(name, CheckStatus::Ok, format!("CodeShellManager is running ({} tools).", tools.len())),
-        Ok(Err(e)) => Check::new(name, CheckStatus::Warn, e.to_string())
+        Ok(Ok(tools)) => Check::new(name, CheckStatus::Ok, format!("CodeShellManager is running ({} tools); {note}.", tools.len())),
+        Ok(Err(e)) => Check::new(name, CheckStatus::Warn, format!("{e} [{note}]"))
             .fix("Start CodeShellManager, or run csm with --start. Setup and doctor work without it."),
         Err(_) => Check::new(name, CheckStatus::Fail, "CodeShellManager did not answer within 8 seconds.")
             .fix("It may be stuck: quit it from the task manager and start it again."),
@@ -244,6 +261,12 @@ fn check_clients(host: &Host) -> Vec<Check> {
                 ActionKind::Unchanged => Check::new(name, CheckStatus::Ok, format!("{} is connected ({}).", c.display, c.config.display())),
                 ActionKind::Blocked => Check::new(name, CheckStatus::Warn, format!("{}: {}", c.display, a.reason.unwrap_or_default()))
                     .fix(format!("Fix the file, then run: csm setup --client {}", c.id)),
+                ActionKind::Update if points_at_old_folder(c, a.before.as_deref(), &command) => Check::new(
+                    name,
+                    CheckStatus::Warn,
+                    format!("{} points {SERVER_NAME} at csm in the old install folder (from before the move to umage.ai).", c.display),
+                )
+                .fix(format!("Run: csm setup --client {}  (CodeShellManager also repairs this when it starts)", c.id)),
                 ActionKind::Update => Check::new(name, CheckStatus::Warn, format!("{} points {SERVER_NAME} at a different csm.", c.display))
                     .fix(format!("Run: csm setup --client {}", c.id)),
                 ActionKind::Create | ActionKind::Add => {
@@ -332,4 +355,29 @@ pub fn mcp_self_test(program: &str, args: &[String], timeout: Duration) -> Check
         return Check::new(name, CheckStatus::Fail, "The MCP server's tool list is missing session_list.").fix("Update csm and the app together.");
     }
     Check::new(name, CheckStatus::Ok, format!("MCP server answered (protocol {protocol}, {} tools listed).", tools.len()))
+}
+
+/// Whether the entry in `before` is one setup wrote that names the pre-2.0 install folder.
+fn points_at_old_folder(c: &Client, before: Option<&str>, command: &[String]) -> bool {
+    let Some(program) = command.first() else { return false };
+    before
+        .and_then(|t| crate::config::read_entry(c, t).ok().flatten())
+        .is_some_and(|e| crate::clients::is_moved_entry(&e, Path::new(program)))
+}
+
+#[cfg(test)]
+mod channel_note_tests {
+    use super::*;
+
+    #[test]
+    fn the_note_names_the_channel_and_the_app_id_it_looks_for() {
+        let dir = std::env::temp_dir().join(format!("csm-doctor-note-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let remote = RemoteOptions { runtime: Some(csm_mcp::RuntimeDir::at(dir.join("rt")).unwrap()), ..Default::default() };
+        let note = channel_note(&remote);
+        let ch = csm_engine::channel::CURRENT;
+        assert!(note.contains(ch.id()) && note.contains(ch.ipc_app_id()), "{note}");
+        assert!(note.contains("no CodeShellManager is published"), "{note}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

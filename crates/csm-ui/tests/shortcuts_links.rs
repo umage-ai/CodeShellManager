@@ -31,12 +31,10 @@ fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize) -> Vec<(Stri
 /// dialog), where their own tests press them, and the mouse chords (Ctrl+click on a link, tested
 /// below; Shift+click in the sidebar, tested in sidebar_ops.rs), and Ctrl+Alt+C, which copies a
 /// selection in a Claude pane as shown (tested in claude_copy_ui.rs).
-/// Ctrl+PageUp and Ctrl+PageDown change the add-on screen tab: with none open they change nothing
-/// (the tab tests in keyboard_lists_ui.rs open one).
 /// The keyboard map's chords that need a panel or more state than this demo has: the add-on screen
 /// tabs (none open), the group tabs 3 to 9 (the demo has fewer groups), the pane moves (one pane),
 /// and Shift+F10 (needs a focused item). Their own tests press them.
-const IN_PANEL: [&str; 19] = [
+const IN_PANEL: [&str; 22] = [
     "Ctrl+Enter",
     "Shift+Tab",
     "Ctrl+click",
@@ -56,6 +54,10 @@ const IN_PANEL: [&str; 19] = [
     "Ctrl+Alt+Up",
     "Ctrl+Alt+Down",
     "Shift+F10",
+    // The New session dialog's own keys (Alt+1 the session tab, Alt+R the place, Alt+G the group: new_session_ui.rs).
+    "Alt+1",
+    "Alt+R",
+    "Alt+G",
 ];
 
 /// Every chord shown in a string literal in `src/` (tooltips, menu hints, the palette, the help

@@ -223,3 +223,59 @@ fn a_form_submit_asks_with_the_add_on_tool_it_runs_and_offers_no_always_allow() 
     assert!(has(&h, "Allow once"), "a one-time allow is offered");
     assert!(!has(&h, "Always for this client"), "no always-allow for a form: the grant would not be kept");
 }
+
+#[test]
+fn the_dialogs_own_keys_switch_tab_cycle_the_place_and_open_the_group_menu() {
+    let mut h = with_form(form("idle", &[], "idle", None, None));
+    open_dialog(&mut h);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num2);
+    settle(&mut h);
+    assert_eq!(h.state().ui.quick.new_form, Some(("nexus".into(), "agent".into())), "Alt+2 opens the first form");
+    assert_eq!(call_of(&h, "new_session_load"), Some(json!({"addon": "nexus", "source": "agent"})));
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num1);
+    settle(&mut h);
+    assert_eq!(h.state().ui.quick.new_form, None, "Alt+1 is the session tab");
+
+    assert!(!h.state().ui.quick.remote);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::R);
+    settle(&mut h);
+    assert!(h.state().ui.quick.remote, "Alt+R moves on to SSH");
+    assert_eq!(h.state().ui.quick.rkind, csm_ui::app::RemoteKind::Ssh);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::R);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::R);
+    settle(&mut h);
+    assert!(!h.state().ui.quick.remote, "and round to this PC again");
+
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::G);
+    settle(&mut h);
+    assert!(matches!(h.state().ui.menu, Some(csm_ui::app::Menu::QuickGroup { .. })), "Alt+G opens the group menu");
+}
+
+#[test]
+fn enter_in_an_open_form_submits_it_and_never_starts_a_plain_session() {
+    let mut h = with_form(form("ready", &[("alpha", "Alpha")], "idle", None, None));
+    open_dialog(&mut h);
+    h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    h.state_mut().ui.quick.new_choice = Some("alpha".into());
+    settle(&mut h);
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    assert_eq!(call_of(&h, "new_session_submit"), Some(json!({"addon": "nexus", "source": "agent", "choice": "alpha"})));
+    assert!(call_of(&h, "session_new").is_none(), "a form's Enter is the form's, not a claude session");
+}
+
+#[test]
+fn a_narrow_window_still_shows_the_start_buttons_and_every_command() {
+    let mut b = backend(ThemeKind::Mocha);
+    b.model_mut().launch_commands = (0..14).map(|i| format!("tool-{i} --with --many --arguments --so-it-is-long")).collect();
+    b.publish();
+    let mut h = harness(app_with(b));
+    settle(&mut h);
+    h.set_size(egui::vec2(420.0, 700.0));
+    open_dialog(&mut h);
+    for i in [0, 13] {
+        assert!(has(&h, &format!("Command: tool-{i} --with --many --arguments --so-it-is-long")), "command {i} is a chip");
+    }
+    assert!(has(&h, "Start"), "the primary button is there");
+    assert!(has(&h, "Start and keep open"));
+}

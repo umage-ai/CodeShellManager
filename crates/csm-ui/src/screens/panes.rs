@@ -518,9 +518,9 @@ pub fn workspace(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 let mut resized = None;
                 egui::Area::new(area_id).order(egui::Order::Middle).fixed_pos(r.min).show(ui.ctx(), |ui| {
                     let rr = Rect::from_min_size(r.min, r.size());
-                    ui.painter().rect_filled(rr.expand(size::HAIRLINE), CornerRadius::same(radius::MD), t.surface2);
+                    ui.painter().rect_filled(rr.expand(size::HAIRLINE), CornerRadius::same(radius::md()), t.surface2);
                     let shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: t.shadow };
-                    ui.painter().add(shadow.as_shape(rr, CornerRadius::same(radius::MD)));
+                    ui.painter().add(shadow.as_shape(rr, CornerRadius::same(radius::md())));
                     // Header drag moves it.
                     let head = Rect::from_min_size(rr.min, vec2(rr.width(), size::PANE_HEADER));
                     let resp = ui.interact(head.shrink2(vec2(space::XXL * 3.0, 0.0)), Id::new(("float-drag", f.session.clone())), Sense::drag());
@@ -729,7 +729,7 @@ fn float_resize_handles(ui: &mut Ui, rr: Rect, f: &crate::model::FloatPane, canv
 /// The strip under the canvas with a chip per minimized pane; a click restores it.
 fn minimized_strip(ui: &mut Ui, strip: Rect, sessions: &[&SessionView], scope: &Scope, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
-    ui.painter().rect(strip, CornerRadius::same(radius::MD), t.mantle, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    ui.painter().rect(strip, CornerRadius::same(radius::md()), t.mantle, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
     let cy = strip.center().y;
     let font = theme::medium(text::CAPTION);
     let head = ui.painter().text(pos2(strip.min.x + space::MD, cy), Align2::LEFT_CENTER, "Minimized", font.clone(), t.muted);
@@ -748,9 +748,9 @@ fn minimized_strip(ui: &mut Ui, strip: Rect, sessions: &[&SessionView], scope: &
         x = chip.max.x + space::XS;
         let resp = ui.interact(chip, Id::new(("minimized-chip", s.id.clone())), Sense::click());
         let bg = if resp.hovered() { t.row_sel } else { t.field };
-        ui.painter().rect(chip, CornerRadius::same(radius::SM), bg, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+        ui.painter().rect(chip, CornerRadius::same(radius::sm()), bg, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
         let stripe = Rect::from_min_size(pos2(chip.min.x + space::SM, cy - icon::SM / 2.0), vec2(size::STRIPE, icon::SM));
-        ui.painter().rect_filled(stripe, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+        ui.painter().rect_filled(stripe, CornerRadius::same(radius::sm() / 2), t.accent(s.accent));
         let glyph = Rect::from_min_size(pos2(stripe.max.x + space::SM, cy - icon::SM / 2.0), Vec2::splat(icon::SM));
         icons::paint_status(ui, glyph, s.status, icon::SM);
         if s.status == Status::Working {
@@ -792,7 +792,7 @@ fn dividers(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, area: Rect, scope: &
             SplitDir::Col => Rect::from_center_size(d.rect.center(), vec2(d.rect.width() * 0.4, size::RING)),
         };
         if lit {
-            ui.painter().rect_filled(line, CornerRadius::same(radius::SM / 2), t.blue);
+            ui.painter().rect_filled(line, CornerRadius::same(radius::sm() / 2), t.blue);
         }
         let resp = resp.on_hover_cursor(if d.dir == SplitDir::Row { CursorIcon::ResizeColumn } else { CursorIcon::ResizeRow });
         if resp.dragged()
@@ -811,7 +811,7 @@ fn dividers(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, area: Rect, scope: &
             let label = format!("{} : {}", pct, 100.0 - pct);
             let lw = widgets::text_width(ui, &label, theme::mono(text::MONO_SM)) + space::MD;
             let lr = Rect::from_center_size(d.rect.center(), vec2(lw, space::LG + space::XS));
-            ui.painter().rect_filled(lr, CornerRadius::same(radius::SM), t.blue);
+            ui.painter().rect_filled(lr, CornerRadius::same(radius::sm()), t.blue);
             ui.painter().text(lr.center(), Align2::CENTER_CENTER, label, theme::mono(text::MONO_SM), t.on_accent);
         }
         if resp.drag_stopped()
@@ -915,7 +915,7 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         pos2(mr.max.x + space::MD, cy - size::SEG_BUTTON / 2.0 - space::XXS - size::HAIRLINE),
         vec2(seg_w, size::SEG_BUTTON + space::XS + size::RING),
     );
-    ui.painter().rect(seg, CornerRadius::same(radius::MD + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    ui.painter().rect(seg, CornerRadius::same(radius::md() + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
     let mut x = seg.min.x + space::XXS + size::HAIRLINE / 2.0;
     for (m, w) in LayoutMode::ALL.into_iter().zip(widths) {
         let b = Rect::from_min_size(pos2(x, cy - size::SEG_BUTTON / 2.0), vec2(w, size::SEG_BUTTON));
@@ -928,7 +928,7 @@ fn group_bar(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let resp = ui.interact(b, Id::new(("layout-mode", m.id())), Sense::click());
         let on = layout.mode == m;
         if on {
-            ui.painter().rect_filled(b, CornerRadius::same(radius::SM + 1), t.field);
+            ui.painter().rect_filled(b, CornerRadius::same(radius::sm() + 1), t.field);
         }
         let fg = if on || resp.hovered() { t.fg } else { t.muted };
         let ir = Rect::from_min_size(pos2(b.min.x + space::ROW_X - space::XXS, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
@@ -1043,7 +1043,7 @@ pub fn pane(
 ) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let accent = t.accent(s.accent);
-    let r = CornerRadius::same(radius::MD);
+    let r = CornerRadius::same(radius::md());
     let p = ui.painter().clone();
     p.rect_filled(rect, r, t.term_bg);
     let head_h = if o.mini { size::PANE_HEADER_MINI } else { size::PANE_HEADER };
@@ -1126,9 +1126,9 @@ pub fn pane(
     }
 
     // Header.
-    p.rect_filled(head, CornerRadius { nw: radius::MD, ne: radius::MD, sw: 0, se: 0 }, t.mantle);
+    p.rect_filled(head, CornerRadius { nw: radius::md(), ne: radius::md(), sw: 0, se: 0 }, t.mantle);
     p.hline(head.x_range(), head.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
-    p.rect_filled(Rect::from_min_size(head.min, vec2(size::STRIPE, head.height())), CornerRadius { nw: radius::MD, ..Default::default() }, accent);
+    p.rect_filled(Rect::from_min_size(head.min, vec2(size::STRIPE, head.height())), CornerRadius { nw: radius::md(), ..Default::default() }, accent);
     let cy = head.center().y;
     // The header itself takes clicks (activate, right-click menu); registered before its
     // controls so they sit on top of it in hit testing.
@@ -1202,7 +1202,7 @@ pub fn pane(
             x -= space::XXS;
             let resp = ui.interact(b, Id::new(("pane-ctl", s.id.clone(), "more".to_string(), o.torn)), Sense::click());
             let (bg, fg) = if resp.hovered() { (t.row_sel, t.fg) } else { (Color32::TRANSPARENT, t.muted) };
-            ui.painter().rect_filled(b, CornerRadius::same(radius::SM), bg);
+            ui.painter().rect_filled(b, CornerRadius::same(radius::sm()), bg);
             let lr = ui.painter().text(pos2(b.min.x + space::SM, cy), Align2::LEFT_CENTER, "Actions", actions_font.clone(), fg);
             icons::paint(ui, Rect::from_min_size(pos2(lr.max.x + space::XS, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "chevD", icon::XS, fg);
             named(&resp, WidgetType::Button, tip.to_string());
@@ -1252,17 +1252,17 @@ pub fn pane(
             x -= space::XS;
             let whole = Rect::from_min_max(pos2(x - main_w - caret_w, cy - size::CONTROL_SM / 2.0), pos2(x, cy + size::CONTROL_SM / 2.0));
             x = whole.min.x - space::XS;
-            p.rect_stroke(whole, CornerRadius::same(radius::SM), Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+            p.rect_stroke(whole, CornerRadius::same(radius::sm()), Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
             let main = Rect::from_min_size(whole.min, vec2(main_w, whole.height()));
             let caret = Rect::from_min_max(pos2(main.max.x, whole.min.y), whole.max);
             p.vline(caret.min.x, whole.y_range(), Stroke::new(size::HAIRLINE, t.surface0));
             let rm = ui.interact(main, Id::new(("run-main", s.id.clone(), o.torn)), Sense::click());
             let rc = ui.interact(caret, Id::new(("run-caret", s.id.clone(), o.torn)), Sense::click());
             if rm.hovered() {
-                p.rect_filled(main.shrink(size::HAIRLINE), CornerRadius::same(radius::SM - 1), t.row_sel);
+                p.rect_filled(main.shrink(size::HAIRLINE), CornerRadius::same(radius::sm().saturating_sub(1)), t.row_sel);
             }
             if rc.hovered() {
-                p.rect_filled(caret.shrink(size::HAIRLINE), CornerRadius::same(radius::SM - 1), t.row_sel);
+                p.rect_filled(caret.shrink(size::HAIRLINE), CornerRadius::same(radius::sm().saturating_sub(1)), t.row_sel);
             }
             let ir = Rect::from_min_size(pos2(main.min.x + space::SM - size::HAIRLINE, cy - icon::XS / 2.0), Vec2::splat(icon::XS));
             icons::paint(ui, ir, "play", icon::XS, t.green);
@@ -1355,10 +1355,13 @@ pub fn pane(
         }
     }
 
-    // Border: the active pane gets its accent ring.
+    // Border: the active pane gets its accent ring. A 3D theme sinks every pane into the window.
+    if t.style.bevel {
+        widgets::paint_bevel(&p, rect, widgets::Edge::Sunken, &t);
+    }
     if o.active && !o.mini {
         p.rect_stroke(rect, r, Stroke::new(size::RING, accent), StrokeKind::Inside);
-    } else {
+    } else if !t.style.bevel {
         p.rect_stroke(rect, r, Stroke::new(size::HAIRLINE, if o.floating { t.surface2 } else { t.surface0 }), StrokeKind::Inside);
     }
 
@@ -1449,12 +1452,12 @@ fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(Sessio
         for e in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
             let z = e.zone(*r).shrink(space::XS);
             if Some(e) == lit {
-                painter.rect_filled(z, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP * 2.0));
-                painter.rect_stroke(z, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+                painter.rect_filled(z, CornerRadius::same(radius::md()), Tokens::tint(t.blue, alpha::DROP * 2.0));
+                painter.rect_stroke(z, CornerRadius::same(radius::md()), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
             } else {
                 painter.rect_stroke(
                     z,
-                    CornerRadius::same(radius::MD),
+                    CornerRadius::same(radius::md()),
                     Stroke::new(size::HAIRLINE, Tokens::tint(t.blue, alpha::ASLEEP)),
                     StrokeKind::Inside,
                 );
@@ -1465,7 +1468,7 @@ fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(Sessio
             let label = "Split here";
             let lw = widgets::text_width(ui, label, theme::medium(text::CAPTION)) + space::LG;
             let lr = Rect::from_center_size(z.center(), vec2(lw, size::CHIP));
-            painter.rect_filled(lr, CornerRadius::same(radius::PILL), t.blue);
+            painter.rect_filled(lr, CornerRadius::same(radius::pill()), t.blue);
             painter.text(lr.center(), Align2::CENTER_CENTER, label, theme::medium(text::CAPTION), t.on_accent);
             drop = Some((tid.clone(), e));
         }
@@ -1474,10 +1477,10 @@ fn split_drag(ui: &mut Ui, app: &mut CsmApp, layout: &Layout, planned: &[(Sessio
     if let Some(s) = app.model.session(&src) {
         let w = widgets::text_width(ui, &s.name, theme::medium(text::BODY)) + space::LG + size::STRIPE;
         let gr = Rect::from_min_size(p + vec2(space::MD, space::XS), vec2(w, size::CONTROL_SM));
-        painter.rect(gr, CornerRadius::same(radius::MD), t.pop, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+        painter.rect(gr, CornerRadius::same(radius::md()), t.pop, Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
         painter.rect_filled(
             Rect::from_min_size(gr.min + vec2(space::SM, space::SM - space::XXS), vec2(size::STRIPE, gr.height() - space::LG + space::XS)),
-            CornerRadius::same(radius::SM / 2),
+            CornerRadius::same(radius::sm() / 2),
             t.accent(s.accent),
         );
         painter.text(

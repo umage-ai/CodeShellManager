@@ -67,8 +67,8 @@ pub fn show(ui: &Ui, model: &UiModel, panes: &[(SessionId, Rect)], actions: &mut
     let what = if hovered == 1 { "Drop to insert the path".to_string() } else { format!("Drop to insert the {hovered} paths") };
     egui::Area::new(Id::new("file-drop-overlay")).order(Order::Foreground).interactable(false).fixed_pos(rect.min).show(ctx, |ui| {
         let p = ui.painter();
-        p.rect_filled(rect, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP));
-        p.rect_stroke(rect.shrink(size::RING / 2.0), CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+        p.rect_filled(rect, CornerRadius::same(radius::md()), Tokens::tint(t.blue, alpha::DROP));
+        p.rect_stroke(rect.shrink(size::RING / 2.0), CornerRadius::same(radius::md()), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
         let card = Rect::from_center_size(rect.center(), vec2((rect.width() - space::XL).clamp(0.0, size::DIALOG_W), size::CONTROL_LG * 2.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
             ui.vertical_centered(|ui| {

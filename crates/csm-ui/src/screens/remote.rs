@@ -437,7 +437,7 @@ pub fn indicator(ui: &Ui, app: &CsmApp, left: f32, right: f32, cy: f32, actions:
     let rect = Rect::from_min_size(pos2(left, cy - size::CONTROL_SM / 2.0), vec2(width, size::CONTROL_SM));
     let resp = ui.interact(rect, ui.id().with("tb-remote"), Sense::click());
     let fill = Tokens::tint(color, if resp.hovered() { alpha::PILL * 2.0 } else { alpha::PILL });
-    ui.painter().rect(rect, CornerRadius::same(radius::PILL), fill, Stroke::new(size::HAIRLINE, Tokens::tint(color, alpha::GAUGE_BAND)), egui::StrokeKind::Inside);
+    ui.painter().rect(rect, CornerRadius::same(radius::pill()), fill, Stroke::new(size::HAIRLINE, Tokens::tint(color, alpha::GAUGE_BAND)), egui::StrokeKind::Inside);
     let dot_c = pos2(rect.min.x + pad + dot / 2.0, rect.center().y);
     ui.painter().circle_filled(dot_c, dot / 2.0, color);
     if let Some(s) = shown {
@@ -808,7 +808,7 @@ fn iface_row(ui: &mut Ui, i: &IfaceView, on: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::click());
     if resp.hovered() || on {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), if on { t.row_sel } else { t.row_hover });
     }
     let c = pos2(rect.min.x + space::ROW_X + icon::XS / 2.0, rect.center().y);
     ui.painter().circle_stroke(c, icon::XS / 2.0, Stroke::new(size::HAIRLINE, if on { t.blue } else { t.surface2 }));
@@ -827,7 +827,7 @@ fn iface_row(ui: &mut Ui, i: &IfaceView, on: bool) -> egui::Response {
     if let Some((tag, color)) = tag {
         let w = widgets::text_width(ui, tag, theme::medium(text::TINY)) + space::MD;
         let chip = Rect::from_min_size(pos2(r.max.x + space::SM, rect.center().y - size::CHIP / 2.0), vec2(w, size::CHIP));
-        ui.painter().rect_filled(chip, CornerRadius::same(radius::PILL), Tokens::tint(color, alpha::PILL));
+        ui.painter().rect_filled(chip, CornerRadius::same(radius::pill()), Tokens::tint(color, alpha::PILL));
         ui.painter().text(chip.center(), Align2::CENTER_CENTER, tag, theme::medium(text::TINY), color);
     }
     let label = format!("Address: {} ({})", i.address, i.name);
@@ -918,7 +918,7 @@ pub(crate) fn paint_qr(ui: &mut Ui, t: &Tokens, n: usize, side: f32, dark: impl 
     let edge = cell * cells as f32;
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(edge), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(radius::MD), paper);
+    p.rect_filled(rect, CornerRadius::same(radius::md()), paper);
     let origin = rect.min + Vec2::splat(cell * quiet as f32);
     for y in 0..n {
         // One rectangle per run of dark modules.

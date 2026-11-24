@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::app::{Action, CsmApp, Overlay};
 use crate::dialog_keys::{self, Controls, Field, Pressed, Slot};
 use crate::icons;
-use crate::model::{RestoreProgress, ShutdownRowState, Status};
+use crate::model::{RestoreProgress, SessionId, ShutdownRowState, Status};
 use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
@@ -99,7 +99,7 @@ pub fn dialog_button(ui: &mut Ui, id: Id, idx: usize, default: Option<usize>, ki
     // `widgets::button` draws the ring once egui gives the button the focus; this covers the
     // dialog's own focus and the default button at rest.
     if !resp.has_focus() && (focus == Some(Slot::Button(idx)) || (focus.is_none() && default == Some(idx))) {
-        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::MD);
+        widgets::focus_ring(ui, resp.rect.expand(space::XS), radius::md());
     }
     resp
 }
@@ -191,7 +191,7 @@ fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>
                     egui::RichText::new("Remember my choice").font(theme::regular(text::BODY)).color(t.fg2),
                 ));
                 if dialog_keys::current(ctx, id) == Some(Slot::Field) {
-                    widgets::focus_ring(ui, cr.rect, radius::SM);
+                    widgets::focus_ring(ui, cr.rect, radius::sm());
                 }
                 cr.on_hover_text("Settings › General › When I close the window changes it later.");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -260,7 +260,7 @@ pub fn shortcut_rows(map: &Keymap) -> Vec<(String, String)> {
 fn help(ctx: &egui::Context, keymap: &Keymap, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new("help-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("help-scrim")).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
         if resp.clicked() {
@@ -368,7 +368,7 @@ fn open_with_offer(ctx: &egui::Context, app: &CsmApp, actions: &mut Vec<Action>)
                     )
                     .wrap(),
                 );
-                egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::same(space::SM as i8)).show(
+                egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::same(space::SM as i8)).show(
                     ui,
                     |ui| {
                         ui.set_width(ui.available_width());
@@ -446,7 +446,7 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
                     if !params.is_empty() {
                         egui::Frame::new()
                             .fill(t.crust)
-                            .corner_radius(CornerRadius::same(radius::MD))
+                            .corner_radius(CornerRadius::same(radius::md()))
                             .inner_margin(egui::Margin::same(space::SM as i8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -475,7 +475,7 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
 fn scrim(ctx: &egui::Context, id: &str) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new(id)).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0.0, t.scrim);
     });
@@ -514,7 +514,7 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
                     let cy = r.center().y;
                     ui.painter().rect_filled(
                         Rect::from_center_size(pos2(r.min.x + space::MD + size::STRIPE / 2.0, cy), vec2(size::STRIPE, space::LG)),
-                        CornerRadius::same(radius::SM / 2),
+                        CornerRadius::same(radius::sm() / 2),
                         t.accent(s.accent),
                     );
                     ui.painter().text(
@@ -558,91 +558,85 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
     });
 }
 
+/// The shutdown board. It always fits the window: the header (title, the count and the bar) and
+/// the footer (Force close now) stay put, and the rows scroll between them, the one closing now
+/// first, then the queue in the engine's order, then the ones that are done.
 fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let Some(board) = app.model.shutdown.clone() else { return };
     let t = Tokens::get(ctx);
     scrim(ctx, "shutdown-scrim");
     let screen = ctx.content_rect();
-    let done = board.rows.iter().filter(|r| matches!(r.state, ShutdownRowState::Clean | ShutdownRowState::Forced)).count();
+    let total = board.rows.len();
+    let done = board.done();
+    let closing = board.rows.iter().filter(|r| r.state == ShutdownRowState::Closing).count();
+    let queued = total.saturating_sub(done + closing);
     let any_forced = board.rows.iter().any(|r| r.state == ShutdownRowState::Forced);
     let hint = if any_forced {
-        "One session did not answer. It was closed without waiting; nothing else was lost."
+        "A session did not answer. It was closed without waiting; nothing else was lost."
     } else if board.budget_used_s < 6.0 {
         "Claude sessions get time to exit on their own so they can save their config."
     } else {
         "Busy Claude sessions take 2 to 5 seconds each to exit."
     };
+    let summary = match (done, closing) {
+        _ if done == total => format!("Closed all {total} sessions"),
+        (_, 0) => format!("Closing {total} sessions: {done} done, {queued} queued"),
+        _ => format!("Closing {total} sessions: {done} done, {closing} closing, {queued} queued"),
+    };
+    let is_claude = |id: &String| app.model.session(id).is_some_and(|s| s.is_claude());
+    let rows: Vec<_> = board.ordered(is_claude).into_iter().filter_map(|r| app.model.session(&r.session).map(|s| (r, s))).collect();
+    let next_claude: Vec<SessionId> = board.next_up(is_claude).into_iter().cloned().collect();
+
+    let pad = space::LG + space::XS;
+    let width = size::BOARD_W.min(screen.width() - 2.0 * (space::LG + pad)).max(size::MENU_W);
+    let max_h = (screen.height() - 2.0 * (space::LG + pad)).max(size::ROW * 2.0);
+    // The footer's height from the last frame, so the list leaves room for it.
+    let footer_id = Id::new("shutdown-footer-h");
+    let footer_h = ctx.data(|d| d.get_temp::<f32>(footer_id)).unwrap_or(size::CONTROL_LG + size::ROW);
     egui::Area::new(Id::new("shutdown")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
-        widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
-            ui.set_width(size::BOARD_W);
+        widgets::pop_frame(&t).inner_margin(egui::Margin::same(pad as i8)).show(ui, |ui| {
+            ui.set_width(width);
+            ui.set_max_height(max_h);
             ui.spacing_mut().item_spacing.y = space::XS;
-            ui.label(egui::RichText::new("Closing CodeShellManager").font(semibold(text::TITLE)).color(t.fg));
-            ui.label(egui::RichText::new("Waiting for sessions to exit, one at a time.").font(theme::regular(text::BODY)).color(t.fg2));
-            ui.add_space(space::SM);
-            for row in &board.rows {
-                let Some(s) = app.model.session(&row.session) else { continue };
-                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::ROW), Sense::hover());
-                let cy = r.center().y;
-                let g = Rect::from_min_size(pos2(r.min.x, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
-                match row.state {
-                    ShutdownRowState::Pending => {
-                        ui.painter().text(g.center(), Align2::CENTER_CENTER, "·", theme::regular(text::BODY), t.faint);
-                    }
-                    ShutdownRowState::Closing => {
-                        icons::paint_status(ui, g, Status::Working, icon::MD);
-                        icons::request_spinner_repaint(ui);
-                    }
-                    ShutdownRowState::Clean => icons::paint_status(ui, g, Status::Done, icon::MD),
-                    ShutdownRowState::Forced => icons::paint_status(ui, g, Status::Error, icon::MD),
-                }
-                ui.painter().rect_filled(
-                    Rect::from_center_size(pos2(g.max.x + space::ROW_X, cy), vec2(size::STRIPE, icon::MD)),
-                    CornerRadius::same(radius::SM / 2),
-                    t.accent(s.accent),
-                );
-                widgets::paint_text(
-                    ui,
-                    pos2(g.max.x + space::LG + space::XS, cy),
-                    Align2::LEFT_CENTER,
-                    &s.name,
-                    theme::regular(text::BODY),
-                    t.fg,
-                    size::MENU_W,
-                );
-                let word = match row.state {
-                    ShutdownRowState::Pending => "waiting",
-                    ShutdownRowState::Closing if s.is_claude() => "closing, saving config",
-                    ShutdownRowState::Closing => "closing",
-                    ShutdownRowState::Clean => "exited cleanly",
-                    ShutdownRowState::Forced => "force-closed after 10 s",
-                };
-                let wc = if row.state == ShutdownRowState::Forced { t.red } else { t.muted };
-                ui.painter().text(pos2(r.max.x - size::GRID_TILE_W * 2.0, cy), Align2::LEFT_CENTER, word, theme::regular(text::CAPTION), wc);
-                if row.state != ShutdownRowState::Pending {
-                    ui.painter().text(pos2(r.max.x, cy), Align2::RIGHT_CENTER, format!("{:.1}s", row.elapsed_s), theme::mono(text::MONO), t.muted);
-                }
-            }
-            ui.add_space(space::SM);
-            let lab = |ui: &mut Ui, a: &str, b: String| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(a).font(theme::regular(text::CAPTION)).color(t.muted));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(b).font(theme::regular(text::CAPTION)).color(t.muted));
-                    });
+            let top = ui.cursor().min.y;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Closing CodeShellManager").font(semibold(text::TITLE)).color(t.fg));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{:.0} s", board.budget_used_s)).font(theme::regular(text::CAPTION)).color(t.muted))
+                        .on_hover_text("Time since closing began.");
                 });
-            };
-            let total = board.rows.len().max(1);
-            lab(ui, "Closed", format!("{done} / {}", board.rows.len()));
-            widgets::bar(ui, done as f32 / total as f32, t.blue, size::BAR);
+            });
+            ui.label(egui::RichText::new(summary).font(theme::medium(text::BODY)).color(t.fg2));
+            widgets::bar(ui, done as f32 / total.max(1) as f32, t.blue, size::BAR);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(board_explanation(board.slots()))
+                    .font(theme::regular(text::CAPTION))
+                    .color(t.muted),
+                )
+                .wrap(),
+            );
             ui.add_space(space::SM);
-            lab(ui, "Wait budget", format!("{:.1} s of {:.0} s", board.budget_used_s, board.budget_s));
-            widgets::bar(ui, board.budget_used_s / board.budget_s.max(1.0), t.peach, size::BAR);
+            let header_h = ui.cursor().min.y - top;
+            let list_h = (max_h - header_h - footer_h - space::SM).max(size::ROW * 2.0);
+            // show_rows spaces rows by the item spacing too: none, so the list is exactly its rows.
+            ui.spacing_mut().item_spacing.y = 0.0;
+            egui::ScrollArea::vertical().id_salt("shutdown-rows").max_height(list_h).auto_shrink([false, true]).show_rows(
+                ui,
+                size::ROW,
+                rows.len(),
+                |ui, range| {
+                    for (row, s) in rows.iter().skip(range.start).take(range.len()) {
+                        shutdown_row(ui, &t, row, s, next_claude.contains(&row.session));
+                    }
+                },
+            );
             ui.add_space(space::SM);
-            let waiting = done < board.rows.len();
+            let foot = ui.cursor().min.y;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // `app_quit { force }`: the engine stops waiting for the remaining exits.
-                    if waiting
+                    if done < total
                         && widgets::button(ui, ButtonKind::Secondary, None, "Force close now", None)
                             .on_hover_text("Everything still running is stopped now, without waiting for it to exit on its own.")
                             .clicked()
@@ -652,6 +646,83 @@ fn shutdown_board(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
                     ui.add(egui::Label::new(egui::RichText::new(hint).font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
                 });
             });
+            let fh = ui.cursor().min.y - foot;
+            ctx.data_mut(|d| d.insert_temp(footer_id, fh));
         });
     });
+}
+
+/// The board's explanation line: how Claude sessions exit, and what keeps their config safe.
+pub(crate) fn board_explanation(slots: usize) -> String {
+    if slots <= 1 {
+        "Claude sessions exit one at a time, so each saves its config before the next starts. Everything else stops at once.".into()
+    } else {
+        format!(
+            "Claude sessions exit {slots} at a time, a moment apart, so each can save its config; ~/.claude.json is backed up first and checked after. Everything else stops at once."
+        )
+    }
+}
+
+/// One row of the shutdown board: state glyph, accent, name, what it is doing or waiting for, and
+/// for a Claude session that finished, how long its exit took.
+fn shutdown_row(ui: &mut Ui, t: &Tokens, row: &crate::model::ShutdownRow, s: &crate::model::SessionView, next: bool) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::ROW), Sense::hover());
+    let cy = r.center().y;
+    let g = Rect::from_min_size(pos2(r.min.x, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
+    match row.state {
+        ShutdownRowState::Pending => {
+            ui.painter().text(g.center(), Align2::CENTER_CENTER, "·", theme::regular(text::BODY), t.faint);
+        }
+        ShutdownRowState::Closing => {
+            icons::paint_status(ui, g, Status::Working, icon::MD);
+            icons::request_spinner_repaint(ui);
+        }
+        ShutdownRowState::Clean => icons::paint_status(ui, g, Status::Done, icon::MD),
+        ShutdownRowState::Forced => icons::paint_status(ui, g, Status::Error, icon::MD),
+    }
+    ui.painter().rect_filled(
+        Rect::from_center_size(pos2(g.max.x + space::ROW_X, cy), vec2(size::STRIPE, icon::MD)),
+        CornerRadius::same(radius::sm() / 2),
+        t.accent(s.accent),
+    );
+    let claude = s.is_claude();
+    // An exit measured at zero was no wait: the process was already gone when its turn came.
+    let instant = row.elapsed_s < 0.05;
+    let word = match row.state {
+        ShutdownRowState::Pending if claude && next => "next",
+        ShutdownRowState::Pending => "queued",
+        ShutdownRowState::Closing if claude => "waiting for Claude to exit",
+        ShutdownRowState::Closing => "stopping",
+        ShutdownRowState::Clean if !claude => "stopped",
+        ShutdownRowState::Clean if instant => "had already exited",
+        ShutdownRowState::Clean => "exited cleanly",
+        ShutdownRowState::Forced => "force-closed",
+    };
+    let wc = match row.state {
+        ShutdownRowState::Forced => t.red,
+        ShutdownRowState::Closing => t.fg2,
+        _ => t.muted,
+    };
+    let word_x = r.max.x - size::GRID_TILE_W * 2.0;
+    let name_x = g.max.x + space::LG + space::XS;
+    widgets::paint_text(ui, pos2(name_x, cy), Align2::LEFT_CENTER, &s.name, theme::regular(text::BODY), t.fg, word_x - name_x - space::SM);
+    ui.painter().text(pos2(word_x, cy), Align2::LEFT_CENTER, word, theme::regular(text::CAPTION), wc);
+    if claude && matches!(row.state, ShutdownRowState::Clean | ShutdownRowState::Forced) && !instant {
+        ui.painter().text(pos2(r.max.x, cy), Align2::RIGHT_CENTER, format!("{:.1}s", row.elapsed_s), theme::mono(text::MONO), t.muted);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::board_explanation;
+
+    #[test]
+    fn the_board_explains_how_many_claude_sessions_exit_at_once() {
+        assert!(board_explanation(1).contains("one at a time"));
+        assert!(board_explanation(0).contains("one at a time"), "an unknown count reads as one");
+        let four = board_explanation(4);
+        assert!(four.contains("exit 4 at a time"), "{four}");
+        assert!(four.contains("~/.claude.json"), "{four}");
+        assert!(!four.contains("one at a time"));
+    }
 }

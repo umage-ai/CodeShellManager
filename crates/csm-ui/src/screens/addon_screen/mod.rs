@@ -206,9 +206,9 @@ pub fn strip(ui: &mut Ui, rect: Rect, infos: &[ScreenInfo], active: Option<&str>
         *x += w + space::XXS;
         let resp = ui.interact(r, id, Sense::click());
         if on {
-            ui.painter().rect_filled(r, CornerRadius::same(radius::MD), t.row_sel);
+            ui.painter().rect_filled(r, CornerRadius::same(radius::md()), t.row_sel);
         } else if resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(radius::MD), t.row_hover);
+            ui.painter().rect_filled(r, CornerRadius::same(radius::md()), t.row_hover);
         }
         let fg = if on { t.fg } else { t.muted };
         let mut px = r.min.x + space::SM;
@@ -220,7 +220,7 @@ pub fn strip(ui: &mut Ui, rect: Rect, infos: &[ScreenInfo], active: Option<&str>
         px = tr.max.x;
         if mark {
             let mr = Rect::from_min_size(pos2(px + space::SM, cy - size::BADGE / 2.0), vec2(mark_w, size::BADGE));
-            ui.painter().rect_filled(mr, CornerRadius::same(radius::PILL), Tokens::tint(t.mauve, alpha::PILL));
+            ui.painter().rect_filled(mr, CornerRadius::same(radius::pill()), Tokens::tint(t.mauve, alpha::PILL));
             ui.painter().text(mr.center(), Align2::CENTER_CENTER, "Add-on", theme::medium(text::TINY), t.mauve);
         }
         let mut close_resp = None;
@@ -228,7 +228,7 @@ pub fn strip(ui: &mut Ui, rect: Rect, infos: &[ScreenInfo], active: Option<&str>
             let cr = Rect::from_center_size(pos2(r.max.x - space::SM - icon::LG / 2.0, cy), vec2(icon::LG + space::XS, icon::LG + space::XS));
             let c = ui.interact(cr, id.with("close"), Sense::click());
             if c.hovered() {
-                ui.painter().rect_filled(cr, CornerRadius::same(radius::SM), t.hover);
+                ui.painter().rect_filled(cr, CornerRadius::same(radius::sm()), t.hover);
             }
             icons::paint(ui, cr, "x", icon::SM, if c.hovered() { t.fg } else { t.muted });
             named(&c, WidgetType::Button, format!("Close {label}"));
@@ -240,7 +240,7 @@ pub fn strip(ui: &mut Ui, rect: Rect, infos: &[ScreenInfo], active: Option<&str>
             move || WidgetInfo::selected(WidgetType::RadioButton, true, on, n.clone())
         });
         if resp.has_focus() {
-            widgets::focus_ring(ui, r, radius::MD);
+            widgets::focus_ring(ui, r, radius::md());
         }
         (resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip), close_resp)
     };
@@ -285,7 +285,7 @@ pub fn show(ui: &mut Ui, rect: Rect, info: &ScreenInfo, tree: Option<&Arc<Screen
     let tr = ui.painter().text(pos2(x, cy), Align2::LEFT_CENTER, &info.title, semibold(text::BODY), t.fg);
     let mw = widgets::text_width(ui, "Add-on", theme::medium(text::TINY)) + space::MD;
     let mr = Rect::from_min_size(pos2(tr.max.x + space::SM, cy - size::BADGE / 2.0), vec2(mw, size::BADGE));
-    ui.painter().rect_filled(mr, CornerRadius::same(radius::PILL), Tokens::tint(t.mauve, alpha::PILL));
+    ui.painter().rect_filled(mr, CornerRadius::same(radius::pill()), Tokens::tint(t.mauve, alpha::PILL));
     ui.painter().text(mr.center(), Align2::CENTER_CENTER, "Add-on", theme::medium(text::TINY), t.mauve);
     let by = format!("{} \u{b7} {}", reveal_line(&info.addon_name), info.addon);
     let mut right = head.max.x - space::SM;

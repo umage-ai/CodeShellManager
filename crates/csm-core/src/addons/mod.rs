@@ -12,5 +12,5 @@ pub use manifest::{
     AddonError, AddonKind, AddonMeta, CommandSpec, NewSessionSpec, Problem, ProcessSpec, ProfileSpec, ProfileStatus, ParsedAddon, ResumeRule, RunTemplateSpec,
     SlashSpec, StatusRule, API_VERSION, match_status, parse, plain_token, valid_id,
 };
-pub use theme::{BUILTIN_THEMES, PALETTE_KEYS, TERMINAL_KEYS, ThemeBase, ThemeSpec};
+pub use theme::{BUILTIN_THEMES, Borders, Corners, FontChoice, PALETTE_KEYS, TERMINAL_KEYS, ThemeBase, ThemeSpec, ThemeStyle, TitleStyle};
 pub use protocol::{DeclaredTool, Handshake, Incoming, ProcessEffect, Remote, RemoteOpen, RpcError};

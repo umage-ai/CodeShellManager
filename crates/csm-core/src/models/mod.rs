@@ -14,8 +14,8 @@ mod ui_state;
 
 pub use alert_event::{AlertEvent, AlertType};
 pub use app_state::{
-    AppSettings, AppState, CloseAction, DEFAULT_INDEX_MAX_MB, DEFAULT_USAGE_RETENTION_DAYS, GroupDisplayMode, INDEX_MAX_MB_RANGE, McpGrant, ProgramStatusProbeMode,
-    SidebarActionIconsMode, UI_ZOOM_DEFAULT, UI_ZOOM_RANGE, USAGE_RETENTION_DAYS_RANGE, WindowBounds, WindowPlacementState,
+    AppSettings, AppState, CloseAction, DEFAULT_INDEX_MAX_MB, DEFAULT_QUIT_CLAUDE_CONCURRENCY, DEFAULT_USAGE_RETENTION_DAYS, GroupDisplayMode, INDEX_MAX_MB_RANGE, McpGrant,
+    ProgramStatusProbeMode, QUIT_CLAUDE_CONCURRENCY_RANGE, SidebarActionIconsMode, UI_ZOOM_DEFAULT, UI_ZOOM_RANGE, USAGE_RETENTION_DAYS_RANGE, WindowBounds, WindowPlacementState,
 };
 pub use group::SessionGroup;
 pub use open_with::OpenWithEntry;

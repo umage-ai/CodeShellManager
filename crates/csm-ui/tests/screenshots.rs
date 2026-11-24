@@ -68,6 +68,101 @@ fn shoot_host(
     assert!(distinct.len() > 100, "{name} looks blank");
 }
 
+/// `n` more live Claude sessions, copies of the demo's first live Claude one.
+fn add_claude_sessions(b: &mut DemoBackend, n: usize) {
+    let m = b.model_mut();
+    let base = m.sessions.iter().find(|s| s.is_claude() && s.status.is_live()).cloned().expect("a live Claude session");
+    for i in 0..n {
+        let mut s = base.clone();
+        s.id = format!("many-{i}");
+        s.name = format!("project-{i:02}");
+        s.accent = csm_ui::model::Accent::Palette((i % 12) as u8);
+        m.sessions.push(s);
+    }
+}
+
+#[test]
+fn new_session_screens() {
+    // The New session dialog: wide, light, narrow window, a long command list, an add-on form.
+    let many_commands = |b: &mut DemoBackend| {
+        b.model_mut().launch_commands = [
+            "claude",
+            "claude --continue",
+            "claude --dangerously-skip-permissions",
+            "claudelocal",
+            "ollama launch hermes",
+            "ollama launch opencode",
+            "opencode",
+            "codex",
+            "gh copilot suggest --target shell with a very long argument list that cannot fit",
+            "pwsh -NoLogo",
+            "wsl.exe -d Ubuntu",
+        ]
+        .map(String::from)
+        .to_vec();
+    };
+    let nexus = |load: &'static str| csm_engine::NewSessionView {
+        addon: "nexus".into(),
+        addon_name: "NEXUS".into(),
+        source: "agent".into(),
+        title: "New NEXUS agent".into(),
+        submit_label: "Create agent".into(),
+        choice_title: "Project".into(),
+        name_title: Some("Agent name".into()),
+        load,
+        choices: ["Alpha", "Billing portal", "Customer data platform", "Docs", "Edge gateway"]
+            .iter()
+            .map(|n| csm_engine::Choice { id: n.to_lowercase(), label: (*n).into(), detail: "repo".into() })
+            .collect(),
+        load_error: None,
+        submit: "idle",
+        submit_text: None,
+    };
+    shoot("08-new-session-commands", ThemeKind::Mocha, many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot("08-new-session-latte", ThemeKind::Latte, many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.query = "odu".into();
+    });
+    shoot_sized("08-new-session-narrow", ThemeKind::Mocha, egui::vec2(520.0, 800.0), many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot_sized("08-new-session-narrow-latte", ThemeKind::Latte, egui::vec2(520.0, 800.0), many_commands, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot("08-new-session-addon-tab", ThemeKind::Mocha, |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+    });
+    shoot("08-new-session-addon-form", ThemeKind::Mocha, |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+        h.state_mut().ui.quick.new_choice = Some("docs".into());
+    });
+    shoot("08-new-session-addon-form-latte", ThemeKind::Latte, |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    });
+    shoot_sized("08-new-session-addon-form-narrow", ThemeKind::Mocha, egui::vec2(520.0, 800.0), |b| b.model_mut().new_sessions = vec![nexus("ready")], |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.new_form = Some(("nexus".into(), "agent".into()));
+    });
+    shoot("08-new-session-wsl", ThemeKind::Mocha, |_| {}, |h| {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
+        h.state_mut().ui.quick.remote = true;
+        h.state_mut().ui.quick.rkind = csm_ui::app::RemoteKind::Wsl;
+    });
+}
+
 #[test]
 fn screens() {
     shoot("01-main", ThemeKind::Mocha, |_| {}, |_| {});
@@ -217,6 +312,19 @@ fn screens() {
     );
     shoot("10-restore", ThemeKind::Mocha, |b| b.set_restore(3), |_| {});
     shoot("10-shutdown", ThemeKind::Mocha, |b| b.set_shutdown(9.0), |_| {});
+    // ~70 sessions in a short window: the header and Force close now stay in view, the rows scroll.
+    for (name, size) in [("10-shutdown-many", egui::vec2(1000.0, 560.0)), ("10-shutdown-many-short", egui::vec2(760.0, 320.0))] {
+        shoot_sized(
+            name,
+            ThemeKind::Mocha,
+            size,
+            |b| {
+                add_claude_sessions(b, 64);
+                b.set_shutdown(40.0);
+            },
+            |_| {},
+        );
+    }
     shoot(
         "10-busy",
         ThemeKind::Mocha,
@@ -462,6 +570,7 @@ fn themes_pack() -> csm_engine::addons::AddonSummary {
         process_calls: vec![],
         process: None,
         themes: parsed.themes,
+        theme_fonts: Vec::new(),
         problems: vec![],
     }
 }
@@ -830,7 +939,7 @@ fn keyboard_prompt_dialog_screen() {
     );
 }
 
-/// The quick-open after two Tabs from its folder field: the focus ring is on the command row.
+/// The quick-open after three Tabs from its folder field (Browse, the folder list, the command row): the focus ring is on the command row.
 #[test]
 fn keyboard_quick_open_screen() {
     shoot(
@@ -840,6 +949,8 @@ fn keyboard_quick_open_screen() {
         |h| {
             h.state_mut().ui.quick = csm_ui::app::QuickOpenState { focus_input: true, ..Default::default() };
             h.state_mut().ui.overlay = csm_ui::app::Overlay::QuickOpen;
+            settle(h);
+            h.key_press(egui::Key::Tab);
             settle(h);
             h.key_press(egui::Key::Tab);
             settle(h);

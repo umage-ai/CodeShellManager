@@ -290,6 +290,29 @@ fn the_screen_heuristic_raises_needs_you_when_no_status_is_reported() {
 }
 
 #[test]
+fn a_restored_session_is_not_judged_by_the_screen_heuristic_until_it_is_addressed() {
+    // Restore is not news: a resumed Claude reprints its last reply, which may end in a question
+    // (ConPTY's cursor jumps and all). That raised "needs you", and a notification, for every
+    // restored session at start-up.
+    let mut app = test_app();
+    app.sessions.push(ShellSession { id: "a".into(), command: "claude".into(), working_folder: ".".into(), ..Default::default() });
+    let h = H::start(app, |_| {});
+    h.wait_status("a", Status::Idle);
+    h.pty(0).emit(b"\x1b[40;1H\xe2\x97\x8f\x1b[1CShall\x1b[1CI\x1b[1Cadd\x1b[1Cthis\x1b[1Cto\x1b[1Cthe\x1b[1Cplan?");
+    // Past the heuristic's 1.5 s idle window.
+    std::thread::sleep(Duration::from_millis(2500));
+    let v = h.engine.view();
+    assert_eq!(v.session("a").map(|s| s.status), Some(Status::Idle), "resumed output is not a question to the person");
+    assert!(v.inbox.is_empty());
+    // Once the person has typed into it, a question it then asks is judged again, with its spaces.
+    h.engine.terminal("a").unwrap().send_key(csm_engine::input::typed("y", false));
+    std::thread::sleep(Duration::from_millis(100));
+    h.pty(0).emit(b"\r\n\x1b[41;1HDo\x1b[1Cyou\x1b[1Cwant\x1b[1Cto\x1b[1Ccontinue?");
+    let v = h.wait_until("heuristic alert", |v| v.session("a").is_some_and(|s| s.status.needs_you()));
+    assert_eq!(v.session("a").and_then(|s| s.status_message.as_deref()), Some("Do you want to continue?"));
+}
+
+#[test]
 fn a_shell_waiting_at_its_prompt_is_idle_not_needs_you() {
     // The WPF heuristic matched any line ending in `>` or `(y/N)`, so every idle shell showed as
     // "needs you". Plain shells are no longer judged by the screen heuristic.
@@ -958,6 +981,8 @@ fn each_claude_gets_its_own_quit_wait_and_the_board_gets_the_whole_budget() {
     // (the first used to eat a shared budget and leave the second none), and the snapshot
     // carries the whole budget, 2 x (wait + stagger), from the start.
     let h = H::start(test_app(), |o| o.shutdown_budget = Duration::from_millis(400));
+    // One slot is the old behaviour: one Claude after another.
+    h.ok("settings_set", json!({"key": "QuitClaudeConcurrency", "value": 1}));
     let _a = h.session("claude");
     let _b = h.session("claude");
     for i in 0..2 {
@@ -1017,4 +1042,131 @@ fn rail_tab_and_pane_steps_wrap_round_the_tabs_and_the_awake_sessions() {
     assert_eq!(h.engine.view().focused, first, "and wraps back");
     h.ok("pane_focus_prev", json!({}));
     assert_eq!(h.engine.view().focused, second, "Previous goes back");
+}
+
+#[test]
+fn quit_claude_concurrency_is_a_setting_with_a_default_and_a_range() {
+    let h = H::new();
+    assert_eq!(h.ok("settings_get", json!({"key": "QuitClaudeConcurrency"})).data["value"], json!(4));
+    h.ok("settings_set", json!({"key": "QuitClaudeConcurrency", "value": 2}));
+    assert_eq!(h.ok("settings_get", json!({"key": "QuitClaudeConcurrency"})).data["value"], json!(2));
+    for bad in [json!(0), json!(9), json!(-1), json!("many")] {
+        assert!(matches!(h.ui("settings_set", json!({"key": "QuitClaudeConcurrency", "value": bad})), Err(ToolError::InvalidParams(_))), "{bad}");
+    }
+    assert_eq!(h.ok("settings_get", json!({"key": "QuitClaudeConcurrency"})).data["value"], json!(2), "a refused value changes nothing");
+}
+
+#[test]
+fn quit_closes_claude_sessions_in_a_bounded_pool_and_the_board_gets_the_slot_count() {
+    // Five wedged Claudes, two slots, 300 ms each: never more than two closing at once, all five
+    // forced after their own wait, and the budget is three waves of waits, not five.
+    let h = H::start(test_app(), |o| o.shutdown_budget = Duration::from_millis(300));
+    h.ok("settings_set", json!({"key": "QuitClaudeConcurrency", "value": 2}));
+    for _ in 0..5 {
+        h.session("claude");
+    }
+    for i in 0..5 {
+        h.pty(i).exit_on_close.store(false, Ordering::SeqCst);
+    }
+    let events = h.engine.subscribe();
+    let done = h.engine.submit(Caller::Ui, "app_quit", json!({}));
+    let snap = h.wait_until("the quit to start", |s| s.quit.is_some());
+    assert_eq!(snap.quit_slots, Some(2));
+    assert_eq!(snap.quit_budget_ms, Some(3 * 300));
+    let (mut now, mut max, mut forced) = (0u32, 0u32, 0u32);
+    while let Ok(e) = events.recv_timeout(Duration::from_secs(10)) {
+        match e {
+            Event::QuitProgress { phase, .. } if phase == "closing" => {
+                now += 1;
+                max = max.max(now);
+            }
+            Event::QuitProgress { phase, .. } => {
+                now -= 1;
+                forced += u32::from(phase == "forced");
+            }
+            Event::QuitReady => break,
+            _ => {}
+        }
+    }
+    assert_eq!((max, forced), (2, 5));
+    done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+}
+
+/// A quit over `n` Claude sessions that "exit" after rewriting `~/.claude.json` as `rewrite` (a
+/// stand-in for the racing CLI); returns the file's text afterwards.
+fn quit_with_claude_json(initial: Option<&str>, rewrite: &str, n: usize) -> (String, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("home").join(".claude.json");
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    if let Some(t) = initial {
+        std::fs::write(&cfg, t).unwrap();
+    }
+    let state = dir.path().join("data").join("state.json");
+    let (cfg2, state2) = (cfg.clone(), state.clone());
+    let h = H::start(test_app(), move |o| {
+        o.save_path = Some(state2);
+        o.claude_configs = csm_engine::claude_config::ClaudeConfigs::Files(vec![cfg2]);
+    });
+    for _ in 0..n {
+        h.session("claude");
+    }
+    let ptys: Vec<_> = (0..n).map(|i| h.pty(i)).collect();
+    for p in &ptys {
+        p.exit_on_close.store(false, Ordering::SeqCst);
+    }
+    // Each Claude, once asked to close, rewrites the file and exits.
+    let (cfg3, text) = (cfg.clone(), rewrite.to_owned());
+    let helpers: Vec<_> = ptys
+        .into_iter()
+        .map(|p| {
+            let (cfg, text) = (cfg3.clone(), text.clone());
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !p.closed.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = std::fs::write(&cfg, &text);
+                p.exit(Some(0));
+            })
+        })
+        .collect();
+    let events = h.engine.subscribe();
+    let done = h.engine.submit(Caller::Ui, "app_quit", json!({}));
+    while let Ok(e) = events.recv_timeout(Duration::from_secs(10)) {
+        if e == Event::QuitReady {
+            break;
+        }
+    }
+    done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    for t in helpers {
+        t.join().unwrap();
+    }
+    let text = std::fs::read_to_string(&cfg).unwrap_or_default();
+    (text, dir.keep())
+}
+
+#[test]
+fn a_claude_json_torn_by_the_exits_is_restored_after_the_quit() {
+    let good = r#"{"numStartups": 3}"#;
+    let (text, dir) = quit_with_claude_json(Some(good), r#"{"numStartups": 4, "proj"#, 3);
+    assert_eq!(text, good);
+    let backups = std::fs::read_dir(dir.join("data").join("claude-config-backups")).unwrap().count();
+    assert!(backups >= 1, "the backup lives in the data folder");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_claude_json_the_exits_left_valid_is_not_touched() {
+    let updated = r#"{"numStartups": 4}"#;
+    let (text, dir) = quit_with_claude_json(Some(r#"{"numStartups": 3}"#), updated, 3);
+    assert_eq!(text, updated, "lost updates are accepted; a good file is never replaced");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_missing_claude_json_is_ignored_by_the_quit() {
+    let (text, dir) = quit_with_claude_json(None, r#"{"numStartups": 1}"#, 2);
+    assert_eq!(text, r#"{"numStartups": 1}"#);
+    assert!(!dir.join("data").join("claude-config-backups").exists(), "no file before, no backup");
+    let _ = std::fs::remove_dir_all(dir);
 }

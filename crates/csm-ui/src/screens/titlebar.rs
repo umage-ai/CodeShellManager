@@ -20,8 +20,12 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let rect = ui.max_rect();
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, t.mantle);
-    p.hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, t.surface0));
+    // A theme's own title bar colours (win98's navy bar), dimmed while the window is not focused.
+    let focused = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
+    let (bar_fg, own_fg) = (t.title_fg(focused), t.custom_title().then(|| t.title_fg(focused)));
+    p.rect_filled(rect, 0.0, t.title_bg(focused));
+    let line = if t.style.bevel { t.bevel_sh() } else { t.surface0 };
+    p.hline(rect.x_range(), rect.max.y - size::HAIRLINE / 2.0, Stroke::new(size::HAIRLINE, line));
 
     // The bar's empty space behaves like a window title bar: drag moves the window, double-click
     // maximizes or restores. Registered first, so the search field and buttons drawn on top of it
@@ -36,9 +40,9 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
 
     // Brand.
     let logo = Rect::from_min_size(pos2(rect.min.x + space::MD, rect.center().y - space::LG / 2.0 - space::XXS), Vec2::splat(space::LG + space::XS));
-    p.rect_filled(logo, CornerRadius::same(radius::SM + 1), t.blue);
+    p.rect_filled(logo, CornerRadius::same(radius::sm() + 1), t.blue);
     icons::paint(ui, logo, "terminal", icon::SM, t.on_accent);
-    let brand = p.text(pos2(logo.max.x + space::SM, rect.center().y), Align2::LEFT_CENTER, "CodeShellManager", semibold(text::BODY), t.fg);
+    let brand = p.text(pos2(logo.max.x + space::SM, rect.center().y), Align2::LEFT_CENTER, "CodeShellManager", semibold(text::BODY), bar_fg);
 
     // Middle: the search field, or the restore pill.
     let mid_w = size::SEARCH_W.min(rect.width() - 2.0 * (size::SIDEBAR - space::XL));
@@ -51,7 +55,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             + space::XXL
             + space::SM;
         let pill = Rect::from_center_size(rect.center(), vec2(w, size::CONTROL_SM));
-        p.rect_filled(pill, CornerRadius::same(radius::PILL), Tokens::tint(t.blue, 0.14));
+        p.rect_filled(pill, CornerRadius::same(radius::pill()), Tokens::tint(t.blue, 0.14));
         let g = Rect::from_min_size(pos2(pill.min.x + space::ROW_X, pill.center().y - icon::SM / 2.0), Vec2::splat(icon::SM));
         icons::paint_status(ui, g, Status::Working, icon::SM);
         icons::request_spinner_repaint(ui);
@@ -60,7 +64,10 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     } else {
         let resp = ui.interact(mid, ui.id().with("cmdk"), Sense::click());
         let stroke = if resp.hovered() { t.surface1 } else { t.surface0 };
-        p.rect(mid, CornerRadius::same(radius::MD), t.field, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
+        p.rect(mid, CornerRadius::same(radius::md()), t.field, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
+        if t.style.bevel {
+            widgets::paint_bevel(p, mid, widgets::Edge::Sunken, &t);
+        }
         let ir = Rect::from_min_size(pos2(mid.min.x + space::ROW_X, mid.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, "search", icon::MD, if resp.hovered() { t.fg2 } else { t.muted });
         p.text(
@@ -91,7 +98,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
 
     // Right: the window's own buttons (frameless only), then recent, inspector, theme, settings,
     // quit, set apart from them.
-    let mut x = if app.window_controls { window_controls(ui, rect) - space::MD } else { rect.max.x - space::SM };
+    let mut x = if app.window_controls { window_controls(ui, rect, bar_fg) - space::MD } else { rect.max.x - space::SM };
     let side = size::CONTROL;
     // The buttons drawn, for the keyboard (`region_items`): F6 enters at the main menu button.
     let mut ids: Vec<egui::Id> = Vec::new();
@@ -99,7 +106,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         x -= side;
         let r = Rect::from_min_size(pos2(x, rect.center().y - side / 2.0), Vec2::splat(side));
         x -= space::XXS;
-        let resp = widgets::icon_button_at(ui, r, ui.id().with(("tb", name.to_string())), name, on, tip);
+        let resp = widgets::icon_button_at_in(ui, r, ui.id().with(("tb", name.to_string())), name, on, tip, own_fg);
         ids.push(resp.id);
         resp.clicked()
     };
@@ -197,7 +204,7 @@ fn update_badge(ui: &mut Ui, app: &CsmApp, bar: Rect, mid: Rect, right: f32, act
     let body = Rect::from_min_max(pill.min, pos2(pill.max.x - close, pill.max.y));
     let resp = ui.interact(body, ui.id().with("tb-update"), Sense::click());
     let p = ui.painter();
-    p.rect_filled(pill, CornerRadius::same(radius::PILL), Tokens::tint(t.green, if resp.hovered() { 0.24 } else { 0.14 }));
+    p.rect_filled(pill, CornerRadius::same(radius::pill()), Tokens::tint(t.green, if resp.hovered() { 0.24 } else { 0.14 }));
     let g = Rect::from_min_size(pos2(pill.min.x + space::ROW_X, pill.center().y - icon::SM / 2.0), Vec2::splat(icon::SM));
     icons::paint(ui, g, "arrowUp", icon::SM, t.green);
     ui.painter().text(pos2(g.max.x + space::XS, pill.center().y), Align2::LEFT_CENTER, &label, font, t.fg);
@@ -214,7 +221,7 @@ fn update_badge(ui: &mut Ui, app: &CsmApp, bar: Rect, mid: Rect, right: f32, act
 /// Minimize, maximize/restore and close at the bar's right end, Windows-sized; returns their left
 /// edge. Close is the OS close request ([`ViewportCommand::Close`]), so it does what the OS
 /// button did: `CloseAction` decides (see [`crate::background`]).
-fn window_controls(ui: &mut Ui, bar: Rect) -> f32 {
+fn window_controls(ui: &mut Ui, bar: Rect, bar_fg: Color32) -> f32 {
     let t = Tokens::get(ui.ctx());
     let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
     let w = size::CAPTION_BUTTON_W;
@@ -237,8 +244,18 @@ fn window_controls(ui: &mut Ui, bar: Rect) -> f32 {
             (false, true, false) => (t.row_sel, t.fg),
             _ => (Color32::TRANSPARENT, t.fg2),
         };
-        ui.painter().rect_filled(r, 0.0, bg);
-        icons::paint(ui, r, icon_name, icon::SM, fg);
+        if t.style.bevel {
+            // 3D caption buttons: small raised squares (sunken while pressed), the bar's own colours around.
+            let b = Rect::from_center_size(r.center(), vec2(w - space::SM, size::CONTROL_SM - space::SM));
+            let down = resp.is_pointer_button_down_on();
+            ui.painter().rect_filled(b, 0.0, if close && resp.hovered() { t.close_hover } else { t.bg });
+            widgets::paint_bevel(ui.painter(), b, if down { widgets::Edge::Sunken } else { widgets::Edge::Raised }, &t);
+            let ink = if close && resp.hovered() { t.on_close_hover } else { t.fg };
+            icons::paint(ui, b.translate(if down { vec2(size::HAIRLINE, size::HAIRLINE) } else { Vec2::ZERO }), icon_name, icon::SM, ink);
+        } else {
+            ui.painter().rect_filled(r, 0.0, bg);
+            icons::paint(ui, r, icon_name, icon::SM, if bar_fg == t.fg { fg } else { bar_fg });
+        }
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         if resp.on_hover_text(label).clicked() {
             ui.ctx().send_viewport_cmd(command);

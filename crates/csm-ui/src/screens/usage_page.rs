@@ -504,7 +504,7 @@ fn figures(ui: &mut Ui, m: &Metrics, sessions: u64) {
         let (row, _) = ui.allocate_exact_size(vec2(w, size::USAGE_KPI_H), Sense::hover());
         for (i, (label, value, detail, story)) in chunk.iter().enumerate() {
             let r = Rect::from_min_size(pos2(row.min.x + (tile_w + space::SM) * i as f32, row.min.y), vec2(tile_w, size::USAGE_KPI_H));
-            ui.painter().rect(r, CornerRadius::same(radius::LG), t.mantle, Stroke::new(size::HAIRLINE, t.surface0), egui::StrokeKind::Inside);
+            ui.painter().rect(r, CornerRadius::same(radius::lg()), t.mantle, Stroke::new(size::HAIRLINE, t.surface0), egui::StrokeKind::Inside);
             ui.interact(r, Id::new(("usage-figure", *label)), Sense::hover()).on_hover_text(story.as_str());
             let inner = r.shrink2(vec2(space::MD, space::SM));
             // A child that takes no room in the page (the row already did).
@@ -538,7 +538,7 @@ fn chart_card(ui: &mut Ui, app: &mut CsmApp, days: &[DayRow]) {
             // The legend.
             for (label, color, ..) in classes(&t, &Metrics::default()) {
                 let (r, _) = ui.allocate_exact_size(vec2(size::SWATCH, size::SWATCH), Sense::hover());
-                ui.painter().rect_filled(r, CornerRadius::same(radius::SM / 2), color);
+                ui.painter().rect_filled(r, CornerRadius::same(radius::sm() / 2), color);
                 ui.label(egui::RichText::new(label).font(theme::regular(text::CAPTION)).color(t.fg2));
                 ui.add_space(space::XS);
             }
@@ -592,7 +592,7 @@ fn chart(ui: &mut Ui, days: &[DayRow], metric: Metric) {
         let x0 = plot.min.x + slot * i as f32;
         let cx = x0 + slot / 2.0;
         if hover == Some(i) {
-            p.rect_filled(Rect::from_min_max(pos2(x0, plot.min.y), pos2(x0 + slot, plot.max.y)), CornerRadius::same(radius::SM), t.row_hover);
+            p.rect_filled(Rect::from_min_max(pos2(x0, plot.min.y), pos2(x0 + slot, plot.max.y)), CornerRadius::same(radius::sm()), t.row_hover);
         }
         let mut acc = 0.0;
         for (_, color, c, k) in classes(&t, &d.metrics) {
@@ -757,7 +757,7 @@ fn table_card(ui: &mut Ui, app: &mut CsmApp, rows: &[GroupRow], truncated: bool)
         for r in page.sorted(rows) {
             let (rr, resp) = ui.allocate_exact_size(vec2(w, size::USAGE_ROW_H), if can_drill { Sense::click() } else { Sense::hover() });
             if resp.hovered() {
-                ui.painter().rect_filled(rr, CornerRadius::same(radius::MD), t.row_hover);
+                ui.painter().rect_filled(rr, CornerRadius::same(radius::md()), t.row_hover);
             }
             let name_w = num_x(0) - space::LG;
             let label = row_label(by, r);
@@ -779,7 +779,7 @@ fn table_card(ui: &mut Ui, app: &mut CsmApp, rows: &[GroupRow], truncated: bool)
                 let x1 = rr.min.x + num_x(ci) + size::USAGE_NUM_W - space::SM;
                 let bw = (size::USAGE_NUM_W - space::LG) * (r.metrics.cost_usd / max_cost).clamp(0.0, 1.0) as f32;
                 let bar = Rect::from_min_max(pos2(x1 - bw, rr.max.y - space::SM - size::STRIPE), pos2(x1, rr.max.y - space::SM));
-                ui.painter().rect_filled(bar, CornerRadius::same(radius::SM / 2), Tokens::tint(t.blue, alpha::SHARE_BAR));
+                ui.painter().rect_filled(bar, CornerRadius::same(radius::sm() / 2), Tokens::tint(t.blue, alpha::SHARE_BAR));
             }
             for (i, (c, _)) in cols.iter().enumerate() {
                 let x = rr.min.x + num_x(i) + size::USAGE_NUM_W - space::SM;

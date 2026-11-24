@@ -55,9 +55,13 @@ pub struct StateOptions {
     /// Size used when no pane reported one. Matches the WPF app's `PseudoTerminal` default.
     pub fallback_size: (u16, u16),
     /// How long a quit waits for EACH Claude session to exit cleanly before it is stopped. They
-    /// close one after another, so the whole quit may take this times the number of Claude
-    /// sessions (plus the launch stagger between them); the board shows that total.
+    /// close `QuitClaudeConcurrency` at a time, so the whole quit may take this times the waves of
+    /// Claude sessions (plus the pauses between starts); the board shows that total.
     pub shutdown_budget: Duration,
+    /// Claude's own config files (`~/.claude.json`), copied before a quit closes the Claude
+    /// sessions and restored if they come out unreadable. Default (tests, the demo): none, so a
+    /// real file is never touched; production: [`crate::claude_config::ClaudeConfigs::Auto`].
+    pub claude_configs: crate::claude_config::ClaudeConfigs,
     /// How long a restart (and sleep/close) waits for a Claude process to exit before killing it.
     pub exit_wait: Duration,
     /// Delay before saving after a change (saves coalesce).
@@ -174,6 +178,7 @@ impl Default for StateOptions {
             first_size_timeout: Duration::from_millis(1500),
             fallback_size: (220, 50),
             shutdown_budget: Duration::from_millis(15_000),
+            claude_configs: crate::claude_config::ClaudeConfigs::None,
             exit_wait: Duration::from_millis(10_000),
             save_debounce: Duration::from_millis(500),
             restore_on_start: true,
@@ -215,6 +220,7 @@ impl StateOptions {
             index: crate::index::IndexSetting::Auto,
             terminal_profiles: TerminalProfiles::Installed,
             claude_roots: crate::usage_tail::ClaudeRoots::Auto,
+            claude_configs: crate::claude_config::ClaudeConfigs::Auto,
             url_opener: real_url_opener(),
             ssh: crate::port_forward::system_ssh(),
             samples_dir: bundled_samples_dir(),
@@ -282,6 +288,8 @@ pub(crate) struct Runtime {
     /// The whole quit's wait budget while it runs: the per-session wait times the Claude
     /// sessions to close, plus the stagger between them.
     pub quit_budget_ms: Option<u64>,
+    /// How many Claude sessions this quit closes at once (the board says so).
+    pub quit_slots: Option<u32>,
     /// `app_quit { force: true }` while a quit runs: skip the remaining Claude exit waits.
     pub quit_force: Arc<std::sync::atomic::AtomicBool>,
     pub waits: Vec<Wait>,

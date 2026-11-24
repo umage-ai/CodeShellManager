@@ -71,8 +71,8 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         // A dragged session over a group's tab: it moves there on release.
         let drop_here = matches!(&scope, Scope::Group(_)) && dragging.is_some() && pointer.is_some_and(|p| r.contains(p));
         if drop_here {
-            p.rect_filled(r, CornerRadius::same(radius::MD), Tokens::tint(t.blue, alpha::DROP * 2.0));
-            p.rect_stroke(r, CornerRadius::same(radius::MD), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
+            p.rect_filled(r, CornerRadius::same(radius::md()), Tokens::tint(t.blue, alpha::DROP * 2.0));
+            p.rect_stroke(r, CornerRadius::same(radius::md()), Stroke::new(size::RING, t.blue), StrokeKind::Inside);
             if released && let (Some(sid), Scope::Group(g)) = (&dragging, &scope) {
                 if moving.len() > 1 {
                     // Dropped on the tab they all are in already: nothing to move (the tool
@@ -85,14 +85,14 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 }
             }
         } else if on || resp.hovered() {
-            p.rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
+            p.rect_filled(r, CornerRadius::same(radius::md()), if on { t.row_sel } else { t.row_hover });
         }
         if on {
             let bar = Rect::from_min_max(
                 pos2(r.min.x - space::XS - space::XXS, r.min.y + space::SM),
                 pos2(r.min.x - space::XS - space::XXS + size::STRIPE, r.max.y - space::SM),
             );
-            p.rect_filled(bar, CornerRadius::same(radius::SM / 2), t.blue);
+            p.rect_filled(bar, CornerRadius::same(radius::sm() / 2), t.blue);
         }
         let fg = if on || resp.hovered() { t.fg } else { t.muted };
         match &scope {
@@ -107,7 +107,7 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let b = widgets::paint_count(ui, c, n, false, size::BADGE);
             ui.painter().rect_stroke(
                 b.expand(size::RING / 2.0),
-                CornerRadius::same(radius::PILL),
+                CornerRadius::same(radius::pill()),
                 Stroke::new(size::RING, t.crust),
                 StrokeKind::Middle,
             );
@@ -141,7 +141,7 @@ pub fn rail(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             actions.push(Action::OpenMenu(Menu::Group { group: g.clone(), at: pos2(r.max.x + space::SM, r.min.y) }));
         }
         if resp.has_focus() {
-            widgets::focus_ring(ui, r, radius::MD);
+            widgets::focus_ring(ui, r, radius::md());
         }
     };
     tab(ui, Scope::All, String::new(), &mut y);
@@ -203,7 +203,7 @@ fn inline_field(ui: &mut Ui, app: &mut CsmApp, rect: Rect, label: &str, hint: &s
     let t = Tokens::get(ui.ctx());
     let Some(e) = app.ui.inline.as_mut() else { return };
     e.unseen_frames = 0;
-    ui.painter().rect(rect, CornerRadius::same(radius::SM), t.field, Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
+    ui.painter().rect(rect, CornerRadius::same(radius::sm()), t.field, Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
     let edit = egui::TextEdit::singleline(&mut e.text)
         .id(Id::new("inline-edit"))
         .frame(egui::Frame::NONE)
@@ -254,7 +254,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let dragging = resp.dragged();
         let lit = dragging || resp.hovered();
         let line = Rect::from_center_size(grip.center(), vec2(grip.width() * 0.3, space::XS - size::HAIRLINE));
-        ui.painter().rect_filled(line, CornerRadius::same(radius::SM / 2), if lit { t.blue } else { t.surface0 });
+        ui.painter().rect_filled(line, CornerRadius::same(radius::sm() / 2), if lit { t.blue } else { t.surface0 });
         let resp = resp.on_hover_cursor(CursorIcon::ResizeRow).on_hover_text("Drag to resize the inbox. Double-click resets.");
         // A triple click (a double click right after another click) resets it too.
         if resp.double_clicked() || resp.triple_clicked() {
@@ -379,7 +379,7 @@ fn drop_between_rows(ui: &mut Ui, app: &mut CsmApp, rows: &[SidebarRow], list: R
         let hr = Rect::from_min_size(pos2(list.min.x, h.top as f32), vec2(list.width(), h.height as f32));
         painter.rect(
             hr,
-            CornerRadius::same(radius::SM),
+            CornerRadius::same(radius::sm()),
             Tokens::tint(t.blue, alpha::DROP * 2.0),
             Stroke::new(size::RING, t.blue),
             StrokeKind::Inside,
@@ -445,7 +445,7 @@ fn drag_ghost(ctx: &egui::Context, app: &CsmApp) {
         widgets::pop_frame(&t).inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::XS as i8)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(size::STRIPE, icon::MD), Sense::hover());
-                ui.painter().rect_filled(r, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+                ui.painter().rect_filled(r, CornerRadius::same(radius::sm() / 2), t.accent(s.accent));
                 ui.label(egui::RichText::new(&label).font(theme::medium(text::BODY)).color(t.fg));
             });
         });
@@ -579,7 +579,10 @@ fn repo_header(ui: &mut Ui, name: &str, count: usize) -> Rect {
 fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let model = app.model.clone();
-    ui.painter().rect(pane, CornerRadius::same(radius::LG), t.bg, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    ui.painter().rect(pane, CornerRadius::same(radius::lg()), t.bg, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    if t.style.bevel {
+        crate::widgets::paint_bevel(ui.painter(), pane, crate::widgets::Edge::Sunken, &t);
+    }
     let needs = model.needs_you();
     let unseen = model.unseen();
     // The rows in the order the arrow keys move through them.
@@ -613,7 +616,7 @@ fn inbox(ui: &mut Ui, app: &mut CsmApp, pane: Rect, actions: &mut Vec<Action>) {
     );
     let nr = ui.interact(next, Id::new("inbox-next"), Sense::click());
     if nr.hovered() {
-        ui.painter().rect_filled(next, CornerRadius::same(radius::SM), t.row_sel);
+        ui.painter().rect_filled(next, CornerRadius::same(radius::sm()), t.row_sel);
     }
     ui.painter().text(
         pos2(next.min.x + space::XS + space::XXS, cy),
@@ -666,7 +669,7 @@ fn inbox_row(ui: &mut Ui, model: &UiModel, s: &SessionView, order: &[Id], action
     list_keys::follow(ui, &resp);
     let active = model.active.as_deref() == Some(s.id.as_str());
     if active || resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), if active { t.row_sel } else { t.row_hover });
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), if active { t.row_sel } else { t.row_hover });
     }
     let line1 = rect.min.y + space::SM + space::XXS + space::XS;
     let g = Rect::from_center_size(pos2(rect.min.x + space::SM + icon::MD / 2.0, line1), Vec2::splat(icon::MD));
@@ -692,7 +695,7 @@ fn inbox_row(ui: &mut Ui, model: &UiModel, s: &SessionView, order: &[Id], action
         rect.max.x - g.max.x - space::LG,
     );
     if resp.has_focus() {
-        widgets::focus_ring(ui, rect, radius::MD);
+        widgets::focus_ring(ui, rect, radius::md());
     }
     named(&resp, WidgetType::Button, format!("Inbox: {}", s.name));
     if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(s.status_text()).clicked() {
@@ -715,7 +718,7 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let br = Rect::from_min_size(pos2(x, cy - size::COUNT / 2.0), vec2(w, size::COUNT));
         let resp = ui.interact(br, Id::new("inbox-reopen"), Sense::click());
         let (bg, fg) = if n > 0 { (t.st_approval, t.on_accent) } else { (t.surface0, t.fg2) };
-        ui.painter().rect_filled(br, CornerRadius::same(radius::PILL), bg);
+        ui.painter().rect_filled(br, CornerRadius::same(radius::pill()), bg);
         icons::paint(
             ui,
             Rect::from_min_size(pos2(br.min.x + space::XS + space::XXS / 2.0, cy - icon::XS / 2.0), Vec2::splat(icon::XS)),
@@ -750,7 +753,7 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         pos2(rect.max.x - space::XS - 3.0 * bw - space::XS, cy - bh / 2.0 - space::XXS),
         pos2(rect.max.x - space::XS, cy + bh / 2.0 + space::XXS),
     );
-    ui.painter().rect(seg, CornerRadius::same(radius::SM + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
+    ui.painter().rect(seg, CornerRadius::same(radius::sm() + 1), t.crust, Stroke::new(size::HAIRLINE, t.surface0), StrokeKind::Inside);
     for (i, (mode, name, tip)) in views.iter().enumerate() {
         let b = Rect::from_min_size(
             pos2(seg.min.x + space::XXS / 2.0 + size::HAIRLINE + i as f32 * (bw + size::HAIRLINE), seg.min.y + space::XXS / 2.0 + size::HAIRLINE),
@@ -759,7 +762,7 @@ fn section_header(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let resp = ui.interact(b, Id::new(("gview", *name)), Sense::click());
         let on = model.group_mode == *mode;
         if on {
-            ui.painter().rect_filled(b, CornerRadius::same(radius::SM - 1), t.field);
+            ui.painter().rect_filled(b, CornerRadius::same(radius::sm().saturating_sub(1)), t.field);
         }
         icons::paint(ui, b, name, icon::SM, if on || resp.hovered() { t.fg } else { t.faint });
         named(&resp, WidgetType::RadioButton, format!("Group view: {}", name));
@@ -872,10 +875,10 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
         }
         list_keys::follow(ui, &resp);
         if resp.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_hover);
+            ui.painter().rect_filled(rect, CornerRadius::same(radius::sm()), t.row_hover);
         }
         if resp.has_focus() {
-            widgets::focus_ring(ui, rect, radius::SM);
+            widgets::focus_ring(ui, rect, radius::sm());
         }
         let cy = rect.center().y;
         let ch = Rect::from_min_size(pos2(rect.min.x + space::XXS, cy - icon::MD / 2.0), Vec2::splat(icon::MD));
@@ -917,7 +920,7 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
             let label = "Window 2";
             let w = widgets::text_width(ui, label, theme::medium(text::TINY)) + icon::XS + space::SM + space::XS;
             let wr = Rect::from_min_size(pos2(rect.max.x - space::XS - w, cy - size::COUNT / 2.0), vec2(w, size::COUNT));
-            ui.painter().rect_filled(wr, CornerRadius::same(radius::PILL), Tokens::tint(t.blue, alpha::SOFT));
+            ui.painter().rect_filled(wr, CornerRadius::same(radius::pill()), Tokens::tint(t.blue, alpha::SOFT));
             icons::paint(
                 ui,
                 Rect::from_min_size(pos2(wr.min.x + space::XS + space::XXS, cy - icon::XS / 2.0), Vec2::splat(icon::XS)),
@@ -957,7 +960,7 @@ fn headers_view(ui: &mut Ui, app: &mut CsmApp, rows: &mut Vec<SidebarRow>, actio
             actions.push(Action::StartGroupRename(g.clone()));
         }
         if resp.has_focus() {
-            widgets::focus_ring(ui, rect, radius::SM);
+            widgets::focus_ring(ui, rect, radius::sm());
         }
         if !collapsed {
             section_rows(ui, app, &ss, rows, actions);
@@ -1025,13 +1028,13 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
     // Multi-selected (Ctrl/Shift-click): a blue tint and outline, over the active row's fill.
     let picked = app.ui.selection.contains(&s.id);
     if selected || resp.hovered() {
-        p.rect_filled(rect, CornerRadius::same(radius::SM), if selected { t.row_sel } else { t.row_hover });
+        p.rect_filled(rect, CornerRadius::same(radius::sm()), if selected { t.row_sel } else { t.row_hover });
     }
     if picked {
-        p.rect(rect, CornerRadius::same(radius::SM), Tokens::tint(t.blue, alpha::PICKED), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
+        p.rect(rect, CornerRadius::same(radius::sm()), Tokens::tint(t.blue, alpha::PICKED), Stroke::new(size::HAIRLINE, t.blue), StrokeKind::Inside);
     }
     if resp.has_focus() {
-        p.rect_stroke(rect, CornerRadius::same(radius::SM), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
+        p.rect_stroke(rect, CornerRadius::same(radius::sm()), Stroke::new(size::RING, t.focus()), StrokeKind::Inside);
         // Where Shift+F10 opens this row's menu (`CsmApp::focused_item_menu`).
         ui.ctx().data_mut(|d| d.insert_temp(Id::new(("row-menu-at", s.id.clone())), rect.left_bottom()));
     }
@@ -1049,7 +1052,7 @@ fn row_at(ui: &mut Ui, app: &mut CsmApp, s: &SessionView, nested: bool, actions:
     let indent = if nested { space::LG - space::XXS } else { 0.0 };
     let cy = rect.min.y + size::ROW / 2.0;
     let stripe = Rect::from_center_size(pos2(rect.min.x + space::SM + indent + size::STRIPE / 2.0, cy), vec2(size::STRIPE, icon::MD));
-    p.rect_filled(stripe, CornerRadius::same(radius::SM / 2), t.accent(s.accent));
+    p.rect_filled(stripe, CornerRadius::same(radius::sm() / 2), t.accent(s.accent));
     let gx = rect.max.x - space::XS - space::XXS - icon::MD;
     icons::paint_status(&child, Rect::from_min_size(pos2(gx, cy - icon::MD / 2.0), Vec2::splat(icon::MD)), status, icon::MD);
     if status == Status::Working {
@@ -1171,7 +1174,7 @@ pub fn kind_badge(ui: &Ui, left_center: egui::Pos2, label: &str) -> Rect {
     let font = semibold(text::CAPS);
     let w = widgets::text_width(ui, label, font.clone()) + space::SM;
     let r = Rect::from_min_size(pos2(left_center.x, left_center.y - space::SM + size::HAIRLINE), vec2(w, space::LG - space::XXS));
-    ui.painter().rect_stroke(r, CornerRadius::same(radius::SM - 1), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
+    ui.painter().rect_stroke(r, CornerRadius::same(radius::sm().saturating_sub(1)), Stroke::new(size::HAIRLINE, t.surface1), StrokeKind::Inside);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, label, theme::mono(text::CAPS), t.muted);
     r
 }

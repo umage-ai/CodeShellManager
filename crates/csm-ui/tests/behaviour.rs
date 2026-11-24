@@ -316,10 +316,11 @@ fn quick_open_starts_a_session_with_the_cycled_command() {
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::OpenQuickOpen { group: None });
     settle(&mut h);
-    h.key_press(egui::Key::Tab); // to the folder field's Browse stop
-    h.step();
-    h.key_press(egui::Key::Tab); // to the command row
-    h.step();
+    // The dialog opens in the folder field; Tab goes Browse, the folder list, the command row.
+    for _ in 0..3 {
+        h.key_press(egui::Key::Tab);
+        h.step();
+    }
     h.key_press(egui::Key::ArrowRight); // claude → pwsh
     h.step();
     h.get_by_label("Folder: Odulodo.Admin").click();

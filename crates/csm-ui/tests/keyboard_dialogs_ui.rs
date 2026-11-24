@@ -198,24 +198,51 @@ fn quick_focus(h: &Harness<'static, csm_ui::CsmApp>) -> Option<Slot> {
     dialog_keys::current(&h.ctx, Id::new(csm_ui::screens::palette::QUICK_ID))
 }
 
+// The Tab stops of the New session dialog, in the order they read on screen (the demo has no
+// Windows Terminal profiles, so no Profile row): This PC, SSH, WSL, the folder field, Browse, the
+// folder list, the command row, the group, Start and keep open, Start.
+const PLACE_THIS_PC: usize = 0;
+const FIELD: usize = 3;
+const BROWSE: usize = 4;
+const LIST: usize = 5;
+const COMMAND_ROW: usize = 6;
+const GROUP: usize = 7;
+const KEEP_OPEN: usize = 8;
+const START: usize = 9;
+
+fn tab_to(h: &mut Harness<'static, csm_ui::CsmApp>, stop: usize) {
+    for _ in 0..24 {
+        if quick_focus(h) == Some(Slot::Button(stop)) {
+            return;
+        }
+        h.key_press(Key::Tab);
+        settle(h);
+    }
+    panic!("Tab never reached stop {stop}: at {:?}", quick_focus(h));
+}
+
 #[test]
-fn quick_open_tab_moves_between_the_folder_field_and_the_controls() {
+fn quick_open_tab_walks_every_control_in_visual_order() {
     let mut h = h();
     open_quick(&mut h);
-    assert_eq!(quick_focus(&h), Some(Slot::Field), "the quick-open opens in its folder field");
+    assert_eq!(quick_focus(&h), Some(Slot::Button(FIELD)), "the quick-open opens in its folder field");
+    for (stop, what) in [(BROWSE, "Browse"), (LIST, "the folder list"), (COMMAND_ROW, "the command row"), (GROUP, "the group"), (KEEP_OPEN, "Start and keep open"), (START, "Start")] {
+        h.key_press(Key::Tab);
+        settle(&mut h);
+        assert_eq!(quick_focus(&h), Some(Slot::Button(stop)), "Tab reaches {what}");
+    }
     h.key_press(Key::Tab);
     settle(&mut h);
-    assert_eq!(quick_focus(&h), Some(Slot::Button(0)), "Tab reaches Browse, the first control after the field");
+    assert_eq!(quick_focus(&h), Some(Slot::Button(PLACE_THIS_PC)), "Tab wraps to the place selector (This PC first)");
+    h.key_press(Key::Tab);
     h.key_press(Key::Tab);
     settle(&mut h);
-    assert_eq!(quick_focus(&h), Some(Slot::Button(1)), "the next Tab reaches the command row");
+    assert_eq!(quick_focus(&h), Some(Slot::Button(2)), "SSH then WSL, left to right");
     h.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
     settle(&mut h);
-    assert_eq!(quick_focus(&h), Some(Slot::Button(0)), "Shift+Tab goes back");
-    h.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
-    settle(&mut h);
-    assert_eq!(quick_focus(&h), Some(Slot::Field), "and back to the folder field");
+    assert_eq!(quick_focus(&h), Some(Slot::Button(1)), "Shift+Tab goes back");
     assert_eq!(h.state().ui.overlay, Overlay::QuickOpen, "Tab closes nothing");
+    assert_eq!(h.state().ui.quick.cmd, 0, "Tab no longer cycles the command");
 }
 
 #[test]
@@ -223,9 +250,7 @@ fn quick_open_left_and_right_cycle_the_command_on_its_row() {
     let mut h = h();
     open_quick(&mut h);
     let commands = csm_ui::screens::palette::quick_commands(h.state()).len();
-    h.key_press(Key::Tab);
-    h.key_press(Key::Tab);
-    settle(&mut h);
+    tab_to(&mut h, COMMAND_ROW);
     h.key_press(Key::ArrowRight);
     settle(&mut h);
     if commands > 1 {
@@ -242,9 +267,7 @@ fn quick_open_enter_on_the_command_row_starts_the_session() {
     let mut h = h();
     open_quick(&mut h);
     h.state_mut().ui.quick.query = r"C:\GitHub\Odulodo.Admin".into();
-    h.key_press(Key::Tab);
-    h.key_press(Key::Tab);
-    settle(&mut h);
+    tab_to(&mut h, COMMAND_ROW);
     h.key_press(Key::Enter);
     settle(&mut h);
     assert_eq!(h.state().ui.overlay, Overlay::None, "Enter on the command row starts the session and closes");
@@ -255,16 +278,12 @@ fn quick_open_enter_on_the_command_row_starts_the_session() {
 fn quick_open_enter_presses_the_focused_button() {
     let mut h = h();
     open_quick(&mut h);
-    // Tab, Tab, Tab: Browse, the command row, then Remote (the remote toggle of the command row).
-    for _ in 0..3 {
-        h.key_press(Key::Tab);
-        settle(&mut h);
-    }
-    assert_eq!(quick_focus(&h), Some(Slot::Button(2)));
+    // SSH is a button of the place selector: Enter picks it, and the dialog stays open.
+    tab_to(&mut h, 1);
     assert!(!h.state().ui.quick.remote);
     h.key_press(Key::Enter);
     settle(&mut h);
-    assert!(h.state().ui.quick.remote, "Enter on Remote… switches to a remote folder");
+    assert!(h.state().ui.quick.remote, "Enter on SSH switches to a remote connection");
     assert_eq!(h.state().ui.overlay, Overlay::QuickOpen, "a button does not close the dialog");
 }
 
@@ -278,5 +297,5 @@ fn quick_open_escape_closes_it_and_forgets_its_focus() {
     settle(&mut h);
     assert_eq!(h.state().ui.overlay, Overlay::None, "Esc closes the quick-open");
     open_quick(&mut h);
-    assert_eq!(quick_focus(&h), Some(Slot::Field), "the next opening starts in the folder field");
+    assert_eq!(quick_focus(&h), Some(Slot::Button(FIELD)), "the next opening starts in the folder field");
 }

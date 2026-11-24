@@ -797,6 +797,50 @@ pub struct ShutdownBoard {
     pub rows: Vec<ShutdownRow>,
     pub budget_used_s: f32,
     pub budget_s: f32,
+    /// How many Claude sessions close at once (`QuitClaudeConcurrency`); 0 until known, read as 1.
+    pub claude_slots: u32,
+}
+
+impl ShutdownBoard {
+    /// Claude sessions closing at once, at least 1.
+    pub fn slots(&self) -> usize {
+        self.claude_slots.max(1) as usize
+    }
+
+    /// The queued Claude sessions that start next, in the engine's order: as many as there are
+    /// free slots (at least the first one). `is_claude` says which rows are Claude sessions.
+    pub fn next_up(&self, is_claude: impl Fn(&SessionId) -> bool) -> Vec<&SessionId> {
+        let closing = self.rows.iter().filter(|r| r.state == ShutdownRowState::Closing).count();
+        let free = self.slots().saturating_sub(closing).max(1);
+        self.ordered(&is_claude)
+            .into_iter()
+            .filter(|r| r.state == ShutdownRowState::Pending && is_claude(&r.session))
+            .take(free)
+            .map(|r| &r.session)
+            .collect()
+    }
+
+    /// Rows that have finished (exited cleanly or were forced).
+    pub fn done(&self) -> usize {
+        self.rows.iter().filter(|r| matches!(r.state, ShutdownRowState::Clean | ShutdownRowState::Forced)).count()
+    }
+
+    /// The rows in the order the board lists them: the one closing now, then any that were
+    /// forced, then the queue in the order the engine closes it (everything that is not Claude
+    /// first, then the Claude sessions one at a time in sidebar order), then the ones that
+    /// exited. `is_claude` says which rows are Claude sessions.
+    pub fn ordered(&self, is_claude: impl Fn(&SessionId) -> bool) -> Vec<&ShutdownRow> {
+        let rank = |r: &ShutdownRow| match r.state {
+            ShutdownRowState::Closing => 0,
+            ShutdownRowState::Forced => 1,
+            ShutdownRowState::Pending if !is_claude(&r.session) => 2,
+            ShutdownRowState::Pending => 3,
+            ShutdownRowState::Clean => 4,
+        };
+        let mut rows: Vec<&ShutdownRow> = self.rows.iter().collect();
+        rows.sort_by_key(|r| rank(r));
+        rows
+    }
 }
 
 /// Everything the screens draw.
@@ -1029,6 +1073,53 @@ pub fn fuzzy(query: &str, text: &str) -> Option<(f32, Vec<usize>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shutdown_board_lists_closing_then_queue_then_done() {
+        let row = |id: &str, state| ShutdownRow { session: id.into(), state, elapsed_s: 0.0 };
+        let board = ShutdownBoard {
+            rows: vec![
+                row("c1", ShutdownRowState::Clean),
+                row("q1", ShutdownRowState::Pending),
+                row("shell", ShutdownRowState::Pending),
+                row("now", ShutdownRowState::Closing),
+                row("q2", ShutdownRowState::Pending),
+                row("f", ShutdownRowState::Forced),
+                row("c2", ShutdownRowState::Clean),
+            ],
+            budget_used_s: 0.0,
+            budget_s: 1.0,
+            claude_slots: 0,
+        };
+        let ids: Vec<&str> = board.ordered(|id| id != "shell").iter().map(|r| r.session.as_str()).collect();
+        assert_eq!(ids, ["now", "f", "shell", "q1", "q2", "c1", "c2"]);
+        assert_eq!(board.done(), 3);
+    }
+
+    #[test]
+    fn the_board_names_as_many_next_as_there_are_free_slots() {
+        let row = |id: &str, state| ShutdownRow { session: id.into(), state, elapsed_s: 0.0 };
+        let mut board = ShutdownBoard {
+            rows: vec![
+                row("a", ShutdownRowState::Closing),
+                row("b", ShutdownRowState::Closing),
+                row("c", ShutdownRowState::Pending),
+                row("d", ShutdownRowState::Pending),
+                row("e", ShutdownRowState::Pending),
+                row("x", ShutdownRowState::Clean),
+            ],
+            budget_used_s: 0.0,
+            budget_s: 1.0,
+            claude_slots: 4,
+        };
+        let all = |_: &SessionId| true;
+        assert_eq!(board.next_up(all), ["c", "d"]);
+        board.claude_slots = 3;
+        assert_eq!(board.next_up(all), ["c"]);
+        // Never fewer than one, and a missing count reads as one at a time.
+        board.claude_slots = 0;
+        assert_eq!((board.slots(), board.next_up(all)), (1, vec![&"c".to_owned()]));
+    }
 
     #[test]
     fn initials_follow_the_mock() {

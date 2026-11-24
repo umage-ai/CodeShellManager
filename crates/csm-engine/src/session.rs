@@ -129,6 +129,7 @@ impl SessionRt {
         }
         self.heuristic_message = None;
         self.io.detector().notify_user_interacted();
+        self.io.mark_addressed();
         changed
     }
 
@@ -179,6 +180,10 @@ pub(crate) struct SessionIo {
     pub detector_active: AtomicBool,
     /// A keystroke arrived and the engine has not been told yet.
     interacted: AtomicBool,
+    /// Something was sent to this run (a keystroke, a paste, a tool's text) or it was focused.
+    /// Until then the screen heuristic does not judge its output: what a run prints by itself as
+    /// it starts (a resumed conversation, a banner) is not a question to the person.
+    addressed: AtomicBool,
     engine: Engine,
     /// Where this session's output is indexed for search, when the run has an index.
     index: Option<csm_index::Index>,
@@ -210,6 +215,7 @@ impl SessionIo {
             detector: Mutex::new(AlertDetector::new(id, name)),
             detector_active: AtomicBool::new(true),
             interacted: AtomicBool::new(false),
+            addressed: AtomicBool::new(false),
             engine,
             index,
             output: Arc::new(OutputTap::new()),
@@ -248,6 +254,7 @@ impl SessionIo {
 
     /// Writes app-authored or already-encoded bytes to the PTY (no-op before it started).
     pub(crate) fn write(&self, bytes: &[u8]) -> bool {
+        self.addressed.store(true, Ordering::Release);
         match self.pty.get() {
             Some(p) => p.write(bytes).is_ok(),
             None => false,
@@ -263,6 +270,15 @@ impl SessionIo {
 
     pub(crate) fn clear_interaction(&self) {
         self.interacted.store(false, Ordering::Release);
+    }
+
+    /// See `addressed`.
+    pub(crate) fn was_addressed(&self) -> bool {
+        self.addressed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_addressed(&self) {
+        self.addressed.store(true, Ordering::Release);
     }
 
     /// The PTY reader's sink: feed the terminal, then tell the engine what the OSC tap saw.

@@ -38,6 +38,26 @@ pub enum AddonState {
     Error,
 }
 
+/// A theme's font file, read and checked on the scan worker. Cheap to clone; equal only when it is
+/// the same read (so a snapshot compares pointers, not megabytes).
+#[derive(Clone)]
+pub struct FontBytes(pub Arc<Vec<u8>>);
+
+impl std::fmt::Debug for FontBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FontBytes({} bytes)", self.0.len())
+    }
+}
+
+impl PartialEq for FontBytes {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// The font files an add-on's themes name that loaded: add-on-relative path, bytes.
+pub type ThemeFonts = Vec<(String, FontBytes)>;
+
 /// One add-on as the catalogue holds it.
 pub(crate) struct Entry {
     pub folder: String,
@@ -51,6 +71,8 @@ pub(crate) struct Entry {
     pub problems: Vec<Problem>,
     /// The tools `[process] calls` lists that passed the install check, with their effects.
     pub standing: Vec<StandingCall>,
+    /// The font files its themes name that loaded (read on the scan worker).
+    pub fonts: ThemeFonts,
 }
 
 /// One tool of `[process] calls`, as the enable dialog and `addon_list` show it.
@@ -122,6 +144,9 @@ pub struct AddonSummary {
     /// `[[theme]]` palettes, offered in Settings › Appearance while the add-on is enabled (ids
     /// there are `addon-id.theme-id`).
     pub themes: Vec<csm_core::addons::ThemeSpec>,
+    /// The font files those themes name that loaded (`[theme.style]`); not part of `addon_list`.
+    #[serde(skip)]
+    pub theme_fonts: ThemeFonts,
     pub problems: Vec<String>,
 }
 
@@ -175,6 +200,8 @@ pub(crate) struct Scanned {
     pub path: PathBuf,
     /// The parsed add-on and the digest of its text, or why it could not be read.
     pub parsed: Result<(ParsedAddon, String), String>,
+    /// Each font file the themes name: loaded, or why not (reported as a problem).
+    pub fonts: Vec<(String, Result<FontBytes, String>)>,
 }
 
 /// The add-ons folder for a state file: beside it, as `addons/`. `None` when nothing is saved.
@@ -217,7 +244,24 @@ fn parse_found(f: disk::Found) -> Scanned {
             core::parse(&text, &f.folder).map(|p| (p, digest)).map_err(|e| e.to_string())
         }
     };
-    Scanned { folder: f.folder, path: f.path, parsed }
+    let fonts = match &parsed {
+        Ok((p, _)) if p.meta.kind != AddonKind::Process => read_fonts(&f.path, &p.themes),
+        _ => Vec::new(),
+    };
+    Scanned { folder: f.folder, path: f.path, parsed, fonts }
+}
+
+/// Reads each distinct font file the themes name (on the scan worker, never the engine or UI thread).
+fn read_fonts(dir: &Path, themes: &[csm_core::addons::ThemeSpec]) -> Vec<(String, Result<FontBytes, String>)> {
+    let mut seen: Vec<&str> = Vec::new();
+    for t in themes {
+        for file in t.style.font_files() {
+            if !seen.contains(&file) {
+                seen.push(file);
+            }
+        }
+    }
+    seen.into_iter().map(|rel| (rel.to_owned(), csm_services::addons::read_theme_font(dir, rel).map(|b| FontBytes(Arc::new(b))))).collect()
 }
 
 /// Engine thread: replaces the catalogue, derives each add-on's state from the approvals, and
@@ -249,7 +293,7 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
 
 fn build_entry(s: Scanned, registry: &Registry) -> Entry {
     match s.parsed {
-        Err(e) => Entry { folder: s.folder, path: s.path, parsed: None, digest: None, state: AddonState::Error, message: Some(e), problems: Vec::new(), standing: Vec::new() },
+        Err(e) => Entry { folder: s.folder, path: s.path, parsed: None, digest: None, state: AddonState::Error, message: Some(e), problems: Vec::new(), standing: Vec::new(), fonts: Vec::new() },
         Ok((mut p, digest)) => {
             let mut problems = Vec::new();
             if p.meta.kind == AddonKind::Process {
@@ -307,7 +351,18 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
                     }
                 }
             }
-            Entry { folder: s.folder, path: s.path, parsed: Some(Arc::new(p)), digest: Some(digest), state: AddonState::Disabled, message: None, problems, standing }
+            // A font that did not load is reported, and the theme draws with the default font.
+            let mut fonts = Vec::new();
+            for (rel, loaded) in s.fonts {
+                match loaded {
+                    Ok(bytes) => fonts.push((rel, bytes)),
+                    Err(message) => {
+                        let scope = p.themes.iter().filter(|t| t.style.font_files().contains(&rel.as_str())).map(|t| format!("theme `{}`", t.id)).collect::<Vec<_>>().join(", ");
+                        problems.push(Problem { scope, message: format!("font {message}; the default font is used") });
+                    }
+                }
+            }
+            Entry { folder: s.folder, path: s.path, parsed: Some(Arc::new(p)), digest: Some(digest), state: AddonState::Disabled, message: None, problems, standing, fonts }
         }
     }
 }
@@ -398,7 +453,10 @@ fn watch_themes(ctx: &mut Ctx<'_>) {
         .entries
         .iter()
         .filter(|e| e.state == AddonState::Loaded && e.parsed.as_ref().is_some_and(|p| !p.themes.is_empty()))
-        .map(|e| e.path.join(disk::MANIFEST_FILE))
+        .flat_map(|e| {
+            let fonts = e.parsed.iter().flat_map(|p| p.themes.iter()).flat_map(|t| t.style.font_files()).map(|f| e.path.join(f)).collect::<Vec<_>>();
+            std::iter::once(e.path.join(disk::MANIFEST_FILE)).chain(fonts)
+        })
         .collect();
     if let Some(shared) = &cat.watch {
         *shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = list;
@@ -574,6 +632,7 @@ pub fn claude_usage_summary(settings: &csm_core::models::AppSettings) -> AddonSu
         process_calls: Vec::new(),
         new_sessions: Vec::new(),
         themes: Vec::new(),
+        theme_fonts: Vec::new(),
         process: None,
         problems: Vec::new(),
     }
@@ -632,6 +691,7 @@ fn summary(e: &Entry, runtime: Option<&PluginRuntime>) -> AddonSummary {
         new_sessions: p.map_or_else(Vec::new, |p| p.new_sessions.iter().map(|s| NewSessionSummary { id: s.id.clone(), title: s.title.clone(), submit: s.submit.clone(), choices_tool: s.choices_tool.clone(), tool: s.tool.clone() }).collect()),
         process: runtime.map(|r| PluginRuntime { stderr_tail: String::new(), ..r.clone() }),
         themes: p.map_or_else(Vec::new, |p| p.themes.clone()),
+        theme_fonts: e.fonts.clone(),
         problems,
     }
 }

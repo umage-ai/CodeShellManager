@@ -51,8 +51,8 @@ pub struct InstallReport {
 
 /// Copies each sample add-on folder under `samples` into `root` (`<config dir>/addons`) unless
 /// `root/<id>` already exists (as anything, a link included): nothing is ever overwritten or
-/// merged, so a sample the person edited or enabled is untouched. Only the files directly in a
-/// sample folder are copied (regular files up to 1 MiB; links are not followed). A missing
+/// merged, so a sample the person edited or enabled is untouched. Only the files in a sample
+/// folder and in its sub-folders one level down are copied (regular files up to 1 MiB; links are not followed). A missing
 /// `samples` folder is an error: the build has none. Blocking file I/O: call from a worker.
 pub fn install_samples(samples: &Path, root: &Path) -> Result<InstallReport, String> {
     let entries = fs::read_dir(samples).map_err(|e| format!("could not read the samples folder {}: {e}", samples.display()))?;
@@ -87,12 +87,63 @@ pub fn install_samples(samples: &Path, root: &Path) -> Result<InstallReport, Str
 }
 
 fn copy_files(src: &Path, dest: &Path) -> std::io::Result<()> {
+    copy_level(src, dest, 0)
+}
+
+/// Copies the regular files of `src` and, one level down, of its sub-folders (a theme's `fonts/`).
+fn copy_level(src: &Path, dest: &Path, depth: u8) -> std::io::Result<()> {
     for entry in fs::read_dir(src)?.flatten() {
         let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() && depth == 0 {
+            let sub = dest.join(entry.file_name());
+            fs::create_dir(&sub)?;
+            copy_level(&entry.path(), &sub, 1)?;
+            continue;
+        }
         if !ft.is_file() || entry.metadata().map_or(true, |m| m.len() > MAX_SAMPLE_FILE) {
             continue;
         }
         fs::copy(entry.path(), dest.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+/// Reads a theme's font file (`[theme.style] ui_font = "fonts/X.otf"`): the path is checked
+/// ([`csm_core::addons::theme::check_font_path`]), resolved against `addon_dir`, and refused when it
+/// leaves the folder (a link or a junction included), is not a regular file, is larger than
+/// [`csm_core::addons::theme::MAX_FONT_BYTES`], or does not parse as a font with a Latin `a`. Blocking
+/// file I/O: call from a worker.
+pub fn read_theme_font(addon_dir: &Path, rel: &str) -> Result<Vec<u8>, String> {
+    use csm_core::addons::theme::{MAX_FONT_BYTES, check_font_path};
+    check_font_path(rel)?;
+    let root = fs::canonicalize(addon_dir).map_err(|e| format!("the add-on folder could not be read: {e}"))?;
+    let file = fs::canonicalize(root.join(rel)).map_err(|e| format!("{rel}: {}", if e.kind() == std::io::ErrorKind::NotFound { "no such file".to_owned() } else { e.to_string() }))?;
+    if !file.starts_with(&root) {
+        return Err(format!("{rel}: the file is outside the add-on's folder"));
+    }
+    let meta = fs::metadata(&file).map_err(|e| format!("{rel}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{rel}: not a file"));
+    }
+    if meta.len() > MAX_FONT_BYTES {
+        return Err(format!("{rel}: {} bytes is over the {} MiB limit", meta.len(), MAX_FONT_BYTES / (1024 * 1024)));
+    }
+    let mut data = Vec::new();
+    fs::File::open(&file).and_then(|f| f.take(MAX_FONT_BYTES + 1).read_to_end(&mut data)).map_err(|e| format!("{rel}: {e}"))?;
+    if data.len() as u64 > MAX_FONT_BYTES {
+        return Err(format!("{rel}: over the {} MiB limit", MAX_FONT_BYTES / (1024 * 1024)));
+    }
+    check_font_bytes(&data).map_err(|e| format!("{rel}: {e}"))?;
+    Ok(data)
+}
+
+/// Whether `data` is a font the UI can use: a TrueType or OpenType file whose first face has a glyph
+/// for `a` and for the space.
+pub fn check_font_bytes(data: &[u8]) -> Result<(), String> {
+    let font = swash::FontRef::from_index(data, 0).ok_or("not a TrueType or OpenType font")?;
+    let map = font.charmap();
+    if map.map('a') == 0 || map.map(' ') == 0 {
+        return Err("the font has no Latin letters".into());
     }
     Ok(())
 }
@@ -266,5 +317,73 @@ mod tests {
     fn digest_is_stable_hex() {
         assert_eq!(digest("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert_eq!(digest("abc").len(), 64);
+    }
+    const W95FA: &[u8] = include_bytes!("../../../samples/addons/theme-fun/fonts/W95FA.otf");
+
+    fn addon_with_font(bytes: &[u8]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("fonts")).unwrap();
+        fs::write(dir.path().join("fonts").join("a.otf"), bytes).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_theme_font_inside_the_folder_loads() {
+        let dir = addon_with_font(W95FA);
+        assert_eq!(read_theme_font(dir.path(), "fonts/a.otf").unwrap(), W95FA);
+    }
+
+    #[test]
+    fn a_theme_font_that_is_not_a_font_or_is_missing_is_refused() {
+        let dir = addon_with_font(b"this is not a font at all, only text");
+        assert!(read_theme_font(dir.path(), "fonts/a.otf").unwrap_err().contains("not a TrueType or OpenType font"));
+        assert!(read_theme_font(dir.path(), "fonts/none.otf").unwrap_err().contains("no such file"));
+        let dir = addon_with_font(&W95FA[..40]);
+        assert!(read_theme_font(dir.path(), "fonts/a.otf").is_err(), "a truncated font");
+    }
+
+    #[test]
+    fn a_theme_font_over_the_size_cap_is_refused_unread() {
+        let dir = addon_with_font(&[0u8; 0]);
+        let big = fs::File::create(dir.path().join("fonts").join("a.otf")).unwrap();
+        big.set_len(csm_core::addons::theme::MAX_FONT_BYTES + 1).unwrap();
+        let e = read_theme_font(dir.path(), "fonts/a.otf").unwrap_err();
+        assert!(e.contains("over the 4 MiB limit"), "{e}");
+    }
+
+    #[test]
+    fn a_theme_font_path_cannot_leave_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let addon = dir.path().join("addon");
+        fs::create_dir_all(addon.join("fonts")).unwrap();
+        fs::write(dir.path().join("outside.otf"), W95FA).unwrap();
+        for bad in ["../outside.otf", "fonts/../../outside.otf", "/outside.otf"] {
+            assert!(read_theme_font(&addon, bad).is_err(), "{bad}");
+        }
+        let absolute = dir.path().join("outside.otf").display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+        assert!(read_theme_font(&addon, &absolute).is_err(), "{absolute}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let addon = dir.path().join("addon");
+        fs::create_dir_all(addon.join("fonts")).unwrap();
+        fs::write(dir.path().join("outside.otf"), W95FA).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("outside.otf"), addon.join("fonts").join("a.otf")).unwrap();
+        assert!(read_theme_font(&addon, "fonts/a.otf").unwrap_err().contains("outside"));
+    }
+
+    #[test]
+    fn samples_bring_their_font_sub_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let samples = dir.path().join("samples");
+        write(&samples, "alpha", "a");
+        fs::create_dir_all(samples.join("alpha").join("fonts")).unwrap();
+        fs::write(samples.join("alpha").join("fonts").join("f.otf"), "font").unwrap();
+        let root = dir.path().join("addons");
+        install_samples(&samples, &root).unwrap();
+        assert_eq!(fs::read_to_string(root.join("alpha").join("fonts").join("f.otf")).unwrap(), "font");
     }
 }

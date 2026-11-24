@@ -23,13 +23,29 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   tick it. A 2.0 export can be read by 0.x's Import.
 - Not carried over: 0.x's search history (`output.db` output). 2.0 starts a new index.
 - No WebView2 runtime or .NET is needed any more.
-- Taskbar pins, shortcuts and scripts that start `CodeShellManager.exe` keep working: the
-  installer keeps a small `CodeShellManager.exe` beside the new `codeshell.exe` that starts it.
+- **CodeShellManager 2 installs under `C:\Program Files\umage.ai\`** (`umage.ai\CodeShellManager`;
+  the beta in `umage.ai\CodeShellManager Beta`), so the company name reads "umage.ai" everywhere.
+  It is a clean break: the upgrade removes 0.x (and any older 2.x or beta) from
+  `C:\Program Files\umage\` and leaves nothing there. **Taskbar pins to the old app need
+  re-pinning**; Start menu and desktop shortcuts are re-created. The sign-in entry and the PATH
+  entry follow the app, and the agent registrations `csm setup` wrote (Claude Code, Claude
+  Desktop, Codex, Cursor) are repaired to the new `csm.exe` when CodeShellManager starts (comments
+  kept, a `.csm-backup` made; `csm doctor` reports any still naming the old folder).
 - **Check for updates**, as in 0.x: once a day the app asks GitHub whether a newer release is
   out and shows "Update available" in the title bar, which opens the release page. Nothing is
   downloaded. Settings › General › Updates turns it off and has *Check now*.
 
 ### New
+
+- **Fun themes sample add-on** (`theme-fun`, Settings > Add-ons > Install samples): Emacs (dark),
+  Windows 98 and Blossom (light), original themes that also change how the window draws.
+- **Themes can style the window, not only colour it** (`[theme.style]`, docs/addons.md, Themes):
+  `corners` (rounded, square, soft), `borders` (flat or a 3D `bevel`), title bar colours, and
+  `ui_font` / `terminal_font` (the bundled fonts, or a font file the theme add-on brings: read on
+  a worker, at most 4 MiB, inside the add-on's folder). Invalid values are listed as problems;
+  a theme without the table looks as before. The sample themes use it: Windows 98 has bevels, a
+  navy title bar and the open-licensed W95FA pixel font, Emacs a monospace UI, Blossom soft corners
+  and Varela Round.
 
 - **One status vocabulary**: every session is Working, Needs you (approval or question), Done,
   Idle, Asleep or Error, shown the same way in the sidebar, pane header, palette and tray. OSC 7501
@@ -110,6 +126,7 @@ file drop; Claude slash-command menu; `--clean`.
 
 ### Changed
 
+- **Quitting closes Claude sessions several at a time** (Settings > General > "Claude sessions closed at once when quitting", `QuitClaudeConcurrency`, default 4, 1 to 8). With about 70 Claude sessions a quit took 5 to 8 minutes; it now takes around a minute and a half. Claude rewrites `~/.claude.json` as it exits, so the quit keeps a copy of it first and restores that copy if the file is left unreadable (some individual updates to it can still be lost); set the number to 1 for the old one-at-a-time quit. The shutdown board says how many close at once and shows several rows closing together. See docs/quit.md.
 - The relay server (`csm-relay`) and the Phone remote add-on moved out of this repository to the private
   `umage-ai/csm-relay` repository, until they are released. The wire protocol CSM uses for its own
   peer link is vendored in `vendor/csm-remote-proto`. CSM ships no phone add-on sample any more.

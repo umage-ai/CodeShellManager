@@ -104,8 +104,8 @@ fn installed_samples_are_all_disabled_and_the_packs_load_clean() {
     h.wait_until("scan", |s| s.addons.is_empty());
     let out = h.ok("addon_install_samples", json!({}));
     // The sample add-ons all ship disabled.
-    assert_eq!(out.data["installed"], json!(["codex-cli", "gemini-cli", "review", "session-summary", "themes"]), "{}", out.message);
-    h.wait_until("five add-ons", |s| s.addons.len() == 5);
+    assert_eq!(out.data["installed"], json!(["codex-cli", "gemini-cli", "review", "session-summary", "theme-fun", "themes"]), "{}", out.message);
+    h.wait_until("six add-ons", |s| s.addons.len() == 6);
     let list = h.ok("addon_list", json!({})).data["addons"].clone();
     for a in list.as_array().unwrap() {
         assert_eq!(a["state"], "disabled", "{a}");
@@ -131,6 +131,6 @@ fn installed_samples_are_all_disabled_and_the_packs_load_clean() {
     // A second install changes nothing.
     let again = h.ok("addon_install_samples", json!({}));
     assert_eq!(again.data["installed"], json!([]));
-    assert_eq!(again.data["skipped"].as_array().unwrap().len(), 5);
+    assert_eq!(again.data["skipped"].as_array().unwrap().len(), 6);
     h.engine.shutdown();
 }

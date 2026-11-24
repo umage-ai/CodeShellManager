@@ -812,7 +812,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_run_value_quotes_the_path_and_round_trips() {
-        for p in [r"C:\Program Files\umage\CodeShellManager\codeshell.exe", r"C:\Users\Åsa Ølstrøm\apps\codeshell.exe", r"C:\x\codeshell.exe"] {
+        for p in [r"C:\Program Files\umage.ai\CodeShellManager\codeshell.exe", r"C:\Users\Åsa Ølstrøm\apps\codeshell.exe", r"C:\x\codeshell.exe"] {
             let line = windows_command_line(&win(p)).unwrap();
             assert_eq!(line, format!("\"{p}\" --autostart"));
             assert_eq!(windows_program(&line), Some(win(p)));
@@ -861,18 +861,18 @@ mod tests {
     #[test]
     fn the_run_key_is_written_read_back_and_removed() {
         let b = run_key();
-        let exe = win(r"C:\Program Files\umage\CodeShellManager\codeshell.exe");
+        let exe = win(r"C:\Program Files\umage.ai\CodeShellManager\codeshell.exe");
         let s = status(&b, &exe).unwrap();
         assert!(!s.enabled && !s.registered && s.program.is_none());
         let s = set(&b, &exe, true).unwrap();
         assert!(s.enabled && s.registered && s.current && !s.disabled_by_os, "{s:?}");
         assert_eq!(
             b.registry().value(RUN_KEY, ENTRY_NAME),
-            Some(MemValue::String(r#""C:\Program Files\umage\CodeShellManager\codeshell.exe" --autostart"#.into()))
+            Some(MemValue::String(r#""C:\Program Files\umage.ai\CodeShellManager\codeshell.exe" --autostart"#.into()))
         );
         assert_eq!(s.location, r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\CodeShellManager");
         // Paths compare without case.
-        assert!(status(&b, &win(r"c:\program files\UMAGE\codeshellmanager\CODESHELL.EXE")).unwrap().current);
+        assert!(status(&b, &win(r"c:\program files\UMAGE.AI\codeshellmanager\CODESHELL.EXE")).unwrap().current);
         let s = set(&b, &exe, false).unwrap();
         assert!(!s.registered && b.registry().value(RUN_KEY, ENTRY_NAME).is_none());
     }
@@ -916,6 +916,24 @@ mod tests {
         set(&b, &old, true).unwrap();
         assert_eq!(refresh(&b, &new, true).unwrap(), None);
         assert_eq!(refresh(&b, &new, false).unwrap(), Some(old.clone()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_fix_up_follows_the_move_from_the_umage_folder_to_umage_ai() {
+        // 2.0 installs under `umage.ai`; an entry written by an older 2.x names the old folder,
+        // which the upgrade removed (here it never existed, so it is gone).
+        let b = run_key();
+        let old = win(r"C:\Program Files\umage\CodeShellManager\codeshell.exe");
+        let new = win(r"C:\Program Files\umage.ai\CodeShellManager\codeshell.exe");
+        set(&b, &old, true).unwrap();
+        assert!(!status(&b, &new).unwrap().current, "the two folders are different programs");
+        assert_eq!(refresh(&b, &new, false).unwrap(), Some(old.clone()));
+        assert!(status(&b, &new).unwrap().current);
+        assert_eq!(
+            b.registry().value(RUN_KEY, ENTRY_NAME),
+            Some(MemValue::String(r#""C:\Program Files\umage.ai\CodeShellManager\codeshell.exe" --autostart"#.into()))
+        );
     }
 
     #[cfg(windows)]
@@ -1023,7 +1041,7 @@ mod tests {
     #[test]
     fn the_current_user_registry_reads_writes_and_deletes_on_a_test_key() {
         use winreg::enums::HKEY_CURRENT_USER;
-        let key = format!(r"Software\umage\CodeShellManagerAutostartTest-{}", std::process::id());
+        let key = format!(r"Software\umage.ai\CodeShellManagerAutostartTest-{}", std::process::id());
         let reg = CurrentUserRegistry;
         assert_eq!(reg.get_string(&key, "Entry").unwrap(), None, "no key yet");
         reg.delete(&key, "Entry").unwrap();

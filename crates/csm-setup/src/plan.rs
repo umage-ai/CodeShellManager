@@ -370,6 +370,28 @@ pub fn apply(host: &Host, plan: &Plan) -> ApplyReport {
     ApplyReport { files }
 }
 
+/// After the install folder moved (`...\umage\CodeShellManager` to `...\umage.ai\CodeShellManager`):
+/// point every entry setup added that still names the old folder at `command` (`[<csm>, "mcp"]`).
+/// Never adds an entry to a client that has none, never touches an entry setup did not write, and
+/// goes through the same plan, backup, verify and roll back as `csm setup`. Blocking file work:
+/// call it from a worker thread. Returns one result per entry it changed (or failed to).
+pub fn repair_moved(host: &Host, command: &[String]) -> Vec<FileResult> {
+    let Some(program) = command.first() else { return Vec::new() };
+    let mut out = Vec::new();
+    for c in &clients(host) {
+        let Ok(Some(text)) = read_text(&c.config) else { continue };
+        let Ok(Some(entry)) = config::read_entry(c, &text) else { continue };
+        if !crate::clients::is_moved_entry(&entry, Path::new(program)) {
+            continue;
+        }
+        let action = inspect_client(c, command);
+        if action.kind == ActionKind::Update {
+            out.push(apply_one(&action, Some(c)));
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "result", content = "detail")]
 pub enum RemoveOutcome {

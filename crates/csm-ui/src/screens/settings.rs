@@ -34,7 +34,7 @@ pub fn show(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         let resp = ui.interact(r, Id::new(("settings-sec", sec.label())), Sense::click());
         let on = app.ui.settings.section == sec;
         if on || resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(radius::MD), if on { t.row_sel } else { t.row_hover });
+            ui.painter().rect_filled(r, CornerRadius::same(radius::md()), if on { t.row_sel } else { t.row_hover });
         }
         let ir = Rect::from_min_size(pos2(r.min.x + space::ROW_X, r.center().y - icon::MD / 2.0), Vec2::splat(icon::MD));
         icons::paint(ui, ir, sec.icon(), icon::MD, if on { t.blue } else { t.muted });
@@ -232,7 +232,7 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     text_setting(ui, app, "DefaultWorkingFolder", "Default folder", "C:\\src (blank: ask)", actions);
     text_setting(ui, app, "DefaultCommand", "Default command", "claude", actions);
     section(ui, "Launch commands");
-    caption(ui, "What Tab cycles through in the New session panel, in this order.");
+    caption(ui, "The commands of the New session panel, in this order (Left and Right on its command row cycle them).");
     let cmds: Vec<String> = app
         .ui
         .settings
@@ -329,6 +329,11 @@ fn general(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     );
     number_setting(ui, app, "ClaudeLaunchStaggerMs", "Claude launch stagger", 0..=10_000, "ms", actions);
     caption(ui, "A flat pause between Claude starts, so two never rewrite ~/.claude.json at once.");
+    number_setting(ui, app, "QuitClaudeConcurrency", "Claude sessions closed at once when quitting", 1..=8, "", actions);
+    caption(
+        ui,
+        "Higher is faster, but Claude rewrites ~/.claude.json as it exits, so some updates can be lost; it is backed up first and restored if damaged. 1 closes them one at a time.",
+    );
     crate::screens::startup::show(ui, app, actions);
     crate::screens::claude_commands::show(ui, app, actions);
     crate::screens::backup::general(ui, app, actions);
@@ -501,14 +506,14 @@ fn theme_row(ui: &mut Ui, entry: &theme::ThemeEntry, slot: &str, selected: bool)
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), Sense::click());
     if selected || resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), if selected { t.row_sel } else { t.row_hover });
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), if selected { t.row_sel } else { t.row_hover });
     }
     let mut x = rect.min.x + space::ROW_X;
     let side = size::BADGE;
     for c in entry.palette.swatches() {
         let r = Rect::from_min_size(pos2(x, rect.center().y - side / 2.0), Vec2::splat(side));
-        ui.painter().rect_filled(r, CornerRadius::same(radius::SM), c);
-        ui.painter().rect_stroke(r, CornerRadius::same(radius::SM), Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
+        ui.painter().rect_filled(r, CornerRadius::same(radius::sm()), c);
+        ui.painter().rect_stroke(r, CornerRadius::same(radius::sm()), Stroke::new(size::HAIRLINE, t.surface1), egui::StrokeKind::Inside);
         x += side + space::XXS;
     }
     x += space::SM;
@@ -651,7 +656,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     // Hero: the logo, the name, what it is, the version.
     ui.horizontal(|ui| {
         let (logo, _) = ui.allocate_exact_size(Vec2::splat(size::ABOUT_LOGO), Sense::hover());
-        ui.painter().rect_filled(logo, CornerRadius::same(radius::LG), t.blue);
+        ui.painter().rect_filled(logo, CornerRadius::same(radius::lg()), t.blue);
         icons::paint(ui, logo, "terminal", icon::HERO, t.on_accent);
         ui.add_space(space::LG);
         ui.vertical(|ui| {
@@ -666,7 +671,7 @@ fn about(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     egui::Frame::new()
         .fill(t.mantle)
         .stroke(Stroke::new(size::HAIRLINE, t.surface0))
-        .corner_radius(CornerRadius::same(radius::LG))
+        .corner_radius(CornerRadius::same(radius::lg()))
         .inner_margin(space::LG)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -50,7 +50,7 @@ pub fn branch_chip(ui: &mut Ui, s: &SessionView, max_w: f32, clickable: bool) ->
     let sense = if clickable { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CHIP), sense);
     let stroke = if clickable && resp.hovered() { t.surface2 } else { t.surface0 };
-    ui.painter().rect(rect, CornerRadius::same(radius::SM), t.crust, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, CornerRadius::same(radius::sm()), t.crust, Stroke::new(size::HAIRLINE, stroke), StrokeKind::Inside);
     let cy = rect.center().y;
     let mut x = rect.min.x + space::XS + space::XXS / 2.0;
     icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::XS / 2.0), Vec2::splat(icon::XS)), "branch", icon::XS, t.fg2);
@@ -260,7 +260,7 @@ fn failure(ui: &mut Ui, t: &Tokens, d: &GitDetail, mem: &mut TabMem, actions: &m
     egui::Frame::new()
         .fill(t.term_bg)
         .stroke(Stroke::new(size::HAIRLINE, t.red))
-        .corner_radius(CornerRadius::same(radius::MD))
+        .corner_radius(CornerRadius::same(radius::md()))
         .inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::SM as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -285,7 +285,7 @@ fn row(ui: &mut Ui, enabled: bool) -> (Rect, Response) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size::CONTROL_LG), if enabled { Sense::click() } else { Sense::hover() });
     let t = Tokens::get(ui.ctx());
     if enabled && resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_hover);
     }
     (rect, resp)
 }
@@ -476,7 +476,7 @@ fn remove_confirm(ui: &mut Ui, t: &Tokens, s: &SessionView, list: &[crate::git_m
     egui::Frame::new()
         .fill(t.field)
         .stroke(Stroke::new(size::HAIRLINE, t.red))
-        .corner_radius(CornerRadius::same(radius::MD))
+        .corner_radius(CornerRadius::same(radius::md()))
         .inner_margin(egui::Margin::symmetric(space::ROW_X as i8, space::SM as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

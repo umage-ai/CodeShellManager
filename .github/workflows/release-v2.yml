@@ -126,7 +126,7 @@ jobs:
       - name: Build
         env:
           CSM_CHANNEL: ${{ steps.ver.outputs.channel }}
-        run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary -p csm-review -p csm-legacy-launcher
+        run: cargo build --release -p codeshell -p csm-cli -p csm-session-summary -p csm-review
 
       # The third-party licence bundle (about.toml / about.hbs), shipped beside the exes in the
       # MSI and the zip. It fails on a licence about.toml does not accept.
@@ -144,20 +144,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # ── Stage the files the MSI and the zip ship ─────────────────────────────
-      # The stable channel replaces the WPF app (0.x), whose exe was CodeShellManager.exe in the same
-      # folder, so it also ships CodeShellManager.exe: a tiny launcher (apps/csm-legacy-launcher)
-      # that starts codeshell.exe beside it, so taskbar pins, shortcuts and scripts that name the
-      # old exe keep working (docs/release.md). A beta folder never held 0.x: no launcher there.
       - name: Stage
         id: stage
         shell: pwsh
-        env:
-          CHANNEL: ${{ steps.ver.outputs.channel }}
         run: |
           New-Item -ItemType Directory -Force publish, dist | Out-Null
           # Our own exes: these are signed and verified.
           $ours = @('codeshell.exe', 'csm.exe', 'csm-session-summary.exe', 'csm-review.exe')
-          if ($env:CHANNEL -eq 'stable') { $ours += 'CodeShellManager.exe' }
           foreach ($f in $ours + @('conpty.dll', 'OpenConsole.exe')) {
             $p = "target/release/$f"
             if (-not (Test-Path $p)) { throw "missing from the build: $f" }
@@ -165,11 +158,14 @@ jobs:
           }
           # Sample add-ons (disabled until the person installs and enables them). They sit under
           # samples/addons beside the exes: the app copies them on "Install samples".
-          $samples = @('codex-cli', 'gemini-cli', 'review', 'session-summary', 'themes')
+          $samples = @('codex-cli', 'gemini-cli', 'review', 'session-summary', 'themes', 'theme-fun')
           foreach ($s in $samples) {
             New-Item -ItemType Directory -Force "publish/samples/addons/$s" | Out-Null
             Copy-Item "samples/addons/$s/addon.toml" "publish/samples/addons/$s/"
           }
+          # A sample's font files (a theme add-on's fonts/ folder) ride along with their licences.
+          New-Item -ItemType Directory -Force "publish/samples/addons/theme-fun/fonts" | Out-Null
+          Copy-Item "samples/addons/theme-fun/fonts/*" "publish/samples/addons/theme-fun/fonts/"
           # The bundled ConPTY must be Microsoft's, unmodified (it is never re-signed by us).
           foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
             $sig = Get-AuthenticodeSignature "publish/$f"
@@ -181,9 +177,7 @@ jobs:
           # program (its output must reach the terminal). The sample plugin is a console program too
           # (it talks over stdin/stdout pipes); the plugin host starts it with CREATE_NO_WINDOW, so
           # no window flashes. PE optional header field Subsystem: 2 = Windows GUI, 3 = console.
-          # The 0.x-name launcher is a GUI program too: no console window flashes from a pin.
           $subsystems = @(@('codeshell.exe', 2), @('csm.exe', 3), @('csm-session-summary.exe', 3), @('csm-review.exe', 3))
-          if ($ours -contains 'CodeShellManager.exe') { $subsystems += , @('CodeShellManager.exe', 2) }
           foreach ($pair in $subsystems) {
             $b = [System.IO.File]::ReadAllBytes("publish/$($pair[0])")
             $pe = [BitConverter]::ToInt32($b, 0x3C)
@@ -194,6 +188,7 @@ jobs:
           $wxs = Get-Content installer/CodeShellManager2.wxs -Raw
           $staged = $ours + @('conpty.dll', 'OpenConsole.exe', 'codeshell.aumid', 'THIRD-PARTY-LICENSES.html')
           foreach ($s in $samples) { $staged += "samples\addons\$s\addon.toml" }
+          foreach ($f in 'W95FA.otf', 'OFL-W95FA.txt', 'VarelaRound-Regular.ttf', 'OFL-VarelaRound.txt') { $staged += "samples\addons\theme-fun\fonts\$f" }
           foreach ($f in $staged) {
             if ($wxs -notmatch [regex]::Escape("`$(var.PublishDir)\$f")) { throw "installer/CodeShellManager2.wxs does not install $f" }
           }

@@ -5,6 +5,12 @@ pre-releases; winget and Chocolatey at 2.0 final). This document covers the othe
 what the build produces today, where to publish it, in what order, and what is still broken at
 run time.
 
+Windows installs under `C:\Program Files\umage.ai\<CodeShellManager|CodeShellManager Beta>` (the
+company name reads "umage.ai" everywhere; clean break from 0.x's `umage` folder, see
+`docs/release.md`, "The install folder moved"). winget and Chocolatey name no install location, so
+nothing in their manifests changed. Reverse-DNS bundle ids on Linux and macOS (`ai.umage.*`) are
+unaffected.
+
 ## 1. What the build produces
 
 `.github/workflows/release-v2-unix.yml` builds Linux on a `v2.*` tag (or a dry run on

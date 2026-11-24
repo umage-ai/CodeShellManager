@@ -137,15 +137,15 @@ pub(super) fn node(ui: &mut Ui, cx: &mut Cx<'_>, n: &Node) {
                     let w = lw + bw + space::LG + if badge.is_empty() { 0.0 } else { space::XS };
                     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CONTROL), Sense::click());
                     if on {
-                        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_sel);
+                        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
                     } else if resp.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(radius::MD), t.row_hover);
+                        ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_hover);
                     }
                     let fg = if on { t.fg } else { t.muted };
                     ui.painter().text(pos2(rect.min.x + space::SM, rect.center().y), Align2::LEFT_CENTER, &tab.label, font, fg);
                     if !badge.is_empty() {
                         let br = Rect::from_center_size(pos2(rect.max.x - space::SM - bw / 2.0, rect.center().y), vec2(bw, size::COUNT));
-                        ui.painter().rect_filled(br, CornerRadius::same(radius::PILL), t.surface0);
+                        ui.painter().rect_filled(br, CornerRadius::same(radius::pill()), t.surface0);
                         ui.painter().text(br.center(), Align2::CENTER_CENTER, badge, theme::medium(text::TINY), t.fg2);
                     }
                     resp.widget_info({
@@ -175,7 +175,7 @@ pub(super) fn node(ui: &mut Ui, cx: &mut Cx<'_>, n: &Node) {
             if let Some(b) = badge {
                 let bw = widgets::text_width(ui, b, theme::medium(text::TINY)) + space::MD;
                 let br = Rect::from_min_size(pos2(tr.max.x + space::SM, rect.center().y - size::COUNT / 2.0), vec2(bw, size::COUNT));
-                ui.painter().rect_filled(br, CornerRadius::same(radius::PILL), t.surface0);
+                ui.painter().rect_filled(br, CornerRadius::same(radius::pill()), t.surface0);
                 ui.painter().text(br.center(), Align2::CENTER_CENTER, b, theme::medium(text::TINY), t.fg2);
             }
             ui.painter().hline(rect.x_range(), rect.max.y, Stroke::new(size::HAIRLINE, t.surface0));
@@ -285,7 +285,7 @@ pub(super) fn node(ui: &mut Ui, cx: &mut Cx<'_>, n: &Node) {
         Kind::Diff(d) => super::view::diff(ui, cx, &key, d),
         Kind::Qr { label, size: qsize, code } => qr_node(ui, &t, label, *qsize, code.as_ref()),
         Kind::Unsupported { type_name } => {
-            egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
+            egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
                 ui.label(egui::RichText::new(format!("unsupported: {type_name}")).font(theme::mono(text::MONO_SM)).color(t.muted));
             });
         }
@@ -307,7 +307,7 @@ fn qr_node(ui: &mut Ui, t: &Tokens, label: &str, qsize: QrSize, code: Option<&Ma
                 crate::screens::remote::paint_qr(ui, t, m.size(), side, |x, y| m.is_dark(x, y), name);
             }
             None => {
-                egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::MD)).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
+                egui::Frame::new().stroke(Stroke::new(size::HAIRLINE, t.surface1)).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)).show(ui, |ui| {
                     ui.label(egui::RichText::new("This code cannot be shown.").font(theme::regular(text::CAPTION)).color(t.muted));
                 });
             }
@@ -324,7 +324,7 @@ pub(super) fn chip(ui: &mut Ui, t: &Tokens, b: &Badge) -> egui::Response {
     let color = tone_color(t, b.tone);
     let w = widgets::text_width(ui, &b.text, font.clone()) + space::MD;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, size::CHIP), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(radius::PILL), if b.tone == Tone::Default { t.surface0 } else { Tokens::tint(color, alpha::PILL) });
+    ui.painter().rect_filled(rect, CornerRadius::same(radius::pill()), if b.tone == Tone::Default { t.surface0 } else { Tokens::tint(color, alpha::PILL) });
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, &b.text, font, if b.tone == Tone::Default { t.fg2 } else { color });
     named(&resp, WidgetType::Label, format!("Badge: {}", b.text));
     resp
@@ -492,9 +492,9 @@ fn comment(ui: &mut Ui, cx: &mut Cx<'_>, key: &str, c: &Comment) {
 fn row_frame(ui: &mut Ui, t: &Tokens, h: f32, on: bool) -> (Rect, egui::Response) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     if on {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_sel);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::sm()), t.row_sel);
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(radius::SM), t.row_hover);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::sm()), t.row_hover);
     }
     (rect, resp)
 }
@@ -507,7 +507,7 @@ fn row_badges(ui: &Ui, t: &Tokens, rect: Rect, badges: &[Badge]) -> f32 {
         let w = widgets::text_width(ui, &b.text, font.clone()) + space::MD;
         let r = Rect::from_min_size(pos2(x - w, rect.center().y - size::COUNT / 2.0), vec2(w, size::COUNT));
         let color = tone_color(t, b.tone);
-        ui.painter().rect_filled(r, CornerRadius::same(radius::PILL), if b.tone == Tone::Default { t.surface0 } else { Tokens::tint(color, alpha::PILL) });
+        ui.painter().rect_filled(r, CornerRadius::same(radius::pill()), if b.tone == Tone::Default { t.surface0 } else { Tokens::tint(color, alpha::PILL) });
         ui.painter().text(r.center(), Align2::CENTER_CENTER, &b.text, font, if b.tone == Tone::Default { t.fg2 } else { color });
         x -= w + space::XS;
     }

@@ -146,7 +146,7 @@ pub fn paint(ui: &Ui, rows: &[Row<'_>], top: f32, x0: f32, x1: f32, now_ms: u64)
                 let running = agent.state == AgentState::Running;
                 let band = Rect::from_min_max(Pos2::new(x0 + indent - space::XS, y + 1.0), Pos2::new(x1 + space::XS, y + size::BOARD_LINE - 1.0));
                 if running {
-                    ui.painter().rect_filled(band, CornerRadius::same(radius::SM), Tokens::tint(t.st_working, alpha::SOFT));
+                    ui.painter().rect_filled(band, CornerRadius::same(radius::sm()), Tokens::tint(t.st_working, alpha::SOFT));
                 }
                 let fade = |c| if *fading { Tokens::tint(c, alpha::ASLEEP) } else { c };
                 let dot = match agent.state {
