@@ -116,7 +116,7 @@ Nothing here runs without Allan's say-so. Tags are created by hand.
 5. After the winget PR is merged: `winget upgrade UmageAI.CodeShellManager` on a machine with
    0.11.0 installed; and `choco upgrade codeshellmanager` likewise.
 
-Dry run at any time (unsigned, artifact only): `gh workflow run release-v2.yml --ref v2 -f channel=stable`.
+Dry run at any time (signed like a release when the signing secrets are set; artifact only, nothing published): `gh workflow run release-v2.yml --ref v2 -f channel=stable`.
 
 ### Version numbers
 
@@ -303,5 +303,6 @@ Decided by Allan on 2026-11-22: 1 (keep `codeshell.exe`), 3 and 8 (a beta data f
   a torn copy only affects the beta's search index and notes, never the stable app's.
 - **Two `csm` on PATH** with stable and beta both installed: the first on PATH wins, and it only
   talks to its own channel's app (`csm setup` also registers both under the MCP name `codeshell`).
-- **Unsigned stable builds** can no longer be published (the workflow refuses), but a dry-run
-  stable MSI is unsigned; installing one on a real machine upgrades its WPF app.
+- **Unsigned stable builds** can no longer be published (the workflow refuses). A dry-run
+  stable MSI is signed too (since the signing secrets are set) and installing one on a real machine
+  upgrades its WPF app.

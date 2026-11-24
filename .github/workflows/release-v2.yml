@@ -206,7 +206,7 @@ jobs:
 
       # OUR exes only, by name: publish/ also holds Microsoft's OpenConsole.exe and conpty.dll.
       - name: Sign executables (Azure Trusted Signing)
-        if: env.IS_TAG == 'true' && env.HAS_SIGNING == 'true'
+        if: env.HAS_SIGNING == 'true'
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -248,7 +248,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Sign MSI (Azure Trusted Signing)
-        if: env.IS_TAG == 'true' && env.HAS_SIGNING == 'true'
+        if: env.HAS_SIGNING == 'true'
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -265,7 +265,7 @@ jobs:
 
       # Our exes and the MSI must carry a valid signature before anything is published.
       - name: Verify signatures
-        if: env.IS_TAG == 'true' && env.HAS_SIGNING == 'true'
+        if: env.HAS_SIGNING == 'true'
         shell: pwsh
         env:
           SIGN_NAMES: ${{ steps.stage.outputs.sign_names }}
