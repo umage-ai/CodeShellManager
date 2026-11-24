@@ -1081,13 +1081,14 @@ fn take_keys(ctx: &egui::Context, digits: bool) -> Keys {
     })
 }
 
-/// An open menu is modal for the plain keys it does not read (Backspace, Delete, the F-keys): they
-/// reach neither the shortcuts nor the focused terminal. Escape (the grid closes with it), and the
+/// An open menu is modal for the plain keys it does not read (Backspace, Delete, the F-keys) and
+/// for typed text: they reach neither the shortcuts nor the focused terminal. Escape (the grid closes with it), and the
 /// Ctrl and Alt chords, go on. Called by the app after `menu_keys` took the keys it reads.
 pub fn drop_plain_keys(ctx: &egui::Context) {
     ctx.input_mut(|i| {
         i.events.retain(|e| {
-            !matches!(e, egui::Event::Key { key, modifiers, .. } if *key != Key::Escape && !modifiers.command && !modifiers.ctrl && !modifiers.alt)
+            !matches!(e, egui::Event::Text(_))
+                && !matches!(e, egui::Event::Key { key, modifiers, .. } if *key != Key::Escape && !modifiers.command && !modifiers.ctrl && !modifiers.alt)
         });
     });
 }
@@ -1393,5 +1394,37 @@ fn row_width(ui: &egui::Ui, e: &Entry) -> f32 {
         }
         Entry::Sub { label: l, .. } => base + label(l) + icon::MD + space::LG,
         Entry::Head(_) | Entry::Sep => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn an_open_menu_keeps_typed_text_and_plain_keys_from_the_terminal() {
+        let m = egui::Modifiers::NONE;
+        let key = |k| egui::Event::Key { key: k, physical_key: Some(k), pressed: true, repeat: false, modifiers: m };
+        let ctrl = egui::Modifiers::CTRL;
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::Text("x".into()),
+                key(Key::Backspace),
+                key(Key::Escape),
+                egui::Event::Key { key: Key::F5, physical_key: Some(Key::F5), pressed: true, repeat: false, modifiers: ctrl },
+            ],
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut left = Vec::new();
+        let mut out = ctx.run_ui(raw, |ui| {
+            drop_plain_keys(ui.ctx());
+            left = ui.ctx().input(|i| i.events.clone());
+        });
+        out.textures_delta.clear();
+        assert!(!left.iter().any(|e| matches!(e, egui::Event::Text(_))), "typed letters are dropped: {left:?}");
+        assert!(!left.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Backspace, .. })));
+        assert!(left.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Escape, .. })), "Escape goes on");
+        assert!(left.iter().any(|e| matches!(e, egui::Event::Key { key: Key::F5, .. })), "a chord carrying the command key goes on");
     }
 }

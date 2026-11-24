@@ -154,3 +154,25 @@ fn ctrl_page_down_with_no_screen_open_keeps_the_sessions_tab() {
     let active = h.state().ui.screens.lock().unwrap().active.clone();
     assert_eq!(active, None, "the Sessions tab stays");
 }
+
+#[test]
+fn a_rebound_rename_key_renames_the_focused_row_and_f2_no_longer_does() {
+    let mut h = h();
+    let ids = rows(&h);
+    let active = h.state().model.active.clone();
+    let other = ids.iter().find(|i| Some(i.as_str()) != active.as_deref()).cloned().expect("a row that is not active");
+    let mut over = csm_core::keymap::Overrides::new();
+    over.insert("session_rename".into(), vec!["Ctrl+Shift+F2".into()]);
+    h.state_mut().prefs.keymap = csm_core::keymap::Keymap::new(&over);
+    focus_row(&mut h, &other);
+    h.key_press(Key::F2);
+    settle(&mut h);
+    assert!(h.state().ui.inline.is_none(), "F2 is no longer the rename key");
+    h.key_press_modifiers(Modifiers::CTRL | Modifiers::SHIFT, Key::F2);
+    settle(&mut h);
+    assert!(
+        matches!(h.state().ui.inline.as_ref().map(|e| &e.target), Some(InlineTarget::Session(s)) if *s == other),
+        "the rebound key edits the focused row's name: {:?}",
+        h.state().ui.inline.as_ref().map(|e| e.target.clone())
+    );
+}

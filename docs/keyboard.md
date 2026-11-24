@@ -56,14 +56,16 @@ from a Claude pane as shown.
 
 ## Terminals and these keys
 
-F6, F10 and Ctrl+Alt+Arrows are taken even when a terminal has the focus, and so are Ctrl+1 to
-Ctrl+9, Ctrl+Tab and Ctrl+J. Programs that use the same keys (Midnight Commander and htop use F6
-and F10, for instance) lose them while CodeShellManager is in front: rebind them in Settings ›
-Keyboard. Ctrl+PgUp and Ctrl+PgDn go to the screen tabs only while an add-on screen is open; with
-none, a terminal keeps them (vim uses them for its tabs). Plain keys, Tab, Esc and the arrows
+Every shortcut in the table above is taken from a focused terminal (F6, F10, Ctrl+Alt+Arrows,
+Ctrl+1 to Ctrl+9, Ctrl+Tab and Ctrl+J among them), with two exceptions: Shift+F10 stays with the
+terminal, and Ctrl+PgUp and Ctrl+PgDn go to the screen tabs only while an add-on screen is open
+(with none, a terminal keeps them; vim uses them for its tabs). Programs that use the same keys
+(Midnight Commander and htop use F6 and F10, for instance) lose them while CodeShellManager is in
+front: rebind them in Settings › Keyboard. Plain keys, Tab, Esc and the arrows
 are never taken from a terminal. When Tab moves the focus into a terminal, the focus ring leaves the
 list or bar it was on, so the keys you type go where the ring is. While a menu is open, the plain
-keys it does not use (Backspace, Delete, the F-keys) are not passed on to the terminal either.
+keys it does not use (Backspace, Delete, the F-keys) and typed letters are not passed on to the
+terminal either.
 
 ## Changing a key
 
@@ -73,10 +75,14 @@ Open **Settings › Keyboard**. It lists every action with its keys.
 - **Clear** removes an action's keys. **Reset** puts one action back to its default, and
   **Reset all** does it for every action.
 
-Two rules keep the keyboard usable:
+Three rules keep the keyboard usable:
 
-- A key needs Ctrl, or be a function key (F1 to F12). Plain letters, digits, Tab, Alt+letter and
+- A key needs Ctrl or must be a function key (F1 to F12). Plain letters, digits, Tab, Alt+letter and
   the arrows are never shortcuts, so typing and the terminal keep them.
+- Ctrl+Alt with a letter, a digit or a punctuation key cannot be recorded: on keyboards with an
+  AltGr key (Danish, German and others) AltGr arrives as Ctrl+Alt, and AltGr+2 is @, AltGr+7 is {,
+  AltGr+E is the euro sign. Ctrl+Alt with an arrow, PgUp, PgDn, Home, End or a function key is
+  fine. Whenever a Ctrl+Alt press types a character, it is typed and no shortcut runs.
 - A key can belong to one action only. If you record a key another action uses, the change is
   refused and the message names that action. Clear it there first.
 - The Ctrl+letter keys a shell or Claude Code needs (Ctrl+A, C, D, E, L, R, U, Z, and Ctrl+W, which

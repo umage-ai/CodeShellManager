@@ -52,6 +52,13 @@ pub enum Key {
 }
 
 impl Key {
+    /// Whether the key can produce a character on some keyboard layout when pressed with AltGr
+    /// (a letter, a digit or a punctuation key). Arrows, PgUp, PgDn, Home, End and the function
+    /// keys never do.
+    pub fn types_text(self) -> bool {
+        matches!(self, Key::Letter(_) | Key::Digit(_) | Key::Comma | Key::Period | Key::Slash | Key::Minus | Key::Equals)
+    }
+
     /// The spelling a chord is written with (`PgUp`, `F10`, `K`).
     pub fn name(self) -> String {
         match self {
@@ -164,8 +171,31 @@ impl Chord {
     /// Whether a chord may be bound. A text key needs Ctrl, so typing is never taken (Shift alone
     /// with a letter is a capital, and Alt with a letter is the terminal's meta prefix). Function
     /// keys may stand alone or carry modifiers.
+    ///
+    /// Ctrl+Alt with a letter, a digit or a punctuation key is refused as well: on keyboards with an
+    /// AltGr key (Danish, German, ...) Windows reports AltGr as Ctrl+Alt, and AltGr+2 is `@`,
+    /// AltGr+7 is `{`, AltGr+E is `€`. A binding there would take those characters.
     pub fn is_bindable(&self) -> bool {
-        matches!(self.key, Key::F(_)) || self.ctrl
+        self.refusal().is_none()
+    }
+
+    /// Why a chord may not be bound by the person (the text follows the chord: "`T` needs ..."),
+    /// or `None` when it may.
+    pub fn refusal(&self) -> Option<&'static str> {
+        if !(matches!(self.key, Key::F(_)) || self.ctrl) {
+            return Some("needs Ctrl or must be a function key");
+        }
+        if self.ctrl && self.alt && self.key.types_text() {
+            return Some("is AltGr on many keyboards (it types characters such as @ { [ ] } \\ and the euro sign); use Ctrl+Shift, or Ctrl+Alt with an arrow, PgUp, PgDn, Home, End or a function key");
+        }
+        None
+    }
+
+    /// Whether the person may bind this chord: any bindable chord, and the app's own defaults
+    /// (a default such as Ctrl+Alt+T types nothing on the keyboards that matter; the dispatcher
+    /// lets an AltGr character through instead).
+    fn accepted(&self) -> bool {
+        self.is_bindable() || BINDINGS.iter().any(|b| default_chords(b).contains(self))
     }
 }
 
@@ -247,8 +277,9 @@ fn parse_chords(texts: &[String]) -> Result<Vec<Chord>, (String, ChordError)> {
     let mut out: Vec<Chord> = Vec::new();
     for text in texts {
         let chord = Chord::parse(text).map_err(|e| (text.clone(), e))?;
-        if !chord.is_bindable() {
-            return Err((text.clone(), ChordError(format!("`{text}` needs Ctrl, or be a function key"))));
+        if !chord.accepted() {
+            let why = chord.refusal().unwrap_or("cannot be bound");
+            return Err((text.clone(), ChordError(format!("`{text}` {why}"))));
         }
         if !out.contains(&chord) {
             out.push(chord);
@@ -340,12 +371,12 @@ impl Keymap {
             let mut ok = Vec::new();
             for text in texts {
                 match Chord::parse(text) {
-                    Ok(c) if c.is_bindable() => {
+                    Ok(c) if c.accepted() => {
                         if !ok.contains(&c) {
                             ok.push(c);
                         }
                     }
-                    Ok(_) => skipped.push(Skipped { id: id.clone(), chord: text.clone(), reason: "needs Ctrl, or be a function key".into() }),
+                    Ok(c) => skipped.push(Skipped { id: id.clone(), chord: text.clone(), reason: c.refusal().unwrap_or("cannot be bound").into() }),
                     Err(e) => skipped.push(Skipped { id: id.clone(), chord: text.clone(), reason: e.0 }),
                 }
             }
@@ -553,8 +584,26 @@ mod tests {
         assert!(!chord("Left").is_bindable());
         assert!(chord("Ctrl+T").is_bindable());
         assert!(chord("Ctrl+Alt+Left").is_bindable());
+        assert!(chord("Ctrl+Alt+PgUp").is_bindable());
+        assert!(chord("Ctrl+Alt+F5").is_bindable());
         assert!(chord("F2").is_bindable());
         assert!(chord("Shift+F10").is_bindable());
+    }
+
+    #[test]
+    fn ctrl_alt_with_a_character_key_is_altgr_and_is_refused() {
+        for c in ["Ctrl+Alt+2", "Ctrl+Alt+7", "Ctrl+Alt+0", "Ctrl+Alt+E", "Ctrl+Alt+Q", "Ctrl+Alt+Shift+8", "Ctrl+Alt+,", "Ctrl+Alt+-", "Ctrl+Alt+="] {
+            assert!(!chord(c).is_bindable(), "{c} is an AltGr character on some keyboards");
+        }
+        let (_, e) = parse_chords(&["Ctrl+Alt+2".into()]).expect_err("refused");
+        assert!(e.0.contains("AltGr") && e.0.contains("Ctrl+Alt+2"), "{e}");
+        let mut over = Overrides::new();
+        over.insert("session_close".into(), vec!["Ctrl+Alt+7".into(), "Ctrl+Alt+Down".into()]);
+        let map = Keymap::new(&over);
+        assert_eq!(map.skipped().len(), 1, "{:?}", map.skipped());
+        assert!(map.skipped()[0].reason.contains("AltGr"));
+        // The app's own default, spelled again, is still accepted.
+        assert!(parse_chords(&["Ctrl+Alt+T".into()]).is_ok());
     }
 
     #[test]
@@ -564,7 +613,7 @@ mod tests {
             assert!(ids.insert(b.id), "duplicate id {}", b.id);
             assert!(!b.defaults.is_empty(), "{} has no default", b.id);
             for text in b.defaults {
-                assert!(Chord::parse(text).is_ok_and(|c| c.is_bindable()), "{}: default {text}", b.id);
+                assert!(Chord::parse(text).is_ok_and(|c| c.accepted()), "{}: default {text}", b.id);
             }
         }
         let map = Keymap::default();
@@ -646,7 +695,7 @@ mod tests {
         assert!(set(&Overrides::new(), "session_close", &["Ctrl+W".into()]).is_ok());
         assert!(matches!(set(&Overrides::new(), "ui.palette", &["Ctrl+W".into()]), Err(SetError::Reserved(_))));
         // With Shift or Alt, or any other letter, the chord is allowed.
-        for text in ["Ctrl+Shift+P", "Ctrl+Alt+C", "Ctrl+P", "F7"] {
+        for text in ["Ctrl+Shift+P", "Ctrl+Alt+F7", "Ctrl+P", "F7"] {
             assert!(!is_terminal_key(&chord(text)), "{text}");
             assert!(set(&Overrides::new(), "ui.palette", &[text.into()]).is_ok(), "{text}");
         }

@@ -229,7 +229,8 @@ Done:
 
 - **Keymap.** One table, `csm_core::keymap::BINDINGS`, read by the dispatch, the help list, the
   palette hints, the menu hints and the F10 menu. Overrides are `AppSettings::keymap`. A chord
-  needs Ctrl, or be a function key. `keymap::set` refuses a chord another action uses, and a
+  needs Ctrl or must be a function key, and Ctrl+Alt with a letter, digit or punctuation key is
+  refused (AltGr arrives as Ctrl+Alt; a Ctrl+Alt press that types a character never runs a shortcut). `keymap::set` refuses a chord another action uses, and a
   Ctrl+letter a terminal program needs (Ctrl+A, C, D, E, L, R, U, W, Z; Ctrl+W stays the default of
   `session_close`). Settings › Keyboard records, clears and resets.
 - **Tools.** `keymap_list`, `keymap_set`, `keymap_reset` (`MUTATES_STATE`, `LAUNCHES_PROCESS`: a
