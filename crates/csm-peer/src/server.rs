@@ -198,6 +198,8 @@ struct Inner {
     uploads_active: Arc<AtomicUsize>,
     /// The bytes the uploads folder holds, across every link (at most `UPLOAD_FOLDER_QUOTA`).
     upload_quota: Arc<uploads::Quota>,
+    /// Dropping it (with the server) ends the hourly upload cleanup.
+    housekeeping: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     /// The relay this server is also reachable through, when the person set one up.
     relay: Mutex<Option<RelayState>>,
     /// The keychain (or a test store): the relay secrets live here, never in a file.
@@ -234,6 +236,7 @@ impl PeerServer {
             pending: None,
             conns: HashMap::new(),
         };
+        let upload_quota = Arc::new(uploads::Quota::with_root(uploads::root_in(&dir)));
         Self {
             token: Arc::new(()),
             inner: Arc::new(Inner {
@@ -248,7 +251,8 @@ impl PeerServer {
                 unauth: AtomicUsize::new(0),
                 in_flight: Arc::new(AtomicUsize::new(0)),
                 uploads_active: Arc::new(AtomicUsize::new(0)),
-                upload_quota: Arc::new(uploads::Quota::default()),
+                upload_quota,
+                housekeeping: Mutex::new(None),
                 relay: Mutex::new(None),
                 secrets: OnceLock::new(),
             }),
@@ -263,17 +267,9 @@ impl PeerServer {
         }
         // Old uploads go on a background thread, never before the window shows.
         let root = uploads::root_in(&self.inner.dir);
-        let quota = self.inner.upload_quota.clone();
-        let cleaned = std::thread::Builder::new().name("csm-peer-upload-clean".into()).spawn(move || {
-            let c = uploads::clean_old(&root, std::time::SystemTime::now());
-            // What the folder holds now, for the quota (the cleanup just removed what it could).
-            quota.set_used(uploads::bytes_under(&root));
-            if c.removed > 0 || c.failed > 0 {
-                log::info!("remote access: {}", uploads::cleanup_summary(c));
-            }
-        });
-        if let Err(e) = cleaned {
-            log::warn!("remote access: could not start the upload cleanup: {e}");
+        match uploads::spawn_housekeeping(root, self.inner.upload_quota.clone(), uploads::HOUSEKEEPING_EVERY) {
+            Ok(stop) => *self.inner.housekeeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stop),
+            Err(e) => log::warn!("remote access: could not start the upload cleanup: {e}"),
         }
         let inner = self.inner.clone();
         let rx = engine.subscribe();

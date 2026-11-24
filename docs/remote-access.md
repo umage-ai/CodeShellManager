@@ -125,14 +125,18 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 - **Limits:** 64 MB a file, 32 MB an image, 256 MB and 20 files a drop. The office refuses an upload
   when remote access is off, when the device has been removed, or when the device may not type into
   sessions. Several uploads may be running at once: at most two from each laptop. The uploads folder
-  holds at most 1 GB in all; an upload that would go past that is refused as too large.
+  holds at most 1 GB in all. When an upload would go past that, the office first removes the oldest
+  finished uploads (only inside the uploads folder) to make room; if that is not enough, the upload is
+  refused with "The office's uploads folder is full; files older than 7 days are removed
+  automatically". An upload larger than the limits above is refused as too large.
 - **Where the files go:** `<office data folder>\peer\uploads\<session id>\<time in ms>-<name>`, for
   example `...\peer\uploads\<session id>\1795800000123-report.pdf`. Never in a project folder. The name
   is the laptop's, cleaned up: no folders, no `..`, no reserved Windows names, at most 120 bytes.
   A partial file is written as `<name>.part` and renamed only when the whole file has arrived and its
   checksum matches.
-- **Cleanup:** when the office starts, uploads older than 7 days are deleted (partial files older than
-  a day). Nothing outside the uploads folder is touched.
+- **Cleanup:** when the office starts and then every hour while it runs, uploads older than 7 days are
+  deleted (partial files older than a day), and their space counts as free again. Nothing outside the
+  uploads folder is touched.
 - **Logging:** `remote-access.log` records an upload's start, end, refusal or cancel, with the file's
   name, size, session and device. An upload that ends because the link closed is logged as cancelled
   with the reason `link_closed`. It never records the contents.

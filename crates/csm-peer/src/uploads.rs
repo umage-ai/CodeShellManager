@@ -19,7 +19,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use csm_peer_proto::ids::hex;
@@ -45,33 +45,127 @@ pub const UPLOAD_FOLDER_QUOTA: u64 = 1024 * 1024 * 1024;
 /// `<stamp>-<name>.1.part`, and so on).
 const PART_TRIES: u32 = 1000;
 
-/// The bytes the uploads folder holds, shared by every link. A begin reserves the declared size
-/// (refused `TooLarge` when that would go over [`UPLOAD_FOLDER_QUOTA`]); a reservation that ends
-/// without a finished file gives its bytes back.
+/// The bytes the uploads folder holds, shared by every link. A begin reserves the declared size.
+/// When that would go over [`UPLOAD_FOLDER_QUOTA`], the oldest finished files are removed first
+/// (only inside the uploads folder); when that is not enough the begin is refused `FolderFull`.
+/// A reservation that ends without a finished file gives its bytes back, and so does every file
+/// the cleanup removes.
 #[derive(Debug, Default)]
 pub struct Quota {
     used: AtomicU64,
+    /// The uploads folder, when eviction is allowed.
+    root: OnceLock<PathBuf>,
 }
 
 impl Quota {
-    /// Sets the count to what the folder holds now (on start, after the cleanup).
-    pub fn set_used(&self, bytes: u64) {
-        self.used.store(bytes, Ordering::Release);
+    /// A quota that may evict old files under `root`.
+    pub fn with_root(root: PathBuf) -> Self {
+        let q = Self::default();
+        let _ = q.root.set(root);
+        q
     }
 
-    fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation, UploadRefused> {
+    /// Adds what the folder held when it was scanned (on start, after the cleanup) to the
+    /// reservations already held, so a begin that came in during the scan is not forgotten.
+    pub fn set_used(&self, bytes: u64) {
+        let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |u| Some(u.saturating_add(bytes)));
+    }
+
+    /// Gives bytes back (files removed).
+    pub fn release(&self, bytes: u64) {
+        let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |u| Some(u.saturating_sub(bytes)));
+    }
+
+    fn try_add(self: &Arc<Self>, bytes: u64) -> Option<Reservation> {
         let mut cur = self.used.load(Ordering::Acquire);
         loop {
-            let next = cur.checked_add(bytes).filter(|n| *n <= UPLOAD_FOLDER_QUOTA).ok_or(UploadRefused::TooLarge)?;
+            let next = cur.checked_add(bytes).filter(|n| *n <= UPLOAD_FOLDER_QUOTA)?;
             match self.used.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Ok(Reservation { quota: self.clone(), bytes, kept: false }),
+                Ok(_) => return Some(Reservation { quota: self.clone(), bytes, kept: false }),
                 Err(actual) => cur = actual,
             }
         }
     }
 
-    fn release(&self, bytes: u64) {
-        let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |u| Some(u.saturating_sub(bytes)));
+    /// `TooLarge` only for a size no folder could hold; a full folder is `FolderFull`.
+    fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation, UploadRefused> {
+        if bytes > UPLOAD_FOLDER_QUOTA {
+            return Err(UploadRefused::TooLarge);
+        }
+        if let Some(r) = self.try_add(bytes) {
+            return Ok(r);
+        }
+        if let Some(root) = self.root.get() {
+            // One bounded scan, only when the folder is full.
+            let over = self.used.load(Ordering::Acquire).saturating_add(bytes).saturating_sub(UPLOAD_FOLDER_QUOTA);
+            self.release(evict_oldest(root, over));
+            if let Some(r) = self.try_add(bytes) {
+                return Ok(r);
+            }
+        }
+        Err(UploadRefused::FolderFull)
+    }
+}
+
+/// Removes the oldest finished files under `root` until `need` bytes are freed (or none are left),
+/// and returns the bytes freed. Partial files, links and anything outside `root/<folder>/` are
+/// left alone.
+pub fn evict_oldest(root: &Path, need: u64) -> u64 {
+    let mut files: Vec<(SystemTime, PathBuf, u64)> = Vec::new();
+    let Ok(folders) = std::fs::read_dir(root) else { return 0 };
+    for folder in folders.flatten() {
+        let path = folder.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&path) else { continue };
+        for file in entries.flatten() {
+            let p = file.path();
+            let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            if !m.is_file() || p.extension().is_some_and(|e| e == "part") {
+                continue;
+            }
+            files.push((m.modified().unwrap_or(SystemTime::UNIX_EPOCH), p, m.len()));
+        }
+    }
+    files.sort_by_key(|f| f.0);
+    let mut freed = 0u64;
+    for (_, p, len) in files {
+        if freed >= need {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            freed = freed.saturating_add(len);
+        }
+    }
+    freed
+}
+
+/// How often the housekeeping removes old uploads while the office runs.
+pub const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// The cleanup on start and then every `every`, on its own thread (never the link reader). After
+/// the first cleanup the folder is scanned and added to the quota; each later cleanup gives the
+/// bytes it removed back. The thread ends when the returned sender is dropped.
+pub fn spawn_housekeeping(root: PathBuf, quota: Arc<Quota>, every: Duration) -> std::io::Result<mpsc::Sender<()>> {
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::Builder::new().name("csm-peer-upload-clean".into()).spawn(move || {
+        let c = clean_old(&root, SystemTime::now());
+        quota.set_used(bytes_under(&root));
+        log_cleanup(c);
+        while let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(every) {
+            let c = clean_old(&root, SystemTime::now());
+            quota.release(c.freed);
+            log_cleanup(c);
+        }
+    })?;
+    Ok(tx)
+}
+
+fn log_cleanup(c: Cleaned) {
+    if c.removed > 0 || c.failed > 0 {
+        log::info!("remote access: {}", cleanup_summary(c));
     }
 }
 
@@ -132,6 +226,7 @@ pub fn reason_name(reason: UploadRefused) -> &'static str {
         UploadRefused::Stalled => "stalled",
         UploadRefused::Failed => "failed",
         UploadRefused::NotSupported => "not_supported",
+        UploadRefused::FolderFull => "folder_full",
     }
 }
 
@@ -220,6 +315,8 @@ pub fn sniff_image(head: &[u8]) -> Option<&'static str> {
 pub struct Cleaned {
     pub removed: usize,
     pub failed: usize,
+    /// The bytes of the files removed.
+    pub freed: u64,
 }
 
 /// Removes old uploads under `root` (one folder per session). Only regular files directly inside
@@ -250,7 +347,10 @@ pub fn clean_old(root: &Path, now: SystemTime) -> Cleaned {
                 continue;
             }
             match std::fs::remove_file(&p) {
-                Ok(()) => out.removed += 1,
+                Ok(()) => {
+                    out.removed += 1;
+                    out.freed = out.freed.saturating_add(m.len());
+                }
                 Err(_) => out.failed += 1,
             }
         }
@@ -341,6 +441,9 @@ struct Active {
     /// The bytes the worker has acknowledged (stored before each `UploadAck` is sent). The reader
     /// reads it to enforce the credit: a chunk may end at most `CREDIT_BYTES` past it.
     acked: Arc<AtomicU64>,
+    /// `UploadEnd` is queued or being finished: the laptop has nothing more to send, so the
+    /// worker's fsync and rename (slow for a large file) must not count as a stall.
+    ending: bool,
 }
 
 /// The most a laptop may send beyond what the office has acknowledged, in bytes.
@@ -425,7 +528,7 @@ impl UploadHub {
             let _ = std::fs::remove_file(&part);
             return Err(UploadRefused::Failed);
         }
-        self.active.insert(plan.id, Active { tx, stop, finished, last: Instant::now(), acked });
+        self.active.insert(plan.id, Active { tx, stop, finished, last: Instant::now(), acked, ending: false });
         let _ = link.send_msg(Msg::UploadAccepted { id: plan.id });
         Ok(())
     }
@@ -462,6 +565,7 @@ impl UploadHub {
         self.prune();
         let Some(a) = self.active.get_mut(&id) else { return Err(UploadRefused::Overrun) };
         a.last = Instant::now();
+        a.ending = true;
         match a.tx.try_send(Job::End { sha256 }) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
@@ -480,7 +584,7 @@ impl UploadHub {
     /// Ends the uploads with no chunk for [`UPLOAD_STALL`]. The worker refuses them `Stalled`.
     pub(crate) fn expire_stalled(&mut self, now: Instant) {
         self.prune();
-        let stalled: Vec<u64> = self.active.iter().filter(|(_, a)| now.duration_since(a.last) > UPLOAD_STALL).map(|(id, _)| *id).collect();
+        let stalled: Vec<u64> = self.active.iter().filter(|(_, a)| !a.ending && now.duration_since(a.last) > UPLOAD_STALL).map(|(id, _)| *id).collect();
         for id in stalled {
             self.end_with(id, Stop::Refuse(UploadRefused::Stalled));
         }
@@ -762,11 +866,11 @@ mod tests {
         let eight_days = SystemTime::now() + Duration::from_secs(8 * 24 * 60 * 60);
         // Everything is eight days old: the finished file and the partial one are both removed.
         let c = clean_old(&root, eight_days);
-        assert_eq!(c, Cleaned { removed: 3, failed: 0 });
+        assert_eq!((c.removed, c.failed, c.freed), (3, 0, 3));
         assert!(outside.exists(), "nothing outside the uploads folder is touched");
         std::fs::write(session.join("fresh.bin"), b"x").unwrap();
         let c = clean_old(&root, SystemTime::now());
-        assert_eq!(c, Cleaned { removed: 0, failed: 0 }, "recent files stay");
+        assert_eq!((c.removed, c.failed), (0, 0), "recent files stay");
         assert!(session.join("fresh.bin").exists());
         // A missing root is not an error.
         assert_eq!(clean_old(&tmp.path().join("nope"), SystemTime::now()), Cleaned::default());
@@ -781,7 +885,8 @@ mod tests {
         std::fs::write(session.join("a.part"), b"x").unwrap();
         std::fs::write(session.join("b.bin"), b"x").unwrap();
         let two_days = SystemTime::now() + Duration::from_secs(2 * 24 * 60 * 60);
-        assert_eq!(clean_old(&root, two_days), Cleaned { removed: 1, failed: 0 });
+        let c = clean_old(&root, two_days);
+        assert_eq!((c.removed, c.failed), (1, 0));
         assert!(!session.join("a.part").exists());
         assert!(session.join("b.bin").exists());
     }
@@ -801,16 +906,103 @@ mod tests {
     fn the_quota_refuses_what_would_go_over_and_gives_back_what_is_not_kept() {
         let quota = Arc::new(Quota::default());
         quota.set_used(UPLOAD_FOLDER_QUOTA - 10);
-        assert!(matches!(quota.reserve(11), Err(UploadRefused::TooLarge)), "over the quota");
+        assert!(matches!(quota.reserve(11), Err(UploadRefused::FolderFull)), "over the quota, nothing to evict");
         let mut kept = quota.reserve(4).unwrap();
         kept.kept = true;
         let given_back = quota.reserve(6).unwrap();
-        assert!(matches!(quota.reserve(1), Err(UploadRefused::TooLarge)), "the folder is full");
+        assert!(matches!(quota.reserve(1), Err(UploadRefused::FolderFull)), "the folder is full");
         drop(given_back);
         assert!(quota.reserve(6).is_ok(), "a dropped reservation frees its bytes");
         drop(kept);
         assert_eq!(quota.used.load(Ordering::Acquire), UPLOAD_FOLDER_QUOTA - 10 + 4, "a kept file stays counted");
         assert!(matches!(quota.reserve(u64::MAX), Err(UploadRefused::TooLarge)), "no overflow");
+        assert!(matches!(quota.reserve(UPLOAD_FOLDER_QUOTA + 1), Err(UploadRefused::TooLarge)), "bigger than any folder");
+    }
+
+    #[test]
+    fn set_used_adds_to_reservations_already_held() {
+        let quota = Arc::new(Quota::default());
+        let mut held = quota.reserve(100).unwrap();
+        held.kept = true;
+        quota.set_used(50);
+        assert_eq!(quota.used.load(Ordering::Acquire), 150);
+        quota.release(1_000);
+        assert_eq!(quota.used.load(Ordering::Acquire), 0, "release never goes below zero");
+    }
+
+    fn aged_file(path: &Path, len: usize, age_days: u64) {
+        std::fs::write(path, vec![1u8; len]).unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(age_days * 24 * 60 * 60)).unwrap();
+    }
+
+    #[test]
+    fn cleaning_gives_the_removed_bytes_back_to_the_quota() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("uploads");
+        let s1 = root.join("s1");
+        std::fs::create_dir_all(&s1).unwrap();
+        aged_file(&s1.join("old.bin"), 100, 9);
+        aged_file(&s1.join("new.bin"), 40, 0);
+        let quota = Arc::new(Quota::with_root(root.clone()));
+        quota.set_used(bytes_under(&root));
+        assert_eq!(quota.used.load(Ordering::Acquire), 140);
+        let c = clean_old(&root, SystemTime::now());
+        quota.release(c.freed);
+        assert_eq!(c.freed, 100);
+        assert_eq!(quota.used.load(Ordering::Acquire), 40);
+    }
+
+    #[test]
+    fn a_full_folder_evicts_the_oldest_kept_files_first_and_leaves_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("uploads");
+        let s1 = root.join("s1");
+        std::fs::create_dir_all(&s1).unwrap();
+        let outside = tmp.path().join("outside.bin");
+        std::fs::write(&outside, b"x").unwrap();
+        aged_file(&s1.join("a-oldest.bin"), 100, 5);
+        aged_file(&s1.join("b-middle.bin"), 100, 3);
+        aged_file(&s1.join("c-newest.bin"), 100, 1);
+        aged_file(&s1.join("d.part"), 100, 6);
+        let quota = Arc::new(Quota::with_root(root.clone()));
+        // The books say 250 bytes are left; asking for 400 needs 150 more, so two files go.
+        quota.set_used(UPLOAD_FOLDER_QUOTA - 250);
+        let r = quota.reserve(400).unwrap();
+        assert!(!s1.join("a-oldest.bin").exists(), "the oldest went first");
+        assert!(!s1.join("b-middle.bin").exists(), "then the next, until it fits");
+        assert!(s1.join("c-newest.bin").exists(), "the newest stays once it fits");
+        assert!(s1.join("d.part").exists(), "partial files are never evicted");
+        assert!(outside.exists(), "nothing outside the uploads folder is touched");
+        drop(r);
+        // Nothing left to evict but a full quota: a distinct refusal, not TooLarge.
+        quota.set_used(UPLOAD_FOLDER_QUOTA);
+        assert!(matches!(quota.reserve(10_000), Err(UploadRefused::FolderFull)));
+    }
+
+    #[test]
+    fn the_housekeeping_cleans_on_start_and_again_later_and_ends_with_its_sender() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("uploads");
+        let s1 = root.join("s1");
+        std::fs::create_dir_all(&s1).unwrap();
+        aged_file(&s1.join("old1.bin"), 10, 9);
+        let quota = Arc::new(Quota::with_root(root.clone()));
+        let stop = spawn_housekeeping(root.clone(), quota.clone(), Duration::from_millis(50)).unwrap();
+        let wait = |f: &dyn Fn() -> bool| {
+            let t = Instant::now();
+            while !f() && t.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(f(), "timed out");
+        };
+        wait(&|| !s1.join("old1.bin").exists());
+        // A file that is past the limit by the next round goes then, and its bytes come back.
+        quota.set_used(10);
+        aged_file(&s1.join("old2.bin"), 10, 9);
+        wait(&|| !s1.join("old2.bin").exists());
+        wait(&|| quota.used.load(Ordering::Acquire) == 0);
+        drop(stop);
     }
 
     /// A hub with one open upload whose worker is not running: its jobs queue in `rx`, which the
@@ -821,7 +1013,7 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel::<Job>(UPLOAD_CREDIT + 1);
         let stop: StopReason = Arc::new(Mutex::new(None));
         let acked = Arc::new(AtomicU64::new(0));
-        hub.active.insert(id, Active { tx, stop: stop.clone(), finished: Arc::new(AtomicBool::new(false)), last: Instant::now(), acked: acked.clone() });
+        hub.active.insert(id, Active { tx, stop: stop.clone(), finished: Arc::new(AtomicBool::new(false)), last: Instant::now(), acked: acked.clone(), ending: false });
         (hub, stop, acked, rx)
     }
 
@@ -834,6 +1026,16 @@ mod tests {
         hub.expire_stalled(Instant::now() + UPLOAD_STALL + Duration::from_secs(1));
         assert_eq!(peek_stop(&stop), Some(Stop::Refuse(UploadRefused::Stalled)));
         assert!(hub.active.is_empty(), "the stalled upload is no longer open");
+    }
+
+    #[test]
+    fn an_upload_whose_end_is_queued_is_not_stalled_while_the_worker_finishes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut hub, stop, _, _rx) = hub_with_one_open_upload(8, tmp.path());
+        hub.end(8, "00".into()).unwrap();
+        hub.expire_stalled(Instant::now() + UPLOAD_STALL * 10);
+        assert_eq!(peek_stop(&stop), None, "the worker is on the fsync, not stalled");
+        assert!(hub.active.contains_key(&8));
     }
 
     #[test]

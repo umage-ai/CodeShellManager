@@ -161,6 +161,8 @@ pub enum UploadRefused {
     /// The session cannot take uploads (an SSH session: the file would sit on the office, where
     /// the remote host cannot read it).
     NotSupported,
+    /// The office's uploads folder is full (its quota) and nothing old enough could be removed.
+    FolderFull,
 }
 
 /// A control message.

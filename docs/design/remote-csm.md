@@ -1206,11 +1206,14 @@ the link's worker) and the UI (the upload card, file drops and image paste in a 
 The rows for file drop and image paste in section 6 point here.
 
 Where the build differs from the text below, the build is right and this note is the record:
-- **No three-lane writer.** The laptop's worker sends one upload frame per turn of its loop, and it
-  drains the window's commands (keystrokes included) before each turn. A keystroke therefore waits
-  for at most one chunk, the same bound the lanes give, without a second writer. Frames are never
-  reordered on the wire: the relay carries the Noise session as one byte stream, so a frame that
-  overtook another would break decryption.
+- **No three-lane writer (the "Laptop writer order" paragraph in section 2 is superseded).** The
+  laptop's worker sends one upload frame per turn of its loop, and it drains the window's commands
+  (keystrokes included) before each turn. Frames are never reordered on the wire, so a keystroke
+  queues behind what is already in flight: the bound on keystroke latency is the in-flight credit, up
+  to 2 files x 8 chunks x 32 KiB (512 KiB), not one chunk. The worker never waits on a disk: sizes and
+  file reads run on their own threads and feed it through small bounded channels (a slow share delays
+  its file only). Frames are never reordered on the wire because the relay carries the Noise
+  session as one byte stream: a frame that overtook another would break decryption.
 - **The laptop paces its upload chunks on a relay channel.** The relay closes a peer channel that
   goes over its bucket (the peer defaults: 8 MiB/s and 2000 frames/s per channel, with a burst of two
   seconds), and it does not queue what it cannot pass on. A client's `Ready` does not announce those
@@ -1218,7 +1221,7 @@ Where the build differs from the text below, the build is right and this note is
   `CLIENT_BULK_FRAMES_PER_SECOND` in `csm-peer/src/relay_pump.rs`). The other half is the margin for
   control, terminal input and acks, which share the bucket. The pacing sits in the channel's write
   (`RelayStream::paced`), under the link's writer lock: a bulk write waits for its tokens there, and
-  every other write only debits them. A keystroke waits for at most one paced chunk, which is the
+  every other write only debits them. A keystroke waits behind what is in flight, which is the
   bound above. A 64 MB file takes about 16 seconds over a relay, not 4.5 minutes. The credit window
   (8 unacknowledged chunks per file) bounds what is ever in flight.
 - **Local drops also paste through `session_drop_paths`.** Its quoting follows the session's shell
@@ -1268,14 +1271,15 @@ never pass through JSON or base64. Every upload has an `id: u64` chosen by the l
 | S→C | `UploadAccepted` (control) | `id`. Sent after `UploadBegin` passes the checks and the `.part` file exists. The laptop sends no chunk before it. |
 | S→C | `UploadAck` (control) | `id`, `received` (bytes written to the `.part` file so far). Sent after every 4 chunks are written and at `UploadEnd`. This is the only credit for the chunk window (section 2). |
 | S→C | `UploadDone` (control) | `id`, `path` (absolute office path of the final file). |
-| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| Forbidden \| NoSession \| BadName \| NotAnImage \| Overrun \| DiskFull \| Corrupt \| Stalled \| Failed \| NotSupported`. `Overrun` is a chunk beyond the credit (section 2). `Forbidden` covers server mode off, a revoked device and a level below Full. `NotSupported` is an SSH session (see the build notes above). `TooLarge` also covers the folder quota. |
+| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| Forbidden \| NoSession \| BadName \| NotAnImage \| Overrun \| DiskFull \| Corrupt \| Stalled \| Failed | NotSupported | FolderFull`| NotSupported`. `Overrun` is a chunk beyond the credit (section 2). `Forbidden` covers server mode off, a revoked device and a level below Full. `NotSupported` is an SSH session (see the build notes above). `TooLarge` is a size over the limits; `FolderFull` is the folder quota (the office first removes the oldest finished uploads, then refuses). |
 
 Paste is not part of these messages. After the laptop has `UploadDone` for every file in a drop, it calls
 a tool (section 5).
 
-`PROTOCOL_VERSION` in `csm-peer-proto/src/msg.rs` goes from 1 to 2. Client and server must match, so a
+`PROTOCOL_VERSION` in `csm-peer-proto/src/msg.rs` is now 3 (1 before uploads; 2 and 3 during the upload work,
+which changed the messages and the credit rules). Client and server must match, so a
 mismatched pair refuses at `Hello` as today. The regenerated vectors cover every new message and the new
-frame kind, plus a refusal of a version-1 peer. The relay protocol (`csm-remote-proto`) carries frames
+frame kind, plus a refusal of an older peer. The relay protocol (`csm-remote-proto`) carries frames
 opaquely and needs no version change unless its own frame kinds change. The relay's `FrameKind` counters
 see the new bytes as ordinary data.
 
@@ -1311,7 +1315,7 @@ their own credit scheme.
 - Memory on the office is bounded: at most 8 active uploads (section 3) times 8 chunks times 32 KiB,
   which is 2 MiB of queued chunks in the worst case.
 
-**Laptop writer order (direct and relay links).** The laptop writer has three lanes, drained in order:
+**Laptop writer order (superseded: the build has no lanes, see the build notes above).** The original design had three lanes, drained in order:
 1. Control messages and `TermInput` (keys, paste, mouse). These are never queued behind a chunk.
 2. Other terminal frames and the rest of the protocol traffic.
 3. Upload chunks.
@@ -1449,7 +1453,7 @@ in 30 s ends it with `Stalled` and deletes the partial file. Neither rule drops 
 ### 10. Build steps
 
 1. **Protocol and office side (`csm-peer-proto`, `csm-peer`, `csm-engine`).** The new messages and frame
-   kind, `PROTOCOL_VERSION` 2, regenerated vectors. A new `csm-peer` upload store: limits, sanitising,
+   kind, `PROTOCOL_VERSION` 3, regenerated vectors. A new `csm-peer` upload store: limits, sanitising,
    `.part` files, hashing, `UploadAck` and the credit, stall, cleanup and the log lines. The `session_drop_paths` tool
    with its declared effect. Tests with the in-process peer harness (`csm-peer/tests`): upload round trip;
    each refusal; a corrupt hash; a ninth unacknowledged chunk refused `Overrun`; a chunk over `UPLOAD_CHUNK` refused by the codec; a name with `..` or a reserved name; a link drop mid-upload that leaves no

@@ -4,8 +4,10 @@
 //! window, the stall rule, and which frame goes out next.
 //!
 //! It runs on the link's worker thread, between the window's commands and the office's frames. Each
-//! [`Uploads::pump`] sends at most one frame, so a keystroke waits for at most one chunk, and reading
-//! a file never waits for the network. Nothing here touches the UI.
+//! [`Uploads::pump`] sends at most one frame. Nothing here touches the UI, and no call here waits on
+//! a disk: the size checks of a drop and the reading of each file run on their own threads (a slow
+//! network share delays that file only, never a keystroke or a ping), and the worker takes what is
+//! ready.
 //!
 //! A drop is all-or-nothing: the paste happens only when every file is in place, and a failed or
 //! cancelled drop leaves nothing for the window to paste.
@@ -14,6 +16,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
 use csm_peer::uploads::UPLOAD_STALL;
@@ -58,10 +61,55 @@ struct Pending {
     source: Source,
 }
 
+/// What a reader thread hands over: the next chunk, or why it cannot.
+type ChunkResult = Result<Vec<u8>, String>;
+
+/// Chunks a reader thread may read ahead of the link.
+const READ_AHEAD: usize = 2;
+
 /// The bytes of a file being sent.
 enum Reader {
-    File(File),
+    /// A file on this laptop that the office has not accepted yet: nothing is opened until it has.
+    Unstarted(PathBuf),
+    /// A reader thread feeding chunks of the file through a small bounded channel.
+    File(Receiver<ChunkResult>),
     Memory { data: Vec<u8>, at: usize },
+}
+
+/// Starts a thread that opens a source and reads it in chunks of [`UPLOAD_CHUNK`] up to `size`
+/// bytes, sending each through a channel of [`READ_AHEAD`] slots. It ends at the first error (sent
+/// as the last item), when `size` bytes are read, or when the receiver is dropped.
+fn spawn_reader<R: Read + Send + 'static>(open: impl FnOnce() -> std::io::Result<R> + Send + 'static, size: u64) -> Receiver<ChunkResult> {
+    let (tx, rx) = mpsc::sync_channel::<ChunkResult>(READ_AHEAD);
+    let spawned = std::thread::Builder::new().name("csm-upload-read".into()).spawn({
+        let tx = tx.clone();
+        move || {
+            let mut source = match open() {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            let mut left = size;
+            while left > 0 {
+                let len = left.min(UPLOAD_CHUNK as u64) as usize;
+                let mut buf = vec![0u8; len];
+                if let Err(e) = source.read_exact(&mut buf) {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+                if tx.send(Ok(buf)).is_err() {
+                    return;
+                }
+                left -= len as u64;
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        let _ = tx.send(Err(format!("could not start a reader: {e}")));
+    }
+    rx
 }
 
 /// A file on the link: begun, sent in chunks, ended.
@@ -97,9 +145,18 @@ struct DropState {
     total: u64,
 }
 
+/// A drop of files whose sizes are being read on another thread.
+struct Preparing {
+    drop: u64,
+    session: String,
+    kind: UploadKind,
+    rx: Receiver<(Vec<Source>, Result<Vec<(String, u64)>, String>)>,
+}
+
 /// Everything the window's uploads have in hand, for one link.
 #[derive(Default)]
 pub struct Uploads {
+    preparing: Vec<Preparing>,
     drops: Vec<DropState>,
     queue: VecDeque<Pending>,
     active: Vec<Transfer>,
@@ -140,6 +197,7 @@ pub fn refusal_text(reason: UploadRefused) -> &'static str {
         UploadRefused::Stalled => "the office stopped taking the file",
         UploadRefused::Failed => "the office could not write the file",
         UploadRefused::NotSupported => "files cannot be uploaded into an SSH session yet",
+        UploadRefused::FolderFull => "The office's uploads folder is full; files older than 7 days are removed automatically",
     }
 }
 
@@ -171,17 +229,59 @@ impl Uploads {
     /// Whether anything is running or waiting (the tests check the queue drains).
     #[cfg(test)]
     pub fn is_idle(&self) -> bool {
-        self.drops.is_empty() && self.queue.is_empty() && self.active.is_empty()
+        self.preparing.is_empty() && self.drops.is_empty() && self.queue.is_empty() && self.active.is_empty()
     }
 
-    /// Checks a drop and queues its files. A drop that fails a check is reported at once and nothing
-    /// is queued. The office checks again; these checks only spare it a refusal.
+    /// Checks a drop and queues its files. A drop that fails a check is reported and nothing is
+    /// queued. The office checks again; these checks only spare it a refusal. Files on disk are
+    /// measured on a thread (a network share can be slow), so their drop is admitted, or failed, by
+    /// a later [`Uploads::pump`]; a drop of in-memory data is checked here.
     pub fn enqueue(&mut self, req: Request) -> Vec<UploadEvent> {
         let Request { drop, session, kind, files } = req;
-        let sized = match Self::check(kind, &files) {
-            Ok(sized) => sized,
-            Err(message) => return vec![UploadEvent::Failed { drop, message }],
-        };
+        if !files.iter().any(|s| matches!(s, Source::File(_))) {
+            return match Self::check(kind, &files) {
+                Ok(sized) => self.admit(drop, session, kind, files, sized),
+                Err(message) => vec![UploadEvent::Failed { drop, message }],
+            };
+        }
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("csm-upload-stat".into()).spawn(move || {
+            let result = Self::check(kind, &files);
+            let _ = tx.send((files, result));
+        });
+        match spawned {
+            Ok(_) => {
+                self.preparing.push(Preparing { drop, session, kind, rx });
+                Vec::new()
+            }
+            Err(e) => vec![UploadEvent::Failed { drop, message: format!("could not start reading the files: {e}") }],
+        }
+    }
+
+    /// Takes the drops whose sizes are known now.
+    fn poll_preparing(&mut self, events: &mut Vec<UploadEvent>) {
+        let mut i = 0;
+        while i < self.preparing.len() {
+            let got = match self.preparing.get(i).map(|p| p.rx.try_recv()) {
+                Some(Ok(got)) => Some(Some(got)),
+                Some(Err(TryRecvError::Empty)) | None => None,
+                Some(Err(TryRecvError::Disconnected)) => Some(None),
+            };
+            let Some(got) = got else {
+                i += 1;
+                continue;
+            };
+            let p = self.preparing.remove(i);
+            match got {
+                Some((files, Ok(sized))) => events.extend(self.admit(p.drop, p.session, p.kind, files, sized)),
+                Some((_, Err(message))) => events.push(UploadEvent::Failed { drop: p.drop, message }),
+                None => events.push(UploadEvent::Failed { drop: p.drop, message: "could not read the files".into() }),
+            }
+        }
+    }
+
+    /// Registers a checked drop and queues its files.
+    fn admit(&mut self, drop: u64, session: String, kind: UploadKind, files: Vec<Source>, sized: Vec<(String, u64)>) -> Vec<UploadEvent> {
         let total: u64 = sized.iter().map(|(_, s)| *s).sum();
         let files_total = sized.len();
         self.drops.push(DropState { id: drop, session, paths: vec![None; files_total], done_bytes: 0, total });
@@ -233,6 +333,10 @@ impl Uploads {
     /// Cancels a drop: each of its files on the link is cancelled on the office (which deletes the
     /// partial file), the queued ones are dropped. Nothing is pasted.
     pub fn cancel(&mut self, drop: u64, wire: &mut dyn Wire) -> Vec<UploadEvent> {
+        if self.preparing.iter().any(|p| p.drop == drop) {
+            self.preparing.retain(|p| p.drop != drop);
+            return vec![UploadEvent::Cancelled { drop }];
+        }
         if !self.drops.iter().any(|d| d.id == drop) {
             return Vec::new();
         }
@@ -242,7 +346,9 @@ impl Uploads {
     /// The link is gone: every drop fails. The office deletes its partial files when the link
     /// closes, so nothing is sent here.
     pub fn lost(&mut self) -> Vec<UploadEvent> {
-        let events = self.drops.iter().map(|d| UploadEvent::Failed { drop: d.id, message: LOST.into() }).collect();
+        let ids = self.preparing.iter().map(|p| p.drop).chain(self.drops.iter().map(|d| d.id));
+        let events = ids.map(|drop| UploadEvent::Failed { drop, message: LOST.into() }).collect();
+        self.preparing.clear();
         self.drops.clear();
         self.queue.clear();
         self.active.clear();
@@ -254,6 +360,7 @@ impl Uploads {
     /// the end of a file whose bytes are all sent. Checks the stall clock first. At most one frame a
     /// call; the events it causes go into `events`.
     pub fn pump(&mut self, wire: &mut dyn Wire, now: Instant, events: &mut Vec<UploadEvent>) -> Pumped {
+        self.poll_preparing(events);
         if let Some(i) = self.stalled(now) {
             let (drop, name) = (self.active[i].drop, self.active[i].name.clone());
             events.extend(self.abort(drop, None, wire, Some(format!("the upload of {name} stalled: the office stopped taking it. Nothing was pasted."))));
@@ -261,7 +368,7 @@ impl Uploads {
         }
         // A begin first: starting a file costs one frame, and the drop's other files then take turns.
         if self.active.len() < ACTIVE_PER_DEVICE && !self.queue.is_empty() {
-            return self.begin_next(wire, now, events);
+            return self.begin_next(wire, now);
         }
         let n = self.active.len();
         for step in 0..n {
@@ -283,7 +390,10 @@ impl Uploads {
             match next {
                 Step::Chunk => {
                     self.turn = (i + 1) % n;
-                    return self.send_chunk(i, wire, now, events);
+                    // `None`: the reader has nothing ready yet; another file may.
+                    if let Some(pumped) = self.send_chunk(i, wire, now, events) {
+                        return pumped;
+                    }
                 }
                 Step::End => {
                     self.turn = (i + 1) % n;
@@ -320,18 +430,11 @@ impl Uploads {
         }
     }
 
-    fn begin_next(&mut self, wire: &mut dyn Wire, now: Instant, events: &mut Vec<UploadEvent>) -> Pumped {
+    fn begin_next(&mut self, wire: &mut dyn Wire, now: Instant) -> Pumped {
         let Some(p) = self.queue.pop_front() else { return Pumped::Idle };
         let reader = match p.source {
             Source::Memory { data, .. } => Reader::Memory { data, at: 0 },
-            Source::File(path) => match File::open(&path) {
-                Ok(f) => Reader::File(f),
-                Err(e) => {
-                    let message = format!("could not read {}: {e}. Nothing was pasted.", p.name);
-                    events.extend(self.abort(p.drop, None, wire, Some(message)));
-                    return Pumped::Idle;
-                }
-            },
+            Source::File(path) => Reader::Unstarted(path),
         };
         self.next_wire = self.next_wire.wrapping_add(1).max(1);
         let wire_id = self.next_wire;
@@ -358,34 +461,60 @@ impl Uploads {
     }
 
     /// Reads the next chunk of active file `i`, hashes it and sends it.
-    fn send_chunk(&mut self, i: usize, wire: &mut dyn Wire, now: Instant, events: &mut Vec<UploadEvent>) -> Pumped {
-        let Some(t) = self.active.get_mut(i) else { return Pumped::Idle };
+    fn send_chunk(&mut self, i: usize, wire: &mut dyn Wire, now: Instant, events: &mut Vec<UploadEvent>) -> Option<Pumped> {
+        let t = self.active.get_mut(i)?;
         let len = (t.size - t.offset).min(UPLOAD_CHUNK as u64) as usize;
-        let mut buf = vec![0u8; len];
-        let read = match &mut t.reader {
-            Reader::File(f) => f.read_exact(&mut buf).map_err(|e| e.to_string()),
+        let read: ChunkResult = match &mut t.reader {
+            Reader::Unstarted(_) => return None,
+            Reader::File(rx) => match rx.try_recv() {
+                Ok(r) => r,
+                Err(TryRecvError::Empty) => {
+                    // A slow disk or share is not the office stalling: the file's clock waits too.
+                    t.last = now;
+                    return None;
+                }
+                Err(TryRecvError::Disconnected) => Err("the file could not be read".to_owned()),
+            },
             Reader::Memory { data, at } => match data.get(*at..*at + len) {
                 Some(s) => {
-                    buf.copy_from_slice(s);
                     *at += len;
-                    Ok(())
+                    Ok(s.to_vec())
                 }
                 None => Err("the file is shorter than it was".to_owned()),
             },
         };
-        if let Err(why) = read {
-            let message = format!("could not read {} while it was sent ({why}). Nothing was pasted.", t.name);
-            let drop = t.drop;
-            events.extend(self.abort(drop, None, wire, Some(message)));
-            return Pumped::Idle;
-        }
+        let buf = match read {
+            Ok(buf) if buf.len() == len => buf,
+            Ok(_) => {
+                return Some(self.fail_read(i, "the file changed while it was read", wire, events));
+            }
+            Err(why) => return Some(self.fail_read(i, &why, wire, events)),
+        };
+        let t = self.active.get_mut(i)?;
         t.hasher.update(&buf);
         let frame = Frame::UploadChunk { id: t.wire, offset: t.offset, bytes: buf };
         t.offset += len as u64;
         t.last = now;
-        match wire.send_frame(&frame) {
+        Some(match wire.send_frame(&frame) {
             Ok(()) => Pumped::Sent,
             Err(()) => Pumped::Lost,
+        })
+    }
+
+    /// A file could not be read: its drop fails and the office is told to drop the rest.
+    fn fail_read(&mut self, i: usize, why: &str, wire: &mut dyn Wire, events: &mut Vec<UploadEvent>) -> Pumped {
+        let Some(t) = self.active.get(i) else { return Pumped::Idle };
+        let message = format!("could not read {} while it was sent ({why}). Nothing was pasted.", t.name);
+        let drop = t.drop;
+        events.extend(self.abort(drop, None, wire, Some(message)));
+        Pumped::Idle
+    }
+
+    /// The office accepted a file: a file on disk starts being read now.
+    fn start_reader(t: &mut Transfer) {
+        if let Reader::Unstarted(path) = &t.reader {
+            let path = path.clone();
+            t.reader = Reader::File(spawn_reader(move || File::open(path), t.size));
         }
     }
 
@@ -410,6 +539,7 @@ impl Uploads {
                 if let Some(t) = self.find_wire(*id) {
                     t.accepted = true;
                     t.last = now;
+                    Self::start_reader(t);
                 }
                 Vec::new()
             }
@@ -526,6 +656,27 @@ mod tests {
         while u.pump(w, now, ev) == Pumped::Sent {}
     }
 
+    /// Pumps until `n` events have come out or ten seconds pass.
+    fn pump_for_events(u: &mut Uploads, w: &mut Fake, n: usize) -> Vec<UploadEvent> {
+        let mut ev = Vec::new();
+        let start = Instant::now();
+        while ev.len() < n && start.elapsed() < Duration::from_secs(10) {
+            u.pump(w, Instant::now(), &mut ev);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        ev
+    }
+
+    /// Pumps until at least `chunks` chunks were sent, an event came, or ten seconds passed:
+    /// the reader threads are asynchronous, which is the point.
+    fn pump_until_chunks(u: &mut Uploads, w: &mut Fake, ev: &mut Vec<UploadEvent>, chunks: usize) {
+        let start = Instant::now();
+        while w.chunks.len() < chunks && ev.is_empty() && start.elapsed() < Duration::from_secs(10) {
+            u.pump(w, Instant::now(), ev);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn accept_all(u: &mut Uploads, w: &mut Fake, now: Instant) {
         let ids: Vec<u64> = u.active.iter().map(|t| t.wire).collect();
         for id in ids {
@@ -543,10 +694,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("sub");
         std::fs::create_dir(&folder).unwrap();
-        let ev = u.enqueue(req(1, vec![Source::File(folder)]));
+        // Files on disk are measured on a thread: the answer comes through the pump.
+        let mut w = Fake::new();
+        assert!(u.enqueue(req(1, vec![Source::File(folder)])).is_empty());
+        let ev = pump_for_events(&mut u, &mut w, 1);
         assert!(matches!(ev.as_slice(), [UploadEvent::Failed { drop: 1, message }] if message.contains("folder")), "{ev:?}");
-        let ev = u.enqueue(req(2, vec![Source::File(dir.path().join("missing.txt"))]));
+        assert!(u.enqueue(req(2, vec![Source::File(dir.path().join("missing.txt"))])).is_empty());
+        let ev = pump_for_events(&mut u, &mut w, 1);
         assert!(matches!(ev.as_slice(), [UploadEvent::Failed { drop: 2, .. }]), "{ev:?}");
+        assert!(w.msgs.is_empty(), "nothing was sent for a refused drop");
         let too_many: Vec<Source> = (0..=MAX_UPLOAD_FILES_PER_DROP).map(|i| mem(&format!("f{i}"), 1)).collect();
         assert!(matches!(u.enqueue(req(3, too_many)).as_slice(), [UploadEvent::Failed { drop: 3, message }] if message.contains("20")));
         assert!(matches!(u.enqueue(req(4, Vec::new())).as_slice(), [UploadEvent::Failed { drop: 4, .. }]));
@@ -708,13 +864,74 @@ mod tests {
         let mut u = Uploads::new();
         let mut w = Fake::new();
         let now = Instant::now();
-        assert!(u.enqueue(req(1, vec![Source::File(path.clone())])).iter().all(|e| !matches!(e, UploadEvent::Failed { .. })));
+        assert!(u.enqueue(req(1, vec![Source::File(path.clone())])).is_empty());
+        let mut ev = Vec::new();
+        // The size is read on a thread; the begin goes out once it is known.
+        let start = Instant::now();
+        while begun(&w).is_empty() && start.elapsed() < Duration::from_secs(10) {
+            u.pump(&mut w, now, &mut ev);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(ev.iter().all(|e| !matches!(e, UploadEvent::Failed { .. })), "{ev:?}");
+        // The file is opened only once the office accepts, so this change is seen.
+        std::fs::write(&path, vec![7u8; 10]).unwrap();
+        accept_all(&mut u, &mut w, now);
+        let start = Instant::now();
+        while !ev.iter().any(|e| matches!(e, UploadEvent::Failed { .. })) && start.elapsed() < Duration::from_secs(10) {
+            u.pump(&mut w, now, &mut ev);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(ev.iter().any(|e| matches!(e, UploadEvent::Failed { drop: 1, message } if message.contains("while it was sent"))), "{ev:?}");
+        assert!(w.chunks.is_empty(), "no garbage was sent");
+    }
+
+    /// A reader that takes its time, like a network share.
+    struct Slow(usize);
+
+    impl Read for Slow {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(150));
+            let n = buf.len().min(self.0);
+            buf[..n].fill(9);
+            self.0 -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_slow_source_never_holds_up_the_pump() {
+        let mut u = Uploads::new();
+        let mut w = Fake::new();
+        let now = Instant::now();
+        u.enqueue(req(1, vec![mem("slow.bin", UPLOAD_CHUNK * 2)]));
         let mut ev = Vec::new();
         pump_all(&mut u, &mut w, now, &mut ev);
         accept_all(&mut u, &mut w, now);
-        std::fs::write(&path, vec![7u8; 10]).unwrap();
-        pump_all(&mut u, &mut w, now, &mut ev);
-        assert!(matches!(ev.as_slice(), [UploadEvent::Failed { drop: 1, message }] if message.contains("while it was sent")), "{ev:?}");
+        // Swap in a slow reader for the in-memory one.
+        u.active[0].reader = Reader::File(spawn_reader(|| Ok(Slow(UPLOAD_CHUNK * 2)), (UPLOAD_CHUNK * 2) as u64));
+        let t = Instant::now();
+        for _ in 0..50 {
+            u.pump(&mut w, now, &mut ev);
+        }
+        assert!(t.elapsed() < Duration::from_millis(100), "fifty pumps took {:?}: the worker waited on the reader", t.elapsed());
+        assert!(w.chunks.is_empty(), "nothing was ready yet");
+        pump_until_chunks(&mut u, &mut w, &mut ev, 2);
+        assert_eq!(w.chunks.len(), 2, "the chunks arrive once the reader has them");
+        assert!(ev.is_empty(), "{ev:?}");
+    }
+
+    #[test]
+    fn a_drop_cancelled_while_its_files_are_measured_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        let mut u = Uploads::new();
+        let mut w = Fake::new();
+        u.enqueue(req(3, vec![Source::File(path)]));
+        assert_eq!(u.cancel(3, &mut w), vec![UploadEvent::Cancelled { drop: 3 }]);
+        let mut ev = Vec::new();
+        pump_all(&mut u, &mut w, Instant::now(), &mut ev);
+        assert!(w.msgs.is_empty() && ev.is_empty() && u.is_idle());
     }
 
     #[test]

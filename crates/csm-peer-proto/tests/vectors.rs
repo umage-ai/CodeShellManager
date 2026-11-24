@@ -349,7 +349,11 @@ fn messages_vectors() {
         ("control_without_json", vec![0x01]),
         ("control_unknown_type", b"\x01{\"t\":\"nope\"}".to_vec()),
         ("hello_wrong_protocol", b"\x01{\"t\":\"hello\",\"protocol\":1,\"client\":\"c\",\"app_version\":\"1\",\"term_version\":\"0.26.0\"}".to_vec()),
-        ("hello_control_char_in_name", b"\x01{\"t\":\"hello\",\"protocol\":1,\"client\":\"a\\nb\",\"app_version\":\"1\",\"term_version\":\"0.26.0\"}".to_vec()),
+        // Built with the current protocol, so the name check is what rejects it, not the version.
+        (
+            "hello_control_char_in_name",
+            format!("\u{1}{{\"t\":\"hello\",\"protocol\":{PROTOCOL_VERSION},\"client\":\"a\\nb\",\"app_version\":\"1\",\"term_version\":\"0.26.0\"}}").into_bytes(),
+        ),
         ("call_bad_tool_id", b"\x01{\"t\":\"call\",\"id\":1,\"tool\":\"Not A Tool\",\"params\":{}}".to_vec()),
         ("resize_zero", b"\x01{\"t\":\"term_resize\",\"stream\":1,\"cols\":0,\"rows\":5,\"driver\":true}".to_vec()),
         ("term_data_truncated", vec![0x02, 0, 0, 0, 1]),
