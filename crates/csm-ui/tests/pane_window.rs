@@ -460,3 +460,23 @@ fn the_palette_finds_each_layout_by_name() {
     settle(&mut h);
     assert_eq!(layout(&h).mode, LayoutMode::Board);
 }
+
+#[test]
+fn the_sleep_button_sleeps_that_pane_and_an_asleep_pane_has_none() {
+    let mut h = h();
+    // One pane across the window: the header has room for every optional button.
+    h.get_by_label("Layout: Focus").click();
+    settle(&mut h);
+    let sleep = "Sleep — end the process, keep it in the sidebar";
+    let id = h.state().model.active.clone().unwrap();
+    let name = h.state().model.session(&id).unwrap().name.clone();
+    let before = h.state().submitted().len();
+    let p = control(&h, &name, sleep);
+    // It sits before (left of) the minimise button.
+    assert!(p.x < control(&h, &name, "Minimize").x, "Sleep is left of Minimize");
+    click_at(&mut h, p);
+    assert_eq!(calls_since(&h, before, "session_sleep"), vec![json!({"session_id": id})]);
+
+    // An asleep session has no pane at all (Wake is in the sidebar), so no Sleep either.
+    assert!(!has(&h, &format!("Pane: {name}")), "the slept pane is gone");
+}

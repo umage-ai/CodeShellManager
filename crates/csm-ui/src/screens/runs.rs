@@ -1,7 +1,7 @@
 //! The inspector's Runs tab: the session's run commands with their state, the output of the
 //! selected one (Stop / Copy / Send to Claude), and an inline editor for the list.
 //!
-//! Every change is a tool (`run_start`, `run_stop`, `run_edit` (save, detect, import),
+//! Every change is a tool (`run_start`, `run_restart`, `run_stop`, `run_edit` (save, detect, import),
 //! `session_send_text`); the only
 //! local state is which run is selected and the editor's unsaved rows (egui memory, per session).
 //! Output is read through [`crate::Backend::run_output`] only when its generation changes, and
@@ -40,6 +40,11 @@ fn editor_id(session: &str) -> Id {
 
 fn selected_id(session: &str) -> Id {
     Id::new(("runs-selected", session.to_string()))
+}
+
+/// Selects a run in the Runs tab (shows its output).
+pub fn select(ctx: &egui::Context, session: &str, run_id: &str) {
+    ctx.data_mut(|d| d.insert_temp(selected_id(session), run_id.to_owned()));
 }
 
 /// Opens the inline editor on a copy of the session's list (`Action::EditRuns`).
@@ -319,6 +324,9 @@ fn output(ui: &mut Ui, app: &mut CsmApp, t: &Tokens, s: &SessionView, r: &RunVie
         if running {
             if widgets::button(ui, ButtonKind::Secondary, Some("stop"), "Stop", Some("Shift+F5")).clicked() {
                 actions.push(Action::Tool("run_stop", json!({"session_id": s.id, "run_id": r.id})));
+            }
+            if widgets::button(ui, ButtonKind::Secondary, Some("restart"), "Restart", Some("Ctrl+Shift+F5")).clicked() {
+                actions.push(Action::Tool("run_restart", json!({"session_id": s.id, "run_id": r.id})));
             }
         } else if widgets::button(ui, ButtonKind::Secondary, Some("play"), "Run", None).clicked() {
             actions.push(Action::Tool("run_start", json!({"session_id": s.id, "run_id": r.id})));

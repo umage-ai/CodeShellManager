@@ -145,12 +145,15 @@ struct DropState {
     total: u64,
 }
 
+/// The files of a drop, with each name and size or why they cannot be sent.
+type Measured = (Vec<Source>, Result<Vec<(String, u64)>, String>);
+
 /// A drop of files whose sizes are being read on another thread.
 struct Preparing {
     drop: u64,
     session: String,
     kind: UploadKind,
-    rx: Receiver<(Vec<Source>, Result<Vec<(String, u64)>, String>)>,
+    rx: Receiver<Measured>,
 }
 
 /// Everything the window's uploads have in hand, for one link.

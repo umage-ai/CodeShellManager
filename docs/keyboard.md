@@ -28,7 +28,7 @@ for one); `docs/design/keyboard.md` has the current list of gaps.
 | `Ctrl+Shift+N` | Notes for the active session |
 | `Ctrl+.` | The active pane's menu |
 | `Ctrl+Shift+C` | Copy Claude's last reply (nothing selected) |
-| `F5` / `Shift+F5` | Run / stop the default run command |
+| `F5` / `Shift+F5` / `Ctrl+Shift+F5` | Run (shows it if running) / stop / restart (asks first) the default run command |
 | `Ctrl+,` | Settings |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Larger / smaller / 100% interface |
 | `F10` | Main menu: every action, by area |

@@ -46,6 +46,39 @@ fn gemini_cli_parses_clean_and_its_rules_match() {
 }
 
 #[test]
+fn opencode_parses_clean_and_has_its_profiles() {
+    let p = pack("opencode", include_str!("../../../samples/addons/opencode/addon.toml"));
+    let argvs: Vec<_> = p.profiles.iter().map(|x| x.argv.clone()).collect();
+    assert_eq!(argvs, vec![vec!["opencode"], vec!["opencode", "--continue"], vec!["opencode", "--auto"]]);
+    assert!(p.profiles.iter().all(|x| x.resume == ResumeRule::ReRun && x.status.len() == 4));
+    assert_eq!(p.slash.len(), 8);
+    assert_eq!(p.commands.len(), 3);
+    let rules = &p.profiles[0].status;
+    let st = |screen: &str| match_status(rules, screen);
+    assert_eq!(st("△ Permission required\n  Allow once   Allow always   Reject"), Some(ProfileStatus::NeedsYouApproval));
+    assert_eq!(st("Ask anything... \"Fix a TODO\"\n  esc interrupt"), Some(ProfileStatus::Working));
+    assert_eq!(st("  esc again to interrupt"), Some(ProfileStatus::Working));
+    assert_eq!(st("Ask anything... \"Fix a TODO in the codebase\""), Some(ProfileStatus::Idle));
+    assert_eq!(st("some plain output"), None);
+}
+
+#[test]
+fn copilot_cli_parses_clean_and_has_its_profiles() {
+    let p = pack("copilot-cli", include_str!("../../../samples/addons/copilot-cli/addon.toml"));
+    let argvs: Vec<_> = p.profiles.iter().map(|x| x.argv.clone()).collect();
+    assert_eq!(argvs, vec![vec!["copilot"], vec!["copilot", "--continue"], vec!["copilot", "--allow-all-tools"]]);
+    assert!(p.profiles.iter().all(|x| x.resume == ResumeRule::ReRun && x.status.len() == 4));
+    assert_eq!(p.slash.len(), 11);
+    assert_eq!(p.commands.len(), 3);
+    let rules = &p.profiles[0].status;
+    let st = |screen: &str| match_status(rules, screen);
+    assert_eq!(st("Do you want to run this command?\n 1. Yes\n 3. No, and tell Copilot what to do differently (Esc)"), Some(ProfileStatus::NeedsYouApproval));
+    assert_eq!(st("Thinking (Esc to cancel)"), Some(ProfileStatus::Working));
+    assert_eq!(st("Type @ to mention files, / for commands"), Some(ProfileStatus::Idle));
+    assert_eq!(st("some plain output"), None);
+}
+
+#[test]
 fn the_session_summary_manifest_is_an_honest_process_add_on() {
     let text = include_str!("../../../samples/addons/session-summary/addon.toml");
     let p = parse(text, "session-summary").unwrap();

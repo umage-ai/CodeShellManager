@@ -463,7 +463,8 @@ fn torn_pass(h: &Harness<'static, csm_ui::CsmApp>, vid: egui::ViewportId, x: f32
     };
     let mut input = egui::RawInput { viewport_id: vid, time: Some(time), ..Default::default() };
     input.viewports.insert(vid, info);
-    let out = h.ctx.run_ui(input, |ui| cb(ui));
+    let mut out = h.ctx.run_ui(input, |ui| cb(ui));
+    out.textures_delta.clear();
     // Only the bounds commands (egui adds its own, e.g. the title, on a first pass).
     let cmds = out.viewport_output.get(&vid).map(|v| v.commands.clone()).unwrap_or_default();
     cmds.into_iter()

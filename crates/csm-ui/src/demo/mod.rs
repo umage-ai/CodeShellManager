@@ -137,7 +137,7 @@ fn runs_dotnet() -> Vec<RunView> {
             output: "Restore complete (0.6s)\n  Odulodo.Core succeeded → bin/Release/net10.0/Odulodo.Core.dll\n  Odulodo.Api succeeded → bin/Release/net10.0/Odulodo.Api.dll\n\nBuild succeeded in 8.4s\n    0 Warning(s)\n    0 Error(s)".into(),
             ..RunView::default()
         },
-        RunView { id: "test".into(), label: "test".into(), command_line: "dotnet test --no-build".into(), state: RunState::Running, detail: "running · 38 s".into(), ..RunView::default() },
+        RunView { id: "test".into(), label: "test".into(), command_line: "dotnet test --no-build".into(), state: RunState::Running, detail: "running · 38 s".into(), elapsed_secs: Some(38), ..RunView::default() },
         RunView { id: "publish".into(), label: "publish".into(), command_line: "dotnet publish -r win-x64".into(), detail: "not run yet".into(), ..RunView::default() },
     ]
 }
@@ -151,6 +151,7 @@ fn runs_npm() -> Vec<RunView> {
             is_default: true,
             state: RunState::Running,
             detail: "running · 4 min".into(),
+            elapsed_secs: Some(240),
             output: "> odulodo-web@2.14.0 dev\n> vite\n\n  VITE v6.2.0  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n\n09:41:12 [vite] hmr update /src/search/FacetPanel.tsx\n09:42:03 [vite] hmr update /src/search/facets.ts".into(),
             ..RunView::default()
         },
@@ -1301,9 +1302,9 @@ impl DemoBackend {
                 self.model.inspector_width = if reset { None } else { call.params.get("width").and_then(Value::as_f64).map(|w| w as f32).filter(|w| w.is_finite()) };
                 vec![]
             }
-            "run_start" | "run_stop" => {
+            "run_start" | "run_stop" | "run_restart" => {
                 let Some(p) = parse::<RunParams>(call) else { return vec![] };
-                let start = call.id == "run_start";
+                let start = call.id != "run_stop";
                 let Some(s) = self.session_mut(&p.session_id) else { return vec![] };
                 let run = match &p.run_id {
                     Some(r) => s.runs.iter_mut().find(|x| &x.id == r),
@@ -1314,6 +1315,9 @@ impl DemoBackend {
                 };
                 let Some(run) = run else { return toast("This session has no run commands yet.".into()) };
                 let label = run.label.clone();
+                if call.id == "run_start" && run.state == RunState::Running {
+                    return toast(format!("{label} is already running."));
+                }
                 if start {
                     run.state = RunState::Running;
                     run.detail = "running · just now".into();

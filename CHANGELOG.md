@@ -86,15 +86,20 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   Drag a task onto an agent to send it (after a confirm showing the exact prompt), accept or reopen
   it in Review. Each Claude session's card lists its subagents and workflow runs.
 - **Command palette** (`Ctrl+K`) over every command and every session.
-- **Quick-open for new sessions** (`Ctrl+T`): type a folder, press Enter; SSH and WSL under
-  *Remote…*.
 - **Files and images into a remote session.** In a remote window, dropping files onto a pane, or
   pasting an image (Ctrl+V with an image on the laptop's clipboard), uploads them to the office over
   the encrypted link and pastes their office paths into the session, quoted for its shell. A progress
   card shows each drop, with Cancel. Files go to the session's folder under the office's app data,
   never into a project; folders are refused. Limits: 64 MB a file, 32 MB an image, 256 MB and 20 files
-  a drop. Uploads older than 7 days are removed when the office starts. A new office tool,
+  a drop. Uploads older than 7 days are removed when the office starts and every hour; the uploads folder holds at most 1 GB. A new office tool,
   `session_drop_paths`, does the paste for local and remote drops alike.
+- **New session dialog** (`Ctrl+T`): type a folder, press Enter. A **This PC / SSH / WSL** selector
+  replaces *Remote…*; up to eight recent folders, wrapping command chips, a profile and group, form
+  tabs from add-ons (New NEXUS agent), **Start** and **Start and keep open**, `Alt+1…9`, `Alt+R`,
+  `Alt+G`.
+- **Remote access (CSM to CSM)**: Settings › Remote access turns it on, pairs devices and can reach
+  the office through a relay; remote windows and `csm attach`. Off until you switch it on. See
+  docs/remote-access.md.
 - **The `csm` command line**: every action in the app is a tool, and every tool is a `csm`
   subcommand. `csm setup`, `csm doctor` and `csm uninstall` connect `csm mcp` to Claude Code,
   Claude Desktop, Codex and Cursor.
@@ -104,7 +109,7 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   Settings → MCP. Optionally offered to the Claude sessions the app starts (off by default).
 - **Add-ons**: declarative packs (agent launch profiles with status rules, run templates, slash
   presets, palette commands) and process add-ons (their own tools and screens), enabled only after
-  you see what they add. Samples ship with the app: Codex CLI, Gemini CLI, Review and Session
+  you see what they add. Samples ship with the app: Codex CLI, GitHub Copilot CLI, Gemini CLI, OpenCode, Review and Session
   summary.
 - **Run commands from `package.json`**: a Node project gets one run command per script; MCP
   clients can add and edit run commands (with consent); a local dev server's URL opens as soon as
@@ -132,8 +137,13 @@ closed (`Ctrl+Shift+T`) and Recent sessions (`Ctrl+Shift+E`); `.csm` backup expo
 file drop; Claude slash-command menu; `--clean`.
 
 ### Changed
+- **Restored sessions do not notify** (popups or screen-text alerts) until you have addressed them.
+- **`csm doctor`** reports its channel, the app id it looks for and which apps are published.
+- Development (dispatch) builds are signed and verified like release builds.
 - **A slashed zero in the terminal**: at small sizes the dot inside the default font's `0` filled in and
   it read as an `8`. The default terminal font now draws `0` with a slash through it. A font you
+- **A Sleep button in the pane header**, left of Minimize: ends the process and keeps the session in the sidebar (`session_sleep`). A header too narrow for it leaves Sleep to the Actions menu.
+- **Starting a run that is already running shows it instead of restarting it.** Clicking a running run in the pane header, its dropdown, the Runs tab, the menus or the palette, or pressing `F5`, opens its output and leaves it running (the Run button reads "Running"). **Restart** is separate (`run_restart`, `Ctrl+Shift+F5`, a Restart row beside Stop) and asks first when the run has been going for more than a few seconds; the `run_start` tool no longer kills a running run.
   chose yourself (`--font`) is drawn as designed.
 
 - **Quitting closes Claude sessions several at a time** (Settings > General > "Claude sessions closed at once when quitting", `QuitClaudeConcurrency`, default 4, 1 to 8). With about 70 Claude sessions a quit took 5 to 8 minutes; it now takes around a minute and a half. Claude rewrites `~/.claude.json` as it exits, so the quit keeps a copy of it first and restores that copy if the file is left unreadable (some individual updates to it can still be lost); set the number to 1 for the old one-at-a-time quit. The shutdown board says how many close at once and shows several rows closing together. See docs/quit.md.

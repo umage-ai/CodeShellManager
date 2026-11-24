@@ -1,0 +1,122 @@
+# Sample add-on: OpenCode (the `opencode` TUI from sst/opencode).
+#
+# Shipped with CodeShellManager under <install dir>\samples\addons\. Settings > Add-ons >
+# "Install samples" copies it into your add-ons folder; it stays off until you Enable it.
+# Needs `opencode` on PATH (npm i -g opencode-ai, or the install script / brew). See docs/addons.md.
+#
+# Verified against `opencode --help` (the flags `-c/--continue`, `-s/--session <id>`, `--fork`,
+# `--auto`) and the docs at opencode.ai/docs. Restore of a profile session starts `opencode`
+# again in the session's folder; OpenCode keeps its own per-project history, so the "continue"
+# profile picks the last session back up. CodeShellManager does not know OpenCode's session ids,
+# so a {session_id} resume template would not help here.
+#
+# UNCERTAINTY: the status regexes were written from strings found in the OpenCode TUI at the time
+# of writing (a "Permission required" panel with "Allow once" / "Allow always" / "Reject", a footer
+# "esc interrupt" that becomes "esc again to interrupt", the question tool's "Type your own
+# answer" option, the prompt placeholder "Ask anything..."). The permission wording is the surest;
+# the question rule is the least certain, and the idle rule relies on the placeholder, which is
+# also visible while OpenCode works (so the working rule comes first). OpenCode's wording changes
+# between releases; if a status stops tracking, adjust the patterns here (the file's digest
+# changes, so you enable it again). Rules match against the last 12 non-empty screen lines; the
+# first matching rule wins.
+# Patterns are TOML literal strings ('...'), so a backslash is a regex backslash.
+
+[addon]
+id = "opencode"
+name = "OpenCode"
+version = "0.1.0"
+description = "Launch profiles for OpenCode, with status detection for permission prompts, questions, work and idle."
+api = 1
+kind = "pack"
+author = "CodeShellManager samples"
+homepage = "https://opencode.ai"
+
+# A new OpenCode session in the session's folder.
+[[profile]]
+name = "agent"
+argv = ["opencode"]
+resume = "re-run"
+status = [
+  { match = '(?i)permission required|allow once|allow always', status = "needs_you_approval" },
+  { match = '(?i)type your own answer', status = "needs_you_question" },
+  { match = '(?i)esc (again to )?interrupt', status = "working" },
+  { match = '(?i)ask anything', status = "idle" },
+]
+
+# Continue the last OpenCode session of the folder (`opencode --continue`, short `-c`).
+[[profile]]
+name = "continue"
+argv = ["opencode", "--continue"]
+resume = "re-run"
+status = [
+  { match = '(?i)permission required|allow once|allow always', status = "needs_you_approval" },
+  { match = '(?i)type your own answer', status = "needs_you_question" },
+  { match = '(?i)esc (again to )?interrupt', status = "working" },
+  { match = '(?i)ask anything', status = "idle" },
+]
+
+# RISKY: `opencode --auto` auto-approves every permission that is not explicitly denied (the help
+# text itself says "dangerous!"). Use it only in a folder you can afford to lose. The approval
+# status will rarely show, because nothing asks.
+[[profile]]
+name = "auto-approve"
+argv = ["opencode", "--auto"]
+resume = "re-run"
+status = [
+  { match = '(?i)permission required|allow once|allow always', status = "needs_you_approval" },
+  { match = '(?i)type your own answer', status = "needs_you_question" },
+  { match = '(?i)esc (again to )?interrupt', status = "working" },
+  { match = '(?i)ask anything', status = "idle" },
+]
+
+# OpenCode slash commands (added to the slash menu only when you do not already have them).
+[[slash]]
+command = "/init"
+description = "Create or update AGENTS.md for this project"
+
+[[slash]]
+command = "/compact"
+description = "Summarise the session to free context (alias /summarize)"
+
+[[slash]]
+command = "/undo"
+description = "Revert the last message and the file changes after it"
+
+[[slash]]
+command = "/redo"
+description = "Restore what /undo reverted"
+
+[[slash]]
+command = "/share"
+description = "Share the session as a link (/unshare removes it)"
+
+[[slash]]
+command = "/models"
+description = "Choose the model"
+
+[[slash]]
+command = "/sessions"
+description = "Switch to another session"
+
+[[slash]]
+command = "/new"
+description = "Start a new session"
+
+# Palette commands: each calls an existing tool with fixed parameters.
+[[command]]
+id = "new"
+title = "New OpenCode session"
+tool = "session_new"
+params = { profile = "opencode.agent", name = "OpenCode" }
+
+[[command]]
+id = "continue"
+title = "Continue the last OpenCode session"
+tool = "session_new"
+params = { profile = "opencode.continue", name = "OpenCode (continued)" }
+
+[[command]]
+id = "auto-approve"
+title = "New OpenCode session (auto-approve, risky)"
+tool = "session_new"
+params = { profile = "opencode.auto-approve", name = "OpenCode (auto)" }

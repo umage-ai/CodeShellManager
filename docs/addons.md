@@ -452,8 +452,8 @@ app supplies the session.
 **Remotes (`csm/remotes_changed`).** The plugin tells CSM what it can open a session on. The message
 is a notification carrying the *complete* current list (an empty list withdraws everything), at most
 200 entries; send it again whenever the list changes. The entries show up in the palette (type `>`
-or part of the name) as `Remote… › <add-on name> › <label>` and as chips in the New session dialog's
-Remote… row. They go away when the add-on stops or is disabled.
+or part of the name) as `Remote… › <add-on name> › <label>` and as saved-remote chips in the New session dialog (under SSH and
+WSL). They go away when the add-on stops or is disabled.
 
 ```
 -> (plugin) {"jsonrpc":"2.0","method":"csm/remotes_changed","params":{"remotes":[
@@ -1071,13 +1071,15 @@ Claude Code token and API-equivalent cost accounting from Claude's own transcrip
 
 ## Samples that ship with the app
 
-`samples/addons/` holds six add-ons, staged by the release workflow into
+`samples/addons/` holds eight add-ons, staged by the release workflow into
 `<install dir>\samples\addons\` (MSI and portable zip alike):
 
 | id | kind | what |
 |---|---|---|
 | `codex-cli` | pack | profiles `agent` (`codex`) and `resume-last` (`codex resume --last`), status rules, `/review` `/diff` `/compact`, palette commands to start either |
+| `copilot-cli` | pack | profiles `agent` (`copilot`), `continue` (`copilot --continue`) and `allow-all-tools` (`copilot --allow-all-tools`, risky), status rules, `/model` `/clear` `/compact` `/usage` `/session` `/share` and more, palette commands to start each |
 | `gemini-cli` | pack | profiles `agent` (`gemini`) and `resume-latest` (`gemini --resume`), status rules, `/compress` `/stats` `/memory`, palette commands to start either |
+| `opencode` | pack | profiles `agent` (`opencode`), `continue` (`opencode --continue`) and `auto-approve` (`opencode --auto`, risky), status rules, `/init` `/compact` `/undo` `/redo` `/share` `/models` `/sessions` `/new`, palette commands to start each |
 | `review` | process | the Review add-on above: changed files, diffs and comment threads that agents answer (first-party, with a screen) |
 | `session-summary` | process | the Session summary plugin above |
 | `themes` | pack | three dark themes: Catppuccin Frappé and Macchiato (official palette, MIT) and an original High contrast |
@@ -1087,8 +1089,8 @@ The MSI installs per machine and add-ons live per user, so nothing is enabled or
 time. **Settings > Add-ons > Install samples** (`addon_install_samples`) copies each sample folder
 that is not already in the add-ons folder; an existing folder (yours, edited, enabled) is never
 touched. They appear **disabled**; **Enable...** shows what each adds and asks, as for any add-on.
-The profile resume is `re-run`: CSM does not know Codex's or Gemini's session ids, so restore
-starts a new conversation and the `resume-*` profiles continue the last one. The status rules match
+The profile resume is `re-run`: CSM does not know Codex's, Copilot's, Gemini's or OpenCode's session ids, so restore
+starts a new conversation and the `resume-*` and `continue` profiles continue the last one. The status rules match
 the TUIs' wording as last seen and may need adjusting after a release of either tool (see the
 comments in each file). `crates/csm-core/tests/sample_packs.rs` parses all of them with no problems.
 
