@@ -33,6 +33,7 @@ pub mod relay_pump;
 mod serve;
 mod server;
 pub mod transport;
+pub mod uploads;
 
 pub use client_host::ClientPeer;
 pub use link::LinkError;

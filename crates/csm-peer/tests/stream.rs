@@ -18,7 +18,9 @@ use csm_peer::identity::Identity;
 use csm_peer::{PeerServer, ServerConfig};
 use csm_peer_proto::Snapshot as WireSnapshot;
 use csm_peer_proto::codec::{Frame, Input};
-use csm_peer_proto::msg::{ByeReason, ConsentOutcome, Msg, Outcome, TermClosedReason};
+use csm_peer_proto::ids::{hex, sha256};
+use csm_peer_proto::limits::{MAX_UPLOAD_FILE, UPLOAD_CHUNK};
+use csm_peer_proto::msg::{ByeReason, ConsentOutcome, Msg, Outcome, TermClosedReason, UploadKind, UploadRefused as UploadRefusedKind};
 use csm_peer_proto::pairing::PeerOffer;
 use csm_pty::{Backend, ExitCallback, OutputSink, Pty, PtySize, SpawnOptions};
 use csm_term::replay;
@@ -800,4 +802,256 @@ fn revoking_a_device_with_live_streams_stops_them_and_writes_nothing_more() {
     v.settle(300);
     assert_eq!(v.data_frames, frames, "data was written to a revoked device");
     assert_eq!(rig.status()["connected"], 0);
+}
+
+// ---- uploads (design: "Uploads: file drops and image paste", section 10, step 1) -----------------
+
+/// Waits for a control message that matches, on a connection. Other frames are skipped.
+fn expect_msg(conn: &Connection, what: &str, mut pred: impl FnMut(&Msg) -> bool) -> Msg {
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        match conn.recv_timeout(Duration::from_millis(100)) {
+            Some(Incoming::Frame(Frame::Control(m))) if pred(&m) => return m,
+            Some(Incoming::Closed(r)) => panic!("the link closed ({r:?}) while waiting for {what}"),
+            _ => {}
+        }
+    }
+    panic!("no {what} arrived");
+}
+
+/// Waits briefly for a control message that matches; `None` if none did.
+fn maybe_msg(conn: &Connection, wait: Duration, mut pred: impl FnMut(&Msg) -> bool) -> Option<Msg> {
+    let end = Instant::now() + wait;
+    while Instant::now() < end {
+        if let Some(Incoming::Frame(Frame::Control(m))) = conn.recv_timeout(Duration::from_millis(50))
+            && pred(&m)
+        {
+            return Some(m);
+        }
+    }
+    None
+}
+
+fn accepted(id: u64) -> impl Fn(&Msg) -> bool {
+    move |m| matches!(m, Msg::UploadAccepted { id: i } if *i == id)
+}
+
+fn refused(id: u64) -> impl Fn(&Msg) -> bool {
+    move |m| matches!(m, Msg::UploadRefused { id: i, .. } if *i == id)
+}
+
+fn payload(n: usize) -> Vec<u8> {
+    (0..n).map(|i| u8::try_from(i % 251).unwrap_or(0).wrapping_mul(13)).collect()
+}
+
+fn digest(bytes: &[u8]) -> String {
+    hex(&sha256(bytes))
+}
+
+/// The names in a session's upload folder (partial and finished).
+fn upload_files(rig: &Rig, session: &str) -> Vec<String> {
+    let dir = rig.peer_dir.join("uploads").join(session);
+    let mut names: Vec<String> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn begin(conn: &Connection, id: u64, session: &str, name: &str, size: u64, kind: UploadKind) {
+    conn.send(Msg::UploadBegin { id, session: session.to_owned(), name: name.to_owned(), size, kind }).unwrap();
+}
+
+fn chunk_frame(id: u64, offset: usize, bytes: &[u8]) -> Frame {
+    Frame::UploadChunk { id, offset: offset as u64, bytes: bytes.to_vec() }
+}
+
+#[test]
+fn a_file_goes_in_chunks_and_lands_in_the_session_folder_with_a_sanitised_name() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    let data = payload(70_000);
+    begin(&conn, 1, &session, "..\\..\\reports\\Q3 report.txt", data.len() as u64, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(1));
+    for (i, part) in data.chunks(UPLOAD_CHUNK).enumerate() {
+        conn.send_frame(&chunk_frame(1, i * UPLOAD_CHUNK, part)).unwrap();
+    }
+    conn.send(Msg::UploadEnd { id: 1, sha256: digest(&data) }).unwrap();
+    let Msg::UploadDone { path, .. } = expect_msg(&conn, "the done", |m| matches!(m, Msg::UploadDone { id: 1, .. })) else { panic!("not a done") };
+    let placed = std::path::PathBuf::from(&path);
+    assert_eq!(placed.parent().unwrap(), rig.peer_dir.join("uploads").join(&session), "under the session's folder");
+    let name = placed.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.ends_with("-Q3 report.txt"), "the laptop's folders are stripped: {name}");
+    assert_eq!(std::fs::read(&placed).unwrap(), data, "the bytes are the bytes that were sent");
+    assert!(upload_files(&rig, &session).iter().all(|n| !n.ends_with(".part")), "no partial file is left");
+    assert!(!rig.folder.join("Q3 report.txt").exists(), "never in the project folder");
+    let log = std::fs::read_to_string(rig.peer_dir.join("remote-access.log")).unwrap();
+    assert!(log.contains("\"event\":\"upload_begin\"") && log.contains("\"event\":\"upload_done\""), "{log}");
+}
+
+#[test]
+fn the_office_acknowledges_every_four_chunks_so_the_laptop_has_credit() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    let chunk = UPLOAD_CHUNK;
+    let data = payload(chunk * 6);
+    begin(&conn, 2, &session, "big.bin", data.len() as u64, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(2));
+    for i in 0..4 {
+        conn.send_frame(&chunk_frame(2, i * chunk, &data[i * chunk..(i + 1) * chunk])).unwrap();
+    }
+    let ack = expect_msg(&conn, "the ack after four chunks", |m| matches!(m, Msg::UploadAck { id: 2, .. }));
+    assert_eq!(ack, Msg::UploadAck { id: 2, received: (4 * chunk) as u64 });
+    for i in 4..6 {
+        conn.send_frame(&chunk_frame(2, i * chunk, &data[i * chunk..(i + 1) * chunk])).unwrap();
+    }
+    conn.send(Msg::UploadEnd { id: 2, sha256: digest(&data) }).unwrap();
+    expect_msg(&conn, "the done", |m| matches!(m, Msg::UploadDone { id: 2, .. }));
+}
+
+#[test]
+fn an_image_is_named_by_what_it_really_is_and_a_non_image_is_refused() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(&payload(300));
+    begin(&conn, 3, &session, "../../evil.exe", png.len() as u64, UploadKind::Image);
+    expect_msg(&conn, "the accept", accepted(3));
+    conn.send_frame(&chunk_frame(3, 0, &png)).unwrap();
+    conn.send(Msg::UploadEnd { id: 3, sha256: digest(&png) }).unwrap();
+    let Msg::UploadDone { path, .. } = expect_msg(&conn, "the done", |m| matches!(m, Msg::UploadDone { id: 3, .. })) else { panic!("not a done") };
+    assert!(path.ends_with("-clipboard.png"), "{path}");
+
+    // Not an image: refused on its first chunk, and nothing is kept.
+    begin(&conn, 4, &session, "x.png", 12, UploadKind::Image);
+    expect_msg(&conn, "the accept", accepted(4));
+    conn.send_frame(&chunk_frame(4, 0, b"%PDF-1.7 hi")).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(4)), Msg::UploadRefused { id: 4, reason: UploadRefusedKind::NotAnImage });
+    wait_for("the partial file to go", || upload_files(&rig, &session).iter().all(|n| !n.ends_with(".part")).then_some(()));
+    assert_eq!(upload_files(&rig, &session).len(), 1, "only the finished image is there");
+}
+
+#[test]
+fn hostile_uploads_are_refused_cleanly_and_the_link_stays_up() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    let file = UploadKind::File;
+
+    // A session that does not exist, and folder names that are not plain ids.
+    for (id, bad) in [(10, "nope"), (11, "../escape"), (12, "a\\b"), (13, "é")] {
+        begin(&conn, id, bad, "x.txt", 1, file);
+        assert_eq!(expect_msg(&conn, "a refusal", refused(id)), Msg::UploadRefused { id, reason: UploadRefusedKind::NoSession }, "{bad:?}");
+    }
+
+    // A digest that does not match the bytes: nothing is kept.
+    let data = payload(1000);
+    begin(&conn, 20, &session, "a.bin", data.len() as u64, file);
+    expect_msg(&conn, "the accept", accepted(20));
+    conn.send_frame(&chunk_frame(20, 0, &data)).unwrap();
+    conn.send(Msg::UploadEnd { id: 20, sha256: digest(b"something else") }).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(20)), Msg::UploadRefused { id: 20, reason: UploadRefusedKind::Corrupt });
+
+    // Fewer bytes than declared at the end: corrupt, not done.
+    begin(&conn, 21, &session, "short.bin", 500, file);
+    expect_msg(&conn, "the accept", accepted(21));
+    conn.send_frame(&chunk_frame(21, 0, &data[..100])).unwrap();
+    conn.send(Msg::UploadEnd { id: 21, sha256: digest(&data[..100]) }).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(21)), Msg::UploadRefused { id: 21, reason: UploadRefusedKind::Corrupt });
+
+    // More bytes than declared.
+    begin(&conn, 22, &session, "long.bin", 10, file);
+    expect_msg(&conn, "the accept", accepted(22));
+    conn.send_frame(&chunk_frame(22, 0, &data[..50])).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(22)), Msg::UploadRefused { id: 22, reason: UploadRefusedKind::TooLarge });
+
+    // A chunk at the wrong offset.
+    begin(&conn, 23, &session, "gap.bin", 1000, file);
+    expect_msg(&conn, "the accept", accepted(23));
+    conn.send_frame(&chunk_frame(23, 5, &data[..10])).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(23)), Msg::UploadRefused { id: 23, reason: UploadRefusedKind::Overrun });
+
+    // A chunk for an upload that was never begun.
+    conn.send_frame(&chunk_frame(99, 0, &[1])).unwrap();
+    assert_eq!(expect_msg(&conn, "the refusal", refused(99)), Msg::UploadRefused { id: 99, reason: UploadRefusedKind::Overrun });
+
+    // Nothing was kept, and the link still answers calls.
+    wait_for("the partial files to go", || upload_files(&rig, &session).is_empty().then_some(()));
+    let out = conn.call_wait("session_list", json!({}), Duration::from_secs(10)).unwrap();
+    assert!(matches!(out, Outcome::Ok { .. }));
+    // A declared size over the limit is refused by the office, and the link stays up.
+    let too_big = MAX_UPLOAD_FILE + 1;
+    begin(&conn, 30, &session, "big.bin", too_big, file);
+    assert_eq!(expect_msg(&conn, "the refusal", refused(30)), Msg::UploadRefused { id: 30, reason: UploadRefusedKind::TooLarge });
+    let out = conn.call_wait("session_list", json!({}), Duration::from_secs(10)).unwrap();
+    assert!(matches!(out, Outcome::Ok { .. }));
+}
+
+#[test]
+fn a_cancel_deletes_the_partial_file_and_sends_nothing_back() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    begin(&conn, 40, &session, "gone.bin", 9000, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(40));
+    conn.send_frame(&chunk_frame(40, 0, &payload(4000))).unwrap();
+    wait_for("the partial file", || upload_files(&rig, &session).iter().any(|n| n.ends_with(".part")).then_some(()));
+    conn.send(Msg::UploadCancel { id: 40 }).unwrap();
+    wait_for("the partial file to go", || upload_files(&rig, &session).is_empty().then_some(()));
+    assert!(maybe_msg(&conn, Duration::from_millis(300), refused(40)).is_none(), "a cancel is silent");
+}
+
+#[test]
+fn a_device_below_full_cannot_upload() {
+    let (rig, dev) = viewer_rig();
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    begin(&conn, 50, &session, "x.txt", 1, UploadKind::File);
+    assert_eq!(expect_msg(&conn, "the refusal", refused(50)), Msg::UploadRefused { id: 50, reason: UploadRefusedKind::Forbidden });
+    assert!(upload_files(&rig, &session).is_empty());
+}
+
+#[test]
+fn turning_remote_access_off_mid_upload_deletes_the_partial_file() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    begin(&conn, 60, &session, "half.bin", 9000, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(60));
+    conn.send_frame(&chunk_frame(60, 0, &payload(4000))).unwrap();
+    wait_for("the partial file", || upload_files(&rig, &session).iter().any(|n| n.ends_with(".part")).then_some(()));
+    rig.ui("peer_server_disable", json!({})).unwrap();
+    wait_for("the partial file to go", || upload_files(&rig, &session).is_empty().then_some(()));
+}
+
+#[test]
+fn an_upload_is_logged_by_name_and_size_and_never_by_its_contents() {
+    let rig = Rig::new();
+    rig.enable();
+    let dev = rig.device("Laptop");
+    let (session, _, _) = rig.session();
+    let conn = dev.connect().conn;
+    let data = payload(64);
+    begin(&conn, 70, &session, "secret-plan.txt", data.len() as u64, UploadKind::File);
+    expect_msg(&conn, "the accept", accepted(70));
+    conn.send_frame(&chunk_frame(70, 0, &data)).unwrap();
+    conn.send(Msg::UploadEnd { id: 70, sha256: digest(&data) }).unwrap();
+    expect_msg(&conn, "the done", |m| matches!(m, Msg::UploadDone { id: 70, .. }));
+    let log = std::fs::read_to_string(rig.peer_dir.join("remote-access.log")).unwrap();
+    assert!(log.contains("\"size\":64") && log.contains("secret-plan.txt") && log.contains(&dev.host.device_id), "{log}");
+    let leaked: String = data.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    assert!(!log.contains(&leaked), "no contents in the log");
 }

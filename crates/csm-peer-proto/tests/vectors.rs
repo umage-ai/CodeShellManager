@@ -15,7 +15,7 @@ use csm_peer_proto::delta::{Delta, DeltaOp, SmallFields};
 use csm_peer_proto::frame::{FrameDecoder, FrameError, encode_frame};
 use csm_peer_proto::ids::{b64_encode, device_id, hex, host_id, sha256, unhex};
 use csm_peer_proto::limits::{MAX_FRAME_LEN, MAX_PLAINTEXT};
-use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, TermClosedReason};
+use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, TermClosedReason, UploadKind, UploadRefused};
 use csm_peer_proto::noise::{MAX_PAIR_ATTEMPTS, PARAMS_PAIRING, PARAMS_SESSION, Preamble, REKEY_INTERVAL, Route, check_code, prologue, route};
 use csm_peer_proto::pairing::{DenyReason, OfferError, PairError, PairMsg, PeerOffer};
 use csm_peer_proto::{Event, GroupInfo, Snapshot};
@@ -166,15 +166,15 @@ fn pairing_vectors() {
         })
         .collect();
     let pair_msgs = [
-        PairMsg::Hello { v: 1, name: "Laptop".into() },
+        PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into() },
         PairMsg::Accept { device_id: device_id(&arr::<32>(13)), level: Level::Full },
         PairMsg::Deny { reason: DenyReason::Denied },
         PairMsg::Deny { reason: DenyReason::Expired },
     ];
     let pair_valid: Vec<Value> = pair_msgs.iter().map(|m| json!({"json": serde_json::to_value(m).unwrap(), "bytes_hex": hex(&m.encode().unwrap())})).collect();
     let pair_invalid: Vec<Value> = [
-        (br#"{"t":"hello","v":2,"name":"x"}"#.as_slice(), PairError::Version(2)),
-        (br#"{"t":"hello","v":1,"name":"a\nb"}"#.as_slice(), PairError::Name),
+        (br#"{"t":"hello","v":1,"name":"x"}"#.as_slice(), PairError::Version(1)),
+        (br#"{"t":"hello","v":2,"name":"a\nb"}"#.as_slice(), PairError::Name),
         (br#"{"t":"accept","device_id":"x","level":"full"}"#.as_slice(), PairError::DeviceId),
         (br#"{"t":"nope"}"#.as_slice(), PairError::Format),
     ]
@@ -245,11 +245,11 @@ fn sample_frames() -> Vec<(&'static str, Frame)> {
     };
     let c = Frame::Control;
     vec![
-        ("hello", c(Msg::Hello { protocol: 1, client: "Laptop".into(), app_version: "2.0.0".into(), term_version: "0.26.0".into() })),
+        ("hello", c(Msg::Hello { protocol: PROTOCOL_VERSION, client: "Laptop".into(), app_version: "2.0.0".into(), term_version: "0.26.0".into() })),
         (
             "welcome",
             c(Msg::Welcome {
-                protocol: 1,
+                protocol: PROTOCOL_VERSION,
                 host_name: "OFFICE".into(),
                 server_version: "2.0.0".into(),
                 term_version: "0.26.0".into(),
@@ -285,6 +285,26 @@ fn sample_frames() -> Vec<(&'static str, Frame)> {
         ("term_input_mouse", Frame::TermInput { stream: 1, input: Input::Mouse(b"\x1b[<0;10;5M".to_vec()) }),
         ("term_input_focus", Frame::TermInput { stream: 1, input: Input::Focus(true) }),
         ("term_input_paste", Frame::TermInput { stream: 1, input: Input::Paste("two\nlines \u{e9}".into()) }),
+        (
+            "upload_begin",
+            c(Msg::UploadBegin { id: 11, session: "s1".into(), name: "report.pdf".into(), size: 4096, kind: UploadKind::File }),
+        ),
+        (
+            "upload_begin_image",
+            c(Msg::UploadBegin { id: 12, session: "s1".into(), name: "clipboard.png".into(), size: 2_000_000, kind: UploadKind::Image }),
+        ),
+        // Over the limit is a valid frame: the office refuses it `too_large` and keeps the link.
+        (
+            "upload_begin_oversize",
+            c(Msg::UploadBegin { id: 1, session: "s1".into(), name: "a.bin".into(), size: 67_108_865, kind: UploadKind::File }),
+        ),
+        ("upload_end", c(Msg::UploadEnd { id: 11, sha256: "ab".repeat(32) })),
+        ("upload_cancel", c(Msg::UploadCancel { id: 11 })),
+        ("upload_accepted", c(Msg::UploadAccepted { id: 11 })),
+        ("upload_ack", c(Msg::UploadAck { id: 11, received: 131_072 })),
+        ("upload_done", c(Msg::UploadDone { id: 11, path: "C:\\data\\peer\\uploads\\s1\\1795800000123-report.pdf".into() })),
+        ("upload_refused", c(Msg::UploadRefused { id: 12, reason: UploadRefused::NotAnImage })),
+        ("upload_chunk", Frame::UploadChunk { id: 11, offset: 262_144, bytes: b"%PDF-1.7\n".to_vec() }),
     ]
 }
 
@@ -328,7 +348,7 @@ fn messages_vectors() {
         ("oversize", vec![0x01; MAX_PLAINTEXT + 1]),
         ("control_without_json", vec![0x01]),
         ("control_unknown_type", b"\x01{\"t\":\"nope\"}".to_vec()),
-        ("hello_wrong_protocol", b"\x01{\"t\":\"hello\",\"protocol\":2,\"client\":\"c\",\"app_version\":\"1\",\"term_version\":\"0.26.0\"}".to_vec()),
+        ("hello_wrong_protocol", b"\x01{\"t\":\"hello\",\"protocol\":1,\"client\":\"c\",\"app_version\":\"1\",\"term_version\":\"0.26.0\"}".to_vec()),
         ("hello_control_char_in_name", b"\x01{\"t\":\"hello\",\"protocol\":1,\"client\":\"a\\nb\",\"app_version\":\"1\",\"term_version\":\"0.26.0\"}".to_vec()),
         ("call_bad_tool_id", b"\x01{\"t\":\"call\",\"id\":1,\"tool\":\"Not A Tool\",\"params\":{}}".to_vec()),
         ("resize_zero", b"\x01{\"t\":\"term_resize\",\"stream\":1,\"cols\":0,\"rows\":5,\"driver\":true}".to_vec()),
@@ -340,6 +360,10 @@ fn messages_vectors() {
         ("term_input_bad_focus", vec![0x04, 0, 0, 0, 1, 2, 7]),
         ("fragment_bad_flag", vec![0x05, 2, 1]),
         ("fragment_empty", vec![0x05, 1]),
+        ("upload_chunk_empty", [vec![0x06], vec![0; 16]].concat()),
+        ("upload_chunk_truncated", vec![0x06, 0, 0, 0, 1]),
+        ("upload_begin_bad_name", b"\x01{\"t\":\"upload_begin\",\"id\":1,\"session\":\"s1\",\"name\":\"a\\nb\",\"size\":1,\"kind\":\"file\"}".to_vec()),
+        ("upload_end_bad_digest", b"\x01{\"t\":\"upload_end\",\"id\":1,\"sha256\":\"not-hex\"}".to_vec()),
     ];
     let invalid: Vec<Value> = invalid_inputs
         .iter()

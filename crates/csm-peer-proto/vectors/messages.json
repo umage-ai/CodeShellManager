@@ -46,12 +46,12 @@
       "plaintext_hex": "017b2274223a226e6f7065227d"
     },
     {
-      "error": "version 2",
+      "error": "version 1",
       "name": "hello_wrong_protocol",
-      "plaintext_hex": "017b2274223a2268656c6c6f222c2270726f746f636f6c223a322c22636c69656e74223a2263222c226170705f76657273696f6e223a2231222c227465726d5f76657273696f6e223a22302e32362e30227d"
+      "plaintext_hex": "017b2274223a2268656c6c6f222c2270726f746f636f6c223a312c22636c69656e74223a2263222c226170705f76657273696f6e223a2231222c227465726d5f76657273696f6e223a22302e32362e30227d"
     },
     {
-      "error": "invalid: client name",
+      "error": "version 1",
       "name": "hello_control_char_in_name",
       "plaintext_hex": "017b2274223a2268656c6c6f222c2270726f746f636f6c223a312c22636c69656e74223a22615c6e62222c226170705f76657273696f6e223a2231222c227465726d5f76657273696f6e223a22302e32362e30227d"
     },
@@ -104,6 +104,26 @@
       "error": "malformed: empty fragment",
       "name": "fragment_empty",
       "plaintext_hex": "0501"
+    },
+    {
+      "error": "invalid: upload chunk length",
+      "name": "upload_chunk_empty",
+      "plaintext_hex": "0600000000000000000000000000000000"
+    },
+    {
+      "error": "malformed: truncated",
+      "name": "upload_chunk_truncated",
+      "plaintext_hex": "0600000001"
+    },
+    {
+      "error": "invalid: upload name",
+      "name": "upload_begin_bad_name",
+      "plaintext_hex": "017b2274223a2275706c6f61645f626567696e222c226964223a312c2273657373696f6e223a227331222c226e616d65223a22615c6e62222c2273697a65223a312c226b696e64223a2266696c65227d"
+    },
+    {
+      "error": "invalid: upload digest",
+      "name": "upload_end_bad_digest",
+      "plaintext_hex": "017b2274223a2275706c6f61645f656e64222c226964223a312c22736861323536223a226e6f742d686578227d"
     }
   ],
   "max_plaintext": 65519,
@@ -112,25 +132,25 @@
       "json": {
         "app_version": "2.0.0",
         "client": "Laptop",
-        "protocol": 1,
+        "protocol": 2,
         "t": "hello",
         "term_version": "0.26.0"
       },
       "name": "hello",
-      "plaintext_hex": "017b2274223a2268656c6c6f222c2270726f746f636f6c223a312c22636c69656e74223a224c6170746f70222c226170705f76657273696f6e223a22322e302e30222c227465726d5f76657273696f6e223a22302e32362e30227d"
+      "plaintext_hex": "017b2274223a2268656c6c6f222c2270726f746f636f6c223a322c22636c69656e74223a224c6170746f70222c226170705f76657273696f6e223a22322e302e30222c227465726d5f76657273696f6e223a22302e32362e30227d"
     },
     {
       "json": {
         "device_id": "ep4hqjshdeo73thrfmf5wdo6kz",
         "host_name": "OFFICE",
         "level": "full",
-        "protocol": 1,
+        "protocol": 2,
         "server_version": "2.0.0",
         "t": "welcome",
         "term_version": "0.26.0"
       },
       "name": "welcome",
-      "plaintext_hex": "017b2274223a2277656c636f6d65222c2270726f746f636f6c223a312c22686f73745f6e616d65223a224f4646494345222c227365727665725f76657273696f6e223a22322e302e30222c227465726d5f76657273696f6e223a22302e32362e30222c226c6576656c223a2266756c6c222c226465766963655f6964223a2265703468716a736864656f3733746872666d663577646f366b7a227d"
+      "plaintext_hex": "017b2274223a2277656c636f6d65222c2270726f746f636f6c223a322c22686f73745f6e616d65223a224f4646494345222c227365727665725f76657273696f6e223a22322e302e30222c227465726d5f76657273696f6e223a22302e32362e30222c226c6576656c223a2266756c6c222c226465766963655f6964223a2265703468716a736864656f3733746872666d663577646f366b7a227d"
     },
     {
       "json": {
@@ -444,6 +464,99 @@
       "json": null,
       "name": "term_input_paste",
       "plaintext_hex": "04000000010374776f0a6c696e657320c3a9"
+    },
+    {
+      "json": {
+        "id": 11,
+        "kind": "file",
+        "name": "report.pdf",
+        "session": "s1",
+        "size": 4096,
+        "t": "upload_begin"
+      },
+      "name": "upload_begin",
+      "plaintext_hex": "017b2274223a2275706c6f61645f626567696e222c226964223a31312c2273657373696f6e223a227331222c226e616d65223a227265706f72742e706466222c2273697a65223a343039362c226b696e64223a2266696c65227d"
+    },
+    {
+      "json": {
+        "id": 12,
+        "kind": "image",
+        "name": "clipboard.png",
+        "session": "s1",
+        "size": 2000000,
+        "t": "upload_begin"
+      },
+      "name": "upload_begin_image",
+      "plaintext_hex": "017b2274223a2275706c6f61645f626567696e222c226964223a31322c2273657373696f6e223a227331222c226e616d65223a22636c6970626f6172642e706e67222c2273697a65223a323030303030302c226b696e64223a22696d616765227d"
+    },
+    {
+      "json": {
+        "id": 1,
+        "kind": "file",
+        "name": "a.bin",
+        "session": "s1",
+        "size": 67108865,
+        "t": "upload_begin"
+      },
+      "name": "upload_begin_oversize",
+      "plaintext_hex": "017b2274223a2275706c6f61645f626567696e222c226964223a312c2273657373696f6e223a227331222c226e616d65223a22612e62696e222c2273697a65223a36373130383836352c226b696e64223a2266696c65227d"
+    },
+    {
+      "json": {
+        "id": 11,
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "t": "upload_end"
+      },
+      "name": "upload_end",
+      "plaintext_hex": "017b2274223a2275706c6f61645f656e64222c226964223a31312c22736861323536223a2261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162227d"
+    },
+    {
+      "json": {
+        "id": 11,
+        "t": "upload_cancel"
+      },
+      "name": "upload_cancel",
+      "plaintext_hex": "017b2274223a2275706c6f61645f63616e63656c222c226964223a31317d"
+    },
+    {
+      "json": {
+        "id": 11,
+        "t": "upload_accepted"
+      },
+      "name": "upload_accepted",
+      "plaintext_hex": "017b2274223a2275706c6f61645f6163636570746564222c226964223a31317d"
+    },
+    {
+      "json": {
+        "id": 11,
+        "received": 131072,
+        "t": "upload_ack"
+      },
+      "name": "upload_ack",
+      "plaintext_hex": "017b2274223a2275706c6f61645f61636b222c226964223a31312c227265636569766564223a3133313037327d"
+    },
+    {
+      "json": {
+        "id": 11,
+        "path": "C:\\data\\peer\\uploads\\s1\\1795800000123-report.pdf",
+        "t": "upload_done"
+      },
+      "name": "upload_done",
+      "plaintext_hex": "017b2274223a2275706c6f61645f646f6e65222c226964223a31312c2270617468223a22433a5c5c646174615c5c706565725c5c75706c6f6164735c5c73315c5c313739353830303030303132332d7265706f72742e706466227d"
+    },
+    {
+      "json": {
+        "id": 12,
+        "reason": "not_an_image",
+        "t": "upload_refused"
+      },
+      "name": "upload_refused",
+      "plaintext_hex": "017b2274223a2275706c6f61645f72656675736564222c226964223a31322c22726561736f6e223a226e6f745f616e5f696d616765227d"
+    },
+    {
+      "json": null,
+      "name": "upload_chunk",
+      "plaintext_hex": "06000000000000000b0000000000040000255044462d312e370a"
     }
   ]
 }

@@ -81,11 +81,11 @@
   ],
   "pair_messages": [
     {
-      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a312c226e616d65223a224c6170746f70227d",
+      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a322c226e616d65223a224c6170746f70227d",
       "json": {
         "name": "Laptop",
         "t": "hello",
-        "v": 1
+        "v": 2
       }
     },
     {
@@ -113,11 +113,11 @@
   ],
   "pair_messages_invalid": [
     {
-      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a322c226e616d65223a2278227d",
-      "error": "Version(2)"
+      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a312c226e616d65223a2278227d",
+      "error": "Version(1)"
     },
     {
-      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a312c226e616d65223a22615c6e62227d",
+      "bytes_hex": "7b2274223a2268656c6c6f222c2276223a322c226e616d65223a22615c6e62227d",
       "error": "Name"
     },
     {

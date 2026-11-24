@@ -257,14 +257,14 @@ mod tests {
 
     #[test]
     fn pair_messages_are_strict() {
-        let hello = PairMsg::Hello { v: 1, name: "Laptop".into() };
+        let hello = PairMsg::Hello { v: 2, name: "Laptop".into() };
         assert_eq!(PairMsg::decode(&hello.encode().unwrap()).unwrap(), hello);
         let accept = PairMsg::Accept { device_id: crate::ids::device_id(&[1; 32]), level: Level::Full };
         assert_eq!(PairMsg::decode(&accept.encode().unwrap()).unwrap(), accept);
         let deny = PairMsg::Deny { reason: DenyReason::Denied };
         assert_eq!(PairMsg::decode(&deny.encode().unwrap()).unwrap(), deny);
-        assert_eq!(PairMsg::decode(br#"{"t":"hello","v":2,"name":"x"}"#), Err(PairError::Version(2)));
-        assert_eq!(PairMsg::decode(br#"{"t":"hello","v":1,"name":"a\nb"}"#), Err(PairError::Name));
+        assert_eq!(PairMsg::decode(br#"{"t":"hello","v":1,"name":"x"}"#), Err(PairError::Version(1)));
+        assert_eq!(PairMsg::decode(br#"{"t":"hello","v":2,"name":"a\nb"}"#), Err(PairError::Name));
         assert_eq!(PairMsg::decode(br#"{"t":"accept","device_id":"x","level":"full"}"#), Err(PairError::DeviceId));
         assert_eq!(PairMsg::decode(br#"{"t":"accept","device_id":"aaaaaaaaaaaaaaaaaaaaaaaaaa","level":"root"}"#), Err(PairError::Format));
         assert_eq!(PairMsg::decode(&vec![b' '; crate::limits::MAX_PAIR_MESSAGE + 1]), Err(PairError::TooLarge));

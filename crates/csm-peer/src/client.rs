@@ -355,6 +355,11 @@ impl Connection {
         self.link.send_msg(msg).map_err(|_| CallError::Closed)
     }
 
+    /// Sends a client frame that is not a control message (an upload chunk, or terminal input).
+    pub fn send_frame(&self, frame: &Frame) -> Result<(), CallError> {
+        self.link.send_frame(frame).map_err(|_| CallError::Closed)
+    }
+
     /// The next thing the host sent that is not a reply, or `None` after `wait`.
     pub fn recv_timeout(&self, wait: Duration) -> Option<Incoming> {
         self.rx.recv_timeout(wait).ok()
