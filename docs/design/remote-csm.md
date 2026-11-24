@@ -460,8 +460,8 @@ One base, two profiles:
 | Open with (editor) | `open_with` (`docs/tools.md:500`) | A **client-side** Open with list per remote host, with templates such as `code --remote ssh-remote+office {path}` or a VS Code Remote Tunnels URI. MVP: hidden. |
 | Ctrl+click link | `open_url` (`docs/tools.md:501`) | Open in the **client's** browser after the same http/https check. For `localhost` or `127.0.0.1` links, warn "this points to OFFICE's localhost". Later: offer a port forward over the peer channel (as VS Code does). |
 | Run ready URL | `post_run_url` with a loopback target (`runs/mod.rs:297`) | Same as links: client browser, with a port-forward offer later. |
-| File drop onto a pane | Paths are pasted with `session_send_text` (`screens/file_drop.rs:1-12`) | The client's paths mean nothing on the server. MVP: refuse with a toast. Later: upload to a temp or project folder on the server, then paste the server paths. |
-| Image paste (Ctrl+V with an image) | Sends raw `^V` so Claude reads the clipboard itself (`terminal/view.rs:506-511`) | Claude reads the **office** clipboard, so the image is lost. Later: upload the image and paste its path; Claude Code accepts image paths. MVP: toast "image paste is not supported remotely". |
+| File drop onto a pane | Paths are pasted with `session_send_text` (`screens/file_drop.rs:1-12`) | The client's paths mean nothing on the server. MVP: refuse with a toast. Later: upload to a temp or project folder on the server, then paste the server paths. Design: "Uploads: file drops and image paste" (end of this file). |
+| Image paste (Ctrl+V with an image) | Sends raw `^V` so Claude reads the clipboard itself (`terminal/view.rs:506-511`) | Claude reads the **office** clipboard, so the image is lost. Later: upload the image and paste its path; Claude Code accepts image paths. MVP: toast "image paste is not supported remotely". Design: "Uploads: file drops and image paste" (end of this file). |
 | OSC 52 copy | `Engine::take_clipboard` → `Notice::Clipboard` (`engine_backend.rs:276`) | Send only to the driving client. Do not change the office clipboard while a peer drives it. |
 | Text paste | `TerminalSource::paste` (bracketed) | Text from the client clipboard, bracketed by the server (untrusted rule). |
 | New-session folder picker | Native dialog (`apps/codeshell/src/main.rs:170`) | That would browse the laptop. Replace it with a server-side folder browser: a new read tool `fs_list_dir` (folders only, consent for MCP), plus recent and pinned folders. |
@@ -1195,3 +1195,176 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
   hold others (its writers wait), but a saturated channel still fills the shared outbox bound (512). A test with two
   saturated channels is not written.
 - The routing secret (the per-device routing token derived from the public key) is still open, as recorded above.
+
+---
+
+## Uploads: file drops and image paste (P3, `csm-peer-proto`, `csm-peer`, `csm-remote`, `csm-engine`, `csm-ui`)
+
+Status: design only (step 0). Nothing below is built yet. The rows for file drop and image paste in
+section 6 point here.
+
+**Goal.** A remote window (laptop, showing an office's sessions) can drop files onto a pane and paste
+an image (Ctrl+V with an image on the laptop's clipboard). The laptop uploads the bytes over the
+existing end-to-end encrypted peer link (direct or relay). The office writes them to disk and pastes
+the office paths into the session the way a local drop does: bracketed, quoted for the session's
+shell, never followed by Enter.
+
+### 1. Messages
+
+Control messages are `Msg` variants (JSON, inside Noise). Bulk bytes are a binary frame kind, so they
+never pass through JSON or base64. Every upload has an `id: u64` chosen by the laptop, unique per link.
+
+| Direction | Message | Fields and rules |
+|---|---|---|
+| C→S | `UploadBegin` (control) | `id`, `session` (an existing session id), `name` (a label only, see 4), `size` (declared bytes), `kind: file \| image`. Refused when `size` is over the limit for the kind. |
+| C→S | `UploadChunk` (binary frame, `Frame::UploadChunk`) | `id`, `offset`, `bytes`. `offset` must equal the bytes received so far. At most 256 KiB per chunk. |
+| C→S | `UploadEnd` (control) | `id`, `sha256` (hex of the whole file). The written file is checked against `size` and `sha256`. |
+| C→S | `UploadCancel` (control) | `id`. The office deletes the partial file. Also sent by the laptop on the Cancel button. |
+| S→C | `UploadAccepted` (control) | `id`. Sent after `UploadBegin` passes the checks and the `.part` file exists. |
+| S→C | `UploadProgress` (control, added to the list) | `id`, `received`. Sent every 1 MiB written to disk, so the laptop sees disk pace as well as link pace. |
+| S→C | `UploadDone` (control) | `id`, `path` (absolute office path of the final file). |
+| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| NotAllowed \| Forbidden \| NoSession \| BadName \| NotAnImage \| DiskFull \| Corrupt \| Stalled \| Failed`. `Forbidden` covers server mode off, a revoked device and a level below Full. |
+
+Paste is not part of these messages. After the laptop has `UploadDone` for every file in a drop, it calls
+a tool (section 5).
+
+`PROTOCOL_VERSION` in `csm-peer-proto/src/msg.rs` goes from 1 to 2. Client and server must match, so a
+mismatched pair refuses at `Hello` as today. The regenerated vectors cover every new message and the new
+frame kind, plus a refusal of a version-1 peer. The relay protocol (`csm-remote-proto`) carries frames
+opaquely and needs no version change unless its own frame kinds change. The relay's `FrameKind` counters
+see the new bytes as ordinary data.
+
+### 2. Chunk size, flow control and fairness
+
+- **Chunk:** 256 KiB (`UPLOAD_CHUNK`). The laptop reads the file in pieces on a background thread.
+- **One lane, one window.** Uploads use the same channel machinery as terminal streams: the same
+  per-channel window (512 frames / 2 MiB, `WINDOW_FRAMES` / `WINDOW_BYTES`), the same pacing from the
+  relay's Welcome rates, and the same `stalled` queue. A channel waiting for pacing keeps its own items
+  in order and does not hold the others. Control messages keep their priority lane.
+- **Limits on the wire:** at most 1 chunk in flight per upload, and at most 2 uploads active per device.
+  Further drops wait in the laptop's queue. The office also caps active uploads at 8 across all devices.
+- **Fairness with terminals:** the office enqueues an upload chunk only while the outbox has room for it
+  and no terminal frame is waiting for the same link. A terminal frame therefore never waits behind more
+  than one chunk, which is 256 KiB at the announced rate. On the direct link the same bounds apply to the writer.
+- **Disk backpressure:** the office stops reading from the link while more than 4 MiB is waiting to be
+  written to disk. `UploadProgress` lets the laptop see this.
+- **Stall:** no `UploadAccepted`, `UploadProgress` or channel ack for 30 s ends the upload with `Stalled`
+  and deletes the partial file. The link itself stays up.
+
+### 3. Limits (configurable constants in `csm-peer-proto/src/limits.rs`)
+
+| Limit | Value | Enforced by |
+|---|---|---|
+| File size | 64 MiB | laptop before reading; office at `UploadBegin` and while writing |
+| Image size | 32 MiB | same (images are a kind of their own) |
+| Drop total | 256 MiB | laptop before the first `UploadBegin` |
+| Files per drop | 20 | laptop before the first `UploadBegin` |
+| Chunk | 256 KiB | office rejects larger frames |
+
+The office is authoritative. If the bytes written go past the declared `size`, the office cancels and
+refuses. A short file at `UploadEnd` is refused as `Corrupt`.
+
+Directories and symbolic links to directories in a drop are refused by the laptop with a toast ("folders
+are not supported yet"). Only regular files are read. The office does not assume the laptop checked.
+
+### 4. Storage, names and sanitising
+
+- **Layout:** `<data>/peer/uploads/<session-id>/<unix-ms>-<sanitised-name>`, for example
+  `.../uploads/<session-id>/1795800000123-report.pdf`. Never inside a project folder.
+- `<session-id>` is used as a folder name only after it matches `[A-Za-z0-9_-]{1,64}` and names an
+  existing session. Anything else is `NoSession`.
+- **Partial files:** the office writes `<final>.part` and renames it to the final name only after the
+  `UploadEnd` checks pass. A rename never overwrites: if the name exists, a suffix ` (n)` is added.
+- **Directory:** created with the owner-only permissions the peer identity files use (`fsperm.rs`).
+- **Sanitising the name** (the laptop's name is a label, never trusted):
+  1. Keep only the last component after splitting on both `\` and `/`.
+  2. Reject `.` and `..`; an empty result becomes `file` (or `image` for kind image).
+  3. Drop control characters and invisible format characters (the same rule as `csm_core::dropped_paths`).
+  4. Replace `< > : " | ? *` with `_`. Trim trailing dots and spaces.
+  5. A reserved Windows name (`CON PRN AUX NUL COM1-9 LPT1-9`, with or without an extension) gets a `_` prefix.
+  6. Cap at 120 bytes of UTF-8, cut on a character boundary and keep the extension.
+  7. For kind image the name is forced to `clipboard.<ext>`, where `<ext>` comes from the sniffed type.
+- **Image check:** the first chunk of an image upload must start with the magic bytes of PNG, JPEG, GIF,
+  WebP or BMP. Otherwise `NotAnImage`.
+- **Integrity:** the office hashes while writing and compares with `UploadEnd.sha256`. On mismatch it
+  deletes the file and refuses with `Corrupt`.
+- **Reparse points:** the office never follows a symlink or junction under the uploads root.
+
+### 5. Paste after the drop
+
+- The laptop waits until **every** file in a drop is `UploadDone`. If one file fails, it pastes nothing
+  from that drop, shows which file failed and why, and leaves the finished files on the office for the
+  7-day cleanup. (All-or-nothing avoids a prompt with half the paths.)
+- Then it calls a **new office tool** `session_drop_paths {session_id, paths[]}` in `csm-engine`. The tool
+  builds the payload with `csm_core::dropped_paths::build_dropped_paths_payload` using the **office's**
+  quoting for that session's shell kind (native, WSL or SSH), and sends it with `session_send_text`,
+  `force: true`, as a bracketed paste, never followed by Enter. Quoting happens on the machine that owns
+  the shell, never on the laptop.
+- The local drop (`screens/file_drop.rs`) moves to the same tool, so both paths share one code path.
+  The tool's declared effect is "types text into the session".
+- The window ends with `FocusTerminal` for the session, as today.
+
+### 6. Image paste flow
+
+- Today the terminal view sends a raw `^V` on Ctrl+V with an image (`terminal/view.rs:506-511`), so Claude
+  reads the **office** clipboard. In a remote window that is wrong, so the rule changes: **a remote window
+  never sends raw `^V`.**
+- On Ctrl+V in a remote window the clipboard is read on a background thread, never in a frame.
+  - If the clipboard has an image: encode it as PNG (unless it is already PNG), reject it above 32 MiB,
+    and upload it as one file of kind `image`. When it is done, call `session_drop_paths` with that path.
+  - If it has text: paste the text, which the office brackets (`term_input {kind: paste}`), since it is untrusted.
+  - If it has nothing usable: a toast ("nothing to paste").
+- Local windows keep `^V` unchanged.
+
+### 7. Refusals, failure cases and restart
+
+- **Refused unless:** server mode is on, the device is not revoked, and the device's level is Full (an
+  upload counts as typing into the session). Otherwise `Forbidden`, checked at `UploadBegin` and again
+  at `UploadEnd`.
+- **Link drop mid-upload:** restart, not resume. The office deletes the `.part` file when the link closes.
+  The laptop shows "upload failed: the link dropped", and the user drops again. A paste is not idempotent,
+  so nothing retries it automatically. (Resume would need an offset handshake and a partial-file index, for
+  a case that is rare on a LAN or a relay.)
+- **Cancel:** the laptop sends `UploadCancel`; the office deletes the partial file and sends no reply.
+  Cancelling a drop cancels every upload in it.
+- **Disk full or write error:** `DiskFull` or `Failed`; the partial file is deleted; the link stays up.
+- **Office quits mid-upload:** the `.part` files are removed by the cleanup on the next start.
+- **Revoke or server mode off mid-upload:** the office sends `Bye`, as for terminals, and deletes the partial files.
+- Nothing in these paths panics: all input is untrusted (section 4 and CLAUDE.md, "never crash on input").
+
+### 8. Cleanup
+
+- On office start, on a background thread (never before the UI shows), delete every entry under
+  `<data>/peer/uploads/` older than **7 days** by modification time. `.part` files older than 1 day go too.
+- Only canonical children of the uploads root are touched. Reparse points are skipped, not followed.
+  Nothing outside the uploads tree is touched.
+- Cleanup errors are logged to `remote-access.log` as a count and never stop the server.
+
+### 9. Logging and audit
+
+- `remote-access.log` gets one line when an upload starts, and one when it finishes, is refused or is cancelled:
+  `upload begin session=<id> device=<id> name="<sanitised>" size=<bytes> kind=<file|image>`,
+  `upload done session=<id> device=<id> size=<bytes> path=<path>`, and
+  `upload refused session=<id> device=<id> reason=<reason>`.
+- Never the contents, never the hash, never the laptop's own path.
+- The paste itself goes through the existing tool audit, as `session_drop_paths`.
+
+### 10. Build steps
+
+1. **Protocol and office side (`csm-peer-proto`, `csm-peer`, `csm-engine`).** The new messages and frame
+   kind, `PROTOCOL_VERSION` 2, regenerated vectors. A new `csm-peer` upload store: limits, sanitising,
+   `.part` files, hashing, `UploadProgress`, stall, cleanup and the log lines. The `session_drop_paths` tool
+   with its declared effect. Tests with the in-process peer harness (`csm-peer/tests`): upload round trip;
+   each refusal; a corrupt hash; a name with `..` or a reserved name; a link drop mid-upload that leaves no
+   `.part`; the stall; a terminal stream still getting its frames during a large upload; cleanup that does
+   not touch files outside the root.
+2. **Laptop side (`csm-remote`, `csm-ui`, `apps/codeshell`).** The upload client (background reads, chunking,
+   window and progress), the progress toast with cancel, a queue of drops, the drop path in
+   `screens/file_drop.rs` for remote windows, and moving the local drop to `session_drop_paths`. Tests: a
+   multi-file drop through the relay test rig, cancel, folder refusal, and the all-or-nothing paste.
+3. **Image paste (`csm-ui`, `csm-remote`).** The remote Ctrl+V branch (no raw `^V`), the clipboard read and PNG
+   encode on a background thread, the 32 MiB check, and the image magic check on the office. Tests: an image
+   paste produces a paste of the office path; a clipboard with no image still pastes text; a local window
+   still sends `^V`.
+
+Each step leaves `cargo test --workspace` and clippy green. The P3 rows in section 7 are updated when step 3 lands.
