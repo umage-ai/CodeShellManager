@@ -138,6 +138,9 @@ pub struct RunView {
     /// (absolute http/https only).
     pub post_run_url: Option<String>,
     pub exit_code: Option<i32>,
+    /// Whole seconds a running run has been going (None when not running or unknown).
+    #[serde(default)]
+    pub elapsed_secs: Option<u64>,
 }
 
 /// One "Open with" entry as a session's menus show it.

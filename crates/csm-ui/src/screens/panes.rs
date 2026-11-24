@@ -1154,6 +1154,7 @@ pub fn pane(
     // Maximize means nothing in Focus (one pane already fills the canvas) or in its own window.
     let can_max = !o.torn && (o.maximized || o.mode != Some(LayoutMode::Focus));
     let run = if o.mini { None } else { s.default_run() };
+    let run_running = run.is_some_and(|r| r.state == crate::model::RunState::Running);
     let run_label = run.map(|r| r.label.clone()).unwrap_or_default();
     let run_main_w = icon::XS + space::XS + widgets::text_width(ui, &run_label, theme::medium(text::CAPTION)) + space::SM + space::XS + space::XXS;
     let run_caret_w = icon::XS + space::SM;
@@ -1175,6 +1176,9 @@ pub fn pane(
     let actions_w = space::SM + widgets::text_width(ui, "Actions", actions_font.clone()) + space::XS + icon::XS + space::SM;
     let actions_labelled = !o.mini && take_room(&mut room, actions_w - size::CONTROL_SM);
     let editor_on = editor.is_some() && take_room(&mut room, icon_w);
+    // Sleep (moon), beside Minimize: the last optional control to keep its room. A header too
+    // narrow for it leaves Sleep to the Actions menu.
+    let sleep_on = !o.mini && s.status.is_live() && take_room(&mut room, icon_w);
 
     // The window bar.
     if ctl(ui, "x", false, "Close session", &mut x) {
@@ -1189,6 +1193,9 @@ pub fn pane(
     }
     if !o.torn && ctl(ui, "min", false, "Minimize", &mut x) {
         actions.push(Action::Tool("pane_minimize", json!({"session_id": s.id, "group": scope.key()})));
+    }
+    if sleep_on && ctl(ui, "moon", false, "Sleep — end the process, keep it in the sidebar", &mut x) {
+        actions.push(Action::Tool("session_sleep", json!({"session_id": s.id})));
     }
     x -= space::XS;
     if head_resp.double_clicked() && can_max && !o.mini {
@@ -1265,12 +1272,17 @@ pub fn pane(
                 p.rect_filled(caret.shrink(size::HAIRLINE), CornerRadius::same(radius::sm().saturating_sub(1)), t.row_sel);
             }
             let ir = Rect::from_min_size(pos2(main.min.x + space::SM - size::HAIRLINE, cy - icon::XS / 2.0), Vec2::splat(icon::XS));
-            icons::paint(ui, ir, "play", icon::XS, t.green);
+            if run_running {
+                // A still dot, not a spinner: a running run must not keep an idle window repainting.
+                p.circle_filled(ir.center(), icon::XS / 4.0, t.blue);
+            } else {
+                icons::paint(ui, ir, "play", icon::XS, t.green);
+            }
             p.text(pos2(ir.max.x + space::XS + size::HAIRLINE, cy), Align2::LEFT_CENTER, &label, theme::medium(text::CAPTION), t.fg2);
             icons::paint(ui, caret, "chevD", icon::XS, t.fg2);
-            named(&rm, WidgetType::Button, format!("Run {label} · {}", s.name));
+            named(&rm, WidgetType::Button, if run_running { format!("Running {label}, show it · {}", s.name) } else { format!("Run {label} · {}", s.name) });
             named(&rc, WidgetType::Button, "All run commands");
-            if rm.on_hover_text("Run the default command  F5").clicked() {
+            if rm.on_hover_text(if run_running { "Running: show its output  F5 (Ctrl+Shift+F5 restarts)" } else { "Run the default command  F5" }).clicked() {
                 actions.push(Action::Tool("run_start", json!({"session_id": s.id})));
             }
             if rc.on_hover_text("All run commands").clicked() {

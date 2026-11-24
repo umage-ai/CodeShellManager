@@ -89,6 +89,10 @@ fn run(r: &WireRun, now_ms: i64) -> RunView {
         mode: r.mode.clone(),
         post_run_url: r.post_run_url.clone(),
         exit_code: r.exit_code,
+        elapsed_secs: match (r.phase, r.started_ms) {
+            (RunPhase::Running | RunPhase::Starting, Some(a)) => Some(u64::try_from(now_ms.saturating_sub(a).max(0) / 1000).unwrap_or(0)),
+            _ => None,
+        },
     }
 }
 
