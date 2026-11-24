@@ -103,8 +103,25 @@ pub fn doctor(host: &Host, req: &DoctorRequest) -> DoctorReport {
     DoctorReport { checks }
 }
 
+/// What this csm looks for: its channel and the app id that names the discovery record and the
+/// pipe (`craft-<user>-<app id>-<pid>`), plus what is actually published.
+fn channel_note(remote: &RemoteOptions) -> String {
+    let ch = csm_engine::channel::CURRENT;
+    let mut note = format!("{} channel, looking for app id {} (pipe craft-<user>-{}-<pid>)", ch.id(), ch.ipc_app_id(), ch.ipc_app_id());
+    match csm_mcp::published_apps(remote.runtime.as_ref()) {
+        Ok(apps) if apps.is_empty() => note.push_str("; no CodeShellManager is published"),
+        Ok(apps) => {
+            let list: Vec<String> = apps.iter().map(|(a, p)| format!("{a} (pid {p})")).collect();
+            note.push_str(&format!("; published: {}", list.join(", ")));
+        }
+        Err(e) => note.push_str(&format!("; could not list the published apps: {e}")),
+    }
+    note
+}
+
 fn check_app(remote: &RemoteOptions) -> Check {
     let name = "app";
+    let note = channel_note(remote);
     let options = RemoteOptions { start: false, ..remote.clone() };
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("csm-doctor-app".into()).spawn(move || {
@@ -114,8 +131,8 @@ fn check_app(remote: &RemoteOptions) -> Check {
         return Check::new(name, CheckStatus::Fail, "could not start the check");
     }
     match rx.recv_timeout(Duration::from_secs(8)) {
-        Ok(Ok(tools)) => Check::new(name, CheckStatus::Ok, format!("CodeShellManager is running ({} tools).", tools.len())),
-        Ok(Err(e)) => Check::new(name, CheckStatus::Warn, e.to_string())
+        Ok(Ok(tools)) => Check::new(name, CheckStatus::Ok, format!("CodeShellManager is running ({} tools); {note}.", tools.len())),
+        Ok(Err(e)) => Check::new(name, CheckStatus::Warn, format!("{e} [{note}]"))
             .fix("Start CodeShellManager, or run csm with --start. Setup and doctor work without it."),
         Err(_) => Check::new(name, CheckStatus::Fail, "CodeShellManager did not answer within 8 seconds.")
             .fix("It may be stuck: quit it from the task manager and start it again."),
@@ -346,4 +363,21 @@ fn points_at_old_folder(c: &Client, before: Option<&str>, command: &[String]) ->
     before
         .and_then(|t| crate::config::read_entry(c, t).ok().flatten())
         .is_some_and(|e| crate::clients::is_moved_entry(&e, Path::new(program)))
+}
+
+#[cfg(test)]
+mod channel_note_tests {
+    use super::*;
+
+    #[test]
+    fn the_note_names_the_channel_and_the_app_id_it_looks_for() {
+        let dir = std::env::temp_dir().join(format!("csm-doctor-note-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let remote = RemoteOptions { runtime: Some(csm_mcp::RuntimeDir::at(dir.join("rt")).unwrap()), ..Default::default() };
+        let note = channel_note(&remote);
+        let ch = csm_engine::channel::CURRENT;
+        assert!(note.contains(ch.id()) && note.contains(ch.ipc_app_id()), "{note}");
+        assert!(note.contains("no CodeShellManager is published"), "{note}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

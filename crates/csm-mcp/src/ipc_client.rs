@@ -180,6 +180,20 @@ impl RemoteBackend {
     }
 }
 
+/// The app ids (`codeshell`, `codeshell-beta`) with a live instance in the runtime directory, with
+/// their pids, sorted. For `csm doctor`: it shows which channel's app is up when this build
+/// looks for another one.
+pub fn published_apps(runtime: Option<&RuntimeDir>) -> Result<Vec<(String, u32)>, BridgeError> {
+    let dir = match runtime {
+        Some(d) => d.clone(),
+        None => RuntimeDir::resolve().map_err(|e| unreachable("could not open the runtime directory", &e))?,
+    };
+    let mut all: Vec<(String, u32)> =
+        Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().map(|r| (r.app, r.pid)).collect();
+    all.sort();
+    Ok(all)
+}
+
 /// A second launch of the app: when this user's app already runs on the same state file (and is not
 /// a `--clean` one), ask it to show its window (`app.activate`, which restores it from the taskbar
 /// or the tray) and answer true, so the new process can exit instead of opening a second window
