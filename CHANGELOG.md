@@ -107,6 +107,9 @@ closed (`Ctrl+Shift+T`) and Recent sessions (`Ctrl+Shift+E`); `.csm` backup expo
 file drop; Claude slash-command menu; `--clean`.
 
 ### Changed
+- **A slashed zero in the terminal**: at small sizes the dot inside the default font's `0` filled in and
+  it read as an `8`. The default terminal font now draws `0` with a slash through it. A font you
+  chose yourself (`--font`) is drawn as designed.
 
 - **Quitting closes Claude sessions several at a time** (Settings > General > "Claude sessions closed at once when quitting", `QuitClaudeConcurrency`, default 4, 1 to 8). With about 70 Claude sessions a quit took 5 to 8 minutes; it now takes around a minute and a half. Claude rewrites `~/.claude.json` as it exits, so the quit keeps a copy of it first and restores that copy if the file is left unreadable (some individual updates to it can still be lost); set the number to 1 for the old one-at-a-time quit. The shutdown board says how many close at once and shows several rows closing together. See docs/quit.md.
 - The relay server (`csm-relay`) and the Phone remote add-on moved out of this repository to the private
