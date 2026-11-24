@@ -1217,13 +1217,13 @@ never pass through JSON or base64. Every upload has an `id: u64` chosen by the l
 | Direction | Message | Fields and rules |
 |---|---|---|
 | C→S | `UploadBegin` (control) | `id`, `session` (an existing session id), `name` (a label only, see 4), `size` (declared bytes), `kind: file \| image`. Refused when `size` is over the limit for the kind. |
-| C→S | `UploadChunk` (binary frame, `Frame::UploadChunk`) | `id`, `offset`, `bytes`. `offset` must equal the bytes received so far. At most 256 KiB per chunk. |
+| C→S | `UploadChunk` (binary frame, `Frame::UploadChunk`) | `id`, `offset`, `bytes`. `offset` must equal the bytes received so far. At most 32 KiB per chunk (`UPLOAD_CHUNK`, one Noise message). At most 8 unacknowledged chunks per upload (section 2). Sent only after `UploadAccepted`. |
 | C→S | `UploadEnd` (control) | `id`, `sha256` (hex of the whole file). The written file is checked against `size` and `sha256`. |
 | C→S | `UploadCancel` (control) | `id`. The office deletes the partial file. Also sent by the laptop on the Cancel button. |
-| S→C | `UploadAccepted` (control) | `id`. Sent after `UploadBegin` passes the checks and the `.part` file exists. |
-| S→C | `UploadProgress` (control, added to the list) | `id`, `received`. Sent every 1 MiB written to disk, so the laptop sees disk pace as well as link pace. |
+| S→C | `UploadAccepted` (control) | `id`. Sent after `UploadBegin` passes the checks and the `.part` file exists. The laptop sends no chunk before it. |
+| S→C | `UploadAck` (control) | `id`, `received` (bytes written to the `.part` file so far). Sent after every 4 chunks are written and at `UploadEnd`. This is the only credit for the chunk window (section 2). |
 | S→C | `UploadDone` (control) | `id`, `path` (absolute office path of the final file). |
-| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| NotAllowed \| Forbidden \| NoSession \| BadName \| NotAnImage \| DiskFull \| Corrupt \| Stalled \| Failed`. `Forbidden` covers server mode off, a revoked device and a level below Full. |
+| S→C | `UploadRefused` (control) | `id`, `reason: TooLarge \| TooMany \| NotAllowed \| Forbidden \| NoSession \| BadName \| NotAnImage \| Overrun \| DiskFull \| Corrupt \| Stalled \| Failed`. `Overrun` is a chunk beyond the credit (section 2). `Forbidden` covers server mode off, a revoked device and a level below Full. |
 
 Paste is not part of these messages. After the laptop has `UploadDone` for every file in a drop, it calls
 a tool (section 5).
@@ -1234,22 +1234,66 @@ frame kind, plus a refusal of a version-1 peer. The relay protocol (`csm-remote-
 opaquely and needs no version change unless its own frame kinds change. The relay's `FrameKind` counters
 see the new bytes as ordinary data.
 
-### 2. Chunk size, flow control and fairness
+### 2. Frames, chunk size, flow control and fairness
 
-- **Chunk:** 256 KiB (`UPLOAD_CHUNK`). The laptop reads the file in pieces on a background thread.
-- **One lane, one window.** Uploads use the same channel machinery as terminal streams: the same
-  per-channel window (512 frames / 2 MiB, `WINDOW_FRAMES` / `WINDOW_BYTES`), the same pacing from the
-  relay's Welcome rates, and the same `stalled` queue. A channel waiting for pacing keeps its own items
-  in order and does not hold the others. Control messages keep their priority lane.
-- **Limits on the wire:** at most 1 chunk in flight per upload, and at most 2 uploads active per device.
-  Further drops wait in the laptop's queue. The office also caps active uploads at 8 across all devices.
-- **Fairness with terminals:** the office enqueues an upload chunk only while the outbox has room for it
-  and no terminal frame is waiting for the same link. A terminal frame therefore never waits behind more
-  than one chunk, which is 256 KiB at the announced rate. On the direct link the same bounds apply to the writer.
-- **Disk backpressure:** the office stops reading from the link while more than 4 MiB is waiting to be
-  written to disk. `UploadProgress` lets the laptop see this.
-- **Stall:** no `UploadAccepted`, `UploadProgress` or channel ack for 30 s ends the upload with `Stalled`
-  and deletes the partial file. The link itself stays up.
+**Frame size.** Every non-control frame is one Noise message (at most `MAX_FRAME_LEN` = 65,535 bytes,
+so at most `MAX_PLAINTEXT` = 65,519 bytes of plaintext). Only control JSON is fragmented. So an upload
+chunk is one binary frame of at most `UPLOAD_CHUNK` = 32 KiB (`MAX_TERM_CHUNK`, the same as a terminal
+chunk). Its plaintext is 1 kind byte + 8 bytes `id` + 8 bytes `offset` + up to 32,768 bytes of data, so
+at most 32,785 bytes, and 32,801 bytes on the wire with the 16-byte tag. That leaves room in the
+Noise limit. The codec refuses a chunk over `UPLOAD_CHUNK` on encode and decode, as it does for
+`term_data`. (A 256 KiB chunk cannot be one frame and is not used.)
+
+**Direction.** Upload data goes laptop to office only. The sender is the laptop's single writer for the
+link. Office to laptop carries only small control messages (`UploadAccepted`, `UploadAck`, `UploadDone`,
+`UploadRefused`). The existing `WINDOW_FRAMES` / `WINDOW_BYTES` (512 frames / 2 MiB per channel) and the
+office's pacing govern the office's writes. They do not govern the laptop's writes, so uploads need
+their own credit scheme.
+
+**Credit (per upload).**
+- The laptop sends no chunk before `UploadAccepted`. After that it may have at most `UPLOAD_CREDIT` = 8
+  chunks (256 KiB) sent but not yet acknowledged for one upload. It never sends the ninth.
+- The office sends `UploadAck {id, received}` after every `UPLOAD_ACK_EVERY` = 4 chunks (128 KiB) have
+  been written to the `.part` file (the `write` call returned; no fsync per chunk), and once more at
+  `UploadEnd`. `received` is the byte count written so far. Reverse traffic is one small message per
+  128 KiB. The ack is the only credit; `UploadProgress` is removed.
+- The office keeps a bounded queue per upload, with room for `UPLOAD_CREDIT` chunks, between its link
+  reader and its disk writer thread. Because the laptop never has more than 8 chunks unacknowledged, the
+  reader never waits for the queue, so reading the link never waits for the disk. A chunk beyond the
+  credit (a ninth unacknowledged chunk) is a protocol violation: the office refuses with `Overrun`, deletes
+  the partial file and keeps the link up.
+- Memory on the office is bounded: at most 8 active uploads (section 3) times 8 chunks times 32 KiB,
+  which is 2 MiB of queued chunks in the worst case.
+
+**Laptop writer order (direct and relay links).** The laptop writer has three lanes, drained in order:
+1. Control messages and `TermInput` (keys, paste, mouse). These are never queued behind a chunk.
+2. Other terminal frames and the rest of the protocol traffic.
+3. Upload chunks.
+
+The writer takes one chunk from lane 3 only when lanes 1 and 2 are empty. A write that has started
+finishes first, so a keystroke waits for at most one 32.8 KiB frame. On the direct link that is one TCP
+write, which is about 26 ms at 10 Mbit/s. Active uploads are served round robin, one chunk each per turn,
+so a multi-file drop does not finish one file before starting the next.
+
+**Relay pacing.** The relay announces per-channel rates in its `Welcome` (256 KiB/s and 50 frames/s
+today; see the csm-relay row of the options table earlier in this file). The laptop's writer waits on
+the same pacing before every frame it sends, control and chunks alike. The design assumes the relay's
+caps apply to each direction. Step 2 must confirm this. If they apply only to the office, the laptop
+still paces itself to the same rates, so the behaviour does not change. A consequence to expect: a
+large upload over the relay runs at about 256 KiB/s. A 64 MiB file takes about 4.5 minutes. Keystrokes
+share the same bucket, but lane 3 takes a token only when lane 1 is empty, so a keystroke never waits
+behind an upload token.
+
+**Concurrency.** At most 2 uploads are active per device on the laptop, and the rest wait in the laptop's
+queue. The office refuses a ninth active upload across all devices (`TooMany`, with a total cap of 8).
+
+**Fairness with terminal output.** Upload data never travels office to laptop, so terminal output is
+never queued behind an upload chunk. The office's acks are small control messages on the control lane.
+
+**Stall.** The laptop starts a 30 s timer (`UPLOAD_STALL`) while it has chunks unacknowledged. It resets
+the timer on every `UploadAck`. On expiry it sends `UploadCancel`, shows "upload stalled", and the
+upload is over. The office applies the same 30 s rule from the other side: no chunk for an open upload
+in 30 s ends it with `Stalled` and deletes the partial file. Neither rule drops the link.
 
 ### 3. Limits (configurable constants in `csm-peer-proto/src/limits.rs`)
 
@@ -1259,13 +1303,13 @@ see the new bytes as ordinary data.
 | Image size | 32 MiB | same (images are a kind of their own) |
 | Drop total | 256 MiB | laptop before the first `UploadBegin` |
 | Files per drop | 20 | laptop before the first `UploadBegin` |
-| Chunk | 256 KiB | office rejects larger frames |
+| Chunk | 32 KiB (`UPLOAD_CHUNK` = `MAX_TERM_CHUNK`) | codec, on encode and on decode; a larger chunk is refused |
+| Unacknowledged chunks per upload | 8 (`UPLOAD_CREDIT`, 256 KiB) | laptop never sends a ninth; office refuses `Overrun` |
+| Ack interval | every 4 chunks (`UPLOAD_ACK_EVERY`, 128 KiB), and at `UploadEnd` | office |
+| Stall | 30 s (`UPLOAD_STALL`) with chunks outstanding (laptop) or no chunk (office) | both ends |
+| Active uploads | 2 per device (laptop); 8 in total (`UPLOAD_ACTIVE_TOTAL`) | laptop queue; office refuses `TooMany` |
+| Queued bytes on the office | 8 uploads x 8 chunks x 32 KiB = 2 MiB at most | office per-upload queues |
 
-The office is authoritative. If the bytes written go past the declared `size`, the office cancels and
-refuses. A short file at `UploadEnd` is refused as `Corrupt`.
-
-Directories and symbolic links to directories in a drop are refused by the laptop with a toast ("folders
-are not supported yet"). Only regular files are read. The office does not assume the laptop checked.
 
 ### 4. Storage, names and sanitising
 
@@ -1353,14 +1397,14 @@ are not supported yet"). Only regular files are read. The office does not assume
 
 1. **Protocol and office side (`csm-peer-proto`, `csm-peer`, `csm-engine`).** The new messages and frame
    kind, `PROTOCOL_VERSION` 2, regenerated vectors. A new `csm-peer` upload store: limits, sanitising,
-   `.part` files, hashing, `UploadProgress`, stall, cleanup and the log lines. The `session_drop_paths` tool
+   `.part` files, hashing, `UploadAck` and the credit, stall, cleanup and the log lines. The `session_drop_paths` tool
    with its declared effect. Tests with the in-process peer harness (`csm-peer/tests`): upload round trip;
-   each refusal; a corrupt hash; a name with `..` or a reserved name; a link drop mid-upload that leaves no
+   each refusal; a corrupt hash; a ninth unacknowledged chunk refused `Overrun`; a chunk over `UPLOAD_CHUNK` refused by the codec; a name with `..` or a reserved name; a link drop mid-upload that leaves no
    `.part`; the stall; a terminal stream still getting its frames during a large upload; cleanup that does
    not touch files outside the root.
 2. **Laptop side (`csm-remote`, `csm-ui`, `apps/codeshell`).** The upload client (background reads, chunking,
-   window and progress), the progress toast with cancel, a queue of drops, the drop path in
-   `screens/file_drop.rs` for remote windows, and moving the local drop to `session_drop_paths`. Tests: a
+   credit and acks, the three-lane writer), the progress toast with cancel, a queue of drops, the drop path in
+   `screens/file_drop.rs` for remote windows, and moving the local drop to `session_drop_paths`. Tests: the writer lane order with a keystroke during a chunk stream, a
    multi-file drop through the relay test rig, cancel, folder refusal, and the all-or-nothing paste.
 3. **Image paste (`csm-ui`, `csm-remote`).** The remote Ctrl+V branch (no raw `^V`), the clipboard read and PNG
    encode on a background thread, the 32 MiB check, and the image magic check on the office. Tests: an image
