@@ -49,10 +49,37 @@ pub(crate) fn error_reply(code: &str, message: impl Into<String>) -> Value {
     json!({"ok": false, "error": {"code": code, "message": message.into(), "data": {}}})
 }
 
-/// Control characters out, length capped, whitespace trimmed. Names reach the consent card and the
+/// Control and invisible format (Unicode Cf) characters, plus the line and paragraph separators:
+/// nothing a name needs, and the ones that reorder or hide text on a consent card.
+fn is_hidden_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
+}
+
+/// Control and invisible format characters out, length capped, whitespace trimmed. Names reach the consent card and the
 /// grant list, so they must not be able to forge a line there.
 pub(crate) fn clean_label(s: &str, max: usize) -> String {
-    let cleaned: String = s.chars().filter(|c| !c.is_control()).take(max).collect();
+    let cleaned: String = s.chars().filter(|c| !is_hidden_char(*c)).take(max).collect();
     cleaned.trim().to_string()
 }
 
@@ -161,6 +188,13 @@ mod tests {
         assert_eq!(session_id.as_deref(), Some("s1"));
         let blank = accept_caller(Some(&json!({"kind": "external", "client": "\n"}))).unwrap_or(Caller::Ui);
         assert_eq!(blank, Caller::External { client: "unknown client".into(), session_id: None });
+    }
+
+    #[test]
+    fn invisible_format_characters_are_stripped_from_names() {
+        // Right-to-left override, zero-width space, bidi isolate, tag character, BOM.
+        let c = accept_caller(Some(&json!({"kind": "external", "client": "a\u{202E}b\u{200B}c\u{2066}d\u{E0041}e\u{FEFF}"}))).unwrap_or(Caller::Ui);
+        assert_eq!(c, Caller::External { client: "abcde".into(), session_id: None });
     }
 
     #[test]

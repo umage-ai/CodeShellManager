@@ -48,7 +48,7 @@ pub use csm_core::channel;
 pub use csm_index;
 /// Re-exported so the UI can build sizes and input without depending on csm-term directly.
 pub use csm_term::{GridSize, input};
-pub use engine::{CONSENT_TIMEOUT, Ctx, Engine, Grant, Job, ParkedReply, Reply};
+pub use engine::{CONSENT_TIMEOUT, MAX_CARD_PARAMS_CHARS, MAX_PENDING_PER_CLIENT, MAX_PENDING_TOTAL, Ctx, Engine, Grant, Job, ParkedReply, Reply};
 pub use events::{Event, Events};
 pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
 pub use plugin_screens::{DeclaredScreen, OPEN_TIMEOUT, ScreenInfo, ScreenPhase, ScreenStore};

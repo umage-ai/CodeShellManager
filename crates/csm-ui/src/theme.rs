@@ -879,6 +879,10 @@ pub mod size {
     pub const BOARD_COLUMN_MIN: f32 = 168.0;
     pub const BOARD_LINE: f32 = 18.0;
     pub const CONSENT_W: f32 = 380.0;
+    /// The tallest a consent card parameter box grows before it scrolls.
+    pub const CONSENT_PARAMS_H: f32 = 140.0;
+    /// The tallest a confirm dialog body grows before it scrolls.
+    pub const DIALOG_BODY_H: f32 = 300.0;
     pub const TOAST_MAX_W: f32 = 620.0;
     pub const INBOX_DEFAULT_H: f32 = 206.0;
     pub const INBOX_MIN_H: f32 = 64.0;

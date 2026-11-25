@@ -197,7 +197,8 @@ fn session_send_text_from_a_button_asks_first_with_the_exact_text() {
     settle(&mut h);
     h.get_by_label("Run it").click();
     settle(&mut h);
-    assert_eq!(calls(&h, "session_send_text"), vec![json!({"session_id": "odulodo", "text": "hello from the screen"})]);
+    // The call log keeps no typed text (SEC-27): the engine got the real text, the log says redacted.
+    assert_eq!(calls(&h, "session_send_text"), vec![json!({"session_id": "odulodo", "text": "<redacted>"})]);
 }
 
 #[test]

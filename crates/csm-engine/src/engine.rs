@@ -31,6 +31,12 @@ use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, emp
 
 /// How long an external call waits for the person to answer a consent question.
 pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Requests one client may have waiting for the person, and all clients together. A flood is
+/// refused with a clear error instead of stacking cards.
+pub const MAX_PENDING_PER_CLIENT: usize = 8;
+pub const MAX_PENDING_TOTAL: usize = 32;
+/// The most characters of a request's parameters a card carries; the rest is cut with a note.
+pub const MAX_CARD_PARAMS_CHARS: usize = 2000;
 
 pub type Reply = Result<ToolOutput, ToolError>;
 
@@ -112,6 +118,8 @@ struct Pending {
     /// For a New session form run by a non-person caller: the add-on tool it runs and that tool's
     /// effects (`tools::new_session::consent_target`). Shown on the card; never saved as a grant.
     target: Option<Value>,
+    /// The exact text the call would type into a session (`task_assign`), shown on the card.
+    preview: Option<String>,
 }
 
 /// A remembered "always allow": this client may call this tool without asking. Kept in the
@@ -400,7 +408,19 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                         return true;
                     }
                     "consent_list" => {
-                        let list: Vec<Value> = pending.iter().map(|(k, p)| pending_json(*k, p)).collect();
+                        // The app, and a paired device at Full, see every request. A client sees its
+                        // own; anyone else (the CLI included: an MCP bridge can arrive as it) sees none.
+                        let sees_all = caller == Caller::Ui || matches!(&caller, Caller::Peer { level, .. } if level.allows(csm_peer_proto::msg::Level::Full));
+                        let mut rows: Vec<(&u64, &Pending)> = pending
+                            .iter()
+                            .filter(|(_, p)| match (&caller, &p.caller) {
+                                _ if sees_all => true,
+                                (Caller::External { client: me, .. }, Caller::External { client, .. }) => me == client,
+                                _ => false,
+                            })
+                            .collect();
+                        rows.sort_by_key(|(k, _)| **k);
+                        let list: Vec<Value> = rows.into_iter().map(|(k, p)| pending_json(*k, p)).collect();
                         let _ = reply.send(Ok(ToolOutput::new(format!("{} waiting", list.len()), json!(list))));
                         return true;
                     }
@@ -431,9 +451,16 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                     let granted = target.is_none()
                         && (state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id) || plugins::standing_call(&state.rt.addons, &caller, spec.id));
                     if spec.effects.needs_consent() && !granted {
+                        let mine = pending.values().filter(|p| matches!(&p.caller, Caller::External { client: c, .. } if c == client)).count();
+                        if mine >= MAX_PENDING_PER_CLIENT || pending.len() >= MAX_PENDING_TOTAL {
+                            let why = if mine >= MAX_PENDING_PER_CLIENT { format!("{client} already has {MAX_PENDING_PER_CLIENT} requests waiting") } else { format!("{MAX_PENDING_TOTAL} requests are already waiting") };
+                            let _ = reply.send(Err(ToolError::Refused(format!("too many approvals are waiting: {why}. Ask the person to answer them in the app, then try again."))));
+                            return true;
+                        }
                         let key = *next_id;
                         *next_id = next_id.saturating_add(1);
-                        let p = Pending { caller: caller.clone(), spec, params, reply, asked_at: Instant::now(), target };
+                        let preview = if spec.id == "task_assign" { crate::tools::tasks::consent_preview(state, &params) } else { None };
+                        let p = Pending { caller: caller.clone(), spec, params, reply, asked_at: Instant::now(), target, preview };
                         engine.events.emit(Event::ConsentRequested { request: pending_json(key, &p) });
                         pending.insert(key, p);
                         return true;
@@ -492,6 +519,25 @@ fn pending_json(key: u64, p: &Pending) -> Value {
         "effects": p.spec.effects,
         "params": p.params,
     });
+    // A card carries a bounded copy: a flood of parameters must not freeze the window or push the
+    // question off screen. The text is cut by characters, with the full length said.
+    if let Ok(pretty) = serde_json::to_string_pretty(&p.params)
+        && pretty.chars().count() > MAX_CARD_PARAMS_CHARS
+    {
+        let total = pretty.chars().count();
+        let mut clipped: String = pretty.chars().take(MAX_CARD_PARAMS_CHARS).collect();
+        clipped.push_str(&format!("\n… {} more characters not shown", total - MAX_CARD_PARAMS_CHARS));
+        card["params"] = Value::String(clipped);
+        card["params_truncated"] = Value::Bool(true);
+    }
+    if let Some(text) = &p.preview {
+        let total = text.chars().count();
+        let mut shown: String = text.chars().take(MAX_CARD_PARAMS_CHARS / 2).collect();
+        if total > MAX_CARD_PARAMS_CHARS / 2 {
+            shown.push_str(&format!("\n… {total} characters in all; the rest is not shown"));
+        }
+        card["will_type"] = Value::String(shown);
+    }
     if let Some(target) = &p.target {
         card["target"] = target.clone();
     }

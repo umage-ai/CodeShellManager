@@ -206,7 +206,7 @@ fn the_group_menu_sends_text_to_every_session_after_a_confirm_with_the_count() {
     assert!(calls(&h, "session_send_text_many").is_empty());
     h.get_by_label(&format!("Send to {ready}")).click();
     settle(&mut h);
-    assert_eq!(calls(&h, "session_send_text_many"), [json!({"group_id": "odulodo", "text": "git pull", "submit": true})]);
+    assert_eq!(calls(&h, "session_send_text_many"), [json!({"group_id": "odulodo", "text": "<redacted>", "submit": true})]);
 }
 
 #[test]

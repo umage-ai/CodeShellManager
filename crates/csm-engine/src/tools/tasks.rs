@@ -460,6 +460,17 @@ fn task_handoff(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     })
 }
 
+/// For the consent card of `task_assign`: the exact text the call would type into the session, so
+/// the person approves what is pasted, not a task id. `None` when the call sends nothing.
+pub fn consent_preview(state: &State, params: &Value) -> Option<String> {
+    let p: AssignParams = serde_json::from_value(params.clone()).ok()?;
+    if !p.send {
+        return None;
+    }
+    let t = get(state, &p.task_id).ok()?;
+    Some(tasks::assignment_prompt(t, &creator_name(state, t)))
+}
+
 fn task_assign(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: AssignParams = parse_params(params.clone())?;
     if let Some(e) = precheck("task_assign", ctx.caller, &params, ctx.state) {
@@ -475,7 +486,9 @@ fn task_assign(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     // Send first: a refused paste (asleep, starting, mid-turn) leaves the task as it was.
     let name = if p.send {
         let prompt = tasks::assignment_prompt(&t, &creator_name(ctx.state, &t));
-        super::sessions::paste_into(ctx, &p.session_id, &prompt, true, p.force)?
+        // An outside caller's text is pasted but not submitted: the person presses Enter, so a
+        // task body can never run itself as a command.
+        super::sessions::paste_into(ctx, &p.session_id, &prompt, !matches!(ctx.caller, Caller::External { .. }), p.force)?
     } else {
         session_name(ctx.state, &p.session_id).unwrap_or_default()
     };
@@ -484,7 +497,11 @@ fn task_assign(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     ctx.state.persist_tasks();
     let t = get(ctx.state, &p.task_id)?;
-    let msg = if p.send { format!("Assigned {} to {name} and sent it.", t.id) } else { format!("Assigned {} to {name}.", t.id) };
+    let msg = match (p.send, matches!(ctx.caller, Caller::External { .. })) {
+        (true, true) => format!("Assigned {} to {name} and pasted it; the person presses Enter to send it.", t.id),
+        (true, false) => format!("Assigned {} to {name} and sent it.", t.id),
+        (false, _) => format!("Assigned {} to {name}.", t.id),
+    };
     Ok(ToolOutput::new(msg, task_json(ctx.state, t)))
 }
 

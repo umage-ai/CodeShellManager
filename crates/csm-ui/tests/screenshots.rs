@@ -901,6 +901,7 @@ fn keyboard_confirm_dialog_screen() {
         |_| {},
         |h| {
             h.state_mut().ui.confirm = Some(csm_ui::app::ConfirmState {
+                safe_default: false,
                 title: "Restart now?".into(),
                 body: "The change needs a new process. Sessions restart with it.".into(),
                 yes_label: "Restart".into(),

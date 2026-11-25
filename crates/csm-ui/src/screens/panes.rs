@@ -1011,6 +1011,7 @@ pub fn close_action(s: &SessionView, quiet: bool) -> Action {
     let busy = matches!(s.status, Status::Working | Status::Approval | Status::Question);
     if busy && !quiet {
         Action::Confirm(crate::app::ConfirmState {
+            safe_default: false,
         also: None,
             title: format!("Close {}?", s.name),
             body: format!(
@@ -1889,6 +1890,7 @@ fn paste_actions(session: &SessionId, req: PasteRequest) -> Vec<Action> {
     let lines = trimmed.split(['\r', '\n']).count();
     let first: String = trimmed.split(['\r', '\n']).next().unwrap_or_default().chars().take(80).collect();
     out.push(Action::Confirm(ConfirmState {
+        safe_default: false,
         title: format!("Paste {lines} lines?"),
         body: format!(
             "This program did not ask for bracketed paste, so every line is entered as soon as it is pasted. A shell runs each one.\n\nStarts with: {first}"

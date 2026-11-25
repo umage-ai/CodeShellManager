@@ -297,3 +297,29 @@ fn every_session_has_a_status_since_and_changes_reach_the_status_log() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn the_assign_card_shows_the_exact_text_and_an_outside_assign_is_not_submitted() {
+    let h = H::new();
+    let g = group(&h, "G");
+    let (a, b) = (session_in(&h, &g), session_in(&h, &g));
+    let t = h.ok("task_new", json!({"session_id": a, "title": "Review the PR"})).data["id"].as_str().unwrap().to_owned();
+    let events = h.engine.subscribe();
+    let rx = h.engine.submit(agent(&a), "task_assign", json!({"task_id": t, "session_id": b}));
+    let request = loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            Ok(Event::ConsentRequested { request }) => break request,
+            Ok(_) => continue,
+            Err(e) => panic!("no consent card: {e}"),
+        }
+    };
+    let will_type = request["will_type"].as_str().unwrap_or_default();
+    assert!(will_type.contains(&format!("Task {t} from the user: Review the PR")), "the card carries the text that will be typed: {request}");
+    h.ok("consent_answer", json!({"request_id": request["request_id"], "answer": "allow_once"}));
+    let out = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    assert!(out.message.contains("presses Enter"), "{}", out.message);
+    std::thread::sleep(Duration::from_millis(200));
+    let typed = h.pty(1).written_text();
+    assert!(typed.contains("Review the PR"), "{typed:?}");
+    assert!(!typed.contains('\r'), "no Enter for an outside caller: {typed:?}");
+}

@@ -212,6 +212,9 @@ const RESTART_CONFIRM_AFTER_SECS: u64 = 5;
 /// A yes/no question: "Restart now?" after an edit that needs a new process.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmState {
+    /// Enter answers no, not yes: set for a question an agent or a plugin caused, so a stray
+    /// Enter or a held key never approves it.
+    pub safe_default: bool,
     pub title: String,
     pub body: String,
     pub yes_label: String,
@@ -560,7 +563,13 @@ pub struct UiState {
     pub toasts: Vec<Toast>,
     /// Uploads to a remote window's office that are running (the progress card).
     pub uploads: Vec<screens::upload_card::UploadRow>,
+    /// Requests waiting for the person (`Event::ConsentRequested`), oldest first. The card shows
+    /// the first; each carries `params_text`, formatted once when it arrived.
     pub consents: Vec<Value>,
+    /// Questions that arrived while another dialog was open, shown one after the other.
+    pub confirm_queue: Vec<ConfirmState>,
+    /// Tests turn the short wait before a new dialog answers off (`dialog_keys::ARM_DELAY`).
+    pub no_dialog_delay: bool,
     pub drags: Drags,
     /// Notes being edited, by folder (saved with `note_set` after a pause).
     pub notes: HashMap<String, (String, f64)>,
@@ -930,6 +939,13 @@ impl CsmApp {
                 if call.id == "session_get" {
                     self.ui.quick.loaded = true;
                 }
+                // A refused setting shows what is saved again, not the text that was refused.
+                if call.id == "settings_set"
+                    && let Some(k) = call.params.get("key").and_then(Value::as_str)
+                {
+                    self.ui.settings.drafts.remove(k);
+                    self.ui.settings.drafts.remove(&format!("#{k}"));
+                }
                 if call.id == "profile_list" {
                     // Import off, or unreadable: the picker shows no profiles.
                     self.ui.quick.profiles = Some(Vec::new());
@@ -976,7 +992,8 @@ impl CsmApp {
                 if out.data.get("requires_restart").and_then(Value::as_bool) == Some(true) && !asked_restart {
                     let id = call.params.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
                     let name = self.model.session(&id).map_or_else(|| "the session".to_string(), |s| s.name.clone());
-                    self.ui.confirm = Some(ConfirmState {
+                    self.offer_confirm(ConfirmState {
+                        safe_default: false,
         also: None,
                         title: "Restart now?".into(),
                         body: format!(
@@ -986,7 +1003,6 @@ impl CsmApp {
                         no_label: "Later".into(),
                         yes: Box::new(Action::Tool("session_restart", json!({"session_id": id}))),
                     });
-                    self.ui.overlay = Overlay::Confirm;
                     ctx.request_repaint();
                 }
             }
@@ -1057,6 +1073,31 @@ impl CsmApp {
         ctx.request_repaint();
     }
 
+    /// Shows a question that arrived by itself (a tool's answer, a link the person clicked a
+    /// moment ago) unless another dialog or overlay is open: that one is never replaced under the
+    /// person's hands. The question waits in line and appears when the overlay closes.
+    pub fn offer_confirm(&mut self, c: ConfirmState) {
+        if self.ui.overlay != Overlay::None || self.ui.confirm.is_some() {
+            if self.ui.confirm_queue.len() < 8 {
+                self.ui.confirm_queue.push(c);
+            }
+            return;
+        }
+        self.ui.confirm = Some(c);
+        self.ui.overlay = Overlay::Confirm;
+    }
+
+    /// The next waiting question, once nothing else is open.
+    fn next_queued_confirm(&mut self, ctx: &egui::Context) {
+        if self.ui.overlay == Overlay::None && !self.ui.confirm_queue.is_empty() {
+            let next = self.ui.confirm_queue.remove(0);
+            // A new dialog starts its own arm timer and focus.
+            screens::overlays::forget_dialogs(ctx);
+            self.ui.confirm = Some(next);
+            self.ui.overlay = Overlay::Confirm;
+        }
+    }
+
     /// A link to a loopback port of an SSH session's host was not opened (`open_url` answered
     /// `needs_forward`): the card offers a forward that opens it, or the link to copy.
     fn port_card(&mut self, data: &Value) {
@@ -1064,7 +1105,8 @@ impl CsmApp {
         let destination = data["destination"].as_str().unwrap_or("the SSH host").to_owned();
         let session = data["session_id"].as_str().unwrap_or_default().to_owned();
         let link = data["url"].as_str().unwrap_or_default().to_owned();
-        self.ui.confirm = Some(ConfirmState {
+        self.offer_confirm(ConfirmState {
+            safe_default: true,
             title: format!("Port {port} is on {destination}, not on this computer"),
             body: "The link points at that machine's own port, so it would open nothing here. Forward the port over SSH to open it on this computer, or copy the link.".into(),
             yes_label: "Forward and open".into(),
@@ -1072,7 +1114,6 @@ impl CsmApp {
             yes: Box::new(Action::Tool("session_port_forward", json!({"session_id": session, "remote_port": port, "open": true}))),
             also: Some(("Copy link".into(), Box::new(Action::CopyText(link)))),
         });
-        self.ui.overlay = Overlay::Confirm;
     }
 
     /// Replies the screens act on: search results and the notes store's answers.
@@ -1245,7 +1286,11 @@ impl CsmApp {
         }
         for e in events {
             match &e {
-                csm_engine::Event::ConsentRequested { request } => self.ui.consents.push(request.clone()),
+                csm_engine::Event::ConsentRequested { request } => {
+                    let mut card = request.clone();
+                    card["params_text"] = Value::String(screens::overlays::card_params_text(&card));
+                    self.ui.consents.push(card);
+                }
                 csm_engine::Event::ConsentResolved { request_id } => {
                     self.ui.consents.retain(|r| r["request_id"].as_u64() != Some(*request_id));
                 }
@@ -1435,6 +1480,7 @@ impl CsmApp {
             }
             Action::ConnectRemoteForget { host_id, name } => {
                 self.ui.confirm = Some(ConfirmState {
+                    safe_default: false,
                     also: None,
                     title: format!("Forget {name}?"),
                     body: format!(
@@ -1449,6 +1495,7 @@ impl CsmApp {
             Action::RemoteQuitOffice => {
                 let name = self.remote.as_ref().map_or_else(|| "the office".to_owned(), |r| r.host_name.clone());
                 self.ui.confirm = Some(ConfirmState {
+                    safe_default: false,
                     also: None,
                     title: format!("Quit CodeShellManager on {name}?"),
                     body: format!("Every session on {name} is closed and {name}'s app quits, so nothing runs there until it is started again. This window disconnects afterwards."),
@@ -1473,6 +1520,7 @@ impl CsmApp {
             Action::AddonConsent(id) => {
                 if let Some(a) = self.model.addons.iter().find(|a| a.id == id) {
                     self.ui.confirm = Some(ConfirmState {
+                        safe_default: true,
         also: None,
                         title: format!("Enable {}?", a.name),
                         body: crate::screens::addons::consent_body(a),
@@ -1891,7 +1939,7 @@ impl CsmApp {
         let session = params.get("session_id").and_then(Value::as_str).and_then(|s| self.model.session(s)).map(|s| s.name.clone());
         let (title, body) = screens::addon_screen::confirm_text(&name, &id, &tool, &params, session.as_deref());
         let yes = Box::new(Action::ScreenConfirmed { tool, params });
-        self.run(ctx, Action::Confirm(ConfirmState { also: None, title, body, yes_label: "Run it".into(), no_label: "Cancel".into(), yes }));
+        self.run(ctx, Action::Confirm(ConfirmState { safe_default: true, also: None, title, body, yes_label: "Run it".into(), no_label: "Cancel".into(), yes }));
     }
 
     /// A tool picked in the palette: params are filled from context (the active session, the
@@ -2046,6 +2094,7 @@ impl CsmApp {
             Some(LinkTarget::Localhost(u)) => {
                 let (title, body) = remote_window::localhost_warning(&host, &u);
                 self.ui.confirm = Some(crate::app::ConfirmState {
+                    safe_default: false,
                     also: None,
                     title,
                     body,
@@ -2099,6 +2148,7 @@ impl CsmApp {
         }
         let elapsed = r.detail.split(" · ").nth(1).map_or_else(|| "a while".to_owned(), str::to_owned);
         self.ui.confirm = Some(ConfirmState {
+            safe_default: false,
             title: format!("Restart {}?", r.label),
             body: format!("{} has been running for {elapsed}. Restarting stops it and everything it started, then runs it again from the start.", r.label),
             yes_label: "Restart".into(),
@@ -2557,8 +2607,11 @@ impl CsmApp {
         for a in remote {
             self.run(&ctx, a);
         }
+        // While a dialog or overlay is open, the terminal behind it takes no keys.
+        ctx.data_mut(|d| d.insert_temp(crate::terminal::view::modal_id(), self.ui.overlay != Overlay::None));
         let model = &self.model;
         self.ui.selection.retain(|id| model.session(id).is_some());
+        self.next_queued_confirm(&ctx);
         self.shortcuts(&ctx);
         // The active session changed (inbox, palette, click): keyboard follows.
         if self.model.active != self.ui.last_active {

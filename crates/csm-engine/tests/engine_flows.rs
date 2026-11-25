@@ -1213,3 +1213,63 @@ fn a_stale_heuristic_needs_you_and_a_sleeping_session_are_not_busy() {
     let v = h.wait_status(&other, Status::Asleep);
     assert!(v.busy_sessions().is_empty(), "a sleeping session has no process to cut off");
 }
+
+fn wait_card(events: &std::sync::mpsc::Receiver<Event>) -> serde_json::Value {
+    loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            Ok(Event::ConsentRequested { request }) => break request,
+            Ok(_) => continue,
+            Err(e) => panic!("no consent card: {e}"),
+        }
+    }
+}
+
+#[test]
+fn a_flood_of_requests_is_refused_and_a_big_card_is_cut_down() {
+    let h = H::new();
+    let id = h.session("pwsh");
+    let events = h.engine.subscribe();
+    let big = "x".repeat(50_000);
+    let first = h.engine.submit(ext(None), "session_send_text", json!({"session_id": id, "text": big}));
+    let card = wait_card(&events);
+    let shown = card["params"].as_str().expect("a long parameter set becomes bounded text");
+    assert!(shown.chars().count() < 2_100, "the card text is bounded: {}", shown.chars().count());
+    assert_eq!(card["params_truncated"], true);
+    let mut waiting = vec![first];
+    for _ in 1..csm_engine::MAX_PENDING_PER_CLIENT {
+        waiting.push(h.engine.submit(ext(None), "session_send_text", json!({"session_id": id, "text": "hi"})));
+    }
+    // The next one from the same client is refused at once, with a reason.
+    let refused = h.engine.submit(ext(None), "session_send_text", json!({"session_id": id, "text": "more"}));
+    match refused.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Err(ToolError::Refused(why)) => assert!(why.contains("too many approvals"), "{why}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // Another client still gets its card.
+    let other = Caller::External { client: "second-client".into(), session_id: None };
+    let _rx = h.engine.submit(other, "session_send_text", json!({"session_id": id, "text": "hi"}));
+    assert_eq!(h.ui("consent_list", json!({})).unwrap().data.as_array().unwrap().len(), MAX_PLUS_ONE);
+}
+
+const MAX_PLUS_ONE: usize = csm_engine::MAX_PENDING_PER_CLIENT + 1;
+
+#[test]
+fn consent_list_shows_a_client_only_its_own_requests() {
+    let h = H::new();
+    let id = h.session("pwsh");
+    let events = h.engine.subscribe();
+    let _a = h.engine.submit(ext(None), "session_send_text", json!({"session_id": id, "text": "secret-a"}));
+    wait_card(&events);
+    let other = Caller::External { client: "other-client".into(), session_id: None };
+    let _b = h.engine.submit(other.clone(), "session_send_text", json!({"session_id": id, "text": "secret-b"}));
+    wait_card(&events);
+    let all = h.ui("consent_list", json!({})).unwrap().data;
+    assert_eq!(all.as_array().unwrap().len(), 2, "the app sees every request");
+    let mine = h.engine.call(other, "consent_list", json!({})).unwrap().data;
+    let mine = mine.as_array().unwrap();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0]["client"], "other-client");
+    assert!(!mine[0].to_string().contains("secret-a"), "another client's parameters are not shown");
+    let cli = h.engine.call(Caller::Cli, "consent_list", json!({})).unwrap().data;
+    assert!(cli.as_array().unwrap().is_empty(), "the CLI, which a bridge can arrive as, sees none");
+}

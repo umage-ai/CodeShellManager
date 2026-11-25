@@ -88,7 +88,8 @@ fn the_docs_tab_reads_the_folder_and_follows_edits() {
 
     let backend = EngineBackend::new(engine.clone(), EngineOptions { folders: vec![folder.path().to_string_lossy().into_owned()], ..EngineOptions::default() });
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
-    let app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    let mut app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    app.ui.no_dialog_delay = true;
     let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app);
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::Tool("session_focus", json!({"session_id": id})));

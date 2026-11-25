@@ -27,7 +27,7 @@ pub(crate) mod new_session;
 mod sessions;
 mod slash;
 mod snapshots;
-mod tasks;
+pub(crate) mod tasks;
 mod themes;
 pub(crate) mod storage;
 pub(crate) mod update;

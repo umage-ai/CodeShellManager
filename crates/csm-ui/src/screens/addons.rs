@@ -190,13 +190,10 @@ fn state_label(s: AddonState) -> &'static str {
 
 /// The consent dialog's body: what the add-on contributes, in plain lines.
 pub fn consent_body(a: &AddonSummary) -> String {
+    // Security-relevant lines first: a program that runs, standing permissions, the exact command
+    // lines. The dialog scrolls, so what matters most is what shows without scrolling.
+    let mut first: Vec<String> = Vec::new();
     let mut lines = Vec::new();
-    if !a.description.is_empty() {
-        lines.push(a.description.clone());
-    }
-    if let Some(author) = &a.author {
-        lines.push(format!("By {author}."));
-    }
     // The exact command lines are shown: the person approves what will run, not just a name.
     if !a.profiles.is_empty() {
         let names: Vec<String> = a.profiles.iter().map(|p| format!("{} runs `{}` (on restore: {})", p.id, p.command_line, p.resume)).collect();
@@ -217,29 +214,38 @@ pub fn consent_body(a: &AddonSummary) -> String {
     if a.kind == "process" {
         let effects = if a.process_effects.is_empty() { "none declared".to_owned() } else { a.process_effects.join(", ") };
         let command = a.process_command_line.clone().unwrap_or_default();
-        lines.push(format!("Process add-on. It runs `{command}` as a program, with its working folder set to the add-on folder. It may request: {effects}. Its tools appear in the palette, the CLI and MCP; a tool that uses an effect asks before it runs for MCP clients."));
+        first.push(format!("Process add-on. It runs `{command}` as a program, with its working folder set to the add-on folder. It may request: {effects}. Its tools appear in the palette, the CLI and MCP; a tool that uses an effect asks before it runs for MCP clients."));
         if a.process_effects.iter().any(|e| e == "stores_data") {
-            lines.push("Stores its own data: it keeps files in a folder of its own (addon-data/<id>) and nowhere else. This needs no approval card.".into());
+            first.push("Stores its own data: it keeps files in a folder of its own (addon-data/<id>) and nowhere else. This needs no approval card.".into());
         }
         if !a.new_sessions.is_empty() {
             // The New session form: its title and the tools it runs when the person uses it.
             let forms: Vec<String> = a.new_sessions.iter().map(|f| format!("\"{}\" (picker: {}; submit: {} runs {})", f.title, f.choices_tool, f.submit, f.tool)).collect();
-            lines.push(format!("New session forms: {}. They show in the New session dialog while it runs, and each runs only its own tools when the person uses it.", forms.join("; ")));
+            first.push(format!("New session forms: {}. They show in the New session dialog while it runs, and each runs only its own tools when the person uses it.", forms.join("; ")));
         }
         if !a.process_calls.is_empty() {
             let list: Vec<String> = a.process_calls.iter().map(|c| format!("{} ({})", c.tool, c.effects)).collect();
-            lines.push(format!(
+            first.push(format!(
                 "Standing permission: enabling this add-on lets it run exactly these app tools without asking each time: {}. Any other tool it calls asks as usual. If the file changes, this ends until you approve it again.",
                 list.join("; ")
             ));
         }
+    }
+    // What the add-on says about itself comes after what it will do: it is its author's text, and a
+    // long one must not push the commands off the first screen.
+    if !a.description.is_empty() {
+        lines.push(a.description.clone());
+    }
+    if let Some(author) = &a.author {
+        lines.push(format!("By {author}."));
     }
     if a.kind == "builtin" {
         lines.push("Built into the app: it runs no program of its own. Enabling is saved; Disable turns it off again, and what it recorded is kept.".into());
     } else {
         lines.push("Enabling is saved. If the file changes later, it is turned off until you enable it again.".into());
     }
-    lines.join("\n")
+    first.extend(lines);
+    first.join("\n")
 }
 
 #[cfg(test)]

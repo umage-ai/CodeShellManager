@@ -163,7 +163,8 @@ fn rig() -> Rig {
     call("view_set", json!({"rail_tab": group}));
     let backend = EngineBackend::new(engine.clone(), EngineOptions { launch_commands: vec!["pwsh".into()], ..EngineOptions::default() });
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
-    let app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    let mut app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    app.ui.no_dialog_delay = true;
     let h = Harness::builder().with_size(vec2(1600.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app);
     let mut r = Rig { h, engine, ptys, group, alpha, beta, _dir: dir };
     r.until("the layout bar", |r| r.has("Layout: Board"));

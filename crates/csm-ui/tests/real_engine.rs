@@ -141,7 +141,8 @@ fn rig_with(exit_on_close: bool, shutdown_budget: Duration) -> Rig {
     };
     let backend = EngineBackend::new(engine.clone(), opts);
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
-    let app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    let mut app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine.clone())), Box::new(backend), TerminalRenderer::new(fonts));
+    app.ui.no_dialog_delay = true;
     let h = Harness::builder().with_size(vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app);
     Rig { h, engine, ptys, folder }
 }
@@ -451,9 +452,9 @@ fn an_always_grant_is_listed_in_settings_and_revoked_there() {
     r.until("the PTY", |r| r.pty(0).is_some());
     let caller = Caller::External { client: "test-client".into(), session_id: None };
     let reply = r.engine.submit(caller.clone(), "session_read_screen", json!({"session_id": id}));
-    r.until("the card", |r| r.has("Always for this client"));
-    r.h.get_by_label("Always for this client").click();
-    r.until("the answer", |r| !r.has("Always for this client"));
+    r.until("the card", |r| r.has("Always allow clients named “test-client”"));
+    r.h.get_by_label("Always allow clients named “test-client”").click();
+    r.until("the answer", |r| !r.has("Always allow clients named “test-client”"));
     reply.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
     assert_eq!(r.engine.call(Caller::Ui, "grant_list", json!({})).unwrap().data.as_array().unwrap().len(), 1);
 

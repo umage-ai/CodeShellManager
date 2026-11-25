@@ -221,7 +221,7 @@ fn a_form_submit_asks_with_the_add_on_tool_it_runs_and_offers_no_always_allow() 
     settle(&mut h);
     assert!(has(&h, "runs nexus.agent_launch (starts programs, uses the network)"), "the card names the tool the form runs and its effects");
     assert!(has(&h, "Allow once"), "a one-time allow is offered");
-    assert!(!has(&h, "Always for this client"), "no always-allow for a form: the grant would not be kept");
+    assert!(h.query_by_label_contains("Always allow").is_none(), "no always-allow for a form: the grant would not be kept");
 }
 
 #[test]

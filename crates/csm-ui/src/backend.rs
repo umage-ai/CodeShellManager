@@ -221,8 +221,12 @@ impl EnginePort {
     }
 }
 
-/// The params as they may be logged or kept in the call history: a secret parameter is replaced
-/// with `"<redacted>"`. The engine itself always gets the real params.
+/// The params as they may be logged or kept in the call history: a secret or free-text parameter
+/// is replaced with `"<redacted>"`. The engine itself always gets the real params. Redaction goes
+/// by the name of the field, so a new tool with a `token` or `link` field is covered without a
+/// list of tools: secrets (`link`, `token`, `secret`, `password`, `passphrase`, `authorization`,
+/// private and API keys), what is typed into a session by a send, paste or broadcast tool (`text`,
+/// `body`, `message`, `prompt`), and the value of a setting whose name looks secret.
 pub fn redacted_params(id: &str, params: &Value) -> Value {
     let mut shown = params.clone();
     if id == "peer_relay_set"
@@ -231,7 +235,41 @@ pub fn redacted_params(id: &str, params: &Value) -> Value {
     {
         obj.insert("access".to_owned(), Value::String("<redacted>".to_owned()));
     }
+    let typed = ["send", "paste", "broadcast", "input"].iter().any(|w| id.contains(w));
+    redact_value(&mut shown, typed);
+    if id == "settings_set"
+        && let Some(obj) = shown.as_object_mut()
+        && obj.get("key").and_then(Value::as_str).is_some_and(secret_name)
+        && obj.contains_key("value")
+    {
+        obj.insert("value".to_owned(), Value::String(REDACTED.to_owned()));
+    }
     shown
+}
+
+const REDACTED: &str = "<redacted>";
+
+/// Whether a field of this name holds a secret.
+fn secret_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "link" || ["token", "secret", "password", "passphrase", "authorization", "api_key", "private_key", "access_key", "credential"].iter().any(|w| n.contains(w))
+}
+
+fn redact_value(v: &mut Value, typed: bool) {
+    match v {
+        Value::Object(m) => {
+            for (k, child) in m.iter_mut() {
+                let free_text = typed && matches!(k.to_ascii_lowercase().as_str(), "text" | "body" | "message" | "prompt");
+                if (secret_name(k) || free_text) && !child.is_null() {
+                    *child = Value::String(REDACTED.to_owned());
+                } else {
+                    redact_value(child, typed);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|c| redact_value(c, typed)),
+        _ => {}
+    }
 }
 
 impl ToolPort for EnginePort {
@@ -299,7 +337,22 @@ impl ToolPort for EnginePort {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
+
+    #[test]
+    fn secrets_and_typed_text_are_redacted_by_field_name_in_the_call_log() {
+        let pair = redacted_params("peer_client_pair", &json!({"link": "csm://pair/abc?t=secret", "name": "Office"}));
+        assert_eq!(pair, json!({"link": "<redacted>", "name": "Office"}));
+        let send = redacted_params("session_send_text", &json!({"session_id": "s1", "text": "my password is hunter2", "submit": true}));
+        assert_eq!(send, json!({"session_id": "s1", "text": "<redacted>", "submit": true}));
+        // A tool that does not type anything keeps its text (a note is not a secret).
+        assert_eq!(redacted_params("note_set", &json!({"session_id": "s1", "text": "todo"}))["text"], "todo");
+        // Nested secrets and settings whose name looks secret.
+        assert_eq!(redacted_params("x", &json!({"a": [{"api_token": "t"}]})), json!({"a": [{"api_token": "<redacted>"}]}));
+        assert_eq!(redacted_params("settings_set", &json!({"key": "RelayToken", "value": "t"})), json!({"key": "RelayToken", "value": "<redacted>"}));
+        assert_eq!(redacted_params("settings_set", &json!({"key": "Theme", "value": "mocha"}))["value"], "mocha");
+    }
     #[test]
     fn the_engine_port_lists_the_registry_and_round_trips_a_call() {
         let engine = crate::demo_engine().expect("the demo engine starts");
