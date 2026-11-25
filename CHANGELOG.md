@@ -44,6 +44,10 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   `create_folder` (default false; it now declares the file-system-write effect, so MCP clients
   are asked), and the new read-only `folder_probe` says what would be made. SSH and WSL are
   unchanged.
+- **Shift+Enter inserts a newline** in a session's prompt (Claude Code, OpenCode, Copilot CLI)
+  instead of submitting it: Esc then Enter, or `CSI 13;2 u` when the program enabled the kitty
+  keyboard protocol. Settings › Terminal › *Shift+Enter inserts a newline* (`ShiftEnterNewline`, on)
+  turns it off for shells that read Esc then Enter as clear-and-run.
 - **Fun themes sample add-on** (`theme-fun`, Settings > Add-ons > Install samples): Emacs (dark),
   Windows 98 and Blossom (light), original themes that also change how the window draws.
 - **Themes can style the window, not only colour it** (`[theme.style]`, docs/addons.md, Themes):

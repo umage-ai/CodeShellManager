@@ -261,6 +261,11 @@ pub struct AppSettings {
     /// text). On by default; written only when turned off.
     #[serde(skip_serializing_if = "is_true")]
     pub clean_claude_copies: bool,
+    /// Shift+Enter in a session's terminal inserts a newline instead of submitting (ESC CR, or
+    /// `CSI 13;2 u` when the program enabled the kitty keyboard protocol). On by default; written
+    /// only when turned off.
+    #[serde(skip_serializing_if = "is_true")]
+    pub shift_enter_newline: bool,
     /// The person's keyboard overrides (`csm_core::keymap`): action id to chords. Changed by the
     /// `keymap_*` tools; written only while some binding differs from its default. A damaged entry
     /// is dropped on load, entry by entry.
@@ -396,6 +401,7 @@ impl Default for AppSettings {
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
             clean_claude_copies: t(),
+            shift_enter_newline: t(),
             keymap: crate::keymap::Overrides::new(),
             start_minimized: false,
             start_minimized_to_tray: false,

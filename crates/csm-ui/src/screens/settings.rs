@@ -485,6 +485,14 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         "Copying a selection in a Claude Code pane drops its markers, frames and indentation and joins the lines Claude wrapped at the pane's edge. Ctrl+Alt+C copies a selection as shown.",
         actions,
     );
+    bool_setting(
+        ui,
+        app,
+        "ShiftEnterNewline",
+        "Shift+Enter inserts a newline",
+        "Shift+Enter keeps typing on a new line instead of sending the prompt (Claude Code, OpenCode, Copilot CLI). It sends Esc then Enter, which a plain shell such as cmd.exe may read as clear-line and run; turn this off there.",
+        actions,
+    );
     section(ui, "Windows Terminal profiles");
     bool_setting(
         ui,

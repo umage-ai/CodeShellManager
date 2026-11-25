@@ -67,6 +67,13 @@ list or bar it was on, so the keys you type go where the ring is. While a menu i
 keys it does not use (Backspace, Delete, the F-keys) and typed letters are not passed on to the
 terminal either.
 
+**Shift+Enter** types a newline in the prompt of a program that supports it (Claude Code, OpenCode,
+Copilot CLI) instead of sending it. The terminal sends Esc then Enter (the Meta+Enter that Claude
+Code's `/terminal-setup` sets up in other terminals), or `CSI 13;2 u` when the program has turned on
+the kitty keyboard protocol. A plain shell reads Esc then Enter differently (cmd.exe clears the line
+and runs it, for instance): turn off *Shift+Enter inserts a newline* in Settings › Terminal and
+Shift+Enter is a plain Enter again. Ctrl+Enter and Alt+Enter are not affected.
+
 ## Changing a key
 
 Open **Settings › Keyboard**. It lists every action with its keys.
