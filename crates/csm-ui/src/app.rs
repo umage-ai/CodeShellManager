@@ -114,6 +114,9 @@ pub enum Action {
     UploadFiles { session: SessionId, paths: Vec<String> },
     /// A remote window: upload the image on the laptop's clipboard, then paste its office path.
     PasteImage(SessionId),
+    /// Paste text the person approved (or that was too big to clean in the frame) into a session:
+    /// untrusted text, bracketed when the program asked for it. Big ones are cleaned on a worker.
+    PasteText { session: SessionId, text: String },
     /// A remote window: cancel an upload (the card's Cancel button).
     UploadCancel(u64),
     /// Sidebar multi-select (widget state, not a tool): Ctrl-click toggles a row,
@@ -689,6 +692,8 @@ pub struct CsmApp {
     /// The theme's `[theme.style]` look as last applied (corners, borders, title bar, fonts).
     look_applied: Option<theme::ThemeLook>,
     fonts_installed: bool,
+    /// A theme font being checked on a worker ([`crate::terminal::fonts::spawn_validation`]).
+    font_job: Option<std::sync::mpsc::Receiver<Result<crate::terminal::fonts::Face, String>>>,
     /// `app_quit` finished: the window may close now.
     pub quit_ready: bool,
     /// Settings the screens follow live.
@@ -756,6 +761,7 @@ impl CsmApp {
             theme_applied: None,
             look_applied: None,
             fonts_installed: false,
+            font_job: None,
             quit_ready: false,
             prefs: Prefs::default(),
             monitors: crate::placement::Monitors::default(),
@@ -1274,10 +1280,17 @@ impl CsmApp {
             // The terminal's font follows the theme's (the face is built from bytes already in
             // memory; glyphs made with the old one leave the atlas).
             if self.look_applied.as_ref().map(|l| &l.terminal_font) != Some(&look.terminal_font) {
-                let face = look.terminal_font.as_ref().and_then(|b| crate::terminal::fonts::face_from_bytes(b.0.as_ref().clone(), 0, "theme font".to_owned()));
-                host.renderer.fonts.use_theme_face(face);
-                if let Some(atlas) = host.renderer.atlas.as_mut() {
-                    atlas.clear();
+                // A theme's font is untrusted: it is checked on a worker (a malformed one can
+                // panic the shaper or rasteriser) and only a face that passes is used (below).
+                match look.terminal_font.as_ref() {
+                    Some(bytes) => self.font_job = Some(crate::terminal::fonts::spawn_validation(bytes.0.clone(), "theme font")),
+                    None => {
+                        self.font_job = None;
+                        host.renderer.fonts.use_theme_face(None);
+                        if let Some(atlas) = host.renderer.atlas.as_mut() {
+                            atlas.clear();
+                        }
+                    }
                 }
             }
             self.theme_applied = Some(palette);
@@ -1297,6 +1310,37 @@ impl CsmApp {
             host.renderer.fonts.coverage = want;
             if let Some(atlas) = host.renderer.atlas.as_mut() {
                 atlas.clear();
+            }
+        }
+        if let Some(rx) = &self.font_job {
+            let outcome = match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("the font check did not finish".to_owned())),
+            };
+            if let Some(outcome) = outcome {
+                self.font_job = None;
+                match outcome {
+                    Ok(face) => host.renderer.fonts.use_theme_face(Some(face)),
+                    Err(e) => {
+                        // Keep the embedded face; say why once.
+                        log::warn!("theme font rejected: {e}");
+                        host.renderer.fonts.use_theme_face(None);
+                        let now = ctx.input(|i| i.time);
+                        self.ui.toasts.retain(|t| t.until > now);
+                        self.ui.toasts.push(Toast {
+                            text: format!("The theme's terminal font was rejected ({e}); using the built-in font."),
+                            until: now + f64::from(theme::timing::TOAST_SECS),
+                        });
+                    }
+                }
+                if let Some(atlas) = host.renderer.atlas.as_mut() {
+                    atlas.clear();
+                }
+                ctx.request_repaint();
             }
         }
         true
@@ -1619,6 +1663,17 @@ impl CsmApp {
                     Err(why) => self.toast(ctx, why),
                 }
             }
+            Action::PasteText { session, text } => match self.backend.terminal(&session) {
+                Some(src) if text.len() > 64 * 1024 => {
+                    // Cleaning and writing megabytes is not frame work.
+                    let spawned = std::thread::Builder::new().name("csm-paste".into()).spawn(move || src.paste(&text));
+                    if let Err(e) = spawned {
+                        self.toast(ctx, format!("Could not paste: {e}"));
+                    }
+                }
+                Some(src) => src.paste(&text),
+                None => self.toast(ctx, "That session is not open here."),
+            },
             Action::PasteImage(session) => {
                 let name = self.model.session(&session).map(|s| s.name.clone()).unwrap_or_default();
                 match self.backend.upload_clipboard_image(&session) {

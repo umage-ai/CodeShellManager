@@ -15,6 +15,7 @@ use csm_pty::{Backend, Pty, PtySize, SpawnOptions};
 use csm_term::alacritty_terminal::term::TermMode;
 use csm_term::{GridSize, Palette, ProbeReply, ReplySink, TapEvent, TermConfig, TermEvent, Terminal, load_mode};
 
+use super::resize::Coalescer;
 use super::source::{SourceState, TerminalSource, lock};
 
 /// Wakes the UI (an `egui::Context::request_repaint` in the app). Called from PTY threads.
@@ -68,6 +69,8 @@ pub struct LocalTerminal {
     status: Arc<Mutex<TermStatus>>,
     bytes: Arc<AtomicU64>,
     spawn_error: Arc<OnceLock<String>>,
+    /// Applies PTY resizes off the UI thread (made with the first one).
+    resizer: OnceLock<Coalescer<PtySize>>,
 }
 
 impl LocalTerminal {
@@ -85,6 +88,7 @@ impl LocalTerminal {
             status: Arc::new(Mutex::new(TermStatus::default())),
             bytes: Arc::new(AtomicU64::new(0)),
             spawn_error: Arc::new(OnceLock::new()),
+            resizer: OnceLock::new(),
         }
     }
 
@@ -227,9 +231,16 @@ impl TerminalSource for LocalTerminal {
         if let Some(pty) = self.pty.get() {
             let want = PtySize::new(grid.cols, grid.rows);
             if inner.pty_size != Some(want) {
-                if let Err(e) = pty.resize(want) {
-                    log::warn!("terminal '{}': resize failed: {e}", self.name);
-                }
+                // The ConPTY call can block: a worker applies the latest size (never the UI thread).
+                let resizer = self.resizer.get_or_init(|| {
+                    let (pty, name) = (pty.clone(), self.name.clone());
+                    Coalescer::spawn("csm-pty-resize", move |size: PtySize| {
+                        if let Err(e) = pty.resize(size) {
+                            log::warn!("terminal '{name}': resize failed: {e}");
+                        }
+                    })
+                });
+                resizer.submit(want);
                 inner.pty_size = Some(want);
             }
         }

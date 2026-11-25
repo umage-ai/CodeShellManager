@@ -150,6 +150,56 @@ pub struct ViewResponse {
     /// Ctrl+V found an image and no text in a remote window's pane: nothing was sent (the office
     /// cannot read this laptop's clipboard). The caller uploads the image instead.
     pub image_paste: bool,
+    /// A paste the view did not send itself: it needs the person's yes first (several lines into a
+    /// program that did not ask for bracketed paste), was cut to [`PASTE_MAX_BYTES`], or is large
+    /// enough that cleaning it belongs off the UI thread. The caller asks or hands it to
+    /// [`TerminalSource::paste`] on a worker.
+    pub paste: Option<PasteRequest>,
+}
+
+/// The most text one paste carries (8 MiB). More is cut, and the person is told.
+pub const PASTE_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Pastes up to this size are cleaned and sent from the frame; bigger ones go to a worker.
+const PASTE_INLINE_BYTES: usize = 64 * 1024;
+
+/// A paste the view hands up instead of sending ([`ViewResponse::paste`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteRequest {
+    /// Already cut to [`PASTE_MAX_BYTES`].
+    pub text: String,
+    /// More than one line, and the program did not ask for bracketed paste: in a shell each line
+    /// would run at once. Ask first.
+    pub confirm: bool,
+    /// The clipboard held more than [`PASTE_MAX_BYTES`].
+    pub truncated: bool,
+}
+
+/// Decides what a clipboard paste becomes: `Ok(text)` is safe to send from the frame now,
+/// `Err(request)` goes up to the app.
+pub fn plan_paste(mut text: String, mode: TermMode) -> Result<String, PasteRequest> {
+    let truncated = text.len() > PASTE_MAX_BYTES;
+    if truncated {
+        let mut at = PASTE_MAX_BYTES;
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        text.truncate(at);
+    }
+    let confirm = !mode.contains(TermMode::BRACKETED_PASTE) && text.trim_end_matches(['\r', '\n']).contains(['\r', '\n']);
+    if confirm || truncated || text.len() > PASTE_INLINE_BYTES { Err(PasteRequest { text, confirm, truncated }) } else { Ok(text) }
+}
+
+/// The link under a clicked cell, read from the terminal now (not the hover cache of an earlier
+/// frame). `None` when there is none, or the emulator is busy (a click is not worth waiting for).
+fn link_at_click(source: &dyn TerminalSource, col: usize, row: usize) -> Option<String> {
+    let term = source.terminal()?;
+    let t = match term.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    let link = t.link_at(col, row)?;
+    link.spans.iter().any(|&(r, a, b)| r == row && (a..=b).contains(&col)).then_some(link.uri)
 }
 
 /// The link under the pointer, looked up again only when the cell or the screen changes.
@@ -183,6 +233,10 @@ pub struct TerminalView {
     was_focused: bool,
     has_selection: bool,
     mouse_down: Option<MouseButton>,
+    /// Whether the press that began the current drag was reported to the program (as opposed to
+    /// selecting locally). Latched at press: the release and the drag follow it even if Shift
+    /// changed since.
+    mouse_reported: bool,
     drag_origin: Option<(usize, usize)>,
     last_click: Option<(Instant, usize, usize, u8)>,
     wheel_accum: f32,
@@ -199,6 +253,8 @@ pub struct TerminalView {
     /// This frame's [`ViewOptions::remote`], and whether an image paste was refused this frame.
     remote: bool,
     image_paste: bool,
+    /// A paste to pass up this frame ([`ViewResponse::paste`]).
+    paste_req: Option<PasteRequest>,
     /// Ctrl+Shift+C asked for Claude's last reply this frame.
     copy_reply: bool,
 }
@@ -286,6 +342,7 @@ impl TerminalView {
             was_focused: false,
             has_selection: false,
             mouse_down: None,
+            mouse_reported: false,
             drag_origin: None,
             last_click: None,
             wheel_accum: 0.0,
@@ -297,6 +354,7 @@ impl TerminalView {
             clean_copy: false,
             remote: false,
             image_paste: false,
+            paste_req: None,
             copy_reply: false,
         }
     }
@@ -391,6 +449,7 @@ impl TerminalView {
         self.copy_reply = false;
         self.remote = opts.remote;
         self.image_paste = false;
+        self.paste_req = None;
         if opts.interactive
             && let Some(g) = grid
         {
@@ -444,13 +503,25 @@ impl TerminalView {
                     };
                     if self.cache.as_ref().map(|c| c.key) != Some(key) {
                         let tb = Instant::now();
-                        let built = render::build(&t, &mut renderer.fonts, atlas, origin, ppp, m, focused, &opts.style);
+                        let mut key = key;
+                        let mut built = render::build(&t, &mut renderer.fonts, atlas, origin, ppp, m, focused, &opts.style);
                         renderer.frame.rebuilds += 1;
-                        renderer.frame.build_ms += tb.elapsed().as_secs_f32() * 1000.0;
                         if atlas.full {
+                            // The atlas ran out of room mid-build: evict everything and build
+                            // again on the empty atlas, in this same frame. If it overflows even
+                            // then (more glyphs on this pane than one atlas holds) keep what fits
+                            // and do not clear again: clearing on every frame would re-rasterise
+                            // the lot at full frame rate. Other panes' cached meshes point into
+                            // the evicted glyphs; the epoch change rebuilds them, and the repaint
+                            // below shows that (throttled when overflows repeat).
                             atlas.clear();
-                            ctx.request_repaint();
+                            built = render::build(&t, &mut renderer.fonts, atlas, origin, ppp, m, focused, &opts.style);
+                            renderer.frame.rebuilds += 1;
+                            atlas.full = false;
+                            key.epoch = atlas.epoch;
+                            ctx.request_repaint_after(atlas.overflow_repaint_delay(now));
                         }
+                        renderer.frame.build_ms += tb.elapsed().as_secs_f32() * 1000.0;
                         self.cache = Some(RenderCache { mesh: Arc::new(built.mesh), key, cursor_rect: built.cursor_rect });
                     }
                 }
@@ -512,7 +583,7 @@ impl TerminalView {
         if false {
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "terminal"));
         }
-        ViewResponse { response: resp, grid, focused, clicked, open_link, copy_reply: std::mem::take(&mut self.copy_reply), image_paste: std::mem::take(&mut self.image_paste) }
+        ViewResponse { response: resp, grid, focused, clicked, open_link, copy_reply: std::mem::take(&mut self.copy_reply), image_paste: std::mem::take(&mut self.image_paste), paste: self.paste_req.take() }
     }
 
     /// The state text to draw over an empty view (`None` while running).
@@ -597,8 +668,12 @@ impl TerminalView {
                     typed = true;
                 }
                 Event::Paste(text) if focused => {
-                    // Clipboard text is untrusted: bracketed paste, never typed.
-                    source.paste(&text);
+                    // Clipboard text is untrusted: bracketed paste, never typed; several lines into
+                    // a program without bracketed paste ask first; the size is capped.
+                    match plan_paste(text, mode) {
+                        Ok(text) => source.paste(&text),
+                        Err(req) => self.paste_req = Some(req),
+                    }
                     typed = true;
                 }
                 Event::Ime(ImeEvent::Preedit { text, .. }) if focused => self.preedit = text,
@@ -623,9 +698,11 @@ impl TerminalView {
                         && modifiers.command
                         && body.contains(pos)
                         && hovered
-                        && let Some(link) = self.hover.as_ref().and_then(|h| h.link_at(col, row))
+                        && let Some(uri) = link_at_click(source, col, row)
                     {
-                        open_link = Some(link.uri.clone());
+                        // Looked up now, under the terminal lock, from the clicked cell: the
+                        // hover cache is the previous frame's and the screen may have moved.
+                        open_link = Some(uri);
                         continue;
                     }
                     if pressed && body.contains(pos) && hovered {
@@ -634,6 +711,7 @@ impl TerminalView {
                                 source.send_mouse(&bytes.0);
                             }
                             self.mouse_down = Some(b);
+                            self.mouse_reported = true;
                         } else if b == MouseButton::Left {
                             let now = Instant::now();
                             let clicks = match self.last_click {
@@ -644,13 +722,16 @@ impl TerminalView {
                             self.ops.push(Op::SelStart { col, row, right_half, clicks });
                             self.has_selection = clicks > 1;
                             self.mouse_down = Some(b);
+                            self.mouse_reported = false;
                             self.drag_origin = Some((col, row));
                         }
                     } else if !pressed && self.mouse_down == Some(b) {
+                        // The release goes where the press went, whatever Shift says now.
+                        let report = self.mouse_reported && input::mouse_reporting(mode);
                         if report && let Some(bytes) = input::encode_mouse(MouseAction::Release(b), col as u32, row as u32, mods(modifiers), mode) {
                             source.send_mouse(&bytes.0);
                         }
-                        if !report && !self.has_selection {
+                        if !self.mouse_reported && !self.has_selection {
                             self.ops.push(Op::SelClear);
                         }
                         self.mouse_down = None;
@@ -662,7 +743,7 @@ impl TerminalView {
                     let shift = ui.input(|i| i.modifiers.shift);
                     let report = input::mouse_reporting(mode) && !shift;
                     match self.mouse_down {
-                        Some(b) if report => {
+                        Some(b) if self.mouse_reported => {
                             if let Some(bytes) =
                                 input::encode_mouse(MouseAction::Motion { held: Some(b) }, col as u32, row as u32, Mods::default(), mode)
                             {
@@ -763,7 +844,7 @@ impl TerminalView {
                     self.has_selection = false;
                 }
                 Op::Copy { raw } => {
-                    if let Some(text) = t.term().selection_to_string()
+                    if let Some(text) = super::selection::visible_text(t)
                         && !text.is_empty()
                     {
                         let text = if self.clean_copy && !raw {

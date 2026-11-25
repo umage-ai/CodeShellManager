@@ -41,6 +41,56 @@ pub fn face_from_bytes(data: Vec<u8>, index: usize, name: String) -> Option<Face
     Some(Face { data: Arc::new(data), offset, key, name, has_wght })
 }
 
+/// Checks a face from an untrusted source (an add-on theme's font) by measuring it, shaping sample
+/// text and rasterising a spread of glyphs, all under `catch_unwind`: a malformed font can panic
+/// inside the shaper or rasteriser, and that must never happen on the UI thread. CPU work: call it
+/// off the UI thread. Returns the face back when it is safe to use.
+pub fn validate_face(face: Face) -> Result<Face, String> {
+    let name = face.name.clone();
+    let counted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| usize::from(face.font().metrics(&[]).glyph_count)));
+    let glyph_count = counted.map_err(|_| format!("{name}: its tables could not be read"))?.min(3000);
+    let mut fonts = FontSet::new(face, Vec::new(), 13.0, true);
+    let measured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fonts.metrics(1.0)));
+    if measured.is_err() {
+        return Err(format!("{name}: its metrics could not be read"));
+    }
+    for style in [Style::default(), Style { bold: true, italic: true }] {
+        for px in [13.0f32, 26.0] {
+            if fonts.try_shape_run("Hello, World! 0123456789 fi -> => == != {}[]()", style, px).is_none() {
+                return Err(format!("{name}: the shaper failed on it"));
+            }
+            for gid in 0..=glyph_count {
+                let gid = u16::try_from(gid).unwrap_or(u16::MAX);
+                if fonts.try_rasterize(0, gid, style, px).is_err() {
+                    return Err(format!("{name}: glyph {gid} failed to render"));
+                }
+            }
+        }
+    }
+    Ok(fonts.primary)
+}
+
+/// Parses and validates font bytes on a worker thread; the result arrives on the channel. A panic
+/// anywhere in it is an `Err`, never a crash.
+pub fn spawn_validation(bytes: Arc<Vec<u8>>, name: &str) -> std::sync::mpsc::Receiver<Result<Face, String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let name = name.to_owned();
+    let spawned = std::thread::Builder::new().name("csm-font-check".into()).spawn({
+        let tx = tx.clone();
+        move || {
+            let r = std::panic::catch_unwind(|| {
+                let face = face_from_bytes(bytes.as_ref().clone(), 0, name.clone()).ok_or_else(|| format!("{name}: not a font"))?;
+                validate_face(face)
+            });
+            let _ = tx.send(r.unwrap_or_else(|_| Err(format!("{name}: it crashed the font reader"))));
+        }
+    });
+    if let Err(e) = spawned {
+        let _ = tx.send(Err(format!("could not start the font check: {e}")));
+    }
+    rx
+}
+
 /// JetBrains Mono, embedded (OFL, `assets/fonts`): the terminal font of the design, and a primary
 /// face that needs no disk access, so tests and first frames never wait on I/O.
 pub static JETBRAINS_MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
@@ -219,6 +269,28 @@ impl FontSet {
     /// Shapes a run of primary-font text with ligatures (`calt`, `liga`). One entry per output
     /// glyph, positioned relative to the run start; `char_index` is the source character.
     pub fn shape_run(&mut self, text: &str, style: Style, px: f32) -> Arc<Vec<Shaped>> {
+        match self.try_shape_run(text, style, px) {
+            Some(v) => v,
+            // The shaper panicked on this font (a malformed face): every character falls back to
+            // plain per-cell drawing (gid 0 is drawn by the caller's character path).
+            None => Arc::new(
+                text.chars().enumerate().map(|(i, _)| Shaped { char_index: u16::try_from(i).unwrap_or(u16::MAX), gid: 0, x: 0.0, y: 0.0 }).collect(),
+            ),
+        }
+    }
+
+    /// [`FontSet::shape_run`], `None` when shaping panicked (a malformed font). The shaper's state
+    /// is rebuilt afterwards.
+    fn try_shape_run(&mut self, text: &str, style: Style, px: f32) -> Option<Arc<Vec<Shaped>>> {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.shape_run_inner(text, style, px)));
+        if r.is_err() {
+            log::error!("font: shaping panicked in {}; falling back to per-cell glyphs", self.primary.name);
+            self.shape_ctx = ShapeContext::new();
+        }
+        r.ok()
+    }
+
+    fn shape_run_inner(&mut self, text: &str, style: Style, px: f32) -> Arc<Vec<Shaped>> {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (text, style, px.to_bits()).hash(&mut h);
         let key = h.finish();
@@ -264,6 +336,21 @@ impl FontSet {
 
     /// Renders one glyph. CPU only, no I/O.
     pub fn rasterize(&mut self, face_idx: u8, gid: u16, style: Style, px: f32) -> Option<RasterGlyph> {
+        self.try_rasterize(face_idx, gid, style, px).ok().flatten()
+    }
+
+    /// [`FontSet::rasterize`], `Err` when the rasteriser panicked on a malformed font (the glyph is
+    /// then blank). The scaler's state is rebuilt afterwards.
+    fn try_rasterize(&mut self, face_idx: u8, gid: u16, style: Style, px: f32) -> Result<Option<RasterGlyph>, ()> {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.rasterize_inner(face_idx, gid, style, px)));
+        if r.is_err() {
+            log::error!("font: rasterising glyph {gid} panicked in face {face_idx}; drawing it blank");
+            self.scale_ctx = ScaleContext::new();
+        }
+        r.map_err(|_| ())
+    }
+
+    fn rasterize_inner(&mut self, face_idx: u8, gid: u16, style: Style, px: f32) -> Option<RasterGlyph> {
         let face = if face_idx == 0 { &self.primary } else { self.fallbacks.get(usize::from(face_idx) - 1)? };
         let builder = self.scale_ctx.builder(face.font()).size(px).hint(self.coverage.hint);
         let real_bold = style.bold && face.has_wght;

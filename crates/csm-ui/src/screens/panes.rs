@@ -15,10 +15,11 @@ use egui::{
 use crate::placement::{Monitors, WindowTracker};
 use serde_json::json;
 
-use crate::app::{Action, CsmApp, Menu, PaneHost};
+use crate::app::{Action, ConfirmState, CsmApp, Menu, PaneHost};
 use crate::icons;
 use crate::model::{Kind, Layout, LayoutMode, Scope, SessionId, SessionView, SplitDir, SplitNode, Status, UiModel};
 use crate::screens::sidebar::kind_badge;
+use crate::terminal::view::{PASTE_MAX_BYTES, PasteRequest};
 use crate::terminal::{SourceState, TerminalSource, TerminalView, ViewOptions, lock};
 use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
@@ -1089,6 +1090,9 @@ pub fn pane(
         if let Some(url) = vr.open_link {
             actions.push(Action::Tool("open_url", json!({"url": url, "session_id": s.id})));
         }
+        if let Some(req) = vr.paste {
+            actions.extend(paste_actions(&s.id, req));
+        }
         if vr.image_paste {
             // Claude reads the office's clipboard, not this laptop's: the image is uploaded, and its
             // office path is pasted (`upload_card`).
@@ -1865,5 +1869,56 @@ mod tests {
         set_pair(&mut tree, &[], 0, 0.7);
         let SplitNode::Split { ratios, .. } = tree else { panic!() };
         assert!((ratios[0] - 0.7).abs() < 1e-5 && (ratios[1] - 0.3).abs() < 1e-5);
+    }
+}
+
+/// What a paste the terminal view handed up becomes: a notice when it was cut, and either the
+/// paste itself or a question first (several lines into a program that did not ask for bracketed
+/// paste would run line after line, as typed commands).
+fn paste_actions(session: &SessionId, req: PasteRequest) -> Vec<Action> {
+    let mut out = Vec::new();
+    if req.truncated {
+        out.push(Action::Toast(format!("The clipboard held more than {} MiB; only the first {} MiB is pasted.", PASTE_MAX_BYTES >> 20, PASTE_MAX_BYTES >> 20)));
+    }
+    let paste = Action::PasteText { session: session.clone(), text: req.text.clone() };
+    if !req.confirm {
+        out.push(paste);
+        return out;
+    }
+    let trimmed = req.text.trim_end_matches(['\r', '\n']);
+    let lines = trimmed.split(['\r', '\n']).count();
+    let first: String = trimmed.split(['\r', '\n']).next().unwrap_or_default().chars().take(80).collect();
+    out.push(Action::Confirm(ConfirmState {
+        title: format!("Paste {lines} lines?"),
+        body: format!(
+            "This program did not ask for bracketed paste, so every line is entered as soon as it is pasted. A shell runs each one.\n\nStarts with: {first}"
+        ),
+        yes_label: "Paste".into(),
+        no_label: "Cancel".into(),
+        yes: Box::new(paste),
+        also: None,
+    }));
+    out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod paste_tests {
+    use super::*;
+
+    #[test]
+    fn several_lines_without_bracketed_paste_ask_first() {
+        let acts = paste_actions(&"s1".to_owned(), PasteRequest { text: "echo a\necho b\n".into(), confirm: true, truncated: false });
+        assert_eq!(acts.len(), 1);
+        let Action::Confirm(c) = &acts[0] else { panic!("not a confirm: {acts:?}") };
+        assert!(c.title.contains('2'), "{}", c.title);
+        assert_eq!(*c.yes, Action::PasteText { session: "s1".into(), text: "echo a\necho b\n".into() });
+    }
+
+    #[test]
+    fn a_cut_paste_says_so_and_a_plain_one_just_pastes() {
+        let acts = paste_actions(&"s1".to_owned(), PasteRequest { text: "x".into(), confirm: false, truncated: true });
+        assert!(matches!(acts[0], Action::Toast(_)));
+        assert!(matches!(acts[1], Action::PasteText { .. }));
     }
 }

@@ -8,6 +8,8 @@ pub mod claude_copy;
 pub mod fonts;
 pub mod local;
 pub mod render;
+pub mod resize;
+pub mod selection;
 pub mod source;
 pub mod view;
 
