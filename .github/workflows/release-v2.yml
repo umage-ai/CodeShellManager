@@ -86,6 +86,13 @@ jobs:
       # dev -> 0). A final release is exactly MAJOR.MINOR.PATCH, as the WPF app's MSIs were, so
       # Add/Remove Programs shows the version winget and Chocolatey publish. MSI compares only
       # the first three fields, so MajorUpgrade allows same-version upgrades.
+      # Build order (SEC-48): because of that, the MSI also carries an integer BUILD ORDER that the
+      # installer records and checks, so an older build cannot silently replace a newer one:
+      #   order = major*10^7 + minor*10^5 + patch*10^3 + stage*100 + N
+      #   stage: beta 1, rc 2, final 3 (N = 0 for a final), N 1..99, major/minor/patch 0..99.
+      #   Always below 10^9, well under 2^31-1 (MSI conditions compare 32-bit signed integers).
+      #   2.0.0-beta.5 -> 20000105, 2.0.0-rc.1 -> 20000201, 2.0.0 -> 20000300,
+      #   2.0.1-beta.1 -> 20001101. A dev build gets 0: it neither checks nor records.
       # Channel: -beta.N -> beta; -rc.N and final -> stable; a dry run -> the chosen input.
       # The tag name is untrusted input: it reaches the script only through the environment and is
       # validated with a strict ASCII regex before any other use (never a workflow expression inside a script).
@@ -111,25 +118,32 @@ jobs:
           $kind = $Matches[4]
           if ($major -lt 2) { throw "Tag version '$semver' is below 2.0.0: the WPF app's tags are not built here" }
           if ($major -gt 255 -or $minor -gt 255 -or $patch -gt 65535) { throw 'version field out of MSI range' }
+          if ($kind -ne 'dev' -and ($major -gt 99 -or $minor -gt 99 -or $patch -gt 99)) { throw 'version field above 99: the build-order encoding (docs/release.md) has two digits each' }
           $base = "$major.$minor.$patch"
           if ($kind) {
             $n = [int]$Matches[5]
             if ($n -lt 1 -or $n -gt 65535) { throw "pre-release number $n out of range 1..65535" }
             # The pre-release number stays in the 4th field (2.0.0.N), as before. MSI ignores that
-            # field, so an older pre-release can still replace a newer one (SEC-48, open: moving it
-            # into the first three fields would make every installed 2.0.0.x build look newer).
+            # field; the build order below is what stops an older pre-release replacing a newer one.
             $msi = switch ($kind) { 'beta' { "$base.$n" } 'rc' { "$base.$(100 + $n)" } default { "$base.0" } }
           } else { $msi = $base }
+          # Build order (see the comment above). Dev builds: 0 = no check, no record.
+          $stage = switch ($kind) { 'beta' { 1 } 'rc' { 2 } 'dev' { 0 } default { 3 } }
+          if (($kind -eq 'beta' -or $kind -eq 'rc') -and ($n -lt 1 -or $n -gt 99)) { throw "pre-release number $n out of range 1..99 (build-order encoding)" }
+          $nn = if ($kind -eq 'beta' -or $kind -eq 'rc') { $n } else { 0 }
+          $order = if ($kind -eq 'dev') { 0 } else { $major * 10000000 + $minor * 100000 + $patch * 1000 + $stage * 100 + $nn }
+          if ($order -lt 0 -or $order -ge 1000000000) { throw 'build order out of range' }
           $channel = switch ($kind) { 'beta' { 'beta' } 'dev' { $env:DISPATCH_CHANNEL } default { 'stable' } }
           if ($channel -notin 'beta', 'stable') { throw 'unknown channel' }
           $aumid = if ($channel -eq 'stable') { 'UmageAI.CodeShellManager' } else { 'UmageAI.CodeShellManager.Beta' }
           $prerelease = if ($kind) { 'true' } else { 'false' }
           "semver=$semver"         | Out-File $env:GITHUB_OUTPUT -Append
           "msi=$msi"               | Out-File $env:GITHUB_OUTPUT -Append
+          "order=$order"           | Out-File $env:GITHUB_OUTPUT -Append
           "channel=$channel"       | Out-File $env:GITHUB_OUTPUT -Append
           "aumid=$aumid"           | Out-File $env:GITHUB_OUTPUT -Append
           "prerelease=$prerelease" | Out-File $env:GITHUB_OUTPUT -Append
-          Write-Host "semver $semver, MSI $msi, channel $channel, pre-release $prerelease"
+          Write-Host "semver $semver, MSI $msi, build order $order, channel $channel, pre-release $prerelease"
 
       # A tag build goes to users (beta and rc testers; winget and Chocolatey for a final) and
       # replaces the signed WPF app on people's machines: never unsigned, on any channel. A
@@ -268,13 +282,22 @@ jobs:
         env:
           SEMVER: ${{ steps.ver.outputs.semver }}
           MSI_VERSION: ${{ steps.ver.outputs.msi }}
+          BUILD_ORDER: ${{ steps.ver.outputs.order }}
           AUMID: ${{ steps.ver.outputs.aumid }}
           CHANNEL: ${{ steps.ver.outputs.channel }}
         run: |
           # Must match AppUserModelId in the .wxs.
           Set-Content publish/codeshell.aumid $env:AUMID -NoNewline
+          # A component GUID that is unique per build order (installer/CodeShellManager2.wxs
+          # explains why): an MD5 over channel, order and semver, in GUID form (dev builds differ
+          # by run number, so no two builds ever share one).
+          $md5 = [System.Security.Cryptography.MD5]::Create()
+          $hash = $md5.ComputeHash([Text.Encoding]::ASCII.GetBytes("csm-build-order|$env:CHANNEL|$env:BUILD_ORDER|$env:SEMVER"))
+          $guid = ([guid]::new($hash)).ToString().ToUpperInvariant()
           wix build installer/CodeShellManager2.wxs `
             -d Version=$env:MSI_VERSION `
+            -d BuildOrder=$env:BUILD_ORDER `
+            -d BuildOrderGuid=$guid `
             -d PublishDir=publish `
             -d Channel=$env:CHANNEL `
             -ext WixToolset.UI.wixext `
