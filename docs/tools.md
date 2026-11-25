@@ -1,14 +1,15 @@
 # Tools: every action, one registry, three front ends
 
-CodeShellManager follows the Craft apps' rule: **everything is a tool.** Every action the person
+CodeShellManager follows one rule: **everything is a tool.** Every action the person
 can take (open a session, focus one, sleep a group, switch the layout, answer the inbox) is a
-`ToolSpec` registered with the engine (`crates/csm-engine`). Four callers dispatch by tool id:
+`ToolSpec` registered with the engine (`crates/csm-engine`). Five callers dispatch by tool id:
 
 | Caller | How | Consent |
 |---|---|---|
 | The app (buttons, menus, palette, keymap) | `engine.submit(Caller::Ui, id, params)`; polled once a frame | Never asked by the engine; the UI asks its own questions ("Close all…?") |
 | The CLI | `csm <tool-id-in-kebab-case> --json '{…}'` (or flags), talks to the running app | As the person: no consent card |
 | MCP clients | `csm mcp` (stdio), bridged to the running app | Tools whose effects need consent wait for an "Allow once / Always for this client / Don't allow" card in the app |
+| A paired CodeShellManager | `Caller::Peer`, set only by the peer server from the device list (see [remote-access.md](remote-access.md)) | A trusted device: none. An untrusted device: a card on this machine for tools that type into a session or start a process. A level below Full refuses what it may not do |
 | The engine itself | scheduled work, restore loop, bulk loops | n/a |
 
 So there is no "MCP hook" to add separately: a feature that isn't a tool isn't finished. A button
@@ -31,7 +32,8 @@ MCP clients and paired devices.
   `deny_unknown_fields`; doc comments on fields become the schema's descriptions), `run`.
 - **Effects are honest.** They drive consent, the MCP annotations and confirmation prompts:
   `IDEMPOTENT`, `CHANGES_UI_STATE`, `MUTATES_STATE`, `LAUNCHES_PROCESS`, `SENDS_INPUT`,
-  `MAY_DISCARD_DATA`, `WRITES_FILESYSTEM`, `ACCESSES_NETWORK`, `READS_SESSION_CONTENT`.
+  `MAY_DISCARD_DATA`, `WRITES_FILESYSTEM`, `ACCESSES_NETWORK`, `READS_SESSION_CONTENT`,
+  `ENABLES_EXTENSION`, `STORES_SECRETS`.
 - **A tool never blocks the engine thread.** Spawn the slow part on a worker and finish with
   `ctx.engine.post(job)`; report progress with events. A tool that needs to wait (e.g.
   `session_wait`) parks its reply and completes it from a later event.
@@ -41,16 +43,17 @@ MCP clients and paired devices.
   (close a busy session) takes a parameter instead (`force: bool`, default false) and refuses
   with a clear error without it.
 - **Untrusted text into a PTY is pasted, never typed.** `session_send_text` uses bracketed paste;
-  `submit: true` adds the Enter separately. See the WPF app's `SendToTerminal` vs
-  `PasteToTerminal`.
+  `submit: true` adds the Enter separately.
+
 
 ## Consent
 
 `Effects::needs_consent()` (any of `SENDS_INPUT`, `MAY_DISCARD_DATA`, `LAUNCHES_PROCESS`,
-`WRITES_FILESYSTEM`, `READS_SESSION_CONTENT`) makes an `External` call park until the person
+`WRITES_FILESYSTEM`, `READS_SESSION_CONTENT`, `ENABLES_EXTENSION`) makes an `External` call park until the person
 answers a card in the app. The card names the client, the session it runs in (when it is one of
 ours), the tool and its params. "Always for this client" grants that client that tool; grants are
-listed and revocable in Settings → MCP. `consent_answer` is refused for every caller but the UI,
+listed and revocable in Settings → MCP. Paired devices are asked by a different rule (the table above).
+`consent_answer` is refused for every caller but the UI,
 so a client can never approve itself. Unanswered requests time out after 120 s.
 
 ### Trust model
@@ -83,8 +86,8 @@ Two extra rules the engine enforces regardless of grants:
 
 ## Toolsets (progressive disclosure)
 
-MCP clients see `core` by default and turn others on with `toolset_enable` (as Craft Anything
-does; dozens of tool definitions cost context). The app and CLI see everything.
+MCP clients see `core` by default and turn others on with `toolset_enable`; hundreds of
+tool definitions would cost too much context. The app and CLI see everything.
 
 ## The catalogue
 
@@ -134,9 +137,9 @@ goes through tools that take `session_ids` and check every id before acting:
 menu's "Restart (N)…" asks first), `session_close_many` (refuses busy ones without force; the
 menu's "Close (N)…" asks first) and `session_move_many` (group_id, before?/after? anchor; the
 block keeps its order; a dragged selection drops through it). The row menu shows them, with
-counts, when the right-clicked row is part of the selection (C# `ResolveActionTargets`).
+counts, when the right-clicked row is part of the selection.
 `session_sort` (by name / folder / last_active / branch / dirty / repo, descending?, group?)
-rewrites the order once (C# `ApplySort`; `csm_core::session_sort`): stable, sessions without a
+rewrites the order once (`csm_core::session_sort`): stable, sessions without a
 branch or repo last in both directions, a group's sessions sorted within their own slots. The ⇅
 control next to the Sessions header and the palette open its menu.
 
@@ -178,7 +181,7 @@ Built in `csm-engine` (`runs/`, `tools/runs.rs`).
 | `run_set` ✅ | session_id, id? (id or label of the one to update), label?, command_line?, is_default?, mode?, post_run_url? ("" removes it) | state, launch | add one run command, or update the one matching `id` (else `label`); the rest of the list stays. Same checks as `run_edit`. **Asks MCP clients** |
 | `run_remove` ✅ | session_id, run_id (id or label) | state, launch, discard | remove one and stop its run; a removed default passes to the first remaining one. **Asks MCP clients** |
 
-Rules carried from the WPF app: a run never types into its session; runs use the **inbox**
+Rules for runs: a run never types into its session; runs use the **inbox**
 ConPTY (`allow_bundled = false`: a headless PTY has nobody to answer OpenConsole's DA1); Process
 mode is `cmd.exe /c "<command>"` passed to CreateProcess verbatim (`SpawnOptions::verbatim_args`:
 cmd does not parse MSVCRT quoting), PowerShell mode `-EncodedCommand`, SSH and WSL parents go
@@ -225,7 +228,7 @@ state. `SessionView` carries `branch`, `git_dirty`, `git_upstream`, `git_ahead`,
 others 120 s, WSL 30 s) plus a shared `.git/HEAD` + `index` watcher; an OSC 9001 push wins.
 
 ### notes, search, project docs ✅
-Built in `csm-engine` (`tools/search.rs`) over the `csm-index` crate (SQLite + FTS5, one DB thread that owns the connection: this replaces the WPF `DbGate`).
+Built in `csm-engine` (`tools/search.rs`) over the `csm-index` crate (SQLite + FTS5, one DB thread that owns the connection:).
 
 | id | params | effects | what |
 |---|---|---|---|
@@ -455,24 +458,25 @@ launches the Claude session itself).
 
 What `csm mcp` costs a client in context, from `cargo xtask mcp-size` (the real `McpService` over
 an in-process engine; tokens are bytes / 4, an estimate good enough to compare toolsets).
-Measured on 2026-11-20 after the Board merge (the `tasks` toolset; 112 engine tools; the app's own `pane_*` tools are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
+Measured on 2026-11-25 (193 engine tools; the app's own `pane_*` tools are not in the engine registry, so they are not counted). Re-run it after adding tools, and keep
 `core` small: it is what every client pays on every conversation.
 
 | toolset | tools | bytes | est. tokens |
 |---|---|---|---|
-| base (core + toolset tools) | 26 | 20543 | ~5135 |
+| base (core + toolset tools) | 39 | 32212 | ~8053 |
 | + groups | 19 | 11434 | ~2858 |
-| + layout | 9 | 6197 | ~1549 |
-| + runs | 5 | 3069 | ~767 |
-| + git | 9 | 6312 | ~1578 |
-| + notes | 3 | 2142 | ~535 |
+| + layout | 13 | 8288 | ~2072 |
+| + runs | 8 | 6423 | ~1605 |
+| + git | 12 | 9895 | ~2473 |
+| + notes | 5 | 4123 | ~1030 |
 | + search | 3 | 2395 | ~598 |
-| + app | 27 | 18679 | ~4669 |
+| + app | 60 | 43329 | ~10832 |
 | + tasks | 11 | 7639 | ~1909 |
-| everything enabled | 112 | 78410 | ~19602 |
+| + addons | 23 | 15346 | ~3836 |
+| everything enabled | 193 | 141084 | ~35271 |
 
-Progressive disclosure is worth about 3x here: a client that only needs sessions pays ~5.1k
-tokens instead of ~19.6k.
+Progressive disclosure is worth about 4x here: a client that only needs sessions pays ~8k
+tokens instead of ~35k.
 
 ## Repository checks (`cargo xtask`)
 

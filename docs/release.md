@@ -33,7 +33,7 @@ this branch (`installer/CodeShellManager2.wxs`, `.github/workflows/{release-v2,w
 | IPC app id (craft-ipc discovery records; Windows pipe `craft-<user>-<app id>-<pid>`) | `codeshell` | `codeshell-beta` |
 | Per-session MCP configs when nothing is saved | `<local app data>\CodeShellManager2-mcp` (Linux: `$XDG_RUNTIME_DIR/CodeShellManager2-mcp`; never the shared temp folder) | `<local app data>\CodeShellManager2-Beta-mcp` |
 
-**Beta data (Allan, 2026-11-22):** a beta build keeps its own data folders, so a beta installed
+**Beta data:** a beta build keeps its own data folders, so a beta installed
 beside the stable app after 2.0 never shares its state. On its first start, when
 `%APPDATA%\CodeShellManager2-Beta` does not exist yet, it copies the stable folders (roaming and
 local) once per folder (`persist::seed_beta_in`: into a `.copying` folder, then renamed, with a
@@ -78,8 +78,8 @@ for the stable channel.
 | MSI scope | `perMachine` | `perMachine` | **Must match**: a major upgrade only sees products of its own scope. Matches. |
 | MajorUpgrade | default (no same-version upgrade) | `AllowSameVersionUpgrades="yes"` (pre-releases differ only in the 4th field, which MSI ignores) | Fine; WiX warns ICE61, expected. The old product is removed before the new one is installed (default schedule). |
 | MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `2.0.0.(100+N)`; beta: `2.0.0.N`; dev: `2.0.0.0` | 2.x > 0.x, so every v2 build upgrades the WPF app. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish. |
-| Package version (winget, Chocolatey, tag) | `0.11.0` | `2.0.0` | Decided (Allan): version 2 starts at 2.0.0. Higher than 0.11.x for every package manager. |
-| Install folder | `ProgramFiles64\umage\CodeShellManager` | `ProgramFiles64\umage.ai\CodeShellManager` | **Differs on purpose** (Allan, 2026-11-24: the company name reads "umage.ai" everywhere). A clean break: the upgrade removes the WPF app (its files and its folder, when empty) and installs into the new folder. See "The install folder moved". |
+| Package version (winget, Chocolatey, tag) | `0.11.0` | `2.0.0` | Decided: version 2 starts at 2.0.0. Higher than 0.11.x for every package manager. |
+| Install folder | `ProgramFiles64\umage\CodeShellManager` | `ProgramFiles64\umage.ai\CodeShellManager` | **Differs on purpose** (the company name reads "umage.ai" everywhere). A clean break: the upgrade removes the WPF app (its files and its folder, when empty) and installs into the new folder. See "The install folder moved". |
 | Main exe | `CodeShellManager.exe` | `codeshell.exe` (GUI) + `csm.exe` (CLI, MCP) + `csm-session-summary.exe`, `csm-review.exe` | Differs. See Decisions. Start-menu and desktop shortcuts are re-created (pointing at `codeshell.exe`). No `CodeShellManager.exe` ships: the folder changed, so a pin to the old path breaks either way (re-pin). |
 | `csm` CLI on PATH | none | install folder appended to the system PATH | New. `csm --start` finds `codeshell.exe` beside `csm.exe` (craft-ipc `resolve("codeshell")`), which is one reason not to rename the exe. |
 | Start menu shortcut | `Programs\CodeShellManager\CodeShellManager.lnk` (+ Uninstall) | same names; now carries the AppUserModelID | Matches, so the upgrade replaces it rather than adding a second entry. |
@@ -87,8 +87,8 @@ for the stable channel.
 | AppUserModelID / toasts | none (tray balloon tips) | `UmageAI.CodeShellManager`, on the Start-menu shortcut and in `codeshell.aumid` beside the exe | New. Toast header shows "CodeShellManager". |
 | Registry (HKCU) | `Software\umage\CodeShellManager` (StartMenu, Desktop: shortcut key paths) | `Software\umage.ai\CodeShellManager` (same values) | Differs (company name). Only shortcut key paths; the old key is removed with the old product for the installing user. |
 | Protocol handlers / file associations | none (`.csm` backups only through file dialogs) | none | Nothing to migrate. |
-| Autostart | none | none | Nothing to migrate. |
-| Single instance | none | none (the IPC endpoint is per channel: `codeshell` / `codeshell-beta`) | Running two copies is possible in both; see Risks. |
+| Autostart | none | Optional sign-in entry (HKCU Run), written by the app (Settings → General → Start-up). The MSI repairs it after an upgrade (`--autostart-refresh`, after `InstallFiles`) and removes it on uninstall (`--autostart-remove`) when it starts this exe | An old entry is repointed to the new exe; see "What holds the old exe path". |
+| Single instance | none | One app per state file: a second launch asks the running app to show its window and exits. Not for `--clean`, `--demo` or `--remote`. The IPC endpoint is per channel (`codeshell` / `codeshell-beta`) | Two copies with different state files, or a stable and a beta, can run side by side; see Risks. |
 | Data folder | `%APPDATA%\CodeShellManager\` : `state.json`(+`.bak`), `output.db` (search index and notes), `crash.log`, `update-cache.json`, `webview2\` | `%APPDATA%\CodeShellManager2\` : `state.json`(+`.bak`), `addons\`, `addon-data\`; index in `%LOCALAPPDATA%\CodeShellManager2\` (beta: `CodeShellManager2-Beta`, see Channels) | Deliberately separate: the formats differ and the WPF app's folder stays as it was, so a rollback to 0.x finds its data. |
 | First-run migration | n/a | On a true first run (no v2 `state.json` or `.bak`, default location, not `--clean`), `codeshell` imports the WPF app's sessions and groups (`state_import_wpf`, sessions arrive asleep), the settings that map onto version 2's (table "0.x settings" below), its Open with list **as a pending offer** (a one-time card, see below) and project notes (`notes_import_wpf`), on a background thread | Reads the WPF files only; never writes or deletes them. Not imported: search history (output.db's indexed output) and the settings marked "not carried". The empty screen and the palette still offer the import by hand, which does the same. |
 | Uninstall | removes program files and shortcuts; leaves `%APPDATA%\CodeShellManager` | same; leaves both data folders; removes the PATH entry | OK. |
@@ -104,7 +104,7 @@ for the stable channel.
 
 ## Release checklist (Windows)
 
-Nothing here runs without Allan's say-so. Tags are created by hand.
+Nothing here runs without the maintainer's say-so. Tags are created by hand.
 
 1. **Before the first stable build:** merge `v2` into `main` (see "Merging into main" below).
 2. Release candidate: tag `v2.0.0-rc.1`. `release-v2.yml` builds the **stable** channel, signs,
@@ -130,6 +130,7 @@ Nothing here runs without Allan's say-so. Tags are created by hand.
      check it now names `...\umage.ai\CodeShellManager\csm.exe` (a `.csm-backup` was made), or run
      `csm doctor`. The sign-in (autostart) entry, if the person had turned it on, names the new exe.
    - `echo %PATH%` has `C:\Program Files\umage.ai\CodeShellManager` and no `...\umage\...` entry.
+   - the sign-in entry (Settings → General → Start-up), if on, starts the new exe; launching the app a second time shows the running window instead of opening another.
 3. Final: tag `v2.0.0`. The release is a normal release, marked latest.
 4. Dispatch the package workflows with the tag (they never run on their own; see the comments
    in each file for why the `release` trigger does not fire):
@@ -142,7 +143,7 @@ Dry run at any time (signed like a release when the signing secrets are set; art
 
 ### Version numbers
 
-Decided by Allan: version 2 starts at **2.0.0**. Tags and package versions are semver
+Decided: version 2 starts at **2.0.0**. Tags and package versions are semver
 (`2.0.0-beta.N`, `2.0.0-rc.N`, `2.0.0`); the workflow refuses tags below 2.0.0. MSI
 ProductVersion must be numeric `major.minor.build[.revision]`, and MSI compares only the first
 three fields:
@@ -210,7 +211,7 @@ missing value keeps version 2's. Re-running the import takes the 0.x values agai
 
 ## The install folder moved (umage.ai) and the 0.x exe name
 
-Allan, 2026-11-24: the company name must read **umage.ai** everywhere, to avoid brand confusion
+Decided 2026-11-24: the company name must read **umage.ai** everywhere, to avoid brand confusion
 (the folder was `umage`; the MSI Manufacturer, the ARP publisher and the winget publisher already
 said `umage.ai`). Version 2 therefore installs to `C:\Program Files\umage.ai\<FolderName>`
 (`CodeShellManager`, `CodeShellManager Beta`) and its HKCU key is `Software\umage.ai\...`. It is a
@@ -296,12 +297,12 @@ badge "↑ vX available" in the title bar that opened the release page, a toast,
   Nothing is downloaded or installed. Unlike 0.x there is no OS toast: the badge stays until
   dismissed.
 
-## Decisions for Allan
+## Decisions
 
-Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 (umage.ai folder), 3 and 8 (a beta data folder), 4
+Decided on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 (umage.ai folder), 3 and 8 (a beta data folder), 4
 (import 0.x settings, Open with only after consent) and 7 (MIT).
 
-1. **Exe name: decided, keep `codeshell.exe`** (Allan, 2026-11-22). Renaming would have needed
+1. **Exe name: decided, keep `codeshell.exe`**. Renaming would have needed
    `csm --start`'s lookup changed on Windows only, and bought one thing: taskbar pins and
    hand-made shortcuts to `CodeShellManager.exe` keep working. The Start-menu and desktop
    shortcuts, the only ones the WPF installer made, are re-created by the upgrade. (On
@@ -311,12 +312,12 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
    (replaces the WPF app; published only as a GitHub pre-release). Recommendation: keep, so the
    upgrade is tested before the final. Alternative: rc on the beta channel, and test the stable
    MSI only through a `channel=stable` dry run.
-3. **Stable removes a beta install, and betas have their own data: decided** (Allan,
-   2026-11-22). The stable MSI still removes a beta, by its UpgradeCode. Betas keep their own data
+3. **Stable removes a beta install, and betas have their own data: decided.**
+   The stable MSI still removes a beta, by its UpgradeCode. Betas keep their own data
    folders (`CodeShellManager2-Beta`) and IPC app id and pipe (`codeshell-beta`), and copy the
    stable folders once on their first start (see Channels). The beta product is now named
    "CodeShellManager Beta" (was "CodeShellManager 2 Beta"; same UpgradeCode).
-4. **Which WPF data is imported: decided, settings too** (Allan, 2026-11-22). Sessions, groups,
+4. **Which WPF data is imported: decided, settings too**. Sessions, groups,
    notes and the settings in "0.x settings" above, once automatically on first run and by hand
    the same way. The Open with list is only offered (the card), never applied silently. Not
    imported: the search index's past output.
@@ -326,12 +327,12 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
 6. **Chocolatey icon.** The nuspec still points at the WPF app's `app.png` pinned to a commit
    (jsDelivr). Version 2's only icon is `apps/codeshell/assets/codeshell.ico`. Recommendation:
    add a PNG of the v2 icon to the repo after the merge and pin `iconUrl` to that commit.
-7. **Licence: decided, MIT** (Allan, 2026-11-22). The workspace `Cargo.toml` says
+7. **Licence: decided, MIT**. The workspace `Cargo.toml` says
    `license = "MIT"` (every crate inherits it) and the macOS `Info.plist` says MIT, matching
    `LICENSE`, the README, the nuspec and the WPF app. `deny.toml` and `about.toml` accept MIT. The
    remaining "MIT OR Apache-2.0" mentions are third-party code (craft-anything, craft-ipc, egui,
    two-face), not ours.
-8. **Data folder name: decided.** `%APPDATA%\CodeShellManager2` stays for stable (Allan); the
+8. **Data folder name: decided.** `%APPDATA%\CodeShellManager2` stays for stable; the
    beta's is `CodeShellManager2-Beta`. Neither is user-facing.
 9. **Workspace version.** `Cargo.toml` is `0.0.1`; only release builds carry the real version.
    Recommendation: set it to `2.0.0-dev` after the merge so local builds and `csm app-info`
@@ -342,8 +343,8 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
    who moves from a new beta to the stable rc or final finds the stable folder as it was (or, with
    none, gets the 0.x import). Betas built before this change used `CodeShellManager2`, so nothing
    changes for them. Recommendation: accept, and say so in the beta release notes.
-12. **Install folder `C:\Program Files\umage.ai\`, a clean break, no legacy launcher: decided**
-   (Allan, 2026-11-24). Brand: the company reads "umage.ai" everywhere. Both channels move
+12. **Install folder `C:\Program Files\umage.ai\`, a clean break, no legacy launcher: decided.**
+   Brand: the company reads "umage.ai" everywhere. Both channels move
    (`umage.ai\CodeShellManager`, `umage.ai\CodeShellManager Beta`), UpgradeCodes unchanged so
    MajorUpgrade still removes 0.x and older 2.x/betas; nothing stays under `umage\`. Taskbar
    pins to the old app break (re-pin); the launcher `apps/csm-legacy-launcher` is deleted. See
@@ -353,7 +354,7 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
 
 - **Taskbar pins** to the WPF app's `...\umage\CodeShellManager\CodeShellManager.exe` (and to an
   older 2.x's `codeshell.exe` there) **break** after the upgrade: Windows says the item "has been
-  changed or moved". Accepted (Allan, 2026-11-24): the install folder moved to `umage.ai` and a
+  changed or moved". Accepted: the install folder moved to `umage.ai` and a
   launcher in the new folder would not fix a pin to the old path (it was tried on 2026-11-23 and
   removed). People re-pin the new app. Start menu and desktop shortcuts are re-created and work.
   Release notes say so: "CSM 2 installs under `C:\Program Files\umage.ai\`; taskbar pins to the

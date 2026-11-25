@@ -42,7 +42,7 @@ status = [                      # optional status rules, first match wins
 [[run_template]]                # a run command the person can add to a session's Runs
 name = "test"
 argv = ["npm", "test"]
-cwd = "{folder}"                # optional: {folder} or a relative folder name
+cwd = "{folder}"                # optional: {folder}; a relative folder name is accepted but cannot be applied yet
 
 [[slash]]                       # a Claude slash preset for the slash menu
 command = "/review"
@@ -267,7 +267,7 @@ second (modified time and size, on a worker). A change reloads the add-ons, and 
 the new colours. An edit that only touches `[[theme]]` tables keeps the add-on enabled (colours run
 nothing); any other change turns it off until it is enabled again, as for every add-on. A process
 add-on's themes are ignored, like its other declarative entries.
-The theme-only exception is a deliberate policy decision (Allan, 2026-11-22), and it covers
+The theme-only exception is a deliberate policy decision, and it covers
 `[theme.style]`: the font files are checked and read on a worker, and a font is data, not code.
 
 ## Enabling: the consent point
@@ -697,14 +697,14 @@ the fields the dialog draws.
 ```toml
 [[new_session]]
 id = "agent"                     # 1 to 64 characters, unique in the add-on
-title = "New NEXUS agent"        # the dialog's chip and heading (64 characters)
+title = "New agent"        # the dialog's chip and heading (64 characters)
 submit = "Create agent"          # optional, default "Create" (32 characters)
-choices_tool = "nexus.projects"  # the add-on's own tool; answers data.choices
+choices_tool = "example.projects"  # the add-on's own tool; answers data.choices
 choice_title = "Project"         # optional, default "Choose" (the picker's heading)
 choice_param = "project"         # the parameter that receives the chosen id
 name_param = "name"              # optional: the parameter that receives the typed name (no field without it)
 name_title = "Agent name"        # optional, default "Name" (the name field's heading, 32 characters)
-tool = "nexus.agent_launch"      # the add-on's own tool, run on submit
+tool = "example.agent_launch"      # the add-on's own tool, run on submit
 [new_session.params]             # optional fixed parameters: strings (256 bytes), booleans, integers
 open = true
 ```
@@ -729,7 +729,7 @@ open = true
   request_id is 1 to 200 letters, digits, `-`, `_`, `.` or `:`. CodeShellManager asks the same tool
   again, with the same arguments plus `request_id`, about once a second, until the answer is final.
   The add-on's tool should wait a while for the job, answer pending again if it is still running, and
-  answer final once it is done (`nexus.agent_launch` does this). After 15 minutes the form fails with
+  answer final once it is done (`example.agent_launch` does this). After 15 minutes the form fails with
   "still running" and stops asking; the add-on's own job may still finish. `pending` without a usable
   request_id is a failure, not a success.
 - **Opening a session.** A final successful submit may name one of the add-on's remotes in
@@ -1110,7 +1110,7 @@ comments in each file). `crates/csm-core/tests/sample_packs.rs` parses all of th
 - A status rule reads the screen about once a second; a short-lived match can be missed.
 - A profile's status rules stop applying the moment its add-on is off; the last status it set is
   cleared on the next tick.
-- Run templates run in a shell, as any Runs command does; a `cwd` other than `{folder}` is refused.
+- Run templates run in a shell, as any Runs command does. A `cwd` of `{folder}` is the only one applied; a relative folder name passes the manifest check but `addon_run_apply` refuses it, because run commands have no working-folder field yet.
 - A symlink to another file inside an add-on folder is not followed for the manifest; other files are ignored. Windows junctions are not detected as links.
 - A process add-on's restarts are not rate-limited by hand: `plugin_restart` (and the Restart button) starts it at once. Only crashes back off.
 - Distinct tool id, title and summary texts of process add-ons are kept for the life of the app, up to 4096 in all. A tool past that is not registered (logged), so a plugin that changes its text on every start uses up that room and then loses its new tools.

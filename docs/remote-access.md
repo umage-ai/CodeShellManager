@@ -39,7 +39,7 @@ offline until it wakes.
 
 ## Pair the laptop
 
-1. In the laptop's CodeShellManager, open the command palette and choose **Connect to another
+1. In the laptop's CodeShellManager, open the command palette (`Ctrl+K`) or the main menu (`F10`) and choose **Connect to another
    CodeShellManager…**.
 2. Paste the link from the office (or its text). Give the office a name if you like; it defaults to
    the address.
@@ -184,6 +184,7 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 
 - A remote session's links and run URLs open in the laptop's browser; port forwarding is planned.
 - There is one office per window; several offices are shown as several windows.
+- A remote window has no tray icon, no system notifications and does not remember its window position. The office's own tray and notifications work as before.
 - At the Full level a paired laptop can do everything the office's own window can do (an untrusted one asks first for typing and launching; see Trusted and untrusted devices). See *Levels* for Operator and Viewer.
 - Anything that can run `csm` on this laptop can type into the offices it is paired with (see the trust
   note under `csm attach`).

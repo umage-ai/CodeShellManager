@@ -1,6 +1,6 @@
 # Quitting
 
-`app_quit` (the window close, the tray menu, `csm app_quit`, MCP) runs one sequence in
+`app_quit` (the window close, the tray menu, `csm app-quit`, MCP) runs one sequence in
 `csm-engine` (`lifecycle.rs` `quit`, `quit_pool.rs`, `claude_config.rs`). It never blocks the UI
 thread: a worker thread does the waiting and the shutdown board follows `QuitProgress` events.
 
