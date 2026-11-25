@@ -73,6 +73,47 @@ fn a_view_call_stays_on_the_laptop_and_a_focus_reaches_the_office() {
 }
 
 #[test]
+fn a_rail_tab_switches_the_laptops_rail_and_the_office_only_hears_the_focus() {
+    let office = Office::new();
+    let (id, _pty, _handle) = office.session();
+    let gid = office.ui("group_new", json!({"name": "Work"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    office.ui("session_move_to_group", json!({"session_id": id, "group_id": gid})).unwrap();
+    let (mut b, _me) = connect(&office, None, "Laptop");
+    settle(&mut b, "the group in the mirror", |b| live(b) && b.model().groups.iter().any(|g| g.id == gid) && b.model().sessions.iter().any(|s| s.id == id));
+    settle(&mut b, "the host's tool list", |b| !b.tools().is_empty());
+    let office_rail_before = office.engine.view().rail_tab.clone();
+    assert_eq!(b.model().rail, csm_ui::model::Scope::All);
+    // Focus an ungrouped session first, so the group tab has something to switch to.
+    let (other, _p2, _h2) = office.session();
+    settle(&mut b, "the second session", |b| b.model().sessions.iter().any(|s| s.id == other));
+    call(&mut b, "session_focus", json!({"session_id": other})).unwrap();
+    let sent_before = b.submitted().len();
+
+    // A group tab click: the laptop switches, and the office gets the focus but keeps its own tab.
+    call(&mut b, "view_set", json!({"rail_tab": gid})).unwrap();
+    assert_eq!(b.model().rail, csm_ui::model::Scope::Group(gid.clone()), "the laptop's rail switched");
+    assert_eq!(b.model().active.as_deref(), Some(id.as_str()), "and focused the group's session");
+    assert_eq!(office.engine.view().rail_tab, office_rail_before, "the office's rail tab did not follow");
+    let sent: Vec<_> = b.submitted()[sent_before..].iter().map(|c| (c.id.clone(), c.params.clone())).collect();
+    assert_eq!(sent, vec![("session_focus".to_owned(), json!({"session_id": id}))], "only the focus was sent");
+    settle(&mut b, "the office's focus", |_| office.engine.view().focused.as_deref() == Some(id.as_str()));
+
+    // Next from the group wraps to All: nothing to focus, so nothing is sent at all.
+    let sent_before = b.submitted().len();
+    call(&mut b, "rail_tab_next", json!({})).unwrap();
+    assert_eq!(b.model().rail, csm_ui::model::Scope::All, "the laptop wrapped to All");
+    assert_eq!(office.engine.view().rail_tab, office_rail_before, "the office's rail tab is untouched");
+    assert!(b.submitted()[sent_before..].iter().all(|c| c.id != "session_focus"), "a tab with no focus sends nothing to the office");
+    call(&mut b, "rail_tab_next", json!({})).unwrap();
+    assert_eq!(b.model().rail, csm_ui::model::Scope::Group(gid), "and the next step is the group again");
+    assert_eq!(office.engine.view().rail_tab, office_rail_before);
+
+    let unknown = call(&mut b, "view_set", json!({"rail_tab": "no-such-group"}));
+    assert!(matches!(unknown, Err(ToolError::NotFound(_))), "an unknown group is refused locally: {unknown:?}");
+    assert!(!b.busy(), "nothing is left waiting");
+}
+
+#[test]
 fn a_terminal_follows_the_office_types_pastes_and_resizes() {
     let office = Office::new();
     let (id, pty, handle) = office.session();

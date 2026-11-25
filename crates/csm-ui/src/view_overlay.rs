@@ -17,9 +17,14 @@
 //! - An overlay focus does not do the server's extras from `lifecycle::focus`: the result
 //!   acknowledgement (`rt.acknowledge`) and the last-activity stamp. Any overlay focus must be
 //!   forwarded, or replayed to the server, for those.
-//! - `inbox_next` and `view_set` with a `rail_tab` are forwarded, because the engine runs a focus
-//!   for them. `inbox_next` declares `UI | LAUNCHES_PROCESS` (it can wake a session; Allan,
-//!   2026-11-23), so the declaration alone keeps it off the overlay and MCP callers are asked.
+//! - `inbox_next` is forwarded, because the engine runs a focus for it. It declares
+//!   `UI | LAUNCHES_PROCESS` (it can wake a session; Allan, 2026-11-23), so the declaration alone
+//!   keeps it off the overlay and MCP callers are asked.
+//! - A rail tab switch (`view_set` with a `rail_tab`, `rail_tab_next`, `rail_tab_prev`) is the
+//!   client's own: [`Route::RailTab`] switches the overlay's tab, as the engine does, and focuses
+//!   a session in the group when it should ([`Applied::Focused`], never a wake). The caller then
+//!   sends `session_focus` for that session, never the rail call itself: the host's own rail tab
+//!   must not follow a laptop.
 //! - Themes are per client (Allan, 2026-11-23): `theme_set` runs against the overlay, which holds
 //!   the client's own mode and dark and light theme ids. A client checks an id against its own
 //!   `theme_list` (the engine's registry is the server's), passed in as [`ViewFacts::themes`]: an unknown id,
@@ -42,8 +47,8 @@ use crate::backend::ToolInfo;
 /// The one tool that is UI-only in part: a local focus, and a `session_wake` when asleep.
 pub const SESSION_FOCUS: &str = "session_focus";
 
-/// The UI-only tools the overlay models: [`apply`] has an arm for each. `view_set` is listed,
-/// but its `rail_tab` form is forwarded (see [`route`]).
+/// The UI-only tools the overlay models: [`apply`] has an arm for each. `view_set` is listed;
+/// its `rail_tab` form is [`Route::RailTab`] (see [`route`]).
 pub const MODELLED_UI: &[&str] = &[
     "view_set",
     "layout_set",
@@ -59,10 +64,12 @@ pub const MODELLED_UI: &[&str] = &[
     "theme_set",
 ];
 
-/// UI tools the engine answers for itself: the rail tab steps pick the next group tab from the engine's
-/// group list, and the pane steps pick the next awake session, so the client forwards them, as it forwards
-/// `view_set` with a rail tab.
-const FORWARDED_UI: &[&str] = &["rail_tab_next", "rail_tab_prev", "pane_focus_next", "pane_focus_prev"];
+/// The rail tab steps: [`Route::RailTab`], like `view_set` with a `rail_tab`.
+const RAIL_STEPS: &[&str] = &["rail_tab_next", "rail_tab_prev"];
+
+/// UI tools the engine answers for itself: the pane steps pick the next awake session, so the
+/// client forwards them.
+const FORWARDED_UI: &[&str] = &["pane_focus_next", "pane_focus_prev"];
 
 /// The window-placement size limit, in physical pixels (the engine's own).
 const MAX_WINDOW_PX: i32 = 1 << 16;
@@ -74,8 +81,11 @@ pub enum Route {
     Local,
     /// `session_focus`: a local focus, plus `session_wake` when the session is asleep.
     Focus,
-    /// Sent to the server: every call that is not UI-only, and the `rail_tab` form of `view_set`
-    /// (the engine focuses a session for it).
+    /// A rail tab switch: `view_set` with a `rail_tab`, `rail_tab_next` or `rail_tab_prev`. Applied
+    /// to the overlay, which may focus a session in the group ([`Applied::Focused`]); the caller
+    /// then sends `session_focus` for it, never the rail call (the host keeps its own rail tab).
+    RailTab,
+    /// Sent to the server: every call that is not UI-only.
     Forward,
     /// UI-only, but its state is not in the overlay (the window's own OS actions, add-on screens,
     /// a session's status). The caller runs it in its own UI or forwards it. It is never dropped.
@@ -90,8 +100,8 @@ pub fn is_ui_only(effects: Effects) -> bool {
 }
 
 /// The route of a call, from its tool and params. The declared effects decide what is UI-only
-/// (`inbox_next` declares a launch, so it is forwarded); the `rail_tab` form of `view_set`
-/// overrides a UI declaration, because the engine focuses a session for it.
+/// (`inbox_next` declares a launch, so it is forwarded); the `rail_tab` form of `view_set` is
+/// [`Route::RailTab`] rather than [`Route::Local`], because it can focus a session.
 pub fn route(tool: &ToolInfo, params: &Value) -> Route {
     if tool.id == SESSION_FOCUS {
         let focus_effects = Effects::UI.union(Effects::LAUNCHES_PROCESS);
@@ -100,8 +110,8 @@ pub fn route(tool: &ToolInfo, params: &Value) -> Route {
     if !is_ui_only(tool.effects) {
         return Route::Forward;
     }
-    if tool.id == "view_set" && params.get("rail_tab").is_some_and(|tab| !tab.is_null()) {
-        return Route::Forward;
+    if (tool.id == "view_set" && params.get("rail_tab").is_some_and(|tab| !tab.is_null())) || RAIL_STEPS.contains(&tool.id.as_str()) {
+        return Route::RailTab;
     }
     if FORWARDED_UI.contains(&tool.id.as_str()) {
         return Route::Forward;
@@ -121,8 +131,8 @@ pub struct SessionFact {
 /// The groups and sessions a UI-only call is checked against, as the server has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ViewFacts {
-    /// Group ids.
-    pub groups: BTreeSet<String>,
+    /// Group ids, in sidebar order (the rail tab steps follow it).
+    pub groups: Vec<String>,
     /// Sessions, in sidebar order.
     pub sessions: Vec<SessionFact>,
     /// The themes the client itself can draw (its own `theme_list`), not the server's. `theme_set`
@@ -176,7 +186,7 @@ impl ViewFacts {
     }
 
     fn has_group(&self, id: &str) -> bool {
-        self.groups.contains(id)
+        self.groups.iter().any(|g| g == id)
     }
 
     fn require_group(&self, id: &str) -> Result<(), ToolError> {
@@ -304,6 +314,52 @@ impl ViewOverlay {
         if self.view == GroupView::Rail && self.rail_tab.as_deref().is_some_and(|tab| tab != group) {
             self.rail_tab = (!group.is_empty()).then(|| group.to_owned());
         }
+    }
+
+    /// A rail tab switch, as the engine's `view_set`, `rail_tab_next` and `rail_tab_prev` do it:
+    /// the tab (`all` is no tab), then a session in the group when the focused one is not already
+    /// in it. That is the group's remembered session when it is awake, else the group's first awake
+    /// session, else none (a tab never wakes). Returns the session focused, if any. A refused call
+    /// changes nothing.
+    fn rail_tab_call(&mut self, facts: &ViewFacts, id: &str, params: Value) -> Result<Option<String>, ToolError> {
+        let (view, tab) = if RAIL_STEPS.contains(&id) {
+            // The engine ignores the params of a step, so the overlay does too.
+            (None, self.rail_step(facts, id == "rail_tab_next"))
+        } else {
+            let p: ViewSetParams = parse_params(params)?;
+            let Some(tab) = p.rail_tab else { return Err(ToolError::InvalidParams("give a `rail_tab`".into())) };
+            if tab != "all" {
+                facts.require_group(&tab)?;
+            }
+            (p.view, tab)
+        };
+        if let Some(v) = view {
+            self.view = v;
+        }
+        self.rail_tab = (tab != "all").then(|| tab.clone());
+        let Some(fact) = (tab != "all").then(|| self.group_tab_focus(facts, &tab)).flatten().cloned() else { return Ok(None) };
+        self.focus(&fact);
+        Ok(Some(fact.id))
+    }
+
+    /// The tab after (or before) the current one: All first, then the groups in order, wrapping.
+    fn rail_step(&self, facts: &ViewFacts, forward: bool) -> String {
+        let tabs: Vec<&str> = std::iter::once("all").chain(facts.groups.iter().map(String::as_str)).collect();
+        let now = self.rail_tab.as_deref().unwrap_or("all");
+        let n = tabs.len();
+        let at = tabs.iter().position(|t| *t == now).unwrap_or(0);
+        let to = if forward { (at + 1) % n } else { (at + n - 1) % n };
+        tabs.get(to).copied().unwrap_or("all").to_owned()
+    }
+
+    /// The session to focus when the rail switches to `group` (the engine's `group_tab_focus`).
+    fn group_tab_focus<'a>(&self, facts: &'a ViewFacts, group: &str) -> Option<&'a SessionFact> {
+        let in_group = |id: &str| facts.session(id).filter(|s| s.group == group);
+        if self.focused.as_deref().is_some_and(|f| in_group(f).is_some()) {
+            return None;
+        }
+        let remembered = self.group_focus.get(group).and_then(|id| in_group(id)).filter(|s| !s.asleep);
+        remembered.or_else(|| facts.sessions.iter().find(|s| s.group == group && !s.asleep))
     }
 
     fn theme_set(&mut self, facts: &ViewFacts, p: ThemeSetParams) -> Result<(), ToolError> {
@@ -471,15 +527,17 @@ fn window_key_is_known(facts: &ViewFacts, key: &str) -> bool {
 pub enum Applied {
     /// The overlay now holds the call's result. Nothing is sent.
     Local,
-    /// A session was focused on the overlay. When `wake` is set the session is asleep on the
-    /// server, and the caller sends `session_wake` for it.
+    /// A session was focused on the overlay (by `session_focus`, or by a rail tab switch, which
+    /// never wakes). The caller sends `session_focus` to the server for it; when `wake` is set the
+    /// session is asleep there, and the server's focus wakes it.
     Focused { session_id: String, wake: bool },
     /// Not applied here: the call is forwarded, or it is UI-only but not modelled (see
     /// [`Route::UiNotModelled`]). The caller runs or forwards it.
     NotInOverlay,
 }
 
-/// Runs a call against the overlay when its [`route`] is [`Route::Local`] or [`Route::Focus`].
+/// Runs a call against the overlay when its [`route`] is [`Route::Local`], [`Route::Focus`] or
+/// [`Route::RailTab`].
 /// A forwarded call, and a UI-only call the overlay does not model, return
 /// [`Applied::NotInOverlay`] and change nothing.
 ///
@@ -491,6 +549,12 @@ pub fn apply(overlay: &mut ViewOverlay, facts: &ViewFacts, tool: &ToolInfo, para
         Route::Focus => {
             let p: IdParams = parse_params(params)?;
             return focus_call(overlay, facts, &p.session_id);
+        }
+        Route::RailTab => {
+            return Ok(match overlay.rail_tab_call(facts, &tool.id, params)? {
+                Some(session_id) => Applied::Focused { session_id, wake: false },
+                None => Applied::Local,
+            });
         }
         Route::Local => {}
     }
@@ -606,15 +670,13 @@ struct CollapseParams {
     collapsed: bool,
 }
 
-/// The local `view_set` fields. A non-null `rail_tab` never gets here: [`route`] forwards it. A
-/// null one is accepted and ignored, as the engine ignores it (no rail tab in the call is no change).
+/// The `view_set` fields. A non-null `rail_tab` is [`Route::RailTab`]; on the local route it is
+/// null, which is accepted and ignored, as the engine ignores it (no rail tab in the call is no change).
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct ViewSetParams {
     view: Option<GroupView>,
-    /// Always null here. Read by no arm: it is only accepted so `deny_unknown_fields` lets it through.
-    #[allow(dead_code)]
-    rail_tab: Option<Value>,
+    rail_tab: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -783,10 +845,11 @@ mod tests {
         "group_dock",
         "theme_set",
     ];
-    /// UI-effect tools that the client forwards: those that also launch or mutate, and the rail tab
-    /// steps (`FORWARDED_UI`). `remote_window_open` launches a process, so it is not UI-only; the app
+    /// UI-effect tools that the client forwards: those that also launch or mutate. `remote_window_open` launches a process, so it is not UI-only; the app
     /// starts it before any port sees the call. The pane steps are UI-only and forwarded (`FORWARDED_UI`).
-    const FIXED_FORWARD: &[&str] = &["inbox_next", "remote_window_open", "rail_tab_next", "rail_tab_prev", "pane_focus_next", "pane_focus_prev"];
+    const FIXED_FORWARD: &[&str] = &["inbox_next", "remote_window_open", "pane_focus_next", "pane_focus_prev"];
+    /// The rail tab steps: applied to the overlay, which focuses a session; the host's rail is kept.
+    const FIXED_RAIL: &[&str] = &["rail_tab_next", "rail_tab_prev"];
     const FIXED_NOT_MODELLED: &[&str] = &[
         // The connect dialog belongs to the laptop's own window: a remote window never offers it,
         // and the app opens it before any port sees the call.
@@ -818,6 +881,8 @@ mod tests {
             Some(Route::Focus)
         } else if FIXED_LOCAL.contains(&id) {
             Some(Route::Local)
+        } else if FIXED_RAIL.contains(&id) {
+            Some(Route::RailTab)
         } else if FIXED_FORWARD.contains(&id) {
             Some(Route::Forward)
         } else if FIXED_NOT_MODELLED.contains(&id) {
@@ -856,9 +921,11 @@ mod tests {
         assert_eq!(route(&info("view_set", Effects::UI), &json!({"rail_tab": null})), Route::Local, "a null rail tab is no rail tab");
         assert_eq!(
             route(&info("view_set", Effects::UI), &json!({"rail_tab": "work"})),
-            Route::Forward,
-            "a rail tab focuses a session: the server does it"
+            Route::RailTab,
+            "a rail tab can focus a session: the overlay switches it, the host only gets the focus"
         );
+        assert_eq!(route(&info("rail_tab_next", Effects::UI), &none), Route::RailTab);
+        assert_eq!(route(&info("rail_tab_prev", Effects::UI), &none), Route::RailTab);
         assert_eq!(route(&info("window_show", Effects::UI | Effects::IDEMPOTENT), &none), Route::UiNotModelled);
         assert_eq!(route(&info("session_new", Effects::MUTATES_STATE | Effects::LAUNCHES_PROCESS), &none), Route::Forward);
         assert_eq!(route(&info("layout_pin", Effects::UI | Effects::MUTATES_STATE), &none), Route::Forward, "a mutation is never local");
@@ -876,7 +943,7 @@ mod tests {
         assert!(t.effects.needs_consent(), "so an MCP caller is asked");
         assert!(!is_ui_only(t.effects));
         assert_eq!(route(&t, &json!({})), Route::Forward);
-        assert_eq!(route(&tool("view_set"), &json!({"rail_tab": "work"})), Route::Forward);
+        assert_eq!(route(&tool("view_set"), &json!({"rail_tab": "work"})), Route::RailTab);
         assert_eq!(route(&tool("theme_set"), &json!({"mode": "dark"})), Route::Local);
     }
 
@@ -924,7 +991,7 @@ mod tests {
             }
         }
         // No stale rows: every id in the fixed table is a UI-only tool of the registry.
-        for id in FIXED_LOCAL.iter().chain(FIXED_FORWARD).chain(FIXED_NOT_MODELLED).chain([&SESSION_FOCUS]) {
+        for id in FIXED_LOCAL.iter().chain(FIXED_FORWARD).chain(FIXED_RAIL).chain(FIXED_NOT_MODELLED).chain([&SESSION_FOCUS]) {
             assert!(seen.contains(*id), "`{id}` is in the fixed table but is not a UI-only registry tool");
         }
         // The module's lists are the fixed ones.
@@ -1025,11 +1092,14 @@ mod tests {
     }
 
     #[test]
-    fn view_set_with_a_rail_tab_is_forwarded_and_the_plain_view_is_local() {
+    fn view_set_with_a_rail_tab_is_the_overlays_and_the_plain_view_is_local() {
         let facts = world();
         let mut o = ViewOverlay::default();
-        assert_eq!(run(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).expect("forwarded"), Applied::NotInOverlay);
-        assert_eq!(o, ViewOverlay::default(), "a forwarded tab changes nothing here");
+        assert_eq!(
+            run(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).expect("rail tab"),
+            Applied::Focused { session_id: "a".into(), wake: false }
+        );
+        assert_eq!(o.rail_tab.as_deref(), Some("work"), "the overlay holds the tab");
 
         assert_eq!(run(&mut o, &facts, "view_set", json!({"view": "headers"})).expect("view"), Applied::Local);
         assert_eq!(o.view, GroupView::Headers);
@@ -1037,6 +1107,105 @@ mod tests {
 
         assert!(matches!(run(&mut o, &facts, "view_set", json!({"view": "rail", "x": 1})), Err(ToolError::InvalidParams(_))));
         assert_eq!(o.view, GroupView::Headers, "a refused call changes nothing");
+    }
+
+    /// Runs a rail tab call and returns the session it focused.
+    fn rail(o: &mut ViewOverlay, facts: &ViewFacts, id: &str, params: Value) -> Option<String> {
+        match run(o, facts, id, params).expect("a rail tab call") {
+            Applied::Focused { session_id, wake } => {
+                assert!(!wake, "a rail tab never wakes");
+                Some(session_id)
+            }
+            Applied::Local => None,
+            other => panic!("not a rail tab result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rail_tab_focuses_the_remembered_awake_session_else_the_first_awake_one() {
+        let facts = world();
+        // Nothing remembered: the first awake session of the group, in sidebar order.
+        let mut o = ViewOverlay::default();
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).as_deref(), Some("a"));
+        assert_eq!((o.rail_tab.as_deref(), o.focused.as_deref()), (Some("work"), Some("a")));
+
+        // A remembered awake session wins over the first one.
+        let two = ViewFacts { sessions: vec![SessionFact { id: "e".into(), group: "work".into(), asleep: false }, facts.sessions[0].clone()], ..world() };
+        let mut o = ViewOverlay { rail_tab: Some("home".into()), ..ViewOverlay::default() };
+        o.group_focus.insert("work".into(), "a".into());
+        assert_eq!(rail(&mut o, &two, "view_set", json!({"rail_tab": "work"})).as_deref(), Some("a"), "the remembered one, not the first (e)");
+
+        // A remembered session that is asleep (or gone) is passed over.
+        let mut o = ViewOverlay::default();
+        o.group_focus.insert("work".into(), "b".into());
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"rail_tab": "work"})).as_deref(), Some("a"), "b is asleep");
+        o.group_focus.insert("home".into(), "gone".into());
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"rail_tab": "home"})).as_deref(), Some("d"), "a gone session is passed over");
+    }
+
+    #[test]
+    fn a_rail_tab_with_only_sleeping_sessions_focuses_nothing_and_wakes_nothing() {
+        let mut facts = world();
+        facts.sessions.retain(|s| s.id != "a");
+        let mut o = ViewOverlay { focused: Some("c".into()), ..ViewOverlay::default() };
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"rail_tab": "work"})), None, "only b is in work, and it is asleep");
+        assert_eq!(o.rail_tab.as_deref(), Some("work"), "the tab still switches");
+        assert_eq!(o.focused.as_deref(), Some("c"), "the focus is kept");
+    }
+
+    #[test]
+    fn a_rail_tab_keeps_a_focus_that_is_already_in_the_group() {
+        let facts = world();
+        let mut o = ViewOverlay { focused: Some("b".into()), ..ViewOverlay::default() };
+        o.group_focus.insert("work".into(), "a".into());
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"rail_tab": "work"})), None, "b (asleep) is focused and in work");
+        assert_eq!((o.rail_tab.as_deref(), o.focused.as_deref()), (Some("work"), Some("b")));
+    }
+
+    #[test]
+    fn the_all_tab_clears_the_tab_and_focuses_nothing() {
+        let facts = world();
+        let mut o = ViewOverlay { rail_tab: Some("work".into()), focused: Some("a".into()), ..ViewOverlay::default() };
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"rail_tab": "all"})), None);
+        assert_eq!((o.rail_tab.as_deref(), o.focused.as_deref()), (None, Some("a")));
+    }
+
+    #[test]
+    fn a_rail_tab_may_come_with_a_view() {
+        let facts = world();
+        let mut o = ViewOverlay { view: GroupView::Headers, ..ViewOverlay::default() };
+        assert_eq!(rail(&mut o, &facts, "view_set", json!({"view": "rail", "rail_tab": "home"})).as_deref(), Some("d"));
+        assert_eq!((o.view, o.rail_tab.as_deref()), (GroupView::Rail, Some("home")));
+    }
+
+    #[test]
+    fn rail_tab_next_and_prev_cycle_all_then_the_groups_and_wrap() {
+        let facts = world();
+        let mut o = ViewOverlay::default();
+        let mut tabs = Vec::new();
+        for _ in 0..4 {
+            rail(&mut o, &facts, "rail_tab_next", json!({}));
+            tabs.push(o.rail_tab.clone());
+        }
+        let work = Some("work".to_owned());
+        let home = Some("home".to_owned());
+        assert_eq!(tabs, vec![work.clone(), home.clone(), None, work.clone()], "all, work, home, then round again");
+        rail(&mut o, &facts, "rail_tab_prev", json!({}));
+        assert_eq!(o.rail_tab, None, "prev goes back to all");
+        rail(&mut o, &facts, "rail_tab_prev", json!({}));
+        assert_eq!(o.rail_tab, home, "prev from all wraps to the last group");
+        assert_eq!(o.focused.as_deref(), Some("d"), "and focuses a session in it");
+    }
+
+    #[test]
+    fn an_unknown_rail_tab_is_refused_and_changes_nothing() {
+        let facts = world();
+        let mut o = ViewOverlay { rail_tab: Some("work".into()), ..ViewOverlay::default() };
+        let before = o.clone();
+        assert!(matches!(run(&mut o, &facts, "view_set", json!({"rail_tab": "nope"})), Err(ToolError::NotFound(_))));
+        assert!(matches!(run(&mut o, &facts, "view_set", json!({"view": "flat", "rail_tab": "nope"})), Err(ToolError::NotFound(_))));
+        assert!(matches!(run(&mut o, &facts, "view_set", json!({"rail_tab": 3})), Err(ToolError::InvalidParams(_))));
+        assert_eq!(o, before, "a refused call changes nothing");
     }
 
     #[test]
@@ -1256,6 +1425,15 @@ mod tests {
             ("view_set", json!({"view": "headers"})),
             ("view_set", json!({"view": "headers", "rail_tab": null})),
             ("view_set", json!({"rail_tab": null})),
+            ("view_set", json!({"rail_tab": "home"})),
+            ("view_set", json!({"rail_tab": "nope"})),
+            ("view_set", json!({"view": "rail", "rail_tab": "work"})),
+            ("rail_tab_next", json!({})),
+            ("rail_tab_next", json!({})),
+            ("rail_tab_next", json!({})),
+            ("rail_tab_prev", json!({})),
+            ("view_set", json!({"rail_tab": "all"})),
+            ("rail_tab_prev", json!({})),
             (SESSION_FOCUS, json!({"session_id": "d"})),
             ("view_set", json!({"view": "rail"})),
             (SESSION_FOCUS, json!({"session_id": "a"})),
