@@ -542,7 +542,7 @@ fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action
                     actions.push(Action::Consent { request_id: id, answer: "allow_once" });
                 }
                 // Never offered for a form's add-on tool: the engine does not keep such a grant.
-                if target.is_none() && widgets::button(ui, ButtonKind::Secondary, None, &always, None).clicked() && armed {
+                if target.is_none() && !req["device"].is_object() && widgets::button(ui, ButtonKind::Secondary, None, &always, None).clicked() && armed {
                     actions.push(Action::Consent { request_id: id, answer: "allow_always" });
                 }
                 if widgets::button(ui, ButtonKind::Ghost, None, "Don't allow", None).clicked() {

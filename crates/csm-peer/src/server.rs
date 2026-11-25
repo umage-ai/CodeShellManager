@@ -927,7 +927,7 @@ impl Inner {
 
     /// Cards that were already waiting when a Full device connected.
     fn send_waiting_cards(&self, device: &Device, link: &Arc<Link>) {
-        if !device.level.allows(Level::Full) {
+        if !device.level.allows(Level::Full) || !device.trusted {
             return;
         }
         let Some(engine) = self.engine.get().cloned() else { return };
@@ -941,6 +941,22 @@ impl Inner {
                 }
             }
         });
+    }
+
+    /// Sends a consent card to the Full devices that are trusted. An untrusted device may not
+    /// answer cards (the engine refuses it), so it is not shown other people's requests either.
+    fn broadcast_card(&self, msg: &Msg) {
+        let links: Vec<Arc<Link>> = {
+            let st = self.lock();
+            st.conns
+                .values()
+                .filter(|c| c.level.allows(Level::Full) && st.devices.as_ref().and_then(|d| d.find(&c.device_id)).is_some_and(|d| d.trusted))
+                .map(|c| c.link.clone())
+                .collect()
+        };
+        for l in links {
+            let _ = l.send_msg(msg.clone());
+        }
     }
 
     /// Sends `msg` to every connected device at `level` or above.
@@ -1037,7 +1053,7 @@ fn forward_events(inner: &Arc<Inner>, rx: &Receiver<csm_engine::Event>) {
     use csm_engine::Event;
     loop {
         match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(Event::ConsentRequested { request }) => inner.broadcast(Level::Full, &Msg::ConsentCard { request }),
+            Ok(Event::ConsentRequested { request }) => inner.broadcast_card(&Msg::ConsentCard { request }),
             Ok(ev @ Event::ConsentResolved { .. }) => {
                 inner.broadcast(Level::Full, &Msg::Event { event: Some(csm_peer_proto::Event::from(&ev)) });
             }
@@ -1168,7 +1184,7 @@ impl PeerHost for PeerServer {
                 }
                 let (name, key) = (p.name.clone(), p.key);
                 i.load_devices(&mut st)?;
-                let added = st.devices.as_mut().map(|d| d.add(&name, &key, Level::Full, unix_secs()));
+                let added = st.devices.as_mut().map(|d| d.add(&name, &key, Level::Full, answer.trusted, unix_secs()));
                 i.relay_resync();
                 match added {
                     Some(Ok(dev)) => {
@@ -1212,10 +1228,33 @@ impl PeerHost for PeerServer {
                         paired_at: x.paired_at,
                         last_seen: x.last_seen,
                         connected: connected.contains(&x.id),
+                        trusted: x.trusted,
                     })
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn device_trusted(&self, id: &str) -> bool {
+        // Looked up now, not from the connection's copy, so un-trusting takes effect at once. A
+        // device that is not on the list (revoked) is not trusted.
+        let mut st = self.inner.lock();
+        let _ = self.inner.load_devices(&mut st);
+        st.devices.as_ref().and_then(|d| d.find(id)).is_some_and(|d| d.trusted)
+    }
+
+    fn set_device_trusted(&self, id: &str, trusted: bool, by: &str) -> Result<(), ToolError> {
+        let i = &self.inner;
+        {
+            let mut st = i.lock();
+            i.load_devices(&mut st)?;
+            let Some(d) = st.devices.as_mut() else { return Err(ToolError::Failed("the device list is not loaded".into())) };
+            if !d.set_trusted(id, trusted).map_err(|e| Inner::io_failed("could not save the device list", &e))? {
+                return Err(ToolError::NotFound(format!("no paired device `{id}`; `peer_device_list` shows the ids")));
+            }
+        }
+        i.audit.record("device_trust", json!({"device_id": clean(id), "trusted": trusted, "by": clean(by)}));
+        Ok(())
     }
 
     fn revoke(&self, target: Revoke, by: &str) -> Result<usize, ToolError> {

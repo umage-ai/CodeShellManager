@@ -25,7 +25,7 @@ use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, emp
 pub const DEFAULT_PORT: u16 = 47_300;
 
 /// The tools only the person at the app's window may call.
-pub const UI_ONLY: [&str; 4] = ["peer_server_enable", "peer_pair_start", "peer_pair_answer", "peer_relay_set"];
+pub const UI_ONLY: [&str; 5] = ["peer_server_enable", "peer_pair_start", "peer_pair_answer", "peer_relay_set", "peer_device_trust"];
 
 pub(super) fn specs() -> Vec<ToolSpec> {
     // Declared honestly: turning it on opens a network door to shells, so it is flagged like
@@ -108,11 +108,20 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "peer_device_list",
             title: "Paired devices",
-            summary: "The devices paired with this app: id, name, level, when paired, when last seen, whether connected now.",
+            summary: "The devices paired with this app: id, name, level, whether trusted (acts without prompts), when paired, when last seen, whether connected now.",
             toolset: Toolset::App,
             effects: Effects::READ_ONLY,
             input_schema: empty_schema,
             run: peer_device_list,
+        },
+        ToolSpec {
+            id: "peer_device_trust",
+            title: "Trust a device (no prompts)",
+            summary: "Trust one paired device (`device_id`, from `peer_device_list`) or stop trusting it (`trusted`: false). A trusted device acts without a consent card; an untrusted one needs the person's approval on this screen before it types into a session or starts a process. Refused for every caller except the app's own window: a device cannot trust itself.",
+            toolset: Toolset::App,
+            effects: Effects::MUTATES_STATE.union(Effects::ENABLES_EXTENSION).union(Effects::WRITES_FILESYSTEM),
+            input_schema: schema_of::<TrustParams>,
+            run: peer_device_trust,
         },
         ToolSpec {
             id: "peer_device_revoke",
@@ -253,6 +262,9 @@ struct AnswerParams {
     /// `full` (the only level so far).
     #[serde(default)]
     level: Option<String>,
+    /// Trust this device: its calls that type into a session or start a process run without a card on this screen. Off unless the person ticks "Trust this device (no prompts)".
+    #[serde(default)]
+    trusted: bool,
 }
 
 fn peer_pair_answer(ctx: &mut Ctx<'_>, params: Value) -> Reply {
@@ -266,7 +278,7 @@ fn peer_pair_answer(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     let allow = p.allow;
     let by = ctx.caller.describe();
-    let s = host(ctx).pair_answer(PairAnswer { allow, check_code: p.check_code, level }, &by)?;
+    let s = host(ctx).pair_answer(PairAnswer { allow, check_code: p.check_code, level, trusted: p.trusted }, &by)?;
     Ok(ToolOutput::new(if allow { "Device allowed." } else { "Device denied." }, to_json(&s)?))
 }
 
@@ -340,4 +352,25 @@ fn peer_relay_status(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
         }
         None => Ok(ToolOutput::new("No relay is set.", Value::Null)),
     }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TrustParams {
+    /// The device's id (from `peer_device_list`).
+    device_id: String,
+    /// `true`: it acts without prompts. `false`: its typing and process launches need approval here.
+    trusted: bool,
+}
+
+fn peer_device_trust(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    if *ctx.caller != Caller::Ui {
+        // Belt and braces: `precheck` already refused it.
+        return Err(ToolError::Refused("only the app's own window can trust a device".into()));
+    }
+    let p: TrustParams = parse_params(params)?;
+    let id = p.device_id.trim().to_owned();
+    let by = ctx.caller.describe();
+    host(ctx).set_device_trusted(&id, p.trusted, &by)?;
+    Ok(ToolOutput::new(if p.trusted { "The device is trusted: it acts without prompts." } else { "The device is not trusted: it needs approval here to type or start a process." }, json!({"device_id": id, "trusted": p.trusted})))
 }

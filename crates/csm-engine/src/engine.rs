@@ -410,7 +410,7 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                     "consent_list" => {
                         // The app, and a paired device at Full, see every request. A client sees its
                         // own; anyone else (the CLI included: an MCP bridge can arrive as it) sees none.
-                        let sees_all = caller == Caller::Ui || matches!(&caller, Caller::Peer { level, .. } if level.allows(csm_peer_proto::msg::Level::Full));
+                        let sees_all = caller == Caller::Ui || trusted_full_peer(state, &caller);
                         let mut rows: Vec<(&u64, &Pending)> = pending
                             .iter()
                             .filter(|(_, p)| match (&caller, &p.caller) {
@@ -442,18 +442,37 @@ fn handle(msg: Msg, engine: &Engine, state: &mut State, pending: &mut HashMap<u6
                 }
                 // Every non-read call of a paired device is logged, whatever its outcome.
                 crate::tools::peer::audit_peer_call(state.options.peer_host.as_ref(), &caller, &spec, &params);
-                if let Caller::External { client, .. } = &caller {
+                // Who is asked about, if anyone. An MCP client asks for every tool that needs
+                // consent. A paired device asks only when the person has not trusted it, and only
+                // for what types into a session or starts a process (`peer_consent_needed`); the
+                // keystrokes of its terminal window are not tool calls and never come here.
+                let asker: Option<String> = match &caller {
+                    Caller::External { client, .. } => Some(client.clone()),
+                    Caller::Peer { device_id, .. } => Some(device_id.clone()),
+                    _ => None,
+                };
+                if let Some(asker) = asker {
                     // A New session form runs an add-on tool whose effects the form's own do not
                     // show, so each such call asks, with that tool on the card, and a grant never
                     // covers it: "always allow" on a form means "allow once".
                     let registry = engine.registry();
                     let target = crate::tools::new_session::consent_target(&state.rt.addons, spec.id, &params, |t| registry.get(t).map(|s| s.effects));
-                    let granted = target.is_none()
-                        && (state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id) || plugins::standing_call(&state.rt.addons, &caller, spec.id));
-                    if spec.effects.needs_consent() && !granted {
-                        let mine = pending.values().filter(|p| matches!(&p.caller, Caller::External { client: c, .. } if c == client)).count();
+                    let needs = match &caller {
+                        Caller::External { client, .. } => {
+                            let granted = target.is_none()
+                                && (state.app.mcp_grants.iter().any(|g| &g.client == client && g.tool == spec.id) || plugins::standing_call(&state.rt.addons, &caller, spec.id));
+                            spec.effects.needs_consent() && !granted
+                        }
+                        _ => peer_consent_needed(state, &caller, &spec, target.is_some()),
+                    };
+                    if needs {
+                        let mine = pending.values().filter(|p| asker_of(&p.caller) == Some(asker.as_str())).count();
                         if mine >= MAX_PENDING_PER_CLIENT || pending.len() >= MAX_PENDING_TOTAL {
-                            let why = if mine >= MAX_PENDING_PER_CLIENT { format!("{client} already has {MAX_PENDING_PER_CLIENT} requests waiting") } else { format!("{MAX_PENDING_TOTAL} requests are already waiting") };
+                            let who = match &caller {
+                                Caller::Peer { name, .. } => name.clone(),
+                                _ => asker.clone(),
+                            };
+                            let why = if mine >= MAX_PENDING_PER_CLIENT { format!("{who} already has {MAX_PENDING_PER_CLIENT} requests waiting") } else { format!("{MAX_PENDING_TOTAL} requests are already waiting") };
                             let _ = reply.send(Err(ToolError::Refused(format!("too many approvals are waiting: {why}. Ask the person to answer them in the app, then try again."))));
                             return true;
                         }
@@ -504,15 +523,46 @@ fn run_tool(spec: &ToolSpec, state: &mut State, caller: &Caller, params: Value, 
     }
 }
 
+/// Who a waiting request is counted against: an MCP client's name or a device's id.
+fn asker_of(c: &Caller) -> Option<&str> {
+    match c {
+        Caller::External { client, .. } => Some(client),
+        Caller::Peer { device_id, .. } => Some(device_id),
+        _ => None,
+    }
+}
+
+/// Whether the call of a paired device waits for the person at the office. A trusted device
+/// never does. An untrusted one does when the tool types into a session or starts a process (or
+/// runs an add-on tool a form chose): the two things that make a stolen device key a shell.
+fn peer_consent_needed(state: &State, caller: &Caller, spec: &ToolSpec, form_target: bool) -> bool {
+    let Caller::Peer { device_id, .. } = caller else { return false };
+    (spec.effects.intersects(Effects::SENDS_INPUT | Effects::LAUNCHES_PROCESS) || form_target) && !state.options.peer_host.device_trusted(device_id)
+}
+
+/// A paired device at the Full level that the person trusts: the person at another screen. An
+/// untrusted device is neither shown the waiting requests nor allowed to answer them, or it
+/// would approve its own.
+fn trusted_full_peer(state: &State, caller: &Caller) -> bool {
+    matches!(caller, Caller::Peer { level, device_id, .. } if level.allows(csm_peer_proto::msg::Level::Full) && state.options.peer_host.device_trusted(device_id))
+}
+
 fn pending_json(key: u64, p: &Pending) -> Value {
+    let mut device = Value::Null;
     let (client, session_id) = match &p.caller {
         Caller::External { client, session_id } => (client.clone(), session_id.clone()),
+        // The card names the device: "Paired device Laptop wants to …".
+        Caller::Peer { device_id, name, .. } => {
+            device = json!({"id": device_id, "name": name});
+            (format!("Paired device {name}"), None)
+        }
         _ => (String::new(), None),
     };
     let mut card = json!({
         "request_id": key,
         "client": client,
         "from_session_id": session_id,
+        "device": device,
         "tool": p.spec.id,
         "title": p.spec.title,
         "summary": p.spec.summary,
@@ -585,7 +635,7 @@ fn answer(caller: &Caller, params: Value, pending: &mut HashMap<u64, Pending>, s
     // Only the person can answer: in the app, or from a paired device at the Full level (the
     // card is forwarded there; the first answer wins, because the request leaves `pending` once).
     // An MCP client must never approve its own request.
-    let level_ok = matches!(caller, Caller::Peer { level, .. } if level.allows(csm_peer_proto::msg::Level::Full));
+    let level_ok = trusted_full_peer(state, caller);
     if *caller != Caller::Ui && !level_ok {
         return Err(ToolError::Refused("consent is answered in the app, not over MCP or the CLI".into()));
     }

@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 struct Log {
     calls: Vec<String>,
     audit: Vec<AuditEvent>,
+    untrusted: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -33,6 +34,9 @@ impl Recorder {
     }
     fn audit(&self) -> Vec<AuditEvent> {
         self.0.lock().unwrap().audit.clone()
+    }
+    fn distrust(&self, id: &str) {
+        self.0.lock().unwrap().untrusted.push(id.to_owned());
     }
     fn note(&self, what: &str) {
         self.0.lock().unwrap().calls.push(what.to_owned());
@@ -61,6 +65,18 @@ impl PeerHost for Recorder {
     }
     fn devices(&self) -> Vec<DeviceInfo> {
         Vec::new()
+    }
+    fn device_trusted(&self, id: &str) -> bool {
+        !self.0.lock().unwrap().untrusted.iter().any(|u| u == id)
+    }
+    fn set_device_trusted(&self, id: &str, trusted: bool, by: &str) -> Result<(), ToolError> {
+        self.note(&format!("trust {id} {trusted} by {by}"));
+        let mut log = self.0.lock().unwrap();
+        log.untrusted.retain(|u| u != id);
+        if !trusted {
+            log.untrusted.push(id.to_owned());
+        }
+        Ok(())
     }
     fn revoke(&self, t: Revoke, by: &str) -> Result<usize, ToolError> {
         self.note(&format!("revoke {t:?} by {by}"));
@@ -324,4 +340,72 @@ fn listing_this_machines_addresses_is_a_read_for_every_caller() {
         assert_eq!(out.data[0]["network"], "10.8.0.0/24");
     }
     assert!(rec.calls().is_empty(), "it only reads");
+}
+
+fn device_id() -> String {
+    peer(Level::Full).describe().split(['(', ')']).nth(1).unwrap().to_owned()
+}
+
+/// Runs `tool` as `caller` on its own thread; the card, if any, shows up on `events`.
+fn call_in_background(h: &H, caller: Caller, tool: &'static str, p: Value) -> std::thread::JoinHandle<Result<csm_engine::ToolOutput, ToolError>> {
+    let engine = h.engine.clone();
+    std::thread::spawn(move || engine.call(caller, tool, p))
+}
+
+fn next_card(events: &std::sync::mpsc::Receiver<Event>) -> Option<Value> {
+    while let Ok(ev) = events.recv_timeout(Duration::from_millis(500)) {
+        if let Event::ConsentRequested { request } = ev {
+            return Some(request);
+        }
+    }
+    None
+}
+
+#[test]
+fn an_untrusted_device_waits_for_the_person_before_typing_or_launching() {
+    let (h, rec) = rig();
+    rec.distrust(&device_id());
+    let events = h.engine.subscribe();
+    let sid = h.session("sh");
+    for (tool, p) in [("session_send_text", json!({"session_id": sid, "text": "rm -rf ~"})), ("session_new", json!({"name": "x", "cwd": "."}))] {
+        let call = call_in_background(&h, peer(Level::Full), tool, p);
+        let card = next_card(&events).unwrap_or_else(|| panic!("{tool}: an untrusted device must get a consent card"));
+        assert_eq!(card["tool"], tool);
+        assert_eq!(card["client"], "Paired device Laptop");
+        assert_eq!(card["device"]["name"], "Laptop");
+        // The device cannot approve itself, nor even see the card.
+        let id = card["request_id"].as_u64().unwrap();
+        let r = h.engine.call(peer(Level::Full), "consent_answer", json!({"request_id": id, "answer": "allow_once"}));
+        assert!(matches!(r, Err(ToolError::Refused(_))), "{r:?}");
+        let listed = h.engine.call(peer(Level::Full), "consent_list", json!({})).unwrap();
+        assert_eq!(listed.data.as_array().unwrap().len(), 0);
+        h.ui("consent_answer", json!({"request_id": id, "answer": "deny"})).unwrap();
+        assert!(matches!(call.join().unwrap(), Err(ToolError::Declined(_))));
+    }
+    // Reads and tools with other effects do not ask.
+    assert!(h.engine.call(peer(Level::Full), "session_list", json!({})).is_ok());
+}
+
+#[test]
+fn a_trusted_device_acts_without_a_card() {
+    let (h, _rec) = rig();
+    let events = h.engine.subscribe();
+    // The call runs and answers at once: nothing waited for the person.
+    let r = h.engine.call(peer(Level::Full), "session_send_text", json!({"session_id": h.session("sh"), "text": "x"}));
+    assert!(r.is_ok(), "{r:?}");
+    assert!(next_card(&events).is_none(), "a trusted device is never asked");
+}
+
+#[test]
+fn trusting_a_device_is_the_persons_alone() {
+    let (h, rec) = rig();
+    for caller in [mcp(), peer(Level::Full), Caller::Cli] {
+        let r = h.engine.call(caller.clone(), "peer_device_trust", json!({"device_id": device_id(), "trusted": true}));
+        assert!(matches!(r, Err(ToolError::Refused(_))), "{caller:?}: {r:?}");
+    }
+    assert!(rec.calls().is_empty());
+    h.ui("peer_device_trust", json!({"device_id": device_id(), "trusted": false})).unwrap();
+    assert!(!rec.device_trusted(&device_id()));
+    h.ui("peer_device_trust", json!({"device_id": device_id(), "trusted": true})).unwrap();
+    assert!(rec.device_trusted(&device_id()));
 }

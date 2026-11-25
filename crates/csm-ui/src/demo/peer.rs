@@ -68,6 +68,7 @@ impl DemoPeerHost {
                 paired_at: self.now_secs.saturating_sub(age_secs),
                 last_seen: None,
                 connected: false,
+                trusted: true,
             });
         }
         self
@@ -173,7 +174,7 @@ impl PeerHost for DemoPeerHost {
             }
             s.next_id += 1;
             let id = format!("DEMODEVICE{:02}", s.next_id);
-            s.devices.push(DeviceInfo { id, name, level: answer.level, paired_at: self.now_secs, last_seen: None, connected: false });
+            s.devices.push(DeviceInfo { id, name, level: answer.level, paired_at: self.now_secs, last_seen: None, connected: false, trusted: answer.trusted });
         }
         s.pending = None;
         s.pairing_open = false;
@@ -182,6 +183,22 @@ impl PeerHost for DemoPeerHost {
 
     fn devices(&self) -> Vec<DeviceInfo> {
         self.st().devices.clone()
+    }
+
+    fn device_trusted(&self, id: &str) -> bool {
+        self.st().devices.iter().find(|d| d.id == id).is_some_and(|d| d.trusted)
+    }
+
+    fn set_device_trusted(&self, id: &str, trusted: bool, by: &str) -> Result<(), ToolError> {
+        let mut s = self.st();
+        s.calls.push(format!("trust {id} {trusted} by {by}"));
+        match s.devices.iter_mut().find(|d| d.id == id) {
+            Some(d) => {
+                d.trusted = trusted;
+                Ok(())
+            }
+            None => Err(ToolError::NotFound(format!("no paired device `{id}`; `peer_device_list` shows the ids"))),
+        }
     }
 
     fn revoke(&self, target: Revoke, by: &str) -> Result<usize, ToolError> {
@@ -251,10 +268,10 @@ mod tests {
         assert!(!h.status().enabled && h.status().listening.is_none());
         h.enable(EnableRequest { addr: "10.8.0.2:47300".parse().unwrap(), allow_all_interfaces: false }, "ui").unwrap();
         h.ask_to_pair("Laptop", "4821");
-        let wrong = PairAnswer { allow: true, check_code: Some("1111".into()), level: "full".into() };
+        let wrong = PairAnswer { allow: true, check_code: Some("1111".into()), level: "full".into(), trusted: false };
         assert!(h.pair_answer(wrong, "ui").is_err());
         assert!(h.devices().is_empty());
-        let right = PairAnswer { allow: true, check_code: Some("4821".into()), level: "full".into() };
+        let right = PairAnswer { allow: true, check_code: Some("4821".into()), level: "full".into(), trusted: false };
         assert_eq!(h.pair_answer(right, "ui").unwrap().devices, 1);
     }
 

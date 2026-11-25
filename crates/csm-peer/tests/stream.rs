@@ -176,7 +176,7 @@ impl Rig {
         let handle = std::thread::spawn(move || client::pair(&offer, &me2, &cfg, &mut |c| drop(tx.send(c.to_owned()))));
         let code = wait_for("a device waiting to pair", || self.status()["pending_pair"]["check_code"].as_str().map(str::to_owned));
         assert_eq!(code, rx.recv_timeout(Duration::from_secs(10)).unwrap());
-        self.ui("peer_pair_answer", json!({"allow": true, "check_code": code})).unwrap();
+        self.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "trusted": true})).unwrap();
         (me, handle.join().unwrap().unwrap())
     }
 

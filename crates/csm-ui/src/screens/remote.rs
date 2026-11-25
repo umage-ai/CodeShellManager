@@ -71,6 +71,8 @@ pub struct DeviceView {
     pub paired_at: u64,
     pub last_seen: Option<u64>,
     pub connected: bool,
+    /// Acts without consent cards on this screen.
+    pub trusted: bool,
 }
 
 /// One row of `peer_interfaces`.
@@ -128,6 +130,9 @@ pub struct RemoteState {
     pub relay_form: RelayForm,
     /// The last refusal of `peer_relay_set`, shown on the relay card.
     pub relay_error: Option<String>,
+    /// The "Trust this device (no prompts)" box on the pairing request. Never kept: it is off
+    /// again for the next device.
+    pub trust_new: bool,
     polled_at: Option<f64>,
 }
 
@@ -242,6 +247,11 @@ pub fn on_reply(app: &mut CsmApp, _ctx: &egui::Context, call: &Call, reply: &csm
         }
         "peer_pair_answer" => {
             set_status(r, parse(&out.data));
+            r.error = None;
+            r.trust_new = false;
+            app.dispatch.submit("peer_device_list", json!({}));
+        }
+        "peer_device_trust" => {
             r.error = None;
             app.dispatch.submit("peer_device_list", json!({}));
         }
@@ -856,9 +866,14 @@ fn pairing_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             )
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Check code"));
             caption(ui, "Allow only if the other screen shows the same four digits. A paired device has full access: it can type into your sessions, like an SSH key to this machine.");
+            let mut trust = app.ui.remote.trust_new;
+            let tr = ui.checkbox(&mut trust, "Trust this device (no prompts)");
+            tr.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, trust, "Trust this device (no prompts)"));
+            app.ui.remote.trust_new = trust;
+            caption(ui, "Trusted: it can type into your sessions and start programs without asking you here. Not trusted: each of those waits for your approval on this screen. Anyone who can use that device's user account can use its key.");
             ui.horizontal(|ui| {
                 if widgets::button(ui, ButtonKind::Primary, Some("check"), "Allow", None).clicked() {
-                    actions.push(Action::Tool("peer_pair_answer", json!({"allow": true, "check_code": p.check_code, "level": "full"})));
+                    actions.push(Action::Tool("peer_pair_answer", json!({"allow": true, "check_code": p.check_code, "level": "full", "trusted": trust})));
                 }
                 if widgets::button(ui, ButtonKind::Danger, Some("x"), "Deny", None).clicked() {
                     actions.push(Action::Tool("peer_pair_answer", json!({"allow": false})));
@@ -992,6 +1007,14 @@ fn devices_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             let meta = format!("{level} \u{b7} paired {} \u{b7} {seen}", ago(now_ms, d.paired_at));
             ui.painter().text(pos2(x, r.center().y + space::SM), Align2::LEFT_CENTER, meta, theme::regular(text::CAPTION), t.muted);
             let b = Rect::from_min_max(pos2(r.max.x - size::MENU_W / 2.0 + space::XL, r.min.y + space::SM), pos2(r.max.x, r.max.y - space::SM));
+            let tb = Rect::from_min_max(pos2(b.min.x - size::MENU_W / 2.0 - space::SM, r.min.y + space::SM), pos2(b.min.x - space::SM, r.max.y - space::SM));
+            let mut trusted = d.trusted;
+            let tr = ui.scope_builder(egui::UiBuilder::new().max_rect(tb).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| ui.checkbox(&mut trusted, "Trusted")).inner;
+            let tlabel = format!("Trust {} (no prompts)", d.name);
+            tr.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, trusted, tlabel.clone()));
+            if tr.changed() {
+                actions.push(Action::Tool("peer_device_trust", json!({"device_id": d.id, "trusted": trusted})));
+            }
             let resp = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(b).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     widgets::button(ui, ButtonKind::Danger, None, "Revoke", None)
@@ -1015,7 +1038,7 @@ mod tests {
     }
 
     fn device(name: &str, connected: bool) -> DeviceView {
-        DeviceView { id: format!("ID{name}"), name: name.into(), level: "full".into(), paired_at: 0, last_seen: None, connected }
+        DeviceView { id: format!("ID{name}"), name: name.into(), level: "full".into(), paired_at: 0, last_seen: None, connected, trusted: false }
     }
 
     #[test]
