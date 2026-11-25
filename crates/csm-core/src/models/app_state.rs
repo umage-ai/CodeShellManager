@@ -261,6 +261,11 @@ pub struct AppSettings {
     /// text). On by default; written only when turned off.
     #[serde(skip_serializing_if = "is_true")]
     pub clean_claude_copies: bool,
+    /// On the laptop (the client side): at start, open a remote window again for each office whose
+    /// window was open when the app last quit (`csm-engine::remote_windows`). On by default;
+    /// written only when turned off. It only reopens a window onto an office that is still paired.
+    #[serde(skip_serializing_if = "is_true")]
+    pub reopen_remote_windows: bool,
     /// Shift+Enter in a session's terminal inserts a newline instead of submitting (ESC CR, or
     /// `CSI 13;2 u` when the program enabled the kitty keyboard protocol). On by default; written
     /// only when turned off.
@@ -401,6 +406,7 @@ impl Default for AppSettings {
             pass_session_name_to_claude: false,
             claude_usage_history: t(),
             clean_claude_copies: t(),
+            reopen_remote_windows: t(),
             shift_enter_newline: t(),
             keymap: crate::keymap::Overrides::new(),
             start_minimized: false,

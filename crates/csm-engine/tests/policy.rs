@@ -46,6 +46,7 @@ fn settings_set_is_an_allow_list_for_mcp_clients_and_paired_devices() {
             "AnthropicApiKey",
             "StartMinimized",
             "CheckForUpdates",
+            "ReopenRemoteWindows",
         ] {
             let r = h.engine.call(caller.clone(), "settings_set", json!({"key": key, "value": false}));
             match &r {

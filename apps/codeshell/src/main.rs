@@ -471,29 +471,69 @@ fn claude_process_running() -> bool {
     }
 }
 
-/// What the laptop's window does to start a remote window (`remote_window_open`): this exe, by argv,
-/// `--remote <host-id>`, with the same state folder. The child starts on a thread of its own, never
-/// on the UI thread; the call returns once that thread is started.
-fn remote_window_launcher(config_dir: Option<PathBuf>) -> csm_engine::RemoteWindowLauncher {
-    Arc::new(move |host_id: &str| {
+/// Starts a remote window as a process of its own (`remote_window_open`, and the reopen at start):
+/// this exe, by argv, `--remote <host-id>`, with the same state folder. The child starts on a thread
+/// of its own, never on the caller's; `spawn` returns once that thread is started. The thread
+/// reports when the child ends, so the open windows can be remembered (`csm_engine::remote_windows`).
+struct ProcessSpawner {
+    config_dir: Option<PathBuf>,
+}
+
+impl csm_engine::WindowSpawner for ProcessSpawner {
+    fn spawn(&self, host_id: &str, ended: Box<dyn FnOnce() + Send>) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this program's path is not known: {e}"))?;
         let mut argv = vec!["--remote".to_owned(), host_id.to_owned()];
-        if let Some(dir) = &config_dir {
+        if let Some(dir) = &self.config_dir {
             argv.push("--config-dir".to_owned());
             argv.push(dir.display().to_string());
         }
-        // `proc::spawn_detached` owns the process rules (no console, reaped on its own thread); this
-        // thread only keeps the start off the UI thread.
+        // The window's end is reported once, whether the child never started or ran and ended.
+        let cell = Arc::new(std::sync::Mutex::new(Some(ended)));
+        let on_end = {
+            let cell = cell.clone();
+            move || {
+                let f = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                if let Some(f) = f {
+                    f();
+                }
+            }
+        };
+        // `proc::spawn_detached_notify` owns the process rules (no console, reaped on its own thread);
+        // this thread only keeps the start off the caller's thread.
+        let thread_end = on_end.clone();
         std::thread::Builder::new()
             .name("csm-remote-spawn".into())
             .spawn(move || {
-                if let Err(e) = csm_engine::proc::spawn_detached(&exe, &argv, None) {
+                if let Err(e) = csm_engine::proc::spawn_detached_notify(&exe, &argv, None, Box::new(thread_end.clone())) {
                     log::warn!("remote window: could not start it: {e}");
+                    thread_end();
                 }
             })
             .map(|_| ())
             .map_err(|e| format!("no thread to start the window on: {e}"))
-    })
+    }
+}
+
+/// Whether this run reopens the remote windows the last one left open: only the real app. Not
+/// `--clean` (it keeps and reads nothing), not `--demo`, and not a remote window itself.
+fn reopen_allowed(args: &Args) -> bool {
+    !args.clean && !args.demo && args.remote.is_none()
+}
+
+/// What the laptop's window does after it is up: reopens the remote windows the last run left open,
+/// if the setting is on, for the offices still paired. On a thread of its own: reading the host list
+/// and starting processes are never the UI thread's.
+fn reopen_remote_windows(windows: Arc<csm_engine::RemoteWindows>, client: Arc<dyn csm_engine::PeerClientHost>, enabled: bool) {
+    let started = std::thread::Builder::new().name("csm-remote-reopen".into()).spawn(move || {
+        let paired = client.hosts().map(|h| h.into_iter().map(|h| h.host_id).collect()).map_err(|e| e.to_string());
+        let n = windows.reopen(enabled, paired).len();
+        if n > 0 {
+            log::info!("remote windows: reopened {n}");
+        }
+    });
+    if let Err(e) = started {
+        log::warn!("remote windows: no thread to reopen them on: {e}");
+    }
 }
 
 /// `--remote <host-id>`: a window onto a paired office. It starts no engine: the window's calls and
@@ -507,6 +547,16 @@ fn run_remote_window(args: &Args, host_id: String, fonts: FontSet) {
     let Some(client_dir) = client_dir else {
         eprintln!("A remote window needs the laptop's state folder: pass --config-dir.");
         std::process::exit(1);
+    };
+    // One window per office: a reopen at start finds one that outlived a crash of the main app. The
+    // lock lives as long as this process (`_window_lock`) and the OS drops it when the process ends.
+    let _window_lock = match csm_remote::connect::claim_window(&client_dir, &host_id) {
+        csm_remote::connect::WindowClaim::Held(f) => Some(f),
+        csm_remote::connect::WindowClaim::AlreadyOpen => {
+            log::info!("remote window: a window onto {host_id} is already open; not opening a second");
+            return;
+        }
+        csm_remote::connect::WindowClaim::Unavailable => None,
     };
     let (params, host) = match csm_remote::window_params(&client_dir, &host_id, theme_kind, Vec::new()) {
         Ok(p) => p,
@@ -653,6 +703,8 @@ fn main() {
         return run_remote_window(&args, host_id, fonts);
     }
 
+    // Set by the real app only: what the reopen of the last run's remote windows needs, once the window is up.
+    let mut reopen: Option<(Arc<csm_engine::RemoteWindows>, Arc<dyn csm_engine::PeerClientHost>, bool)> = None;
     let (engine, mode, theme_kind, start) = if args.demo {
         let shell: Vec<OsString> = match find_on_path("pwsh.exe").or_else(|| find_on_path("pwsh")) {
             Some(_) => vec!["pwsh".into(), "-NoLogo".into()],
@@ -689,11 +741,21 @@ fn main() {
             Some(d) => Arc::new(csm_peer::ClientPeer::new(d.join("peer-client"))),
             None => Arc::new(csm_engine::NoPeerClient),
         };
-        let remote_window_launcher = remote_window_launcher(args.config_dir.clone());
-        let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, remote_window_launcher, ..StateOptions::production() };
+        // The open remote windows are remembered beside the host list, so the next start can open them
+        // again. Not for `--clean`, which keeps and reads nothing there.
+        let windows_file = save_path.as_deref().and_then(std::path::Path::parent).filter(|_| !args.clean).map(|d| d.join("peer-client").join(csm_engine::remote_windows::FILE));
+        let remote_windows = csm_engine::RemoteWindows::new(windows_file, Arc::new(ProcessSpawner { config_dir: args.config_dir.clone() }));
+        let remote_window_launcher: csm_engine::RemoteWindowLauncher = {
+            let windows = remote_windows.clone();
+            Arc::new(move |host_id: &str| windows.open(host_id))
+        };
+        let reopen_client = peer_client.clone();
+        let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, remote_window_launcher, remote_windows: remote_windows.clone(), ..StateOptions::production() };
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
+        // Read before the state moves into the engine; what start does with it is below.
+        let reopen_setting = state.app.settings.reopen_remote_windows;
         // The sign-in entry (one per channel) is repaired only when the program it names is gone;
         // the installer's hook moves it on an upgrade. A working entry is never taken over, so copies
         // and development builds cannot fight over it. Not for a test run (`--clean`, another config
@@ -725,6 +787,9 @@ fn main() {
         let first_run_import = persist::first_run_wpf_import(args.config_dir.as_deref(), args.clean, report.source);
         let beta_offer = persist::beta_import_offer(args.config_dir.as_deref(), args.clean, report.source);
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
+        if reopen_allowed(&args) {
+            reopen = Some((remote_windows, reopen_client, reopen_setting));
+        }
         if let Some(p) = &peer_server {
             // Gives it the engine its devices' calls run on, and replays the one thing the person
             // may have chosen before: remote access on, at the address they picked. A fresh install,
@@ -826,6 +891,10 @@ fn main() {
             }
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
+            // The main window is up: the remote windows the last run left open come back (off the UI thread).
+            if let Some((windows, client, enabled)) = reopen.take() {
+                reopen_remote_windows(windows, client, enabled);
+            }
             // On the main thread, with the event loop running: where the tray must be made.
             let (tray, notifier, clicked) = if real {
                 let (click_tx, click_rx) = mpsc::channel();
@@ -882,5 +951,18 @@ mod icon_file {
         }
         let committed = std::fs::read(&path).unwrap_or_default();
         assert!(committed == fresh, "{} is stale: run `CSM_WRITE_ICON=1 cargo test -p codeshell icon_file`", path.display());
+    }
+}
+
+#[cfg(test)]
+mod reopen_rules {
+    use super::*;
+
+    #[test]
+    fn only_the_real_app_reopens_remote_windows() {
+        assert!(reopen_allowed(&Args::default()));
+        assert!(!reopen_allowed(&Args { clean: true, ..Args::default() }));
+        assert!(!reopen_allowed(&Args { demo: true, ..Args::default() }));
+        assert!(!reopen_allowed(&Args { remote: Some("abc".into()), ..Args::default() }));
     }
 }

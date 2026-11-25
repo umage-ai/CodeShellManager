@@ -215,6 +215,7 @@ fn full_settings(s: &AppSettings) -> Result<Value, serde_json::Error> {
         m.entry("StartMinimizedToTray").or_insert(json!(s.start_minimized_to_tray));
         m.entry("ThemeDark").or_insert(json!(s.theme_dark));
         m.entry("ThemeLight").or_insert(json!(s.theme_light));
+        m.entry("ReopenRemoteWindows").or_insert(json!(s.reopen_remote_windows));
         m.entry("CheckForUpdates").or_insert(json!(s.check_for_updates));
         m.entry("IndexMaxMb").or_insert(json!(s.index_max_mb));
         m.entry("ClaudeUsageRetentionDays").or_insert(json!(s.claude_usage_retention_days));

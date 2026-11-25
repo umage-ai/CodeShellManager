@@ -107,11 +107,60 @@ pub fn window_params(dir: &Path, host_id: &str, theme: ThemeKind, themes: Vec<Th
     Ok((ConnectParams { addr: p.addr, relay: p.relay, host_public: p.host_public, identity: p.identity, cfg: p.cfg, theme, themes, overlay }, p.window))
 }
 
+/// What a starting `--remote <host-id>` process finds about other windows onto the same office.
+#[derive(Debug)]
+pub enum WindowClaim {
+    /// No other window holds this office: keep the file for as long as this window runs. The
+    /// operating system releases the lock when the process ends, however it ends (a crash too).
+    Held(std::fs::File),
+    /// A window onto this office is running already: this one must not open a second.
+    AlreadyOpen,
+    /// The lock could not be made (an unreadable folder, a file system with no locks): the window
+    /// opens without the guard rather than not at all.
+    Unavailable,
+}
+
+/// Claims the office for this window: `remote-window-<host id>.lock` in the client folder, locked
+/// with the file system's advisory lock. It is what stops a reopen at start from putting a second
+/// window beside one that survived the last run (a crash of the main app leaves its windows
+/// running). A host id that is not a plain name claims nothing.
+pub fn claim_window(dir: &Path, host_id: &str) -> WindowClaim {
+    let plain = !host_id.is_empty() && host_id.len() <= MAX_HOST_ID && host_id.chars().all(|c| c.is_ascii_alphanumeric());
+    if !plain {
+        return WindowClaim::Unavailable;
+    }
+    if std::fs::create_dir_all(dir).is_err() {
+        return WindowClaim::Unavailable;
+    }
+    let file = match std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("remote-window-{host_id}.lock"))) {
+        Ok(f) => f,
+        Err(_) => return WindowClaim::Unavailable,
+    };
+    match file.try_lock() {
+        Ok(()) => WindowClaim::Held(file),
+        Err(std::fs::TryLockError::WouldBlock) => WindowClaim::AlreadyOpen,
+        Err(std::fs::TryLockError::Error(_)) => WindowClaim::Unavailable,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn a_second_window_onto_the_same_office_is_refused_until_the_first_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("peer-client");
+        let first = claim_window(&dir, "ABC234");
+        assert!(matches!(first, WindowClaim::Held(_)), "{first:?}");
+        assert!(matches!(claim_window(&dir, "ABC234"), WindowClaim::AlreadyOpen), "the same office");
+        assert!(matches!(claim_window(&dir, "XYZ789"), WindowClaim::Held(_)), "another office is its own window");
+        drop(first);
+        assert!(matches!(claim_window(&dir, "ABC234"), WindowClaim::Held(_)), "closed: the office can open again");
+        assert!(matches!(claim_window(&dir, "../evil"), WindowClaim::Unavailable));
+    }
     #[test]
     fn a_view_file_is_named_only_by_a_plain_host_id() {
         let dir = Path::new("/state/peer-client");

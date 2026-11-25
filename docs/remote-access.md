@@ -104,6 +104,16 @@ The level is the office's decision, kept in its device list. Pair the device aga
   **Quit CodeShellManager on OFFICE…**; it asks first.
 - Closing a remote window (its ✕ or Alt+F4) disconnects the same way. A window that has lost its host shows its last
   picture greyed out, with the strip saying it is reconnecting.
+- **Reopened at start.** With **Reopen remote windows at start** on (Settings › Remote access, on the
+  laptop, on by default), starting CodeShellManager opens a remote window again for each office whose
+  window was open when you last quit. A window you closed yourself before quitting stays closed. An
+  office that is no longer paired is skipped and forgotten, and nothing is ever paired or sent
+  anywhere new: a reopened window connects exactly as one opened with Connect, and shows its normal
+  reconnecting state if the office is offline. `--clean`, `--demo` and remote windows themselves never
+  reopen anything. The open offices are kept in `open-remote-windows.json` in the `peer-client`
+  folder, updated each time a window opens or is closed, so a crash of the main app still reopens what
+  was open. Only one window per office runs at a time (a lock in the same folder): a window that
+  survived a crash is not joined by a second.
 - Some things stay on the office or are refused in a remote window, because they would act on the
   laptop's machine: opening a folder or a file in an editor, the native folder picker and backup
   export and import. Files and images are not refused: they are uploaded (see *Uploads* below).

@@ -117,6 +117,11 @@ pub fn run_ok(cmd: &mut Command, timeout: Duration) -> Option<String> {
 /// its own argument parser (Explorer: a path with a comma must arrive quoted). Callers pass only
 /// values they have validated.
 pub fn spawn_detached(program: &std::path::Path, args: &[String], raw: Option<&str>) -> std::io::Result<()> {
+    spawn_detached_notify(program, args, raw, Box::new(|| {}))
+}
+
+/// As [`spawn_detached`], and `ended` is called on the reaping thread when the process has ended.
+pub fn spawn_detached_notify(program: &std::path::Path, args: &[String], raw: Option<&str>, ended: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
     let mut cmd = Command::new(program);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     no_window(&mut cmd);
@@ -130,6 +135,7 @@ pub fn spawn_detached(program: &std::path::Path, args: &[String], raw: Option<&s
     let mut child = cmd.spawn()?;
     let _ = std::thread::Builder::new().name("csm-reap".into()).spawn(move || {
         let _ = child.wait();
+        ended();
     });
     Ok(())
 }
