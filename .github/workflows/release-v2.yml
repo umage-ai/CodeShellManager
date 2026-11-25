@@ -18,8 +18,9 @@ name: Release (Windows)
 #     PRE-release for -beta/-rc, otherwise a normal release marked "latest" (what the WPF app's
 #     update check reads, and what winget.yml / chocolatey.yml publish). Tags are created by
 #     hand, and only when Allan says so (see CLAUDE.md, "Releases").
-#   - workflow_dispatch: a dry run. Same build and packaging for the chosen channel, unsigned,
-#     uploaded as a workflow artifact; no release is created.
+#   - workflow_dispatch: a dry run. Same build and packaging for the chosen channel, SIGNED when
+#     the signing secrets below exist (unsigned without them), uploaded as a workflow artifact;
+#     no release is created.
 #
 # A tag runs the workflow files of the commit it points at, so a v2 tag on a v2 commit never
 # runs the WPF app's build.yml (which main keeps until v2 is merged into it).
@@ -30,11 +31,15 @@ name: Release (Windows)
 # Signing uses the repo's Azure Trusted Signing secrets (same names as the WPF release):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
 #   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
-# A stable-channel tag refuses to publish unsigned.
+# ANY tag build (beta, rc or final) refuses to publish unsigned: it fails when one of the six is
+# missing. Every third-party action is pinned to a full commit SHA (tag in the trailing comment;
+# Dependabot keeps them current). This job restores no build cache: it holds the signing
+# secrets, so nothing but the checked-out source and the pinned downloads may reach the build.
 
 on:
   push:
-    tags: ['v*.*.*']
+    # MAJOR >= 2 only, the same rule as release-v2-unix.yml (the Versions step checks it again).
+    tags: ['v[2-9].*.*', 'v[1-9][0-9]+.*.*']
   workflow_dispatch:
     inputs:
       channel:
@@ -56,17 +61,24 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     env:
-      HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' }}
+      HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_SIGNING_PROFILE != '' }}
       IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      # The subject every signature must carry (umage.ai's Azure Trusted Signing identity). Its
+      # certificates rotate every few days, so the subject is pinned, not a thumbprint.
+      EXPECTED_SIGNER_SUBJECT: 'CN=umage.ai ApS, O=umage.ai ApS, L=2830, S=Capital Region, C=DK'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      # The gate's toolchain (see ci.yml).
-      - uses: dtolnay/rust-toolchain@master
+      # The gate's toolchain (see ci.yml). Pinned to a commit of the action's master branch (it
+      # has no release tags to pin by); the toolchain is the input.
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      # No Swatinem/rust-cache here: this job signs, and a restored cache is attacker-reachable
+      # input to the exes that get signed.
 
       # ── Versions and channel ────────────────────────────────────────────────
       # semver (Cargo, file names, winget, Chocolatey): 2.0.0-beta.3, 2.0.0-rc.1, 2.0.0
@@ -75,23 +87,41 @@ jobs:
       # Add/Remove Programs shows the version winget and Chocolatey publish. MSI compares only
       # the first three fields, so MajorUpgrade allows same-version upgrades.
       # Channel: -beta.N -> beta; -rc.N and final -> stable; a dry run -> the chosen input.
+      # The tag name is untrusted input: it reaches the script only through the environment and is
+      # validated with a strict ASCII regex before any other use (never a workflow expression inside a script).
       - name: Versions
         id: ver
         shell: pwsh
         env:
           DISPATCH_CHANNEL: ${{ inputs.channel }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if ($env:IS_TAG -eq 'true') { $semver = '${{ github.ref_name }}'.TrimStart('v') }
-          else { $semver = "2.0.0-dev.${{ github.run_number }}" }
-          if ($semver -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-(beta|rc|dev)\.(\d+))?$') {
-            throw "Tag version '$semver' is not MAJOR.MINOR.PATCH[-beta.N|-rc.N]"
+          if ($env:IS_TAG -eq 'true') {
+            if ($env:REF_NAME -notmatch '^v([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,5}(?:-(?:beta|rc)\.[0-9]{1,5})?)\z') {
+              throw 'The tag is not vMAJOR.MINOR.PATCH[-beta.N|-rc.N] (plain ASCII digits)'
+            }
+            $semver = $Matches[1]
+          } else {
+            if ($env:RUN_NUMBER -notmatch '^[0-9]{1,5}\z') { throw 'run number out of range' }
+            $semver = "2.0.0-dev.$($env:RUN_NUMBER)"
           }
-          if ([int]$Matches[1] -lt 2) { throw "Tag version '$semver' is below 2.0.0: the WPF app's tags are not built here" }
-          $base = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          if ($semver -notmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)(?:-(beta|rc|dev)\.([0-9]+))?\z') { throw 'version did not parse' }
+          $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
           $kind = $Matches[4]
-          $msi = switch ($kind) { 'beta' { "$base.$([int]$Matches[5])" } 'rc' { "$base.$(100 + [int]$Matches[5])" } 'dev' { "$base.0" } default { $base } }
+          if ($major -lt 2) { throw "Tag version '$semver' is below 2.0.0: the WPF app's tags are not built here" }
+          if ($major -gt 255 -or $minor -gt 255 -or $patch -gt 65535) { throw 'version field out of MSI range' }
+          $base = "$major.$minor.$patch"
+          if ($kind) {
+            $n = [int]$Matches[5]
+            if ($n -lt 1 -or $n -gt 65535) { throw "pre-release number $n out of range 1..65535" }
+            # The pre-release number stays in the 4th field (2.0.0.N), as before. MSI ignores that
+            # field, so an older pre-release can still replace a newer one (SEC-48, open: moving it
+            # into the first three fields would make every installed 2.0.0.x build look newer).
+            $msi = switch ($kind) { 'beta' { "$base.$n" } 'rc' { "$base.$(100 + $n)" } default { "$base.0" } }
+          } else { $msi = $base }
           $channel = switch ($kind) { 'beta' { 'beta' } 'dev' { $env:DISPATCH_CHANNEL } default { 'stable' } }
-          if ($channel -notin 'beta', 'stable') { throw "unknown channel '$channel'" }
+          if ($channel -notin 'beta', 'stable') { throw 'unknown channel' }
           $aumid = if ($channel -eq 'stable') { 'UmageAI.CodeShellManager' } else { 'UmageAI.CodeShellManager.Beta' }
           $prerelease = if ($kind) { 'true' } else { 'false' }
           "semver=$semver"         | Out-File $env:GITHUB_OUTPUT -Append
@@ -101,19 +131,22 @@ jobs:
           "prerelease=$prerelease" | Out-File $env:GITHUB_OUTPUT -Append
           Write-Host "semver $semver, MSI $msi, channel $channel, pre-release $prerelease"
 
-      # A stable build goes to winget and Chocolatey and replaces the signed WPF app on people's
-      # machines: never unsigned.
-      - name: Refuse an unsigned stable release
-        if: env.IS_TAG == 'true' && steps.ver.outputs.channel == 'stable' && env.HAS_SIGNING != 'true'
+      # A tag build goes to users (beta and rc testers; winget and Chocolatey for a final) and
+      # replaces the signed WPF app on people's machines: never unsigned, on any channel. A
+      # dispatch dry run signs when the secrets exist and stays unsigned when they do not.
+      - name: Refuse an unsigned tag release
+        if: env.IS_TAG == 'true' && env.HAS_SIGNING != 'true'
         shell: pwsh
-        run: throw 'A stable-channel tag needs the Azure Trusted Signing secrets; none are set.'
+        run: throw 'A tag build needs all six Azure Trusted Signing secrets (AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE); at least one is missing.'
 
       # The exe reports the release's version (About, `csm app-info`).
       - name: Stamp the workspace version
         shell: pwsh
+        env:
+          SEMVER: ${{ steps.ver.outputs.semver }}
         run: |
           $toml = Get-Content Cargo.toml -Raw
-          $new = [regex]::Replace($toml, '(?m)^version = "[^"]*"', 'version = "${{ steps.ver.outputs.semver }}"', 1)
+          $new = [regex]::Replace($toml, '(?m)^version = "[^"]*"', "version = ""$env:SEMVER""", 1)
           if ($new -eq $toml) { throw 'workspace version line not found in Cargo.toml' }
           Set-Content Cargo.toml $new -NoNewline
 
@@ -130,10 +163,10 @@ jobs:
 
       # The third-party licence bundle (about.toml / about.hbs), shipped beside the exes in the
       # MSI and the zip. It fails on a licence about.toml does not accept.
+      # Pinned to an exact version and built from source with its lockfile (not a prebuilt binary
+      # fetched by a third-party action).
       - name: Install cargo-about
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3
 
       - name: Third-party licences
         shell: pwsh
@@ -202,7 +235,7 @@ jobs:
       # OUR exes only, by name: publish/ also holds Microsoft's OpenConsole.exe and conpty.dll.
       - name: Sign executables (Azure Trusted Signing)
         if: env.HAS_SIGNING == 'true'
-        uses: azure/trusted-signing-action@v2.0.0
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -218,8 +251,10 @@ jobs:
       # ── Portable zip (no codeshell.aumid: a portable copy has no Start-menu shortcut) ──
       - name: Portable zip
         shell: pwsh
+        env:
+          SEMVER: ${{ steps.ver.outputs.semver }}
         run: |
-          Compress-Archive -Path publish\* -DestinationPath "dist/CodeShellManager-${{ steps.ver.outputs.semver }}-win-x64.zip"
+          Compress-Archive -Path publish\* -DestinationPath "dist/CodeShellManager-$env:SEMVER-win-x64.zip"
 
       # ── MSI ─────────────────────────────────────────────────────────────────
       - name: Install WiX toolset v4 (last open-source release)
@@ -230,21 +265,26 @@ jobs:
 
       - name: Build MSI
         shell: pwsh
+        env:
+          SEMVER: ${{ steps.ver.outputs.semver }}
+          MSI_VERSION: ${{ steps.ver.outputs.msi }}
+          AUMID: ${{ steps.ver.outputs.aumid }}
+          CHANNEL: ${{ steps.ver.outputs.channel }}
         run: |
           # Must match AppUserModelId in the .wxs.
-          Set-Content publish/codeshell.aumid '${{ steps.ver.outputs.aumid }}' -NoNewline
+          Set-Content publish/codeshell.aumid $env:AUMID -NoNewline
           wix build installer/CodeShellManager2.wxs `
-            -d Version=${{ steps.ver.outputs.msi }} `
+            -d Version=$env:MSI_VERSION `
             -d PublishDir=publish `
-            -d Channel=${{ steps.ver.outputs.channel }} `
+            -d Channel=$env:CHANNEL `
             -ext WixToolset.UI.wixext `
             -arch x64 `
-            -o "dist/CodeShellManager-${{ steps.ver.outputs.semver }}-Setup.msi"
+            -o "dist/CodeShellManager-$env:SEMVER-Setup.msi"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Sign MSI (Azure Trusted Signing)
         if: env.HAS_SIGNING == 'true'
-        uses: azure/trusted-signing-action@v2.0.0
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -270,13 +310,14 @@ jobs:
           foreach ($f in $files) {
             $sig = Get-AuthenticodeSignature $f
             if ($sig.Status -ne 'Valid') { throw "$f is not validly signed ($($sig.Status))" }
+            if ($sig.SignerCertificate.Subject -ne $env:EXPECTED_SIGNER_SUBJECT) { throw "$f is signed by an unexpected subject: $($sig.SignerCertificate.Subject)" }
             Write-Host "$f signed by $($sig.SignerCertificate.Subject)"
           }
 
       # ── Publish ─────────────────────────────────────────────────────────────
       - name: Upload packages (dry run)
         if: env.IS_TAG != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codeshellmanager-${{ steps.ver.outputs.semver }}
           path: dist/*
@@ -285,7 +326,7 @@ jobs:
       # (releases/latest) then offers it, and winget.yml / chocolatey.yml take its MSI.
       - name: Create GitHub release
         if: env.IS_TAG == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
           make_latest: ${{ steps.ver.outputs.prerelease == 'true' && 'false' || 'true' }}

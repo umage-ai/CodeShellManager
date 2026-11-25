@@ -87,13 +87,14 @@ jobs:
       - name: Sync umage-ai/winget-pkgs with upstream
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
         run: |
-          gh api -X POST "repos/${{ github.repository_owner }}/winget-pkgs/merge-upstream" \
+          gh api -X POST "repos/$OWNER/winget-pkgs/merge-upstream" \
             -f branch=master \
             --jq '"sync: \(.merge_type) - \(.message)"'
 
       - name: Submit to winget-pkgs
-        uses: vedantmgoyal9/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
           identifier: UmageAI.CodeShellManager
           installers-regex: '\.msi$'

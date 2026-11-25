@@ -434,7 +434,17 @@ impl State {
                     log::error!("state: could not read {why}; starting read-only so the file is not replaced");
                     options.read_only = Some(why);
                 }
-                (out.loaded.state, Some(out.loaded.source))
+                // Written by a NEWER app (a downgrade, or a beta's file): this build must neither
+                // guess at it nor replace it. Start empty and read-only; the file is untouched.
+                if options.read_only.is_none()
+                    && let Some(why) = persist::newer_state_reason(out.loaded.state.csm_rs_version)
+                {
+                    log::error!("state: {} is from a newer CodeShellManager; starting read-only so it is not replaced", p.display());
+                    options.read_only = Some(why);
+                    (AppState::default(), Some(LoadSource::Unreadable))
+                } else {
+                    (out.loaded.state, Some(out.loaded.source))
+                }
             }
             None => (AppState::default(), None),
         };

@@ -5,7 +5,8 @@
 //! On Windows it also embeds `assets/codeshell.ico` as the exe's icon. That needs the Windows
 //! SDK's rc.exe; without it the build goes on with a warning and the exe has no icon.
 
-use std::path::PathBuf;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=CSM_CONPTY_DIR");
@@ -34,11 +35,18 @@ fn main() {
             continue;
         }
         let to = profile_dir.join(name);
-        let same = std::fs::metadata(&from).ok().map(|m| m.len()) == std::fs::metadata(&to).ok().map(|m| m.len());
+        // By content hash, not length: a different build of the same size must be copied too.
+        let same = matches!((file_hash(&from), file_hash(&to)), (Some(a), Some(b)) if a == b);
         if !same && let Err(e) = std::fs::copy(&from, &to) {
             println!("cargo:warning=could not copy {name} to {}: {e}", to.display());
         }
     }
+}
+
+/// SHA-256 of a file, or `None` when it cannot be read.
+fn file_hash(path: &Path) -> Option<[u8; 32]> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(Sha256::digest(&bytes).into())
 }
 
 fn embed_icon() {

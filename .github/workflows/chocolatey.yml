@@ -36,10 +36,16 @@ permissions:
 jobs:
   publish:
     runs-on: windows-latest
+    env:
+      # The subject the MSI's signature must carry: umage.ai's Azure Trusted Signing identity (the
+      # same value as release-v2.yml's EXPECTED_SIGNER_SUBJECT). Its certificates rotate every few
+      # days, so the subject is pinned, not a thumbprint.
+      EXPECTED_SIGNER_SUBJECT: 'CN=umage.ai ApS, O=umage.ai ApS, L=2830, S=Capital Region, C=DK'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
+          persist-credentials: false
 
       - name: Resolve tag and version
         id: ver
@@ -62,9 +68,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $tag     = '${{ steps.ver.outputs.tag }}'
-          $version = '${{ steps.ver.outputs.version }}'
+          $tag     = $env:TAG
+          $version = $env:VERSION
           $msiName = "CodeShellManager-$version-Setup.msi"
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
           gh release download $tag --repo umage-ai/CodeShellManager --pattern $msiName --dir artifact
@@ -74,12 +82,18 @@ jobs:
           }
           $sig = Get-AuthenticodeSignature "artifact\$msiName"
           if ($sig.Status -ne 'Valid') { Write-Error "MSI $msiName is not validly signed ($($sig.Status))."; exit 1 }
+          # Valid is not enough: any publicly trusted certificate would pass. It must be ours.
+          if ($sig.SignerCertificate.Subject -ne $env:EXPECTED_SIGNER_SUBJECT) {
+            Write-Error "MSI $msiName is signed by '$($sig.SignerCertificate.Subject)', not the expected umage.ai identity."; exit 1
+          }
           Write-Host "Downloaded artifact\$msiName"
 
       - name: Template version, URL, and checksum into package
         shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $version = '${{ steps.ver.outputs.version }}'
+          $version = $env:VERSION
           $msiName = "CodeShellManager-$version-Setup.msi"
           $url64   = "https://github.com/umage-ai/CodeShellManager/releases/download/v$version/$msiName"
           $sha256  = (Get-FileHash "artifact\$msiName" -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -113,8 +127,9 @@ jobs:
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $version = '${{ steps.ver.outputs.version }}'
+          $version = $env:VERSION
           $nupkg   = "artifact/codeshellmanager.$version.nupkg"
           if (-not (Test-Path $nupkg)) {
             Write-Error "Expected nupkg not found: $nupkg"
@@ -125,7 +140,7 @@ jobs:
 
       - name: Upload built nupkg as workflow artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codeshellmanager-chocolatey-${{ steps.ver.outputs.version }}
           path: artifact/*.nupkg
