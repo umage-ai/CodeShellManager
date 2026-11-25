@@ -15,9 +15,16 @@ phone (PWA) --wss--> relay <--wss-- CSM add-on        Noise IK, end to end: the 
      `push`. Relay to host: `welcome`, `allow_ok`, `pairing_ok`, `push_result`, `error`. Phone to
      relay: one `hello` with `token` (routing token) or `pairing_id`. Relay to phone: `ready` or
      `error`.
+   - A CSM peer client (the laptop) may also send the text message `{"t":"ack","frames":N,"bytes":N}`; the
+     relay turns it into an `ack` frame for the host.
+   - **Two namespaces.** Phones use `/v1/host` and `/v1/client`; CSM peers (an office and a laptop) use
+     `/v1/peer-host` and `/v1/peer-client`, with the same messages, separate and higher limits (`limits`,
+     the `Peer` caps) and no push. A phone never reaches a peer channel, and a peer never reaches a phone
+     channel. See `relay/README.md`, "CSM peers".
    - Binary messages on the **host** socket are frames: `version(1) kind(1) channel(u32 BE)
      payload`; kinds `data` (1), `open` (2, relay to host: `0x00 token_hash(32)` or `0x01
-     pairing_id(16)`), `close` (3, `u16 BE` refusal number or 0). Binary messages on a **phone**
+     pairing_id(16)`), `close` (3, `u16 BE` refusal number or 0), `ack` (4, relay to a peer host: `frames
+     u64 BE | bytes u64 BE`, what a peer client's reader has taken; counts only). Binary messages on a **phone**
      socket are the raw Noise messages (one socket = one channel).
    - Refusals are `RefusalCode`s (`codes`): stable names and numbers; WebSocket close code
      `4000 + number`.
