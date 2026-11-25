@@ -111,7 +111,7 @@ impl Rig {
     }
 
     fn server_status(&self) -> Value {
-        self.cli("peer_status", json!({})).unwrap().data
+        self.ui("peer_status", json!({})).unwrap().data
     }
 
     fn hosts(&self) -> Vec<Value> {

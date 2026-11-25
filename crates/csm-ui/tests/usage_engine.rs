@@ -118,6 +118,10 @@ fn the_usage_tab_and_the_sidebar_chip_follow_a_real_transcript() {
     let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app: &mut CsmApp| app.frame(ui), app);
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Action::Tool("session_focus", json!({"session_id": id})));
+    // The focus itself answers with a "Focused ..." toast. Wait for that reply and drop it, so the
+    // "polling never toasts" check below sees only what polling made (no timing involved).
+    until(&mut h, "the focus reply", |h| h.state().ui.toasts.iter().any(|t| t.text.starts_with("Focused ")));
+    h.state_mut().ui.toasts.clear();
     h.state_mut().run(&ctx, Action::Tool("inspector_show", json!({"tab": "usage"})));
     until(&mut h, "the Usage tab", |h| h.state().model.inspector == Some(InspectorTab::Usage));
     // The tab asks again every few seconds until the reader has stored the request.

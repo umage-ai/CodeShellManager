@@ -474,7 +474,13 @@ pub fn confirm_text(addon_name: &str, addon_id: &str, tool: &str, params: &Value
             }
         }
         "open_url" => body.push_str(&format!("\n\nAddress:\n{}", clip(params.get("url").and_then(Value::as_str).unwrap_or("")))),
-        _ => body.push_str(&format!("\n\nParameters:\n{}", clip(&serde_json::to_string_pretty(params).unwrap_or_default()))),
+        _ => {
+            // Deep nesting can make the pretty form much longer than the compact one, which the
+            // parser capped; when it would be cut, show the compact form so nothing is hidden.
+            let pretty = serde_json::to_string_pretty(params).unwrap_or_default();
+            let text = if pretty.chars().count() > SHOWN { serde_json::to_string(params).unwrap_or_default() } else { pretty };
+            body.push_str(&format!("\n\nParameters:\n{}", clip(&text)));
+        }
     }
     (title, body)
 }
@@ -536,6 +542,18 @@ pub fn pop_windows(ctx: &egui::Context, app: &mut CsmApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_params_are_never_cut_in_the_confirm() {
+        // Within the 8 KiB compact cap, but a pretty print would indent it past the clip.
+        let mut v = json!("end-marker");
+        for _ in 0..100 {
+            v = json!([v, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        }
+        let (_, body) = confirm_text("A", "a", "some_tool", &v, None);
+        assert!(body.contains("end-marker"), "the innermost value is shown");
+        assert!(!body.contains("more characters"), "nothing is cut");
+    }
 
     #[test]
     fn the_confirm_for_a_paste_shows_the_target_and_the_exact_text() {

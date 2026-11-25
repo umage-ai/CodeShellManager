@@ -476,7 +476,12 @@ pub enum SideItem<'a> {
 pub fn nest<'a>(ss: &[&'a SessionView]) -> Vec<SideItem<'a>> {
     use crate::git_model::folder_key;
     let list = ordered(ss);
-    let here = |id: &str| list.iter().find(|x| x.id == id).copied();
+    // Indexed once: the lookups below run per row, so a scan each would be cubic in the list.
+    let mut by_id: std::collections::HashMap<&str, &'a SessionView> = std::collections::HashMap::new();
+    for &x in &list {
+        by_id.entry(x.id.as_str()).or_insert(x);
+    }
+    let here = |id: &str| by_id.get(id).copied();
     // A row others may nest under: not nested itself (no parent in this section).
     let top = |p: &SessionView| p.parent.as_deref().is_none_or(|pp| pp == p.id || here(pp).is_none());
     let repo_key = |s: &SessionView| -> Option<String> {
@@ -485,17 +490,34 @@ pub fn nest<'a>(ss: &[&'a SessionView]) -> Vec<SideItem<'a>> {
     };
     // The row a session nests under: its parent when that is here and a top row; for a session
     // in a linked worktree, else the first top row of a session in the repository's main checkout.
-    let parent_of = |s: &SessionView| -> Option<String> {
+    // The first top row of each repository's main checkout, by folder key.
+    let mut mains: std::collections::HashMap<String, &'a SessionView> = std::collections::HashMap::new();
+    for &m in &list {
+        if m.worktree_of.is_none()
+            && top(m)
+            && let Some(root) = m.repo_root.as_deref()
+        {
+            mains.entry(folder_key(root)).or_insert(m);
+        }
+    }
+    let parent_of_uncached = |s: &SessionView| -> Option<String> {
         let parent = s.parent.as_deref().filter(|p| *p != s.id).and_then(&here).filter(|p| top(p));
         let main = || {
             s.worktree_of.as_ref()?;
             let root = folder_key(s.repo_root.as_deref()?);
-            list.iter()
-                .find(|m| m.id != s.id && m.worktree_of.is_none() && m.repo_root.as_deref().map(folder_key) == Some(root.clone()) && top(m))
-                .copied()
+            mains.get(&root).copied().filter(|m| m.id != s.id)
         };
         parent.or_else(main).map(|p| p.id.clone())
     };
+    // Computed once per session, with the children of each row in list order.
+    let parents: std::collections::HashMap<&str, Option<String>> = list.iter().map(|s| (s.id.as_str(), parent_of_uncached(s))).collect();
+    let parent_of = |s: &SessionView| -> Option<String> { parents.get(s.id.as_str()).cloned().flatten() };
+    let mut children: std::collections::HashMap<&str, Vec<&'a SessionView>> = std::collections::HashMap::new();
+    for &c in &list {
+        if let Some(Some(p)) = parents.get(c.id.as_str()) {
+            children.entry(p.as_str()).or_default().push(c);
+        }
+    }
     let orphan = |s: &SessionView| parent_of(s).is_none() && repo_key(s).is_some();
     let mut out = Vec::new();
     let mut done: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
@@ -508,7 +530,7 @@ pub fn nest<'a>(ss: &[&'a SessionView]) -> Vec<SideItem<'a>> {
             }
             out.push(SideItem::Session { s: x, nested: n });
             let kids: Vec<&'a SessionView> =
-                list.iter().copied().filter(|c| !done.contains(c.id.as_str()) && parent_of(c).as_deref() == Some(x.id.as_str())).collect();
+                children.get(x.id.as_str()).map_or_else(Vec::new, |k| k.iter().copied().filter(|c| !done.contains(c.id.as_str())).collect());
             stack.extend(kids.into_iter().rev().map(|c| (c, true)));
         }
     };

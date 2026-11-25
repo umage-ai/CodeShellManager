@@ -785,6 +785,10 @@ pub(crate) fn apply_term_events(ctx: &mut Ctx<'_>, id: &str, instance: u64, even
     let mut persist = false;
     for ev in events {
         match ev {
+            // Trust model (SEC-32): OSC 9001/7501/133 come from whatever writes to the pane, so a
+            // hostile ssh host can rename or recolour its own session (persisted) and fake its git
+            // branch or status. That is the shell-integration feature working as designed; the
+            // values are sanitised and length-capped, and none of it reaches a tool's authority.
             TermEvent::Tap(TapEvent::ShellIntegration(pairs)) => {
                 for (k, v) in pairs {
                     match k.as_str() {

@@ -61,7 +61,7 @@ impl Rig {
     }
 
     fn status(&self) -> Value {
-        self.engine.call(Caller::Cli, "peer_status", json!({})).unwrap().data
+        self.engine.call(Caller::Ui, "peer_status", json!({})).unwrap().data
     }
 
     /// Turns remote access on at 127.0.0.1 with a free port the system picks.

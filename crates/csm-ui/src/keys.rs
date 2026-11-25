@@ -143,11 +143,36 @@ pub fn consume(i: &mut InputState, c: &Chord) -> bool {
     }
     let key = egui_key(c.key);
     let base = Modifiers { alt: c.alt, shift: c.shift, ..Modifiers::NONE };
+    // A shiftless punctuation chord also matches the same press with Shift (layouts where the
+    // character needs it). When another binding owns that Shift chord, the more specific one wins:
+    // this one takes only the press without Shift.
+    let lenient = !shadowed_by_shift_chord(c);
     if c.ctrl {
-        crate::app::consume_exact(i, Modifiers { command: true, ..base }, key) || crate::app::consume_exact(i, Modifiers { ctrl: true, ..base }, key)
+        crate::app::consume_modifiers(i, Modifiers { command: true, ..base }, key, lenient)
+            || crate::app::consume_modifiers(i, Modifiers { ctrl: true, ..base }, key, lenient)
     } else {
-        crate::app::consume_exact(i, base, key)
+        crate::app::consume_modifiers(i, base, key, lenient)
     }
+}
+
+thread_local! {
+    /// The Shift-bearing punctuation chords of the keymap in force (set by [`note_keymap`]).
+    static SHIFTED_PUNCTUATION: std::cell::RefCell<Vec<Chord>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Remembers which Shift-bearing punctuation chords the keymap binds, so [`consume`] can let them
+/// take their press before the same chord without Shift does.
+pub fn note_keymap(map: &csm_core::keymap::Keymap) {
+    let shifted: Vec<Chord> = map.entries().iter().flat_map(|e| e.chords().iter().copied()).filter(|c| c.shift && is_punctuation(c.key)).collect();
+    SHIFTED_PUNCTUATION.with(|s| *s.borrow_mut() = shifted);
+}
+
+fn is_punctuation(key: Key) -> bool {
+    matches!(key, Key::Comma | Key::Period | Key::Slash | Key::Equals)
+}
+
+fn shadowed_by_shift_chord(c: &Chord) -> bool {
+    !c.shift && is_punctuation(c.key) && SHIFTED_PUNCTUATION.with(|s| s.borrow().iter().any(|x| x.key == c.key && x.ctrl == c.ctrl && x.alt == c.alt))
 }
 
 /// Whether this frame's input has a typed character (not a control character).

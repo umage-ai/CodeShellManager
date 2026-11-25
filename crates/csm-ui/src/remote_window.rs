@@ -99,13 +99,63 @@ pub enum LinkTarget {
     Public(String),
     /// A loopback address: it names the office's own machine. Ask first.
     Localhost(String),
+    /// A private-network host (RFC 1918, link-local, `.local`, a single-label name): a request to it
+    /// would come from this laptop's place on the network. Ask first.
+    PrivateNetwork(String),
 }
 
 /// Checks a link the way the engine does (absolute http or https, no whitespace or quotes), then
 /// tells a loopback address apart. `None`: the link is not one this app opens.
 pub fn check_link(url: &str) -> Option<LinkTarget> {
     let ok = csm_engine::runs::launchable_url(url)?;
-    if is_loopback(&ok) { Some(LinkTarget::Localhost(ok)) } else { Some(LinkTarget::Public(ok)) }
+    if is_loopback(&ok) {
+        Some(LinkTarget::Localhost(ok))
+    } else if is_private_network(&ok) {
+        Some(LinkTarget::PrivateNetwork(ok))
+    } else {
+        Some(LinkTarget::Public(ok))
+    }
+}
+
+/// The host part of an http(s) URL, lower-cased and without a trailing dot.
+fn url_host(url: &str) -> String {
+    let rest = url.split_once("://").map_or("", |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    let host = match hostport.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => hostport.split(':').next().unwrap_or(""),
+    };
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Whether an http(s) URL's host is on a private network rather than the public internet: an
+/// RFC 1918, link-local or shared-address-space (100.64.0.0/10) IPv4 address, a unique-local or
+/// link-local IPv6 address, a `.local` / `.lan` / `.internal` / `.home.arpa` name, or a single-label
+/// name (which resolves through the local search domain). Loopback is separate ([`is_loopback`]).
+pub fn is_private_network(url: &str) -> bool {
+    let host = url_host(url);
+    if host.is_empty() {
+        return false;
+    }
+    if let Ok(v6) = host.parse::<Ipv6Addr>() {
+        let [a, _, _, _, _, f, g, h] = v6.segments();
+        if v6.segments()[..5].iter().all(|s| *s == 0) && f == 0xffff {
+            let [g1, g2] = g.to_be_bytes();
+            let [h1, h2] = h.to_be_bytes();
+            return is_private_v4(Ipv4Addr::new(g1, g2, h1, h2));
+        }
+        return (a & 0xfe00) == 0xfc00 || (a & 0xffc0) == 0xfe80;
+    }
+    if let Some(v4) = parse_ipv4_loose(&host) {
+        return is_private_v4(v4);
+    }
+    host.ends_with(".local") || host.ends_with(".lan") || host.ends_with(".internal") || host.ends_with(".home.arpa") || !host.contains('.')
+}
+
+fn is_private_v4(v4: Ipv4Addr) -> bool {
+    let [a, b, ..] = v4.octets();
+    a == 10 || (a == 172 && (16..32).contains(&b)) || (a == 192 && b == 168) || (a == 169 && b == 254) || (a == 100 && (64..128).contains(&b))
 }
 
 /// Whether an http(s) URL's host is this machine: `localhost` or `*.localhost`, an address in
@@ -193,6 +243,14 @@ pub fn localhost_warning(host_name: &str, url: &str) -> (String, String) {
     (
         format!("This link points to {host_name}"),
         format!("{url} is on {host_name}'s own machine (localhost), not on this laptop. It opens in this laptop's browser, where nothing may be listening."),
+    )
+}
+
+/// The warning shown before a private-network link opens.
+pub fn private_network_warning(host_name: &str, url: &str) -> (String, String) {
+    (
+        format!("This link from {host_name} points at a private network"),
+        format!("{url} is a local-network address. Opening it sends a request from this laptop's place on the network, which {host_name}'s output chose. Open it only if you expect it."),
     )
 }
 
@@ -290,6 +348,16 @@ impl ConnectDialog {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn private_network_links_ask_first() {
+        for url in ["http://192.168.1.1/x", "http://10.8.0.2:47300/", "http://172.16.0.1/", "http://169.254.169.254/", "http://[fd00::1]/", "http://printer.local/", "http://nas/", "http://[::ffff:10.0.0.1]/"] {
+            assert!(matches!(check_link(url), Some(LinkTarget::PrivateNetwork(_))), "{url}");
+        }
+        for url in ["https://example.com/", "http://172.32.0.1/", "http://8.8.8.8/", "http://[2001:db8::1]/"] {
+            assert!(matches!(check_link(url), Some(LinkTarget::Public(_))), "{url}");
+        }
+    }
 
     #[test]
     fn every_spelling_of_this_machine_is_loopback() {
