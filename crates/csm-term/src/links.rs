@@ -14,6 +14,8 @@ use alacritty_terminal::term::cell::Flags;
 /// A row may wrap into at most this many rows in either direction before the search stops
 /// (a 2000-character URL on an 80-column terminal is 25 rows).
 const MAX_WRAP_ROWS: i32 = 32;
+/// Longest OSC 8 URI reported, characters.
+const MAX_URI_CHARS: usize = 8 * 1024;
 
 /// Characters a URL found in plain text never contains (they end it): ASCII delimiters that are
 /// not valid unescaped in a URL, and the box-drawing characters TUIs draw borders with.
@@ -173,7 +175,7 @@ impl crate::Terminal {
             while b < at.len() && same(b) {
                 b += 1;
             }
-            let uri: String = h.uri().chars().filter(|c| !c.is_control()).collect();
+            let uri: String = h.uri().chars().filter(|c| !c.is_control()).take(MAX_URI_CHARS).collect();
             return (!uri.is_empty()).then(|| Link { uri, explicit: true, spans: to_spans(a..b) });
         }
 

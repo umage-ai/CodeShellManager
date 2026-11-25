@@ -377,7 +377,7 @@ pub(crate) struct WinPty {
     process: OwnedHandle,
     job: Option<OwnedHandle>,
     pid: u32,
-    writer: Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
+    writer: Mutex<Option<crate::WriterTx>>,
     output: Arc<EarlyOutputBuffer>,
     exit: Arc<ExitState>,
 }
@@ -563,6 +563,10 @@ impl Pty for WinPty {
 
     fn write(&self, bytes: &[u8]) -> io::Result<()> {
         crate::send_to_writer(&self.writer, bytes)
+    }
+
+    fn write_reply(&self, bytes: &[u8]) -> io::Result<()> {
+        crate::send_reply_to_writer(&self.writer, bytes)
     }
 
     fn resize(&self, size: PtySize) -> io::Result<()> {

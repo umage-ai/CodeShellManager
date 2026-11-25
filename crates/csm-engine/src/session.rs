@@ -155,7 +155,7 @@ struct Replies(Arc<OnceLock<Arc<dyn Pty>>>);
 impl ReplySink for Replies {
     fn send(&self, bytes: &[u8]) {
         if let Some(p) = self.0.get() {
-            let _ = p.write(bytes);
+            let _ = p.write_reply(bytes);
         }
     }
 }

@@ -131,7 +131,7 @@ pub struct CellSnap {
 
 impl CellSnap {
     fn from_cell(cell: &Cell) -> Self {
-        Self { c: cell.c, zerowidth: cell.zerowidth().map(<[char]>::to_vec).unwrap_or_default(), flags: cell.flags, pen: Pen::from_cell(cell) }
+        Self { c: cell.c, zerowidth: cell.zerowidth().map(|z| z.iter().copied().take(crate::MAX_ZEROWIDTH).collect()).unwrap_or_default(), flags: cell.flags, pen: Pen::from_cell(cell) }
     }
 }
 

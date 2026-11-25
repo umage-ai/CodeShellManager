@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod colors;
+mod guard;
 pub mod input;
 pub mod links;
 pub mod probe;
@@ -140,6 +141,7 @@ impl EventListener for Listener {
                 shared.replies.send(format(size).as_bytes());
             }
             Event::Title(t) => {
+                let t = clamp_title(t);
                 *shared.title.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = t.clone();
                 shared.push(TermEvent::Title(t));
             }
@@ -157,12 +159,43 @@ impl EventListener for Listener {
     }
 }
 
+/// Most combining (zero-width) characters kept on one cell; later ones are dropped.
+pub const MAX_ZEROWIDTH: usize = 16;
+/// Longest window title kept, bytes.
+pub const MAX_TITLE_BYTES: usize = 1024;
+/// Bytes handed to the emulator between combining-mark trims.
+const ADVANCE_SLICE: usize = 2048;
+
+fn clamp_title(mut t: String) -> String {
+    if t.len() > MAX_TITLE_BYTES {
+        let mut end = MAX_TITLE_BYTES;
+        while !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        t.truncate(end);
+    }
+    t
+}
+
+/// Drops the marks past [`MAX_ZEROWIDTH`], keeping the cell's other extras.
+fn trim_cell(cell: &mut alacritty_terminal::term::cell::Cell) {
+    let keep: Vec<char> = cell.zerowidth().map(|z| z.iter().copied().take(MAX_ZEROWIDTH).collect()).unwrap_or_default();
+    let (link, underline) = (cell.hyperlink(), cell.underline_color());
+    cell.extra = None;
+    cell.set_hyperlink(link);
+    cell.set_underline_color(underline);
+    for c in keep {
+        cell.push_zerowidth(c);
+    }
+}
+
 /// One terminal: emulator + parser + OSC tap.
 pub struct Terminal {
     term: Term<Listener>,
     processor: ansi::Processor,
     tap_parser: vte::Parser,
     tap: tap::OscTap,
+    guard: guard::StringGuard,
     shared: Arc<Shared>,
     config: TermConfig,
     probe: probe::ProbeGate,
@@ -187,6 +220,7 @@ impl Terminal {
             processor: ansi::Processor::new(),
             tap_parser: vte::Parser::new(),
             tap: tap::OscTap::default(),
+            guard: guard::StringGuard::default(),
             shared,
             config,
             probe: probe::ProbeGate::default(),
@@ -201,7 +235,8 @@ impl Terminal {
 
     /// Feeds PTY output. See the crate docs for the ordering guarantee.
     pub fn advance(&mut self, bytes: &[u8]) {
-        let mut rest = bytes;
+        let guarded = self.guard.filter(bytes);
+        let mut rest: &[u8] = &guarded;
         while !rest.is_empty() {
             self.tap.reset_stop();
             let mut n = self.tap_parser.advance_until_terminated(&mut self.tap, rest);
@@ -209,7 +244,11 @@ impl Terminal {
                 n = rest.len(); // cannot happen with a fresh stop flag; never loop forever
             }
             let (segment, tail) = rest.split_at(n.min(rest.len()));
-            self.processor.advance(&mut self.term, segment);
+            // Small slices, so combining-mark floods are trimmed before they pile up.
+            for piece in segment.chunks(ADVANCE_SLICE) {
+                self.processor.advance(&mut self.term, piece);
+                self.trim_zerowidth();
+            }
             if std::mem::take(&mut self.tap.colors_changed) {
                 self.refresh_colors();
             }
@@ -224,6 +263,23 @@ impl Terminal {
         }
         self.generation = self.generation.wrapping_add(1);
         self.publish_mode();
+    }
+
+    /// Caps the combining marks on the cells the cursor is writing to (see [`MAX_ZEROWIDTH`]).
+    fn trim_zerowidth(&mut self) {
+        use alacritty_terminal::index::{Column, Point};
+        let (cols, lines) = (self.term.columns(), self.term.screen_lines());
+        let cursor = self.term.grid().cursor.point;
+        if cursor.line.0 < 0 || cursor.line.0 as usize >= lines {
+            return;
+        }
+        let hi = cursor.column.0.min(cols.saturating_sub(1));
+        for c in hi.saturating_sub(2)..=hi {
+            let cell = &mut self.term.grid_mut()[Point::new(cursor.line, Column(c))];
+            if cell.zerowidth().is_some_and(|z| z.len() > MAX_ZEROWIDTH) {
+                trim_cell(cell);
+            }
+        }
     }
 
     fn handle_tap(&mut self, event: TapEvent) {

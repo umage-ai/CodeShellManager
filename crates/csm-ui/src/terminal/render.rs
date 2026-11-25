@@ -175,7 +175,7 @@ pub fn build(
             fg,
             bg,
             flags: cell.flags,
-            zerowidth: cell.zerowidth().map(<[char]>::to_vec).unwrap_or_default(),
+            zerowidth: cell.zerowidth().map(|z| z.iter().copied().take(csm_term::MAX_ZEROWIDTH).collect()).unwrap_or_default(),
             underline: cell.underline_color().map(|c| c32(palette.resolve(c, colors))),
         };
     }
@@ -257,8 +257,8 @@ pub fn build(
             if cell.c != ' ' {
                 draw_char(&mut p, fonts, atlas, cell, x, y, style, m, px_bits);
             }
-            for &z in &cell.zerowidth {
-                let zc = CellInfo { c: z, zerowidth: Vec::new(), ..cell.clone() };
+            for &z in cell.zerowidth.iter().take(csm_term::MAX_ZEROWIDTH) {
+                let zc = CellInfo { c: z, fg: cell.fg, bg: cell.bg, flags: cell.flags, zerowidth: Vec::new(), underline: cell.underline };
                 draw_char(&mut p, fonts, atlas, &zc, x, y, style, m, px_bits);
             }
             col += 1;
