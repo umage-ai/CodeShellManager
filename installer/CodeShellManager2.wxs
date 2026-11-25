@@ -15,8 +15,7 @@
      Channel=beta: "CodeShellManager Beta", installed BESIDE the WPF app with its own
        UpgradeCode, folder, Start-menu entry and app id, so a beta never upgrades or removes it. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
-     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
   <?ifndef Channel ?>
     <?define Channel = "beta" ?>
@@ -52,10 +51,8 @@
            UpgradeCode="$(var.UpgradeCode)"
            Scope="perMachine">
 
-    <!-- ProductVersion encodes the pre-release number in the first three fields (docs/release.md,
-         "Version scheme"), because MSI ignores the fourth: beta.5 > beta.2 and every pre-release
-         < the final release, so an older pre-release can never silently replace a newer one.
-         Same-version upgrades stay allowed (re-running a build of the same version repairs it).
+    <!-- Pre-releases share the first three version fields (2.0.0.N) and MSI ignores the fourth,
+         so a same-version upgrade must replace the old build rather than install a second copy.
          The WPF app's versions (0.x) are always lower, so they are always upgraded. The old
          product is removed before the new one is installed (the default schedule), so the WPF
          app's files (CodeShellManager.exe, Assets\) leave its folder (C:\Program Files\umage\...,
@@ -109,16 +106,13 @@
 
     <!-- Upgrade (or uninstall) while the app runs: ask it to quit gracefully BEFORE files are
          replaced. The installed csm.exe (by full path, from the file table) runs the app_quit
-         tool; it is started without waiting (asyncNoWait), so a slow quit cannot hang the
-         installer, and CloseApplication below then waits a bounded time for codeshell.exe to go
-         (Timeout, seconds) and posts WM_CLOSE. If it is still running after that, Windows
-         Installer's file-in-use handling takes over (files are replaced on restart). Failures
-         never fail the install (Return=ignore). ExeCommand is a fixed string. -->
+         tool, which reaches only this channel's app (stable and beta have separate app ids). It
+         is started without waiting (asyncNoWait), so a slow quit cannot hang the installer; if
+         the app is still running, Windows Installer's file-in-use handling takes over as before.
+         No util:CloseApplication: it matches by exe name only, and both channels' exe is
+         codeshell.exe, so a beta install would close the stable app too. ExeCommand is fixed. -->
     <CustomAction Id="QuitRunningApp" FileRef="CsmExe" ExeCommand="app_quit"
                   Execute="immediate" Return="asyncNoWait" />
-    <util:CloseApplication Id="CloseCodeShell" Target="codeshell.exe" CloseMessage="yes"
-                           RebootPrompt="no" Timeout="60"
-                           Condition="WIX_UPGRADE_DETECTED OR CSMBETAFOUND OR REMOVE~=&quot;ALL&quot;" />
 
     <InstallExecuteSequence>
       <Custom Action="QuitRunningApp" After="CostFinalize"

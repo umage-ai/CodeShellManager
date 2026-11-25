@@ -77,7 +77,7 @@ for the stable channel.
 | MSI ProductCode | new per build (WiX `*`) | new per build | Must differ per version (major upgrade). OK. |
 | MSI scope | `perMachine` | `perMachine` | **Must match**: a major upgrade only sees products of its own scope. Matches. |
 | MajorUpgrade | default (no same-version upgrade) | `AllowSameVersionUpgrades="yes"` (re-installing the same build repairs it; pre-releases are ordered by the version scheme) | Fine; WiX warns ICE61, expected. The old product is removed before the new one is installed (default schedule). |
-| MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `1.30.N`; beta: `1.20.N`; dev: `1.10.<run>` (see "Version scheme") | Every build is above the WPF app's 0.x, so every v2 build upgrades it. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish; a pre-release is always below the final and orders by its number. |
+| MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `2.0.0.(100+N)`; beta: `2.0.0.N`; dev: `2.0.0.0` (see "Version scheme") | 2.x > 0.x, so every v2 build upgrades the WPF app. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish. |
 | Package version (winget, Chocolatey, tag) | `0.11.0` | `2.0.0` | Decided (Allan): version 2 starts at 2.0.0. Higher than 0.11.x for every package manager. |
 | Install folder | `ProgramFiles64\umage\CodeShellManager` | `ProgramFiles64\umage.ai\CodeShellManager` | **Differs on purpose** (Allan, 2026-11-24: the company name reads "umage.ai" everywhere). A clean break: the upgrade removes the WPF app (its files and its folder, when empty) and installs into the new folder. See "The install folder moved". |
 | Main exe | `CodeShellManager.exe` | `codeshell.exe` (GUI) + `csm.exe` (CLI, MCP) + `csm-session-summary.exe`, `csm-review.exe` | Differs. See Decisions. Start-menu and desktop shortcuts are re-created (pointing at `codeshell.exe`). No `CodeShellManager.exe` ships: the folder changed, so a pin to the old path breaks either way (re-pin). |
@@ -152,35 +152,24 @@ MAJOR >= 2 (the workflows' Versions steps check it again with a strict ASCII reg
 
 #### Version scheme (the MSI ProductVersion)
 
-MSI ProductVersion must be numeric `major.minor.build` (fields up to 255.255.65535) and Windows
-Installer compares **only those three fields**, so a pre-release number in a fourth field
-(`2.0.0.N`, what the first betas used) cannot order anything: beta.2 and beta.5 are "the same
-version" and a same-version upgrade is allowed, so an older build could silently replace a newer
-one. The pre-release number therefore lives in the first three fields, below the final release:
+MSI ProductVersion must be numeric `major.minor.build[.revision]`, and Windows Installer compares
+only the first three fields. Pre-releases put their number in the fourth:
 
 | Tag | Channel | MSI ProductVersion | GitHub release |
 |---|---|---|---|
-| (dispatch) `2.0.0-dev.<run>` | input (`beta` default) | `1.10.<run>` | none (workflow artifact) |
-| `v2.0.0-beta.N` | beta | `1.20.N` | pre-release |
-| `v2.0.0-rc.N` | stable | `1.30.N` | pre-release |
+| (dispatch) `2.0.0-dev.<run>` | input (`beta` default) | `2.0.0.0` | none (workflow artifact) |
+| `v2.0.0-beta.N` | beta | `2.0.0.N` | pre-release |
+| `v2.0.0-rc.N` | stable | `2.0.0.(100+N)` | pre-release |
 | `v2.0.0` | stable | `2.0.0` | release, latest |
 
-That is `(MAJOR-1).<stage>.<N>`: stage 10 dev, 20 beta, 30 rc; N is the pre-release number
-(1..65535; for dev, the workflow run number). Consequences:
+`AllowSameVersionUpgrades` is on, so any build of 2.0.0 replaces any other. Every v2 build is above
+the WPF app's `0.x`, so it upgrades it.
 
-- `dev.N < beta.N < rc.N < 2.0.0`, and a later pre-release of a stage always has the higher number
-  (beta.5 > beta.2). Every one of them is still above the WPF app's `0.x`, so they all upgrade it.
-- A final release is exactly its tag version, so Add/Remove Programs shows what winget and
-  Chocolatey publish.
-- Add/Remove Programs shows `1.20.5` for `2.0.0-beta.5` (the app's About box shows the semver).
-- A pre-release can never downgrade an installed final: `1.30.N < 2.0.0`, the installer stops.
-- Only `MAJOR.0.0` releases may have pre-releases; the Versions step refuses `2.1.0-rc.1` etc.,
-  because that rc would sort below an installed `2.0.0`. To ship `2.1.0` pre-releases, extend this
-  scheme first (for example a minor-level equivalent) and update the step and this section.
-- **One-time break:** a pre-release installed before this scheme (`2.0.0.N`) is *higher* than
-  `1.20.N`, so installing a new beta over it fails with "A newer version is already installed":
-  uninstall the old beta first (its data is untouched). Dev builds (`2.0.0.0` before) likewise.
-- `AllowSameVersionUpgrades` stays on: re-installing the same build repairs it.
+**Known gap (review finding SEC-48, open):** because the fourth field is ignored, an older
+pre-release can replace a newer one (beta.2 over beta.5) without a warning. Moving the number into
+the first three fields (for example `1.20.N` for beta.N) would fix the order, but every build
+already installed as `2.0.0.x` would then look newer than the next one and block it, so each
+tester would have to uninstall first. That is a decision to make before the first public beta.
 
 **State files.** A `state.json` written by a newer app (its `CsmRsVersion` above what this build
 writes, `persist::STATE_FILE_VERSION`) is not loaded: the app starts empty and read-only, shows a
@@ -401,7 +390,7 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
 - **Scripts and agent configs that name the old path** (`C:\Program Files\umage\CodeShellManager\csm.exe`):
   the ones `csm setup` wrote are repaired when the app starts; a hand-written one is not. The PATH
   entry is replaced by the installer.
-- **The app running during the upgrade**: the MSI first runs the installed `csm.exe app_quit` (a graceful quit: sessions are closed cleanly and restored next start; started without waiting), then `util:CloseApplication` waits up to 60 s for `codeshell.exe` to exit and posts WM_CLOSE. Anything still running falls back to Windows Installer's files-in-use handling (a reboot, exit 3010, for a silent winget/choco upgrade). The WPF app (0.x) has no `csm` and is handled by the fallback only.
+- **The app running during the upgrade**: the MSI first runs the installed `csm.exe app_quit` (a graceful quit of this channel's app only: sessions are closed cleanly and restored next start; started without waiting). Anything still running falls back to Windows Installer's files-in-use handling (a reboot, exit 3010, for a silent winget/choco upgrade). There is no close-by-name step: stable and beta both run `codeshell.exe`, so it would close the other channel's app too. The WPF app (0.x) has no `csm` and is handled by the fallback only.
 - **Import is one-shot.** If someone starts version 2 before the WPF app has saved its last
   changes, or deletes v2's state later, the automatic import does not re-run while a v2 state
   file exists; the import is still available by hand (palette: "Import from CodeShellManager

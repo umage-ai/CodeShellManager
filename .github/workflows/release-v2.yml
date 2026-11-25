@@ -82,14 +82,10 @@ jobs:
 
       # ── Versions and channel ────────────────────────────────────────────────
       # semver (Cargo, file names, winget, Chocolatey): 2.0.0-beta.3, 2.0.0-rc.1, 2.0.0
-      # MSI ProductVersion must be numeric and MSI compares only its first THREE fields, so the
-      # pre-release number goes there (docs/release.md, "Version scheme"):
-      #   final        MAJOR.MINOR.PATCH, e.g. 2.0.0 (what winget and Chocolatey publish)
-      #   pre-release  (MAJOR-1).<stage>.<N>, stage dev 10, beta 20, rc 30:
-      #                2.0.0-beta.2 -> 1.20.2, beta.5 -> 1.20.5, rc.1 -> 1.30.1, dev.N -> 1.10.N
-      # so dev < beta < rc < the final release, and a later pre-release always has the higher
-      # number. Only MAJOR.0.0 releases may have pre-releases (a 2.1.0-rc would sort below an
-      # installed 2.0.0); the step refuses the rest.
+      # MSI ProductVersion must be numeric. Pre-releases: 2.0.0.N (beta.N -> N, rc.N -> 100+N,
+      # dev -> 0). A final release is exactly MAJOR.MINOR.PATCH, as the WPF app's MSIs were, so
+      # Add/Remove Programs shows the version winget and Chocolatey publish. MSI compares only
+      # the first three fields, so MajorUpgrade allows same-version upgrades.
       # Channel: -beta.N -> beta; -rc.N and final -> stable; a dry run -> the chosen input.
       # The tag name is untrusted input: it reaches the script only through the environment and is
       # validated with a strict ASCII regex before any other use (never a workflow expression inside a script).
@@ -119,9 +115,10 @@ jobs:
           if ($kind) {
             $n = [int]$Matches[5]
             if ($n -lt 1 -or $n -gt 65535) { throw "pre-release number $n out of range 1..65535" }
-            if ($minor -ne 0 -or $patch -ne 0) { throw 'Pre-releases are supported for MAJOR.0.0 only (docs/release.md, "Version scheme"): extend the scheme before tagging one.' }
-            $stage = switch ($kind) { 'dev' { 10 } 'beta' { 20 } 'rc' { 30 } }
-            $msi = "$($major - 1).$stage.$n"
+            # The pre-release number stays in the 4th field (2.0.0.N), as before. MSI ignores that
+            # field, so an older pre-release can still replace a newer one (SEC-48, open: moving it
+            # into the first three fields would make every installed 2.0.0.x build look newer).
+            $msi = switch ($kind) { 'beta' { "$base.$n" } 'rc' { "$base.$(100 + $n)" } default { "$base.0" } }
           } else { $msi = $base }
           $channel = switch ($kind) { 'beta' { 'beta' } 'dev' { $env:DISPATCH_CHANNEL } default { 'stable' } }
           if ($channel -notin 'beta', 'stable') { throw 'unknown channel' }
@@ -265,7 +262,6 @@ jobs:
         run: |
           dotnet tool install --global wix --version "4.0.5"
           wix extension add --global WixToolset.UI.wixext/4.0.5
-          wix extension add --global WixToolset.Util.wixext/4.0.5
 
       - name: Build MSI
         shell: pwsh
@@ -282,7 +278,6 @@ jobs:
             -d PublishDir=publish `
             -d Channel=$env:CHANNEL `
             -ext WixToolset.UI.wixext `
-            -ext WixToolset.Util.wixext `
             -arch x64 `
             -o "dist/CodeShellManager-$env:SEMVER-Setup.msi"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
