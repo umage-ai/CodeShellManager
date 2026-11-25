@@ -394,6 +394,11 @@ impl TerminalHandle {
         self.0.pty.get().is_some()
     }
 
+    /// Epoch ms of the last output, if any. Lock-free.
+    pub fn last_output_ms(&self) -> Option<i64> {
+        self.0.last_output()
+    }
+
     pub fn has_exited(&self) -> bool {
         self.0.pty.get().is_some_and(|p| p.has_exited())
     }

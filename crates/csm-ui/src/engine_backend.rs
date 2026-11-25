@@ -339,6 +339,10 @@ impl Backend for EngineBackend {
         self.engine.screens().instances()
     }
 
+    fn busy_sessions(&self) -> Option<Vec<String>> {
+        Some(self.engine.view().busy_sessions())
+    }
+
     fn screen_declared(&self) -> Vec<csm_engine::DeclaredScreen> {
         self.engine.screens().declared()
     }

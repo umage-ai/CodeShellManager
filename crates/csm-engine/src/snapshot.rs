@@ -216,6 +216,21 @@ impl Snapshot {
         self.terminals.get(id)
     }
 
+    /// Ids of the sessions that closing the app now would cut off: running and really busy (see
+    /// `status::is_busy`). Reads the live output clock, so call it when the answer is needed
+    /// (the quit prompt), not from a cached copy.
+    pub fn busy_sessions(&self) -> Vec<String> {
+        let now = crate::session::now_ms();
+        self.sessions
+            .iter()
+            .filter(|s| {
+                let last = self.terminals.get(&s.id).and_then(TerminalHandle::last_output_ms);
+                crate::status::is_busy(s.status, s.live && !s.asleep, s.reports_status, last, now)
+            })
+            .map(|s| s.id.clone())
+            .collect()
+    }
+
     /// Every run output handle (the UI's waker sums their generations to repaint on output).
     pub fn run_outputs(&self) -> impl Iterator<Item = &crate::runs::RunOutputHandle> {
         self.run_outputs.values()

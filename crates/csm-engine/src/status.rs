@@ -123,6 +123,21 @@ impl WaitUntil {
     }
 }
 
+/// Whether closing the app now would cut this session off mid-work: it has a running process
+/// and is really busy. A program that speaks OSC 7501 is judged by its report (working, or
+/// blocked mid-turn); any other session by output in the last few seconds
+/// (`csm_core::busy_rules`), or an add-on's `working` verdict. A stale screen-heuristic
+/// "needs you", an unseen result, and anything asleep, exited or still starting are not busy.
+pub(crate) fn is_busy(status: Status, live: bool, reports_status: bool, last_output_ms: Option<i64>, now_ms: i64) -> bool {
+    if !live || matches!(status, Status::Asleep | Status::Exited | Status::Starting) {
+        return false;
+    }
+    if reports_status {
+        return matches!(status, Status::Working | Status::NeedsYouApproval | Status::NeedsYouQuestion);
+    }
+    status == Status::Working || csm_core::busy_rules::reason(false, None, None, 0, last_output_ms, now_ms).is_some()
+}
+
 /// The unified status of a session plus its progress and message.
 pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>, mark: Option<&crate::plugins::PluginMark>) -> (Status, Option<u8>, Option<String>) {
     if is_dormant {
@@ -140,7 +155,13 @@ pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>,
         return (s, None, None);
     }
     let sum = rt.records.summarize();
+    // A process that has ended is not working, blocked or waiting, whatever it last said: a
+    // Working/Blocked record, an add-on rule match or a heuristic alert left from before it died
+    // must not outlive it (they would keep an exited session "busy" and "needing you" forever).
+    // A finished result it left (done/error) still stands until the person sees it.
+    let exited = matches!(rt.phase, Phase::Exited { .. });
     let reported = match sum.state {
+        Some(ProgramState::Blocked | ProgramState::Working) if exited => None,
         Some(ProgramState::Blocked) => Some(if sum.kind == BlockedKind::Permission { Status::NeedsYouApproval } else { Status::NeedsYouQuestion }),
         Some(ProgramState::Working) => Some(Status::Working),
         Some(ProgramState::Error) => Some(Status::Error),
@@ -150,6 +171,9 @@ pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>,
     if let Some(s) = reported {
         let progress = if s == Status::Working { sum.progress } else { None };
         return (s, progress, sum.message);
+    }
+    if exited {
+        return (Status::Exited, None, None);
     }
     if let Some(a) = rt.addon_status {
         let s = match a {
@@ -169,9 +193,6 @@ pub(crate) fn derive(is_dormant: bool, restarting: bool, rt: Option<&SessionRt>,
         };
         return (s, None, rt.heuristic_message.clone());
     }
-    if matches!(rt.phase, Phase::Exited { .. }) {
-        return (Status::Exited, None, None);
-    }
     (Status::Idle, None, sum.message)
 }
 
@@ -189,5 +210,26 @@ mod tests {
         assert!(!WaitUntil::Idle.reached(Status::NeedsYouQuestion, Status::Working));
         assert!(WaitUntil::Exit.reached(Status::Asleep, Status::Idle));
         assert!(!WaitUntil::AnyChange.reached(Status::Idle, Status::Idle));
+    }
+
+    const NOW: i64 = 1_793_966_400_000;
+
+    #[test]
+    fn only_a_live_running_session_that_is_really_busy_counts() {
+        // A reporting program: working or blocked is busy; an output time is ignored.
+        assert!(is_busy(Status::Working, true, true, None, NOW));
+        assert!(is_busy(Status::NeedsYouApproval, true, true, None, NOW));
+        assert!(!is_busy(Status::DoneUnseen, true, true, Some(NOW), NOW));
+        assert!(!is_busy(Status::Idle, true, true, Some(NOW), NOW));
+        // A heuristic-only session sitting on a stale "needs you" is not busy ...
+        assert!(!is_busy(Status::NeedsYouQuestion, true, false, Some(NOW - 60_000), NOW));
+        assert!(!is_busy(Status::NeedsYouApproval, true, false, None, NOW));
+        // ... until it prints something.
+        assert!(is_busy(Status::NeedsYouQuestion, true, false, Some(NOW - 1_000), NOW));
+        // No process: never busy, whatever it last said.
+        for st in [Status::Asleep, Status::Exited, Status::Starting] {
+            assert!(!is_busy(st, true, true, Some(NOW), NOW), "{st:?}");
+        }
+        assert!(!is_busy(Status::Working, false, true, Some(NOW), NOW));
     }
 }
