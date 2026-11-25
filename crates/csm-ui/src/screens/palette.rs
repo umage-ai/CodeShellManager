@@ -695,6 +695,47 @@ fn wsl_params(q: &crate::app::QuickOpenState) -> serde_json::Value {
     json!({"distro": q.distro.trim(), "user": user, "folder": q.linux_folder.trim()})
 }
 
+/// What `folder_probe` said about the typed folder, when it is not there and could be made:
+/// the New session dialog on This PC, a typed absolute path, no session being edited.
+pub fn missing_folder<'a>(app: &'a CsmApp, folder: &str) -> Option<&'a crate::model::FolderProbe> {
+    let q = &app.ui.quick;
+    if q.edit.is_some() || q.remote || typed_path(folder).is_none() {
+        return None;
+    }
+    app.model.folder_probes.get(&folder_key(folder)).filter(|p| p.can_create && !p.exists && !p.missing.is_empty())
+}
+
+/// How long a typed path rests before `folder_probe` looks at it (no disk read per keystroke).
+const PROBE_DELAY_S: f64 = 0.3;
+
+/// New, local: asks `folder_probe` for the typed path once it has rested [`PROBE_DELAY_S`]. The
+/// check runs on an engine worker; its reply lands in the model (`folder_probes`).
+fn track_probe(ctx: &egui::Context, app: &mut CsmApp) {
+    let q = &app.ui.quick;
+    let want = (q.edit.is_none() && !q.remote).then(|| typed_path(&q.query).map(str::to_string)).flatten();
+    let now = ctx.input(|i| i.time);
+    let same = match (&want, &q.probe_for) {
+        (Some(f), Some((g, _, _))) => folder_key(f) == folder_key(g),
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        app.ui.quick.probe_for = want.map(|f| (f, now, false));
+    }
+    if let Some((f, since, asked)) = &mut app.ui.quick.probe_for
+        && !*asked
+    {
+        let wait = PROBE_DELAY_S - (now - *since);
+        if wait <= 0.0 {
+            *asked = true;
+            let path = f.clone();
+            app.dispatch.submit("folder_probe", json!({"path": path}));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        }
+    }
+}
+
 fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
     let q = &app.ui.quick;
     let cmds = quick_commands(app);
@@ -762,6 +803,20 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
     let mut params = json!({"folder": folder, "command": program, "args": args, "group": q.group});
     stamp_profile(&mut params, q);
     use_addon_profile(&mut params, q);
+    if let Some(probe) = missing_folder(app, &folder) {
+        // The folder is not there: one short question, then `session_new` makes it first.
+        params["create_folder"] = json!(true);
+        let n = probe.missing.len();
+        let what = if n == 1 { "folder" } else { "folders" };
+        return vec![Action::Confirm(crate::app::ConfirmState {
+            title: format!("Create {what}?"),
+            body: format!("“{folder}” does not exist. Create {} in “{}” and start the session there?", probe.missing.join("\\"), probe.ancestor),
+            yes_label: "Create and start".into(),
+            no_label: "Cancel".into(),
+            yes: Box::new(Action::Tool("session_new", params)),
+            also: None,
+        })];
+    }
     out.push(Action::Tool("session_new", params));
     // The ticked sibling worktrees: the same command, group and look, not focused (WPF's "Also
     // start sessions in sibling worktrees"). The engine staggers Claude launches.
@@ -1649,6 +1704,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         }
     }
     track_siblings(ctx, app);
+    track_probe(ctx, app);
     if enter || ctrl_enter {
         if in_form {
             if let Some(f) = open_form(&new_forms, &app.ui.quick)
@@ -1675,6 +1731,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     let mut changed = false;
     let mut open_group_menu = None;
     let mut start_clicked = false;
+    let mut create_clicked = false;
     let mut keep_clicked = false;
     let mut place_pick = None;
     let mut ask_distros = false;
@@ -1802,7 +1859,42 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                         ui.horizontal(|ui| {
                             widgets::caps(ui, if q.query.trim().is_empty() { "Recent folders" } else { "Folders" });
                         });
-                        if rows.is_empty() {
+                        let create = if q.edit.is_none() { model.folder_probes.get(&folder_key(&q.query)).filter(|p| p.can_create && !p.exists && !p.missing.is_empty()) } else { None };
+                        let create = create.filter(|_| typed_path(&q.query).is_some());
+                        if let Some(p) = create {
+                            let path = q.query.trim();
+                            let many = p.missing.len() > 1;
+                            let title = format!("Create {} “{path}” and start here", if many { "folders" } else { "folder" });
+                            let caption = if many {
+                                format!("Makes {} folders in {}: {}", p.missing.len(), p.ancestor, p.missing.join("\\"))
+                            } else {
+                                format!("Makes “{}” in {}", p.missing.first().map_or("", String::as_str), p.ancestor)
+                            };
+                            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::FOLDER_ROW), Sense::hover());
+                            let r = ui.interact(rect, Id::new("qo-create"), Sense::click());
+                            if path_wins || r.hovered() {
+                                ui.painter().rect_filled(rect, CornerRadius::same(radius::md()), t.row_sel);
+                            }
+                            let cy = rect.center().y;
+                            let x = rect.min.x + space::SM;
+                            icons::paint(ui, Rect::from_min_size(pos2(x, cy - icon::LG / 2.0), Vec2::splat(icon::LG)), "plus", icon::LG, t.fg);
+                            let nx = x + icon::LG + space::ROW_X;
+                            let text_w = (rect.max.x - space::SM - nx).max(space::XXL);
+                            let fit = middle_fit(&title, |s| widgets::text_width(ui, s, theme::regular(text::BODY)) <= text_w);
+                            ui.painter().text(pos2(nx, rect.min.y + space::SM - space::XXS), Align2::LEFT_TOP, fit, theme::regular(text::BODY), t.fg);
+                            let cap = middle_fit(&caption, |s| widgets::text_width(ui, s, theme::mono(text::MONO_SM)) <= text_w);
+                            ui.painter().text(pos2(nx, rect.max.y - space::SM + space::XXS), Align2::LEFT_BOTTOM, cap, theme::mono(text::MONO_SM), t.muted);
+                            let label = format!("Create folder: {path}");
+                            r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+                            if r.on_hover_text("You are asked to confirm before anything is created").clicked() {
+                                create_clicked = true;
+                            }
+                        }
+                        if create.is_some() {
+                            if path_wins {
+                                ui.add(egui::Label::new(egui::RichText::new("Enter asks to create the folder, then starts here.").font(theme::regular(text::CAPTION)).color(t.muted)).wrap());
+                            }
+                        } else if rows.is_empty() {
                             let msg = if q.query.trim().is_empty() {
                                 "No recent folders yet. Type a path, or Browse… for one.".to_string()
                             } else {
@@ -2106,6 +2198,13 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     }
     if ask_profiles {
         actions.push(Action::Tool("profile_list", json!({})));
+    }
+    if create_clicked {
+        // The create row stands for the typed path, whatever row was last arrowed to.
+        q.navigated = false;
+        app.ui.quick = q;
+        actions.extend(start_quick(app, false));
+        return;
     }
     if start_clicked || keep_clicked {
         app.ui.quick = q;

@@ -465,6 +465,9 @@ pub struct QuickOpenState {
     /// The folder the sibling checkboxes are for, and when it became the chosen one (`ctx`
     /// time), and whether `worktree_list {folder}` was asked (once it stayed chosen a moment).
     pub siblings_for: Option<(String, f64, bool)>,
+    /// The typed path `folder_probe` is for, when it became the typed one (`ctx` time), and
+    /// whether it was asked (once it rested a moment).
+    pub probe_for: Option<(String, f64, bool)>,
     /// Windows Terminal profiles (`profile_list`, asked once when profile import is on): each
     /// `{name, commandline, starting_directory, look, …}` as the tool returns it.
     pub profiles: Option<Vec<Value>>,

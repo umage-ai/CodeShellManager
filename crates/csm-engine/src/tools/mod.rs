@@ -8,6 +8,7 @@ mod backup;
 mod bulk;
 mod claude_replies;
 mod docs;
+pub(crate) mod folder;
 pub(crate) mod git;
 mod groups;
 mod keymap;
@@ -53,6 +54,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     v.extend(git::specs());
     v.extend(runs::specs());
     v.extend(new_session::specs());
+    v.extend(folder::specs());
     v.extend(open::specs());
     v.extend(ports::specs());
     v.extend(platform::specs());

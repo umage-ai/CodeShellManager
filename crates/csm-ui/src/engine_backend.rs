@@ -150,6 +150,7 @@ impl EngineBackend {
         let mut m = map_snapshot(view, &self.opts, self.theme);
         m.git = self.git.map.clone();
         m.folder_worktrees = self.git.folders.clone();
+        m.folder_probes = self.git.probes.clone();
         m.usage = self.usage.clone();
         m.docs = self.docs.clone();
         if let Some(q) = &self.quit {
@@ -669,6 +670,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         windows: view.windows.clone(),
         git: Default::default(),
         folder_worktrees: Default::default(),
+        folder_probes: Default::default(),
         usage: Default::default(),
         docs: Default::default(),
         port_forwards: view

@@ -49,9 +49,11 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "session_new",
             title: "New session…",
-            summary: "Open a session: a folder and a command (default: the configured one, usually claude), locally, over SSH or in WSL. It starts when its pane is measured, or after 1.5 s headless.",
+            summary: "Open a session: a folder and a command (default: the configured one, usually claude), locally, over SSH or in WSL. It starts when its pane is measured, or after 1.5 s headless. With `create_folder` a missing local folder (and its missing parents, never a drive) is created first; without it a missing folder is an error.",
             toolset: Toolset::Core,
-            effects: state_launch,
+            // Writes the file system only when `create_folder` is set; declared for the tool
+            // as a whole, since effects are static.
+            effects: state_launch.union(Effects::WRITES_FILESYSTEM),
             input_schema: schema_of::<NewParams>,
             run: session_new,
         },
@@ -386,6 +388,10 @@ struct NewParams {
     /// `rerun`: reconnecting re-runs the same command line (no Claude `--resume`); for sessions
     /// whose own program reattaches, such as `tmux new-session -A`. Default: the usual rules.
     resume: Option<ResumeParam>,
+    /// Local sessions: create `folder` (and its missing parents) first when it does not exist.
+    /// Default false. Refused for a relative path, a device path, a path with `..`, quotes or
+    /// control characters, or when no folder above it exists (a drive is never created).
+    create_folder: Option<bool>,
 }
 
 /// Most elements of an ssh remote command, and the longest one, in bytes.
@@ -544,6 +550,15 @@ pub(crate) fn session_new_owned(ctx: &mut Ctx<'_>, params: Value, owner: Option<
         }
         _ => None,
     };
+    if p.create_folder == Some(true) {
+        match (&folder, kind) {
+            (Some(f), KindParam::Local) => {
+                // A directory make on the engine thread, after every other check has passed.
+                super::folder::create(f).map_err(ToolError::Refused)?;
+            }
+            _ => return Err(ToolError::InvalidParams("`create_folder` is for a local session".into())),
+        }
+    }
     let now = Timestamp::from_epoch_ms(now_ms());
     let mut s = ShellSession {
         id: new_id(),
