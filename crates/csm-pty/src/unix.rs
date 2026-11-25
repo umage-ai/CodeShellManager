@@ -13,7 +13,7 @@ use crate::{Backend, EarlyOutputBuffer, ExitCallback, ExitState, OutputSink, Pty
 pub(crate) struct UnixPty {
     master: Mutex<Box<dyn MasterPty + Send>>,
     pid: Option<u32>,
-    writer: Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
+    writer: Mutex<Option<crate::WriterTx>>,
     output: Arc<EarlyOutputBuffer>,
     exit: Arc<ExitState>,
 }
@@ -72,6 +72,9 @@ impl Pty for UnixPty {
     }
     fn write(&self, bytes: &[u8]) -> io::Result<()> {
         crate::send_to_writer(&self.writer, bytes)
+    }
+    fn write_reply(&self, bytes: &[u8]) -> io::Result<()> {
+        crate::send_reply_to_writer(&self.writer, bytes)
     }
     fn resize(&self, size: PtySize) -> io::Result<()> {
         self.master.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resize(pp_size(size)).map_err(io::Error::other)

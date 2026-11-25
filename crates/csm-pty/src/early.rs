@@ -24,6 +24,9 @@ struct Inner {
     sink: Option<OutputSink>,
     /// `Some` until the first subscriber takes it; `None` forever after.
     pending: Option<Vec<u8>>,
+    /// Set when a chunk did not fit: everything after it is dropped too, so the backlog is a
+    /// clean prefix of the stream, never a stream with a hole.
+    overflowed: bool,
 }
 
 /// See the module docs.
@@ -33,7 +36,7 @@ pub struct EarlyOutputBuffer {
 
 impl Default for EarlyOutputBuffer {
     fn default() -> Self {
-        Self { inner: Mutex::new(Inner { sink: None, pending: Some(Vec::new()) }) }
+        Self { inner: Mutex::new(Inner { sink: None, pending: Some(Vec::new()), overflowed: false }) }
     }
 }
 
@@ -67,14 +70,18 @@ impl EarlyOutputBuffer {
     /// Called by the reader thread with each chunk.
     pub fn deliver(&self, bytes: &[u8]) {
         let mut inner = self.lock();
-        let Inner { sink, pending } = &mut *inner;
+        let Inner { sink, pending, overflowed } = &mut *inner;
         match sink {
             Some(sink) => sink(bytes),
             None => {
                 if let Some(pending) = pending
-                    && pending.len() + bytes.len() <= MAX_BUFFERED_BYTES
+                    && !*overflowed
                 {
-                    pending.extend_from_slice(bytes);
+                    if pending.len() + bytes.len() <= MAX_BUFFERED_BYTES {
+                        pending.extend_from_slice(bytes);
+                    } else {
+                        *overflowed = true;
+                    }
                 }
             }
         }
@@ -127,6 +134,21 @@ mod tests {
         let (out, sink) = collector();
         buf.subscribe(sink);
         assert_eq!(out.lock().unwrap().len(), MAX_BUFFERED_BYTES);
+    }
+
+    #[test]
+    fn overflow_latches_and_later_small_chunks_are_dropped_too() {
+        let buf = EarlyOutputBuffer::new();
+        let chunk = vec![b'x'; MAX_BUFFERED_BYTES - 10];
+        buf.deliver(&chunk);
+        buf.deliver(&[b'y'; 100]); // does not fit: latches
+        buf.deliver(b"small"); // would fit, but must not leave a hole
+        let (out, sink) = collector();
+        buf.subscribe(sink);
+        assert_eq!(*out.lock().unwrap(), chunk);
+        // Live delivery after subscribing is unaffected.
+        buf.deliver(b"live");
+        assert!(out.lock().unwrap().ends_with(b"live"));
     }
 
     #[test]

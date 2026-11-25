@@ -40,7 +40,7 @@ struct PtyReplies(Arc<OnceLock<Arc<dyn Pty>>>);
 impl ReplySink for PtyReplies {
     fn send(&self, bytes: &[u8]) {
         if let Some(pty) = self.0.get()
-            && let Err(e) = pty.write(bytes)
+            && let Err(e) = pty.write_reply(bytes)
         {
             log::debug!("reply write failed: {e}");
         }
@@ -237,7 +237,7 @@ impl TerminalSource for LocalTerminal {
 
     fn write(&self, bytes: &[u8]) {
         if let Some(pty) = self.pty.get()
-            && let Err(e) = pty.write(bytes)
+            && let Err(e) = pty.write_reply(bytes)
         {
             log::debug!("terminal '{}': write failed: {e}", self.name);
         }

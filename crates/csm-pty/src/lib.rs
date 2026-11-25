@@ -33,7 +33,7 @@ mod unix;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -113,6 +113,13 @@ pub trait Pty: Send + Sync {
     fn on_exit(&self, cb: ExitCallback);
     /// Queues bytes for the child's input.
     fn write(&self, bytes: &[u8]) -> io::Result<()>;
+    /// Queues an emulator-generated reply (DA1, cursor report, colour reply…). Same queue and
+    /// order as [`Pty::write`], but dropped while more than [`MAX_PENDING_REPLY_BYTES`] are
+    /// already waiting, so a child that floods queries and never reads cannot grow the queue
+    /// without bound. Keystrokes and pastes use `write`, which is never dropped.
+    fn write_reply(&self, bytes: &[u8]) -> io::Result<()> {
+        self.write(bytes)
+    }
     fn resize(&self, size: PtySize) -> io::Result<()>;
     /// Latched once the child has actually exited. Use this, not "do we hold a handle".
     fn has_exited(&self) -> bool;
@@ -249,23 +256,67 @@ pub(crate) fn spawn_reader(name: String, mut source: impl Read + Send + 'static,
 /// A dedicated writer thread: one queue, so writes from the UI (keys, pastes) and from the
 /// emulator (DA1, 7501 replies) reach the child in exactly the order they were queued, and a
 /// child that stops reading can never block the caller.
-pub(crate) fn spawn_writer(name: String, mut sink: impl Write + Send + 'static) -> io::Result<Sender<Vec<u8>>> {
+pub(crate) fn spawn_writer(name: String, mut sink: impl Write + Send + 'static) -> io::Result<WriterTx> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let pending = Arc::new(AtomicUsize::new(0));
+    let counter = pending.clone();
     std::thread::Builder::new().name(name).spawn(move || {
         for chunk in rx {
-            if let Err(e) = sink.write_all(&chunk).and_then(|()| sink.flush()) {
+            let len = chunk.len();
+            let result = sink.write_all(&chunk).and_then(|()| sink.flush());
+            counter.fetch_sub(len, Ordering::AcqRel);
+            if let Err(e) = result {
                 log::debug!("PTY writer ended: {e}");
                 break;
             }
         }
     })?;
-    Ok(tx)
+    Ok(WriterTx { tx, pending })
 }
 
-pub(crate) fn send_to_writer(writer: &Mutex<Option<Sender<Vec<u8>>>>, bytes: &[u8]) -> io::Result<()> {
+/// Most emulator-reply bytes allowed to wait in the writer queue (16 KiB: a few hundred DA1 /
+/// cursor-report answers). The writer drains the queue as fast as the child reads; this only
+/// bites when the child does not read.
+pub const MAX_PENDING_REPLY_BYTES: usize = 16 * 1024;
+
+/// The sending half of a writer thread's queue, plus how many bytes are waiting in it.
+pub(crate) struct WriterTx {
+    tx: Sender<Vec<u8>>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl WriterTx {
+    fn send(&self, bytes: &[u8]) -> io::Result<()> {
+        self.pending.fetch_add(bytes.len(), Ordering::AcqRel);
+        self.tx.send(bytes.to_vec()).map_err(|_| {
+            self.pending.fetch_sub(bytes.len(), Ordering::AcqRel);
+            io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer has stopped")
+        })
+    }
+}
+
+/// User input (keys, pastes, programmatic sends): always queued. These are bounded by their
+/// sources (a human, a paste, a tool call), never by the child's output, and dropping any of it
+/// would corrupt what the user typed.
+pub(crate) fn send_to_writer(writer: &Mutex<Option<WriterTx>>, bytes: &[u8]) -> io::Result<()> {
     let guard = writer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_ref() {
-        Some(tx) => tx.send(bytes.to_vec()).map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer has stopped")),
+        Some(w) => w.send(bytes),
+        None => Err(io::Error::new(io::ErrorKind::BrokenPipe, "PTY is closed")),
+    }
+}
+
+/// Emulator replies: queued in order with user input, but dropped (not an error) while
+/// [`MAX_PENDING_REPLY_BYTES`] are already waiting. A reply to a query the child is flooding and
+/// not reading has no reader to matter to.
+pub(crate) fn send_reply_to_writer(writer: &Mutex<Option<WriterTx>>, bytes: &[u8]) -> io::Result<()> {
+    let guard = writer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.as_ref() {
+        Some(w) if w.pending.load(Ordering::Acquire) >= MAX_PENDING_REPLY_BYTES => {
+            log::debug!("PTY reply dropped: {} bytes already queued", w.pending.load(Ordering::Relaxed));
+            Ok(())
+        }
+        Some(w) => w.send(bytes),
         None => Err(io::Error::new(io::ErrorKind::BrokenPipe, "PTY is closed")),
     }
 }
@@ -292,6 +343,37 @@ mod tests {
         // A second latch is ignored.
         state.latch(Some(9));
         assert_eq!(state.code(), Some(7));
+    }
+
+    /// A sink that never finishes its first write, like a child that never reads stdin.
+    struct Stuck(mpsc::Receiver<()>);
+
+    impl Write for Stuck {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reply_flood_to_a_child_that_never_reads_is_bounded() {
+        let (release, gate) = mpsc::channel::<()>();
+        let tx = spawn_writer("test-stuck".into(), Stuck(gate)).unwrap();
+        let slot = Mutex::new(Some(tx));
+        // 2.1M DA1 answers, as in the probe: 8 bytes each is ~17 MB if unbounded.
+        for _ in 0..2_100_000 {
+            send_reply_to_writer(&slot, b"\x1b[?62;c").unwrap();
+        }
+        let pending = slot.lock().unwrap().as_ref().map(|w| w.pending.load(Ordering::Acquire)).unwrap();
+        assert!(pending <= MAX_PENDING_REPLY_BYTES + 16, "pending {pending}");
+        // User input is never dropped, even over the reply cap.
+        send_to_writer(&slot, &vec![b'k'; MAX_PENDING_REPLY_BYTES * 2]).unwrap();
+        let pending = slot.lock().unwrap().as_ref().map(|w| w.pending.load(Ordering::Acquire)).unwrap();
+        assert!(pending >= MAX_PENDING_REPLY_BYTES * 2);
+        drop(release);
     }
 
     #[test]
