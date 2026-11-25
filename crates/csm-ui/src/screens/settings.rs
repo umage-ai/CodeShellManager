@@ -490,7 +490,7 @@ fn appearance(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
         app,
         "ShiftEnterNewline",
         "Shift+Enter inserts a newline",
-        "Shift+Enter keeps typing on a new line instead of sending the prompt (Claude Code, OpenCode, Copilot CLI). It sends Esc then Enter, which a plain shell such as cmd.exe may read as clear-line and run; turn this off there.",
+        "Keeps typing on a new line instead of sending the prompt. cmd.exe may clear the line instead.",
         actions,
     );
     section(ui, "Windows Terminal profiles");

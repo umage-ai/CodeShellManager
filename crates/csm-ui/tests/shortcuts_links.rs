@@ -34,7 +34,8 @@ fn calls_since(h: &Harness<'static, csm_ui::CsmApp>, before: usize) -> Vec<(Stri
 /// The keyboard map's chords that need a panel or more state than this demo has: the add-on screen
 /// tabs (none open), the group tabs 3 to 9 (the demo has fewer groups), the pane moves (one pane),
 /// and Shift+F10 (needs a focused item). Their own tests press them.
-const IN_PANEL: [&str; 22] = [
+const IN_PANEL: [&str; 23] = [
+    "Shift+Enter",
     "Ctrl+Enter",
     "Shift+Tab",
     "Ctrl+click",

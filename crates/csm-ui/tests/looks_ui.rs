@@ -62,6 +62,8 @@ fn the_profile_row_shows_when_import_is_on_and_stamps_the_profile_on_a_new_sessi
     settle(&mut h);
     h.get_by_label("Settings: Appearance").click();
     settle(&mut h);
+    h.get_by_label("Offer Windows Terminal profiles").scroll_to_me();
+    settle(&mut h);
     h.get_by_label("Offer Windows Terminal profiles").click();
     settle(&mut h);
     let engine = h.state().dispatch.engine().expect("an engine port");
