@@ -89,6 +89,15 @@ pub struct DoctorRequest {
     pub check_signing: bool,
 }
 
+/// Crash reports the app or `csm` left behind: a warning, so the report gets sent (none, no line).
+fn check_crash_logs(dir: Option<&std::path::Path>) -> Option<Check> {
+    let all = csm_engine::diag::crash_logs(dir?);
+    let newest = all.last()?;
+    let mut c = Check::new("crash-reports", CheckStatus::Warn, format!("{} crash report(s) saved; the newest is {}.", all.len(), newest.display()));
+    c.remedy = Some("Attach the newest report to a bug report; delete the crash-*.log files in that folder to clear this.".into());
+    Some(c)
+}
+
 pub fn doctor(host: &Host, req: &DoctorRequest) -> DoctorReport {
     let mut checks = vec![check_app(&req.remote), check_conpty(req), check_claude(host), check_git()];
     checks.push(check_wsl());
@@ -100,6 +109,7 @@ pub fn doctor(host: &Host, req: &DoctorRequest) -> DoctorReport {
         checks.push(Check::new("mcp:self-test", CheckStatus::Skipped, "skipped"));
     }
     checks.extend(check_clients(host));
+    checks.extend(check_crash_logs(csm_engine::diag::logs_dir(None).as_deref()));
     DoctorReport { checks }
 }
 

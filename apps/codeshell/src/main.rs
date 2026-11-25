@@ -568,9 +568,9 @@ fn start_failed(e: impl std::fmt::Display) -> ! {
 
 fn main() {
     let args = parse_args();
-    if std::env::var_os("RUST_LOG").is_none() {
-        log::set_max_level(log::LevelFilter::Info);
-    }
+    // First: a panic on any thread leaves `logs/crash-<UTC>.log` (release builds have no console).
+    let logs = csm_engine::diag::logs_dir(args.config_dir.as_deref());
+    csm_engine::diag::install_panic_hook(logs.clone(), "codeshell");
     if let Some(hook) = args.installer {
         // Run by the MSI as the installing user (`installer/CodeShellManager2.wxs`): no window.
         let a = csm_engine::Autostart::system();
@@ -601,6 +601,19 @@ fn main() {
             }
             Ok(false) => {}
             Err(e) => log::warn!("could not reach a running CodeShellManager ({e}); starting another"),
+        }
+    }
+
+    // The file log and the run marker: the real app only. `--clean`, `--demo` and `--remote` run
+    // beside the real app on the same folders, so they leave its log and marker alone.
+    let diag_dir = logs.filter(|_| !args.demo && !args.clean && args.remote.is_none());
+    let mut crash_notice = None;
+    if let Some(dir) = &diag_dir {
+        csm_engine::diag::init_file_logger(dir);
+        log::info!("CodeShellManager {} ({} channel) starting", env!("CARGO_PKG_VERSION"), csm_core::channel::CURRENT.id());
+        crash_notice = csm_engine::diag::begin_run(dir).notice();
+        if let Some(n) = &crash_notice {
+            log::warn!("{n}");
         }
     }
 
@@ -775,6 +788,9 @@ fn main() {
             let mut app = csm_ui::CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), backend, TerminalRenderer::new(fonts));
             app.monitors = app_monitors;
             app.window_controls = cfg!(windows);
+            if let Some(n) = crash_notice.take() {
+                app.toast(&cc.egui_ctx, n);
+            }
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
             // On the main thread, with the event loop running: where the tray must be made.
@@ -804,6 +820,10 @@ fn main() {
         log::warn!("ipc: {e}");
     }
     shutdown.shutdown();
+    if let Some(dir) = &diag_dir {
+        log::info!("CodeShellManager quit");
+        csm_engine::diag::end_run(dir);
+    }
     if let Err(e) = result {
         eprintln!("event loop: {e}");
         std::process::exit(1);
