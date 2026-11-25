@@ -234,6 +234,7 @@ impl RemoteBackend {
         m.stale = self.mirror.is_some() && matches!(self.link, LinkState::Reconnecting { .. } | LinkState::Stopped);
         m.git = self.git.map.clone();
         m.folder_worktrees = self.git.folders.clone();
+        m.folder_probes = self.git.probes.clone();
         m.usage = self.usage.clone();
         m.docs = self.docs.clone();
         self.model = Arc::new(m);

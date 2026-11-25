@@ -37,6 +37,13 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 
 ### New
 
+- **New session offers to create a folder that does not exist.** Type a path such as
+  `d:\dev\shapesbyme` on This PC and the folder list gets a row, *Create folder "..." and start
+  here*, when the nearest folder above it exists (a drive is never created). Enter or a click asks
+  once, then makes the folder and starts the session in it. Tools: `session_new` takes
+  `create_folder` (default false; it now declares the file-system-write effect, so MCP clients
+  are asked), and the new read-only `folder_probe` says what would be made. SSH and WSL are
+  unchanged.
 - **Fun themes sample add-on** (`theme-fun`, Settings > Add-ons > Install samples): Emacs (dark),
   Windows 98 and Blossom (light), original themes that also change how the window draws.
 - **Themes can style the window, not only colour it** (`[theme.style]`, docs/addons.md, Themes):

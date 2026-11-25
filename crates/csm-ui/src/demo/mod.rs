@@ -333,6 +333,7 @@ pub fn demo_model(now: u64, theme: ThemeKind) -> UiModel {
         usage: crate::usage_model::demo_details(),
         docs: crate::docs_model::demo_details(),
         folder_worktrees: BTreeMap::new(),
+        folder_probes: BTreeMap::new(),
         open_with: demo_open_with(),
         pending_open_with: Vec::new(),
         update: None,
@@ -1333,6 +1334,27 @@ impl DemoBackend {
             "git_switch_branch" => toast("Switched branch.".into()),
             "worktree_new" => toast("Created the worktree and opened a session in it.".into()),
             "worktree_remove" => toast("Refused: this worktree has uncommitted changes.".into()),
+            "folder_probe" => {
+                // The fixture never touches the disk: C:\GitHub exists, the demo's own folders
+                // exist, anything else under C:\GitHub is missing and creatable.
+                if let Some(path) = call.params.get("path").and_then(Value::as_str) {
+                    let key = crate::git_model::folder_key(path);
+                    let exists = self.model.folders.iter().any(|f| crate::git_model::folder_key(&f.path) == key);
+                    let root = "c:\\github";
+                    let probe = match key.strip_prefix(root) {
+                        _ if exists => crate::model::FolderProbe { exists: true, ..Default::default() },
+                        Some(rest) if rest.starts_with('\\') => crate::model::FolderProbe {
+                            exists: false,
+                            can_create: true,
+                            ancestor: "C:\\GitHub".into(),
+                            missing: path.trim().trim_end_matches(['\\', '/']).get(root.len() + 1..).unwrap_or_default().split(['\\', '/']).map(str::to_string).collect(),
+                        },
+                        _ => crate::model::FolderProbe::default(),
+                    };
+                    self.model.folder_probes.insert(key, probe);
+                }
+                Vec::new()
+            }
             "worktree_list" => {
                 // The fixture's Odulodo.Web worktrees, asked by session (the row menu) or by
                 // folder (the quick-open). Anything else is not a repository.

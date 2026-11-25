@@ -132,6 +132,8 @@ pub struct GitDetails {
     pub map: BTreeMap<SessionId, GitDetail>,
     /// `worktree_list {folder}` replies, by [`folder_key`].
     pub folders: BTreeMap<String, Vec<WorktreeRow>>,
+    /// `folder_probe` replies (the quick-open's missing-folder row), by [`folder_key`].
+    pub probes: BTreeMap<String, crate::model::FolderProbe>,
     seq: u64,
 }
 
@@ -188,12 +190,30 @@ pub fn parse_worktrees(v: &Value) -> Vec<WorktreeRow> {
         .unwrap_or_default()
 }
 
+/// A `folder_probe` reply's data. Missing or mistyped fields read as "nothing to offer".
+fn parse_probe(v: &Value) -> crate::model::FolderProbe {
+    let missing: Vec<String> = v["missing"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let can_create = v["can_create"].as_bool().unwrap_or(false) && !missing.is_empty();
+    crate::model::FolderProbe { exists: v["exists"].as_bool().unwrap_or(false), can_create, ancestor: s(&v["ancestor"]), missing }
+}
+
 impl GitDetails {
     /// A git tool's reply: stores what it says. `Some(notices)` when the call was a git tool
     /// (they replace the backend's default toast: reads are quiet, operations say their one
     /// sentence, failures say their first line and open the output panel).
     pub fn on_reply(&mut self, call: &Call, reply: &csm_engine::Reply) -> Option<Vec<Notice>> {
         let id = call.id.as_str();
+        if id == "folder_probe" {
+            // The quick-open's check of a typed folder: quiet. A failed check is "not creatable".
+            if let Some(path) = call.params.get("path").and_then(Value::as_str) {
+                let probe = match reply {
+                    Ok(out) => parse_probe(&out.data),
+                    Err(_) => crate::model::FolderProbe::default(),
+                };
+                self.probes.insert(folder_key(path), probe);
+            }
+            return Some(Vec::new());
+        }
         if !READ_TOOLS.contains(&id) && !OP_TOOLS.contains(&id) {
             return None;
         }

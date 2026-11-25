@@ -846,6 +846,18 @@ impl ShutdownBoard {
     }
 }
 
+/// What `folder_probe` said about a typed folder: it is there, or what `session_new` with
+/// `create_folder` would make.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FolderProbe {
+    pub exists: bool,
+    pub can_create: bool,
+    /// The nearest existing folder above it.
+    pub ancestor: String,
+    /// The levels that would be made below `ancestor`, outermost first.
+    pub missing: Vec<String>,
+}
+
 /// Everything the screens draw.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiModel {
@@ -900,6 +912,9 @@ pub struct UiModel {
     /// Worktrees of a folder no session is asked for (`worktree_list {folder}`, the quick-open's
     /// sibling checkboxes), keyed by [`crate::git_model::folder_key`]. Empty: not a repository.
     pub folder_worktrees: BTreeMap<String, Vec<crate::git_model::WorktreeRow>>,
+    /// `folder_probe` replies for the quick-open (a typed path that is not there), keyed by
+    /// [`crate::git_model::folder_key`].
+    pub folder_probes: BTreeMap<String, FolderProbe>,
     /// The Open with list (the editor).
     pub open_with: Vec<OpenWithEntryView>,
     /// Open with entries from CodeShellManager 0.x waiting for the person's answer: the consent
