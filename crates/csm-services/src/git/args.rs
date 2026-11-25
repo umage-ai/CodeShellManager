@@ -40,12 +40,11 @@ pub fn strip_wsl_profile_noise(stdout: &str) -> &str {
 }
 
 /// Config every spawned git gets first (SEC-4). A repo folder is untrusted input: its config may
-/// name a program git then runs on its own (`core.fsmonitor`, hooks, the `ext::` transport), so
-/// those are switched off. An empty `core.hooksPath` disables hooks (checked against git 2.55
-/// for Windows: `commit` ran no pre-commit hook). `status` only reads, so none of this changes
-/// what the app shows; it does mean hooks do not run for app-made commits or worktrees.
-pub const GIT_HARDENING: [&str; 8] =
-    ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=", "-c", "protocol.ext.allow=never"];
+/// name a program git then runs on its own while the app only polls (`core.fsmonitor`, the
+/// `ext::` transport), so those are switched off. Hooks stay on: they run only for operations the
+/// person starts (commit, switch, worktree add, pull), never for the background reads, and a
+/// repo's own pre-commit checks must keep working for commits made from the app.
+pub const GIT_HARDENING: [&str; 6] = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "protocol.ext.allow=never"];
 
 /// The `wsl.exe` command line for one git invocation inside a distro:
 /// `-d <distro> -e sh -lc '<fixed script>' git -C <cwd> <args...>`.
@@ -376,7 +375,7 @@ mod tests {
 
     #[test]
     fn every_command_line_disarms_repo_defined_commands() {
-        // SEC-4: a folder's own config must not get to run fsmonitor, hooks or ext:: transports.
+        // SEC-4: a folder's own config must not get to run fsmonitor or ext:: transports.
         // The hardening sits between `-C <dir>` and the builder's own args, for every builder.
         let all: Vec<Vec<String>> = vec![status_args(), status_text_args(), fetch_args(), pull_ff_only_args(), list_worktrees_args()];
         for git_args in all {
@@ -386,7 +385,7 @@ mod tests {
             for argv in [local, wsl] {
                 let c = argv.iter().position(|a| a == "-C").unwrap();
                 assert_eq!(argv[c + 2..c + 2 + GIT_HARDENING.len()], GIT_HARDENING);
-                for want in ["core.fsmonitor=false", "core.untrackedCache=false", "core.hooksPath=", "protocol.ext.allow=never"] {
+                for want in ["core.fsmonitor=false", "core.untrackedCache=false", "protocol.ext.allow=never"] {
                     assert!(argv.iter().any(|a| a == want), "{want} missing");
                 }
             }

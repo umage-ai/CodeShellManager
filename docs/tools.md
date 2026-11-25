@@ -72,9 +72,9 @@ the line between an agent (an MCP client, a paired device, an add-on) and the pe
   person); links are never followed and network folders are refused.
 - A pack's palette command may name only read-only tools and a short list of navigation tools
   (`PACK_COMMAND_TOOLS` in `addons.rs`); a screen button may open only its own add-on's screens.
-- Every git the app runs gets `-c core.fsmonitor=false -c core.untrackedCache=false -c core.hooksPath=
-  -c protocol.ext.allow=never` first, so a repository's own config cannot make git run a program.
-  Hooks therefore do not run for git operations the app makes.
+- Every git the app runs gets `-c core.fsmonitor=false -c core.untrackedCache=false
+  -c protocol.ext.allow=never` first, so a repository's own config cannot make git run a program
+  while the app polls it. Hooks still run for operations you start (commit, switch, worktree add).
 - An OSC 52 clipboard write is accepted only from the focused session, and a toast names it.
 
 Two extra rules the engine enforces regardless of grants:

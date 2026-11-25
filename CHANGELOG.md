@@ -150,7 +150,7 @@ file drop; Claude slash-command menu; `--clean`.
 ### Security
 
 - **MCP clients and paired devices may change only cosmetic settings** with `settings_set` (an allow-list; the rest is changed in the app). Paired devices are refused the "decides what runs" tools like MCP clients, and may not turn remote access off or revoke every device.
-- **Git cannot run repository-defined programs**: every git call the app makes disables `core.fsmonitor`, the untracked cache, hooks and the `ext::` transport. Git hooks no longer run for operations the app makes.
+- **Git cannot run repository-defined programs**: every git call the app makes disables `core.fsmonitor`, the untracked cache and the `ext::` transport, so opening a session in a copied repo cannot run its configured programs. Hooks still run for commits and other operations you start.
 - **Importing a backup** no longer takes its default command, launch commands or Claude commands unless you tick the new box; the preview lists each session's SSH and run commands, and a network or relative SSH config path refuses the import. **Exporting** needs a `.csm` name, never replaces a file unless `overwrite` is set, and never writes the API key.
 - **Project docs** are read only from sessions' folders for MCP clients; links and network folders are refused. The Review add-on only works on repositories CSM knows (no network paths, at most 32 per caller).
 - **Add-on pack palette commands** may call only read-only and navigation tools, and a plugin screen button may open only its own add-on's screens.
