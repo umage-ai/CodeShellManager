@@ -5,7 +5,8 @@ name: Release (v2 beta, Linux and macOS)
 # or publishes anywhere: docs/distribution.md is the plan for that.
 #
 # macOS runners cost about ten times Linux ones, so macOS is built ONLY when asked for:
-#   - a `v2.*` tag (e.g. v2.0.0-beta.1) on the v2 branch: Linux only, version from the tag (the
+#   - a `vMAJOR.MINOR.PATCH[-beta.N|-rc.N]` tag with MAJOR >= 2 (e.g. v2.0.0-beta.1; the same rule
+#     as release-v2.yml): Linux only, version from the tag (the
 #     Windows MSI comes from release-v2.yml on the same tag).
 #   - a push to `release-macos/v2.<version>` (e.g. `git push origin v2.0.0-beta.1:refs/heads/release-macos/v2.0.0-beta.1`):
 #     macOS only, for that release. The tag must exist and point at the same commit. The app is
@@ -18,7 +19,7 @@ name: Release (v2 beta, Linux and macOS)
 # Like release-v2.yml, GitHub only dispatches a workflow that exists on the default branch, so a
 # copy of this file must sit on main before `gh workflow run release-v2-unix.yml --ref v2` works.
 # The jobs refuse any ref other than the v2 or main branch, a release-dry-run/ or release-macos/
-# branch, or a v2.* tag (v0.x/v1 tags are skipped).
+# branch, or a tag with MAJOR >= 2 (v0.x/v1 tags are skipped).
 #
 # Artifacts (one per platform, named like release-v2.yml's `codeshellmanager-<version>`):
 #   codeshellmanager-<ver>-linux-x86_64   CodeShellManager-<ver>-linux-x86_64.tar.gz
@@ -39,7 +40,8 @@ name: Release (v2 beta, Linux and macOS)
 
 on:
   push:
-    tags: ['v*.*.*']
+    # MAJOR >= 2 only, the same rule as release-v2.yml (the Versions step checks it again).
+    tags: ['v[2-9].*.*', 'v[1-9][0-9]+.*.*']
     # A dry run without a copy of this file on main: push v2 to a release-dry-run/<name> branch.
     branches: ['release-dry-run/**', 'release-macos/**']
   workflow_dispatch:
@@ -53,7 +55,7 @@ env:
 jobs:
   # ── Versions (shared, so every package carries the same numbers) ──────────────────────────
   version:
-    if: github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-dry-run/') || startsWith(github.ref, 'refs/heads/release-macos/') || startsWith(github.ref, 'refs/tags/v2.')
+    if: github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-dry-run/') || startsWith(github.ref, 'refs/heads/release-macos/') || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
       semver: ${{ steps.ver.outputs.semver }}
@@ -68,27 +70,31 @@ jobs:
         id: ver
         shell: bash
         env:
-          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v2.') }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # release-macos/v2.x.y: build the release of tag v2.x.y, which must be this very commit.
+          # REF_NAME is untrusted (a branch or tag name chosen by whoever pushes): it is validated
+          # against the strict regex below before it is used for anything else.
+          re='^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,5})(-(beta|rc|dev)\.([0-9]{1,5}))?$'
+          # release-macos/vX.Y.Z: build the release of tag vX.Y.Z, which must be this very commit.
           case "$REF_NAME" in
-            release-macos/v2.*)
+            release-macos/v[0-9]*)
               tag="${REF_NAME#release-macos/}"
-              tag_sha=$(gh api "repos/$REPO/commits/$tag" --jq .sha) || { echo "::error::Tag $tag does not exist"; exit 1; }
-              if [ "$tag_sha" != "$GITHUB_SHA" ]; then echo "::error::Tag $tag is $tag_sha, this branch is $GITHUB_SHA"; exit 1; fi
+              if ! [[ "${tag#v}" =~ $re ]]; then echo "::error::The release-macos branch does not name a valid version tag"; exit 1; fi
+              tag_sha=$(gh api "repos/$REPO/commits/$tag" --jq .sha) || { echo "::error::The tag does not exist"; exit 1; }
+              if [ "$tag_sha" != "$GITHUB_SHA" ]; then echo "::error::The tag is not this branch's commit"; exit 1; fi
               IS_TAG=true; REF_NAME="$tag" ;;
           esac
           echo "release=$IS_TAG" >> "$GITHUB_OUTPUT"
           if [ "$IS_TAG" = "true" ]; then semver="${REF_NAME#v}"; else semver="2.0.0-dev.${RUN_NUMBER}"; fi
-          re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-(beta|rc|dev)\.([0-9]+))?$'
           if ! [[ "$semver" =~ $re ]]; then
-            echo "::error::Tag version '$semver' is not MAJOR.MINOR.PATCH[-beta.N|-rc.N]"; exit 1
+            echo "::error::The version is not MAJOR.MINOR.PATCH[-beta.N|-rc.N]"; exit 1
           fi
+          if (( 10#${BASH_REMATCH[1]} < 2 )); then echo "::error::The version is below 2.0.0: WPF tags are not built here"; exit 1; fi
           base="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
           if [ -n "${BASH_REMATCH[4]}" ]; then deb="${base}~${BASH_REMATCH[5]}.${BASH_REMATCH[6]}"; else deb="$base"; fi
           { echo "semver=$semver"; echo "base=$base"; echo "deb=$deb"; } >> "$GITHUB_OUTPUT"
@@ -113,17 +119,26 @@ jobs:
       DEBVER: ${{ needs.version.outputs.deb }}
       ARCH: ${{ matrix.arch }}
       DEB_ARCH: ${{ matrix.deb_arch }}
-      # appimagetool, pinned. Its release also fetches the matching type2 runtime at build time.
+      # appimagetool and its type2 runtime, pinned by version and SHA-256 (the runtime is passed
+      # with --runtime-file so the tool downloads nothing itself). Hashes: docs/release.md.
       APPIMAGETOOL_VERSION: "1.9.0"
+      APPIMAGETOOL_SHA256_X86_64: 46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+      APPIMAGETOOL_SHA256_AARCH64: 04f45ea45b5aa07bb2b071aed9dbf7a5185d3953b11b47358c1311f11ea94a96
+      TYPE2_RUNTIME_RELEASE: "20251108"
+      TYPE2_RUNTIME_SHA256_X86_64: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+      TYPE2_RUNTIME_SHA256_AARCH64: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # The gate's toolchain (see ci.yml).
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      # The Linux job holds no secrets (read-only token, artifacts only), so it may use the cache.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-${{ matrix.arch }}
 
@@ -261,11 +276,21 @@ jobs:
           EOF
           chmod 0755 "$appdir/AppRun"
 
+          case "$ARCH" in
+            x86_64)  tool_sha="$APPIMAGETOOL_SHA256_X86_64";  rt_sha="$TYPE2_RUNTIME_SHA256_X86_64" ;;
+            aarch64) tool_sha="$APPIMAGETOOL_SHA256_AARCH64"; rt_sha="$TYPE2_RUNTIME_SHA256_AARCH64" ;;
+            *) echo "::error::no pinned appimagetool for $ARCH"; exit 1 ;;
+          esac
           tool="stage/appimagetool-${ARCH}.AppImage"
+          runtime="stage/runtime-${ARCH}"
           curl -fsSL -o "$tool" "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${ARCH}.AppImage"
+          curl -fsSL -o "$runtime" "https://github.com/AppImage/type2-runtime/releases/download/${TYPE2_RUNTIME_RELEASE}/runtime-${ARCH}"
+          # Verify BEFORE the first use; a mismatch stops the build.
+          echo "$tool_sha  $tool" | sha256sum -c -
+          echo "$rt_sha  $runtime" | sha256sum -c -
           chmod +x "$tool"
           # Runners have no FUSE: let the tool unpack itself instead of mounting.
-          APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$tool" --no-appstream "$appdir" "dist/CodeShellManager-${SEMVER}-${ARCH}.AppImage"
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$tool" --no-appstream --runtime-file "$runtime" "$appdir" "dist/CodeShellManager-${SEMVER}-${ARCH}.AppImage"
           chmod +x "dist/CodeShellManager-${SEMVER}-${ARCH}.AppImage"
 
       - name: Checksums
@@ -273,7 +298,7 @@ jobs:
         run: cd dist && sha256sum * | tee SHA256SUMS-linux-${ARCH}.txt
 
       - name: Upload packages
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codeshellmanager-${{ needs.version.outputs.semver }}-linux-${{ matrix.arch }}
           path: dist/*
@@ -294,16 +319,17 @@ jobs:
       # Matches LSMinimumSystemVersion in installer/macos/Info.plist.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.97"
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-macos-universal
+      # No build cache here: this job holds the Apple signing secrets, and a restored cache is
+      # attacker-reachable input to what gets signed.
 
       - name: Stamp the workspace version
         shell: bash
@@ -439,7 +465,7 @@ jobs:
         run: cd dist && shasum -a 256 * | tee SHA256SUMS-macos.txt
 
       - name: Upload packages
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codeshellmanager-${{ needs.version.outputs.semver }}-macos
           path: dist/*

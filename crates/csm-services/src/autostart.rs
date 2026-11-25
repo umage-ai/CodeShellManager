@@ -27,8 +27,20 @@ use serde::Serialize;
 
 use crate::argv::quote_for_cmd;
 
-/// The Windows `Run` value's name.
+/// The Windows `Run` value's name for the stable channel. It stays the WPF app's name so a stable
+/// install keeps (and upgrades) the entry the WPF app wrote.
 pub const ENTRY_NAME: &str = "CodeShellManager";
+/// The beta channel's own `Run` value, so a beta never reads, rewrites or removes the stable app's
+/// entry, and the reverse.
+pub const BETA_ENTRY_NAME: &str = "CodeShellManager-Beta";
+
+/// The `Run` value name a channel uses.
+pub const fn entry_name_for(channel: csm_core::channel::Channel) -> &'static str {
+    match channel {
+        csm_core::channel::Channel::Stable => ENTRY_NAME,
+        csm_core::channel::Channel::Beta => BETA_ENTRY_NAME,
+    }
+}
 /// The launchd label and the desktop entry's file stem (the app id the Linux packages use).
 pub const LAUNCH_ID: &str = "ai.umage.CodeShellManager";
 /// The argument the entry starts the app with, so a start at sign-in can be told apart in the log.
@@ -138,8 +150,9 @@ pub fn set(b: &dyn Backend, exe: &Path, enabled: bool) -> Result<Status, Error> 
 
 /// The start-up fix-up: an entry that starts another exe (the app moved, or was upgraded into a
 /// new folder) is rewritten to start `exe`, keeping whether the OS had turned it off. With
-/// `only_if_missing` the entry is left alone while the program it names still exists (a
-/// development build must not take over the installed app's entry). Returns the program the
+/// `only_if_missing` the entry is left alone while the program it names still exists: a copy
+/// of the app (a portable folder, a development build) must not take over a working entry. The
+/// entry is per channel (see [`entry_name_for`]), so the other channel's value is never touched. Returns the program the
 /// entry named before, when it was rewritten.
 pub fn refresh(b: &dyn Backend, exe: &Path, only_if_missing: bool) -> Result<Option<PathBuf>, Error> {
     let Some(entry) = b.read()? else { return Ok(None) };
@@ -277,8 +290,14 @@ pub struct WindowsRun<R: Registry> {
 }
 
 impl<R: Registry> WindowsRun<R> {
+    /// The entry of this build's channel.
     pub fn new(reg: R) -> Self {
-        WindowsRun { reg, name: ENTRY_NAME.to_string() }
+        Self::with_name(reg, entry_name_for(csm_core::channel::Channel::current()))
+    }
+
+    /// An entry under an explicit value name (tests, and the other channel's entry).
+    pub fn with_name(reg: R, name: &str) -> Self {
+        WindowsRun { reg, name: name.to_string() }
     }
 
     pub fn registry(&self) -> &R {
@@ -934,6 +953,25 @@ mod tests {
             b.registry().value(RUN_KEY, ENTRY_NAME),
             Some(MemValue::String(r#""C:\Program Files\umage.ai\CodeShellManager\codeshell.exe" --autostart"#.into()))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn each_channel_has_its_own_run_value() {
+        use csm_core::channel::Channel;
+        assert_eq!(entry_name_for(Channel::Stable), "CodeShellManager");
+        assert_ne!(entry_name_for(Channel::Beta), entry_name_for(Channel::Stable));
+        let beta = WindowsRun::with_name(MemoryRegistry::default(), entry_name_for(Channel::Beta));
+        let exe = win(r"C:\Program Files\umage.ai\CodeShellManager Beta\codeshell.exe");
+        // A stable value exists in the registry; the beta backend never sees or touches it.
+        beta.registry().put(RUN_KEY, ENTRY_NAME, MemValue::String(r#""C:\x\codeshell.exe" --autostart"#.into()));
+        assert!(beta.read().unwrap().is_none(), "the beta never reads the stable value");
+        set(&beta, &exe, true).unwrap();
+        assert!(beta.registry().value(RUN_KEY, ENTRY_NAME).is_some(), "the stable value is untouched");
+        assert!(beta.registry().value(RUN_KEY, BETA_ENTRY_NAME).is_some());
+        beta.remove().unwrap();
+        assert!(beta.registry().value(RUN_KEY, ENTRY_NAME).is_some(), "removing the beta's entry keeps the stable one");
+        assert!(beta.registry().value(RUN_KEY, BETA_ENTRY_NAME).is_none());
     }
 
     #[cfg(windows)]

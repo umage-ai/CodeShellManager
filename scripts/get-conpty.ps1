@@ -6,7 +6,8 @@
 .DESCRIPTION
   Default: downloads Microsoft.Windows.Console.ConPTY (the version the WPF app ships) from
   nuget.org. -From copies from an existing folder instead (e.g. the WPF app's build output).
-  Either way both files must carry a valid Microsoft Authenticode signature.
+  The nupkg must match the pinned SHA-256. Either way both files must carry a valid Microsoft
+  Authenticode signature.
 
 .EXAMPLE
   pwsh scripts/get-conpty.ps1
@@ -15,7 +16,10 @@
 param(
     [string]$From,
     [ValidateSet('x64', 'arm64', 'x86')][string]$Arch = 'x64',
-    [string]$Version = '1.25.260930003'
+    [string]$Version = '1.25.260930003',
+    # SHA-256 of the nupkg for $Version (nuget.org). Change both together; a different version
+    # needs its hash computed from a trusted download.
+    [string]$Sha256 = '02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -30,7 +34,13 @@ if ($From) {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) "csm-conpty-$Version"
     New-Item -ItemType Directory -Force $tmp | Out-Null
     $pkg = Join-Path $tmp 'conpty.nupkg'
+    Remove-Item $pkg -Force -ErrorAction SilentlyContinue
     Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/$Version" -OutFile $pkg
+    $actual = (Get-FileHash $pkg -Algorithm SHA256).Hash
+    if ($actual -ne $Sha256.ToUpperInvariant()) {
+        Remove-Item $pkg -Force
+        throw "conpty nupkg SHA-256 mismatch: expected $Sha256, got $actual"
+    }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($pkg)
     try {

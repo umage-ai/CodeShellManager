@@ -152,3 +152,30 @@ fn an_old_api_key_is_removed_from_the_file_its_backup_and_the_snapshots_and_neve
     }
     assert!(std::fs::read_to_string(&path).unwrap().contains("\"keep\""), "the sessions survive");
 }
+
+#[test]
+fn a_state_file_from_a_newer_app_is_refused_read_only_and_never_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let mut app = test_app();
+    app.sessions.push(ShellSession { id: "future".into(), name: "From the future".into(), is_dormant: true, ..Default::default() });
+    app.csm_rs_version = Some(persist::STATE_FILE_VERSION + 1);
+    let text = app.to_json().unwrap();
+    std::fs::write(&path, &text).unwrap();
+    let ptys = Default::default();
+    let mut o = common::fast_options(&ptys);
+    o.save_path = Some(path.clone());
+    let (state, report) = State::load(o);
+    assert!(report.set_aside.is_empty(), "{:?}", report.set_aside);
+    assert!(state.options().read_only.is_some());
+    let e = Engine::start(state, vec![]).unwrap();
+    assert_eq!(warning_ids(&e), vec!["state_newer".to_string()]);
+    assert!(e.view().warnings[0].text.contains("newer CodeShellManager"));
+    e.call(Caller::Ui, "group_new", json!({"name": "G"})).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    e.shutdown();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "the newer file is untouched");
+    // The current version and an unversioned (WPF) file load as before.
+    assert!(persist::newer_state_reason(Some(persist::STATE_FILE_VERSION)).is_none());
+    assert!(persist::newer_state_reason(None).is_none());
+}

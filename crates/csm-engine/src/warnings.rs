@@ -7,6 +7,8 @@
 //!   that works, and a toast says so.
 //! - `state_read_only`: `state.json` exists but could not be read at start-up, so this run starts
 //!   empty and saves nothing (the real file is never replaced).
+//! - `state_newer`: `state.json` was written by a newer app (its `CsmRsVersion` is above what this
+//!   build understands): the same read-only start, with its own text.
 //! - `tasks_unreadable`: the same for the Board's `tasks.json`.
 //! - `beta_import`: first run of the stable app with no state of its own but a beta's: offers
 //!   `state_import_beta`.
@@ -42,7 +44,12 @@ fn warn(id: &str, text: String) -> Warning {
 /// Everything that is wrong or on offer now.
 pub(crate) fn current(state: &State) -> Vec<Warning> {
     let mut out = Vec::new();
-    if let Some(why) = &state.options.read_only {
+    if let Some(v) = state.options.read_only.as_deref().and_then(|w| w.strip_prefix(crate::persist::NEWER_STATE_MARKER)) {
+        out.push(warn(
+            "state_newer",
+            format!("Your saved sessions were written by a newer CodeShellManager (file version {v}; this one understands {}), so this one started empty and will not save anything this time. The file is untouched: install the newer version again to use it.", crate::persist::STATE_FILE_VERSION),
+        ));
+    } else if let Some(why) = &state.options.read_only {
         out.push(warn(
             "state_read_only",
             format!("Your saved sessions could not be read ({why}), so CodeShellManager started empty and will not save anything this time. Close what is using the file and restart; the file itself is untouched."),

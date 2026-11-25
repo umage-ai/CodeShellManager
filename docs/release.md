@@ -76,8 +76,8 @@ for the stable channel.
 | MSI UpgradeCode | `3F7A9B1C-2D5E-4F8A-B0C3-6E1D9A4F2B7E` | same | **Must match**: it is how MSI MajorUpgrade, and winget's installed-package correlation, find the WPF app. Changed from the beta's code for the stable channel. |
 | MSI ProductCode | new per build (WiX `*`) | new per build | Must differ per version (major upgrade). OK. |
 | MSI scope | `perMachine` | `perMachine` | **Must match**: a major upgrade only sees products of its own scope. Matches. |
-| MajorUpgrade | default (no same-version upgrade) | `AllowSameVersionUpgrades="yes"` (pre-releases differ only in the 4th field, which MSI ignores) | Fine; WiX warns ICE61, expected. The old product is removed before the new one is installed (default schedule). |
-| MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `2.0.0.(100+N)`; beta: `2.0.0.N`; dev: `2.0.0.0` | 2.x > 0.x, so every v2 build upgrades the WPF app. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish. |
+| MajorUpgrade | default (no same-version upgrade) | `AllowSameVersionUpgrades="yes"` (re-installing the same build repairs it; pre-releases are ordered by the version scheme) | Fine; WiX warns ICE61, expected. The old product is removed before the new one is installed (default schedule). |
+| MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `1.30.N`; beta: `1.20.N`; dev: `1.10.<run>` (see "Version scheme") | Every build is above the WPF app's 0.x, so every v2 build upgrades it. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish; a pre-release is always below the final and orders by its number. |
 | Package version (winget, Chocolatey, tag) | `0.11.0` | `2.0.0` | Decided (Allan): version 2 starts at 2.0.0. Higher than 0.11.x for every package manager. |
 | Install folder | `ProgramFiles64\umage\CodeShellManager` | `ProgramFiles64\umage.ai\CodeShellManager` | **Differs on purpose** (Allan, 2026-11-24: the company name reads "umage.ai" everywhere). A clean break: the upgrade removes the WPF app (its files and its folder, when empty) and installs into the new folder. See "The install folder moved". |
 | Main exe | `CodeShellManager.exe` | `codeshell.exe` (GUI) + `csm.exe` (CLI, MCP) + `csm-session-summary.exe`, `csm-review.exe` | Differs. See Decisions. Start-menu and desktop shortcuts are re-created (pointing at `codeshell.exe`). No `CodeShellManager.exe` ships: the folder changed, so a pin to the old path breaks either way (re-pin). |
@@ -93,7 +93,7 @@ for the stable channel.
 | First-run migration | n/a | On a true first run (no v2 `state.json` or `.bak`, default location, not `--clean`), `codeshell` imports the WPF app's sessions and groups (`state_import_wpf`, sessions arrive asleep), the settings that map onto version 2's (table "0.x settings" below), its Open with list **as a pending offer** (a one-time card, see below) and project notes (`notes_import_wpf`), on a background thread | Reads the WPF files only; never writes or deletes them. Not imported: search history (output.db's indexed output) and the settings marked "not carried". The empty screen and the palette still offer the import by hand, which does the same. |
 | Uninstall | removes program files and shortcuts; leaves `%APPDATA%\CodeShellManager` | same; leaves both data folders; removes the PATH entry | OK. |
 | Update check | GitHub `releases/latest` of `umage-ai/CodeShellManager`, compared as `Version` | the same endpoint (a pre-release build reads the release list), a title-bar badge, `update_check`, setting `CheckForUpdates` (see "Update check") | A v2 final published as "latest" makes every running WPF app say "Update available 2.0.0" (pre-releases do not). 0.x's releases (below 2.0.0) are never offered to version 2. |
-| Authenticode signing | Azure Trusted Signing (`azure/trusted-signing-action@v2.0.0`) on `CodeShellManager.exe` and the MSI; secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | same action and secrets, on `codeshell.exe`, `csm.exe`, `csm-session-summary.exe`, `csm-review.exe` and the MSI (never Microsoft's ConPTY files) | Already ported. Added: signatures verified before publishing; a stable tag refuses to publish unsigned. |
+| Authenticode signing | Azure Trusted Signing (`azure/trusted-signing-action@v2.0.0`) on `CodeShellManager.exe` and the MSI; secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | same action and secrets, on `codeshell.exe`, `csm.exe`, `csm-session-summary.exe`, `csm-review.exe` and the MSI (never Microsoft's ConPTY files) | Already ported. Added: signatures verified (and the signer subject checked) before publishing; any tag build (beta, rc, final) refuses to publish unsigned. The Chocolatey workflow checks the signer subject too. |
 | winget | `UmageAI.CodeShellManager`, MSI, `installers-regex '\.msi$'`, komac via `vedantmgoyal9/winget-releaser@v2`, secret `WINGET_TOKEN` (classic PAT, `public_repo` + `workflow`), fork sync of `umage-ai/winget-pkgs` | same workflow, same id and secret; refuses pre-release and pre-2.0 tags | komac reads ProductCode, UpgradeCode, scope and installer type from the new MSI. Same UpgradeCode keeps `winget upgrade` working. |
 | Chocolatey | `codeshellmanager`, wraps the release MSI (`Install-ChocolateyPackage`, `/qn /norestart`), secret `CHOCO_API_KEY`, WebView2 check | same id, secret and MSI name pattern (`CodeShellManager-<ver>-Setup.msi`); WebView2 check dropped; uninstall matches exactly `CodeShellManager` (not a beta); package files taken from the tag; MSI signature checked | `choco upgrade` runs the new MSI, which major-upgrades the WPF app. |
 | Release assets | `CodeShellManager-<ver>-Setup.msi`, `CodeShellManager-<ver>-win-x64.zip` | same names | Matches (Chocolatey and winget depend on the MSI name/extension). |
@@ -110,7 +110,7 @@ Nothing here runs without Allan's say-so. Tags are created by hand.
 2. Release candidate: tag `v2.0.0-rc.1`. `release-v2.yml` builds the **stable** channel, signs,
    and publishes a GitHub **pre-release**. Test on a machine (or VM) with the WPF app installed:
    - by MSI: install `CodeShellManager-2.0.0-rc.1-Setup.msi`. Expect one "CodeShellManager" in
-     Add/Remove Programs (version 2.0.0.101), the WPF app gone from `C:\Program Files\umage\CodeShellManager`
+     Add/Remove Programs (version 1.30.1), the WPF app gone from `C:\Program Files\umage\CodeShellManager`
      (and `C:\Program Files\umage` gone if nothing else was in it), version 2 in
      `C:\Program Files\umage.ai\CodeShellManager`, `%APPDATA%\CodeShellManager` untouched, and on first start the WPF sessions listed asleep
      and the notes present.
@@ -130,6 +130,9 @@ Nothing here runs without Allan's say-so. Tags are created by hand.
      check it now names `...\umage.ai\CodeShellManager\csm.exe` (a `.csm-backup` was made), or run
      `csm doctor`. The sign-in (autostart) entry, if the person had turned it on, names the new exe.
    - `echo %PATH%` has `C:\Program Files\umage.ai\CodeShellManager` and no `...\umage\...` entry.
+   - **upgrade while running:** with the app open (a few sessions, one a Claude session), install the next build's MSI (also by `msiexec /i ... /qn`). Expect: the app quits by itself within about a minute and its sessions come back asleep next start; the new files are in place without a reboot prompt; the sign-in entry (if on) names the new exe. Repeat with the app minimized to the tray, and with a beta running while the stable MSI installs (the beta is removed). If `csm app_quit` cannot reach the app from the installer's context (a silent install by a service account), the 60 s fallback and the files-in-use handling apply: record which happened.
+   - the installer has no "choose folder" page (it installs to `C:\Program Files\umage.ai\...` only: that folder goes on the system PATH, so it must not be user-chosen).
+   - the sign-in entry: stable uses the Run value `CodeShellManager`, beta `CodeShellManager-Beta`; a copy of the app (portable, dev build) does not take over a working entry.
 3. Final: tag `v2.0.0`. The release is a normal release, marked latest.
 4. Dispatch the package workflows with the tag (they never run on their own; see the comments
    in each file for why the `release` trigger does not fire):
@@ -143,19 +146,56 @@ Dry run at any time (signed like a release when the signing secrets are set; art
 ### Version numbers
 
 Decided by Allan: version 2 starts at **2.0.0**. Tags and package versions are semver
-(`2.0.0-beta.N`, `2.0.0-rc.N`, `2.0.0`); the workflow refuses tags below 2.0.0. MSI
-ProductVersion must be numeric `major.minor.build[.revision]`, and MSI compares only the first
-three fields:
+(`2.0.0-beta.N`, `2.0.0-rc.N`, `2.0.0`); the workflow refuses tags below 2.0.0. The tag filter is
+the same in `release-v2.yml` and `release-v2-unix.yml`: `vMAJOR.MINOR.PATCH[-beta.N|-rc.N]` with
+MAJOR >= 2 (the workflows' Versions steps check it again with a strict ASCII regex).
+
+#### Version scheme (the MSI ProductVersion)
+
+MSI ProductVersion must be numeric `major.minor.build` (fields up to 255.255.65535) and Windows
+Installer compares **only those three fields**, so a pre-release number in a fourth field
+(`2.0.0.N`, what the first betas used) cannot order anything: beta.2 and beta.5 are "the same
+version" and a same-version upgrade is allowed, so an older build could silently replace a newer
+one. The pre-release number therefore lives in the first three fields, below the final release:
 
 | Tag | Channel | MSI ProductVersion | GitHub release |
 |---|---|---|---|
-| (dispatch) `2.0.0-dev.<run>` | input (`beta` default) | `2.0.0.0` | none (workflow artifact) |
-| `v2.0.0-beta.N` | beta | `2.0.0.N` | pre-release |
-| `v2.0.0-rc.N` | stable | `2.0.0.(100+N)` | pre-release |
+| (dispatch) `2.0.0-dev.<run>` | input (`beta` default) | `1.10.<run>` | none (workflow artifact) |
+| `v2.0.0-beta.N` | beta | `1.20.N` | pre-release |
+| `v2.0.0-rc.N` | stable | `1.30.N` | pre-release |
 | `v2.0.0` | stable | `2.0.0` | release, latest |
 
-Because the fourth field is ignored, `AllowSameVersionUpgrades` lets each pre-release replace
-the previous one of the same channel, and the final replace an rc.
+That is `(MAJOR-1).<stage>.<N>`: stage 10 dev, 20 beta, 30 rc; N is the pre-release number
+(1..65535; for dev, the workflow run number). Consequences:
+
+- `dev.N < beta.N < rc.N < 2.0.0`, and a later pre-release of a stage always has the higher number
+  (beta.5 > beta.2). Every one of them is still above the WPF app's `0.x`, so they all upgrade it.
+- A final release is exactly its tag version, so Add/Remove Programs shows what winget and
+  Chocolatey publish.
+- Add/Remove Programs shows `1.20.5` for `2.0.0-beta.5` (the app's About box shows the semver).
+- A pre-release can never downgrade an installed final: `1.30.N < 2.0.0`, the installer stops.
+- Only `MAJOR.0.0` releases may have pre-releases; the Versions step refuses `2.1.0-rc.1` etc.,
+  because that rc would sort below an installed `2.0.0`. To ship `2.1.0` pre-releases, extend this
+  scheme first (for example a minor-level equivalent) and update the step and this section.
+- **One-time break:** a pre-release installed before this scheme (`2.0.0.N`) is *higher* than
+  `1.20.N`, so installing a new beta over it fails with "A newer version is already installed":
+  uninstall the old beta first (its data is untouched). Dev builds (`2.0.0.0` before) likewise.
+- `AllowSameVersionUpgrades` stays on: re-installing the same build repairs it.
+
+**State files.** A `state.json` written by a newer app (its `CsmRsVersion` above what this build
+writes, `persist::STATE_FILE_VERSION`) is not loaded: the app starts empty and read-only, shows a
+strip ("written by a newer CodeShellManager"), and never replaces the file. Bump
+`STATE_FILE_VERSION` only for a format an older app cannot use safely.
+
+**Release hardening in the workflows.** Every third-party action is pinned to a full commit SHA
+(Dependabot updates them weekly); the Windows release job restores no build cache (it signs), and
+installs `cargo-about` at an exact version; a tag build fails when any signing secret is missing;
+tag names reach scripts only through `env:`. Downloads are verified by SHA-256 before use:
+`scripts/get-conpty.ps1` (the ConPTY nupkg, version and hash in the script's parameters; both
+files must also be Microsoft-signed, and `apps/codeshell/build.rs` copies them by content hash),
+and `release-v2-unix.yml` (appimagetool 1.9.0 and the type2 runtime 20251108, hashes in the
+job's `env`). To change one, download the new file in a clean folder, hash it
+(`sha256sum`/`Get-FileHash`), and change version and hash together.
 
 ## Merging into main
 
@@ -223,7 +263,7 @@ whatever folder it is in; it is removed before the new one is installed):
 | Coming from | What happens |
 |---|---|
 | 0.x (WPF), stable MSI | The WPF product is uninstalled by its own MSI: its files, shortcuts and (when empty) `umage\CodeShellManager` go. Version 2 is installed in `umage.ai\CodeShellManager`. Start menu and desktop shortcuts are re-created. **Taskbar pins and hand-made shortcuts to `...\umage\CodeShellManager\CodeShellManager.exe` break** (re-pin). `%APPDATA%\CodeShellManager` is untouched; the first-run import runs as before. |
-| An older 2.x stable (installed under `umage`) | Same: the old product is removed, version 2 goes to the new folder. Its PATH entry goes with it and the new one is added. The sign-in entry (HKCU Run) is rewritten to the new `codeshell.exe` by the `AutostartRefresh` action (right after `InstallFiles`) and again by the app on every start; `csm setup` registrations are repaired by the app's start (below). A pin made to `codeshell.exe` breaks. |
+| An older 2.x stable (installed under `umage`) | Same: the old product is removed, version 2 goes to the new folder. Its PATH entry goes with it and the new one is added. The sign-in entry (HKCU Run) is rewritten to the new `codeshell.exe` by the `AutostartRefresh` action (right after `InstallFiles`) and by the app at start only when the program it names is gone (per channel: stable `CodeShellManager`, beta `CodeShellManager-Beta`); `csm setup` registrations are repaired by the app's start (below). A pin made to `codeshell.exe` breaks. |
 | An older beta | The beta product (its own UpgradeCode) is replaced by the new beta, or removed by a stable install, exactly as before; the folder changes from `umage\CodeShellManager Beta` to `umage.ai\CodeShellManager Beta`. |
 
 Leftovers: the new MSI carries two components (`RemoveFolder On="install"`, never
@@ -361,8 +401,7 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
 - **Scripts and agent configs that name the old path** (`C:\Program Files\umage\CodeShellManager\csm.exe`):
   the ones `csm setup` wrote are repaired when the app starts; a hand-written one is not. The PATH
   entry is replaced by the installer.
-- **The WPF app running during the upgrade**: MSI asks to close it (files in use); a silent
-  winget/choco upgrade may schedule a reboot (exit 3010) instead. Same as WPF-to-WPF upgrades.
+- **The app running during the upgrade**: the MSI first runs the installed `csm.exe app_quit` (a graceful quit: sessions are closed cleanly and restored next start; started without waiting), then `util:CloseApplication` waits up to 60 s for `codeshell.exe` to exit and posts WM_CLOSE. Anything still running falls back to Windows Installer's files-in-use handling (a reboot, exit 3010, for a silent winget/choco upgrade). The WPF app (0.x) has no `csm` and is handled by the fallback only.
 - **Import is one-shot.** If someone starts version 2 before the WPF app has saved its last
   changes, or deletes v2's state later, the automatic import does not re-run while a v2 state
   file exists; the import is still available by hand (palette: "Import from CodeShellManager
@@ -374,6 +413,37 @@ Decided by Allan on 2026-11-22 (12 on 2026-11-24): 1 (keep `codeshell.exe`), 12 
   a torn copy only affects the beta's search index and notes, never the stable app's.
 - **Two `csm` on PATH** with stable and beta both installed: the first on PATH wins, and it only
   talks to its own channel's app (`csm setup` also registers both under the MCP name `codeshell`).
-- **Unsigned stable builds** can no longer be published (the workflow refuses). A dry-run
+- **Unsigned tag builds** can no longer be published (the workflow refuses). A dry-run
   stable MSI is signed too (since the signing secrets are set) and installing one on a real machine
   upgrades its WPF app.
+
+## Manual hardening for Allan (GitHub settings; not done by any workflow)
+
+The workflows are pinned and least-privilege as far as files can make them (actions pinned to full
+commit SHAs, no build cache where secrets are held, tag names only through `env:`, the Chocolatey
+publish checks the signer). These settings live in GitHub and only Allan can change them:
+
+1. **GitHub Environments.** Create `release-signing` (the Azure Trusted Signing secrets) and
+   `release-publish` (`WINGET_TOKEN`, `CHOCO_API_KEY`), move those secrets out of repository
+   secrets into them, restrict each to **deployment tags `v*`** (Deployment branches and tags >
+   Selected > Add rule > Tag `v*`) and add **required reviewers** (Allan). Then add
+   `environment: release-signing` to the `release` job in `release-v2.yml` and
+   `environment: release-publish` to the jobs in `winget.yml` / `chocolatey.yml` (one line each;
+   do it together with the settings change so no run is left without its secrets). Note that a
+   dispatch dry run of `release-v2.yml` from a branch would then need a reviewer approval and an
+   environment that allows that branch, or it builds unsigned.
+2. **OIDC for Azure signing.** Replace the client secret (`AZURE_CLIENT_SECRET`) with a federated
+   credential on the app registration (subject
+   `repo:umage-ai/CodeShellManager:environment:release-signing`), give the job
+   `permissions: id-token: write`, and drop the secret. Then sign through `azure/login` (OIDC) with
+   `azure/trusted-signing-action` using its default credential chain.
+3. **A fine-grained bot token for winget.** `winget-releaser` documents a classic PAT. Use a
+   dedicated bot account (not a person) with a token limited to that purpose, rotate it, keep it
+   only in the `release-publish` environment; if a fine-grained token (contents and pull requests
+   on the `winget-pkgs` fork) works with the action's current version, use that instead.
+4. **A tag ruleset.** Settings > Rules > Rulesets > New tag ruleset on `v*`: restrict creation to
+   Allan (bypass list), block updates and deletions, so a release tag cannot be moved or
+   re-created to re-run a signing build on different content.
+5. **Dependabot** (`.github/dependabot.yml`) already updates the pinned action SHAs weekly; review
+   those pull requests like code (the diff is the new commit).
+6. Optional: a CODEOWNERS entry for `.github/` so workflow changes need Allan's review.

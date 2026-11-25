@@ -96,9 +96,10 @@ pub fn check_source(file: &str, text: &str) -> Findings {
         ui_frame: allowed(UI_FRAME, file),
         lines: text.lines().collect(),
         aliases: HashMap::new(),
+        globs: Vec::new(),
         problems: Vec::new(),
     };
-    v.collect_aliases(&parsed.items);
+    v.collect_aliases(&parsed);
     if is_root(file) {
         v.check_root(&parsed.attrs);
     }
@@ -114,7 +115,57 @@ struct Policy<'a> {
     lines: Vec<&'a str>,
     /// `use` names to their full paths, so `Command` resolves to `std::process::Command`.
     aliases: HashMap<String, Vec<String>>,
+    /// The prefixes of `use path::*` imports: a bare name may come from any of them.
+    globs: Vec<Vec<String>>,
     problems: Findings,
+}
+
+#[derive(Default)]
+struct AliasCollector {
+    aliases: HashMap<String, Vec<String>>,
+    globs: Vec<Vec<String>>,
+}
+
+/// Every `use` in a file, at any depth (one inside a function body counts), outside test-only items.
+impl<'ast> Visit<'ast> for AliasCollector {
+    fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
+        if has_cfg_test(&u.attrs) {
+            return;
+        }
+        let mut out = Vec::new();
+        flatten(&u.tree, &mut Vec::new(), &mut out);
+        for (name, full) in out {
+            if name == "*" {
+                self.globs.push(full);
+            } else {
+                self.aliases.insert(name, full);
+            }
+        }
+    }
+
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        if !has_cfg_test(&m.attrs) {
+            syn::visit::visit_item_mod(self, m);
+        }
+    }
+
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        if !has_cfg_test(&f.attrs) {
+            syn::visit::visit_item_fn(self, f);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        if !has_cfg_test(&f.attrs) {
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+
+    fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+        if !has_cfg_test(&i.attrs) {
+            syn::visit::visit_item_impl(self, i);
+        }
+    }
 }
 
 fn flatten(tree: &syn::UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
@@ -124,11 +175,18 @@ fn flatten(tree: &syn::UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String,
             flatten(&p.tree, prefix, out);
             prefix.pop();
         }
+        // `use std::process::{self}` imports `process` itself, not a name "self".
+        syn::UseTree::Name(n) if n.ident == "self" => {
+            if let Some(last) = prefix.last() {
+                out.push((last.clone(), prefix.clone()));
+            }
+        }
         syn::UseTree::Name(n) => {
             let mut full = prefix.clone();
             full.push(n.ident.to_string());
             out.push((n.ident.to_string(), full));
         }
+        syn::UseTree::Rename(r) if r.ident == "self" => out.push((r.rename.to_string(), prefix.clone())),
         syn::UseTree::Rename(r) => {
             let mut full = prefix.clone();
             full.push(r.ident.to_string());
@@ -143,11 +201,45 @@ fn flatten(tree: &syn::UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String,
     }
 }
 
+/// Is the item compiled in test builds only? `#[test]`, or a `#[cfg(...)]` whose predicate can never
+/// hold when `test` is off. Evaluated structurally (`any`, `all`, `not`), never by looking for the
+/// word: `cfg(any(test, unix))` and `cfg(feature = "test")` are compiled in a normal build too.
 fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
-        let text = quote_attr(a);
-        a.path().is_ident("test") || (a.path().is_ident("cfg") && text.contains("test") && !text.contains("not (test") && !text.contains("not(test"))
+        if a.path().is_ident("test") {
+            return true;
+        }
+        if !a.path().is_ident("cfg") {
+            return false;
+        }
+        match a.parse_args::<syn::Meta>() {
+            Ok(pred) => !cfg_may_be(&pred, true),
+            // A predicate that does not parse is never trusted as test-only.
+            Err(_) => false,
+        }
     })
+}
+
+/// Can `pred` evaluate to `truth` in a build where `test` is off (any other option may go either
+/// way)?
+fn cfg_may_be(pred: &syn::Meta, truth: bool) -> bool {
+    let nested = |l: &syn::MetaList| -> Option<Vec<syn::Meta>> {
+        l.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated).ok().map(|p| p.into_iter().collect())
+    };
+    match pred {
+        // `test` is off here: it is false, never true.
+        syn::Meta::Path(p) if p.is_ident("test") => !truth,
+        syn::Meta::List(l) if l.path.is_ident("not") => match nested(l) {
+            Some(v) if v.len() == 1 => cfg_may_be(&v[0], !truth),
+            _ => true,
+        },
+        syn::Meta::List(l) if l.path.is_ident("all") || l.path.is_ident("any") => {
+            let Some(items) = nested(l) else { return true };
+            // all(..) is true iff every item is; any(..) iff one is. Asking for "false" flips it.
+            if l.path.is_ident("all") == truth { items.iter().all(|i| cfg_may_be(i, truth)) } else { items.iter().any(|i| cfg_may_be(i, truth)) }
+        }
+        _ => true,
+    }
 }
 
 fn quote_attr(a: &syn::Attribute) -> String {
@@ -174,22 +266,11 @@ mod quote_free {
 }
 
 impl Policy<'_> {
-    fn collect_aliases(&mut self, items: &[syn::Item]) {
-        for item in items {
-            match item {
-                syn::Item::Use(u) if !has_cfg_test(&u.attrs) => {
-                    let mut out = Vec::new();
-                    flatten(&u.tree, &mut Vec::new(), &mut out);
-                    self.aliases.extend(out);
-                }
-                syn::Item::Mod(m) if !has_cfg_test(&m.attrs) => {
-                    if let Some((_, inner)) = &m.content {
-                        self.collect_aliases(inner);
-                    }
-                }
-                _ => {}
-            }
-        }
+    fn collect_aliases(&mut self, file: &syn::File) {
+        let mut c = AliasCollector::default();
+        c.visit_file(file);
+        self.aliases = c.aliases;
+        self.globs = c.globs;
     }
 
     fn at(&self, span: Span) -> String {
@@ -200,18 +281,35 @@ impl Policy<'_> {
         self.lines.get(span.start().line.saturating_sub(1)).is_some_and(|l| l.contains("policy-ok:"))
     }
 
-    fn resolve(&self, segments: &[String]) -> Vec<String> {
-        match segments.first().and_then(|f| self.aliases.get(f)) {
-            Some(full) => full.iter().chain(segments.iter().skip(1)).cloned().collect(),
-            None => segments.to_vec(),
+    /// What a path may name: itself, through an alias (`use std::process as p`), and through each
+    /// glob import (`use std::process::*` makes a bare `Command` std's).
+    fn candidates(&self, segments: &[String]) -> Vec<Vec<String>> {
+        let mut out = vec![segments.to_vec()];
+        if let Some(full) = segments.first().and_then(|f| self.aliases.get(f)) {
+            out.push(full.iter().chain(segments.iter().skip(1)).cloned().collect());
         }
+        for g in &self.globs {
+            out.push(g.iter().chain(segments.iter()).cloned().collect());
+        }
+        out
     }
 
     fn check_path(&mut self, segments: Vec<String>, span: Span) {
-        let full = self.resolve(&segments);
+        for full in self.candidates(&segments) {
+            self.check_resolved(&full, span);
+        }
+    }
+
+    fn report(&mut self, msg: String) {
+        if !self.problems.contains(&msg) {
+            self.problems.push(msg);
+        }
+    }
+
+    fn check_resolved(&mut self, full: &[String], span: Span) {
         let s: Vec<&str> = full.iter().map(String::as_str).collect();
         if !self.process_ok && s.starts_with(&["std", "process", "Command"]) {
-            self.problems.push(format!("{}: `std::process::Command` outside the modules that own processes (use csm_engine::proc)", self.at(span)));
+            self.report(format!("{}: `std::process::Command` outside the modules that own processes (use csm_engine::proc)", self.at(span)));
         }
         if self.ui_frame && !self.opted_out(span) {
             let banned = s.starts_with(&["std", "fs"])
@@ -220,7 +318,7 @@ impl Policy<'_> {
                 || s.starts_with(&["std", "thread", "sleep"])
                 || s.starts_with(&["std", "io", "stdin"]);
             if banned {
-                self.problems.push(format!(
+                self.report(format!(
                     "{}: `{}` in UI frame code (blocking or I/O; send it to a background thread and poll a channel)",
                     self.at(span),
                     s.join("::")
@@ -322,7 +420,11 @@ impl<'ast> Visit<'ast> for Policy<'_> {
         let mut out = Vec::new();
         flatten(&u.tree, &mut Vec::new(), &mut out);
         let span = u.use_token.span;
-        for (_, full) in out {
+        for (name, full) in out {
+            // `use std::process::*` brings `Command` in by name.
+            if name == "*" && full == ["std", "process"] {
+                self.check_resolved(&["std".to_owned(), "process".to_owned(), "Command".to_owned()], span);
+            }
             self.check_path(full, span);
         }
     }
@@ -362,6 +464,70 @@ mod tests {
         // The same text is fine where processes live, and clap's Command is not std's.
         assert!(check_source("crates/csm-engine/src/proc.rs", "use std::process::Command; fn f() { Command::new(\"x\"); }").is_empty());
         assert!(check_source("apps/csm-cli/src/args.rs", "use clap::Command; fn f() { Command::new(\"x\"); }").is_empty());
+    }
+
+    #[test]
+    fn every_way_of_importing_process_command_is_flagged() {
+        for src in [
+            "use std::process::*; fn f() { Command::new(\"x\"); }",
+            "use std::process::{self}; fn f() { process::Command::new(\"x\"); }",
+            "use std::process::{self as p}; fn f() { p::Command::new(\"x\"); }",
+            "use std::process::Command as C; fn f() { C::new(\"x\"); }",
+            "use std::{process::Command, io}; fn f() {}",
+            "use std::*; fn f() { process::Command::new(\"x\"); }",
+            "use ::std::process::Command; fn f() {}",
+            "fn f() { use std::process::Command; Command::new(\"x\"); }",
+            "fn f() { use std::process as p; p::Command::new(\"x\"); }",
+            "mod m { use std::process::{Command as K}; pub fn f() { K::new(\"x\"); } }",
+            "fn f() { ::std::process::Command::new(\"x\"); }",
+        ] {
+            assert!(!check_source(ENGINE, src).is_empty(), "{src}");
+            assert!(check_source("crates/csm-engine/src/proc.rs", src).is_empty(), "allowed in proc.rs: {src}");
+        }
+        // Other std::process items and other `Command`s are fine.
+        for src in [
+            "use std::process::ExitCode; fn f() {}",
+            "use std::process::*; fn f() { exit(1); }",
+            "fn f() { std::process::exit(1); }",
+            "use clap::*; fn f() { Command::new(\"x\"); }",
+        ] {
+            let found = check_source(ENGINE, src);
+            // `use std::process::*` itself is flagged (it brings Command in); the others are clean.
+            if src.contains("process::*") {
+                assert!(!found.is_empty(), "{src}");
+            } else {
+                assert!(found.is_empty(), "{src}: {found:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_predicate_that_needs_test_exempts_an_item() {
+        let cmd = "use std::process::Command; fn f() { Command::new(\"x\"); }";
+        // Test-only: exempt.
+        for cfg in ["test", "all(test, unix)", "all(unix, test)", "all(test, feature = \"x\")", "not(not(test))"] {
+            let src = format!("#[cfg({cfg})] mod m {{ {cmd} }}");
+            assert!(check_source(ENGINE, &src).is_empty(), "{cfg}");
+        }
+        // Compiled in a normal build too: NOT exempt (the first two used to slip through).
+        for cfg in [
+            "any(test, unix)",
+            "any(unix, test)",
+            "feature = \"test\"",
+            "feature = \"attest\"",
+            "not(test)",
+            "all(not(test), unix)",
+            "any(test, not(test))",
+            "target_os = \"test\"",
+            "not(all(test, unix))",
+        ] {
+            let src = format!("#[cfg({cfg})] mod m {{ {cmd} }}");
+            assert!(!check_source(ENGINE, &src).is_empty(), "{cfg}");
+        }
+        // Functions are exempt the same way; #[test] always is.
+        assert!(check_source(ENGINE, &format!("#[cfg(test)] fn f() {{ {cmd} }}")).is_empty());
+        assert!(!check_source(ENGINE, &format!("#[cfg(any(test, windows))] fn f() {{ {cmd} }}")).is_empty());
+        assert!(check_source(ENGINE, "#[test] fn t() { std::process::Command::new(\"x\"); }").is_empty());
     }
 
     #[test]

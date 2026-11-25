@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- CodeShellManager (version 2, the Rust app). Built by .github/workflows/release-v2.yml with
-       -d Version=<numeric> -d PublishDir=<dir> -d Channel=stable|beta
+       -d Version=<numeric; docs/release.md, "Version scheme"> -d PublishDir=<dir> -d Channel=stable|beta
      See docs/release.md for every identity below and why it has the value it has.
 
      Channel=stable (rc and final releases): THE CodeShellManager. It carries the WPF app's
@@ -15,7 +15,8 @@
      Channel=beta: "CodeShellManager Beta", installed BESIDE the WPF app with its own
        UpgradeCode, folder, Start-menu entry and app id, so a beta never upgrades or removes it. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <?ifndef Channel ?>
     <?define Channel = "beta" ?>
@@ -51,8 +52,10 @@
            UpgradeCode="$(var.UpgradeCode)"
            Scope="perMachine">
 
-    <!-- Pre-releases share the first three version fields (2.0.0.N) and MSI ignores the fourth,
-         so a same-version upgrade must replace the old build rather than install a second copy.
+    <!-- ProductVersion encodes the pre-release number in the first three fields (docs/release.md,
+         "Version scheme"), because MSI ignores the fourth: beta.5 > beta.2 and every pre-release
+         < the final release, so an older pre-release can never silently replace a newer one.
+         Same-version upgrades stay allowed (re-running a build of the same version repairs it).
          The WPF app's versions (0.x) are always lower, so they are always upgraded. The old
          product is removed before the new one is installed (the default schedule), so the WPF
          app's files (CodeShellManager.exe, Assets\) leave its folder (C:\Program Files\umage\...,
@@ -76,11 +79,13 @@
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/umage-ai/CodeShellManager" />
 
-    <ui:WixUI Id="WixUI_InstallDir" />
+    <!-- No folder page: the install folder is fixed (Program Files\umage.ai\...), because this
+         folder goes on the SYSTEM PATH and a user-chosen one (e.g. a writable folder) would put
+         an attacker-writable directory on every user's PATH. -->
+    <ui:WixUI Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf"  Value="installer\License.rtf" />
     <WixVariable Id="WixUIBannerBmp"   Value="installer\banner.bmp" />
     <WixVariable Id="WixUIDialogBmp"   Value="installer\dialog.bmp" />
-    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
     <Feature Id="ProductFeature" Title="$(var.ProductName)" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
@@ -101,7 +106,23 @@
                   Execute="deferred" Impersonate="yes" Return="ignore" />
     <CustomAction Id="AutostartRemove" FileRef="CodeShellExe" ExeCommand="--autostart-remove"
                   Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <!-- Upgrade (or uninstall) while the app runs: ask it to quit gracefully BEFORE files are
+         replaced. The installed csm.exe (by full path, from the file table) runs the app_quit
+         tool; it is started without waiting (asyncNoWait), so a slow quit cannot hang the
+         installer, and CloseApplication below then waits a bounded time for codeshell.exe to go
+         (Timeout, seconds) and posts WM_CLOSE. If it is still running after that, Windows
+         Installer's file-in-use handling takes over (files are replaced on restart). Failures
+         never fail the install (Return=ignore). ExeCommand is a fixed string. -->
+    <CustomAction Id="QuitRunningApp" FileRef="CsmExe" ExeCommand="app_quit"
+                  Execute="immediate" Return="asyncNoWait" />
+    <util:CloseApplication Id="CloseCodeShell" Target="codeshell.exe" CloseMessage="yes"
+                           RebootPrompt="no" Timeout="60"
+                           Condition="WIX_UPGRADE_DETECTED OR CSMBETAFOUND OR REMOVE~=&quot;ALL&quot;" />
+
     <InstallExecuteSequence>
+      <Custom Action="QuitRunningApp" After="CostFinalize"
+              Condition="WIX_UPGRADE_DETECTED OR CSMBETAFOUND OR REMOVE~=&quot;ALL&quot;" />
       <Custom Action="AutostartRefresh" After="InstallFiles" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="AutostartRemove" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
@@ -170,7 +191,7 @@
       <!-- The CLI and MCP server (`csm`, `csm mcp`). Its folder goes on the system PATH so
            `csm setup` / an agent's MCP config can name it without a full path. -->
       <Component Directory="INSTALLFOLDER" Guid="*">
-        <File Source="$(var.PublishDir)\csm.exe" KeyPath="yes" />
+        <File Id="CsmExe" Source="$(var.PublishDir)\csm.exe" KeyPath="yes" />
         <Environment Id="PathCsm" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />
       </Component>
 

@@ -22,6 +22,16 @@ pub const PORTABLE_MARKER: &str = "portable";
 /// The persisted-file version written into `state.json` (`CsmRsVersion`).
 pub const STATE_FILE_VERSION: u32 = 1;
 
+/// What `State::load` puts first in `read_only` when `state.json` was written by a newer app:
+/// loading it could drop what this version does not know, and a save would replace it.
+pub const NEWER_STATE_MARKER: &str = "newer-version:";
+
+/// The read-only reason for a state file of `version`, when this build cannot safely use it.
+pub fn newer_state_reason(version: Option<u32>) -> Option<String> {
+    let v = version.filter(|v| *v > STATE_FILE_VERSION)?;
+    Some(format!("{NEWER_STATE_MARKER}{v}"))
+}
+
 /// The app's folder name under the platform data dirs (roaming: state; local: the index), by
 /// release channel (`csm_core::channel`): `CodeShellManager2` for stable builds (and every local
 /// build), `CodeShellManager2-Beta` for beta builds, so a beta installed beside the stable app

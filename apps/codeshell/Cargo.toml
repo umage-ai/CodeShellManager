@@ -46,3 +46,5 @@ notify-rust = "4.19"
 [build-dependencies]
 # Embeds assets/codeshell.ico as the exe's icon (Windows only; needs rc.exe from the Windows SDK).
 winresource = "0.1"
+# build.rs compares the bundled ConPTY files by content hash.
+sha2 = "0.10"

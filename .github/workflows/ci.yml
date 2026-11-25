@@ -30,16 +30,16 @@ jobs:
       matrix:
         os: ${{ fromJSON(startsWith(github.ref_name, 'ci-full/') && '["windows-latest", "macos-latest", "ubuntu-latest"]' || '["ubuntu-latest"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # The same toolchain as the local gate (cargo +1.97, rust-version in Cargo.toml): a newer
       # stable brings new clippy lints that would fail CI but not the gate. Bump both together.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.97"
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # egui / winit / wgpu need these to compile and link on Linux.
       - name: Linux system libraries
@@ -73,7 +73,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2
         with:
           command: check

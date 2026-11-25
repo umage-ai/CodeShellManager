@@ -694,13 +694,14 @@ fn main() {
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
-        // The sign-in entry follows the app when it moved (an upgrade into a new folder). Not for a
-        // test run (`--clean`, another config folder: the entry starts neither), and a development
-        // build only takes over an entry whose program is gone.
+        // The sign-in entry (one per channel) is repaired only when the program it names is gone;
+        // the installer's hook moves it on an upgrade. A working entry is never taken over, so copies
+        // and development builds cannot fight over it. Not for a test run (`--clean`, another config
+        // folder: the entry starts neither).
         if !args.clean
             && args.config_dir.is_none()
             && std::env::var_os("CSM_CONFIG_DIR").is_none()
-            && let Some(line) = options_autostart.refresh(cfg!(debug_assertions))
+            && let Some(line) = options_autostart.refresh(true)
         {
             log::info!("autostart: {line}");
         }
