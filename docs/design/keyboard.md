@@ -1,7 +1,18 @@
 # Keyboard: drive the whole UI without a mouse
 
-Date: 2026-11-24. Branch `kb/navigation`. Design note only: no app code changes in this step.
-`file:line` references are to this worktree at `f1ada33`.
+> **Historical design note.** Written 2026-11-24 before the keyboard work was built; it is kept for
+> the reasons behind the design. The current behaviour is in [../keyboard.md](../keyboard.md). Where
+> this note and that page differ, the page is right. §1 describes the code as it was before the
+> work and the file:line references are no longer valid. Section 8's "Status" lists what is done and
+> what is not.
+>
+> | Item in this note | Now |
+> |---|---|
+> | Space or Ctrl+Space toggles a sidebar row | Plain **Space** toggles the focused row; Ctrl+Space is not bound |
+> | Delete closes the focused row | Not bound |
+> | The context-menu key opens the row menu | Not bound (egui has no key for it); Shift+F10 only |
+> | F10 filters the main menu by typing | It does not; the access letters take the typed keys |
+> | `ui.screen_tab_next` / `_prev` as tools | UI keymap actions, not tools |
 
 **Goal (owner-approved):** a power user can reach and operate every part of CSM from the keyboard,
 and can rebind any action. Every existing shortcut keeps working.
@@ -74,7 +85,7 @@ Per-region keyboard behaviour (keys work only where the mouse already does the s
 |---|---|
 | Title bar | Left/Right move between buttons; Enter or Space activate |
 | Rail tabs | Left/Right (or Up/Down, whichever axis the strip uses) move; Home/End jump; Enter or Space select |
-| Sidebar list | Up/Down move the ring; Shift+Up/Down extend selection; Ctrl+Space toggles one row (as Ctrl+click); Home/End; Enter opens or runs the row; F2 renames; Delete closes it if the row menu offers Close; Shift+F10 or the context-menu key opens the row menu |
+| Sidebar list | Up/Down move the ring; Shift+Up/Down extend selection; Space toggles one row (as Ctrl+click); Home/End; Enter opens or runs the row; F2 renames; Shift+F10 opens the row menu (the Delete and context-menu-key bindings planned here were not built) |
 | Group headers | Enter toggles collapse; Shift+F10 opens the group menu |
 | Inbox panel | Up/Down move; Enter opens the session |
 | Screen strip | Left/Right move; Home/End; Enter or Space select; Ctrl+PgUp/PgDn switch tabs from any region |
@@ -98,7 +109,7 @@ Anything not in this table keeps its mouse behaviour only and is listed as a gap
 **Main actions menu: F10.** A new menu listing every action grouped by area (Sessions, Panes,
 Views, Layout, Runs, Git, Notes, Settings, Help). It is built from the tool registry plus the UI-only
 actions, so a new tool appears without UI work. Each row shows its current chord from the keymap.
-Typing filters the list; it is not a second command palette, and Ctrl+K stays the palette. Alt
+The list does not filter by typing (the access letters take typed keys); it is not a second command palette, and Ctrl+K stays the palette. Alt
 on its own does nothing: a clean Alt tap is not shipped (open question 3). Alt is the terminal's meta
 prefix, so a bare Alt tap is fragile.
 
@@ -130,12 +141,12 @@ section 1 and the terminal key list. "Risk" lists known OS or app conflicts.
 | Ctrl+Alt+PgUp / Ctrl+Alt+PgDn | Rail tab prev / next (`rail_tab_prev`, `rail_tab_next`) | tool | free |
 | F10 | Main actions menu | UI | free. Windows reserves F10 only for a native menu bar, which CSM does not have |
 | Shift+F10 | Menu of the focused item (outside terminal) | UI | free; the terminal keeps it when focused |
-| Menu key (context menu key) | Same as Shift+F10 | UI | free |
-| Ctrl+Space | Toggle the focused sidebar row in the selection | UI | free |
+| Menu key (context menu key) | Same as Shift+F10 (planned; not built) | UI | free |
+| Space (planned as Ctrl+Space) | Toggle the focused sidebar row in the selection | UI | built as plain Space |
 | Shift+Up / Shift+Down | Extend the sidebar selection | UI | free outside terminal |
 | Enter / Space | Activate the focused control | UI | existing Enter; Space only outside terminal |
 | F2 | Rename (existing) | tool `session_rename` | existing |
-| Delete | Close the focused row's session, with confirm | tool `session_close` | free outside terminal; only if the row menu offers it |
+| Delete | Close the focused row's session, with confirm | tool `session_close` | free outside terminal; only if the row menu offers it | (planned; not built)
 | Tab / Shift+Tab | Move within a dialog or tablist | UI | consumed only when a non-terminal region has focus |
 
 Existing chords stay exactly as they are (section 1). Chords kept out of the new table on purpose:
@@ -188,14 +199,14 @@ Tools are added only where the action changes app state and makes sense outside 
 
 | Tool | Effect | Notes |
 |---|---|---|
-| `ui.screen_tab_next` / `ui.screen_tab_prev` | switch the add-on screen tab | UI keymap actions, not tools yet (see step 5) |
-| `rail_tab_next` / `rail_tab_prev` | switch the rail tab | state change; `view_set` already exists, so these are thin wrappers that compute the next tab |
-| `pane_focus_next` / `pane_focus_prev` | focus the next / previous visible pane | state change; wraps `session_focus` |
+
+| `rail_tab_next` / `rail_tab_prev` | switch the rail tab | `ui` effect; `view_set` already exists, so these are thin wrappers that compute the next tab |
+| `pane_focus_next` / `pane_focus_prev` | focus the next / previous visible pane | `ui` effect; wraps `session_focus` |
 
 Pane geometry (Ctrl+Alt+Arrow) resolves to `session_focus` with the id chosen by UI. It needs no
 new tool, because the outcome is the same tool call.
 
-Effects are declared honestly in the `ToolSpec` (all three are `state` effects, no consent prompt
+Effects are declared honestly in the `ToolSpec` (the tools above are `ui` effects, no consent prompt
 for MCP beyond what `session_focus` already asks).
 
 ## 8. Build steps

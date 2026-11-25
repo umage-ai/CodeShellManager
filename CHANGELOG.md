@@ -14,9 +14,9 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 ### Upgrading from 0.x
 
 - 2.0 keeps its data in its own folder and never writes to 0.x's (`%AppData%\CodeShellManager`).
-- On first start, with no sessions yet, **Import from CodeShellManager (WPF)** brings 0.x's
+- On first start, with no sessions yet, **Import from CodeShellManager 0.x** brings 0.x's
   sessions and groups across, asleep: nothing starts until you wake it.
-- *Import notes from CodeShellManager (WPF)* (palette) brings the per-folder notes from 0.x's
+- *Import notes from CodeShellManager 0.x…* (palette) brings the per-folder notes from 0.x's
   `output.db`, read-only; a newer note wins.
 - Settings: export a `.csm` backup in 0.x and use *Import setup* in 2.0. It previews the change,
   keeps your API key if the backup's is blank, and adopts the backup's Open with list only if you
@@ -106,7 +106,7 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   `session_drop_paths`, does the paste for local and remote drops alike.
 - **New session dialog** (`Ctrl+T`): type a folder, press Enter. A **This PC / SSH / WSL** selector
   replaces *Remote…*; up to eight recent folders, wrapping command chips, a profile and group, form
-  tabs from add-ons (New NEXUS agent), **Start** and **Start and keep open**, `Alt+1…9`, `Alt+R`,
+  tabs from add-ons (New agent), **Start** and **Start and keep open**, `Alt+1…9`, `Alt+R`,
   `Alt+G`.
 - **Remote access (CSM to CSM)**: Settings › Remote access turns it on, pairs devices and can reach
   the office through a relay; remote windows and `csm attach`. Off until you switch it on. See

@@ -1,6 +1,6 @@
 # Distributing CodeShellManager 2 on macOS and Linux
 
-Status: plan, November 2026. Windows ships through `release-v2.yml` (signed MSI and zip, GitHub
+Status: November 2026. This document was written as a plan, and its checks were done by hand; the results of real runs are on the repository's Actions page, not here. Windows ships through `release-v2.yml` (signed MSI and zip, GitHub
 pre-releases; winget and Chocolatey at 2.0 final). This document covers the other two platforms:
 what the build produces today, where to publish it, in what order, and what is still broken at
 run time.
@@ -16,7 +16,7 @@ unaffected.
 `.github/workflows/release-v2-unix.yml` builds Linux on a `v2.*` tag (or a dry run on
 `workflow_dispatch` / a `release-dry-run/**` branch). **macOS is built only when asked for**, because
 its runners cost about ten times Linux ones: push the tag's commit to `release-macos/<tag>`
-(`git push origin v2.0.0-beta.17:refs/heads/release-macos/v2.0.0-beta.17`; the tag must point at the
+(`git push origin v2.0.0-beta.N:refs/heads/release-macos/v2.0.0-beta.N`; the tag must point at the
 same commit), or to any other `release-macos/<name>` for an unsigned dry run, and delete the branch
 afterwards. It uploads **workflow artifacts only**. Nothing is attached to a release and nothing is
 published.
@@ -44,9 +44,10 @@ published.
 - **Icons:** generated in CI from `apps/codeshell/assets/codeshell.ico` (which a test keeps in sync
   with the drawn icon) by `scripts/ico-to-png.py`.
 
-**Not verified.** The workflow has never run: it can only run on GitHub. Locally, it parses as
-YAML and its shell and packaging steps were reviewed by hand; actionlint was not available. Check
-these on the first dry run:
+**Checked by hand, not recorded here.** The workflow can only run on GitHub, so this document does
+not say what has run. Locally, it parses as YAML and its shell and packaging steps were reviewed by
+hand; actionlint was not available. Check these on a dry run, and read the run before trusting
+anything below that says "first":
 
 - **arm64 Linux runner.** `ubuntu-22.04-arm` is free for public repositories. If the repository is
   private, the aarch64 job needs a paid larger runner, or should be dropped.
@@ -201,7 +202,7 @@ from the user's PATH, reads `~/.claude`, and serves the `csm` CLI over a socket 
 | Apple Team / Developer ID | umage organisation | Apple Developer Program |
 | apt/rpm repository host | e.g. `https://umage-ai.github.io/CodeShellManager/apt` or Cloudsmith `umage-ai/codeshellmanager` | decide (below) |
 
-## 6. Accounts and secrets Allan needs
+## 6. Accounts and secrets the maintainer needs
 
 - **Apple Developer Program** (organisation, 99 USD a year, D-U-N-S number), then the six `APPLE_*`
   repository secrets listed in section 3.
@@ -300,7 +301,7 @@ the repository root. Two small ones are fixed on this branch: marked *fixed*.
 21. **Secret storage on Linux needs a Secret Service** (gnome-keyring or KWallet). The .deb
     recommends one.
 
-## 8. Decisions for Allan
+## 8. Decisions
 
 1. **Enrol in the Apple Developer Program now** (as the organisation; 99 USD a year). Notarization
    gates every good macOS route.

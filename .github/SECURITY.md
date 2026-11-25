@@ -5,11 +5,30 @@ ssh…) in local pseudo-terminals, indexes their output to a local SQLite databa
 state in the user's app-data folder (`%AppData%\CodeShellManager2` and
 `%LocalAppData%\CodeShellManager2` on Windows). It has no account and sends no telemetry.
 
+## What uses the network
+
+- **Local control channel (always).** The `csm` command line and the `csm mcp` server talk to the
+  running app over a loopback connection, authenticated with a token written per launch to the
+  user's runtime folder. By default nothing listens on other interfaces.
+- **Remote access (off until the person turns it on).** Only the person at the app can turn it on
+  or pair a device; no agent, MCP client, `csm` command or paired device can. When it is on, the
+  app listens on the port and address the person chose (port 47300 by default, one address, or
+  every interface only as an explicit choice). A saved "every interface" choice is honoured after a
+  restart only when it carries the app's own signature; otherwise the app listens on loopback
+  until the person confirms it again. Connections use Noise with per-device keys after a pairing
+  with a check code, and each paired device has a level (Full, Operator, Viewer) and a trusted flag
+  that only the office's own window can change. An untrusted device needs the person's OK on the
+  office for anything that types into a session or starts a process. Every enable, pairing,
+  connection and revocation is logged. With a relay configured, the app also connects outbound to
+  that relay, which carries only encrypted frames. See `docs/remote-access.md`.
+- **Update check (on by default).** Once a day the app makes one HTTPS request to GitHub's API to
+  ask whether a newer release exists. Nothing is downloaded and the only identifying header is a
+  generic `CodeShellManager/<version>` user agent. Turn it off in Settings → General → Updates.
+- **What the person starts.** Git fetch, ssh and the programs run in sessions go where the person
+  points them.
+
 ## The security model in brief
 
-- **Local control channel.** The `csm` command line and the `csm mcp` server talk to the running
-  app over a loopback connection, authenticated with a token written per launch to the user's
-  runtime folder. Nothing listens on other interfaces.
 - **Consent for MCP clients.** Every action is a tool with declared effects. When an MCP client
   calls a tool that sends input to a session, reads session content, starts a process, writes
   files or may discard data, the call waits until the person answers a consent card in the app

@@ -88,7 +88,7 @@ Each group remembers its own layout. Switch from the bar above the panes:
 | **Side by side** | The sessions you pin, tiled automatically (the default). With nothing pinned, the live sessions. |
 | **Overview** | Every live session as a grid of live mini-terminals; click one to focus it. |
 | **Board** | Agents and tasks in columns (see below). |
-| **Grid** | Fixed presets (1, 2, 2×2, 3×2, 3×3) or your own columns × rows, up to 6×6. |
+| **Grid** | Fixed presets (1, 2, 4×1, 6×1, 2×2, 3×2, 6×2, 3×3) or your own columns × rows, up to 8×8. |
 | **Free** | Free-hand tiling: drag dividers, drop a pane on another pane's edge to split it, float a pane over the canvas, or tear it off into its own window. |
 
 A whole group can also move into its own window (for example a client's sessions on the second
@@ -165,7 +165,7 @@ A **This PC / SSH / WSL** selector chooses where it runs: SSH uses your own `ssh
 WSL one of your distributions. **Start and keep open** (`Ctrl+Enter`) starts one and leaves the
 dialog up for the next. `Alt+1…9` switch tabs, `Alt+R` cycles the location, `Alt+G` picks the
 group, and Tab moves through every control. Add-ons can add tabs with a form of their own, such as
-**New NEXUS agent**.
+**New agent**.
 
 ![The New session dialog with the This PC / SSH / WSL selector](docs/screens/08-new-session.png)
 
@@ -192,6 +192,8 @@ Register it with Claude Code by hand with `claude mcp add codeshell -- csm mcp`,
 **Settings → MCP → Offer CodeShellManager's tools to Claude sessions** for the sessions the app
 starts. MCP clients see a small core set of tools and turn on more (groups, layout, runs, git,
 notes, search, tasks, add-ons) when they need them.
+
+The global flags (`--start`, `--instance`), the built-in commands and the exit codes are in [docs/cli.md](docs/cli.md).
 
 **Consent cards.** A tool that types into a session, reads its output, starts a process, writes
 files or may discard data does not run for an MCP client until you answer a card in the app:
@@ -220,7 +222,9 @@ Show an office CodeShellManager's sessions on another machine: **Settings → Re
 it on and pairs a device, over a private network (WireGuard, Tailscale) or through a relay when
 there is no VPN. The remote window types into the sessions and answers their consent cards, and
 `csm attach` does the same from a terminal. Off until you switch it on, and only the person at the
-app can. See [docs/remote-access.md](docs/remote-access.md). The relay server and a phone add-on
+app can. Each paired device has a level (Full, Operator or Viewer) and may be trusted or not; an
+untrusted device needs your OK on the office for anything that types into a session or starts a
+program. See [docs/remote-access.md](docs/remote-access.md). The relay server and a phone add-on
 live in the separate, private `umage-ai/csm-relay` repository.
 
 ### And more
@@ -363,9 +367,9 @@ and a redesigned UI. winget and Chocolatey upgrade it like any other release.
 
 **Your sessions.** 2.0 keeps its data in its own folder and never writes to the old app's
 (`%AppData%\CodeShellManager`), so your existing data stays as it was. On first start, while it
-has no sessions, 2.0 offers **Import from CodeShellManager (WPF)**: your sessions and groups come
+has no sessions, 2.0 offers **Import from CodeShellManager 0.x**: your sessions and groups come
 across from the old app's `state.json`, **asleep**, so nothing starts until you wake it. Your
-notes come across with the palette command *Import notes from CodeShellManager (WPF)*.
+notes come across with the palette command *Import notes from CodeShellManager 0.x…*.
 
 **Your settings.** To bring the old settings as well (launch commands, the Open with list and the
 rest), export a `.csm` backup in 0.x and import it in 2.0 with the palette command *Import setup*.
@@ -391,14 +395,25 @@ keeps comments, makes a backup, and `csm uninstall` removes only what it added.
 usage, subagents). Codex CLI and Gemini CLI have sample add-ons with launch profiles and status
 rules. Anything else runs as a plain terminal.
 
-**Does anything leave my machine?** No account, no telemetry. The only listener is a loopback
-connection for `csm` and `csm mcp`, authenticated with a token per launch, unless you switch on
-[remote access](docs/remote-access.md), which is off by default. Git fetch and SSH go where you
-point them.
+**Does anything leave my machine?** No account, no telemetry. Three things can use the network:
 
-**What happens to running agents when I close the window?** By default, closing quits: busy
-sessions are listed first, and every session gets a moment to exit. With *Keep running in the tray
-when the window closes*, they keep running until you quit from the tray.
+- **Update check.** On by default. Once a day the app asks GitHub's API whether a newer release
+  exists and says so in the title bar. Nothing is downloaded and nothing about you is sent. Turn it
+  off in Settings → General → Updates (*Check for updates*).
+- **Remote access.** Off until you switch it on in Settings → Remote access. By default the only
+  listener is a loopback connection for `csm` and `csm mcp`, authenticated with a token per launch.
+  With remote access on, the app also listens on the port you chose (47300 by default) on the
+  address you picked, and pairing a device is the only way in. Listening on every interface is an
+  explicit choice; after a restart it falls back to this PC only until you confirm it again. With a
+  relay set up, the app also connects outbound to that relay. See
+  [docs/remote-access.md](docs/remote-access.md).
+- **What you start.** Git fetch, SSH and the commands in your sessions go where you point them.
+
+**What happens to running agents when I close the window?** By default it asks: *Keep running in
+the tray* or *Quit*. Settings → General → *When I close the window* can make either one the
+standing answer (Ask, Tray, Quit). Quitting lists busy sessions first and gives every session a
+moment to exit. In the tray, sessions keep running until you quit from the tray. Without a tray
+icon, closing always quits.
 
 **How do I start it when I sign in, out of the way?** Settings → General → Start-up: *Start
 CodeShellManager when I sign in*, plus *Start minimized* (on Windows and macOS, *Start in the
@@ -411,8 +426,8 @@ nothing.
 
 ## Documentation
 
-- [docs/](docs/README.md): the documentation index (tools, add-ons, shell integration,
-  architecture)
+- [docs/](docs/README.md): the documentation index (keyboard, remote access, the `csm` command
+  line, tools, add-ons, shell integration, design history)
 - [CHANGELOG.md](CHANGELOG.md)
 - [Contributing](.github/CONTRIBUTING.md) · [Security](.github/SECURITY.md) ·
   [Support](.github/SUPPORT.md) · [Code of Conduct](.github/CODE_OF_CONDUCT.md)

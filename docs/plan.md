@@ -1,6 +1,25 @@
 # CodeShellManager → Rust, cross-platform: evaluation and plan
 
-Status: accepted 2026-11-19 (decisions in section 6). Phase 0 has started.
+> **Historical plan.** Accepted 2026-11-19, before the rewrite was built; kept for the reasons behind
+> the decisions. Where it says "adopt", "planned" or "in progress", read the status below. For how
+> the app works now, read the [README](../README.md), [tools.md](tools.md), [keyboard.md](keyboard.md),
+> [quit.md](quit.md) and [remote-access.md](remote-access.md).
+>
+> | Item in this plan | What happened |
+> |---|---|
+> | Phase 0 terminal spike and the Tauri fallback | Passed on egui, so the fallback was not used. The spike is in [phase0-spike.md](phase0-spike.md). |
+> | egui 0.37 move (section 7) | Not done: the app is on upstream egui 0.36 (`Cargo.lock`). |
+> | Phases 1 to 5 | Built. The plan's "1.0" is the 2.0 release. |
+> | Layouts (section 4) | Focus, Side by side, Overview, Grid and Free as planned, plus **Board** (agents and tasks in columns). |
+> | One status vocabulary (section 4) | Built, with one more value than planned: **Starting** (launching: waiting for the first measured size, the Claude stagger or the process). **Exited** is also separate from Error. |
+> | Inspector tabs | Notes, Docs, Runs, Git, Session, Usage. |
+> | Crates marked "adopt" (section 1) | Only `craft-mcp-server`, `craft-ipc` (vendored, with one macOS fix) and `craft-dialogs` are dependencies. Settings, the keymap, menus, title bar, update check and widgets were written in this repository (`csm-core`, `csm-services`, `csm-ui`); `craft-ui`, `craft-settings`, `craft-keymap`, `craft-menu`, `craft-window`, `craft-quit`, `craft-update`, `craft-platform` and `craft-i18n` are not used. |
+> | Dev tooling (section 7) | Built: `cargo xtask` with `layers`, `policy`, `tools`, `secrets`, `mcp-size` and `ci`; the pre-commit hook; CI with `-D warnings`; `deny.toml` and `about.toml`. `rustfmt.toml` sets `max_width = 150` (not 160) and is not applied workspace-wide. `mcp-size` replaces `mcp-probe.py`. Not done: a `disallowed-types` rule for `std::sync::Mutex`. The crate-root deny of `unwrap_used` and friends is a workspace `warn` lint, not a `deny`. |
+> | Patterns to copy (section 7) | A run marker and a file log exist (`csm-engine` `diag`). The graphics start-up fallback chain (DX12, WARP, Vulkan, GL) was not built. Other items: see the code, not this plan. |
+> | Crate list (section 3) | Out of date. The table in section 3 is the current list. |
+>
+> The WPF app's `CLAUDE.md`, which this plan calls the record of hard-won behaviour, now lives in
+> this repository as [wpf/lessons.md](wpf/lessons.md).
 
 ## 1. What craft-anything is, and what it can be used for
 
@@ -15,7 +34,7 @@ There are two ways it could help. Only the second one is worth doing.
 
 - Its check step compares the rebuild with the original (screenshots, runs), so the result would
   copy today's UI, which is the opposite of the redesign we want.
-- What CodeShellManager is really worth is its hard-won invariants (CLAUDE.md: the ConPTY
+- What CodeShellManager is really worth is its hard-won invariants (the WPF app's CLAUDE.md, now [wpf/lessons.md](wpf/lessons.md): the ConPTY
   DA1/OSC behaviour, fit/size reporting, git off the UI thread, argv-only command lines, the
   restart and shutdown races). An automated rebuild would not carry them over.
 - The project describes itself as early alpha and is aimed at websites and games, not 21k lines of
@@ -98,6 +117,8 @@ tests port as golden cases. The UI is rewritten, not ported.
 
 ## 3. Architecture
 
+**The crate list below is the plan as first written. The table after it is the current one**, and `cargo xtask layers` (`xtask/src/layers.rs`) enforces it. Change both together.
+
 Follow craft-anything's "headless first" layering. Nothing in the UI crate owns processes or
 persistence.
 
@@ -121,6 +142,18 @@ apps/
   csm-cli       `csm mcp` (stdio MCP server) and every tool as `csm <tool-id>`; both talk to the
                 running app over craft-ipc and start it if needed
 ```
+
+**Current crates and layers.** A crate may depend only on crates of a lower layer; only `csm-ui` and the apps use egui.
+
+| Layer | Crates | Role |
+|---|---|---|
+| L0 | `csm-core`, `csm-remote-proto` (vendored), `csm-peer-proto` | Pure logic and wire types: models, validation, payloads; the phone protocol; the peer protocol |
+| L1 | `csm-pty`, `csm-term` | PTY (ConPTY on Windows) and terminal model |
+| L2 | `csm-services`, `csm-index` | Git, ssh, WSL, open-with, update check; the FTS5 output index and notes |
+| L3 | `csm-engine` | Session supervisor, tool registry, consent, peer host |
+| L4 | `csm-mcp`, `csm-ui`, `csm-peer` | MCP and IPC bridge; the egui UI; the peer link (Noise over TCP) |
+| L5 | `csm-setup`, `csm-remote` | `csm setup` and `doctor`; the remote window's client |
+| L6 | `codeshell`, `csm-cli`, `csm-session-summary`, `csm-review`, `term-spike` | Programs |
 
 Rules carried over from both projects:
 - Nothing slow runs on the UI thread. egui's frame loop makes this explicit: work goes to
@@ -190,7 +223,7 @@ tested as in craft's `theme.rs`):
   - *Side by side*: the sessions you pin, auto-tiled. Intent mode, and the default.
   - *Overview*: every live session as an auto-fitting grid of live mini-terminals; click one to
     focus it. Intent mode.
-  - *Grid*: the fixed presets users already rely on (1, 2, 2×2, 3×2, 3×3, custom N×M). **Kept.**
+  - *Grid*: the fixed presets users already rely on (1, 2, 2×2, 3×2, 3×3, custom N×M; built as 8 presets, up to 8×8). **Kept.** (A sixth mode, *Board*, was added later.)
   - *Free*: free-hand tiling. Panes form a split tree you resize by dragging any divider, split by
     dropping a pane on another pane's edge, and every ratio persists. Panes can also **float**:
     either inside the main window (an egui window over the canvas, which a native renderer allows
@@ -296,7 +329,7 @@ the stack holds.
    block carries a `// SAFETY:` comment, and the module is kept small enough to review in one
    sitting. Rationale: one auditable FFI surface instead of forking portable-pty, while Craft's
    safe-only rule holds everywhere else.
-5. **Redesign review:** Morten and Allan go through the mock-ups before Phase 3. Mock-ups are
+5. **Redesign review:** The maintainers go through the mock-ups before Phase 3. Mock-ups are
    published as a private page.
 
 ## 7. From the Craft ecosystem (survey, 2026-11-19)
@@ -330,7 +363,7 @@ with the phase they land in.
   file around the first frames to detect a driver crash on the previous start; renderer chain
   DX12 → WARP → Vulkan → GL saved per app version (DX12 only first on Windows); `WGPU_*`
   overrides; `desktop.log`. Phase 3.
-- **Pitfalls** (`docs/pitfalls.md`): image paste (egui-winit drops Ctrl+V when the clipboard has
+- **Pitfalls** (craft-anything's `docs/pitfalls.md`; not in this repository): image paste (egui-winit drops Ctrl+V when the clipboard has
   no text, so pass the raw key through to the PTY or pasting a screenshot into Claude Code does
   nothing); per-frame repaint from spinners; `scroll_to_me` every frame; `CREATE_NO_WINDOW` for
   every child process; `.cmd` shims and the macOS Dock PATH when finding `claude` (`which.rs`).
@@ -354,7 +387,7 @@ with the phase they land in.
   workspace warnings). Record the ConPTY module as the named `unsafe` exception.
 - `cargo-deny` (licence allowlist, check alacritty_terminal and the font stack) and
   `cargo-about` (third-party licence file for the MSI).
-- Suite `rustfmt.toml` (`max_width = 160`, `use_small_heuristics = "Max"`).
+- Suite `rustfmt.toml` (`max_width = 150` as built; this plan said 160; `use_small_heuristics = "Max"`).
 - `artcraft/scripts/mcp-probe.py` to measure `csm mcp` tool definitions per toolset.
 
 ### Agent integration (Phase 2)

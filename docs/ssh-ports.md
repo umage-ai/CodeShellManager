@@ -12,7 +12,7 @@ Click a link in an SSH session's terminal (Cmd+click on macOS).
 1. CodeShellManager reads the session's ssh configuration (`ssh -G`, with the session's `-F`, `-p`,
    `-i`, `-J`, `-o`, `-l` and destination; no connection is made). Off the UI thread.
 2. If that configuration forwards the port (a `LocalForward` to `localhost` or `127.0.0.1` on the
-   remote side, as the NEXUS config does for agent web ports), the link opens on this computer at
+   remote side, as a config does for a remote dev server), the link opens on this computer at
    the forwarded port. Nothing is started.
 3. Otherwise nothing opens. A card says **"Port 3000 is on <destination>, not on this computer"**
    with two answers:

@@ -82,7 +82,7 @@ Open **Settings › Keyboard**. It lists every action with its keys.
 - **Clear** removes an action's keys. **Reset** puts one action back to its default, and
   **Reset all** does it for every action.
 
-Three rules keep the keyboard usable:
+Four rules keep the keyboard usable:
 
 - A key needs Ctrl or must be a function key (F1 to F12). Plain letters, digits, Tab, Alt+letter and
   the arrows are never shortcuts, so typing and the terminal keep them.

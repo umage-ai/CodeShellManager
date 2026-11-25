@@ -1,16 +1,34 @@
 # CSM as a server for a remote CSM: research
 
-Date: 2026-11-22. Code read: `C:\Github\umage\CSM-v2`, branch `v2`. Nothing built or changed.
+> **Historical design note.** This began as research (2026-11-22) and the sections up to "Decisions"
+> are the research as written, when nothing was built: "Nothing built", the `Dispatcher` seam and the
+> relay's phone-only limits describe the code of that day. The sections after "Decisions" record
+> what was built, step by step. For how it works now, read
+> [../remote-access.md](../remote-access.md). File and line references below are to the code as it
+> was and are no longer valid.
+>
+> | Phase | Status now |
+> |---|---|
+> | P0 prerequisites | Built |
+> | P1 MVP over a private network | Built: pairing, snapshots and terminal streams, remote window, `csm attach` |
+> | P2 robust | Built: resume from offsets, reconnect, consent cards on peers, relay transport |
+> | P3 comfort | Partly: uploads for drops and paste are built; port forwarding for run URLs is not |
+> | P4 later | Operator and Viewer levels are built and chosen at pairing; mixed view and several offices in one window are not (one office per window) |
+>
+> Peers have their own relay endpoints with higher limits (8 MiB/s and 2000 frames/s per channel by
+> default, set on the relay), so the relay is usable for terminal streams.
+
+Date: 2026-11-22. Code read: the `v2` branch at that date. Nothing built or changed at the time.
 All `file:line` references are to that checkout.
 
-**Goal (Allan):** CSM runs on the always-on office machine. At home, CSM on the laptop connects to
+**Goal:** CSM runs on the always-on office machine. At home, CSM on the laptop connects to
 it and shows the same sessions, live, with full control.
 
-**Network (Allan, update):** office and home are on the same **WireGuard** network. The laptop can
+**Network:** office and home are on the same **WireGuard** network. The laptop can
 reach the office machine directly at its WireGuard address. That direct connection is the primary
 design target. Relay and internet options get a short "later / for others" section (section 9).
 
-**Firm requirement (Allan):** server mode is **off by default** on every install and upgrade.
+**Firm requirement:** server mode is **off by default** on every install and upgrade.
 Nothing listens and nothing is broadcast until the person turns it on in Settings. No agent or MCP
 caller can turn it on. See section 4.1.
 
@@ -35,9 +53,9 @@ caller can turn it on. See section 4.1.
 - **Reuse from the phone-remote work:** the Noise parameters, prologue, check code, pairing flow
   and device allow-list ideas from `csm-remote-proto` (now in the private csm-relay repository, vendored here). Do **not** reuse its message set:
   that set has no terminal access by design (`msg.rs:1-13`). Add a second profile ("peer") over
-  the same handshake and pairing base. The relay is not needed for WireGuard. Its rate limits
-  (256 KiB/s and 50 frames/s per channel, `limits.rs:16-17`) are also too tight for terminal
-  streams without changes.
+  the same handshake and pairing base. The relay is not needed for WireGuard. Its phone limits at the time
+  (256 KiB/s and 50 frames/s per channel, `limits.rs:16-17`) were too tight for terminal
+  streams; peer endpoints with their own, higher limits were added later (see the status table).
 - **Security:** a paired laptop is effectively the person at the office keyboard: it has a shell.
   So: explicit opt-in, bind only to a chosen address, Noise IK with device keys after a pairing
   code, a new `Caller::Peer`, an audit log, one-click off and revoke-all. Do not rely on
@@ -140,7 +158,7 @@ A's client and stream code.
 
 **Option A**, with C1 built alongside as a harness. A reuses almost all of the UI unchanged,
 keeps one source of truth (the office engine, which owns sessions, files, git, add-ons and
-consent), and matches how Allan works: the office machine does the work and the laptop is a
+consent), and matches how the owner works: the office machine does the work and the laptop is a
 window onto it. B can come later as a thin layer over A's client.
 
 ---
@@ -209,7 +227,7 @@ using the server's own view state.
 **Open items before wiring** (implemented as `csm-ui`'s `view_overlay` routes):
 - `inbox_next` and `view_set` with a `rail_tab` are forwarded, not local: the engine runs
   `lifecycle::focus` for them (a wake and an acknowledgement). Their declared effects under-state
-  this (`inbox_next` is `UI` only). Fixing the declarations changes MCP consent, so Allan approves
+  this (`inbox_next` is `UI` only). Fixing the declarations changes MCP consent, so the owner approves
   it first.
 - An overlay focus does not do `lifecycle::focus`'s server extras: the result acknowledgement and
   the last-activity stamp. Every overlay focus must be forwarded or replayed to the server for them.
@@ -304,7 +322,7 @@ These are estimates; measure them first (P0 adds a bytes-per-second counter per 
 ## 4. Security
 
 **Threat model:** a paired client can type into shells on the office machine. That is code
-execution as Allan. Treat a paired device like an SSH key to the office machine.
+execution as the user. Treat a paired device like an SSH key to the office machine.
 
 ### 4.1 Server mode is off by default; how it is turned on
 
@@ -343,7 +361,7 @@ execution as Allan. Treat a paired device like an SSH key to the office machine.
      new offer version.
   4. On the laptop: "Connect to another CSM…" → paste the link. The handshake runs.
   5. **Both screens show the 4-digit check code** (`noise.rs:40-49`) and the device name. On the
-     office screen, the person chooses **Allow** and the level, or **Deny**. Problem: Allan may
+     office screen, the person chooses **Allow** and the level, or **Deny**. Problem: the owner may
      be at home when he wants to pair. Pairing then needs the office screen, through RDP or by
      pairing while the laptop is in the office. Open question Q2.
   6. **Selector and limits (review fix).** The responder picks `IKpsk2` or `IK` before reading
@@ -382,11 +400,11 @@ execution as Allan. Treat a paired device like an SSH key to the office machine.
 
 ### 4.3 Authorization (levels)
 
-- **Full** (default for Allan's own laptop): everything the office UI can do, including answering
+- **Full** (default for your own laptop): everything the office UI can do, including answering
   consent cards.
-- **Operator** (later): sessions, input and runs, but no settings, add-ons, grants or Open with
+- **Operator** (built; chosen at pairing): sessions, input and runs, but no settings, add-ons, grants or Open with
   editing.
-- **Viewer** (later): snapshot and terminal output only; input is refused on the server.
+- **Viewer** (built; chosen at pairing): snapshot and terminal output only; input is refused on the server.
 - The server enforces levels. A new **`Caller::Peer { device_id, name }`** in `tool.rs:155-164`
   lets the engine log, check levels and refuse peer-control tools. Peers are never `Caller::Ui`.
   The server-mode tools above stay UI-only, even for Full: a remote device cannot pair further
@@ -400,7 +418,7 @@ execution as Allan. Treat a paired device like an SSH key to the office machine.
 Proposal: forward cards to every connected **Full** client and to the office UI. The **first
 answer wins**. `ConsentResolved` already removes the card everywhere (`engine.rs:518`). Allow
 `consent_answer` from `Caller::Peer` at level Full only, and record which device answered. This
-matters: if Allan is at home, a card shown only in the office times out after 120 s
+matters: if the owner is at home, a card shown only in the office times out after 120 s
 (`engine.rs:33`).
 
 ### 4.5 Audit and revocation
@@ -469,7 +487,7 @@ One base, two profiles:
 | Git, Docs, Notes, Search, Usage, Runs, Board | Engine tools | Correct as they are: they read the server's disk. Just proxy them. |
 | Add-on screens and add-on tools | Run on the server | Proxy `screen_tree` and `screen_event`. |
 | Theme, fonts, zoom, window placement, torn-off windows | Partly engine settings | Per-client (overlay). |
-| OS notifications and tray | Client UI (`notify.rs`) | Client-side, from the mirrored snapshot. |
+| OS notifications and tray | Client UI (`notify.rs`) | As built, a remote window has no tray and no OS notifications (see step 7). |
 | `app_quit` | Quits the engine | A remote window's Quit disconnects instead (5). |
 | Claude Remote Control links | claude.ai URLs | Client browser; fine. |
 | WSL and SSH session kinds | Launched by the engine | Run on the server; correct. |
@@ -512,7 +530,7 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 
 ---
 
-## 8. Open questions for Allan
+## 8. Open questions
 
 1. **Levels:** is "Full" for your own laptop enough for v1, with no Viewer or Operator yet?
 2. **Pairing when you are not at the office:** is pairing in the office acceptable (or through
@@ -539,7 +557,7 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 |---|---|---|
 | **WireGuard or Tailscale** (primary) | Best | Direct TCP to the VPN address. Tailscale works the same way: bind to the `100.x` address. |
 | **SSH tunnel** | Good for power users | `ssh -L 47300:127.0.0.1:47300 office`, with the server bound to loopback. The Noise layer stays. |
-| **csm-relay** | For people with no VPN | E2E Noise already exists, and the relay sees ciphertext only. It needs: a peer client endpoint (today `/v1/client` is phone-shaped, with a browser `Origin` check); higher per-channel limits (256 KiB/s and 50 frames/s, `limits.rs:16-17`; 16 channels per host); and backpressure that tolerates bursts. A self-hosted relay is fine; umage's relay is for umage only (the csm-relay repository's `README.md`). |
+| **csm-relay** | For people with no VPN | E2E Noise already exists, and the relay sees ciphertext only. *As built:* peer endpoints exist with their own limits (8 MiB/s and 2000 frames/s per channel by default, set on the relay), and the office paces its writes to what the relay announces. The phone endpoint keeps its small caps. A self-hosted relay is fine; umage's relay is for umage only (the csm-relay repository's `README.md`). |
 | **Direct public port with TLS** | Not recommended | It exposes the shell port to the internet. If someone insists: Noise is still required, plus rate limits as on the relay. |
 
 ---
@@ -571,10 +589,10 @@ Estimates are for one developer working with agents, as in `docs/plan.md`.
 - `snow` as a production dependency: review it under `deny.toml`. It is pure Rust and widely
   used, but it is new to the release build.
 
-## Decisions (Allan, 2026-11-22)
+## Decisions (2026-11-22)
 
-- Themes are per client (Allan, 2026-11-23): the laptop keeps its own theme choice, like layout.
-- `inbox_next` declares that it can wake a session (Allan, 2026-11-23), so MCP callers are asked.
+- Themes are per client (2026-11-23): the laptop keeps its own theme choice, like layout.
+- `inbox_next` declares that it can wake a session (2026-11-23), so MCP callers are asked.
 
 - Q2 pairing: from home via remote desktop, or with the laptop at the office — both fine; no remote-initiated pairing.
 - Q3 consent: cards raised by office agents are answerable from the laptop; first answer wins.
@@ -784,7 +802,7 @@ Base sha for this step: `9c20e082108f5e854b04421d93c70c89ec0a83f6`.
 - **Nothing listens, and nothing dials without a pairing.** `ClientPeer::new` touches no disk and no network; reading
   the list creates no folder. The only dial is a pairing the person started in the app.
 - **Forget** removes the host entry and the host key pinned with it. This app's own device key is kept, because other
-  hosts may still know it (a choice to confirm with Allan: "removes the key" could also mean the device key).
+  hosts may still know it (a choice to confirm with the owner: "removes the key" could also mean the device key).
 - **Tests.** `crates/csm-peer/tests/pairing_client.rs` (15, real TCP on 127.0.0.1, one engine playing both apps): allow
   (both screens show the same code, the host is stored, a connection with the stored key works), the default name, deny,
   a wrong code at the office then the right one, an expired offer, cancel (the office drops the request and a new pairing
@@ -891,7 +909,7 @@ Base sha for this step: `f0f7c0f2d0317cc333a5dc5762c5c77170888d0d`.
   (`a_window_shares_one_connection_between_its_port_and_its_view`). Screenshots: `remote_window_screens` in
   `crates/csm-ui/tests/screenshots.rs` (`23-remote-*`, `23-connect-dialog*`).
 - **Not done.** A window that cannot connect (no key, an unpaired host, a damaged list) writes its reason to stderr and exits;
-  it has no window of its own to say so. The laptop's dialog is reachable from the palette only (the app has no main menu; no
+  it has no window of its own to say so. The laptop's dialog was reachable from the palette only (the F10 main menu, built later from the tool list, lists it too; no
   title-bar button). A remote window does not know the laptop's theme list (`ConnectParams::themes` is empty), so a saved theme
   is only as good as the window's own list. The window polls its link every 100 ms (the link thread does not wake the UI).
   Run-ready URLs (`post_run_url`) do not go to the laptop's browser yet. Remote windows have no tray, no OS notifications and
@@ -1033,7 +1051,7 @@ Base sha for this round: `b16b6c48f57aaa493d627f3e32d4f9cc2d4e1060` (the final P
   (`a_cancel_ends_a_pairing_that_waits_in_the_handshake_at_once`).
 - **Trust is written down.** `docs/remote-access.md`: `csm attach` and the remote window carry this laptop's device key.
 
-**Decisions to confirm (Allan).**
+**Decisions to confirm.**
 1. `SnapshotRequest` is added without bumping `PROTOCOL_VERSION` (still 1): nothing has shipped with the peer protocol yet.
    If a release has gone out by the time this lands, bump it.
 2. Notices: 10 per second, one note per drop burst. Consent cards are never limited.
@@ -1081,7 +1099,7 @@ Base sha for this round: `a40fe7079452eb999e1baf6fc0a2c71b1827ecd2`.
 - **Engine.** `peer_relay_status` (read-only, App) and `peer_relay_set` (UI-only, like `peer_server_enable`). `PeerHost` gained
   `relay_set` and `relay_status` with defaults for the no-op host.
 
-**Decisions to confirm (Allan).**
+**Decisions to confirm.**
 1. The relay's peer endpoints share the operator's access rules (`[access]`), so one token admits phones and offices alike.
    A separate peer allow policy is possible if you want it.
 2. Plain `ws://` is accepted only to `127.0.0.1`, `localhost` or `[::1]` (tests, a relay on this PC), checked by a strict
