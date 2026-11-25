@@ -136,24 +136,34 @@ pub fn prepare_data_dirs_in(
     }
 }
 
+/// Folders of the stable app that stay with the stable app and are never copied to a beta: the
+/// remote-access identity and its enabled listener (`peer`), the paired hosts (`peer-client`), and
+/// the Claude config backups (they hold a copy of `~/.claude.json`). A beta starts with remote
+/// access off and nobody paired.
+pub const SEED_SKIP_DIRS: &[&str] = &["peer", "peer-client", "claude-config-backups"];
+
+/// Written inside a seeded beta folder once its copy is complete (and renamed into place).
+pub const SEED_DONE_MARKER: &str = ".csm-seed-done";
+
 /// A beta build's first start: copy the stable app's data folders (`CodeShellManager2`, roaming
 /// state and local index) to the beta's (`CodeShellManager2-Beta`), so testers keep their
-/// sessions, notes and add-ons. Once: only when the beta's roaming folder does not exist yet
-/// (it exists from then on). Never the other way, and the stable folders are only read. Each
-/// folder is copied into a `.copying` folder first and renamed into place, so a copy cut short
-/// never looks finished; a file that cannot be read is reported and skipped.
+/// sessions, notes and add-ons. Once per base folder: only where the beta's folder does not exist
+/// yet. The local folder is copied only for a beta whose roaming folder was seeded (now or on an
+/// earlier start: [`SEED_DONE_MARKER`]), so a roaming folder that worked and a local one that did
+/// not is retried on the next start. Never the other way, and the stable folders are only read.
+/// Each folder is copied into a `.copying` folder first and renamed into place, so a copy cut
+/// short never looks finished; a file that cannot be read is reported and skipped. [`SEED_SKIP_DIRS`]
+/// and a database's `-wal`/`-shm`/`-journal` files (the stable app may be writing them) are left out.
 pub fn seed_beta_in(roaming: &Path, local: Option<&Path>) -> Vec<String> {
     let mut report = Vec::new();
-    if roaming.join(BETA_APP_DIR).exists() {
-        return report;
-    }
-    let mut bases = vec![roaming.to_path_buf()];
+    let mut bases = vec![(roaming.to_path_buf(), true)];
     if let Some(l) = local.filter(|l| *l != roaming) {
-        bases.push(l.to_path_buf());
+        bases.push((l.to_path_buf(), false));
     }
-    for base in bases {
+    let mut roaming_seeded = roaming.join(BETA_APP_DIR).join(SEED_DONE_MARKER).is_file();
+    for (base, is_roaming) in bases {
         let (from, to) = (base.join(STABLE_APP_DIR), base.join(BETA_APP_DIR));
-        if !from.is_dir() || to.exists() {
+        if !from.is_dir() || to.exists() || (!is_roaming && !roaming_seeded) {
             continue;
         }
         let staging = base.join(format!("{BETA_APP_DIR}.copying"));
@@ -164,12 +174,18 @@ pub fn seed_beta_in(roaming: &Path, local: Option<&Path>) -> Vec<String> {
             continue;
         }
         let mut problems = Vec::new();
-        let copied = copy_tree(&from, &staging, &mut problems);
+        let copied = copy_tree(&from, &staging, &mut problems, true);
         report.extend(problems);
-        match copied.and_then(|n| fs::rename(&staging, &to).map(|()| n)) {
-            Ok(n) => report.push(format!("copied {n} files from {} to {} (first start of this beta)", from.display(), to.display())),
+        let done = copied
+            .and_then(|n| fs::write(staging.join(SEED_DONE_MARKER), b"").map(|()| n))
+            .and_then(|n| fs::rename(&staging, &to).map(|()| n));
+        match done {
+            Ok(n) => {
+                roaming_seeded |= is_roaming;
+                report.push(format!("copied {n} files from {} to {} (first start of this beta)", from.display(), to.display()));
+            }
             Err(e) => {
-                report.push(format!("could not copy {} to {}: {e}", from.display(), to.display()));
+                report.push(format!("could not copy {} to {}: {e}; it is tried again on the next start", from.display(), to.display()));
                 let _ = fs::remove_dir_all(&staging);
             }
         }
@@ -177,9 +193,16 @@ pub fn seed_beta_in(roaming: &Path, local: Option<&Path>) -> Vec<String> {
     report
 }
 
-/// Copies a folder tree (plain files and folders; links and temp files are skipped). Returns the
-/// number of files copied; unreadable files are reported in `problems` and skipped.
-fn copy_tree(from: &Path, to: &Path, problems: &mut Vec<String>) -> io::Result<usize> {
+/// A file the seed leaves out: temp files and the side files of a live database.
+fn seed_skips_file(name: &std::ffi::OsStr) -> bool {
+    let n = name.to_string_lossy().to_ascii_lowercase();
+    [".tmp", "-wal", "-shm", "-journal"].iter().any(|s| n.ends_with(s))
+}
+
+/// Copies a folder tree (plain files and folders; links and temp files are skipped; at the top
+/// level the [`SEED_SKIP_DIRS`] folders too). Returns the number of files copied; unreadable files
+/// are reported in `problems` and skipped.
+fn copy_tree(from: &Path, to: &Path, problems: &mut Vec<String>, top: bool) -> io::Result<usize> {
     fs::create_dir_all(to)?;
     let mut n = 0;
     for entry in fs::read_dir(from)? {
@@ -193,11 +216,14 @@ fn copy_tree(from: &Path, to: &Path, problems: &mut Vec<String>) -> io::Result<u
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
         let Ok(kind) = entry.file_type() else { continue };
         if kind.is_dir() {
-            match copy_tree(&src, &dst, problems) {
+            if top && SEED_SKIP_DIRS.iter().any(|d| entry.file_name().to_string_lossy().eq_ignore_ascii_case(d)) {
+                continue;
+            }
+            match copy_tree(&src, &dst, problems, false) {
                 Ok(k) => n += k,
                 Err(e) => problems.push(format!("could not copy {}: {e}", src.display())),
             }
-        } else if kind.is_file() && src.extension().is_none_or(|x| x != "tmp") {
+        } else if kind.is_file() && !seed_skips_file(&entry.file_name()) {
             match fs::copy(&src, &dst) {
                 Ok(_) => n += 1,
                 Err(e) => problems.push(format!("could not copy {}: {e}", src.display())),
@@ -213,6 +239,33 @@ pub fn first_run_wpf_import_if(default_location: bool, clean: bool, source: Opti
         return None;
     }
     wpf.filter(|p| p.is_file())
+}
+
+/// The beta's `state.json`: `%AppData%\CodeShellManager2-Beta\state.json`.
+pub fn beta_state_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join(BETA_APP_DIR).join("state.json"))
+}
+
+/// The beta `state.json` a stable build offers to import ([`beta_import_offer`]'s decision, given
+/// what it reads from the environment): only a stable build, only on a true first run (no state of
+/// our own, not even a `.bak`), only in the default place and never for `--clean`. A tester who
+/// moves from a beta to the final release would otherwise start empty beside a full beta folder.
+pub fn beta_import_offer_if(
+    channel: csm_core::channel::Channel,
+    default_location: bool,
+    clean: bool,
+    source: Option<state::LoadSource>,
+    beta: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if channel != csm_core::channel::Channel::Stable || !default_location || clean || source != Some(state::LoadSource::FirstRun) {
+        return None;
+    }
+    beta.filter(|p| p.is_file())
+}
+
+/// [`beta_import_offer_if`] over this build and machine.
+pub fn beta_import_offer(cli_config_dir: Option<&Path>, clean: bool, source: Option<state::LoadSource>) -> Option<PathBuf> {
+    beta_import_offer_if(csm_core::channel::CURRENT, is_default_location(cli_config_dir), clean, source, beta_state_path())
 }
 
 /// Moves the pre-v2 data folders (`CodeShellManager-rs`, roaming and local) to `CodeShellManager2`,
@@ -245,24 +298,66 @@ fn temp_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Reads a file as text; `None` when it does not exist. Unreadable bytes become U+FFFD (the
-/// parser then rejects it and the backup is tried).
-fn read_text(path: &Path) -> Option<String> {
-    match fs::read(path) {
-        Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => {
-            log::warn!("state: could not read {}: {e}", path.display());
-            Some(String::new())
+/// How many times a file that exists but cannot be read is tried, and the pause between tries
+/// (a sharing violation from a backup or antivirus scan is usually over in a moment).
+const READ_TRIES: u32 = 4;
+const READ_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Reads a file as text. `Ok(None)` only when it does not exist (`NotFound`); any other failure
+/// (a sharing violation, access denied, a folder where the file should be) is an `Err`, because a
+/// file that is there but unreadable must never be mistaken for a missing or a corrupt one.
+/// Unreadable bytes become U+FFFD (the parser then rejects it and the backup is tried).
+fn read_text(path: &Path) -> io::Result<Option<String>> {
+    read_text_with(path, READ_TRIES, READ_PAUSE)
+}
+
+fn read_text_with(path: &Path, tries: u32, pause: std::time::Duration) -> io::Result<Option<String>> {
+    let mut attempt = 1;
+    loop {
+        match fs::read(path) {
+            Ok(bytes) => return Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if attempt >= tries => {
+                log::warn!("state: could not read {}: {e}", path.display());
+                return Err(e);
+            }
+            Err(_) => {
+                attempt += 1;
+                thread::sleep(pause);
+            }
         }
     }
 }
 
-/// Primary, then `.bak`; never fails.
-pub fn load(path: &Path) -> Loaded {
+/// What [`load_checked`] found.
+pub struct LoadOutcome {
+    pub loaded: Loaded,
+    /// Set when `state.json` (or the `.bak` it needed) exists but could not be read, even after
+    /// retries. The state in `loaded` is then NOT the person's: the caller must start read-only
+    /// (save nothing, move nothing aside), so the real file is never replaced.
+    pub unreadable: Option<String>,
+}
+
+/// Primary, then `.bak`; never fails. An I/O error is not a parse error: see [`LoadOutcome`].
+pub fn load_checked(path: &Path) -> LoadOutcome {
     let primary = read_text(path);
     let backup = read_text(&backup_path(path));
-    state::load(primary.as_deref(), backup.as_deref())
+    let usable = |t: &io::Result<Option<String>>| t.as_ref().ok().and_then(Clone::clone);
+    let loaded = state::load(usable(&primary).as_deref(), usable(&backup).as_deref());
+    // The primary parsed: a `.bak` that is merely locked does not matter.
+    let primary_good = loaded.source == state::LoadSource::Primary;
+    let unreadable = match (&primary, &backup) {
+        (Err(e), _) => Some(format!("{}: {e}", path.display())),
+        (_, Err(e)) if !primary_good => Some(format!("{}: {e}", backup_path(path).display())),
+        _ => None,
+    };
+    LoadOutcome { loaded, unreadable }
+}
+
+/// Primary, then `.bak`; never fails (an unreadable file counts as empty here; start-up uses
+/// [`load_checked`]).
+pub fn load(path: &Path) -> Loaded {
+    load_checked(path).loaded
 }
 
 /// `.tmp` → rotate the current file to `.bak` → move `.tmp` into place.
@@ -281,6 +376,40 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         fs::rename(path, backup_path(path))?;
     }
     fs::rename(&tmp, path)
+}
+
+/// Writes `text` over `path` through a temp file, without rotating a `.bak`.
+fn replace_file(path: &Path, text: &str) -> io::Result<()> {
+    let tmp = temp_path(path);
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)
+}
+
+/// Removes the 0.x API key (SEC-25) from the copies of the state on disk: the file, its `.bak` and
+/// the snapshots, each rewritten only when it parses and holds a key. A plaintext secret that an
+/// older build wrote must not survive in the generations a save rotates to. Returns the files
+/// rewritten; a file that cannot be rewritten is logged and left.
+pub fn scrub_api_key(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![path.to_path_buf(), backup_path(path)];
+    files.extend(list_snapshots(path).into_iter().map(|(_, p)| p));
+    let mut done = Vec::new();
+    for f in files {
+        let Ok(Some(text)) = read_text_with(&f, 1, READ_PAUSE) else { continue };
+        let Ok(mut app) = state::parse(&text) else { continue };
+        if app.settings.anthropic_api_key.trim().is_empty() {
+            continue;
+        }
+        app.settings.anthropic_api_key.clear();
+        match app.to_json().map_err(io::Error::other).and_then(|t| replace_file(&f, &t)) {
+            Ok(()) => done.push(f),
+            Err(e) => log::warn!("state: could not remove the old API key from {}: {e}", f.display()),
+        }
+    }
+    done
 }
 
 // ── Rolling snapshots and unreadable files (issue #166) ─────────────────────────────────
@@ -433,10 +562,17 @@ pub fn tasks_path(state_path: &Path) -> PathBuf {
 
 /// Reads `tasks.json` (primary, then `.bak`; never fails) and keeps an unreadable file aside
 /// as `state.json` does, so the next save can't overwrite it. Start-up only (file I/O).
-pub fn load_tasks(path: &Path, now_ms: i64) -> csm_core::tasks::TaskFile {
+///
+/// The second value is false when a file is there but could not be read (an I/O error, not a
+/// parse error): nothing is moved aside then, and the caller must not save over it.
+pub fn load_tasks(path: &Path, now_ms: i64) -> (csm_core::tasks::TaskFile, bool) {
     use csm_core::tasks::TaskFile;
-    let primary = read_text(path);
-    let backup = read_text(&backup_path(path));
+    let (primary, backup) = (read_text(path), read_text(&backup_path(path)));
+    if let Some(e) = primary.as_ref().err().or(backup.as_ref().err()) {
+        log::error!("tasks: could not read {} ({e}); the Board is not loaded and not saved this run", path.display());
+        return (TaskFile::default(), false);
+    }
+    let (primary, backup) = (primary.ok().flatten(), backup.ok().flatten());
     let parse = |t: &Option<String>| t.as_deref().map(TaskFile::parse);
     let (file, source) = match (parse(&primary), parse(&backup)) {
         (None, None) => (TaskFile::default(), state::LoadSource::FirstRun),
@@ -452,36 +588,111 @@ pub fn load_tasks(path: &Path, now_ms: i64) -> csm_core::tasks::TaskFile {
     for f in keep_unreadable(path, source, now_ms) {
         log::warn!("tasks: the unreadable file was kept as {}", f.display());
     }
-    file
+    (file, true)
 }
 
+/// How a saver stands, shared between its thread and the engine (which reads it on every wake-up
+/// and shows a warning while it is failing). Cheap to clone.
+#[derive(Clone, Default)]
+pub(crate) struct SaveHealth(std::sync::Arc<std::sync::Mutex<HealthInner>>);
+
+#[derive(Default)]
+struct HealthInner {
+    /// The last failure, until a save succeeds.
+    failing: Option<String>,
+    /// A change the engine has not seen yet.
+    changed: Option<HealthChange>,
+}
+
+/// What [`SaveHealth::take_change`] reports, once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HealthChange {
+    Failed(String),
+    Recovered,
+}
+
+impl SaveHealth {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HealthInner> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn fail(&self, message: String) {
+        let mut h = self.lock();
+        if h.failing.is_none() {
+            h.changed = Some(HealthChange::Failed(message.clone()));
+        }
+        h.failing = Some(message);
+    }
+
+    fn ok(&self) {
+        let mut h = self.lock();
+        if h.failing.take().is_some() {
+            h.changed = Some(HealthChange::Recovered);
+        }
+    }
+
+    /// The failure that has not been fixed yet, for the warning strip.
+    pub(crate) fn failing(&self) -> Option<String> {
+        self.lock().failing.clone()
+    }
+
+    /// A failure or a recovery since the last call.
+    pub(crate) fn take_change(&self) -> Option<HealthChange> {
+        self.lock().changed.take()
+    }
+}
+
+/// The first pause before a failed save is tried again, and the longest one.
+const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(2);
+const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// One background thread that writes the newest state it was given. Saves are serialised (the
-/// WPF app's `SemaphoreSlim`): overlapping saves would race on the shared `.tmp`.
+/// WPF app's `SemaphoreSlim`): overlapping saves would race on the shared `.tmp`. A save that
+/// fails (a full disk, a locked folder) is reported through [`SaveHealth`] and retried with a
+/// growing pause until it works or a newer state replaces it.
 pub(crate) struct Saver {
     tx: Sender<String>,
     thread: Option<thread::JoinHandle<()>>,
+    health: SaveHealth,
 }
 
 impl Saver {
     pub(crate) fn start(path: PathBuf) -> Option<Saver> {
-        Self::start_with(path, true, "csm-state-saver")
+        Self::start_with(path, true, "csm-state-saver", RETRY_FIRST)
     }
 
     /// A saver for another file beside the state (`tasks.json`): the same atomic write and `.bak`,
     /// without the rolling snapshots (`snapshots` is the state file's own).
     pub(crate) fn start_plain(path: PathBuf, thread_name: &str) -> Option<Saver> {
-        Self::start_with(path, false, thread_name)
+        Self::start_with(path, false, thread_name, RETRY_FIRST)
     }
 
-    fn start_with(path: PathBuf, snapshots: bool, thread_name: &str) -> Option<Saver> {
+    pub(crate) fn health(&self) -> SaveHealth {
+        self.health.clone()
+    }
+
+    pub(crate) fn start_with(path: PathBuf, snapshots: bool, thread_name: &str, retry_first: std::time::Duration) -> Option<Saver> {
         let (tx, rx) = mpsc::channel::<String>();
+        let health = SaveHealth::default();
+        let h = health.clone();
         let p = path;
         let spawned = thread::Builder::new().name(thread_name.into()).spawn(move || {
-            while let Ok(mut text) = rx.recv() {
+            let mut pending: Option<String> = None;
+            let mut pause = retry_first;
+            let mut closing = false;
+            while !closing {
+                let got = if pending.is_some() { rx.recv_timeout(pause) } else { rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected) };
+                match got {
+                    Ok(t) => pending = Some(t),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    // The app is closing: one last try at what is pending, then done.
+                    Err(mpsc::RecvTimeoutError::Disconnected) => closing = true,
+                }
                 // Coalesce: only the newest pending state matters.
                 while let Ok(newer) = rx.try_recv() {
-                    text = newer;
+                    pending = Some(newer);
                 }
+                let Some(text) = pending.take() else { continue };
                 // The Saver only exists when state is saved at all (never `--clean` or isolated).
                 if snapshots {
                     match snapshot_outgoing(&p, crate::session::now_ms()) {
@@ -490,13 +701,22 @@ impl Saver {
                         Err(e) => log::warn!("state: snapshot of {} failed: {e}", p.display()),
                     }
                 }
-                if let Err(e) = write_atomic(&p, &text) {
-                    log::error!("state: save to {} failed: {e}", p.display());
+                match write_atomic(&p, &text) {
+                    Ok(()) => {
+                        h.ok();
+                        pause = retry_first;
+                    }
+                    Err(e) => {
+                        log::error!("state: save to {} failed: {e}; will retry in {:?}", p.display(), pause);
+                        h.fail(format!("{}: {e}", p.display()));
+                        pending = Some(text);
+                        pause = (pause * 2).min(RETRY_MAX);
+                    }
                 }
             }
         });
         match spawned {
-            Ok(h) => Some(Saver { tx, thread: Some(h) }),
+            Ok(t) => Some(Saver { tx, thread: Some(t), health }),
             Err(e) => {
                 log::error!("state: could not start the saver thread: {e}; state will not be saved");
                 None
@@ -730,5 +950,147 @@ mod tests {
         assert_eq!(bad, BAD_COPIES_KEPT);
         // Nothing to do for a good load.
         assert!(keep_unreadable(&path, LoadSource::Primary, T0).is_empty());
+    }
+
+    #[test]
+    fn the_beta_seed_leaves_out_remote_access_and_the_claude_backups() {
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        stable_data(r.path(), l.path());
+        let stable = r.path().join(STABLE_APP_DIR);
+        for d in SEED_SKIP_DIRS {
+            fs::create_dir_all(stable.join(d)).unwrap();
+            fs::write(stable.join(d).join("secret.json"), "identity").unwrap();
+        }
+        // A same-named folder deeper down is an ordinary folder and is copied.
+        fs::create_dir_all(stable.join("addons").join("peer")).unwrap();
+        fs::write(stable.join("addons").join("peer").join("a.txt"), "x").unwrap();
+        seed_beta_in(r.path(), Some(l.path()));
+        let beta = r.path().join(BETA_APP_DIR);
+        for d in SEED_SKIP_DIRS {
+            assert!(!beta.join(d).exists(), "{d} must stay with the stable app");
+        }
+        assert!(beta.join("state.json").is_file());
+        assert!(beta.join("addons").join("peer").join("a.txt").is_file());
+    }
+
+    #[test]
+    fn the_beta_seed_skips_the_side_files_of_a_live_database() {
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        stable_data(r.path(), l.path());
+        for n in ["index.db-wal", "index.db-shm", "index.db-journal"] {
+            fs::write(l.path().join(STABLE_APP_DIR).join(n), "live").unwrap();
+        }
+        seed_beta_in(r.path(), Some(l.path()));
+        let beta_local = l.path().join(BETA_APP_DIR);
+        assert!(beta_local.join("index.db").is_file());
+        for n in ["index.db-wal", "index.db-shm", "index.db-journal"] {
+            assert!(!beta_local.join(n).exists(), "{n}");
+        }
+    }
+
+    #[test]
+    fn a_seed_that_got_only_part_of_the_way_is_retried_for_the_missing_base() {
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        stable_data(r.path(), l.path());
+        // The local base cannot be copied: its staging path is a file (copy fails, roaming works).
+        fs::write(l.path().join(format!("{BETA_APP_DIR}.copying")), "in the way").unwrap();
+        let report = seed_beta_in(r.path(), Some(l.path()));
+        assert!(r.path().join(BETA_APP_DIR).join(SEED_DONE_MARKER).is_file(), "{report:?}");
+        assert!(!l.path().join(BETA_APP_DIR).exists(), "{report:?}");
+        // The next start retries the local base (the roaming one is done and left alone).
+        fs::remove_file(l.path().join(format!("{BETA_APP_DIR}.copying"))).unwrap();
+        fs::write(r.path().join(BETA_APP_DIR).join("state.json"), "{}").unwrap();
+        seed_beta_in(r.path(), Some(l.path()));
+        assert!(l.path().join(BETA_APP_DIR).join("index.db").is_file());
+        assert_eq!(fs::read_to_string(r.path().join(BETA_APP_DIR).join("state.json")).unwrap(), "{}");
+    }
+
+    #[test]
+    fn the_local_base_is_not_seeded_for_a_beta_that_never_was() {
+        // A beta whose roaming folder exists from its own earlier runs (no seed marker) does not
+        // get the stable index copied in later.
+        let (r, l) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        stable_data(r.path(), l.path());
+        fs::create_dir_all(r.path().join(BETA_APP_DIR)).unwrap();
+        assert!(seed_beta_in(r.path(), Some(l.path())).is_empty());
+        assert!(!l.path().join(BETA_APP_DIR).exists());
+    }
+
+    #[test]
+    fn a_stable_first_run_offers_the_beta_state_only_in_the_default_place() {
+        use csm_core::channel::Channel;
+        let dir = tempfile::tempdir().unwrap();
+        let beta = dir.path().join("state.json");
+        fs::write(&beta, "{}").unwrap();
+        let first = Some(LoadSource::FirstRun);
+        let offer = |ch, default, clean, src, p: Option<PathBuf>| beta_import_offer_if(ch, default, clean, src, p);
+        assert_eq!(offer(Channel::Stable, true, false, first, Some(beta.clone())), Some(beta.clone()));
+        assert_eq!(offer(Channel::Beta, true, false, first, Some(beta.clone())), None, "a beta never offers itself");
+        assert_eq!(offer(Channel::Stable, false, false, first, Some(beta.clone())), None);
+        assert_eq!(offer(Channel::Stable, true, true, first, Some(beta.clone())), None, "--clean");
+        for other in [LoadSource::Primary, LoadSource::Backup, LoadSource::Unreadable] {
+            assert_eq!(offer(Channel::Stable, true, false, Some(other), Some(beta.clone())), None, "{other:?}");
+        }
+        assert_eq!(offer(Channel::Stable, true, false, first, Some(dir.path().join("none.json"))), None);
+        assert_eq!(offer(Channel::Stable, true, false, first, None), None);
+    }
+
+    #[test]
+    fn a_file_that_is_there_but_cannot_be_read_is_an_error_not_an_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        // A folder in place of the file: reading it fails, whatever the platform words it.
+        let p = dir.path().join("state.json");
+        fs::create_dir(&p).unwrap();
+        assert!(read_text_with(&p, 2, std::time::Duration::from_millis(1)).is_err());
+        assert!(read_text_with(&dir.path().join("none"), 2, std::time::Duration::from_millis(1)).unwrap().is_none());
+        let out = load_checked(&p);
+        assert!(out.unreadable.is_some());
+        // The `.bak` rescues the state but the run is still read-only: the primary is not ours to replace.
+        fs::write(backup_path(&p), state_text(&["a"])).unwrap();
+        let out = load_checked(&p);
+        assert!(out.unreadable.is_some());
+        assert_eq!(out.loaded.state.sessions.len(), 1);
+    }
+
+    fn until(f: &dyn Fn() -> bool) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !f() {
+            assert!(std::time::Instant::now() < end, "timed out");
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_saver_reports_a_failure_retries_and_reports_the_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::create_dir(temp_path(&path)).unwrap();
+        let saver = Saver::start_with(path.clone(), false, "test-saver", std::time::Duration::from_millis(20)).unwrap();
+        let health = saver.health();
+        saver.save(state_text(&["a"]));
+        until(&|| health.failing().is_some());
+        assert!(matches!(health.take_change(), Some(HealthChange::Failed(_))));
+        assert_eq!(health.take_change(), None, "reported once");
+        // Space is back: the same pending state is written without a new save.
+        fs::remove_dir(temp_path(&path)).unwrap();
+        until(&|| health.failing().is_none());
+        assert_eq!(health.take_change(), Some(HealthChange::Recovered));
+        assert_eq!(load(&path).state.sessions.len(), 1);
+        saver.finish(None);
+    }
+
+    #[test]
+    fn a_newer_state_replaces_a_pending_one_that_could_not_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::create_dir(temp_path(&path)).unwrap();
+        let saver = Saver::start_with(path.clone(), false, "test-saver", std::time::Duration::from_millis(20)).unwrap();
+        let health = saver.health();
+        saver.save(state_text(&["old"]));
+        until(&|| health.failing().is_some());
+        saver.save(state_text(&["new"]));
+        fs::remove_dir(temp_path(&path)).unwrap();
+        saver.finish(None);
+        assert_eq!(load(&path).state.sessions[0].id, "new");
     }
 }

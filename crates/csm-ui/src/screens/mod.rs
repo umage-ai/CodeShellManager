@@ -20,6 +20,7 @@ pub mod palette;
 pub mod panes;
 pub mod remote;
 pub mod remote_bar;
+pub mod warn_bar;
 pub mod recent;
 pub mod runs;
 pub mod search;

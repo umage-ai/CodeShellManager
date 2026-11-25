@@ -910,6 +910,8 @@ pub mod size {
     pub const RESTORE_RAIL: f32 = 2.0;
     /// The strip under the title bar of a remote window ("Connected to OFFICE · address").
     pub const REMOTE_BAR: f32 = 24.0;
+    /// One standing warning under the title bar (two lines of caption text and a button).
+    pub const WARN_BAR: f32 = 36.0;
     pub const BAR: f32 = 6.0;
     pub const GRID_TILE_W: f32 = 92.0;
     pub const GRID_GLYPH: [f32; 2] = [56.0, 36.0];

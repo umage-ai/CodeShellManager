@@ -150,7 +150,19 @@ pub fn clean_body(body: &str) -> Result<String, StoreError> {
 pub struct Store {
     dir: Option<PathBuf>,
     projects: HashMap<String, Project>,
+    /// Projects whose file is there but could not be read (an I/O error, not bad JSON), by key,
+    /// with the reason. Never treated as empty: changing them is refused, so the real file is
+    /// not replaced by one that holds only what this run added.
+    unreadable: HashMap<String, String>,
     seq: u64,
+}
+
+/// What reading a project's file found.
+enum Read {
+    /// The file (parsed), or a bad one moved aside, or no file at all: a project to work with.
+    Project(Option<Project>),
+    /// The file exists but cannot be read.
+    Unreadable(String),
 }
 
 impl Store {
@@ -172,30 +184,61 @@ impl Store {
     fn load(&mut self, project: &str, now: u64) -> &mut Project {
         let key = project_key(project);
         if !self.projects.contains_key(&key) {
-            let p = self.read_file(&key, now).unwrap_or_default();
-            self.projects.insert(key.clone(), p);
+            match self.read_file(&key, now) {
+                Read::Project(p) => {
+                    self.projects.insert(key.clone(), p.unwrap_or_default());
+                }
+                Read::Unreadable(why) => {
+                    self.unreadable.insert(key.clone(), why);
+                    self.projects.insert(key.clone(), Project::default());
+                }
+            }
         }
         self.projects.entry(key).or_default()
     }
 
-    fn read_file(&self, key: &str, now: u64) -> Option<Project> {
-        let path = self.file_of(key)?;
-        let text = fs::read_to_string(&path).ok()?;
+    /// Only a file that does not exist (`NotFound`) is "no threads yet". A file that cannot be
+    /// read for another reason (a sharing violation, access denied) is [`Read::Unreadable`]; a file
+    /// that is read but is not valid is set aside as `threads.json.bad-<now>`.
+    fn read_file(&self, key: &str, now: u64) -> Read {
+        let Some(path) = self.file_of(key) else { return Read::Project(None) };
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Read::Project(None),
+            // Not UTF-8 is a damaged file, not an unreadable one.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => String::new(),
+            Err(e) => return Read::Unreadable(format!("cannot read {}: {e}", path.display())),
+        };
         match serde_json::from_str::<Project>(&text) {
-            Ok(p) => Some(p),
+            Ok(p) => Read::Project(Some(p)),
             Err(_) => {
                 let bad = path.with_file_name(format!("threads.json.bad-{now}"));
                 let _ = fs::rename(&path, bad);
-                None
+                Read::Project(None)
             }
         }
     }
 
-    fn save(&self, project: &str) -> Result<(), StoreError> {
+    /// A copy of the project to change, or why it may not be changed (its file could not be read).
+    fn editable(&mut self, project: &str, now: u64) -> Result<Project, StoreError> {
         let key = project_key(project);
-        let (Some(path), Some(p)) = (self.file_of(&key), self.projects.get(&key)) else { return Ok(()) };
-        let text = serde_json::to_string_pretty(p).map_err(|e| StoreError::Refused(format!("cannot write the threads: {e}")))?;
-        write_atomic(&path, &text).map_err(|e| StoreError::Refused(format!("cannot save the threads: {e}")))
+        let copy = self.load(project, now).clone();
+        match self.unreadable.get(&key) {
+            Some(why) => Err(StoreError::Refused(format!("{why}; the threads of this project are left as they are"))),
+            None => Ok(copy),
+        }
+    }
+
+    /// Saves `p` and, only when that worked, makes it the project's state in memory: a failed save
+    /// leaves memory and disk as they were.
+    fn commit(&mut self, project: &str, p: Project) -> Result<(), StoreError> {
+        let key = project_key(project);
+        if let Some(path) = self.file_of(&key) {
+            let text = serde_json::to_string_pretty(&p).map_err(|e| StoreError::Refused(format!("cannot write the threads: {e}")))?;
+            write_atomic(&path, &text).map_err(|e| StoreError::Refused(format!("cannot save the threads: {e}")))?;
+        }
+        self.projects.insert(key, p);
+        Ok(())
     }
 
     /// Every project id with a file on disk (and those in memory), for a lookup by thread id.
@@ -209,7 +252,7 @@ impl Store {
                 if self.projects.contains_key(&key) {
                     continue;
                 }
-                if let Some(p) = self.read_file(&key, now) {
+                if let Read::Project(Some(p)) = self.read_file(&key, now) {
                     ids.push(p.project.clone());
                     self.projects.insert(key, p);
                 }
@@ -249,7 +292,7 @@ impl Store {
         let body = clean_body(body)?;
         let tid = self.next_id("t", now);
         let cid = self.next_id("c", now);
-        let p = self.load(project, now);
+        let mut p = self.editable(project, now)?;
         if p.threads.len() >= MAX_THREADS {
             return Err(StoreError::Refused(format!("this project has {MAX_THREADS} threads; resolve and delete some first")));
         }
@@ -268,7 +311,7 @@ impl Store {
         }
         let t = Thread { id: tid, status: Status::Open, created_ms: now, updated_ms: now, anchor, comments: vec![Comment { id: cid, author, body, created_ms: now }] };
         p.threads.push(t.clone());
-        self.save(project)?;
+        self.commit(project, p)?;
         Ok(t)
     }
 
@@ -278,7 +321,7 @@ impl Store {
     pub fn reply(&mut self, project: &str, id: &str, body: &str, author: Author, status: Option<Status>, now: u64) -> Result<Thread, StoreError> {
         let body = clean_body(body)?;
         let cid = self.next_id("c", now);
-        let p = self.load(project, now);
+        let mut p = self.editable(project, now)?;
         let t = p.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| StoreError::NotFound(format!("no thread `{id}`")))?;
         if t.comments.len() >= MAX_COMMENTS {
             return Err(StoreError::Refused(format!("a thread holds at most {MAX_COMMENTS} comments")));
@@ -292,28 +335,28 @@ impl Store {
             (None, s, _) => s,
         };
         let out = t.clone();
-        self.save(project)?;
+        self.commit(project, p)?;
         Ok(out)
     }
 
     pub fn set_status(&mut self, project: &str, id: &str, status: Status, now: u64) -> Result<Thread, StoreError> {
-        let p = self.load(project, now);
+        let mut p = self.editable(project, now)?;
         let t = p.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| StoreError::NotFound(format!("no thread `{id}`")))?;
         t.status = status;
         t.updated_ms = now;
         let out = t.clone();
-        self.save(project)?;
+        self.commit(project, p)?;
         Ok(out)
     }
 
     pub fn delete(&mut self, project: &str, id: &str, now: u64) -> Result<(), StoreError> {
-        let p = self.load(project, now);
+        let mut p = self.editable(project, now)?;
         let before = p.threads.len();
         p.threads.retain(|t| t.id != id);
         if p.threads.len() == before {
             return Err(StoreError::NotFound(format!("no thread `{id}`")));
         }
-        self.save(project)
+        self.commit(project, p)
     }
 
     /// The repository folder recorded for a project, if it has threads.
@@ -439,5 +482,54 @@ mod tests {
         assert!(a.id < c.id);
         assert_eq!(project_key("repo:C:/x").len(), 16);
         assert_ne!(project_key("a"), project_key("b"));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_empty_and_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::new(Some(dir.path().to_path_buf()));
+        let path = s.path_of("p").unwrap();
+        // A folder where the file should be: there, but reading it is an I/O error, not NotFound.
+        fs::create_dir_all(path.join("keep")).unwrap();
+        assert!(s.threads("p", 1).is_empty());
+        let err = s.create("p", "", anchor(), "mine", Author::person("A"), 2).unwrap_err();
+        assert!(format!("{err:?}").contains("cannot read"), "{err:?}");
+        assert!(s.reply("p", "t_x", "r", Author::person("A"), None, 3).is_err());
+        assert!(s.set_status("p", "t_x", Status::Resolved, 4).is_err());
+        assert!(s.delete("p", "t_x", 5).is_err());
+        assert!(path.is_dir() && path.join("keep").is_dir(), "the real file is untouched");
+        assert!(!path.with_file_name("threads.json.bad-1").exists(), "and not moved aside as corrupt");
+        // Another project is unaffected.
+        assert!(s.create("q", "", anchor(), "fine", Author::person("A"), 6).is_ok());
+    }
+
+    #[test]
+    fn a_missing_file_is_just_a_project_without_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::new(Some(dir.path().to_path_buf()));
+        assert!(s.threads("nothing-yet", 1).is_empty());
+        assert!(s.create("nothing-yet", "", anchor(), "first", Author::person("A"), 2).is_ok());
+    }
+
+    #[test]
+    fn a_failed_save_changes_nothing_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::new(Some(dir.path().to_path_buf()));
+        let first = s.create("p", "", anchor(), "one", Author::person("A"), 1).unwrap();
+        // The temp file's name taken by a folder: every save fails (as a full disk would).
+        let tmp = s.path_of("p").unwrap().with_extension("json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        assert!(s.create("p", "", anchor(), "two", Author::person("A"), 2).is_err());
+        assert!(s.reply("p", &first.id, "reply", Author::person("A"), Some(Status::Resolved), 3).is_err());
+        assert!(s.set_status("p", &first.id, Status::Resolved, 4).is_err());
+        assert!(s.delete("p", &first.id, 5).is_err());
+        let t = s.thread("p", &first.id, 6).unwrap();
+        assert_eq!((t.status, t.comments.len()), (Status::Open, 1), "memory still matches the disk");
+        assert_eq!(s.threads("p", 6).len(), 1);
+        // The disk recovers: the next change is built on what is really there.
+        fs::remove_dir(&tmp).unwrap();
+        s.create("p", "", anchor(), "three", Author::person("A"), 7).unwrap();
+        let mut again = Store::new(Some(dir.path().to_path_buf()));
+        assert_eq!(again.threads("p", 8).len(), 2);
     }
 }

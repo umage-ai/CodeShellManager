@@ -707,10 +707,69 @@ impl McpOffer {
     /// Writes `<dir>/mcp-<id>.json` and returns the `--mcp-config '<path>'` argument. Worker only.
     fn write_config(&self, session_id: &str) -> Result<String, String> {
         let (json, file) = mcp_config(&self.csm, session_id, &self.dir)?;
-        std::fs::create_dir_all(&self.dir).map_err(|e| format!("could not create {}: {e}", self.dir.display()))?;
-        std::fs::write(&file, json).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+        private_dir(&self.dir).map_err(|e| format!("could not use {} safely: {e}", self.dir.display()))?;
+        write_private_file(&file, json.as_bytes()).map_err(|e| format!("could not write {}: {e}", file.display()))?;
         mcp_config_arg(&file)
     }
+}
+
+/// Makes sure `dir` is a real folder (not a link) that only this user can use: created with mode
+/// 0700 on Unix, and refused when it already exists with another owner or with group or other
+/// access (a predictable shared folder another user planted). The owner is read by comparing with
+/// a file made here, which we own by definition. On Windows the folder inherits its parent's
+/// per-user permissions.
+fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true).mode(0o700);
+        b.create(dir)?;
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.is_dir() {
+            return Err(std::io::Error::other("not a plain folder (a link?)"));
+        }
+        let probe = dir.join(format!(".owner-probe-{}", std::process::id()));
+        let _ = std::fs::remove_file(&probe);
+        write_private_file(&probe, b"")?;
+        let mine = std::fs::symlink_metadata(&probe).map(|m| m.uid());
+        let _ = std::fs::remove_file(&probe);
+        if mine? != meta.uid() {
+            return Err(std::io::Error::other("the folder belongs to another user"));
+        }
+        if meta.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)?;
+        if std::fs::symlink_metadata(dir)?.file_type().is_symlink() {
+            return Err(std::io::Error::other("not a plain folder (a link?)"));
+        }
+        Ok(())
+    }
+}
+
+/// Writes a new file that only this user can read (0600 on Unix), never through an existing file
+/// or link: a leftover of an earlier run is removed first and the file is made with `create_new`.
+fn write_private_file(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    match std::fs::remove_file(file) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let mut f = o.open(file)?;
+    f.write_all(bytes)
 }
 
 /// The config JSON and its file name for one session. The session id becomes part of a file name
@@ -789,6 +848,42 @@ mod mcp_offer_tests {
         let p = resolve(&s, false, Some(&offer)).unwrap();
         assert!(!p.argv.join(" ").contains("--mcp-config"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_config_is_made_new_and_private_never_through_a_leftover_or_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let offer = McpOffer { dir: tmp.path().join("mcp"), csm: PathBuf::from("csm") };
+        std::fs::create_dir_all(&offer.dir).unwrap();
+        let file = offer.dir.join("mcp-s1.json");
+        std::fs::write(&file, "leftover").unwrap();
+        offer.write_config("s1").unwrap();
+        assert!(std::fs::read_to_string(&file).unwrap().contains("mcpServers"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&offer.dir).unwrap().permissions().mode() & 0o777, 0o700);
+            // A planted link at the file's name is replaced, never written through.
+            let victim = tmp.path().join("victim");
+            std::fs::write(&victim, "mine").unwrap();
+            std::fs::remove_file(&file).unwrap();
+            std::os::unix::fs::symlink(&victim, &file).unwrap();
+            offer.write_config("s1").unwrap();
+            assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine");
+            // A folder with group or other access is tightened; a link in its place is refused.
+            std::fs::set_permissions(&offer.dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+            offer.write_config("s1").unwrap();
+            assert_eq!(std::fs::metadata(&offer.dir).unwrap().permissions().mode() & 0o777, 0o700);
+            let linked = McpOffer { dir: tmp.path().join("link"), csm: PathBuf::from("csm") };
+            std::os::unix::fs::symlink(tmp.path(), &linked.dir).unwrap();
+            assert!(linked.write_config("s1").is_err());
+        }
+    }
+
+    #[test]
+    fn a_session_id_cannot_climb_out_of_the_config_folder() {
+        assert!(mcp_config(Path::new("csm"), "../x", Path::new("d")).is_err());
     }
 }
 

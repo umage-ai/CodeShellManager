@@ -143,6 +143,23 @@ pub struct RunView {
     pub elapsed_secs: Option<u64>,
 }
 
+/// A button on a warning strip: runs a tool.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarningButton {
+    pub label: String,
+    pub tool: &'static str,
+    pub params: serde_json::Value,
+}
+
+/// A standing warning under the title bar (a failing save, a read-only start, an import offer).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarningRow {
+    pub id: String,
+    pub text: String,
+    pub action: Option<WarningButton>,
+    pub dismiss: Option<WarningButton>,
+}
+
 /// One "Open with" entry as a session's menus show it.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OpenWithItem {
@@ -923,6 +940,8 @@ pub struct UiModel {
     /// A newer release than this build (`update_check`): the title bar's "Update available"
     /// badge, which opens `url` (`open_url`) and can be dismissed (`update_dismiss`).
     pub update: Option<UpdateBadge>,
+    /// Standing warnings, drawn as strips under the title bar until their cause is gone.
+    pub warnings: Vec<WarningRow>,
     /// The running SSH port forwards (`session_port_forwards`): the Session tab's Ports list.
     pub port_forwards: Vec<PortForwardRow>,
     /// Closed sessions that can be reopened, newest first (`session_reopen_closed` by index).

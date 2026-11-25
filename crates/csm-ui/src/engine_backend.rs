@@ -691,6 +691,7 @@ pub fn map_snapshot(view: &Snapshot, opts: &EngineOptions, theme: ThemeKind) -> 
         open_with: view.open_with.iter().map(open_with_view).collect(),
         pending_open_with: view.pending_open_with.iter().map(open_with_view).collect(),
         update: view.update.as_ref().map(|u| crate::model::UpdateBadge { version: u.version.clone(), url: u.url.clone() }),
+        warnings: view.warnings.iter().map(warning_row).collect(),
         recently_closed: view
             .recently_closed
             .iter()
@@ -801,6 +802,12 @@ impl TerminalSource for EngineTerminal {
     fn focus_changed(&self, focused: bool) {
         self.handle.focus_changed(focused);
     }
+}
+
+/// A standing warning from the engine, as the strip shows it.
+fn warning_row(w: &csm_engine::warnings::Warning) -> crate::model::WarningRow {
+    let button = |a: &csm_engine::warnings::WarningAction| crate::model::WarningButton { label: a.label.clone(), tool: a.tool, params: a.params.clone() };
+    crate::model::WarningRow { id: w.id.clone(), text: w.text.clone(), action: w.action.as_ref().map(button), dismiss: w.dismiss.as_ref().map(button) }
 }
 
 #[cfg(test)]

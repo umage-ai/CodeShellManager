@@ -307,6 +307,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
 
     // Git: track live sessions, start due status probes (on workers).
     crate::tools::git::tick(ctx);
+    crate::warnings::tick(ctx);
 
     if ctx.state.rt.save_due.is_some_and(|d| now >= d) {
         ctx.state.rt.save_due = None;
@@ -333,6 +334,9 @@ fn state_json(state: &State) -> Option<String> {
     let mut app = state.app.clone();
     app.ui.focused_session = state.rt.focused.clone();
     app.csm_rs_version = Some(crate::persist::STATE_FILE_VERSION);
+    // Version 2 never uses the 0.x API key, and a plaintext secret has no place in state.json, its
+    // `.bak` or the snapshots (SEC-25). Cleared at load as well, so this holds for what is in memory.
+    app.settings.anthropic_api_key.clear();
     match app.to_json() {
         Ok(t) => Some(t),
         Err(e) => {
@@ -1192,6 +1196,46 @@ fn finish_restart(ctx: &mut Ctx<'_>, reply: Option<ParkedReply>, results: Vec<(S
     }
 }
 
+/// The running restart workers (each waits for an old Claude to exit before the relaunch). A quit
+/// waits for them, bounded, before it checks `~/.claude.json`.
+#[derive(Default)]
+pub(crate) struct RestartWorkers {
+    running: Mutex<usize>,
+    idle: std::sync::Condvar,
+}
+
+/// Held by a restart worker; the count drops when it ends, however it ends.
+pub(crate) struct RestartTicket(Arc<RestartWorkers>);
+
+impl RestartWorkers {
+    pub(crate) fn begin(self: &Arc<Self>) -> RestartTicket {
+        *self.running.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        RestartTicket(self.clone())
+    }
+
+    /// Waits until no worker runs, at most `limit`; false when some still run.
+    pub(crate) fn wait_idle(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        let mut n = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        while *n > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            n = self.idle.wait_timeout(n, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        true
+    }
+}
+
+impl Drop for RestartTicket {
+    fn drop(&mut self) {
+        let mut n = self.0.running.lock().unwrap_or_else(PoisonError::into_inner);
+        *n = n.saturating_sub(1);
+        self.0.idle.notify_all();
+    }
+}
+
 /// One restart: tear down, wait for a Claude process to exit (then the flat stagger), relaunch
 /// with resume. `then` runs once the new process started or the restart failed (the session is
 /// then asleep). Holds no guard of its own.
@@ -1209,7 +1253,18 @@ pub(crate) fn restart_core(ctx: &mut Ctx<'_>, id: &str, then: StartedCb) {
     let wait = ctx.state.options.exit_wait;
     let quiesce = Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0));
     let (engine, id) = (ctx.engine.clone(), id.to_owned());
+    // The old process and the continuation travel in a slot, so that a worker that cannot be
+    // started hands them back (the closure is gone with the failed spawn).
+    type Slot = Arc<Mutex<Option<(Option<Arc<dyn Pty>>, StartedCb)>>>;
+    let slot: Slot = Arc::new(Mutex::new(Some((pty, then))));
+    // Counted until the worker ends, so a quit can wait for an old Claude that is still exiting
+    // (it may be rewriting `~/.claude.json`) before it checks that file.
+    let ticket = ctx.state.rt.restart_workers.begin();
+    let (worker_slot, worker_id) = (slot.clone(), id.clone());
     let worker = move || {
+        let _ticket = ticket;
+        let Some((pty, then)) = worker_slot.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
+        let id = worker_id;
         if let Some(p) = pty {
             if claude {
                 p.close();
@@ -1223,8 +1278,26 @@ pub(crate) fn restart_core(ctx: &mut Ctx<'_>, id: &str, then: StartedCb) {
         }
         engine.post(Box::new(move |ctx| relaunch_after_restart(ctx, &id, was_focused, then)));
     };
-    if let Err(e) = thread::Builder::new().name("csm-restart".into()).spawn(worker) {
-        log::error!("restart: no worker thread: {e}");
+    let spawned = if ctx.state.options.fail_worker_spawn {
+        drop(worker);
+        Err(std::io::Error::other("worker spawn disabled (test)"))
+    } else {
+        thread::Builder::new().name("csm-restart".into()).spawn(worker).map(|_| ())
+    };
+    if let Err(e) = spawned {
+        log::error!("restart {id}: no worker thread: {e}");
+        // Not stuck: kill the old process here, put the session to sleep and report the failure,
+        // so the restart (and a bulk restart's `restart_active`) ends.
+        let Some((pty, then)) = slot.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
+        if let Some(p) = pty {
+            p.kill();
+        }
+        ctx.state.rt.restarting.remove(&id);
+        if let Some(s) = ctx.state.app.sessions.iter_mut().find(|s| s.id == id) {
+            s.is_dormant = true;
+        }
+        ctx.state.persist();
+        then(ctx, Err(format!("could not start the restart worker: {e}")));
     }
 }
 
@@ -1323,7 +1396,9 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     // Claude's own config files, copied before the first Claude is asked to exit and checked after
     // the last one has (`claude_config`). Never with --clean or without a data folder.
     let configs = if ctx.state.options.saves() { ctx.state.options.claude_configs.clone() } else { crate::claude_config::ClaudeConfigs::None };
-    let backup_dir = ctx.state.options.save_path.as_deref().and_then(std::path::Path::parent).map(|d| d.join(crate::claude_config::DIR));
+    let backup_dir = ctx.state.options.save_path.as_deref().and_then(crate::claude_config::backup_dir_for);
+    let restart_workers = ctx.state.rt.restart_workers.clone();
+    let restart_wait = ctx.state.options.exit_wait + Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0)) + Duration::from_secs(2);
     let worker = move || {
         let forced_now = || forced.load(std::sync::atomic::Ordering::Acquire);
         let done = |engine: &Engine| {
@@ -1355,6 +1430,11 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
                 done(&engine);
             }
         });
+        // A restart in flight has an old Claude that may still be rewriting the config file:
+        // wait for it (bounded: its own exit wait, the pause after it, and a margin).
+        if !restart_workers.wait_idle(restart_wait) {
+            log::warn!("quit: a restart's old Claude was still exiting after {restart_wait:?}; checking the config anyway");
+        }
         // Every Claude has exited: only now is the config file safe to look at.
         if let Some(g) = guard {
             for (file, outcome) in g.verify() {
@@ -1383,10 +1463,33 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     }
 }
 
-/// Where per-session MCP configs go: beside the state file, or a temp folder when nothing is saved.
+/// Where per-session MCP configs go: beside the state file, or, when nothing is saved, the
+/// per-user runtime folder (`XDG_RUNTIME_DIR` on Linux, else the local app data). Never the shared
+/// temp folder: a predictable name there is open to another user. `None`: no such folder, no offer.
+/// [`crate::launch::McpOffer`] makes it private (0700) and refuses one owned by someone else.
 fn mcp_offer_dir(state: &State) -> Option<std::path::PathBuf> {
     match state.options.save_path.as_deref().and_then(std::path::Path::parent) {
         Some(d) if state.options.saves() => Some(d.join("mcp")),
-        _ => Some(std::env::temp_dir().join(format!("{}-mcp", crate::persist::APP_DIR))),
+        _ => dirs::runtime_dir().or_else(dirs::data_local_dir).map(|d| d.join(format!("{}-mcp", crate::persist::APP_DIR))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_quit_waits_for_a_running_restart_worker_but_only_so_long() {
+        let workers = Arc::new(RestartWorkers::default());
+        assert!(workers.wait_idle(Duration::from_millis(10)), "nothing running: no wait");
+        let ticket = workers.begin();
+        let start = Instant::now();
+        assert!(!workers.wait_idle(Duration::from_millis(60)), "a worker still runs: bounded wait, then false");
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        let w2 = workers.clone();
+        let waiter = thread::spawn(move || w2.wait_idle(Duration::from_secs(10)));
+        thread::sleep(Duration::from_millis(30));
+        drop(ticket);
+        assert!(waiter.join().unwrap(), "the end of the worker wakes the waiter");
     }
 }

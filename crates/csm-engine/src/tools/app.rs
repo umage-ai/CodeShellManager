@@ -70,6 +70,15 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             state_import_wpf,
         ),
         t(
+            "state_import_beta",
+            "Import from the beta…",
+            "Bring the sessions and groups of a CodeShellManager beta (its state.json beside this app's data folder; only read) into this app. Offered on the first run of a stable build that has no state of its own. Imported sessions arrive asleep; existing ones are kept. dismiss: true hides the offer. App and CLI only.",
+            Toolset::App,
+            Effects::MUTATES_STATE,
+            schema_of::<ImportBetaParams>,
+            state_import_beta,
+        ),
+        t(
             "app_quit",
             "Quit",
             "Close every session (Claude ones get time to exit cleanly, QuitClaudeConcurrency at a time; see docs/quit.md), save, then signal the app to exit. Sessions restore next time. force: true skips the exit waits (also while a quit is already running).",
@@ -422,7 +431,64 @@ fn refused_for_mcp() -> ToolError {
 
 /// Refused before any consent card (`tools::precheck`).
 pub(super) fn precheck(id: &str, caller: &Caller) -> Option<ToolError> {
-    (id == "state_import_wpf" && caller.is_external()).then(refused_for_mcp)
+    (id == "state_import_wpf" && caller.is_external()).then(refused_for_mcp).or_else(|| {
+        (id == "state_import_beta" && caller.is_external()).then(|| ToolError::Refused("importing from a beta decides what runs; do it in the app or with `csm state-import-beta`".into()))
+    })
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+#[serde(default, deny_unknown_fields)]
+struct ImportBetaParams {
+    /// Hide the offer instead of importing.
+    dismiss: bool,
+}
+
+/// The first-run offer to import a beta's sessions (`persist::beta_import_offer`): reads the beta's
+/// `state.json` on a worker (never writes it) and adds its groups and sessions, asleep. Settings,
+/// notes and add-ons are not touched.
+fn state_import_beta(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    if ctx.caller.is_external() {
+        return Err(ToolError::Refused("importing from a beta is for the app and the CLI".into()));
+    }
+    let p: ImportBetaParams = if params.is_null() { ImportBetaParams::default() } else { parse_params(params)? };
+    if p.dismiss {
+        ctx.state.rt.beta_offer = None;
+        ctx.state.touch();
+        return Ok(ToolOutput::message("The offer is hidden."));
+    }
+    let path = ctx.state.rt.beta_offer.clone().or_else(crate::persist::beta_state_path).ok_or_else(|| ToolError::NotFound("no beta data folder on this platform".into()))?;
+    let reply = ctx.park();
+    let engine = ctx.engine.clone();
+    let worker = move || {
+        let result = read_beta(&path);
+        engine.post(Box::new(move |ctx| {
+            let r = match result {
+                Err(msg) => Err(ToolError::Failed(msg)),
+                Ok(mut imported) => {
+                    let (sessions, groups) = merge_sessions(ctx, &mut imported);
+                    ctx.state.rt.beta_offer = None;
+                    ctx.state.persist();
+                    Ok(ToolOutput::new(format!("Imported {sessions} sessions (asleep) and {groups} groups from the beta."), json!({"sessions": sessions, "groups": groups})))
+                }
+            };
+            crate::lifecycle::after_step(ctx.state, ctx.engine);
+            if let Some(reply) = reply {
+                reply.send(r);
+            }
+        }));
+    };
+    std::thread::Builder::new().name("csm-import".into()).spawn(worker).map_err(|e| ToolError::Failed(format!("could not start the import: {e}")))?;
+    Ok(ToolOutput::message("Importing."))
+}
+
+/// Reads a beta's `state.json` (v2 format; never written).
+fn read_beta(path: &std::path::Path) -> Result<csm_core::models::AppState, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    if !meta.is_file() || meta.len() > MAX_WPF_STATE_BYTES {
+        return Err(format!("{} is not a CodeShellManager state file", path.display()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    csm_core::state::parse(&String::from_utf8_lossy(&bytes)).map_err(|e| format!("{} is not a CodeShellManager state file: {e}", path.display()))
 }
 
 fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
@@ -453,10 +519,8 @@ fn state_import_wpf(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     Ok(ToolOutput::message("Importing."))
 }
 
-/// Adds the imported groups and sessions that are not here yet (by id; sessions arrive asleep),
-/// takes the 0.x settings that map onto ours, and offers its Open with list for consent.
-fn merge(ctx: &mut Ctx<'_>, read: WpfRead) -> ToolOutput {
-    let WpfRead { state: mut imported, settings, open_with } = read;
+/// Adds the groups and sessions of `imported` that are not here yet (by id; sessions arrive asleep).
+fn merge_sessions(ctx: &mut Ctx<'_>, imported: &mut csm_core::models::AppState) -> (usize, usize) {
     let mut groups = 0;
     for g in imported.groups.drain(..) {
         if !g.id.trim().is_empty() && !ctx.state.app.groups.iter().any(|x| x.id == g.id) {
@@ -480,6 +544,14 @@ fn merge(ctx: &mut Ctx<'_>, read: WpfRead) -> ToolOutput {
     for (i, g) in ctx.state.app.groups.iter_mut().enumerate() {
         g.sort_order = i32::try_from(i).unwrap_or(i32::MAX);
     }
+    (sessions, groups)
+}
+
+/// Adds the imported groups and sessions that are not here yet (by id; sessions arrive asleep),
+/// takes the 0.x settings that map onto ours, and offers its Open with list for consent.
+fn merge(ctx: &mut Ctx<'_>, read: WpfRead) -> ToolOutput {
+    let WpfRead { state: mut imported, settings, open_with } = read;
+    let (sessions, groups) = merge_sessions(ctx, &mut imported);
     // Settings: value by value; anything unusable is skipped and logged, never fatal.
     let mapped = csm_core::wpf_settings::map(&settings, &ctx.state.app.settings);
     for line in &mapped.skipped {

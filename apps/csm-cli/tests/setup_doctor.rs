@@ -91,3 +91,21 @@ fn private_tempdir() -> tempfile::TempDir {
     }
     dir
 }
+
+#[test]
+fn setup_exits_non_zero_when_the_named_client_was_blocked_and_nothing_is_written() {
+    let home = private_tempdir();
+    let rt = private_tempdir();
+    std::fs::create_dir_all(home.path().join(".cursor")).unwrap();
+    let cfg = home.path().join(".cursor").join("mcp.json");
+    // An entry with our name that setup did not write: blocked, and left exactly as it is.
+    let mine = "{\"mcpServers\": {\"codeshell\": {\"command\": \"mine\", \"args\": []}}}";
+    std::fs::write(&cfg, mine).unwrap();
+    let blocked = csm(home.path(), rt.path(), &["setup", "--client", "cursor"]);
+    assert!(!blocked.status.success(), "a blocked client is not success: {}", text(&blocked));
+    assert!(text(&blocked).contains("skipped Cursor"), "{}", text(&blocked));
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), mine);
+    // Every detected client blocked (no --client) fails the same way.
+    let all = csm(home.path(), rt.path(), &["setup"]);
+    assert!(!all.status.success(), "{}", text(&all));
+}
