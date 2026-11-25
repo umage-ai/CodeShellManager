@@ -42,6 +42,26 @@ pub enum OfferError {
     Field(&'static str),
 }
 
+/// `ws://127.0.0.1` with an optional port and an optional path, and nothing else. A userinfo part
+/// (`ws://127.0.0.1@host`) or a longer host name (`ws://127.0.0.1.example`) is refused (SEC-69).
+pub fn is_loopback_ws_relay(relay: &str) -> bool {
+    let Some(rest) = relay.strip_prefix("ws://127.0.0.1") else { return false };
+    let tail = match rest.strip_prefix(':') {
+        Some(after_colon) => {
+            let digits = after_colon.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 || digits > 5 {
+                return false;
+            }
+            match after_colon.get(digits..) {
+                Some(t) => t,
+                None => return false,
+            }
+        }
+        None => rest,
+    };
+    tail.is_empty() || tail.starts_with('/')
+}
+
 impl PairingOffer {
     pub fn new(relay: &str, host_id: &str, host_pub: &[u8; KEY_LEN], pairing_id: &[u8; PAIRING_ID_LEN], psk: &[u8; PSK_LEN]) -> Self {
         Self {
@@ -59,8 +79,7 @@ impl PairingOffer {
         if self.v != OFFER_VERSION {
             return Err(OfferError::Version(self.v));
         }
-        let loopback = self.r.starts_with("ws://127.0.0.1") || self.r.starts_with("ws://localhost");
-        if !(self.r.starts_with("wss://") || loopback) || self.r.len() > 256 || self.r.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        if !(self.r.starts_with("wss://") || is_loopback_ws_relay(&self.r)) || self.r.len() > 256 || self.r.chars().any(|c| c.is_control() || c.is_whitespace()) {
             return Err(OfferError::Field("r"));
         }
         if !is_valid_host_id(&self.h) {
@@ -174,6 +193,16 @@ mod tests {
         let url = o.url("https://phone.example.test/", "0.1.0");
         assert!(url.starts_with("https://phone.example.test/v/0.1.0/#p="));
         assert_eq!(PairingOffer::decode(&url).unwrap(), o);
+    }
+
+    #[test]
+    fn a_look_alike_loopback_relay_is_not_accepted_in_an_offer() {
+        for relay in ["ws://127.0.0.1.evil.example", "ws://127.0.0.1@evil.example", "ws://localhost.evil.example", "ws://localhost:9000"] {
+            let o = PairingOffer::new(relay, &host_id(&[1; 32]), &[2; 32], &[3; 16], &[4; 32]);
+            assert_eq!(o.validate(), Err(OfferError::Field("r")), "{relay}");
+        }
+        let ok = PairingOffer::new("ws://127.0.0.1:9000", &host_id(&[1; 32]), &[2; 32], &[3; 16], &[4; 32]);
+        assert!(ok.validate().is_ok());
     }
 
     #[test]

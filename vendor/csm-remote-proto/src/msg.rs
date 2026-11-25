@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use crate::limits::MAX_APP_MESSAGE_BYTES;
 
-/// What a paired device may do. `Operator` includes everything `Viewer` may.
+/// What a paired device may do. `Operator` includes everything `Viewer` may. An operator acts on
+/// every session the PC has, not only on ones the phone created (SEC-66, documented, not limited).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
