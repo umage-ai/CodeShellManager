@@ -118,6 +118,11 @@ fn clean(s: &str, max: usize) -> bool {
     (1..=max).contains(&n) && !s.chars().any(char::is_control)
 }
 
+/// A base64url (unpadded) key as the browser gives it: 1 to `max` bytes of `A-Za-z0-9_-`.
+fn base64url(s: &str, max: usize) -> bool {
+    (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 impl Op {
     /// Every wire name, for "unknown op" detection and docs.
     pub const NAMES: &'static [&'static str] = &[
@@ -206,7 +211,9 @@ impl Op {
                 clean(session_id, MAX_ID_CHARS) && clean(command, MAX_COMMAND_CHARS) && command.starts_with('/') && !command.contains(char::is_whitespace)
             }
             Self::PushSubscribe { endpoint, p256dh, auth } => {
-                clean(endpoint, MAX_ENDPOINT_CHARS) && endpoint.starts_with("https://") && clean(p256dh, 128) && clean(auth, 64)
+                // Bytes, and ASCII only: the add-on's device list counts bytes, so a limit of characters would let
+                // a multibyte value through the wire check and then break the saved list.
+                clean(endpoint, MAX_ENDPOINT_CHARS) && endpoint.is_ascii() && endpoint.starts_with("https://") && base64url(p256dh, 128) && base64url(auth, 64)
             }
         };
         if ok { Ok(()) } else { Err(ErrorCode::BadRequest) }
@@ -596,6 +603,20 @@ mod tests {
         assert!(cmd("remote-control").is_err());
         assert!(cmd("/a b").is_err());
         assert!(cmd("/a\nb").is_err());
+    }
+
+    #[test]
+    fn push_keys_are_ascii_base64url_and_bounded_in_bytes() {
+        let p = |e: &str, k: &str, a: &str| Op::PushSubscribe { endpoint: e.into(), p256dh: k.into(), auth: a.into() }.validate();
+        let ep = "https://fcm.googleapis.com/x";
+        assert!(p(ep, &"k".repeat(128), &"a".repeat(64)).is_ok());
+        assert!(p(ep, &"k".repeat(129), "a").is_err());
+        assert!(p(ep, "k", &"a".repeat(65)).is_err());
+        // 100 two-byte characters pass a count of characters (100 <= 128) but are 200 bytes.
+        assert!(p(ep, &"é".repeat(100), "a").is_err());
+        assert!(p(ep, "k", &"é".repeat(40)).is_err());
+        assert!(p(ep, "k+/=", "a").is_err());
+        assert!(p("https://é.example/x", "k", "a").is_err());
     }
 
     #[test]

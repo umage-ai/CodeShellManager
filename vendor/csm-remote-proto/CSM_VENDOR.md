@@ -4,7 +4,7 @@ The wire protocol of the CSM phone remote, copied into CodeShellManager so that 
 access to its source repository, which is private for now.
 
 - **Source:** `github.com/umage-ai/csm-relay` (private), `crates/csm-remote-proto`
-- **Commit:** `fa8b35b046d9ee404adca1b69586c52ef4e676e7` (the csm-relay HEAD at the time of the copy)
+- **Commit:** `0a60d56abc96cedcd15292d5d801cd2dbd54690e` (the csm-relay HEAD at the time of the copy)
 - **Changes:** `src/`, `vectors/` and `README.md` are byte-identical to the source. `Cargo.toml` differs
   only where workspace inheritance cannot work, because `vendor/*` is outside the CSM workspace:
   - `version`, `edition`, `license`, `rust-version` and `publish` are written out as literal values
