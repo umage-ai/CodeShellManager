@@ -96,7 +96,7 @@ fn start_minimized_settings_are_listed_off_by_default_and_saved() {
     h.ok("settings_set", json!({"key": "start_minimized_to_tray", "value": true}));
     let all = h.ok("settings_get", json!({})).data;
     assert_eq!((all["StartMinimized"].clone(), all["StartMinimizedToTray"].clone()), (json!(true), json!(true)));
-    // Harmless to the session's work: an MCP client may change it without the app-only rule.
+    // Not cosmetic: an MCP client may not change it (SEC-3).
     let ext = Caller::External { client: "t".into(), session_id: None };
-    assert!(h.engine.call(ext, "settings_set", json!({"key": "StartMinimized", "value": false})).is_ok());
+    assert!(matches!(h.engine.call(ext, "settings_set", json!({"key": "StartMinimized", "value": false})), Err(csm_engine::ToolError::Refused(_))));
 }

@@ -628,8 +628,8 @@ fn turning_it_off_closes_the_listener_and_every_connection() {
     let conn = connect(&host, &me).unwrap();
     let open_offer = rig.open_offer();
     wait_for("connected", || (rig.status()["connected"] == 1).then_some(()));
-    // Anyone may turn it off, an agent included.
-    rig.engine.call(Caller::External { client: "an-agent".into(), session_id: None }, "peer_server_disable", json!({})).unwrap();
+    // The person may turn it off (an agent may not: SEC-37).
+    rig.engine.call(Caller::Cli, "peer_server_disable", json!({})).unwrap();
     assert_eq!(wait_closed(&conn), Some(ByeReason::ServerOff));
     assert!(refuses_connections(addr), "nothing listens any more");
     TcpListener::bind(addr).expect("the port is free again");

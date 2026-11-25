@@ -39,6 +39,14 @@ pub fn strip_wsl_profile_noise(stdout: &str) -> &str {
     }
 }
 
+/// Config every spawned git gets first (SEC-4). A repo folder is untrusted input: its config may
+/// name a program git then runs on its own (`core.fsmonitor`, hooks, the `ext::` transport), so
+/// those are switched off. An empty `core.hooksPath` disables hooks (checked against git 2.55
+/// for Windows: `commit` ran no pre-commit hook). `status` only reads, so none of this changes
+/// what the app shows; it does mean hooks do not run for app-made commits or worktrees.
+pub const GIT_HARDENING: [&str; 8] =
+    ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=", "-c", "protocol.ext.allow=never"];
+
 /// The `wsl.exe` command line for one git invocation inside a distro:
 /// `-d <distro> -e sh -lc '<fixed script>' git -C <cwd> <args...>`.
 ///
@@ -54,6 +62,7 @@ pub fn strip_wsl_profile_noise(stdout: &str) -> &str {
 pub fn build_wsl_git_command_line(distro: &str, cwd: &str, git_args: &[&str]) -> String {
     let mut argv: Vec<String> =
         vec!["-d".into(), distro.into(), "-e".into(), "sh".into(), "-lc".into(), WSL_GIT_SCRIPT.into(), "git".into(), "-C".into(), cwd.into()];
+    argv.extend(GIT_HARDENING.iter().map(|a| (*a).to_owned()));
     argv.extend(git_args.iter().map(|a| translate_unc_arg_to_linux(a, distro)));
     join_argv(&argv)
 }
@@ -62,6 +71,7 @@ pub fn build_wsl_git_command_line(distro: &str, cwd: &str, git_args: &[&str]) ->
 #[must_use]
 pub fn build_local_git_command_line(working_dir: &str, git_args: &[&str]) -> String {
     let mut argv: Vec<&str> = vec!["-C", working_dir];
+    argv.extend_from_slice(&GIT_HARDENING);
     argv.extend_from_slice(git_args);
     join_argv(&argv)
 }
@@ -307,10 +317,22 @@ mod tests {
     /// The argv from `git` onwards: what the distro's git actually receives, ignoring the
     /// wsl.exe preamble. Position-independent so a preamble change does not need every
     /// expectation rewritten.
+    /// The argv minus the fixed hardening config, so the tests below stay about the arguments.
+    fn without_hardening(argv: &[String]) -> Vec<String> {
+        let mut out = argv.to_vec();
+        if let Some(i) = out.iter().position(|a| a == "-C") {
+            let start = i + 2;
+            if out.get(start..start + GIT_HARDENING.len()).is_some_and(|w| w == GIT_HARDENING) {
+                out.drain(start..start + GIT_HARDENING.len());
+            }
+        }
+        out
+    }
+
     fn git_argv(command_line: &str) -> Vec<String> {
         let argv = split_command_line(command_line);
         let g = argv.iter().position(|a| a == "git").unwrap_or_else(|| panic!("no `git` in: {command_line}"));
-        argv[g..].to_vec()
+        without_hardening(&argv[g..])
     }
 
     fn strs(v: &[&str]) -> Vec<String> {
@@ -335,7 +357,7 @@ mod tests {
     fn local_git_command_line_keeps_each_value_as_exactly_one_argument() {
         for payload in HOSTILE {
             let cmd = build_local_git_command_line(r"C:\repo", &["worktree", "add", "-b", payload, r"C:\wt"]);
-            assert_eq!(split_command_line(&cmd), strs(&["-C", r"C:\repo", "worktree", "add", "-b", payload, r"C:\wt"]), "{payload:?}");
+            assert_eq!(without_hardening(&split_command_line(&cmd)), strs(&["-C", r"C:\repo", "worktree", "add", "-b", payload, r"C:\wt"]), "{payload:?}");
         }
     }
 
@@ -351,6 +373,25 @@ mod tests {
         assert!(!argv[..git].iter().any(|a| a == "--"));
     }
 
+
+    #[test]
+    fn every_command_line_disarms_repo_defined_commands() {
+        // SEC-4: a folder's own config must not get to run fsmonitor, hooks or ext:: transports.
+        // The hardening sits between `-C <dir>` and the builder's own args, for every builder.
+        let all: Vec<Vec<String>> = vec![status_args(), status_text_args(), fetch_args(), pull_ff_only_args(), list_worktrees_args()];
+        for git_args in all {
+            let refs: Vec<&str> = git_args.iter().map(String::as_str).collect();
+            let local = split_command_line(&build_local_git_command_line(r"C:\repo", &refs));
+            let wsl = split_command_line(&build_wsl_git_command_line("Ubuntu", "/repo", &refs));
+            for argv in [local, wsl] {
+                let c = argv.iter().position(|a| a == "-C").unwrap();
+                assert_eq!(argv[c + 2..c + 2 + GIT_HARDENING.len()], GIT_HARDENING);
+                for want in ["core.fsmonitor=false", "core.untrackedCache=false", "core.hooksPath=", "protocol.ext.allow=never"] {
+                    assert!(argv.iter().any(|a| a == want), "{want} missing");
+                }
+            }
+        }
+    }
     #[test]
     fn wsl_git_command_line_runs_git_through_a_login_shell_without_reparsing() {
         // A bare `-e git` is injection-safe but drops the login shell, so PATH is the bare
@@ -510,7 +551,7 @@ mod tests {
             let refs: Vec<&str> = sw.iter().map(String::as_str).collect();
             let cmd = build_local_git_command_line(r"C:\repo", &refs);
             let argv = split_command_line(&format!("git {cmd}"));
-            assert_eq!(argv, strs(&["git", "-C", r"C:\repo", "switch", "--no-guess", "--", branch]));
+            assert_eq!(without_hardening(&argv), strs(&["git", "-C", r"C:\repo", "switch", "--no-guess", "--", branch]));
         }
     }
 

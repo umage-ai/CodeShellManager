@@ -111,7 +111,7 @@ are plain. The consent dialog shows that exact command line.
   wrong without it.
 - **A palette command naming a tool that does not exist** is dropped when the add-on loads (the
   registry is the authority). A command may never call an `addon_*` tool, and may not call a tool
-  that writes into a session (`session_send_text` and similar) or enables an extension.
+  that writes into a session (`session_send_text` and similar) or enables an extension. Beyond read-only tools, only these may be named: `session_new`, `session_focus`, `session_wake`, `session_recent`, `layout_set`, `theme_set`, `view_set`, `window_show`, `inspector_show`, `inbox_next`, `pane_focus_next`, `pane_focus_prev`, `rail_tab_next`, `rail_tab_prev`. Anything else (`settings_set`, `open_with_set`, `state_import` and the like) is dropped and reported.
 
 ## Profiles
 
@@ -876,7 +876,7 @@ through the normal dispatch as a click of the person, so a button does nothing a
 with the same tool. Which tools is decided when the tree is parsed, by the tool id:
 
 - The add-on's own tools (`<its id>.*`) run directly.
-- `session_focus`, `screen_open`, `screen_close` and `inspector_show` run directly.
+- `session_focus` and `inspector_show` run directly. `screen_open` runs directly for a screen of the button's own add-on only; another add-on's screen is refused, and `screen_close` is refused (an add-on closes its own screens with `screen/close`).
 - `session_send_text`, `open_url` and `open_with` run only after **a confirm CSM draws**: it names
   the add-on, the tool, the exact text or address and the target session (invisible characters shown
   as markers). The button's label is the plugin's, so the confirm is where the truth is shown.

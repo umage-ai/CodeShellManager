@@ -131,11 +131,11 @@ fn ssh_sessions_have_none_and_mcp_callers_need_no_consent() {
 
     write(&h.dir.path().join("AGENTS.md"), b"# a");
     let mcp = Caller::External { client: "test-mcp".into(), session_id: None };
-    let path = h.dir.path().to_string_lossy().into_owned();
-    // Read-only effects: no consent card, so these answer at once.
-    let l = h.engine.call(mcp.clone(), "project_docs_list", json!({"path": path})).unwrap();
+    let sid = session_in(&h, h.dir.path());
+    // Read-only effects: no consent card, so these answer at once. An MCP client names a session.
+    let l = h.engine.call(mcp.clone(), "project_docs_list", json!({"session_id": sid})).unwrap();
     assert_eq!(rels(&l.data), ["AGENTS.md"]);
-    let t = h.engine.call(mcp, "project_doc_get", json!({"path": path, "file": "AGENTS.md"})).unwrap();
+    let t = h.engine.call(mcp, "project_doc_get", json!({"session_id": sid, "file": "AGENTS.md"})).unwrap();
     assert_eq!(t.data["text"], "# a");
     let spec = h.engine.registry().get("project_doc_get").copied().unwrap();
     assert!(spec.effects.read_only_hint() && !spec.effects.needs_consent());

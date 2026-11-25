@@ -559,7 +559,7 @@ fn blocks_bytes(blocks: &[Block]) -> usize {
 /// list of core tools is allowed, and `session_send_text`, `open_url` and `open_with` ask first
 /// (CSM draws the confirm). Everything else (`addon_*`, `plugin_*`, `consent_*`, `settings_set`,
 /// anything that enables an extension or may discard data) is refused.
-pub fn action_policy(addon: &str, tool: &str) -> ActionPolicy {
+pub fn action_policy(addon: &str, tool: &str, params: &Value) -> ActionPolicy {
     if let Some((owner, _)) = split_tool_id(tool) {
         return if owner == addon {
             ActionPolicy::Direct
@@ -568,12 +568,20 @@ pub fn action_policy(addon: &str, tool: &str) -> ActionPolicy {
         };
     }
     match tool {
-        "session_focus" | "screen_open" | "screen_close" | "inspector_show" => ActionPolicy::Direct,
+        // A button opens only its own add-on's screens (SEC-22): another add-on's screen would get
+        // a context this add-on chose. Screen instances are opaque ids it cannot prove it owns, so
+        // closing is left to the add-on itself (`screen/close`).
+        "screen_open" => match params.get("screen").and_then(Value::as_str).and_then(split_tool_id) {
+            Some((owner, _)) if owner == addon => ActionPolicy::Direct,
+            _ => ActionPolicy::Refused(format!("a screen button may only open screens of its own add-on (`{addon}.<name>`)")),
+        },
+        "screen_close" => ActionPolicy::Refused("a screen button cannot close screens; an add-on closes its own with `screen/close`".into()),
+        "session_focus" | "inspector_show" => ActionPolicy::Direct,
         "session_send_text" | "open_url" | "open_with" => ActionPolicy::Confirm,
         t if t.starts_with("addon_") || t.starts_with("plugin_") || t.starts_with("consent_") || t == "settings_set" => {
             ActionPolicy::Refused(format!("`{tool}` manages add-ons or settings; a screen button may not run it"))
         }
-        _ => ActionPolicy::Refused(format!("`{tool}` is not one of the core tools a screen button may run (session_focus, screen_open, screen_close, inspector_show, open_url, session_send_text, open_with)")),
+        _ => ActionPolicy::Refused(format!("`{tool}` is not one of the core tools a screen button may run (session_focus, screen_open (own screens), inspector_show, open_url, session_send_text, open_with)")),
     }
 }
 
@@ -899,7 +907,8 @@ impl<'a> TreeParser<'a> {
         if serde_json::to_string(&params).map_or(true, |s| s.len() > MAX_ACTION_PARAMS) {
             return err(format!("an action's params are over {} KiB", MAX_ACTION_PARAMS / 1024));
         }
-        Ok(Action { tool: tool.to_owned(), params, policy: action_policy(self.addon, tool) })
+        let policy = action_policy(self.addon, tool, &params);
+        Ok(Action { tool: tool.to_owned(), params, policy })
     }
 
     fn node(&mut self, v: &Value, depth: usize) -> Res<Node> {

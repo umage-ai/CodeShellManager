@@ -122,6 +122,11 @@ fn check_folder(folder: &str) -> Result<PathBuf, DocError> {
     if !p.is_absolute() {
         return Err(DocError::BadFolder(format!("`{f}` is not an absolute path")));
     }
+    // A network path would make Windows send credentials to a host the caller picked. WSL's own
+    // shares are on this machine.
+    if is_unc(f) && !crate::git::run::is_wsl_folder(f) {
+        return Err(DocError::BadFolder("network folders are not read for project docs".into()));
+    }
     if !p.is_dir() {
         return Err(DocError::BadFolder(format!("{f} is not a folder (or is not reachable)")));
     }
@@ -145,10 +150,37 @@ fn find_ci(dir: &Path, name: &str, want_dir: bool) -> Option<(PathBuf, fs::Metad
         })
         .collect();
     hits.sort();
+    let inside = fs::canonicalize(dir).ok()?;
     hits.into_iter().find_map(|(_, p)| {
-        let m = fs::metadata(&p).ok()?;
-        (if want_dir { m.is_dir() } else { m.is_file() }).then_some((p, m))
+        // Links are never followed (SEC-13): a README that points at a secret is not a doc.
+        let m = fs::symlink_metadata(&p).ok()?;
+        if is_link(&m) || !(if want_dir { m.is_dir() } else { m.is_file() }) {
+            return None;
+        }
+        // And whatever the path resolves through, it ends up inside the folder it was found in.
+        fs::canonicalize(&p).ok()?.starts_with(&inside).then_some((p, m))
     })
+}
+
+/// A symbolic link, or on Windows any reparse point (junction, mount point, cloud placeholder).
+fn is_link(m: &fs::Metadata) -> bool {
+    if m.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// `\\host\share`, `//host/share`, `\\?\` and `\\.\` paths.
+fn is_unc(p: &str) -> bool {
+    p.starts_with(r"\\") || p.starts_with("//")
 }
 
 /// `to` relative to `from` (both absolute, lexically), with `/`.
@@ -314,5 +346,42 @@ mod tests {
     fn relative_paths() {
         assert_eq!(relative(Path::new("/a/b/c"), Path::new("/a/README.md")), "../../README.md");
         assert_eq!(relative(Path::new("/a"), Path::new("/a/.claude/CLAUDE.md")), ".claude/CLAUDE.md");
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn network_folders_are_refused_and_wsl_ones_are_not_network() {
+        for bad in [r"\\evil\share\repo", "//evil/share/repo", r"\\?\UNC\evil\share"] {
+            assert!(matches!(list(bad), Err(DocError::BadFolder(_))), "{bad}");
+        }
+        assert!(is_unc(r"\\wsl$\Ubuntu\home") && crate::git::run::is_wsl_folder(r"\\wsl$\Ubuntu\home"));
+    }
+
+    #[test]
+    fn a_doc_that_is_a_link_is_not_a_doc() {
+        let d = tempfile::tempdir().unwrap();
+        let secret = d.path().join("secret.txt");
+        fs::write(&secret, "top secret").unwrap();
+        let folder = d.path().join("proj");
+        fs::create_dir_all(&folder).unwrap();
+        let link = folder.join("README.md");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&secret, &link);
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&secret, &link);
+        if made.is_err() {
+            eprintln!("no permission to create symlinks here; skipping");
+            return;
+        }
+        let l = list(folder.to_str().unwrap()).unwrap();
+        assert!(l.entries.is_empty(), "{:?}", l.entries);
+        assert!(read(folder.to_str().unwrap(), "README.md").is_err());
+        // A real file beside it is still found.
+        fs::write(folder.join("AGENTS.md"), "ok").unwrap();
+        assert_eq!(list(folder.to_str().unwrap()).unwrap().entries.len(), 1);
     }
 }

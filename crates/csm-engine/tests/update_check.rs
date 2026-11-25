@@ -123,7 +123,9 @@ fn the_check_is_network_but_not_a_consent_question_and_the_setting_is_open_to_mc
     assert!(!spec.effects.needs_consent());
     assert_eq!(h.ok("settings_get", json!({"key": "CheckForUpdates"})).data["value"], true);
     let mcp = Caller::External { client: "agent".into(), session_id: None };
-    h.engine.call(mcp, "settings_set", json!({"key": "check_for_updates", "value": false})).unwrap();
+    let r = h.engine.call(mcp, "settings_set", json!({"key": "check_for_updates", "value": false}));
+    assert!(matches!(r, Err(csm_engine::ToolError::Refused(_))), "{r:?}");
+    h.ok("settings_set", json!({"key": "check_for_updates", "value": false}));
     assert_eq!(h.ok("settings_get", json!({"key": "CheckForUpdates"})).data["value"], false);
 }
 

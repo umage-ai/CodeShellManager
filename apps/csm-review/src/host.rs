@@ -65,6 +65,11 @@ impl Who {
     }
 
     /// The person: the app's UI or `csm <tool>`. Only they resolve or delete.
+    /// Who to count projects against.
+    fn key(&self) -> String {
+        format!("{}:{}", self.kind, self.client)
+    }
+
     fn is_person(&self) -> bool {
         matches!(self.kind.as_str(), "ui" | "cli")
     }
@@ -117,6 +122,39 @@ struct Screen {
 /// What `locate` needs for one file: the current text and blob of a side.
 type Text = (String, String);
 
+/// Projects one non-person caller may work on.
+const MAX_PROJECTS_PER_CALLER: usize = 32;
+
+/// The projects each caller has worked on this run.
+#[derive(Default)]
+struct Touched(HashMap<String, HashSet<String>>);
+
+impl Touched {
+    /// `true` when `caller` may work on `project`: already counted, or the cap has room.
+    fn admit(&mut self, caller: &str, project: &str) -> bool {
+        let set = self.0.entry(caller.to_owned()).or_default();
+        if set.contains(project) {
+            return true;
+        }
+        if set.len() >= MAX_PROJECTS_PER_CALLER {
+            return false;
+        }
+        set.insert(project.to_owned());
+        true
+    }
+}
+
+/// `\\host\share`, `//host/share` or a device path: anything that is not a plain local path.
+fn is_network_path(p: &str) -> bool {
+    let p = p.trim();
+    p.starts_with(r"\\") || p.starts_with("//")
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.trim().replace('\\', "/").trim_end_matches('/').to_lowercase();
+    norm(a) == norm(b)
+}
+
 pub struct Host {
     lines: Lines<StdinLock<'static>>,
     out: io::Stdout,
@@ -126,12 +164,14 @@ pub struct Host {
     screens: HashMap<String, Screen>,
     user: String,
     eof: bool,
+    /// The projects each non-person caller has worked on, capped (SEC-6).
+    touched: Touched,
 }
 
 pub fn run() {
     let stdin = io::stdin();
     let user = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).map(|u| cut(&u.chars().filter(|c| !c.is_control()).collect::<String>(), 40)).ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| "Reviewer".into());
-    let mut host = Host { lines: stdin.lock().lines(), out: io::stdout(), pending: VecDeque::new(), next_id: 1000, store: Store::new(None), screens: HashMap::new(), user, eof: false };
+    let mut host = Host { lines: stdin.lock().lines(), out: io::stdout(), pending: VecDeque::new(), next_id: 1000, store: Store::new(None), screens: HashMap::new(), user, eof: false, touched: Touched::default() };
     while !host.eof {
         let Some(msg) = host.next_message() else { break };
         host.dispatch(&msg);
@@ -281,6 +321,7 @@ impl Host {
             }
             own
         } else if let Some(g) = given {
+            self.admit_project(who, &g)?;
             g
         } else if let Some(id) = thread_id.filter(|_| who.is_person()) {
             self.store.locate_project(None, id, now_ms()).ok_or_else(|| Fail(format!("no thread `{id}`")))?
@@ -291,10 +332,37 @@ impl Host {
             (Some(sid), true) => json!({"session_id": sid}),
             _ => {
                 let root = project.strip_prefix("repo:").map(str::to_owned).or_else(|| self.store.root_of(&project, now_ms())).unwrap_or_default();
-                if root.is_empty() { Value::Null } else { json!({"folder": root}) }
+                if root.is_empty() || is_network_path(&root) { Value::Null } else { json!({"folder": root}) }
             }
         };
         Ok((project, target))
+    }
+
+    /// SEC-6: a project a caller names must be one CSM knows, never a path the caller picked, and
+    /// never a network path (reading it would make Windows send credentials to that host). The
+    /// person (UI, CLI) may name any local repository; everyone else only a repository with a
+    /// session open in it or threads already stored, and at most `MAX_PROJECTS_PER_CALLER`.
+    fn admit_project(&mut self, who: &Who, project: &str) -> Result<(), Fail> {
+        if let Some(root) = project.strip_prefix("repo:") {
+            if is_network_path(root) {
+                return fail("a network path is not a project; name a repository on this computer");
+            }
+            if !who.is_person() && !self.is_known_repo(project, root) {
+                return fail("that project is not known to CSM: open a session in the repository first, or leave `project` out");
+            }
+        }
+        if !who.is_person() && !self.touched.admit(&who.key(), project) {
+            return fail(format!("one caller may work on at most {MAX_PROJECTS_PER_CALLER} projects"));
+        }
+        Ok(())
+    }
+
+    fn is_known_repo(&mut self, project: &str, root: &str) -> bool {
+        if self.store.root_of(project, now_ms()).is_some() {
+            return true;
+        }
+        let Ok(d) = self.csm_call("session_list", json!({"include_asleep": true})) else { return false };
+        d.as_array().into_iter().flatten().any(|v| text_of(v, "repo_root").is_some_and(|r| same_path(r, root)))
     }
 
     fn author(&self, who: &Who) -> Author {
@@ -569,6 +637,7 @@ impl Host {
             self.reply(id, json!({"rev": 1, "root": view::note("Open the review on a session", "The review needs a session in a repository: use Open Review from a session.")}));
             return;
         };
+if is_network_path(project.strip_prefix("repo:").unwrap_or(&project)) || is_network_path(&folder) {            self.reply_err(id, -32000, "a network path cannot be reviewed; use a repository on this computer");            return;        }
         if self.screens.len() >= MAX_SCREENS && !self.screens.contains_key(&instance) {
             self.reply_err(id, -32000, "too many review screens are open");
             return;
@@ -1031,6 +1100,20 @@ mod tests {
         assert!(!agent.is_person() && agent.is_agent());
         assert!(!addon.is_person() && !addon.is_agent());
         assert!(!none.is_person() && !none.is_agent(), "no caller is nobody");
+    }
+
+    #[test]
+    fn network_paths_and_the_project_cap() {
+        assert!(is_network_path(r"\\evil\share\repo") && is_network_path("//evil/share") && is_network_path(r"  \\x\y"));
+        assert!(!is_network_path(r"C:\code\shop") && !is_network_path("/home/a/shop"));
+        assert!(same_path(r"C:\Code\Shop\\", "c:/code/shop"));
+        let mut t = Touched::default();
+        for i in 0..MAX_PROJECTS_PER_CALLER {
+            assert!(t.admit("external:a", &format!("repo:/r{i}")));
+        }
+        assert!(!t.admit("external:a", "repo:/one-too-many"));
+        assert!(t.admit("external:a", "repo:/r0"), "a project already counted stays usable");
+        assert!(t.admit("external:b", "repo:/one-too-many"), "the cap is per caller");
     }
 
     #[test]

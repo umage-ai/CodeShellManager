@@ -149,14 +149,22 @@ fn only_the_full_level_exists_so_far() {
 }
 
 #[test]
-fn turning_things_off_is_allowed_for_everyone() {
+fn turning_things_off_is_the_persons_but_one_device_may_be_revoked_by_anyone() {
     let (h, rec) = rig();
-    for caller in [Caller::Ui, Caller::Cli, mcp(), peer(Level::Full)] {
+    for caller in [Caller::Ui, Caller::Cli] {
         h.engine.call(caller.clone(), "peer_server_disable", json!({})).unwrap_or_else(|e| panic!("disable for {caller:?}: {e:?}"));
         h.engine.call(caller.clone(), "peer_device_revoke", json!({"all": true})).unwrap_or_else(|e| panic!("revoke for {caller:?}: {e:?}"));
         h.engine.call(caller, "peer_device_revoke", json!({"id": "someid"})).unwrap();
     }
-    assert_eq!(rec.calls().len(), 12);
+    // SEC-37: an MCP client or a paired device cannot drop everything, only revoke one device.
+    for caller in [mcp(), peer(Level::Full)] {
+        let r = h.engine.call(caller.clone(), "peer_server_disable", json!({}));
+        assert!(matches!(r, Err(ToolError::Refused(_))), "disable for {caller:?}: {r:?}");
+        let r = h.engine.call(caller.clone(), "peer_device_revoke", json!({"all": true}));
+        assert!(matches!(r, Err(ToolError::Refused(_))), "revoke all for {caller:?}: {r:?}");
+        h.engine.call(caller, "peer_device_revoke", json!({"id": "someid"})).unwrap();
+    }
+    assert_eq!(rec.calls().len(), 8);
     let r = h.ui("peer_device_revoke", json!({}));
     assert!(matches!(r, Err(ToolError::InvalidParams(_))));
     let r = h.ui("peer_device_revoke", json!({"id": "a", "all": true}));

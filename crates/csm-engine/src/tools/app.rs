@@ -36,7 +36,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         t(
             "settings_set",
             "Change a setting…",
-            "Set one setting by key. Settings that decide what runs (default command, launch commands, editors, API key, ConPTY) can only be changed in the app.",
+            "Set one setting by key. MCP clients may change only cosmetic settings (theme, fonts, zoom, sidebar layout); everything else is changed in the app.",
             Toolset::App,
             Effects::MUTATES_STATE,
             schema_of::<SetParams>,
@@ -135,19 +135,35 @@ pub(super) fn specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// Settings an MCP client may not change: they decide what runs, or are secrets.
-/// (`ClaudeCommands` is text the app types into sessions; `PassSessionNameToClaude` changes every
-/// Claude command line, and a Claude CLI without `--name` would then refuse to start.)
-const APP_ONLY_KEYS: [&str; 9] = [
-    "AnthropicApiKey",
-    "DefaultCommand",
-    "DefaultWorkingFolder",
-    "LaunchCommands",
-    "OpenWith",
-    "OpenWithSeeded",
-    "UseBundledConPty",
-    "ClaudeCommands",
-    "PassSessionNameToClaude",
+/// The only settings an MCP client (External or Peer) may change, with no consent card: purely
+/// cosmetic. Everything else (launch commands, clipboard and close behaviour, MCP offers, secrets,
+/// anything added later) is refused for them; the person changes it in the app's Settings.
+const MCP_SETTABLE_KEYS: [&str; 25] = [
+    "Theme",
+    "ThemeDark",
+    "ThemeLight",
+    "GroupDisplayMode",
+    "FilterGridByActiveGroup",
+    "PerGroupLayout",
+    "ShowGroupsTab",
+    "ShowWorktreeClusters",
+    "UngroupedSectionExpanded",
+    "SearchCollapseAfterNavigate",
+    "MaxSearchResults",
+    "ShowTerminalStatusDot",
+    "SidebarActionIconsMode",
+    "TerminalFontFamily",
+    "TerminalFontSize",
+    "TerminalFontLigatures",
+    "TerminalFontWeight",
+    "TerminalLetterSpacing",
+    "TerminalLineHeight",
+    "TerminalPadding",
+    "TerminalFontPoints",
+    "UiZoomPercent",
+    "ShowGitBranch",
+    "ShowToastNotifications",
+    "ShowNotificationSound",
 ];
 const SECRET_KEYS: [&str; 1] = ["AnthropicApiKey"];
 
@@ -266,14 +282,14 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     if key == keymap::SETTING_KEY {
         return Err(ToolError::Refused("keyboard shortcuts are changed with keymap_set and keymap_reset (each chord is checked for conflicts)".into()));
     }
-    if ctx.caller.is_external() && APP_ONLY_KEYS.contains(&key.as_str()) {
-        return Err(ToolError::Refused(format!("`{key}` decides what runs; change it in the app's settings")));
-    }
     let Ok(Value::Object(mut m)) = full_settings(&ctx.state.app.settings) else {
         return Err(ToolError::Failed("could not read the settings".into()));
     };
     if !m.contains_key(&key) {
         return Err(ToolError::NotFound(format!("no setting `{}`; settings_get lists them", p.key)));
+    }
+    if ctx.caller.is_external() && !MCP_SETTABLE_KEYS.contains(&key.as_str()) {
+        return Err(ToolError::Refused(format!("`{key}` can only be changed by the person: use Settings in the app")));
     }
     m.insert(key.clone(), p.value.clone());
     let updated: AppSettings =
@@ -510,7 +526,7 @@ struct QuitParams {
 
 fn app_quit(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: QuitParams = if params.is_null() { QuitParams::default() } else { parse_params(params)? };
-    if matches!(ctx.caller, Caller::External { .. }) {
+    if ctx.caller.is_external() {
         // Allowed (it needs consent), but say what happens.
         log::info!("quit requested by an MCP client");
     }

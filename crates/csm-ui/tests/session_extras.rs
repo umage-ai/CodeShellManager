@@ -267,7 +267,7 @@ fn import_reviews_the_backup_and_asks_before_replacing() {
     click_below(&mut h, "Import and replace");
     settle(&mut h);
     let imports = calls(&h, "state_import");
-    assert_eq!(imports.last().unwrap(), &json!({"path": path, "force": true, "adopt_open_with": false}), "the Open with list is kept unless ticked");
+    assert_eq!(imports.last().unwrap(), &json!({"path": path, "force": true, "adopt_open_with": false, "adopt_launch_settings": false}), "the Open with list and launch commands are kept unless ticked");
     // Done: the review closes and the settings are read again (the imported values).
     settle(&mut h);
     assert!(h.state().ui.settings.import.is_none());
