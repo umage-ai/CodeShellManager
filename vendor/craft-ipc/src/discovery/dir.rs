@@ -22,7 +22,12 @@ impl RuntimeDir {
         // missing ancestors. RuntimeDir::at keeps its existing caller-provided-path contract.
         #[cfg(windows)]
         if let Some(parent) = path.parent() {
+            // CSM_PATCH (SEC-64): a namespace folder this call creates gets an owner-only ACL.
+            let fresh = !parent.exists();
             ensure_private_dir(parent)?;
+            if fresh {
+                restrict_to_current_user(parent);
+            }
         }
         Self::at(path)
     }
@@ -167,6 +172,51 @@ fn macos_runtime_path(tmpdir: Option<&std::ffi::OsStr>, euid: u32) -> PathBuf {
         }
     }
     PathBuf::from(format!("/tmp/craft-{euid}"))
+}
+
+/// CSM_PATCH (SEC-64). Replaces the inherited permissions of `dir` with one entry for the user
+/// this process runs as, so the discovery records (which carry the session token) do not depend on
+/// where `%LOCALAPPDATA%` points. Best effort: the programs are named by their System32 path (never
+/// found through `PATH`), no shell is used, and any failure leaves the inherited permissions.
+#[cfg(windows)]
+fn restrict_to_current_user(dir: &Path) {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Some(root) = std::env::var_os("SystemRoot").filter(|r| !r.is_empty()) else { return };
+    let system32 = PathBuf::from(root).join("System32");
+    let Ok(out) = Command::new(system32.join("whoami.exe"))
+        .args(["/user", "/fo", "csv", "/nh"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    else {
+        return;
+    };
+    if !out.status.success() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let Some(sid) = text.lines().map(str::trim).find(|l| !l.is_empty()).and_then(|l| l.rsplit(',').next()).map(|s| s.trim().trim_matches('"')) else {
+        return;
+    };
+    let ok = sid.strip_prefix("S-1-").is_some_and(|r| !r.is_empty() && r.len() < 180 && r.chars().all(|c| c.is_ascii_digit() || c == '-'));
+    if !ok {
+        return;
+    }
+    let mut grant = std::ffi::OsString::from("*");
+    grant.push(sid);
+    grant.push(":(OI)(CI)F");
+    let _ = Command::new(system32.join("icacls.exe"))
+        .arg(dir)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(grant)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
 }
 
 pub(crate) fn ensure_private_dir(path: &Path) -> Result<(), LinkError> {

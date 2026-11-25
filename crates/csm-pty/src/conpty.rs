@@ -260,6 +260,8 @@ fn coord(size: PtySize) -> COORD {
 struct AttrList {
     // usize-aligned backing storage (the list holds pointers).
     buf: Vec<usize>,
+    /// Set once `InitializeProcThreadAttributeList` succeeded; `Drop` deletes only then.
+    initialized: bool,
 }
 
 impl AttrList {
@@ -271,11 +273,12 @@ impl AttrList {
         if size == 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut list = Self { buf: vec![0usize; size.div_ceil(size_of::<usize>())] };
+        let mut list = Self { buf: vec![0usize; size.div_ceil(size_of::<usize>())], initialized: false };
         // SAFETY: the buffer is at least `size` bytes and pointer-aligned.
         if unsafe { InitializeProcThreadAttributeList(list.ptr(), 1, 0, &mut size) } == 0 {
             return Err(io::Error::last_os_error());
         }
+        list.initialized = true;
         // SAFETY: the list is initialized. For PSEUDOCONSOLE the HPCON value itself is passed as
         // lpValue (it is an opaque pointer-sized handle), with cbSize = size_of::<HPCON>().
         let ok = unsafe {
@@ -302,7 +305,12 @@ impl AttrList {
 
 impl Drop for AttrList {
     fn drop(&mut self) {
-        // SAFETY: only reachable after a successful InitializeProcThreadAttributeList.
+        if !self.initialized {
+            // The list was never initialised (the initialise call failed), so there is nothing to delete.
+            return;
+        }
+        // SAFETY: `initialized` is set only after a successful InitializeProcThreadAttributeList on
+        // this buffer, and the buffer is still alive and unmoved in its heap allocation.
         unsafe { DeleteProcThreadAttributeList(self.ptr()) };
     }
 }
@@ -355,7 +363,14 @@ fn env_block(changes: &[(std::ffi::OsString, Option<std::ffi::OsString>)]) -> Ve
     }
     let mut block = Vec::new();
     for (k, v) in vars.values() {
-        if k.is_empty() || k.encode_wide().any(|c| c == 0 || c == u16::from(b'=')) || v.encode_wide().any(|c| c == 0) {
+        // A name may start with `=` (the per-drive directories `=C:` and `=ExitCode`), but has no
+        // other `=`; a bare `=` has no name at all.
+        let units: Vec<u16> = k.encode_wide().collect();
+        let eq = u16::from(b'=');
+        let bad_name = units.len() < 2 && units.first().is_none_or(|&c| c == eq || c == 0)
+            || units.first() == Some(&0)
+            || units.iter().skip(1).any(|&c| c == 0 || c == eq);
+        if bad_name || v.encode_wide().any(|c| c == 0) {
             continue;
         }
         block.extend(k.encode_wide());
@@ -481,14 +496,17 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
         Ok(job) => {
             // SAFETY: both handles are valid and owned by us.
             if unsafe { AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle()) } == 0 {
-                log::warn!("PTY AssignProcessToJobObject failed: {}", io::Error::last_os_error());
+                log::error!(
+                    "PTY AssignProcessToJobObject failed: {} — tree kill degrades to TerminateProcess (grandchildren may outlive a close)",
+                    io::Error::last_os_error()
+                );
                 None
             } else {
                 Some(job)
             }
         }
         Err(e) => {
-            log::warn!("PTY CreateJobObject failed: {e} — tree kill degrades to TerminateProcess");
+            log::error!("PTY CreateJobObject failed: {e} — tree kill degrades to TerminateProcess (grandchildren may outlive a close)");
             None
         }
     };
@@ -508,10 +526,23 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<WinPty>> {
     // SAFETY: valid process handle.
     let pid = unsafe { GetProcessId(process.as_raw_handle()) };
     let output = Arc::new(EarlyOutputBuffer::new());
-    crate::spawn_reader(format!("pty-read-{pid}"), File::from(out_read), output.clone())?;
-    let writer = crate::spawn_writer(format!("pty-write-{pid}"), File::from(in_write))?;
     let exit = Arc::new(ExitState::default());
-    spawn_exit_monitor(&process, pid, exit.clone())?;
+    // The child is already running: if any of its plumbing cannot be set up, kill it rather than
+    // leave an orphan the app has no handle on (COR-17/COR-18).
+    let plumbing = (|| {
+        crate::spawn_reader(format!("pty-read-{pid}"), File::from(out_read), output.clone())?;
+        let writer = crate::spawn_writer(format!("pty-write-{pid}"), File::from(in_write))?;
+        spawn_exit_monitor(&process, pid, exit.clone())?;
+        Ok::<_, io::Error>(writer)
+    })();
+    let writer = match plumbing {
+        Ok(w) => w,
+        Err(e) => {
+            // SAFETY: valid process handle we own (and the job, if any, kills the tree on drop).
+            unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+            return Err(e);
+        }
+    };
 
     log::info!("PTY started pid={pid} on {} {}x{}", pcon.api.kind.label(), opts.size.cols, opts.size.rows);
     Ok(Arc::new(WinPty { pcon, process, job, pid, writer: Mutex::new(Some(writer)), output, exit }))
@@ -524,9 +555,8 @@ fn spawn_exit_monitor(process: &OwnedHandle, pid: u32, exit: Arc<ExitState>) -> 
     // SAFETY: valid source handle; pseudo-handle for the current process; valid out-pointer.
     let ok = unsafe { DuplicateHandle(GetCurrentProcess(), process.as_raw_handle(), GetCurrentProcess(), &mut dup, 0, 0, DUPLICATE_SAME_ACCESS) };
     if ok == 0 {
-        log::warn!("PTY DuplicateHandle failed: {} — exit code unknown", io::Error::last_os_error());
-        exit.latch(None);
-        return Ok(());
+        // Not "exited": the process is alive. A spawn error makes the caller kill it (COR-17).
+        return Err(io::Error::other(format!("DuplicateHandle for the exit monitor failed: {}", io::Error::last_os_error())));
     }
     let dup = owned(dup)?;
     std::thread::Builder::new().name(format!("pty-exit-{pid}")).spawn(move || {
@@ -690,6 +720,21 @@ mod tests {
         let a = text.find("CSM_TEST_A=1").unwrap();
         let b = text.find("CSM_TEST_B=2").unwrap();
         assert!(a < b);
+    }
+
+    #[test]
+    fn env_block_keeps_per_drive_names_and_drops_bad_ones() {
+        let block = env_block(&[
+            ("=C:".into(), Some("C:\\work".into())),
+            ("=ExitCode".into(), Some("00000000".into())),
+            ("=".into(), Some("no name".into())),
+            ("A=B".into(), Some("two equals".into())),
+            ("".into(), Some("empty".into())),
+        ]);
+        let text = String::from_utf16_lossy(&block);
+        assert!(text.contains("=C:=C:\\work\0"));
+        assert!(text.contains("=ExitCode=00000000\0"));
+        assert!(!text.contains("no name") && !text.contains("two equals") && !text.contains("empty"));
     }
 
     #[test]

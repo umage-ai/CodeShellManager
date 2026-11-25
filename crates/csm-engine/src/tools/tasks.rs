@@ -229,17 +229,18 @@ fn note(n: Option<&str>) -> Result<Option<String>, ToolError> {
 
 /// Applies `f` to a task and saves; answers with the task.
 fn change(ctx: &mut Ctx<'_>, id: &str, message: &str, f: impl FnOnce(&mut Task, &mut csm_core::tasks::TaskFile) -> Result<(), ToolError>) -> Reply {
-    let mut file = std::mem::take(&mut ctx.state.rt.tasks);
-    let r = match file.get(id).cloned() {
-        None => Err(ToolError::NotFound(format!("no task `{id}`; `task_list` shows the ids"))),
-        Some(mut t) => f(&mut t, &mut file).map(|()| {
+    // Worked on in place: the file is never moved out of the state, so an early exit or a panic in
+    // `f` cannot leave the engine with an empty task list (COR-46).
+    let file = &mut ctx.state.rt.tasks;
+    match file.get(id).cloned() {
+        None => return Err(ToolError::NotFound(format!("no task `{id}`; `task_list` shows the ids"))),
+        Some(mut t) => {
+            f(&mut t, file)?;
             if let Some(slot) = file.get_mut(id) {
                 *slot = t;
             }
-        }),
-    };
-    ctx.state.rt.tasks = file;
-    r?;
+        }
+    }
     ctx.state.persist_tasks();
     let t = get(ctx.state, id)?;
     Ok(ToolOutput::new(format!("{message} {}: {}.", t.id, t.title), task_json(ctx.state, t)))

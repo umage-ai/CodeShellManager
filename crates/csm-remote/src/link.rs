@@ -38,6 +38,10 @@ const TOOLS_KEY: u64 = 0;
 /// one note says so. Consent cards and their answers are never limited: they wait for a person.
 const NOTICES_PER_SEC: u32 = 10;
 
+/// All mirror emulators of one link together, in cells (SEC-62): one 2000x2000 grid, or many
+/// ordinary ones. An office cannot make this laptop allocate 64 maximum-size screens.
+const MAX_MIRROR_CELLS: u64 = 4_000_000;
+
 /// What the window shows of the connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkState {
@@ -544,6 +548,24 @@ impl Worker {
             Frame::Control(Msg::TermResized { stream, .. } | Msg::TermClosed { stream, .. }) => *stream,
             _ => return,
         };
+        if let Frame::TermAttach { cols, rows, .. } = frame {
+            let others: u64 = self
+                .streams
+                .iter()
+                .filter(|(k, _)| **k != stream)
+                .map(|(_, o)| {
+                    let z = lock(&o.term).size();
+                    u64::from(z.cols) * u64::from(z.rows)
+                })
+                .sum();
+            if others + u64::from(*cols) * u64::from(*rows) > MAX_MIRROR_CELLS {
+                log::warn!("remote terminal {stream}: {cols}x{rows} would exceed the mirror size limit; stream ended");
+                if let Some(s) = self.streams.get(&stream) {
+                    s.state.store(ENDED, Ordering::Release);
+                }
+                return;
+            }
+        }
         let Some(s) = self.streams.get_mut(&stream) else { return };
         match s.follower.on_frame(frame) {
             Ok(TermUpdate::Attached(a)) => {

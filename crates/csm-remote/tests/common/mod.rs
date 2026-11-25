@@ -199,7 +199,7 @@ impl Office {
     }
 
     pub fn status(&self) -> Value {
-        self.engine.call(Caller::Cli, "peer_status", json!({})).unwrap().data
+        self.engine.call(Caller::Ui, "peer_status", json!({})).unwrap().data
     }
 
     pub fn enable(&self) -> SocketAddr {

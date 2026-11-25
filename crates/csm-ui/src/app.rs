@@ -1226,6 +1226,7 @@ impl CsmApp {
         if let Some(v) = s.values.get("Keymap") {
             p.keymap = csm_core::keymap::Keymap::new(&csm_core::keymap::overrides_from_value(v));
         }
+        crate::keys::note_keymap(&p.keymap);
         self.prefs = p;
     }
 
@@ -2093,18 +2094,27 @@ impl CsmApp {
             Some(LinkTarget::Public(u)) => self.run(ctx, Action::OpenLinkLocally(u)),
             Some(LinkTarget::Localhost(u)) => {
                 let (title, body) = remote_window::localhost_warning(&host, &u);
-                self.ui.confirm = Some(crate::app::ConfirmState {
-                    safe_default: false,
-                    also: None,
-                    title,
-                    body,
-                    yes_label: "Open on this laptop".into(),
-                    no_label: "Cancel".into(),
-                    yes: Box::new(Action::OpenLinkLocally(u)),
-                });
-                self.ui.overlay = Overlay::Confirm;
+                self.ask_open_link(u, title, body);
+            }
+            Some(LinkTarget::PrivateNetwork(u)) => {
+                let (title, body) = remote_window::private_network_warning(&host, &u);
+                self.ask_open_link(u, title, body);
             }
         }
+    }
+
+    /// Asks before a remote window's link opens in this laptop's browser.
+    fn ask_open_link(&mut self, u: String, title: String, body: String) {
+        self.ui.confirm = Some(crate::app::ConfirmState {
+            safe_default: false,
+            also: None,
+            title,
+            body,
+            yes_label: "Open on this laptop".into(),
+            no_label: "Cancel".into(),
+            yes: Box::new(Action::OpenLinkLocally(u)),
+        });
+        self.ui.overlay = Overlay::Confirm;
     }
 
     /// The run a `run_start` / `run_restart` call names (its `run_id`, else the session's default).
@@ -2814,7 +2824,13 @@ const RAIL_TAB_IDS: [&str; 9] = [
 /// ignored and Ctrl+/ still opens the shortcut list there. Minus is not one of them: Ctrl+Shift+-
 /// is Ctrl+_ (the terminal's undo), which must not match the zoom out on Ctrl+-.
 pub fn consume_exact(i: &mut egui::InputState, m: Modifiers, key: Key) -> bool {
-    let symbol = matches!(
+    consume_modifiers(i, m, key, true)
+}
+
+/// [`consume_exact`], with the extra-Shift leniency for punctuation keys switched by `lenient`
+/// (off when another binding owns the same chord with Shift, COR-9).
+pub(crate) fn consume_modifiers(i: &mut egui::InputState, m: Modifiers, key: Key, lenient: bool) -> bool {
+    let symbol = lenient && matches!(
         key,
         Key::Slash
             | Key::Period

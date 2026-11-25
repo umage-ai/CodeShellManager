@@ -55,6 +55,10 @@ pub(crate) fn spawn(opts: &SpawnOptions) -> io::Result<Arc<UnixPty>> {
 
 impl UnixPty {
     fn kill_tree(&self) {
+        // Once the child has been reaped its pid (and process group) may belong to someone else.
+        if self.exit.has_exited() {
+            return;
+        }
         if let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok())
             && let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGKILL)
         {

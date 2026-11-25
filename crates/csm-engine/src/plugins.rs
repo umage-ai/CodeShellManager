@@ -698,7 +698,11 @@ pub(crate) fn dynamic_tools(tools: &[DeclaredTool]) -> Vec<DynamicTool> {
                     ProcessEffect::StoresData => Effects::MUTATES_STATE,
                 }
             });
-            let (Some(id), Some(title), Some(summary)) = (intern(&t.id), intern(&t.title), intern(&t.summary)) else {
+            // The title and summary are the add-on's own words and reach MCP clients as tool text:
+            // say so, so a client or person cannot take them for CodeShellManager's (SEC-63).
+            let addon = t.id.split('.').next().unwrap_or("");
+            let labelled = format!("[Add-on `{addon}`; text written by the add-on] {}", t.summary);
+            let (Some(id), Some(title), Some(summary)) = (intern(&t.id), intern(&t.title), intern(&labelled)) else {
                 log::error!("add-on tool `{}` was not registered: too many distinct tool texts this run", t.id);
                 return None;
             };

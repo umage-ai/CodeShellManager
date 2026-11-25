@@ -21,3 +21,12 @@ blocking; the existing send/recv timeouts then bound it, as they were meant to.
 
 Report upstream; when a craft-libs rev contains the fix, bump the rev in `crates/csm-mcp`,
 remove the `[patch]` entry and delete this folder.
+
+## Second patch: owner-only ACL on the Windows runtime folder (SEC-64)
+
+`RuntimeDir::resolve` on Windows creates `%LOCALAPPDATA%\Craft` and `\run`, whose only protection
+was the inherited ACL. When `resolve` creates the `Craft` folder it now replaces the inherited
+permissions with one entry for the process's own SID (`whoami /user`, then `icacls ... /inheritance:r
+/grant:r *SID:(OI)(CI)F`, both by their System32 path, no shell, no console window). Best effort: on
+any failure the inherited ACL stays. A folder that already exists is left as it is. Search
+`CSM_PATCH (SEC-64)` in `src/discovery/dir.rs`. Drop it together with the first patch.

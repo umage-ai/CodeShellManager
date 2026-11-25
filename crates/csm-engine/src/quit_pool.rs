@@ -52,6 +52,31 @@ impl PoolOptions {
 /// exit begins, then `clean` or `forced` when it is done (exactly one of those per session).
 pub(crate) type Emit<'a> = &'a (dyn Fn(&str, &str, u64) + Sync);
 
+/// Spaces the starts: each start waits until `gap` after the previous start ACTUALLY happened (not
+/// after the time it was scheduled for, which an oversleep would shrink). The lock is held while
+/// waiting, so slots take their turns however many ask at once; a forced quit ends the wait.
+struct StartGate {
+    gap: Duration,
+    last_start: Mutex<Option<Instant>>,
+}
+
+impl StartGate {
+    fn new(gap: Duration) -> Self {
+        Self { gap, last_start: Mutex::new(None) }
+    }
+
+    /// Waits for this start's turn (unless `stop`) and returns the instant the start happened.
+    fn wait_turn(&self, stop: &dyn Fn() -> bool) -> Instant {
+        let mut last = self.last_start.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(prev) = *last {
+            sleep_unless((prev + self.gap).saturating_duration_since(Instant::now()), stop);
+        }
+        let now = Instant::now();
+        *last = Some(now);
+        now
+    }
+}
+
 /// Closes every session in `targets` (in order) with at most `o.slots` in flight. Returns when all
 /// are done. `forced` is polled: once true, nothing waits any more.
 pub(crate) fn close_all(targets: Vec<(String, Arc<dyn Pty>)>, o: PoolOptions, forced: &(dyn Fn() -> bool + Sync), emit: Emit<'_>) {
@@ -60,9 +85,7 @@ pub(crate) fn close_all(targets: Vec<(String, Arc<dyn Pty>)>, o: PoolOptions, fo
     }
     let slots = o.slots.clamp(1, targets.len());
     let queue = Mutex::new(VecDeque::from(targets));
-    // When the next start may happen.
-    let next_start = Mutex::new(Instant::now());
-    let gap = o.start_gap();
+    let gate = StartGate::new(o.start_gap());
     let one_slot = o.slots <= 1;
     let work = || {
         loop {
@@ -77,14 +100,7 @@ pub(crate) fn close_all(targets: Vec<(String, Arc<dyn Pty>)>, o: PoolOptions, fo
                 emit(&id, phase, ms(t0));
                 continue;
             }
-            // Claim the next start time, so starts are spaced however many slots wait at once.
-            let at = {
-                let mut n = next_start.lock().unwrap_or_else(PoisonError::into_inner);
-                let at = (*n).max(Instant::now());
-                *n = at + gap;
-                at
-            };
-            sleep_unless(at.saturating_duration_since(Instant::now()), forced);
+            gate.wait_turn(forced);
             let t0 = Instant::now();
             if forced() {
                 let phase = if pty.has_exited() { "clean" } else { "forced" };
@@ -292,13 +308,32 @@ mod tests {
         let o = opts(4, 1000, 800);
         assert_eq!(o.start_gap(), Duration::from_millis(200));
         let log = run(ptys, o, &|| false);
-        let starts: Vec<Instant> = log.events.lock().unwrap().iter().filter(|e| e.1 == "closing").map(|e| e.2).collect();
-        assert_eq!(starts.len(), 4);
-        let mut sorted = starts.clone();
+        assert_eq!(log.phases("closing").len(), 4);
+        // The spacing itself is checked on the gate, on the instants it reports: no scheduler
+        // jitter between "the start happened" and "an event was stamped" can make it flaky.
+        let gate = StartGate::new(o.start_gap());
+        let starts: Vec<Instant> = thread::scope(|s| {
+            let handles: Vec<_> = (0..4).map(|_| s.spawn(|| gate.wait_turn(&|| false))).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut sorted = starts;
         sorted.sort();
         for w in sorted.windows(2) {
-            assert!(w[1].duration_since(w[0]) >= Duration::from_millis(170), "{:?}", w[1].duration_since(w[0]));
+            assert!(w[1].duration_since(w[0]) >= o.start_gap(), "{:?}", w[1].duration_since(w[0]));
         }
+    }
+
+    #[test]
+    fn a_late_start_does_not_shorten_the_next_gap() {
+        // The second start waits a full gap after the first one really happened, even when the first
+        // was late: nothing is scheduled ahead of time.
+        let gate = StartGate::new(Duration::from_millis(50));
+        let a = gate.wait_turn(&|| false);
+        thread::sleep(Duration::from_millis(80)); // later than the gap: the next start is immediate
+        let b = gate.wait_turn(&|| false);
+        let c = gate.wait_turn(&|| false);
+        assert!(b.duration_since(a) >= Duration::from_millis(80));
+        assert!(c.duration_since(b) >= Duration::from_millis(50), "{:?}", c.duration_since(b));
     }
 
     #[test]

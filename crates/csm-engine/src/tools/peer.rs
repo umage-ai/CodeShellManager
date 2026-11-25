@@ -178,7 +178,14 @@ fn host(ctx: &Ctx<'_>) -> std::sync::Arc<dyn PeerHost> {
 }
 
 fn peer_status(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
-    let s = host(ctx).status();
+    let mut s = host(ctx).status();
+    // The pairing check code is for the person's own screen (the app's window): a code read from
+    // here by an agent or the CLI would let it approve a pairing it should not (SEC-61).
+    if *ctx.caller != Caller::Ui
+        && let Some(p) = s.pending_pair.as_mut()
+    {
+        p.check_code = String::new();
+    }
     let message = if !s.available {
         "Remote access isn't available here.".to_owned()
     } else if let Some(l) = &s.listening {

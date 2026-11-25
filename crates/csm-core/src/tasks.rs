@@ -413,6 +413,11 @@ pub fn permit(actor: &Actor, op: Op, task: Option<&Task>, project: Option<&str>,
             Some(t) if t.assignee.is_none() || mine => Ok(()),
             _ => refuse("that task is assigned to another session; an agent may claim only unassigned tasks"),
         },
+        // Once the agent has handed a task in for review (or it is closed) the text the person is
+        // checking must not change under them.
+        Op::Update if mine && task.is_some_and(|t| t.state != TaskState::Assigned) => {
+            refuse("this task is no longer in progress; an agent can't edit it after handing it in for review")
+        }
         Op::Update | Op::Done | Op::Handoff if mine => Ok(()),
         Op::Update | Op::Done | Op::Handoff => refuse("an agent may change only the tasks assigned to itself; claim it first (task_claim)"),
         Op::Cancel => refuse("an agent can't cancel a task; hand it back (task_handoff) and say why"),
@@ -600,6 +605,10 @@ mod tests {
         for op in [Op::Cancel, Op::Accept, Op::Reopen] {
             assert!(permit(&me, op, Some(&mine), None, 0).is_err(), "{op:?} is the person's");
         }
+        // COR-46: after handing a task in for review the agent can no longer edit it.
+        let in_review = task(TaskState::Review, Some("me"));
+        assert!(permit(&me, Op::Update, Some(&in_review), None, 0).is_err());
+        assert!(permit(&Actor::Person, Op::Update, Some(&in_review), None, 0).is_ok());
         // Assign and delete are allowed in its project (their effects make it ask).
         assert!(permit(&me, Op::Assign, Some(&free), Some("repo:/src/app"), 0).is_ok());
         assert!(permit(&me, Op::Delete, Some(&theirs), None, 0).is_ok());
