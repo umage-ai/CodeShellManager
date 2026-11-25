@@ -336,7 +336,9 @@ history import also needs the setting `ClaudeUsageHistory` (default on) and neve
 
 **Open folder / Open with** (`tools/open.rs`, rules in `csm-services::open_with`). `open_folder`
 (session_id) opens only an existing *directory* (a file would be run); Windows normalises to
-backslashes and hands Explorer the path as one always-quoted argument — measured on Windows 11, a
+backslashes and opens it through the Shell's default verb (`rundll32 url.dll,FileProtocolHandler`,
+i.e. ShellExecute, so an Explorer replacement such as FilePilot gets it; `explorer.exe` by full
+path only if that cannot start) with the path as one always-quoted argument — measured on Windows 11, a
 forward-slash path or an unquoted path with a comma opened Documents instead; macOS `open`, Linux
 `xdg-open`; SSH sessions are refused. `open_with` (session_id, entry? id or label) runs
 `prepare` (template split first, one placeholder = one argv element, nothing option-shaped, no

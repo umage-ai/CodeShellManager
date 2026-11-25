@@ -9,8 +9,12 @@
 //!
 //! **Open folder** (`FolderOpener`): only an existing DIRECTORY is ever opened (ShellExecute or
 //! `open` on a *file* runs it, and a folder comes from state.json and imports). On Windows the
-//! path is normalised to backslashes and handed to `explorer.exe` as its only argument, always
-//! quoted: measured on Windows 11 (asking the Shell which folder each new window showed), a
+//! path is normalised to backslashes and opened through the Shell's default verb
+//! (`rundll32.exe url.dll,FileProtocolHandler "<folder>"`, which calls ShellExecute with no verb),
+//! so whatever is registered as the Folder/Directory handler runs: an Explorer replacement such as
+//! FilePilot or Directory Opus, as in every other program's "Open folder". Hard-coding
+//! `explorer.exe` ignored that. If that launcher cannot start, `explorer.exe` is the fallback
+//! (also by full path). Either way the path is the only argument, always quoted: measured on Windows 11 (asking the Shell which folder each new window showed), a
 //! forward-slash path and an UNQUOTED path with a comma both opened Documents instead, while the
 //! quoted backslash form opened the right folder (comma, spaces, drive root). macOS uses
 //! `/usr/bin/open`, Linux `xdg-open`.
@@ -668,19 +672,40 @@ pub fn normalise_folder(f: &str, windows: bool) -> Option<String> {
     }
 }
 
-/// The file manager's argv for an already-validated folder: the program and, on Windows, the
-/// raw (always quoted) argument.
+/// The file manager's argv for an already-validated folder: the program, its arguments and, on
+/// Windows, the raw (always quoted) argument. Windows goes through the Shell's default open
+/// verb (`rundll32 url.dll,FileProtocolHandler`, i.e. ShellExecute), so the user's registered
+/// folder handler (an Explorer replacement) is the one that runs; see [`explorer_command`].
 pub fn folder_command(target: &str, platform: Platform) -> (PathBuf, Vec<String>, Option<String>) {
     match platform {
-        Platform::Windows => (system32_or_windows("explorer.exe", false), Vec::new(), Some(format!("\"{target}\""))),
+        Platform::Windows => (
+            system32_or_windows("rundll32.exe", true),
+            vec!["url.dll,FileProtocolHandler".to_owned()],
+            Some(format!("\"{target}\"")),
+        ),
         Platform::Mac => (PathBuf::from("/usr/bin/open"), vec![target.to_owned()], None),
         Platform::Linux => (PathBuf::from("xdg-open"), vec![target.to_owned()], None),
     }
 }
 
+/// The Windows fallback when the shell launcher cannot start: Explorer itself, by full path,
+/// with the folder as its one always-quoted argument.
+pub fn explorer_command(target: &str) -> (PathBuf, Vec<String>, Option<String>) {
+    (system32_or_windows("explorer.exe", false), Vec::new(), Some(format!("\"{target}\"")))
+}
+
 pub(crate) fn open_folder_now(target: &str) -> Result<(), String> {
-    let (program, args, raw) = folder_command(target, Platform::native());
-    spawn_detached(&program, &args, raw.as_deref()).map_err(|e| format!("could not open the folder: {e}"))
+    let platform = Platform::native();
+    let (program, args, raw) = folder_command(target, platform);
+    match spawn_detached(&program, &args, raw.as_deref()) {
+        Ok(()) => Ok(()),
+        Err(e) if platform == Platform::Windows => {
+            log::warn!("shell open of '{target}' failed ({e}); falling back to explorer.exe");
+            let (program, args, raw) = explorer_command(target);
+            spawn_detached(&program, &args, raw.as_deref()).map_err(|e| format!("could not open the folder: {e}"))
+        }
+        Err(e) => Err(format!("could not open the folder: {e}")),
+    }
 }
 
 /// `%SystemRoot%\System32\<exe>` (or `%SystemRoot%\<exe>`), by full path.
@@ -1067,11 +1092,15 @@ mod tests {
     }
 
     #[test]
-    fn explorer_gets_the_folder_as_one_quoted_argument() {
+    fn the_folder_is_one_quoted_argument_through_the_shell_default_verb() {
         let (prog, args, raw) = folder_command(r"C:\repos\a,b & c %PATH%", Platform::Windows);
+        assert!(prog.ends_with("rundll32.exe"), "not explorer.exe: a replacement must get the folder");
+        assert_eq!(args, ["url.dll,FileProtocolHandler"]);
+        assert_eq!(raw.as_deref(), Some(r#""C:\repos\a,b & c %PATH%""#));
+        let (prog, args, raw) = explorer_command(r"C:\repos\a,b");
         assert!(prog.ends_with("explorer.exe"));
         assert!(args.is_empty());
-        assert_eq!(raw.as_deref(), Some(r#""C:\repos\a,b & c %PATH%""#));
+        assert_eq!(raw.as_deref(), Some(r#""C:\repos\a,b""#));
         let (prog, args, raw) = folder_command("/Users/u/a b", Platform::Mac);
         assert_eq!(prog, PathBuf::from("/usr/bin/open"));
         assert_eq!(args, ["/Users/u/a b"]);
