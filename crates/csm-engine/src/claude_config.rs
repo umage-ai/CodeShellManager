@@ -87,12 +87,61 @@ fn is_good(bytes: &[u8]) -> bool {
     serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v.is_object())
 }
 
+/// A short, stable hash of a path (FNV-1a, folded to 32 bits; case-insensitive, as Windows paths
+/// are), so two config folders with the same name get different backup labels.
+fn short_hash(path: &Path) -> u32 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in path.to_string_lossy().to_lowercase().replace('\\', "/").bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    u32::try_from((h >> 32) ^ (h & 0xffff_ffff)).unwrap_or(0)
+}
+
+/// The backup name stem of a config file: its folder's name and a short hash of the full path
+/// (two profiles in folders both called `.claude` must not share, and so overwrite, backups).
 fn label(config: &Path) -> String {
     let parent = config.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut l: String = parent.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     l.truncate(40);
     let file = config.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    format!("{l}-{}", file.trim_start_matches('.').replace('.', "_"))
+    format!("{l}-{:08x}-{}", short_hash(config), file.trim_start_matches('.').replace('.', "_"))
+}
+
+/// Where the copies live for a state file: for the default install (state in the roaming
+/// `CodeShellManager2` folder) the *local* app data folder, because the copies hold a copy of
+/// `~/.claude.json` (tokens, project paths) and must not roam with the profile; anywhere else
+/// (portable, `--config-dir`, tests) beside the state file.
+pub fn backup_dir_for(save_path: &Path) -> Option<PathBuf> {
+    let state_dir = save_path.parent()?;
+    let roaming_default = dirs::data_dir().map(|d| d.join(crate::persist::APP_DIR));
+    if roaming_default.as_deref() == Some(state_dir)
+        && let Some(local) = dirs::data_local_dir()
+    {
+        return Some(local.join(crate::persist::APP_DIR).join(DIR));
+    }
+    Some(state_dir.join(DIR))
+}
+
+/// Creates `dir` (0700 on Unix) and writes `bytes` to `path` (0600 on Unix): the copies hold what
+/// Claude keeps in its own private file.
+fn write_private(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(dir)?;
+    let mut o = fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)?.write_all(bytes)
 }
 
 /// Copies every config file that exists and parses into `dir`, keeping the newest [`KEEP`] copies
@@ -110,9 +159,10 @@ pub fn take(configs: &[PathBuf], dir: &Path, now_ms: i64) -> Guard {
             continue;
         }
         let target = dir.join(format!("{}.{now_ms}.json", label(config)));
-        match fs::create_dir_all(dir).and_then(|()| fs::write(&target, &bytes)) {
+        match write_private(dir, &target, &bytes) {
             Ok(()) => {
-                prune(dir, &label(config));
+                prune(dir, &label(config), "");
+                prune(dir, &label(config), "corrupt-");
                 guard.items.push((config.clone(), Some(target)));
             }
             Err(e) => {
@@ -124,9 +174,10 @@ pub fn take(configs: &[PathBuf], dir: &Path, now_ms: i64) -> Guard {
     guard
 }
 
-/// Removes all but the newest [`KEEP`] copies for `label`.
-fn prune(dir: &Path, label: &str) {
-    let prefix = format!("{label}.");
+/// Removes all but the newest [`KEEP`] copies for `label`: the plain copies (`kind` empty) or the
+/// torn files kept for a look (`kind` `corrupt-`).
+fn prune(dir: &Path, label: &str, kind: &str) {
+    let prefix = format!("{label}.{kind}");
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut mine: Vec<(i64, PathBuf)> = rd
         .filter_map(Result::ok)
@@ -154,8 +205,11 @@ impl Guard {
         match fs::read(config) {
             Ok(bytes) if is_good(&bytes) => return Outcome::Fine,
             Ok(bytes) => {
-                // Keep the torn file for a look; the restore replaces it.
-                let _ = fs::write(self.dir.join(format!("{}.corrupt.json", label(config))), bytes);
+                // Keep the torn file for a look (the newest few); the restore replaces it.
+                let stem = label(config);
+                let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                let _ = write_private(&self.dir, &self.dir.join(format!("{stem}.corrupt-{ms}.json")), &bytes);
+                prune(&self.dir, &stem, "corrupt-");
             }
             Err(_) => {}
         }
@@ -179,7 +233,7 @@ fn restore(backup: &Path, config: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::other("the backup does not parse either"));
     }
     let tmp = config.with_extension("json.csm-restore");
-    fs::write(&tmp, &bytes)?;
+    write_private(config.parent().unwrap_or_else(|| Path::new(".")), &tmp, &bytes)?;
     fs::rename(&tmp, config).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
@@ -224,7 +278,8 @@ mod tests {
         fs::write(&cfg, r#"{"numStartups": 8, "proj"#).unwrap();
         assert_eq!(g.verify()[0].1, Outcome::Restored);
         assert_eq!(fs::read_to_string(&cfg).unwrap(), GOOD);
-        assert!(dir.join(format!("{}.corrupt.json", label(&cfg))).is_file(), "the torn file is kept for a look");
+        let kept = |kind: &str| fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(&format!("{}.{kind}", label(&cfg)))).count();
+        assert!(kept("corrupt-") >= 1, "the torn file is kept for a look");
         // Empty, and gone: put back too.
         fs::write(&cfg, "").unwrap();
         assert_eq!(g.verify()[0].1, Outcome::Restored);
@@ -273,5 +328,59 @@ mod tests {
         fs::write(&cfg, "{").unwrap();
         assert!(matches!(g.verify()[0].1, Outcome::RestoreFailed(_)));
         assert_eq!(fs::read_to_string(&cfg).unwrap(), "{");
+    }
+
+    #[test]
+    fn same_named_folders_get_different_backup_names() {
+        let a = Path::new("C:/Users/a/work/.claude/.claude.json");
+        let b = Path::new("C:/Users/a/home/.claude/.claude.json");
+        assert_ne!(label(a), label(b));
+        let spelled = "c:/Users/a/work/.claude/.claude.json".replace('/', &char::from(92u8).to_string());
+        assert_eq!(label(a), label(Path::new(&spelled)), "the same path, spelled another way");
+        // Two profiles do not overwrite each other's copies.
+        let d = tempfile::tempdir().unwrap();
+        let (x, y) = (d.path().join("x").join(".claude"), d.path().join("y").join(".claude"));
+        for p in [&x, &y] {
+            fs::create_dir_all(p).unwrap();
+            fs::write(p.join(".claude.json"), GOOD).unwrap();
+        }
+        let dir = d.path().join("backups");
+        let _ = take(&[x.join(".claude.json"), y.join(".claude.json")], &dir, 5);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn torn_copies_kept_for_a_look_are_pruned_too() {
+        let (_d, cfg, dir) = rig(Some(GOOD));
+        let g = take(std::slice::from_ref(&cfg), &dir, 1000);
+        for i in 0..8 {
+            fs::write(&cfg, format!("{{torn{i}")).unwrap();
+            assert_eq!(g.verify()[0].1, Outcome::Restored);
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+        let corrupt = fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".corrupt-")).count();
+        assert_eq!(corrupt, KEEP);
+    }
+
+    #[test]
+    fn the_default_installs_copies_live_in_local_not_roaming_app_data() {
+        let (Some(roaming), Some(local)) = (dirs::data_dir(), dirs::data_local_dir()) else { return };
+        let state = roaming.join(crate::persist::APP_DIR).join("state.json");
+        let got = backup_dir_for(&state).unwrap();
+        assert_eq!(got, local.join(crate::persist::APP_DIR).join(DIR));
+        // Anywhere else: beside the state file.
+        let t = tempfile::tempdir().unwrap();
+        assert_eq!(backup_dir_for(&t.path().join("state.json")).unwrap(), t.path().join(DIR));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copies_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, cfg, dir) = rig(Some(GOOD));
+        let g = take(std::slice::from_ref(&cfg), &dir, 1);
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        let backup = g.items[0].1.clone().unwrap();
+        assert_eq!(fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

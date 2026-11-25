@@ -380,6 +380,9 @@ impl State {
     /// one (the file is untrusted). `--clean` drops sessions, groups and recently closed.
     pub fn new(mut app: AppState, options: StateOptions) -> State {
         let mut m = SessionManager::new();
+        // Nothing in version 2 uses the 0.x API key: a plaintext secret in an old state file is
+        // dropped here, so the next save (which never writes it) removes it from the disk.
+        app.settings.anthropic_api_key.clear();
         m.load_from_state(&mut app);
         m.populate_state(&mut app);
         if options.clean {
@@ -441,6 +444,16 @@ impl State {
                 log::error!("state: neither the file nor its backup could be read; starting empty")
             }
             _ => {}
+        }
+        // SEC-25: a 0.x API key in the file (or its copies) is removed from the disk now; the
+        // state never writes it again. Only a run that writes the state at all.
+        if let Some(p) = &path
+            && options.writes_state()
+            && !app.settings.anthropic_api_key.trim().is_empty()
+        {
+            for f in persist::scrub_api_key(p) {
+                log::info!("state: removed the old API key from {}", f.display());
+            }
         }
         // Issue #166: an unreadable file is kept where no save can overwrite it (only when this
         // run saves at all: `--clean` and isolated runs never touch the disk).

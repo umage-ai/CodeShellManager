@@ -334,6 +334,9 @@ fn state_json(state: &State) -> Option<String> {
     let mut app = state.app.clone();
     app.ui.focused_session = state.rt.focused.clone();
     app.csm_rs_version = Some(crate::persist::STATE_FILE_VERSION);
+    // Version 2 never uses the 0.x API key, and a plaintext secret has no place in state.json, its
+    // `.bak` or the snapshots (SEC-25). Cleared at load as well, so this holds for what is in memory.
+    app.settings.anthropic_api_key.clear();
     match app.to_json() {
         Ok(t) => Some(t),
         Err(e) => {
@@ -1252,7 +1255,8 @@ pub(crate) fn restart_core(ctx: &mut Ctx<'_>, id: &str, then: StartedCb) {
     let (engine, id) = (ctx.engine.clone(), id.to_owned());
     // The old process and the continuation travel in a slot, so that a worker that cannot be
     // started hands them back (the closure is gone with the failed spawn).
-    let slot: Arc<Mutex<Option<(Option<Arc<dyn Pty>>, StartedCb)>>> = Arc::new(Mutex::new(Some((pty, then))));
+    type Slot = Arc<Mutex<Option<(Option<Arc<dyn Pty>>, StartedCb)>>>;
+    let slot: Slot = Arc::new(Mutex::new(Some((pty, then))));
     // Counted until the worker ends, so a quit can wait for an old Claude that is still exiting
     // (it may be rewriting `~/.claude.json`) before it checks that file.
     let ticket = ctx.state.rt.restart_workers.begin();
@@ -1392,7 +1396,7 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
     // Claude's own config files, copied before the first Claude is asked to exit and checked after
     // the last one has (`claude_config`). Never with --clean or without a data folder.
     let configs = if ctx.state.options.saves() { ctx.state.options.claude_configs.clone() } else { crate::claude_config::ClaudeConfigs::None };
-    let backup_dir = ctx.state.options.save_path.as_deref().and_then(std::path::Path::parent).map(|d| d.join(crate::claude_config::DIR));
+    let backup_dir = ctx.state.options.save_path.as_deref().and_then(crate::claude_config::backup_dir_for);
     let restart_workers = ctx.state.rt.restart_workers.clone();
     let restart_wait = ctx.state.options.exit_wait + Duration::from_millis(u64::try_from(ctx.state.app.settings.claude_launch_stagger_ms).unwrap_or(0)) + Duration::from_secs(2);
     let worker = move || {

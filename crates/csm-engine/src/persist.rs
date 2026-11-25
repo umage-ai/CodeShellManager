@@ -378,6 +378,40 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// Writes `text` over `path` through a temp file, without rotating a `.bak`.
+fn replace_file(path: &Path, text: &str) -> io::Result<()> {
+    let tmp = temp_path(path);
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)
+}
+
+/// Removes the 0.x API key (SEC-25) from the copies of the state on disk: the file, its `.bak` and
+/// the snapshots, each rewritten only when it parses and holds a key. A plaintext secret that an
+/// older build wrote must not survive in the generations a save rotates to. Returns the files
+/// rewritten; a file that cannot be rewritten is logged and left.
+pub fn scrub_api_key(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![path.to_path_buf(), backup_path(path)];
+    files.extend(list_snapshots(path).into_iter().map(|(_, p)| p));
+    let mut done = Vec::new();
+    for f in files {
+        let Ok(Some(text)) = read_text_with(&f, 1, READ_PAUSE) else { continue };
+        let Ok(mut app) = state::parse(&text) else { continue };
+        if app.settings.anthropic_api_key.trim().is_empty() {
+            continue;
+        }
+        app.settings.anthropic_api_key.clear();
+        match app.to_json().map_err(io::Error::other).and_then(|t| replace_file(&f, &t)) {
+            Ok(()) => done.push(f),
+            Err(e) => log::warn!("state: could not remove the old API key from {}: {e}", f.display()),
+        }
+    }
+    done
+}
+
 // ── Rolling snapshots and unreadable files (issue #166) ─────────────────────────────────
 
 /// The snapshot folder's name, beside `state.json`.

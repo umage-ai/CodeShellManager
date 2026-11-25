@@ -23,7 +23,7 @@ pub use clients::{Client, Format, Host, Os, SERVER_NAME, Shape, clients, is_move
 pub use doctor::{Check, CheckStatus, DoctorReport, DoctorRequest, doctor, mcp_self_test};
 pub use plan::{
     Action, ActionKind, ApplyReport, FileResult, Outcome, Plan, PlanRequest, RemoveOutcome, UninstallReport, UninstallResult, apply, default_command,
-    plan, repair_moved, uninstall,
+    plan, repair_moved, repair_moved_when_idle, uninstall,
 };
 
 /// Ids of the clients detected on this host.

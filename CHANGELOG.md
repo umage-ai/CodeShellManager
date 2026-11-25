@@ -157,6 +157,19 @@ file drop; Claude slash-command menu; `--clean`.
 - **A terminal can set the clipboard (OSC 52) only while it is the focused session**, and a toast says which session did.
 - **Paired devices are trusted per device** (SEC-9): a device you pair is not trusted unless you tick "Trust this device (no prompts)"; an untrusted device needs your approval on the office screen before it types into a session or starts a process, and cannot answer those approvals itself. Existing pairings were migrated as trusted. `peer_device_trust` (the app only) and a Trusted box per device change it.
 
+- **A plaintext 0.x API key is no longer kept** (SEC-25): version 2 never uses it, so it is not written to `state.json`, its `.bak`, the snapshots or an export, and an old one is removed from those files at start.
+- **Claude config backups and `csm setup`** (SEC-24, SEC-40, SEC-41): the `~/.claude.json` copies are named after the folder plus a short hash of its path (no collisions between same-named profiles), kept in the local (not roaming) app data, private (0700/0600 on Unix) and pruned, torn copies included. `csm setup` copies the original file mode to its config and backups, writes through a symlinked config, makes temp files with `create_new`, keeps the newest three backups, and re-reads the file just before the rename and stops if it changed. The start-up repair of moved registrations waits while a Claude process is running.
+- **The per-session MCP config folder** (SEC-26) is per-user (local app data, or `XDG_RUNTIME_DIR`), never the shared temp folder; 0700, refused if owned by someone else, files made new with 0600.
+- **A beta's first-run copy** of the stable app's data leaves out remote access (`peer`), paired hosts (`peer-client`) and the Claude config backups (SEC-49).
+
+### Fixed
+
+- **A full disk no longer makes saving fail silently** (COR-5): a red strip under the title bar says sessions are not being saved, the save is retried with backoff, and it clears (with a toast) when a save works.
+- **A `state.json` that is locked or unreadable is never replaced** (COR-6): the app retries the read, then starts read-only (nothing saved, nothing moved aside) with a notice, instead of treating it as corrupt and saving an empty state over it. Likewise `tasks.json`, and the Review add-on's threads (COR-28), which also keep memory and disk in step when a save fails.
+- **Quit waits for a restart's old Claude** before it checks `~/.claude.json` (COR-7), and a restart whose worker thread cannot start no longer leaves the session stuck or the restart guard held (COR-8).
+- **`csm setup` exits non-zero** when a client was blocked or a named one was not written (COR-30), and an update merges into the existing entry, keeping extra arguments and `env` (COR-31).
+- **Beta to final** (COR-36): the stable app's first run offers to import a beta's sessions and groups (*Import from the beta*, tool `state_import_beta`). The beta's first-run copy skips a live database's `-wal`/`-shm` files and retries a partly done copy (COR-37).
+
 ### Changed
 - **Restored sessions do not notify** (popups or screen-text alerts) until you have addressed them.
 - **`csm doctor`** reports its channel, the app id it looks for and which apps are published.

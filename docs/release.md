@@ -31,18 +31,34 @@ this branch (`installer/CodeShellManager2.wxs`, `.github/workflows/{release-v2,w
 | Compiled-in channel (`CSM_CHANNEL`, `csm_core::channel`) | `stable` (also every local and dev build: unset = stable) | `beta` (set by `release-v2.yml` from the tag) |
 | Data folders | `%APPDATA%\CodeShellManager2`, index in `%LOCALAPPDATA%\CodeShellManager2` | `%APPDATA%\CodeShellManager2-Beta`, index in `%LOCALAPPDATA%\CodeShellManager2-Beta` |
 | IPC app id (craft-ipc discovery records; Windows pipe `craft-<user>-<app id>-<pid>`) | `codeshell` | `codeshell-beta` |
-| Per-session MCP configs when nothing is saved | `%TEMP%\CodeShellManager2-mcp` | `%TEMP%\CodeShellManager2-Beta-mcp` |
+| Per-session MCP configs when nothing is saved | `<local app data>\CodeShellManager2-mcp` (Linux: `$XDG_RUNTIME_DIR/CodeShellManager2-mcp`; never the shared temp folder) | `<local app data>\CodeShellManager2-Beta-mcp` |
 
 **Beta data (Allan, 2026-11-22):** a beta build keeps its own data folders, so a beta installed
 beside the stable app after 2.0 never shares its state. On its first start, when
 `%APPDATA%\CodeShellManager2-Beta` does not exist yet, it copies the stable folders (roaming and
-local) once (`persist::seed_beta_in`: into a `.copying` folder, then renamed, so a copy cut short
-is redone), so testers keep their sessions, notes and add-ons. Never the other way: a stable build
-never reads or writes the beta folders. Not for `--clean`, `--config-dir`, `CSM_CONFIG_DIR`,
+local) once per folder (`persist::seed_beta_in`: into a `.copying` folder, then renamed, with a
+`.csm-seed-done` marker inside, so a copy cut short is redone, and a roaming copy that worked beside
+a local one that did not is retried for the local one on the next start), so testers keep their
+sessions, notes and add-ons. Left out of the copy: the stable app's remote-access identity and
+enabled listener (`peer`), its paired hosts (`peer-client`) and its Claude config backups
+(`claude-config-backups`), so a beta starts with remote access off and nobody paired; and a
+database's `-wal`, `-shm` and `-journal` side files, which the stable app may be writing. Never the
+other way: a stable build never reads or writes the beta folders on its own (see "Beta to final"
+below for the one thing it offers). Not for `--clean`, `--config-dir`, `CSM_CONFIG_DIR`,
 `CSM_STATE_PATH` or a portable install. A beta `csm` only finds a beta app (the app id), and
 `csm --start` starts the `codeshell.exe` beside it before looking on PATH (with both installed,
 PATH could hold the other channel's). The Linux and macOS packages have no separate beta
 install, so `release-v2-unix.yml` builds the stable channel.
+
+**Beta to final (COR-36).** A tester who moves from a beta to the final release would otherwise
+start the stable app empty beside a full `CodeShellManager2-Beta` folder. So on the stable app's
+first run (no `state.json` and no `.bak` of its own; not `--clean`, not a custom state location),
+when `%APPDATA%\CodeShellManager2-Beta\state.json` exists, a strip under the title bar offers
+*Import from the beta*. It runs the tool `state_import_beta` (the app and the CLI, `csm
+state-import-beta`; MCP clients are refused): the beta's groups and sessions that are not here yet
+arrive asleep, by id, and the beta's file is only read. Settings, notes and add-ons are not copied
+(copy the folder by hand for those); *No thanks* hides the offer, and it is not made again once the
+stable app has a `state.json` of its own. A 0.x import on the same first run is separate.
 
 The beta keeps its own identity so testers can run it beside the WPF app; a beta never
 upgrades or removes the WPF app. Release candidates use the stable channel so the real upgrade

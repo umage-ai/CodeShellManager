@@ -73,7 +73,9 @@ pub(crate) fn run_setup(m: &ArgMatches) -> i32 {
         }
         println!("Run `csm doctor` to check the connection.");
     }
-    if report.ok() { EXIT_OK } else { EXIT_TOOL }
+    // A client that was blocked (an entry setup did not write, a config that does not parse) or
+    // failed is not connected: a script must not see success (COR-30).
+    if report.complete() { EXIT_OK } else { EXIT_TOOL }
 }
 
 pub(crate) fn run_uninstall(m: &ArgMatches) -> i32 {

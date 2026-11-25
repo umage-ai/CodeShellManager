@@ -120,3 +120,35 @@ fn the_beta_offer_can_be_dismissed() {
     h.ok("state_import_beta", json!({"dismiss": true}));
     h.wait_until("the offer to go", |v| v.warnings.is_empty());
 }
+
+#[test]
+fn an_old_api_key_is_removed_from_the_file_its_backup_and_the_snapshots_and_never_written_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let mut app = test_app();
+    app.settings.anthropic_api_key = "sk-ant-plaintext".into();
+    app.sessions.push(ShellSession { id: "keep".into(), is_dormant: true, ..Default::default() });
+    let text = app.to_json().unwrap();
+    assert!(text.contains("sk-ant-plaintext"));
+    std::fs::write(&path, &text).unwrap();
+    std::fs::write(persist::backup_path(&path), &text).unwrap();
+    let snaps = persist::snapshots_dir(&path);
+    std::fs::create_dir_all(&snaps).unwrap();
+    std::fs::write(snaps.join(csm_core::state::snapshot_file_name(1_800_000_000_000)), &text).unwrap();
+    let ptys = Default::default();
+    let mut o = common::fast_options(&ptys);
+    o.save_path = Some(path.clone());
+    let (state, _) = State::load(o);
+    assert!(state.app.settings.anthropic_api_key.is_empty());
+    let e = Engine::start(state, vec![]).unwrap();
+    e.call(Caller::Ui, "group_new", json!({"name": "G"})).unwrap();
+    e.shutdown();
+    let mut files = vec![path.clone(), persist::backup_path(&path)];
+    files.extend(persist::list_snapshots(&path).into_iter().map(|(_, p)| p));
+    assert!(files.len() >= 3);
+    for f in files {
+        let t = std::fs::read_to_string(&f).unwrap();
+        assert!(!t.contains("sk-ant-plaintext"), "{} still holds the key", f.display());
+    }
+    assert!(std::fs::read_to_string(&path).unwrap().contains("\"keep\""), "the sessions survive");
+}

@@ -446,12 +446,28 @@ fn repair_moved_registrations() {
             return;
         };
         let command = vec![csm.to_string_lossy().into_owned(), "mcp".to_owned()];
-        for r in csm_setup::repair_moved(&csm_setup::Host::current(), &command) {
+        // Not while a Claude process may be rewriting ~/.claude.json (a rewrite between our read
+        // and our rename would be lost): wait for a quiet moment, a few minutes at most; the next
+        // start repairs what is left.
+        let results = csm_setup::repair_moved_when_idle(&csm_setup::Host::current(), &command, &claude_process_running, 10, std::time::Duration::from_secs(60));
+        for r in results {
             log::info!("agent registration: {} {:?} (backup {:?})", r.config.display(), r.outcome, r.backup);
         }
     };
     if let Err(e) = std::thread::Builder::new().name("csm-repair-mcp".into()).spawn(worker) {
         log::warn!("agent registration: could not start the repair: {e}");
+    }
+}
+
+/// Whether a Claude Code process runs on this machine: `claude.exe`, or `node.exe` with `claude`
+/// in its command line. A process scan, so only from a worker thread. When the scan cannot be
+/// done the answer is "yes", which only postpones the repair.
+fn claude_process_running() -> bool {
+    let script = "(Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'claude.exe' -or ($_.Name -ieq 'node.exe' -and $_.CommandLine -match 'claude') } | Measure-Object).Count";
+    let args = ["-NoProfile", "-NonInteractive", "-Command", script];
+    match csm_engine::proc::capture_ok("powershell.exe", args, std::time::Duration::from_secs(20)) {
+        Some(out) => out.trim().parse::<u32>().map_or(true, |n| n > 0),
+        None => true,
     }
 }
 

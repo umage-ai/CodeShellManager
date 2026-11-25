@@ -264,3 +264,114 @@ fn repair_moved_rewrites_only_our_entries_in_the_old_install_folder() {
     // Nothing left to repair, and a client with no entry is never given one.
     assert!(csm_setup::repair_moved(&h, &new).is_empty());
 }
+
+fn owned_entry_json(command: &str, extra: &str) -> String {
+    let command = serde_json::to_string(command).unwrap();
+    format!("{{\n  \"mcpServers\": {{\n    \"{SERVER_NAME}\": {{\"type\": \"stdio\", \"command\": {command}, \"args\": [\"mcp\"{extra}], \"env\": {{\"KEEP\": \"1\"}}}}\n  }}\n}}\n")
+}
+
+#[test]
+fn an_update_changes_the_command_and_keeps_the_arguments_and_env_the_person_added() {
+    let (_d, h) = host();
+    let path = config_of(&h, "claude_code");
+    write(&path, &owned_entry_json("/old/place/csm", ", \"--session\", \"mine\""));
+    let p = plan(&h, &request(&["claude_code"])).unwrap();
+    assert_eq!(p.actions[0].kind, ActionKind::Update);
+    let report = apply(&h, &p);
+    assert_eq!(report.files[0].outcome, Outcome::Written, "{report:?}");
+    let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let e = &v["mcpServers"][SERVER_NAME];
+    assert_eq!(e["command"], cmd()[0].as_str());
+    assert_eq!(e["args"], json!(["mcp", "--session", "mine"]), "the person's arguments stay");
+    assert_eq!(e["env"], json!({"KEEP": "1"}), "env stays");
+    assert_eq!(e["type"], "stdio");
+}
+
+#[test]
+fn an_entry_that_only_has_extra_arguments_is_already_right() {
+    let (_d, h) = host();
+    let path = config_of(&h, "claude_code");
+    write(&path, &owned_entry_json(&cmd()[0], ", \"--x\""));
+    let p = plan(&h, &request(&["claude_code"])).unwrap();
+    assert_eq!(p.actions[0].kind, ActionKind::Unchanged, "{:?}", p.actions[0]);
+}
+
+#[test]
+fn backups_are_pruned_to_the_newest_three() {
+    let (_d, h) = host();
+    let path = config_of(&h, "cursor");
+    write(&path, "{}");
+    for i in 0..6 {
+        // Each round the entry is out of date again, so setup writes and backs up.
+        write(&path, &owned_entry_json(&format!("/old/{i}/csm"), ""));
+        let report = apply(&h, &plan(&h, &request(&["cursor"])).unwrap());
+        assert_eq!(report.files[0].outcome, Outcome::Written, "{report:?}");
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    let backups = fs::read_dir(path.parent().unwrap()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".csm-backup")).count();
+    assert_eq!(backups, csm_setup::plan::BACKUPS_KEPT);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_config_is_written_through_and_modes_are_kept() {
+    use std::os::unix::fs::PermissionsExt;
+    let (d, h) = host();
+    let path = config_of(&h, "cursor");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let real = d.path().join("dotfiles").join("mcp.json");
+    write(&real, "{\"keep\": 1}");
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(&real, &path).unwrap();
+    let report = apply(&h, &plan(&h, &request(&["cursor"])).unwrap());
+    assert_eq!(report.files[0].outcome, Outcome::Written, "{report:?}");
+    assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink(), "the link stays a link");
+    assert!(fs::read_to_string(&real).unwrap().contains(SERVER_NAME), "its target was written");
+    assert_eq!(fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+    let backup = report.files[0].backup.clone().unwrap();
+    assert_eq!(fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600, "the backup is no more open than the config");
+}
+
+#[test]
+fn a_blocked_client_means_the_report_is_not_complete() {
+    let (_d, h) = host();
+    let path = config_of(&h, "cursor");
+    // An entry with our name that setup did not write: blocked, never overwritten.
+    write(&path, "{\"mcpServers\": {\"codeshell\": {\"command\": \"mine\", \"args\": []}}}");
+    let report = apply(&h, &plan(&h, &request(&["cursor"])).unwrap());
+    assert!(matches!(report.files[0].outcome, Outcome::Skipped(_)));
+    assert!(report.ok(), "nothing failed");
+    assert!(!report.complete(), "but the client was not connected");
+    // A connected one is complete.
+    let (_d2, h2) = host();
+    write(&config_of(&h2, "cursor"), "{}");
+    assert!(apply(&h2, &plan(&h2, &request(&["cursor"])).unwrap()).complete());
+}
+
+#[test]
+fn the_startup_repair_waits_for_a_quiet_moment_and_gives_up_politely() {
+    let (_d, h) = host();
+    let new = vec![r"C:\Program Files\umage.ai\CodeShellManager\csm.exe".to_owned(), "mcp".to_owned()];
+    let cc = config_of(&h, "claude_code");
+    write(&cc, &owned_entry_json(r"C:\Program Files\umage\CodeShellManager\csm.exe", ""));
+    let before = fs::read_to_string(&cc).unwrap();
+    // Claude keeps running: nothing is touched, and it asked every time.
+    let asked = std::cell::Cell::new(0);
+    let busy = || {
+        asked.set(asked.get() + 1);
+        true
+    };
+    let r = csm_setup::repair_moved_when_idle(&h, &new, &busy, 3, std::time::Duration::from_millis(1));
+    assert!(r.is_empty());
+    assert_eq!(asked.get(), 3);
+    assert_eq!(fs::read_to_string(&cc).unwrap(), before, "never written while Claude runs");
+    // It quiets down on the second look: repaired then.
+    let calls = std::cell::Cell::new(0);
+    let sometimes = || {
+        calls.set(calls.get() + 1);
+        calls.get() < 2
+    };
+    let r = csm_setup::repair_moved_when_idle(&h, &new, &sometimes, 5, std::time::Duration::from_millis(1));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(calls.get(), 2);
+}
