@@ -135,7 +135,7 @@ fn command(target: &GitTarget, git_args: &[String], read_only: bool) -> Result<C
             }
             #[cfg(not(windows))]
             {
-                c.arg("-C").arg(dir).args(&refs);
+                c.arg("-C").arg(dir).args(args::GIT_HARDENING).args(&refs);
             }
             for (k, v) in env {
                 c.env(k, v);

@@ -840,13 +840,20 @@ pub(crate) fn apply_term_events(ctx: &mut Ctx<'_>, id: &str, instance: u64, even
             }
             TermEvent::Title(t) => rt.title = si::sanitize_title(&t),
             // OSC 52 copy (#156). The UI sets the clipboard on its own thread; the text never
-            // rides an event. Queries (reads) are never answered (`csm_term`).
+            // rides an event. Only the
+            // focused session may do it, and the person is told which one did. Queries (reads) are never answered (`csm_term`).
             TermEvent::ClipboardStore(text) => {
                 if !state.app.settings.allow_osc52_clipboard {
                     log::debug!("session {id}: OSC 52 copy ignored (turned off in settings)");
+                } else if state.rt.focused.as_deref() != Some(id) {
+                    // SEC-17: a session the person is not looking at does not get to set their
+                    // clipboard (a background agent or a remote shell could swap what they paste).
+                    log::debug!("session {id}: OSC 52 copy ignored (the session is not focused)");
                 } else if text.len() <= csm_term::MAX_CLIPBOARD_STORE_BYTES {
                     ctx.engine.offer_clipboard(text);
                     ctx.events.emit(Event::ClipboardOffered { session_id: id.to_owned() });
+                    let name = state.app.sessions.get(i).map(|s| s.name.chars().filter(|c| !c.is_control()).take(40).collect::<String>()).unwrap_or_default();
+                    ctx.events.emit(Event::Toast { message: format!("Copied to the clipboard by {name}") });
                 }
             }
             _ => {}

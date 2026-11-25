@@ -7,7 +7,7 @@
 //! consent card, not a question, because a card can be clicked through or asked again until it is.
 //! None of this is a `settings_set` key: settings are `state`, which needs no consent and which
 //! the CLI may write. Turning things off (`peer_server_disable`, `peer_device_revoke`) is always
-//! allowed: closing a door is safe.
+//! allowed for the app and the CLI; a caller that is an MCP client or a paired device may only revoke a single device by id (closing one door), because dropping everything is a denial of service.
 //!
 //! The tools only decide who may ask; the socket, the keys and the device list belong to the
 //! [`PeerHost`](crate::peer_host::PeerHost) the app wired in (`csm-peer`).
@@ -81,7 +81,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "peer_server_disable",
             title: "Turn off remote access",
-            summary: "Stop listening, close every connected device with a goodbye, close any open pairing offer. Paired devices stay paired (revoke them to delete their keys). Allowed for every caller.",
+            summary: "Stop listening, close every connected device with a goodbye, close any open pairing offer. Paired devices stay paired (revoke them to delete their keys). Refused for MCP clients and paired devices (the app and the CLI may).",
             toolset: Toolset::App,
             effects: Effects::MUTATES_STATE.union(Effects::ACCESSES_NETWORK).union(Effects::IDEMPOTENT),
             input_schema: empty_schema,
@@ -117,7 +117,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "peer_device_revoke",
             title: "Revoke a device",
-            summary: "Delete one paired device's key (`id`) or every device's (`all`: true) and close their connections at once. They need a fresh pairing to come back. Allowed for every caller.",
+            summary: "Delete one paired device's key (`id`) or every device's (`all`: true) and close their connections at once. They need a fresh pairing to come back. One device by `id` is open to every caller; `all` is the app's and the CLI's only.",
             toolset: Toolset::App,
             // Not WRITES_FILESYSTEM on purpose (like peer_server_disable): that flag would put an
             // MCP consent card in front of closing a door, and closing must work for every caller.
@@ -225,6 +225,9 @@ fn peer_server_enable(ctx: &mut Ctx<'_>, params: Value) -> Reply {
 }
 
 fn peer_server_disable(ctx: &mut Ctx<'_>, _p: Value) -> Reply {
+    if ctx.caller.is_external() {
+        return Err(ToolError::Refused("turning remote access off drops every connected device; do it in the app (or with `csm peer-server-disable`)".into()));
+    }
     let by = ctx.caller.describe();
     let s = host(ctx).disable(&by);
     Ok(ToolOutput::new("Remote access is off; every connection is closed.", to_json(&s)?))
@@ -290,6 +293,9 @@ fn peer_device_revoke(ctx: &mut Ctx<'_>, params: Value) -> Reply {
         (None, true) => Revoke::All,
         _ => return Err(ToolError::InvalidParams("give either `id` or `all: true`".into())),
     };
+    if matches!(target, Revoke::All) && ctx.caller.is_external() {
+        return Err(ToolError::Refused("revoking every device is done in the app (or with the CLI); an MCP client or a paired device may revoke one device by `id`".into()));
+    }
     let by = ctx.caller.describe();
     let n = host(ctx).revoke(target, &by)?;
     Ok(ToolOutput::new(if n == 1 { "Revoked 1 device.".to_owned() } else { format!("Revoked {n} devices.") }, json!({"revoked": n})))

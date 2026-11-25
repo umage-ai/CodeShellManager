@@ -157,12 +157,19 @@ fn render_envelope_rules() {
 
 #[test]
 fn action_buttons_get_a_policy_from_the_tool_id() {
-    let p = |tool: &str| action_policy(ADDON, tool);
+    let p = |tool: &str| action_policy(ADDON, tool, &json!({}));
     assert_eq!(p("demo.review_open"), ActionPolicy::Direct, "the add-on's own tool");
     assert!(matches!(p("other.x"), ActionPolicy::Refused(_)), "another add-on's tool");
-    for t in ["session_focus", "screen_open", "screen_close", "inspector_show"] {
+    for t in ["session_focus", "inspector_show"] {
         assert_eq!(p(t), ActionPolicy::Direct, "{t}");
     }
+    // SEC-22: a button opens only its own add-on's screens, and closes none.
+    let open = |screen: Value| action_policy(ADDON, "screen_open", &json!({"screen": screen}));
+    assert_eq!(open(json!(format!("{ADDON}.main"))), ActionPolicy::Direct);
+    for bad in [json!("other.main"), json!("main"), json!(5), json!(null)] {
+        assert!(matches!(open(bad.clone()), ActionPolicy::Refused(_)), "{bad}");
+    }
+    assert!(matches!(p("screen_close"), ActionPolicy::Refused(_)));
     for t in ["session_send_text", "open_url", "open_with"] {
         assert_eq!(p(t), ActionPolicy::Confirm, "{t}");
     }

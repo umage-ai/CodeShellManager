@@ -3,7 +3,7 @@
 //!
 //! - **Export** writes the whole app state (sessions, groups, layouts, settings) as JSON, the
 //!   same shape as `state.json`, so a WPF backup imports here and back. The file is written on a
-//!   worker. An MCP caller's export leaves out the API key and the MCP grants.
+//!   worker. An export never carries the API key or the MCP grants, and never replaces a file unless asked.
 //! - **Import** follows the WPF app: the backup's sessions and groups **replace** ours (ours are
 //!   closed, which keeps them in Recently closed), and a fixed list of settings is taken from
 //!   it. Two deliberate differences, both because a backup is any file someone was handed:
@@ -14,6 +14,9 @@
 //!   (`sanitize_imported`: no batch files, each program checked at its real path on disk) and
 //!   still only adopted when the caller says so (`adopt_open_with`), after showing the person
 //!   the commands (`dry_run` returns them). Without it, ours is kept (the WPF default answer).
+//! - **Launch settings** (default command, launch commands, Claude commands) are likewise kept
+//!   unless `adopt_launch_settings`; the dry run lists them, and each session's SSH config file,
+//!   SSH remote command and run commands. A relative or UNC `ssh_config_file` refuses the import.
 //! - Import is refused for MCP clients: it decides what runs. `dry_run` reads and changes nothing;
 //!   replacing existing sessions needs `force` (the "Continue?" the UI asks).
 
@@ -36,16 +39,16 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "state_export",
             title: "Export setup…",
-            summary: "Write a backup of the whole setup (sessions, groups, layouts, settings) to a .csm file at `path` (absolute). The same JSON as state.json; the WPF app's Import reads it. An MCP client's export leaves out the API key and MCP grants.",
+            summary: "Write a backup of the whole setup (sessions, groups, layouts, settings) to a .csm file at `path` (absolute, must end in .csm). The same JSON as state.json; the WPF app's Import reads it. Never includes the API key or MCP grants. An existing file is replaced only with overwrite: true (the old one is kept as .bak).",
             toolset: Toolset::App,
-            effects: Effects::WRITES_FILESYSTEM,
+            effects: Effects::WRITES_FILESYSTEM.union(Effects::MAY_DISCARD_DATA),
             input_schema: schema_of::<ExportParams>,
             run: state_export,
         },
         ToolSpec {
             id: "state_import",
             title: "Import setup…",
-            summary: "Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true. App and CLI only.",
+            summary: "Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true, and its default command, launch commands and Claude commands only with adopt_launch_settings: true. App and CLI only.",
             toolset: Toolset::App,
             effects: Effects::MUTATES_STATE.union(Effects::MAY_DISCARD_DATA),
             input_schema: schema_of::<ImportParams>,
@@ -83,27 +86,35 @@ fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), ToolError>
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ExportParams {
-    /// Where to write the backup: an absolute path (`.csm` by convention). An existing file is
-    /// replaced (the old one is kept beside it as `.bak`).
+    /// Where to write the backup: an absolute path ending in `.csm`.
     path: String,
+    /// Replace a file that is already there (the old one is kept beside it as `.bak`). Without it
+    /// an existing file is never touched.
+    #[serde(default)]
+    overwrite: bool,
 }
 
 fn state_export(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: ExportParams = parse_params(params)?;
     let path = backup_path(&p.path)?;
+    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csm")) {
+        return Err(ToolError::InvalidParams("a backup file name ends in .csm".into()));
+    }
+    let overwrite = p.overwrite;
     let mut app = ctx.state.app.clone();
     app.ui.focused_session = ctx.state.rt.focused.clone();
     app.csm_rs_version = Some(crate::persist::STATE_FILE_VERSION);
-    if ctx.caller.is_external() {
-        app.settings.anthropic_api_key.clear();
-        app.mcp_grants.clear();
-    }
+    // A backup is a file that gets handed around: it never carries secrets, whoever asks.
+    app.settings.anthropic_api_key.clear();
+    app.mcp_grants.clear();
     let text = app.to_json().map_err(|e| ToolError::Failed(format!("could not write the state as JSON: {e}")))?;
     let (sessions, groups) = (app.sessions.len(), app.groups.len());
     let reply = park(ctx)?;
     spawn("csm-export", move || {
         let r = if path.is_dir() {
             Err(ToolError::InvalidParams(format!("{} is a folder; give a file name", path.display())))
+        } else if path.exists() && !overwrite {
+            Err(ToolError::Refused(format!("{} already exists; pass overwrite: true to replace it (the old file is kept as .bak)", path.display())))
         } else {
             match crate::persist::write_atomic(&path, &text) {
                 Ok(()) => Ok(ToolOutput::new(
@@ -137,6 +148,11 @@ struct ImportParams {
     /// person has seen it (`dry_run` lists it). Default: keep ours.
     #[serde(default)]
     adopt_open_with: bool,
+    /// Also take the backup's default command, launch commands and Claude commands (they decide
+    /// what the app starts and types). Only after the person has seen them (`dry_run` lists
+    /// them). Default: keep ours.
+    #[serde(default)]
+    adopt_launch_settings: bool,
 }
 
 /// What a worker read from a backup file.
@@ -196,7 +212,11 @@ fn state_import(ctx: &mut Ctx<'_>, params: Value) -> Reply {
 }
 
 fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -> Reply {
+    if let Some(why) = refuse_unsafe_sessions(&read.state.sessions) {
+        return Err(ToolError::Refused(why));
+    }
     let theirs = &read.state.settings;
+    let launch_differs = launch_settings_differ(theirs, &ctx.state.app.settings, read.state.csm_rs_version.is_some());
     let differs = theirs.open_with_seeded && !open::same_commands(&read.open_with, &ctx.state.app.settings.open_with);
     let (have_s, have_g) = (ctx.state.app.sessions.len(), ctx.state.app.groups.len());
     let (in_s, in_g) = (read.state.sessions.len(), read.state.groups.len());
@@ -207,6 +227,13 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
         "replaces": {"sessions": have_s, "groups": have_g},
         // What the imported sessions run when woken: a backup is any file someone was handed.
         "commands": session_commands(&read.state.sessions),
+        "session_details": session_details(&read.state.sessions),
+        "launch_settings": {
+            "differs": launch_differs,
+            "default_command": theirs.default_command,
+            "launch_commands": theirs.launch_commands,
+            "claude_commands": theirs.claude_commands.iter().map(|c| c.command.clone()).collect::<Vec<_>>(),
+        },
         "open_with": {
             "differs": differs,
             "entries": read.open_with.len(),
@@ -227,6 +254,7 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
         )));
     }
     let adopt = differs && p.adopt_open_with;
+    let adopt_launch = launch_differs && p.adopt_launch_settings;
     // Settings only this app has are taken only from a backup this app wrote: a WPF backup
     // has none of them, and its defaults must not erase ours.
     let from_rust = read.state.csm_rs_version.is_some();
@@ -246,7 +274,7 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
     app.last_layout = theirs.last_layout;
     app.ui = theirs.ui;
     app.ui.focused_session = None;
-    adopt_settings(&mut app.settings, &theirs.settings, adopt.then_some(open_with), from_rust);
+    adopt_settings(&mut app.settings, &theirs.settings, adopt.then_some(open_with), from_rust, adopt_launch);
     let (n_s, n_g) = (app.sessions.len(), app.groups.len());
     ctx.state.persist();
     let msg = format!(
@@ -259,11 +287,17 @@ fn finish_import(ctx: &mut Ctx<'_>, path: &Path, read: Read, p: &ImportParams) -
             ""
         }
     );
+    let msg = if launch_differs && !adopt_launch {
+        format!("{msg} The backup's default command, launch commands and Claude commands were not taken (adopt_launch_settings: true takes them).")
+    } else {
+        msg
+    };
     let mut data = summary;
     data["imported"] = json!({
         "sessions": n_s,
         "groups": n_g,
         "open_with_adopted": adopt,
+        "launch_settings_adopted": adopt_launch,
         "launch_commands": ctx.state.app.settings.launch_commands,
     });
     Ok(ToolOutput::new(msg, data))
@@ -301,7 +335,7 @@ fn adopt_sessions(groups: Vec<SessionGroup>, sessions: Vec<ShellSession>) -> (Ve
 /// MCP offer, the API key when the backup has none, and the Open with list unless `open_with`
 /// carries the one the person agreed to. The Rust-only settings come along only `from_rust`
 /// (a backup this app wrote; a WPF one doesn't have them).
-fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Option<Vec<OpenWithEntry>>, from_rust: bool) {
+fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Option<Vec<OpenWithEntry>>, from_rust: bool, launch: bool) {
     ours.auto_restore_sessions = theirs.auto_restore_sessions;
     ours.auto_resume_claude = theirs.auto_resume_claude;
     ours.show_toast_notifications = theirs.show_toast_notifications;
@@ -309,7 +343,7 @@ fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Optio
     if !theirs.anthropic_api_key.trim().is_empty() {
         ours.anthropic_api_key = theirs.anthropic_api_key.clone();
     }
-    if !theirs.default_command.trim().is_empty() && !theirs.default_command.chars().any(char::is_control) {
+    if launch && !theirs.default_command.trim().is_empty() && !theirs.default_command.chars().any(char::is_control) {
         ours.default_command = theirs.default_command.trim().to_owned();
     }
     if !theirs.default_working_folder.chars().any(char::is_control) {
@@ -319,16 +353,9 @@ fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Optio
     ours.search_collapse_after_navigate = theirs.search_collapse_after_navigate;
     ours.max_search_results = theirs.max_search_results;
     ours.show_terminal_status_dot = theirs.show_terminal_status_dot;
-    ours.launch_commands =
-        theirs.launch_commands.iter().map(|c| c.trim().to_owned()).filter(|c| !c.is_empty() && !c.chars().any(char::is_control)).fold(
-            Vec::new(),
-            |mut v, c| {
-                if !v.contains(&c) {
-                    v.push(c);
-                }
-                v
-            },
-        );
+    if launch {
+        ours.launch_commands = clean_launch_commands(&theirs.launch_commands);
+    }
     if let Some(list) = open_with {
         ours.open_with = list;
         ours.open_with_seeded = true;
@@ -342,8 +369,74 @@ fn adopt_settings(ours: &mut AppSettings, theirs: &AppSettings, open_with: Optio
     if from_rust {
         ours.terminal_font_points = theirs.terminal_font_points;
         ours.terminal_padding = theirs.terminal_padding;
-        ours.claude_commands = SlashCommand::clean_list(&theirs.claude_commands);
+        if launch {
+            ours.claude_commands = SlashCommand::clean_list(&theirs.claude_commands);
+        }
     }
+}
+
+fn clean_launch_commands(list: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for c in list.iter().map(|c| c.trim().to_owned()).filter(|c| !c.is_empty() && !c.chars().any(char::is_control)) {
+        if !v.contains(&c) {
+            v.push(c);
+        }
+    }
+    v
+}
+
+/// Whether the backup would change what the app starts or types (SEC-5): the default command,
+/// the launch commands or the Claude commands.
+fn launch_settings_differ(theirs: &AppSettings, ours: &AppSettings, from_rust: bool) -> bool {
+    let cmd = theirs.default_command.trim();
+    (!cmd.is_empty() && cmd != ours.default_command)
+        || clean_launch_commands(&theirs.launch_commands) != ours.launch_commands
+        || (from_rust && SlashCommand::clean_list(&theirs.claude_commands) != ours.claude_commands)
+}
+
+/// A session's `ssh_config_file` must be an absolute local path: relative resolves against
+/// whatever folder the app runs in, and a UNC path makes Windows send credentials to a host the
+/// file names. Returns the reason an import is refused.
+fn refuse_unsafe_sessions(sessions: &[ShellSession]) -> Option<String> {
+    for s in sessions {
+        let f = s.ssh_config_file.trim();
+        if f.is_empty() {
+            continue;
+        }
+        let unc = f.starts_with(r"\\") || f.starts_with("//");
+        if unc || !Path::new(f).is_absolute() {
+            return Some(format!(
+                "session `{}` names an SSH config file that is not an absolute local path (`{}`): a network or relative path is not accepted from a backup",
+                s.name.escape_debug(),
+                f.chars().take(120).collect::<String>().escape_debug()
+            ));
+        }
+    }
+    None
+}
+
+/// Per-session launch details a backup carries beyond `command args`: the SSH config file and
+/// remote command, and the run commands. Shown before an import; control characters escaped,
+/// at most 40 lines of at most 300 characters.
+fn session_details(sessions: &[ShellSession]) -> Vec<String> {
+    let esc = |t: &str| -> String { t.chars().flat_map(|c| if c.is_control() { c.escape_unicode().collect::<Vec<_>>() } else { vec![c] }).take(300).collect() };
+    let mut out: Vec<String> = Vec::new();
+    for s in sessions {
+        if !s.ssh_config_file.trim().is_empty() {
+            out.push(format!("{}: ssh config file {}", esc(&s.name), esc(s.ssh_config_file.trim())));
+        }
+        if !s.ssh_remote_argv.is_empty() {
+            out.push(format!("{}: ssh remote command {}", esc(&s.name), esc(&s.ssh_remote_argv.join(" "))));
+        }
+        for r in &s.run_commands {
+            out.push(format!("{}: run command {}: {}", esc(&s.name), esc(&r.label), esc(&r.command_line)));
+        }
+        if out.len() >= 40 {
+            out.truncate(40);
+            break;
+        }
+    }
+    out
 }
 
 /// The distinct command lines the backup's sessions start (`command args`), shown before an
@@ -396,7 +489,7 @@ mod tests {
             ..AppSettings::default()
         };
         let mut a = ours.clone();
-        adopt_settings(&mut a, &theirs, None, true);
+        adopt_settings(&mut a, &theirs, None, true, true);
         assert!(!a.auto_restore_sessions);
         assert_eq!(a.default_command, "codex");
         assert_eq!(a.launch_commands, ["codex", "pwsh"], "control characters and duplicates dropped");
@@ -406,7 +499,7 @@ mod tests {
         assert!(a.offer_mcp_to_claude, "the MCP offer changes the claude command line: not imported");
         assert_eq!(a.open_with, ours.open_with, "the Open with list is kept unless the person agreed");
         let mut b = ours.clone();
-        adopt_settings(&mut b, &theirs, Some(vec![entry("Agreed", r"C:\Agreed.exe")]), true);
+        adopt_settings(&mut b, &theirs, Some(vec![entry("Agreed", r"C:\Agreed.exe")]), true, true);
         assert_eq!(b.open_with[0].label, "Agreed");
         assert!(b.open_with_seeded);
     }
@@ -421,7 +514,7 @@ mod tests {
         };
         let theirs = AppSettings { default_command: "codex".into(), ..AppSettings::default() };
         let mut a = ours.clone();
-        adopt_settings(&mut a, &theirs, None, false);
+        adopt_settings(&mut a, &theirs, None, false, true);
         assert_eq!(a.default_command, "codex", "the WPF list is still taken");
         assert_eq!(a.claude_commands, ours.claude_commands);
         assert_eq!((a.terminal_padding, a.terminal_font_points), (9, 14));
@@ -457,5 +550,55 @@ mod tests {
         assert!(backup_path("C:\\x\n.csm").is_err());
         let abs = if cfg!(windows) { r"C:\backups\a.csm" } else { "/backups/a.csm" };
         assert_eq!(backup_path(abs).unwrap(), PathBuf::from(abs));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn launch_settings_are_kept_unless_the_person_agreed() {
+        let ours = AppSettings { default_command: "pwsh".into(), launch_commands: vec!["pwsh".into()], claude_commands: vec![SlashCommand::new("/mine", "")], ..AppSettings::default() };
+        let theirs = AppSettings {
+            default_command: "evil".into(),
+            launch_commands: vec!["evil".into()],
+            claude_commands: vec![SlashCommand::new("/evil", "")],
+            auto_restore_sessions: false,
+            ..AppSettings::default()
+        };
+        assert!(launch_settings_differ(&theirs, &ours, true));
+        let mut a = ours.clone();
+        adopt_settings(&mut a, &theirs, None, true, false);
+        assert_eq!((a.default_command.as_str(), &a.launch_commands, &a.claude_commands), ("pwsh", &ours.launch_commands, &ours.claude_commands));
+        assert!(!a.auto_restore_sessions, "plain settings still come along");
+        adopt_settings(&mut a, &theirs, None, true, true);
+        assert_eq!(a.default_command, "evil");
+        assert_eq!(a.claude_commands, vec![SlashCommand::new("/evil", "")]);
+    }
+
+    #[test]
+    fn ssh_config_files_must_be_absolute_and_local() {
+        let mk = |f: &str| ShellSession { name: "s".into(), ssh_config_file: f.into(), ..ShellSession::default() };
+        assert!(refuse_unsafe_sessions(&[mk("")]).is_none());
+        assert!(refuse_unsafe_sessions(&[mk(r"\\evil\share\config")]).is_some());
+        assert!(refuse_unsafe_sessions(&[mk("//evil/share/config")]).is_some());
+        assert!(refuse_unsafe_sessions(&[mk("config")]).is_some());
+        let abs = if cfg!(windows) { r"C:\Users\a\.ssh\config" } else { "/home/a/.ssh/config" };
+        assert!(refuse_unsafe_sessions(&[mk(abs)]).is_none());
+    }
+
+    #[test]
+    fn the_dry_run_lists_ssh_and_run_details() {
+        let s = ShellSession {
+            name: "box".into(),
+            ssh_config_file: r"C:\cfg".into(),
+            ssh_remote_argv: vec!["rm".into(), "-rf".into()],
+            run_commands: vec![csm_core::models::RunCommandItem { label: "go".into(), command_line: "npm start".into(), ..Default::default() }],
+            ..ShellSession::default()
+        };
+        let d = session_details(&[s]);
+        assert_eq!(d.len(), 3);
+        assert!(d[0].contains("ssh config file") && d[1].contains("rm -rf") && d[2].contains("npm start"));
     }
 }

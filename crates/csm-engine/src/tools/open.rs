@@ -435,7 +435,7 @@ fn open_with_list(ctx: &mut Ctx<'_>, params: Value) -> Reply {
 }
 
 fn open_with_set(ctx: &mut Ctx<'_>, params: Value) -> Reply {
-    if matches!(ctx.caller, Caller::External { .. }) {
+    if ctx.caller.is_external() {
         return Err(ToolError::Refused("the Open with list decides what runs on a click; edit it in the app".into()));
     }
     let p: SetParams = parse_params(params)?;

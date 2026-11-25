@@ -155,12 +155,19 @@ fn the_ssh_launch_line_keeps_hostile_values_out_of_ssh_options() {
 fn hostile_git_arguments_reach_git_as_single_elements() {
     for payload in ["$(id)", "`id`", "a;id", "a b", "a\"b", "trailing\\\\", "a\nb"] {
         let local = build_local_git_command_line(r"C:\repo", &["worktree", "add", "-b", payload, "--", r"C:\wt"]);
-        assert_eq!(real_argv(&local), vec!["-C", r"C:\repo", "worktree", "add", "-b", payload, "--", r"C:\wt"], "{payload:?}");
+        let hard = csm_services::git::GIT_HARDENING;
+        let mut want = vec!["-C", r"C:\repo"];
+        want.extend(hard);
+        want.extend(["worktree", "add", "-b", payload, "--", r"C:\wt"]);
+        assert_eq!(real_argv(&local), want, "{payload:?}");
 
         let wsl = build_wsl_git_command_line("Ubuntu", "/home/a/repo", &["switch", "--no-guess", "--", payload]);
         let argv = real_argv(&wsl);
         let g = argv.iter().position(|a| a == "git").unwrap();
         assert_eq!(argv[..g], ["-d", "Ubuntu", "-e", "sh", "-lc", WSL_GIT_SCRIPT]);
-        assert_eq!(argv[g..], ["git", "-C", "/home/a/repo", "switch", "--no-guess", "--", payload]);
+        let mut want = vec!["git", "-C", "/home/a/repo"];
+        want.extend(hard);
+        want.extend(["switch", "--no-guess", "--", payload]);
+        assert_eq!(argv[g..], want[..]);
     }
 }

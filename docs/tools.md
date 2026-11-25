@@ -53,6 +53,30 @@ ours), the tool and its params. "Always for this client" grants that client that
 listed and revocable in Settings → MCP. `consent_answer` is refused for every caller but the UI,
 so a client can never approve itself. Unanswered requests time out after 120 s.
 
+### Trust model
+
+Consent is for **MCP clients** (and add-ons calling through `csm/call`). It is not a security boundary
+against the person's own account: any process that runs as the same user with shell access can run
+`csm <tool>`, which is the `Cli` caller and is treated as the person (no consent card), or can read
+and edit `state.json` directly. That is by design: the CLI is how the person scripts their own app,
+and an attacker with that much access has the person's files anyway. What the rules below protect is
+the line between an agent (an MCP client, a paired device, an add-on) and the person.
+
+- Tools that decide what runs are refused for MCP clients and paired devices (`Caller::is_external`)
+  before any card: `state_import`, `state_import_wpf`, `open_with_set`, `addon_run_apply`, and
+  `settings_set` for every key but a short allow-list of cosmetic ones (theme, fonts, zoom, sidebar
+  layout; `MCP_SETTABLE_KEYS` in `tools/app.rs`). A new setting is refused for them until it is added.
+- Turning remote access off and revoking *every* device are the app's and the CLI's; an MCP client or
+  a paired device may revoke one device by id.
+- `project_docs_list` and `project_doc_get` take a `session_id` from an MCP client (a `path` is for the
+  person); links are never followed and network folders are refused.
+- A pack's palette command may name only read-only tools and a short list of navigation tools
+  (`PACK_COMMAND_TOOLS` in `addons.rs`); a screen button may open only its own add-on's screens.
+- Every git the app runs gets `-c core.fsmonitor=false -c core.untrackedCache=false
+  -c protocol.ext.allow=never` first, so a repository's own config cannot make git run a program
+  while the app polls it. Hooks still run for operations you start (commit, switch, worktree add).
+- An OSC 52 clipboard write is accepted only from the focused session, and a toast names it.
+
 Two extra rules the engine enforces regardless of grants:
 - A session can't send input to **itself** through MCP (an agent typing into its own prompt).
 - `session_send_text` into a session that is mid-turn (`working`) is refused unless `force: true`.
@@ -246,9 +270,11 @@ says, also under `--clean`. On its own the engine checks 5 s after start and the
 **Terminal profiles and looks** (`tools/look.rs`, parsing in `csm-services::wt_profiles`). ✅ `profile_list` (read; opt-in via the `ImportWindowsTerminalProfiles` setting, refused otherwise) reads Windows Terminal's `settings.json` (Stable, Preview, unpackaged; JSONC) **on a worker thread** and returns each visible profile with its command line, starting folder and `look`. ✅ `session_look_set` (session_id + exactly one of `profile` (name), `look`, `clear: true`; state) stamps a look onto the session; `session_new` takes `look` too. A look is colours (16 + fg/bg/cursor/selection), font size, cursor shape/blink, padding, opacity, retro; it is stored in the WPF app's `Profile*` fields of `state.json` (same formats), survives restart and Recently closed, and stays put if the WT profile changes later. The renderer draws the colours, font size, cursor shape and padding; font face, weight, ligatures, blink, opacity and retro are stored but not drawn.
 
 **Backup, usage, slash commands** (`tools/backup.rs`, `tools/usage.rs`, `tools/slash.rs`).
-`state_export` (path) writes the whole state as `state.json`-shaped JSON (the WPF `.csm`) on a
-worker; an MCP caller's export blanks the API key and grants. `state_import` (path, dry_run?,
-force?, adopt_open_with?) follows the WPF Import: the backup's sessions and groups *replace* ours
+`state_export` (path, overwrite?) writes the whole state as `state.json`-shaped JSON (the WPF `.csm`) on a
+worker. The file name must end in `.csm`, an existing file is replaced only with `overwrite: true`
+(the old one is kept as `.bak`; the tool declares `MAY_DISCARD_DATA`), and the API key and grants are
+never written, whoever asks. `state_import` (path, dry_run?,
+force?, adopt_open_with?, adopt_launch_settings?) follows the WPF Import: the backup's sessions and groups *replace* ours
 (ours are closed, so they sit in Recently closed; replacing needs `force`), the WPF list of
 settings is taken (a blank API key never erases ours; the MCP offer and grants stay ours), and the
 backup's Open with list is sanitised with `sanitize_imported` and adopted only with
@@ -525,7 +551,7 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `window_placement_set` | layout | ui | no | Remember where a window is: the main window, a torn-off group or a torn-off pane (physical pixels, the monitor's DPI, maximized). The app sends it as windows move; it applies at the next start or tear-off. |
 | `app_info` | app | read | no | Version, the ConPTY in use, where the state is kept, session counts. |
 | `settings_get` | app | read | no | All settings (or one, by key). Keys as in state.json (PascalCase) or snake_case. Secrets are not returned. |
-| `settings_set` | app | state | no | Set one setting by key. Settings that decide what runs (default command, launch commands, editors, API key, ConPTY) can only be changed in the app. |
+| `settings_set` | app | state | no | Set one setting by key. MCP clients may change only cosmetic settings (theme, fonts, zoom, sidebar layout); everything else is changed in the app. |
 | `recently_closed_list` | app | read | no | Closed sessions that can be reopened, newest first (index 0). |
 | `session_recent` | core | read | no | The sessions used most recently (up to 10, live or asleep, newest first), without the focused one: the first is the session used before it. Each has its status and how long ago it was used (5m, 3h, 2d). `session_focus` goes to one (waking it). |
 | `state_import_wpf` | app | state | no | Import sessions, groups and settings from CodeShellManager 0.x's state.json (default: its usual location; the file is only read). Imported sessions arrive asleep; existing ones are kept. Its Open with list is not applied: it waits for the person's answer (open_with_pending). App and CLI only. |
@@ -591,11 +617,11 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `search_output` | search | content | asks | Full-text search of everything every session printed (ANSI stripped). The query is taken literally as a phrase unless advanced is true (FTS5 syntax: AND, OR, NOT, prefix*). Newest matches first. |
 | `search_notes` | search | content | asks | Search every folder's notes for a piece of text (case-insensitive, literal). |
 | `search_reopen_session` | search | state, launch | asks | Start a new session from the configuration a closed session had (session_id from a search result). Refused when that session is still in the sidebar. |
-| `project_docs_list` | notes | read | no | The project docs of a session's folder (or an absolute `path`): README.md, CLAUDE.md, AGENTS.md, CLAUDE.local.md, GEMINI.md and .claude/CLAUDE.md, matched ignoring case, in that order; also those at the top of the git repository when that is another folder. Name, relative and absolute path, size and modified time of each, and the one to show first. |
-| `project_doc_get` | notes | read | no | The text of one project doc (`file`: its relative path, absolute path or name from project_docs_list). Anything that is not one of the listed docs is refused. Cut at 1 MiB (`truncated`); a file that is not UTF-8 is decoded lossily (`lossy`). |
+| `project_docs_list` | notes | read | no | The project docs of a session's folder (or an absolute `path`): README.md, CLAUDE.md, AGENTS.md, CLAUDE.local.md, GEMINI.md and .claude/CLAUDE.md, matched ignoring case, in that order; MCP clients name a `session_id`; the folder is never a network path. Also those at the top of the git repository when that is another folder. Name, relative and absolute path, size and modified time of each, and the one to show first. |
+| `project_doc_get` | notes | read | no | The text of one project doc (`file`: its relative path, absolute path or name from project_docs_list). Anything that is not one of the listed docs is refused. Links are never followed. Cut at 1 MiB (`truncated`); a file that is not UTF-8 is decoded lossily (`lossy`). |
 | `session_send_command` | core | input | asks | Type one of the configured Claude slash commands (settings ClaudeCommands: /help, /clear, /compact, /status, /memory, /init, /remote-control, exit) into a session and press Enter. Refused into the caller's own session, and while the session is working unless force is true. |
-| `state_export` | app | files | asks | Write a backup of the whole setup (sessions, groups, layouts, settings) to a .csm file at `path` (absolute). The same JSON as state.json; the WPF app's Import reads it. An MCP client's export leaves out the API key and MCP grants. |
-| `state_import` | app | state, discard | asks | Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true. App and CLI only. |
+| `state_export` | app | discard, files | asks | Write a backup of the whole setup (sessions, groups, layouts, settings) to a .csm file at `path` (absolute, must end in .csm). The same JSON as state.json; the WPF app's Import reads it. Never includes the API key or MCP grants. An existing file is replaced only with overwrite: true (the old one is kept as .bak). |
+| `state_import` | app | state, discard | asks | Read a .csm backup and replace the sessions and groups with its own (ours are closed; Recently closed keeps the last ten; imported ones arrive asleep), taking its settings. dry_run: true only reports what it would do and lists the backup's Open with commands; replacing needs force: true; the backup's Open with list is adopted only with adopt_open_with: true, and its default command, launch commands and Claude commands only with adopt_launch_settings: true. App and CLI only. |
 | `usage_stats` | app | read | no | Per command (claude, pwsh, …): how many sessions started, their total running time in seconds, and the last day (UTC) it was used. Counted on this machine only. |
 | `usage_session` | app | read | no | A Claude session's context fill (last main-thread request vs the model's window), API-equivalent cost and tokens (total and today), cache hit ratio, the last cache miss with the idle gap before it, compactions, and subagent cost. Read from Claude's transcripts; numbers only. Needs the built-in Claude usage add-on (off by default). |
 | `session_subagents` | app | read | no | The subagents a Claude session has started (Task/Agent calls and dynamic-workflow agents): label, type, model, state (running, idle after 5 minutes without output, done), workflow run and phase, tokens and API-equivalent cost, plus workflow runs with per-phase done/total. Read from Claude Code's own transcript folder (an undocumented layout, parsed leniently); numbers and the agents' short descriptions only. |
@@ -635,11 +661,11 @@ Generated from `csm-engine`'s registry. "asks" means an MCP caller waits for the
 | `peer_relay_status` | app | read | no | Whether remote access is also reachable through a relay, which relay, and whether this machine is connected to it right now. No secrets. |
 | `peer_relay_set` | app | state, files, network | asks | Also let paired devices reach remote access through a relay (`wss://` address), for networks without a VPN. The relay only copies encrypted frames. The operator's enrolment token, when the relay needs one, is kept in the OS keychain, never in a file. The relay runs only while remote access is on. An empty `url` turns the relay off. Refused for every caller except the app's own window. |
 | `peer_server_enable` | app | state, files, network | asks | Let another CodeShellManager connect to this one, on the one address and port you choose (never all interfaces unless `all_interfaces` is set). A paired device can type into your sessions. Refused for every caller except the app's own window: not the CLI, not MCP, not a paired device. |
-| `peer_server_disable` | app | state, network | no | Stop listening, close every connected device with a goodbye, close any open pairing offer. Paired devices stay paired (revoke them to delete their keys). Allowed for every caller. |
+| `peer_server_disable` | app | state, network | no | Stop listening, close every connected device with a goodbye, close any open pairing offer. Paired devices stay paired (revoke them to delete their keys). Refused for MCP clients and paired devices (the app and the CLI may). |
 | `peer_pair_start` | app | state, files, network | asks | Open a pairing offer, valid for 10 minutes and one use, and return its link (`csm://pair#...`) for the other CodeShellManager to open. The link is a secret. Refused for every caller except the app's own window. |
 | `peer_pair_answer` | app | state, files | asks | Answer the device waiting to pair: `allow` with the four-digit `check_code` both screens show, or deny. Refused for every caller except the app's own window. |
 | `peer_device_list` | app | read | no | The devices paired with this app: id, name, level, when paired, when last seen, whether connected now. |
-| `peer_device_revoke` | app | state, network | no | Delete one paired device's key (`id`) or every device's (`all`: true) and close their connections at once. They need a fresh pairing to come back. Allowed for every caller. |
+| `peer_device_revoke` | app | state, network | no | Delete one paired device's key (`id`) or every device's (`all`: true) and close their connections at once. They need a fresh pairing to come back. One device by `id` is open to every caller; `all` is the app's and the CLI's only. |
 | `peer_connect_open` | app | ui | no | Open the dialog that pairs this app with another CodeShellManager from its `csm://pair#...` link, shows the check code, and lists the paired offices with Connect and Forget. Only the app's own window opens it; refused for every other caller. |
 | `remote_window_open` | app | ui, launch | asks | Start a window of this app that runs on a paired CodeShellManager (the office) instead of a local engine. It is a separate process with its own layout, focus and theme. Only the app's own window starts one; refused for every other caller. |
 | `peer_client_pair` | app | state, files, network | asks | Pair this app with another CodeShellManager from its `csm://pair#...` link. It starts in the background and returns at once; `peer_client_pair_status` shows the four-digit check code to compare with the other screen, and the result once the other person has allowed or denied it. Refused for every caller except the app's own window. |

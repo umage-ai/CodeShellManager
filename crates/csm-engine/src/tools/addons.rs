@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::addons::{self, AddonState};
 use crate::engine::{Ctx, Reply};
-use crate::tool::{Caller, Effects, ToolError, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
+use crate::tool::{Effects, ToolError, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::tools::{find, open};
 
 pub(super) fn specs() -> Vec<ToolSpec> {
@@ -295,7 +295,7 @@ fn addon_install_samples(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
 }
 
 fn addon_run_apply(ctx: &mut Ctx<'_>, params: Value) -> Reply {
-    if matches!(ctx.caller, Caller::External { .. }) {
+    if ctx.caller.is_external() {
         return Err(ToolError::Refused("run commands decide what F5 runs; add an add-on's run command in the app".into()));
     }
     let p: ApplyRunParams = parse_params(params)?;

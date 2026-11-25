@@ -39,6 +39,8 @@ pub struct ImportReview {
     pub error: Option<String>,
     /// "Also replace my Open with list with the backup's". Off unless ticked.
     pub adopt_open_with: bool,
+    /// "Also take the backup's launch commands". Off unless ticked.
+    pub adopt_launch_settings: bool,
     /// The import was submitted and hasn't answered.
     pub importing: bool,
 }
@@ -154,6 +156,7 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let mut close = false;
     let mut submit = None;
     let mut adopt = r.adopt_open_with;
+    let mut adopt_launch = r.adopt_launch_settings;
     widgets::card_frame(&t).inner_margin(egui::Margin::same(space::MD as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = space::SM;
@@ -168,7 +171,7 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             }
             (None, Some(s)) => {
                 let body = format!(
-                    "This backup has {} sessions and {} groups. Importing replaces your {} sessions and {} groups: they are closed, busy or not (Recently closed keeps the last ten). The imported sessions arrive asleep; wake them when you need them. Launch commands, Claude commands and terminal settings come from the backup too.",
+                    "This backup has {} sessions and {} groups. Importing replaces your {} sessions and {} groups: they are closed, busy or not (Recently closed keeps the last ten). The imported sessions arrive asleep; wake them when you need them. Terminal settings come from the backup too; its launch commands only if you tick the box below.",
                     n(&s["sessions"]),
                     n(&s["groups"]),
                     n(&s["replaces"]["sessions"]),
@@ -183,6 +186,39 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                         let listing = commands.join("\n");
                         ui.add(egui::Label::new(egui::RichText::new(listing).font(theme::mono(text::MONO_SM)).color(t.fg)).wrap());
                     });
+                }
+                let details: Vec<&str> = s["session_details"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                if !details.is_empty() {
+                    caption(ui, "They also use these SSH settings and run commands:");
+                    widgets::card_frame(&t).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(egui::Label::new(egui::RichText::new(details.join("\n")).font(theme::mono(text::MONO_SM)).color(t.fg)).wrap());
+                    });
+                }
+                let ls = &s["launch_settings"];
+                if ls["differs"].as_bool() == Some(true) {
+                    let list = |v: &Value| v.as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                    caption(ui, "The backup has its own launch settings:");
+                    let listing = format!(
+                        "default command: {}\nlaunch commands: {}\nClaude commands: {}",
+                        ls["default_command"].as_str().unwrap_or_default(),
+                        list(&ls["launch_commands"]),
+                        list(&ls["claude_commands"])
+                    );
+                    widgets::card_frame(&t).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(egui::Label::new(egui::RichText::new(listing).font(theme::mono(text::MONO_SM)).color(t.fg)).wrap());
+                    });
+                    if widgets::toggle(
+                        ui,
+                        adopt_launch,
+                        "Use these launch settings instead of mine",
+                        Some("Leave this off unless you made this backup yourself: your settings are kept."),
+                    )
+                    .clicked()
+                    {
+                        adopt_launch = !adopt_launch;
+                    }
                 }
                 let ow = &s["open_with"];
                 if ow["differs"].as_bool() == Some(true) {
@@ -213,7 +249,7 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             ui.spacing_mut().item_spacing = vec2(space::SM, 0.0);
             let ready = r.error.is_none() && r.summary.is_some() && !r.importing;
             if ready && widgets::button(ui, ButtonKind::Danger, Some("enter"), "Import and replace", None).clicked() {
-                submit = Some(json!({"path": r.path, "force": true, "adopt_open_with": adopt}));
+                submit = Some(json!({"path": r.path, "force": true, "adopt_open_with": adopt, "adopt_launch_settings": adopt_launch}));
             }
             if r.importing {
                 ui.label(egui::RichText::new("Importing…").font(theme::regular(text::BODY)).color(t.muted));
@@ -225,6 +261,7 @@ fn review(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
     if let Some(cur) = app.ui.settings.import.as_mut() {
         cur.adopt_open_with = adopt;
+        cur.adopt_launch_settings = adopt_launch;
         if submit.is_some() {
             cur.importing = true;
         }

@@ -190,7 +190,9 @@ fn import_is_refused_for_mcp_clients_and_bad_files_are_plain_errors() {
     assert!(matches!(&r, Err(ToolError::Failed(m)) if m.contains("could not be read")), "{r:?}");
     let r = h.ui("state_import", json!({"path": "relative.csm"}));
     assert!(matches!(r, Err(ToolError::InvalidParams(_))), "{r:?}");
-    let r = h.ui("state_export", json!({"path": h.dir.path().to_string_lossy()}));
+    let folder = h.dir.path().join("dir.csm");
+    std::fs::create_dir_all(&folder).unwrap();
+    let r = h.ui("state_export", json!({"path": folder.to_string_lossy()}));
     assert!(matches!(&r, Err(ToolError::InvalidParams(m)) if m.contains("folder")), "{r:?}");
 }
 
@@ -214,8 +216,9 @@ fn an_mcp_export_leaves_out_the_api_key() {
     h.ok("consent_answer", json!({"request_id": request["request_id"], "answer": "allow_once"}));
     rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
     assert!(!std::fs::read_to_string(&file).unwrap().contains("sk-secret"));
-    h.ok("state_export", json!({"path": file}));
-    assert!(std::fs::read_to_string(&file).unwrap().contains("sk-secret"), "the person's own export is a full backup");
+    // SEC-16: nobody's export carries the key, and an existing file needs overwrite.
+    h.ok("state_export", json!({"path": file, "overwrite": true}));
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("sk-secret"), "no export carries the API key");
 }
 
 // ── usage_stats ──────────────────────────────────────────────────────────────────────────

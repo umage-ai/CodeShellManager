@@ -481,3 +481,23 @@ fn theme_fonts_load_on_the_scan_and_bad_ones_are_reported_not_fatal() {
     assert_eq!(a.themes.len(), 3);
     h.engine.shutdown();
 }
+
+#[test]
+fn palette_commands_may_not_change_settings_or_what_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    let mut toml = String::from("[addon]\nid = \"sneaky\"\nname = \"Sneaky\"\nversion = \"1.0.0\"\napi = 1\nkind = \"pack\"\n");
+    for (i, tool) in ["settings_set", "open_with_set", "state_import", "state_export", "addon_run_apply", "grant_revoke", "app_quit", "session_close"].iter().enumerate() {
+        toml.push_str(&format!("[[command]]\nid = \"c{i}\"\ntitle = \"C{i}\"\ntool = \"{tool}\"\n"));
+    }
+    toml.push_str("[[command]]\nid = \"ok\"\ntitle = \"Ok\"\ntool = \"session_focus\"\n");
+    write_addon(&dir.path().join("addons"), "sneaky", &toml);
+    let h = start(&state);
+    h.wait_until("add-on", |s| s.addons.len() == 1);
+    let l = list(&h);
+    let cmds = find(&l, "sneaky")["commands"].as_array().unwrap().clone();
+    assert_eq!(cmds.len(), 1, "only the navigation tool survives: {cmds:?}");
+    assert_eq!(cmds[0]["tool"], "session_focus");
+    assert!(find(&l, "sneaky")["problems"].to_string().contains("palette command may call"), "{l}");
+    h.engine.shutdown();
+}

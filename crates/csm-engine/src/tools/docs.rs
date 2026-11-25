@@ -21,7 +21,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_docs_list",
             title: "Project docs",
-            summary: "The project docs of a session's folder (or an absolute `path`): README.md, CLAUDE.md, AGENTS.md, CLAUDE.local.md, GEMINI.md and .claude/CLAUDE.md, matched ignoring case, in that order; also those at the top of the git repository when that is another folder. Name, relative and absolute path, size and modified time of each, and the one to show first.",
+            summary: "The project docs of a session's folder (or an absolute `path`): README.md, CLAUDE.md, AGENTS.md, CLAUDE.local.md, GEMINI.md and .claude/CLAUDE.md, matched ignoring case, in that order; MCP clients name a `session_id`; the folder is never a network path. Also those at the top of the git repository when that is another folder. Name, relative and absolute path, size and modified time of each, and the one to show first.",
             toolset: Toolset::Notes,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<ListParams>,
@@ -30,7 +30,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_doc_get",
             title: "Read a project doc",
-            summary: "The text of one project doc (`file`: its relative path, absolute path or name from project_docs_list). Anything that is not one of the listed docs is refused. Cut at 1 MiB (`truncated`); a file that is not UTF-8 is decoded lossily (`lossy`).",
+            summary: "The text of one project doc (`file`: its relative path, absolute path or name from project_docs_list). Anything that is not one of the listed docs is refused. Links are never followed. Cut at 1 MiB (`truncated`); a file that is not UTF-8 is decoded lossily (`lossy`).",
             toolset: Toolset::Notes,
             effects: Effects::READ_ONLY,
             input_schema: schema_of::<GetParams>,
@@ -44,7 +44,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
 struct ListParams {
     /// The session whose folder to look in. Give this or `path`.
     session_id: Option<String>,
-    /// An absolute local folder. Give this or `session_id`.
+    /// An absolute local folder (not a network path; MCP clients give `session_id` instead). Give this or `session_id`.
     path: Option<String>,
 }
 
@@ -54,7 +54,7 @@ struct GetParams {
     /// The session whose folder to look in. Give this or `path`.
     #[serde(default)]
     session_id: Option<String>,
-    /// An absolute local folder. Give this or `session_id`.
+    /// An absolute local folder (not a network path; MCP clients give `session_id` instead). Give this or `session_id`.
     #[serde(default)]
     path: Option<String>,
     /// The doc: its `rel`, `path` or `name` as project_docs_list gives them.
@@ -63,6 +63,11 @@ struct GetParams {
 
 /// The folder to look in: the session's, or an absolute `path`.
 fn folder_of(ctx: &Ctx<'_>, session_id: Option<&str>, path: Option<&str>) -> Result<String, ToolError> {
+    // An MCP client or peer reads only the folders of sessions the person has open; it does not
+    // get to name a folder (SEC-13).
+    if ctx.caller.is_external() && path.is_some() {
+        return Err(ToolError::Refused("name a `session_id`: project docs are read from a session's folder, not from a path an MCP client picks".into()));
+    }
     match (session_id, path) {
         (Some(_), Some(_)) => Err(ToolError::InvalidParams("give `session_id` or `path`, not both".into())),
         (None, None) => Err(ToolError::InvalidParams("give `session_id` or `path`".into())),

@@ -291,6 +291,27 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
     crate::lifecycle::restore_waiting_addons(ctx);
 }
 
+/// The tools a pack's palette command may name (SEC-21), besides read-only ones. A command
+/// runs as the person, with no consent card, so it gets only tools that open, show or start something the pack itself
+/// declared: never `settings_set`, `open_with_set`, `state_import` or the like. Everything an MCP
+/// client is refused stays out.
+pub(crate) const PACK_COMMAND_TOOLS: [&str; 14] = [
+    "session_new",
+    "session_focus",
+    "session_wake",
+    "session_recent",
+    "layout_set",
+    "theme_set",
+    "view_set",
+    "window_show",
+    "inspector_show",
+    "inbox_next",
+    "pane_focus_next",
+    "pane_focus_prev",
+    "rail_tab_next",
+    "rail_tab_prev",
+];
+
 fn build_entry(s: Scanned, registry: &Registry) -> Entry {
     match s.parsed {
         Err(e) => Entry { folder: s.folder, path: s.path, parsed: None, digest: None, state: AddonState::Error, message: Some(e), problems: Vec::new(), standing: Vec::new(), fonts: Vec::new() },
@@ -316,6 +337,7 @@ fn build_entry(s: Scanned, registry: &Registry) -> Entry {
                     Some(t) if t.effects.intersects(Effects::SENDS_INPUT | Effects::ENABLES_EXTENSION) => {
                         Some(format!("`{}` writes into sessions or enables extensions, which a palette command may not do; ignored", c.tool))
                     }
+                    Some(t) if !(PACK_COMMAND_TOOLS.contains(&t.id) || t.effects.read_only_hint()) => Some(format!("`{}` is not one of the tools a palette command may call (it could change settings or what runs); ignored", c.tool)),
                     Some(_) => None,
                 };
                 match verdict {
