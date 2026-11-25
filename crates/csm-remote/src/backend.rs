@@ -4,7 +4,10 @@
 //!   to this client's own [`ViewOverlay`] and answered here. Everything else goes to the host, and
 //!   its reply comes back by `poll`. A local focus is also sent to the host (`session_focus`: it
 //!   acknowledges the result and wakes a sleeping session); if the host refuses, the overlay is put
-//!   back as it was.
+//!   back as it was. A rail tab switch (`view_set` with a `rail_tab`, `rail_tab_next`, `rail_tab_prev`)
+//!   is applied to the overlay the same way, but the host never sees it: it only gets the
+//!   `session_focus` for the session the switch focused, if any, so the office's own rail tab does
+//!   not follow a laptop.
 //! - State: the mirrored snapshot is rebuilt into a [`UiModel`] whenever it or the overlay changes.
 //! - Terminals: [`RemoteBackend::show_terminals`] subscribes the panes the UI shows and drops the
 //!   others.
@@ -252,9 +255,16 @@ impl RemoteBackend {
 
     /// Sends a call to the host. `restore` is the overlay to put back if the host refuses.
     fn forward(&mut self, call: Call, restore: Option<ViewOverlay>) {
-        self.log_call(&call);
+        let sent = call.clone();
+        self.forward_as(call, sent, restore);
+    }
+
+    /// Sends `sent` to the host and answers `call` with its reply (a rail tab call is answered by
+    /// the `session_focus` it turned into).
+    fn forward_as(&mut self, call: Call, sent: Call, restore: Option<ViewOverlay>) {
+        self.log_call(&sent);
         let key = self.next_call_key();
-        let cmd = Cmd::Call { key, tool: call.id.clone(), params: call.params.clone() };
+        let cmd = Cmd::Call { key, tool: sent.id, params: sent.params };
         match self.cmds.send(cmd) {
             Ok(()) => {
                 if let Some(s) = restore {
@@ -346,7 +356,8 @@ impl ToolPort for RemoteBackend {
             self.forward(call, None);
             return;
         };
-        match view_overlay::route(&tool, &params) {
+        let route = view_overlay::route(&tool, &params);
+        match route {
             Route::Local => {
                 let facts = self.facts();
                 let result = view_overlay::apply(&mut self.overlay, &facts, &tool, params);
@@ -354,15 +365,26 @@ impl ToolPort for RemoteBackend {
                 self.log_call(&call);
                 self.ready.push((call, result.map(|_| ToolOutput::message(""))));
             }
-            Route::Focus => {
+            Route::Focus | Route::RailTab => {
                 let facts = self.facts();
                 let before = self.overlay.clone();
                 match view_overlay::apply(&mut self.overlay, &facts, &tool, params.clone()) {
-                    Ok(Applied::Focused { .. }) => {
+                    Ok(Applied::Focused { session_id, .. }) => {
                         self.dirty = true;
-                        self.forward(call, Some(before));
+                        // A rail tab call is the overlay's alone: the host only hears of the session it
+                        // focused (to acknowledge it), so its own rail tab stays where it is.
+                        if route == Route::RailTab {
+                            let sent = Call { id: view_overlay::SESSION_FOCUS.to_owned(), params: serde_json::json!({ "session_id": session_id }) };
+                            self.forward_as(call, sent, Some(before));
+                        } else {
+                            self.forward(call, Some(before));
+                        }
                     }
-                    Ok(_) => self.ready.push((call, Ok(ToolOutput::message("")))),
+                    Ok(_) => {
+                        self.dirty = true;
+                        self.log_call(&call);
+                        self.ready.push((call, Ok(ToolOutput::message(""))));
+                    }
                     Err(e) => self.ready.push((call, Err(e))),
                 }
             }
