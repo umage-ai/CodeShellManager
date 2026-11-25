@@ -704,6 +704,7 @@ fn main() {
         // `csm_ui::start_window`. A tray only where the tray module makes one.
         let start = StartWindow::choose(settings.start_minimized, settings.start_minimized_to_tray, tray::POSSIBLE);
         let first_run_import = persist::first_run_wpf_import(args.config_dir.as_deref(), args.clean, report.source);
+        let beta_offer = persist::beta_import_offer(args.config_dir.as_deref(), args.clean, report.source);
         let engine = Engine::start(state, csm_ui::app_tools()).unwrap_or_else(|e| start_failed(e));
         if let Some(p) = &peer_server {
             // Gives it the engine its devices' calls run on, and replays the one thing the person
@@ -714,6 +715,10 @@ fn main() {
         }
         if let Some(path) = first_run_import {
             import_wpf_on_first_run(&engine, path);
+        }
+        if let Some(path) = beta_offer {
+            // A tester's beta data beside a stable build with none of its own: offered, never imported silently.
+            engine.offer_beta_import(path);
         }
         (engine, Mode::Real { opts }, theme_kind, start)
     };

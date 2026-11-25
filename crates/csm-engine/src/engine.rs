@@ -333,6 +333,15 @@ impl Engine {
         let _ = self.tx.send(Msg::Post(job));
     }
 
+    /// A first run of the stable app that found a beta's `state.json` (`persist::beta_import_offer`):
+    /// shows the offer to import it (a standing warning with the `state_import_beta` button).
+    pub fn offer_beta_import(&self, path: std::path::PathBuf) {
+        self.post(Box::new(move |ctx| {
+            ctx.state.rt.beta_offer = Some(path);
+            ctx.state.touch();
+        }));
+    }
+
     /// Stop the engine thread and wait for it.
     pub fn shutdown(&self) {
         let _ = self.tx.send(Msg::Shutdown);

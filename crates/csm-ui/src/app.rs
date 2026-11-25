@@ -2646,6 +2646,12 @@ impl CsmApp {
             ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| screens::remote_bar::show(ui, &status));
             body_top = bar.max.y;
         }
+        for w in self.model.warnings.clone() {
+            // Standing: a save that fails, a read-only start, an import offer (until their cause is gone).
+            let bar = Rect::from_min_max(pos2(full.min.x, body_top), pos2(full.max.x, body_top + size::WARN_BAR));
+            screens::warn_bar::show(ui, bar, &w, &mut actions);
+            body_top = bar.max.y;
+        }
         if let Some(r) = &self.model.restore {
             let rail = Rect::from_min_max(pos2(full.min.x, body_top), pos2(full.max.x, body_top + size::RESTORE_RAIL));
             screens::overlays::restore_rail(ui, rail, r);

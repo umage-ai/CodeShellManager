@@ -48,6 +48,13 @@ pub struct StateOptions {
     pub save_path: Option<PathBuf>,
     /// The `--clean` mode: start without sessions or groups and never write anything.
     pub clean: bool,
+    /// Why this run must not write `state.json`: it exists but could not be read ([`State::load`]
+    /// sets it). The sessions start empty and nothing is saved or moved aside, so the real file
+    /// survives. `None`: the normal case.
+    pub read_only: Option<String>,
+    /// Test hook: restart workers cannot be spawned (`restart_core` must not leave a session stuck).
+    #[doc(hidden)]
+    pub fail_worker_spawn: bool,
     pub pty: PtyFactory,
     /// How long a new session waits for the UI to report its first measured grid before it
     /// starts at [`StateOptions::fallback_size`] (headless and MCP-created sessions).
@@ -174,6 +181,8 @@ impl Default for StateOptions {
         Self {
             save_path: None,
             clean: false,
+            read_only: None,
+            fail_worker_spawn: false,
             pty: real_pty_factory(),
             first_size_timeout: Duration::from_millis(1500),
             fallback_size: (220, 50),
@@ -234,6 +243,11 @@ impl StateOptions {
     pub(crate) fn saves(&self) -> bool {
         !self.clean && self.save_path.is_some()
     }
+
+    /// Whether `state.json` is written by this run: [`Self::saves`], and not a read-only start.
+    pub(crate) fn writes_state(&self) -> bool {
+        self.saves() && self.read_only.is_none()
+    }
 }
 
 /// What [`State::load`] found on disk.
@@ -281,6 +295,8 @@ pub(crate) struct Runtime {
     pub restore: Option<Progress>,
     /// A restart (single or bulk) holds this for its whole run.
     pub restart_active: bool,
+    /// Restart workers still running (an old Claude exiting): the quit waits for them.
+    pub(crate) restart_workers: Arc<crate::lifecycle::RestartWorkers>,
     pub restart: Option<Progress>,
     pub restart_cancel: bool,
     pub shutting_down: bool,
@@ -328,6 +344,10 @@ pub(crate) struct Runtime {
     /// The Board's tasks (`tasks.json`; loaded and saved only when the state is).
     pub tasks: csm_core::tasks::TaskFile,
     pub tasks_saver: Option<persist::Saver>,
+    /// `tasks.json` exists but could not be read: the Board starts empty and is never saved.
+    pub tasks_unreadable: bool,
+    /// The beta-era `state.json` a first run of the stable app offers to import (`state_import_beta`).
+    pub beta_offer: Option<PathBuf>,
     pub tasks_save_due: Option<Instant>,
     /// Bumped on every change to `tasks`; the snapshot shares `tasks_view` until it moves.
     pub tasks_gen: u64,
@@ -379,13 +399,16 @@ impl State {
         let mut rt = Runtime { focused, dirty: true, index: crate::index::open(&options), ..Runtime::default() };
         let mode = crate::usage_tail::mode_of(&app.settings, &options);
         rt.usage = crate::usage_tail::UsageTail::start(rt.index.as_ref(), &options.claude_roots, options.save_path.as_deref(), options.usage_poll, mode);
-        if options.saves()
+        if options.writes_state()
             && let Some(path) = &options.save_path
         {
             rt.saver = persist::Saver::start(path.clone());
             let tasks = persist::tasks_path(path);
-            rt.tasks = persist::load_tasks(&tasks, crate::session::now_ms());
-            rt.tasks_saver = persist::Saver::start_plain(tasks, "csm-tasks-saver");
+            let (file, readable) = persist::load_tasks(&tasks, crate::session::now_ms());
+            rt.tasks = file;
+            // A Board file that could not be read is never saved over.
+            rt.tasks_saver = if readable { persist::Saver::start_plain(tasks, "csm-tasks-saver") } else { None };
+            rt.tasks_unreadable = !readable;
             // Tasks of sessions that are gone (closed while the app was not running) go back.
             let gone: HashSet<String> =
                 rt.tasks.tasks.iter().filter_map(|t| t.assignee.clone()).filter(|a| !app.sessions.iter().any(|s| &s.id == a)).collect();
@@ -398,12 +421,17 @@ impl State {
 
     /// Reads `options.save_path` (primary, then `.bak`; never fails) and builds the state.
     /// File I/O: call it at start-up, not from a UI frame.
-    pub fn load(options: StateOptions) -> (State, LoadReport) {
+    pub fn load(mut options: StateOptions) -> (State, LoadReport) {
         let path = options.save_path.clone();
         let (app, source) = match &path {
             Some(p) => {
-                let loaded = persist::load(p);
-                (loaded.state, Some(loaded.source))
+                let out = persist::load_checked(p);
+                // Present but unreadable (not corrupt): start read-only, never save over it.
+                if let Some(why) = out.unreadable {
+                    log::error!("state: could not read {why}; starting read-only so the file is not replaced");
+                    options.read_only = Some(why);
+                }
+                (out.loaded.state, Some(out.loaded.source))
             }
             None => (AppState::default(), None),
         };
@@ -417,7 +445,7 @@ impl State {
         // Issue #166: an unreadable file is kept where no save can overwrite it (only when this
         // run saves at all: `--clean` and isolated runs never touch the disk).
         let set_aside = match (&path, source) {
-            (Some(p), Some(src)) if options.saves() => persist::keep_unreadable(p, src, crate::session::now_ms()),
+            (Some(p), Some(src)) if options.writes_state() => persist::keep_unreadable(p, src, crate::session::now_ms()),
             _ => Vec::new(),
         };
         for f in &set_aside {

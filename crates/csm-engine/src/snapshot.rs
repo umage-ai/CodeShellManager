@@ -192,6 +192,8 @@ pub struct Snapshot {
     /// A newer release than the running build, not dismissed: the title bar's badge
     /// (`update_check`, `update_dismiss`). `None`: nothing to show.
     pub update: Option<crate::tools::update::UpdateView>,
+    /// Standing warnings (a failing save, a read-only start, an import offer); empty normally.
+    pub warnings: Vec<crate::warnings::Warning>,
     /// Saved window bounds (`window_placement_set`): `main` (the state file's `LastPlacement` and
     /// `WindowMaximized`), `group:<id>` and `pane:<session id>` for torn-off windows.
     pub windows: BTreeMap<String, WindowSlot>,
@@ -453,6 +455,7 @@ pub(crate) fn build(state: &mut State, version: u64) -> Snapshot {
         open_with: crate::tools::open::list_view(&state.app.settings.open_with),
         pending_open_with: crate::tools::open::list_view(&state.app.pending_open_with),
         update: crate::tools::update::view(state),
+        warnings: crate::warnings::current(state),
         windows,
         recently_closed: state
             .app
