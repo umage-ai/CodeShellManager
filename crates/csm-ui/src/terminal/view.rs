@@ -104,6 +104,11 @@ fn inset(rect: Rect, opts: &ViewOptions) -> Rect {
 }
 
 /// The smallest scale a preview is drawn at (Overview mini-terminals).
+/// Set each frame by the app: a dialog or overlay is open, so no terminal takes the keyboard.
+pub fn modal_id() -> Id {
+    Id::new("terminal-modal-open")
+}
+
 const PREVIEW_MIN_ZOOM: f32 = 0.66;
 
 /// UI → terminal changes, applied when the view next gets the emulator's lock.
@@ -434,10 +439,11 @@ impl TerminalView {
             }
         }
 
-        if opts.interactive && (opts.request_focus || resp.is_pointer_button_down_on()) && !resp.has_focus() {
+        let modal = ui.ctx().data(|d| d.get_temp::<bool>(modal_id())).unwrap_or(false);
+        if opts.interactive && !modal && (opts.request_focus || resp.is_pointer_button_down_on()) && !resp.has_focus() {
             resp.request_focus();
         }
-        let focused = opts.interactive && resp.has_focus();
+        let focused = opts.interactive && !modal && resp.has_focus();
         if focused {
             ui.memory_mut(|mem| {
                 mem.set_focus_lock_filter(self.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
@@ -583,7 +589,7 @@ impl TerminalView {
                 painter.hline(r.x_range(), r.max.y, egui::Stroke::new(1.0, fg));
             }
         }
-        if opts.interactive && (opts.request_focus || resp.is_pointer_button_down_on()) && !resp.has_focus() {
+        if opts.interactive && !modal && (opts.request_focus || resp.is_pointer_button_down_on()) && !resp.has_focus() {
             resp.request_focus();
         }
         if false {

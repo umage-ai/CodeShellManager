@@ -20,7 +20,10 @@ pub fn backend(theme: ThemeKind) -> DemoBackend {
 
 pub fn app_with(backend: DemoBackend) -> CsmApp {
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
-    CsmApp::new(Box::new(csm_ui::EnginePort::new(csm_ui::demo_engine().unwrap())), Box::new(backend), TerminalRenderer::new(fonts))
+    let mut app = CsmApp::new(Box::new(csm_ui::EnginePort::new(csm_ui::demo_engine().unwrap())), Box::new(backend), TerminalRenderer::new(fonts));
+    // The short wait before a new dialog answers is off, so a test can press at once.
+    app.ui.no_dialog_delay = true;
+    app
 }
 
 pub fn harness(app: CsmApp) -> Harness<'static, CsmApp> {
@@ -62,7 +65,9 @@ pub fn settle(h: &mut Harness<'static, CsmApp>) {
 pub fn app_with_peer(backend: DemoBackend, host: &csm_ui::demo::peer::DemoPeerHost) -> CsmApp {
     let fonts = FontSet::new(embedded_mono().unwrap(), Vec::new(), csm_ui::theme::text::TERMINAL, true);
     let engine = csm_ui::demo_engine_with_peer(std::sync::Arc::new(host.clone())).unwrap();
-    CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), Box::new(backend), TerminalRenderer::new(fonts))
+    let mut app = CsmApp::new(Box::new(csm_ui::EnginePort::new(engine)), Box::new(backend), TerminalRenderer::new(fonts));
+    app.ui.no_dialog_delay = true;
+    app
 }
 
 /// Steps until `done` holds and the engine is idle, for up to 15 s (the engine answers on its own

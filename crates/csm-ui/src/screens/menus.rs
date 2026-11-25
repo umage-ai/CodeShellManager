@@ -455,6 +455,7 @@ pub fn bulk_menu(model: &UiModel, targets: &[String]) -> Vec<Entry> {
             format!("Restart ({k})…"),
             if k > 1 {
                 Action::Confirm(ConfirmState {
+                    safe_default: false,
         also: None,
                     title: format!("Restart {k} sessions?"),
                     body: "They restart one after another; Claude sessions resume their conversations. Running run commands stop.".into(),
@@ -481,6 +482,7 @@ pub fn bulk_menu(model: &UiModel, targets: &[String]) -> Vec<Entry> {
         hint: None,
         danger: true,
         action: Action::Confirm(ConfirmState {
+            safe_default: false,
         also: None,
             title: format!("Close {n} sessions?"),
             body,

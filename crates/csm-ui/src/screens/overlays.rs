@@ -2,7 +2,9 @@
 //! (`Event::ConsentRequested` → `consent_answer`), the close and busy-close dialogs, the shutdown board and
 //! the restore rail. A native renderer can draw these over live panes; WebView2 never could.
 
-use egui::{Align2, CornerRadius, Id, Order, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use csm_core::addons::screen::{clean_label, reveal};
+use egui::text::{LayoutJob, TextFormat};
+use egui::{Align2, Color32, CornerRadius, Id, Order, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use csm_core::keymap::Keymap;
 use serde_json::{Value, json};
 
@@ -10,7 +12,7 @@ use crate::app::{Action, CsmApp, Overlay};
 use crate::dialog_keys::{self, Controls, Field, Pressed, Slot};
 use crate::icons;
 use crate::model::{RestoreProgress, SessionId, ShutdownRowState, Status};
-use crate::theme::{self, Tokens, icon, radius, semibold, size, space, text};
+use crate::theme::{self, Tokens, alpha, icon, radius, semibold, size, space, text};
 use crate::widgets::{self, ButtonKind};
 
 /// The 2px determinate rail under the title bar while sessions restore.
@@ -52,6 +54,10 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
 pub const CONFIRM_ID: &str = "dlg-confirm";
 pub const CLOSE_ID: &str = "dlg-close";
 pub const PROMPT_ID: &str = "dlg-prompt";
+pub const BUSY_ID: &str = "dlg-busy";
+pub const HELP_ID: &str = "dlg-help";
+/// Every dialog id that keeps keys.
+const DIALOG_IDS: [&str; 5] = [CONFIRM_ID, CLOSE_ID, PROMPT_ID, BUSY_ID, HELP_ID];
 
 /// The controls of the open modal dialog (`Overlay::Confirm`, `CloseAsk` or `Prompt`), with the
 /// id its keys are kept under. Buttons are numbered in the order the dialog draws them.
@@ -59,8 +65,13 @@ pub fn dialog_controls(app: &CsmApp) -> Option<(Id, Controls)> {
     match app.ui.overlay {
         Overlay::Confirm => {
             let c = app.ui.confirm.as_ref()?;
-            Some((Id::new(CONFIRM_ID), Controls { field: Field::None, buttons: 2 + usize::from(c.also.is_some()), default: Some(0) }))
+            let buttons = 2 + usize::from(c.also.is_some());
+            // A question an agent or a plugin caused has "no" as its default: Enter declines.
+            let default = if c.safe_default { buttons - 1 } else { 0 };
+            Some((Id::new(CONFIRM_ID), Controls { field: Field::None, buttons, default: Some(default) }))
         }
+        Overlay::Busy => Some((Id::new(BUSY_ID), Controls { field: Field::Checkbox, buttons: 2, default: Some(0) })),
+        Overlay::Help => Some((Id::new(HELP_ID), Controls { field: Field::None, buttons: 0, default: None })),
         Overlay::CloseAsk => Some((Id::new(CLOSE_ID), Controls { field: Field::Checkbox, buttons: 2, default: Some(0) })),
         Overlay::Prompt => app.ui.prompt.as_ref().map(|_| (Id::new(PROMPT_ID), Controls { field: Field::Text, buttons: 2, default: None })),
         _ => None,
@@ -71,7 +82,7 @@ pub fn dialog_controls(app: &CsmApp) -> Option<(Id, Controls)> {
 /// forgets the focus of the dialogs that are not open. True when Escape cancels the dialog.
 pub fn take_keys(ctx: &egui::Context, app: &CsmApp) -> bool {
     let open = dialog_controls(app);
-    for id in [CONFIRM_ID, CLOSE_ID, PROMPT_ID] {
+    for id in DIALOG_IDS {
         if open.as_ref().is_none_or(|(o, _)| *o != Id::new(id)) {
             dialog_keys::forget(ctx, Id::new(id));
         }
@@ -80,13 +91,20 @@ pub fn take_keys(ctx: &egui::Context, app: &CsmApp) -> bool {
         crate::screens::palette::release_quick(ctx);
     }
     let Some((id, c)) = open else { return false };
-    dialog_keys::take(ctx, id, &c) == Some(Pressed::Cancel)
+    dialog_keys::take(ctx, id, &c, arm_delay(app)) == Some(Pressed::Cancel)
+}
+
+/// Forgets the focus, the presses and the arm timer of every dialog: the next one starts afresh.
+pub fn forget_dialogs(ctx: &egui::Context) {
+    for id in DIALOG_IDS {
+        dialog_keys::forget(ctx, Id::new(id));
+    }
 }
 
 /// Forgets the presses of the dialogs for this frame. An open menu takes the keys, so a press a
 /// dialog stored earlier must not reach the dialog.
 pub fn clear_presses(ctx: &egui::Context) {
-    for id in [CONFIRM_ID, CLOSE_ID, PROMPT_ID] {
+    for id in DIALOG_IDS {
         dialog_keys::clear_pressed(ctx, Id::new(id));
     }
 }
@@ -113,8 +131,10 @@ pub fn pressed_button(ctx: &egui::Context, id: &str) -> Option<usize> {
     }
 }
 
-/// A yes/no question ("Restart now?"). Enter answers yes; Esc and the scrim answer no. Tab moves
-/// between the buttons, and the yes button is the default.
+/// A yes/no question ("Restart now?"). Enter answers the default button, Esc and the scrim answer
+/// no, and Tab moves between the buttons. The default is yes, except for a question an agent or a
+/// plugin caused (`safe_default`): there it is no. The title and the buttons stay put; a long body
+/// scrolls in a box of its own, so the buttons are never pushed off the screen.
 fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let Some(c) = app.ui.confirm.clone() else {
         actions.push(Action::CloseOverlays);
@@ -124,29 +144,38 @@ fn confirm_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Actio
     scrim(ctx, "confirm-scrim");
     let id = Id::new(CONFIRM_ID);
     let no = 1 + usize::from(c.also.is_some());
+    let def = if c.safe_default { no } else { 0 };
     let mut picked = pressed_button(ctx, CONFIRM_ID);
+    let armed = dialog_keys::armed(ctx, id, arm_delay(app));
     let screen = ctx.content_rect();
+    let body_h = size::DIALOG_BODY_H.min((screen.height() - size::PALETTE_TOP * 2.0).max(size::MENU_W));
     egui::Area::new(Id::new("confirm")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
         widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
             ui.set_width(size::DIALOG_W);
             ui.spacing_mut().item_spacing.y = space::MD;
-            ui.label(egui::RichText::new(&c.title).font(semibold(text::TITLE)).color(t.fg));
-            ui.add(egui::Label::new(egui::RichText::new(&c.body).font(theme::regular(text::BODY)).color(t.fg2)).wrap());
+            ui.add(egui::Label::new(revealed(&t, &c.title, semibold(text::TITLE), t.fg)).wrap());
+            egui::ScrollArea::vertical().id_salt("confirm-body").max_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::Label::new(revealed(&t, &c.body, theme::regular(text::BODY), t.fg2)).wrap());
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if dialog_button(ui, id, 0, Some(0), ButtonKind::Primary, &c.yes_label, Some("Enter")).clicked() {
+                if dialog_button(ui, id, 0, Some(def), ButtonKind::Primary, &c.yes_label, (def == 0).then_some("Enter")).clicked() {
                     picked = Some(0);
                 }
                 if let Some((label, _)) = &c.also
-                    && dialog_button(ui, id, 1, Some(0), ButtonKind::Secondary, label, None).clicked()
+                    && dialog_button(ui, id, 1, Some(def), ButtonKind::Secondary, label, None).clicked()
                 {
                     picked = Some(1);
                 }
-                if dialog_button(ui, id, no, Some(0), ButtonKind::Ghost, &c.no_label, Some("Esc")).clicked() {
+                if dialog_button(ui, id, no, Some(def), ButtonKind::Ghost, &c.no_label, Some(if def == no { "Enter, Esc" } else { "Esc" })).clicked() {
                     picked = Some(no);
                 }
             });
         });
     });
+    // A click in the first moments after the dialog appears answers nothing, except no.
+    if !armed && picked != Some(no) {
+        picked = None;
+    }
     match picked {
         Some(0) => {
             actions.push(Action::CloseOverlays);
@@ -207,6 +236,10 @@ fn close_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>
             ui.label(egui::RichText::new("Esc keeps the window open.").font(theme::regular(text::CAPTION)).color(t.muted));
         });
     });
+    // A press in the first moments after the dialog appears answers nothing.
+    if !dialog_keys::armed(ctx, id, arm_delay(app)) {
+        picked = None;
+    }
     match picked {
         Some(0) => actions.push(Action::CloseAnswer { tray: true, remember: app.ui.close_remember }),
         Some(1) => actions.push(Action::CloseAnswer { tray: false, remember: app.ui.close_remember }),
@@ -402,75 +435,133 @@ fn open_with_offer(ctx: &egui::Context, app: &CsmApp, actions: &mut Vec<Action>)
 /// The offer card's title (tests find the card by it).
 pub const OPEN_WITH_OFFER_TITLE: &str = "Use these editors from CodeShellManager 0.x?";
 
-fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>, start_y: f32) {
-    if app.ui.consents.is_empty() {
-        return;
+/// The text of `s` with invisible characters shown as markers (the add-on confirm's `reveal`), so
+/// a client name or a parameter cannot hide or reorder what a card says.
+pub fn revealed(t: &Tokens, s: &str, font: egui::FontId, color: Color32) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    for seg in reveal(s) {
+        let fmt = TextFormat {
+            font_id: font.clone(),
+            color: if seg.marker { t.yellow } else { color },
+            background: if seg.marker { Tokens::tint(t.yellow, alpha::PILL) } else { Color32::TRANSPARENT },
+            ..TextFormat::default()
+        };
+        job.append(&seg.text, 0.0, fmt);
     }
+    job
+}
+
+/// How long a new dialog or card ignores Enter and the clicks that answer it (see `dialog_keys`).
+fn arm_delay(app: &CsmApp) -> f64 {
+    if app.ui.no_dialog_delay { 0.0 } else { dialog_keys::ARM_DELAY }
+}
+
+/// The most characters a card text keeps, however large the request.
+const CARD_TEXT_MAX: usize = 2000;
+
+/// The text a consent card shows for a request's parameters, built once when the request arrives
+/// (`CsmApp::on_event`, stored as `params_text`): the engine already bounded it, and this bounds
+/// it again, so a card never formats or lays out more than a few thousand characters per frame.
+pub fn card_params_text(request: &Value) -> String {
+    match &request["params"] {
+        Value::Null => String::new(),
+        Value::String(s) => s.chars().take(CARD_TEXT_MAX + 80).collect(),
+        v => {
+            let pretty = serde_json::to_string_pretty(v).unwrap_or_default();
+            if pretty.chars().count() > CARD_TEXT_MAX {
+                let mut cut: String = pretty.chars().take(CARD_TEXT_MAX).collect();
+                cut.push_str("\n… not all shown");
+                cut
+            } else {
+                pretty
+            }
+        }
+    }
+}
+
+/// The oldest waiting request, as one card; "+N waiting" says how many are behind it. One card at
+/// a time: a stack of cards would hide each other and make a quick click land on the wrong one.
+/// The header and the buttons never move: only the parameters scroll, in a box of a fixed height.
+fn consent_cards(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>, start_y: f32) {
+    let Some(req) = app.ui.consents.first().cloned() else { return };
+    let waiting = app.ui.consents.len() - 1;
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    let mut y = start_y;
-    let model = app.model.clone();
-    for req in app.ui.consents.clone().iter().rev() {
-        let id = req["request_id"].as_u64().unwrap_or(0);
-        let client = req["client"].as_str().unwrap_or("An MCP client").to_string();
-        let from = req["from_session_id"].as_str().and_then(|s| model.session(s)).map(|s| s.name.clone());
-        let title = req["title"].as_str().unwrap_or("a tool").to_string();
-        let tool = req["tool"].as_str().unwrap_or("").to_string();
-        let summary = req["summary"].as_str().unwrap_or("").to_string();
-        let params = match &req["params"] {
-            Value::Null => String::new(),
-            v => serde_json::to_string_pretty(v).unwrap_or_default(),
-        };
-        let target = Some(&req["target"]).filter(|t| !t.is_null()).cloned();
-        let who = match &from {
-            Some(f) => format!("{client} in {f}"),
-            None => client.clone(),
-        };
-        let resp = egui::Area::new(Id::new(("consent", id)))
-            .order(Order::Foreground)
-            .pivot(Align2::RIGHT_BOTTOM)
-            .fixed_pos(pos2(screen.max.x - space::LG, y))
-            .show(ctx, |ui| {
-                widgets::pop_frame(&t).inner_margin(egui::Margin::same(space::LG as i8)).show(ui, |ui| {
-                    ui.set_width(size::CONSENT_W);
-                    ui.horizontal(|ui| {
-                        icons::status(ui, Status::Approval, icon::XL);
-                        ui.label(egui::RichText::new(format!("{who} wants to run “{title}”")).font(semibold(text::BODY)).color(t.fg));
-                    });
-                    ui.label(egui::RichText::new(summary).font(theme::regular(text::CAPTION)).color(t.muted));
-                    ui.label(egui::RichText::new(&tool).font(theme::mono(text::MONO_SM)).color(t.fg2));
-                    // A New session form runs an add-on tool: the card names it and its effects.
-                    if let Some(target) = target.as_ref() {
-                        let line = format!("runs {} ({})", target["tool"].as_str().unwrap_or("?"), target["effects"].as_str().unwrap_or("unknown effects"));
-                        ui.label(egui::RichText::new(line).font(theme::regular(text::CAPTION)).color(t.muted));
-                    }
-                    if !params.is_empty() {
-                        egui::Frame::new()
-                            .fill(t.crust)
-                            .corner_radius(CornerRadius::same(radius::md()))
-                            .inner_margin(egui::Margin::same(space::SM as i8))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.add(egui::Label::new(egui::RichText::new(&params).font(theme::mono(text::MONO_SM)).color(t.fg2)).wrap());
-                            });
-                    }
-                    ui.add_space(space::XS);
-                    ui.horizontal(|ui| {
-                        if widgets::button(ui, ButtonKind::Primary, None, "Allow once", None).clicked() {
-                            actions.push(Action::Consent { request_id: id, answer: "allow_once" });
-                        }
-                        // Never offered for a form's add-on tool: the engine does not keep such a grant.
-                        if target.is_none() && widgets::button(ui, ButtonKind::Secondary, None, "Always for this client", None).clicked() {
-                            actions.push(Action::Consent { request_id: id, answer: "allow_always" });
-                        }
-                        if widgets::button(ui, ButtonKind::Ghost, None, "Don't allow", None).clicked() {
-                            actions.push(Action::Consent { request_id: id, answer: "deny" });
-                        }
-                    });
-                });
+    let delay = arm_delay(app);
+    let id = req["request_id"].as_u64().unwrap_or(0);
+    let client = req["client"].as_str().unwrap_or("An MCP client").to_string();
+    let from = req["from_session_id"].as_str().and_then(|s| app.model.session(s)).map(|s| s.name.clone());
+    // The session the call acts on, by name: the id alone says nothing to a person.
+    let acts_on = req["params"]["session_id"].as_str().and_then(|s| app.model.session(s)).map(|s| s.name.clone());
+    let title = req["title"].as_str().unwrap_or("a tool").to_string();
+    let tool = req["tool"].as_str().unwrap_or("").to_string();
+    let summary = req["summary"].as_str().unwrap_or("").to_string();
+    let params = req["params_text"].as_str().map_or_else(|| card_params_text(&req), str::to_owned);
+    let will_type = req["will_type"].as_str().unwrap_or("").to_string();
+    let target = Some(&req["target"]).filter(|t| !t.is_null()).cloned();
+    let who = match &from {
+        Some(f) => format!("{client} in {f}"),
+        None => client.clone(),
+    };
+    // The grant is by the client's name, which the client chose: the button says so.
+    let always = format!("Always allow clients named “{}”", clean_label(&client, 24));
+    let card_id = Id::new(("consent", id));
+    let armed = dialog_keys::armed(ctx, card_id, delay);
+    egui::Area::new(card_id).order(Order::Foreground).pivot(Align2::RIGHT_BOTTOM).fixed_pos(pos2(screen.max.x - space::LG, start_y)).show(ctx, |ui| {
+        widgets::pop_frame(&t).inner_margin(egui::Margin::same(space::LG as i8)).show(ui, |ui| {
+            ui.set_width(size::CONSENT_W);
+            ui.horizontal(|ui| {
+                icons::status(ui, Status::Approval, icon::XL);
+                let head = revealed(&t, &format!("{who} wants to run “{title}”"), semibold(text::BODY), t.fg);
+                ui.add(egui::Label::new(head).wrap());
             });
-        y = resp.response.rect.min.y - space::SM;
-    }
+            if waiting > 0 {
+                ui.label(egui::RichText::new(format!("+{waiting} waiting")).font(theme::regular(text::CAPTION)).color(t.yellow));
+            }
+            ui.add(egui::Label::new(revealed(&t, &summary, theme::regular(text::CAPTION), t.muted)).wrap());
+            ui.add(egui::Label::new(revealed(&t, &tool, theme::mono(text::MONO_SM), t.fg2)).wrap());
+            if let Some(name) = &acts_on {
+                let line = format!("on session {name}");
+                ui.add(egui::Label::new(revealed(&t, &line, theme::regular(text::CAPTION), t.fg2)).wrap());
+            }
+            // A New session form runs an add-on tool: the card names it and its effects.
+            if let Some(target) = target.as_ref() {
+                let line = format!("runs {} ({})", target["tool"].as_str().unwrap_or("?"), target["effects"].as_str().unwrap_or("unknown effects"));
+                ui.add(egui::Label::new(revealed(&t, &line, theme::regular(text::CAPTION), t.muted)).wrap());
+            }
+            if !will_type.is_empty() {
+                ui.label(egui::RichText::new("Will be typed into the session:").font(theme::regular(text::CAPTION)).color(t.muted));
+                card_box(ui, &t, ("will-type", id), &will_type);
+            }
+            if !params.is_empty() {
+                card_box(ui, &t, ("params", id), &params);
+            }
+            ui.add_space(space::XS);
+            ui.horizontal_wrapped(|ui| {
+                if widgets::button(ui, ButtonKind::Primary, None, "Allow once", None).clicked() && armed {
+                    actions.push(Action::Consent { request_id: id, answer: "allow_once" });
+                }
+                // Never offered for a form's add-on tool: the engine does not keep such a grant.
+                if target.is_none() && widgets::button(ui, ButtonKind::Secondary, None, &always, None).clicked() && armed {
+                    actions.push(Action::Consent { request_id: id, answer: "allow_always" });
+                }
+                if widgets::button(ui, ButtonKind::Ghost, None, "Don't allow", None).clicked() {
+                    actions.push(Action::Consent { request_id: id, answer: "deny" });
+                }
+            });
+        });
+    });
+}
+
+/// A bounded, scrolling box of monospace text: it never grows past `size::CONSENT_PARAMS_H`, so
+/// the lines above it and the buttons below it stay on screen.
+fn card_box(ui: &mut Ui, t: &Tokens, id: (&str, u64), body: &str) {
+    egui::Frame::new().fill(t.crust).corner_radius(CornerRadius::same(radius::md())).inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        egui::ScrollArea::vertical().id_salt(id).max_height(size::CONSENT_PARAMS_H).auto_shrink([false, true]).show(ui, |ui| {
+            ui.add(egui::Label::new(revealed(t, body, theme::mono(text::MONO_SM), t.fg2)).wrap());
+        });
+    });
 }
 
 fn scrim(ctx: &egui::Context, id: &str) {
@@ -485,9 +576,12 @@ fn scrim(ctx: &egui::Context, id: &str) {
 fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ctx);
     scrim(ctx, "busy-scrim");
-    // Enter and Esc both keep running.
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-        actions.push(Action::CloseOverlays);
+    // Enter and Esc both keep running; the keys come from `dialog_keys` like every dialog's, so
+    // the terminal behind never also gets the Enter.
+    let id = Id::new(BUSY_ID);
+    let mut picked = pressed_button(ctx, BUSY_ID);
+    if dialog_keys::pressed(ctx, id) == Some(Pressed::Toggle) {
+        app.ui.dont_warn = !app.ui.dont_warn;
     }
     let ids = app.busy_session_ids();
     let busy: Vec<_> = app.model.sessions.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
@@ -540,23 +634,35 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
                     &mut app.ui.dont_warn,
                     egui::RichText::new("Don't warn me again").font(theme::regular(text::BODY)).color(t.fg2),
                 ));
+                if dialog_keys::current(ctx, id) == Some(Slot::Field) {
+                    widgets::focus_ring(ui, cr.rect, radius::sm());
+                }
                 cr.on_hover_text("Settings › General › Warn when closing busy sessions turns it back on.");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, ButtonKind::Primary, None, "Keep running", None).clicked() {
-                        actions.push(Action::CloseOverlays);
+                    if dialog_button(ui, id, 0, Some(0), ButtonKind::Primary, "Keep running", Some("Enter")).clicked() {
+                        picked = Some(0);
                     }
-                    if widgets::button(ui, ButtonKind::Danger, None, "Close anyway", None).clicked() {
-                        actions.push(Action::CloseOverlays);
-                        if app.ui.dont_warn {
-                            actions.push(Action::Tool("settings_set", json!({"key": "WarnOnCloseWhenBusy", "value": false})));
-                        }
-                        actions.push(Action::Tool("app_quit", json!({})));
+                    if dialog_button(ui, id, 1, Some(0), ButtonKind::Danger, "Close anyway", None).clicked() {
+                        picked = Some(1);
                     }
                 });
             });
             ui.label(egui::RichText::new("Enter and Esc both keep running.").font(theme::regular(text::CAPTION)).color(t.muted));
         });
     });
+    // "Close anyway" waits a moment after the dialog appears; keeping the sessions never does.
+    let armed = dialog_keys::armed(ctx, id, arm_delay(app));
+    match picked {
+        Some(0) => actions.push(Action::CloseOverlays),
+        Some(1) if armed => {
+            actions.push(Action::CloseOverlays);
+            if app.ui.dont_warn {
+                actions.push(Action::Tool("settings_set", json!({"key": "WarnOnCloseWhenBusy", "value": false})));
+            }
+            actions.push(Action::Tool("app_quit", json!({})));
+        }
+        _ => {}
+    }
 }
 
 /// The shutdown board. It always fits the window: the header (title, the count and the bar) and

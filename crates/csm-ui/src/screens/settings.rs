@@ -172,7 +172,12 @@ fn text_setting(ui: &mut Ui, app: &mut CsmApp, key: &str, label: &str, hint: &st
             let r = ui.add(edit);
             let label = label.to_string();
             r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label.clone()));
-            let commit = r.lost_focus() || (r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            // Escape gives the field its saved text back; only Enter or leaving the field saves.
+            let escaped = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if escaped {
+                buf.clone_from(&saved);
+            }
+            let commit = !escaped && (r.lost_focus() || (r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))));
             if commit && buf != saved {
                 actions.push(set(key, Value::String(buf.trim().to_string())));
             }
@@ -213,7 +218,11 @@ fn number_setting(
             let r = ui.add(egui::DragValue::new(&mut v).range(range));
             let label = label.to_string();
             r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, label.clone()));
-            let done = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
+            let escaped = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if escaped {
+                v = saved;
+            }
+            let done = !escaped && (r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus()));
             if done && v != saved {
                 actions.push(set(key, json!(v)));
             }

@@ -30,6 +30,7 @@ fn tool_ids(h: &Harness<'static, csm_ui::CsmApp>) -> Vec<String> {
 fn open_confirm(h: &mut Harness<'static, csm_ui::CsmApp>, also: bool) {
     let also = also.then(|| ("Copy link".to_string(), Box::new(Action::Tool("session_close", json!({})))));
     h.state_mut().ui.confirm = Some(ConfirmState {
+        safe_default: false,
         title: "Restart now?".into(),
         body: "The change needs a new process.".into(),
         yes_label: "Restart".into(),

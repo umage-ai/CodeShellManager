@@ -809,6 +809,7 @@ fn start_quick(app: &CsmApp, keep_open: bool) -> Vec<Action> {
         let n = probe.missing.len();
         let what = if n == 1 { "folder" } else { "folders" };
         return vec![Action::Confirm(crate::app::ConfirmState {
+            safe_default: false,
             title: format!("Create {what}?"),
             body: format!("“{folder}” does not exist. Create {} in “{}” and start the session there?", probe.missing.join("\\"), probe.ancestor),
             yes_label: "Create and start".into(),
@@ -1657,7 +1658,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     // Tab and Shift+Tab move between them. Enter presses a button stop; in a text input, the
     // folder list or the command row it starts the session, as it always did.
     let prev = quick_stops_prev(ctx);
-    let press = dialog_keys::take(ctx, quick_id(), &Controls { field: Field::None, buttons: prev.len(), default: None });
+    let press = dialog_keys::take(ctx, quick_id(), &Controls { field: Field::None, buttons: prev.len(), default: None }, 0.0);
     quick_note_focus(ctx);
     let stop_starts = matches!(press, Some(Pressed::Button(b)) if prev.get(b) == Some(&true));
     let (down, up, enter, ctrl_enter, alt_tab, alt_group, alt_run) = ctx.input_mut(|i| {

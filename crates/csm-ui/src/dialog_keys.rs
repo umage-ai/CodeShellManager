@@ -84,10 +84,41 @@ fn pressed_id(id: Id) -> Id {
     id.with("pressed")
 }
 
+fn opened_id(id: Id) -> Id {
+    id.with("opened-at")
+}
+
+/// How long a dialog ignores Enter and clicks after it appears, so a key the person was already
+/// pressing, or a click aimed at what was under it, never answers a question they have not read.
+pub const ARM_DELAY: f64 = 0.4;
+
+/// Marks dialog `id` as open (the first call starts its arm timer) and says whether `delay`
+/// seconds have passed since. Escape (cancel) never waits; only the answers that do something.
+pub fn armed(ctx: &Context, id: Id, delay: f64) -> bool {
+    let now = std::time::Instant::now();
+    let at = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(opened_id(id), || now));
+    let waited = now.saturating_duration_since(at).as_secs_f64();
+    if waited < delay {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64((delay - waited).max(0.0) + 0.02));
+        return false;
+    }
+    true
+}
+
+/// Drops the repeats of the keys a dialog answers with: holding Enter or Space must not press a
+/// button again and again, or answer the next dialog.
+fn drop_repeats(ctx: &Context) {
+    ctx.input_mut(|i| {
+        i.events.retain(|e| !matches!(e, egui::Event::Key { repeat: true, key: Key::Enter | Key::Escape | Key::Space | Key::Tab, .. }));
+    });
+}
+
 /// Reads this frame's dialog keys for the dialog `id` with controls `c`. Tab and Shift+Tab move
 /// the focus; Enter, Space and Escape return what they press (and are consumed). Returns the
 /// press, which `pressed` also gives to the draw code.
-pub fn take(ctx: &Context, id: Id, c: &Controls) -> Option<Pressed> {
+pub fn take(ctx: &Context, id: Id, c: &Controls, delay: f64) -> Option<Pressed> {
+    drop_repeats(ctx);
+    let armed = armed(ctx, id, delay);
     let list = slots(c);
     let stored = ctx.data(|d| d.get_temp::<Option<Slot>>(focus_id(id))).unwrap_or_else(|| initial(c));
     let at = stored.and_then(|s| list.iter().position(|x| *x == s));
@@ -112,7 +143,10 @@ pub fn take(ctx: &Context, id: Id, c: &Controls) -> Option<Pressed> {
             if let Some(b) = target
                 && ctx.input_mut(|i| consume_exact(i, Modifiers::NONE, Key::Enter))
             {
-                pressed = Some(Pressed::Button(b));
+                // Consumed while the dialog is new, but it answers nothing.
+                if armed {
+                    pressed = Some(Pressed::Button(b));
+                }
             }
         }
     }
@@ -149,6 +183,7 @@ pub fn forget(ctx: &Context, id: Id) {
     ctx.data_mut(|d| {
         d.remove::<Option<Slot>>(focus_id(id));
         d.remove::<Option<Pressed>>(pressed_id(id));
+        d.remove::<std::time::Instant>(opened_id(id));
     });
 }
 

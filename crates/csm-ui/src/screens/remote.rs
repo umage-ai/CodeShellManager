@@ -951,6 +951,7 @@ fn devices_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::button(ui, ButtonKind::Danger, None, "Revoke all", None).clicked() {
                     actions.push(Action::Confirm(ConfirmState {
+                        safe_default: false,
                         also: None,
                         title: "Revoke every device?".into(),
                         body: format!(
