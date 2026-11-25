@@ -243,7 +243,7 @@ fn start_with_a_bad_app_path_fails_with_the_path_in_the_message() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = RuntimeDir::at(dir.path().join("rt")).unwrap();
     let missing = dir.path().join("no-such-app.exe");
-    let mut remote = RemoteBackend::new(RemoteOptions { runtime: Some(runtime), start: true, app_path: Some(missing), app_args: vec![], tcp: None });
+    let mut remote = RemoteBackend::new(RemoteOptions { runtime: Some(runtime), start: true, app_path: Some(missing), ..RemoteOptions::default() });
     let Err(BridgeError::Unreachable(m)) = remote.tools() else { panic!("expected unreachable") };
     assert!(m.contains("no-such-app"), "{m}");
 }
@@ -314,7 +314,7 @@ fn a_second_launch_raises_the_running_app_only_when_it_keeps_the_same_state() {
         count.fetch_add(1, Ordering::SeqCst);
     });
     let handle =
-        serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), on_activate: Some(on_activate), ..IpcOptions::default() }).unwrap();
+        serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), on_activate: Some(on_activate), state_path: Some(state.clone()), ..IpcOptions::default() }).unwrap();
     assert!(!csm_mcp::activate_running(opts(), &dir.path().join("other").join("state.json")).unwrap(), "another state file: its own app");
     assert_eq!(raised.load(Ordering::SeqCst), 0);
     assert!(csm_mcp::activate_running(opts(), &state).unwrap());
@@ -323,6 +323,65 @@ fn a_second_launch_raises_the_running_app_only_when_it_keeps_the_same_state() {
         assert!(Instant::now() < deadline, "the running app was not asked to show its window");
         thread::sleep(Duration::from_millis(5));
     }
+    handle.shutdown().unwrap();
+    drop(engine);
+}
+
+#[test]
+fn a_clean_instance_is_skipped_unless_named_and_never_receives_a_second_launch() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = || RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let state = dir.path().join("state.json");
+    let engine = common::engine();
+    let handle = serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), clean: true, ..IpcOptions::default() }).unwrap();
+
+    // Default: a --clean instance is not picked, so nothing is "running".
+    let mut plain = RemoteBackend::new(RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() });
+    let e = plain.call(&Caller::Cli, "fake_toast", json!({})).unwrap_err();
+    assert!(matches!(&e, BridgeError::Unreachable(m) if m.contains("--clean")), "{e:?}");
+
+    // Named by pid it is reachable.
+    let pid = std::process::id().to_string();
+    let mut named = RemoteBackend::new(RemoteOptions { runtime: Some(runtime()), instance: Some(pid), ..RemoteOptions::default() });
+    assert_eq!(named.call(&Caller::Cli, "fake_toast", json!({})).unwrap().message, "Toasted.");
+
+    // A second real launch on the same state file is not handed to the clean instance.
+    assert!(!csm_mcp::activate_running(RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() }, &state).unwrap());
+    handle.shutdown().unwrap();
+    drop(engine);
+}
+
+#[test]
+fn instances_are_selected_by_state_file_and_the_handoff_only_reaches_the_same_one() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = || RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let state = dir.path().join("a").join("state.json");
+    let other = dir.path().join("b").join("state.json");
+    let engine = common::engine();
+    let handle = serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), state_path: Some(state.clone()), ..IpcOptions::default() }).unwrap();
+    let by = |p: &std::path::Path| {
+        RemoteBackend::new(RemoteOptions { runtime: Some(runtime()), instance: Some(p.display().to_string()), ..RemoteOptions::default() })
+    };
+    assert_eq!(by(&state).call(&Caller::Cli, "fake_toast", json!({})).unwrap().message, "Toasted.");
+    assert!(by(&other).call(&Caller::Cli, "fake_toast", json!({})).is_err(), "another state file is another instance");
+    assert!(!csm_mcp::activate_running(RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() }, &other).unwrap());
+    handle.shutdown().unwrap();
+    drop(engine);
+}
+
+#[test]
+fn an_older_instance_that_names_no_state_file_still_receives_the_second_launch() {
+    // An app from before the `state.` cap, still running across an upgrade, must be raised rather
+    // than have a second app started beside it on the same state.json.
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = || RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let engine = common::engine();
+    let handle = serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), ..IpcOptions::default() }).unwrap();
+    let state = dir.path().join("state.json");
+    assert!(csm_mcp::activate_running(RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() }, &state).unwrap());
     handle.shutdown().unwrap();
     drop(engine);
 }

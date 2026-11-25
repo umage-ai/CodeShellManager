@@ -947,7 +947,7 @@ fn run_once(spec: &PluginSpec, ctl: &Receiver<Ctl>, env: &Env, rt: &mut PluginRu
 }
 
 fn stop_child(child: &mut Child) {
-    let _ = child.kill();
+    crate::proc::kill_tree(child);
     let _ = child.wait();
 }
 
@@ -1096,7 +1096,7 @@ fn drive(
             Err(RecvTimeoutError::Disconnected) => {
                 // Its stdout closed. It may still be running, so it is killed rather than waited
                 // for: a wait could hang and ignore a stop or a disable.
-                let _ = child.kill();
+                crate::proc::kill_tree(child);
                 return Exit::Failed(match child.wait().ok() {
                     Some(s) => format!("closed its output and exited ({s})"),
                     None => "closed its output".into(),

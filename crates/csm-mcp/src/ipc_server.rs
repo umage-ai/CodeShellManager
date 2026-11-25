@@ -70,6 +70,12 @@ pub struct IpcOptions {
     pub tcp: Option<bool>,
     /// Called when a peer asks the app to raise its window (`app.activate`). Must be quick.
     pub on_activate: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// This instance runs `--clean`: published with the `clean` cap; `csm` skips it unless asked
+    /// for it with `--instance`.
+    pub clean: bool,
+    /// The state file this instance keeps, published as a `state.<hash>` cap so a second launch and
+    /// `csm --instance <path>` reach the instance that owns that file and no other.
+    pub state_path: Option<std::path::PathBuf>,
 }
 
 /// A running bridge. Dropping it, or [`Handle::shutdown`], closes the socket and removes the
@@ -115,7 +121,7 @@ pub fn serve_ipc(engine: Engine) -> Result<Handle, IpcError> {
 }
 
 pub fn serve_ipc_with(engine: Engine, options: IpcOptions) -> Result<Handle, IpcError> {
-    let IpcOptions { runtime, app_version, tcp, on_activate } = options;
+    let IpcOptions { runtime, app_version, tcp, on_activate, clean, state_path } = options;
     let sink = Arc::new(Sink::new(engine.clone()));
     let config = ServerConfig {
         app: APP_ID.to_string(),
@@ -127,7 +133,15 @@ pub fn serve_ipc_with(engine: Engine, options: IpcOptions) -> Result<Handle, Ipc
         activate: Arc::new(Raise(on_activate)),
         frames: Arc::new(NoFrames),
     };
-    let server = Arc::new(Server::start(config)?);
+    let mut caps = Vec::new();
+    if clean {
+        caps.push(wire::CAP_CLEAN.to_string());
+    }
+    if let Some(p) = &state_path {
+        caps.push(wire::state_cap(p));
+    }
+    let extensions = craft_ipc::server::Extensions { caps, ..Default::default() };
+    let server = Arc::new(Server::start_with(config, extensions)?);
     let stop = Arc::new(AtomicBool::new(false));
     let events = engine.subscribe();
     let forwarder = {

@@ -33,6 +33,38 @@ pub struct RemoteOptions {
     pub tcp: Option<bool>,
     /// Arguments passed to the app when it is started.
     pub app_args: Vec<OsString>,
+    /// Which instance to talk to: a pid, or the path of the state file it keeps (`--instance`,
+    /// `CSM_INSTANCE`). `None` picks the newest instance that is not a `--clean` one.
+    pub instance: Option<String>,
+}
+
+/// Whether `record` is the instance `selector` names (a pid, or a state file path).
+fn matches_instance(record: &InstanceRecord, selector: &str) -> bool {
+    let selector = selector.trim();
+    match selector.parse::<u32>() {
+        Ok(pid) => record.pid == pid,
+        // A record that names no state file at all comes from a build before the `state.` cap (an
+        // app still running across an upgrade): it may be the one on this file, so it matches,
+        // or a second launch would start another app on the same `state.json`.
+        Err(_) => {
+            let caps = record.caps();
+            caps.contains(&wire::state_cap(std::path::Path::new(selector))) || !caps.iter().any(|c| c.starts_with("state."))
+        }
+    }
+}
+
+fn is_clean(record: &InstanceRecord) -> bool {
+    record.caps().iter().any(|c| c == wire::CAP_CLEAN)
+}
+
+/// The instance `csm` should use among `found`: the named one, else the one with the highest pid
+/// that is not a `--clean` instance.
+fn pick_instance(mut found: Vec<InstanceRecord>, selector: Option<&str>) -> Option<InstanceRecord> {
+    found.sort_by_key(|r| r.pid);
+    match selector {
+        Some(s) => found.into_iter().rev().find(|r| matches_instance(r, s)),
+        None => found.into_iter().rev().find(|r| !is_clean(r)),
+    }
 }
 
 /// A connection to the running app, made on first use and re-made if it drops between calls.
@@ -81,17 +113,21 @@ impl RemoteBackend {
     /// The newest live instance, started first when allowed.
     fn find_record(&self) -> Result<InstanceRecord, BridgeError> {
         let dir = self.runtime()?;
-        let mut found: Vec<InstanceRecord> = Discovery::scan(&dir)
+        let found: Vec<InstanceRecord> = Discovery::scan(&dir)
             .map_err(|e| unreachable("could not look for CodeShellManager", &e))?
             .into_iter()
             .filter(|r| r.app == APP_ID)
             .collect();
-        found.sort_by_key(|r| r.pid);
-        if let Some(r) = found.pop() {
+        let only_clean = !found.is_empty() && found.iter().all(is_clean);
+        if let Some(r) = pick_instance(found, self.options.instance.as_deref()) {
             return Ok(r);
         }
         if !self.options.start {
-            return Err(not_running(""));
+            return Err(match &self.options.instance {
+                Some(s) => not_running(&format!(" as instance `{s}`")),
+                None if only_clean => not_running(" (only a --clean instance is up; pick it with --instance <pid>)"),
+                None => not_running(""),
+            });
         }
         let bin = match &self.options.app_path {
             Some(p) => p.clone(),
@@ -200,16 +236,13 @@ pub fn published_apps(runtime: Option<&RuntimeDir>) -> Result<Vec<(String, u32)>
 /// over the same `state.json`. False when none is running or the running one keeps its state
 /// elsewhere: start normally.
 pub fn activate_running(options: RemoteOptions, state_path: &std::path::Path) -> Result<bool, BridgeError> {
-    let mut b = RemoteBackend::new(RemoteOptions { start: false, ..options });
+    let mut b = RemoteBackend::new(RemoteOptions { start: false, instance: Some(state_path.display().to_string()), ..options });
     let dir = b.runtime()?;
-    let running = Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().any(|r| r.app == APP_ID);
-    if !running {
-        return Ok(false);
-    }
-    let info = b.call(&Caller::Cli, "app_info", json!({}))?.data;
-    let clean = info.get("clean").and_then(Value::as_bool).unwrap_or(true);
-    let same = info.get("state_path").and_then(Value::as_str) == Some(state_path.display().to_string().as_str());
-    if clean || !same {
+    // Only a real instance that keeps this very state file: a `--clean` one or one on another
+    // file is not the app this launch would share `state.json` with.
+    let found: Vec<InstanceRecord> =
+        Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().filter(|r| r.app == APP_ID && !is_clean(r)).collect();
+    if pick_instance(found, b.options.instance.as_deref()).is_none() {
         return Ok(false);
     }
     b.with(|c| c.call("app.activate", json!({"from_pid": std::process::id()})))?;

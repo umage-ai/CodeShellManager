@@ -14,7 +14,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, BufRead, Write};
 
 use serde_json::{Value, json};
@@ -157,14 +157,22 @@ fn initialize(id: &Value) -> Value {
     )
 }
 
-/// Reads lines until the answer to request `want` arrives. Anything else (events, stray
-/// requests) is ignored while waiting; `None` when stdin closes.
-fn wait_for(lines: &mut impl Iterator<Item = io::Result<String>>, want: u64) -> Option<Value> {
+/// The most requests held while one is waiting on the app's answer; past it they are refused.
+const MAX_PENDING: usize = 64;
+
+/// Reads lines until the answer to request `want` arrives. A request that arrives meanwhile (a
+/// second `tools/call`) is queued in `pending` to be served next, never dropped; notifications and
+/// stray answers are ignored. `None` when stdin closes.
+fn wait_for(lines: &mut impl Iterator<Item = io::Result<String>>, want: u64, pending: &mut VecDeque<Value>) -> Option<Value> {
     for line in lines {
         let line = line.ok()?;
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
-        if msg.get("id").and_then(Value::as_u64) == Some(want) && msg.get("method").is_none() {
-            return Some(msg);
+        if msg.get("method").is_none() {
+            if msg.get("id").and_then(Value::as_u64) == Some(want) {
+                return Some(msg);
+            }
+        } else if msg.get("id").is_some() && pending.len() < MAX_PENDING {
+            pending.push_back(msg);
         }
     }
     None
@@ -174,10 +182,23 @@ fn main() {
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
     let stdout = io::stdout();
-    let mut out = stdout.lock();
+    serve(&mut lines, &mut stdout.lock());
+}
+
+fn serve(lines: &mut impl Iterator<Item = io::Result<String>>, out: &mut impl Write) {
     let mut next_id: u64 = 1000;
-    while let Some(Ok(line)) = lines.next() {
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+    let mut pending: VecDeque<Value> = VecDeque::new();
+    loop {
+        let msg = match pending.pop_front() {
+            Some(m) => m,
+            None => match lines.next() {
+                Some(Ok(line)) => match serde_json::from_str::<Value>(&line) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                },
+                _ => break,
+            },
+        };
         let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
         let Some(id) = msg.get("id").cloned() else { continue };
         let reply = match method {
@@ -190,10 +211,10 @@ fn main() {
                     let include_asleep = params.get("arguments").and_then(|a| a.get("include_asleep")).and_then(Value::as_bool).unwrap_or(false);
                     next_id += 1;
                     let call = json!({"jsonrpc": "2.0", "id": next_id, "method": "csm/call", "params": {"tool": "session_list", "params": {}}});
-                    if send(&mut out, &call).is_err() {
+                    if send(out, &call).is_err() {
                         break;
                     }
-                    match wait_for(&mut lines, next_id) {
+                    match wait_for(lines, next_id, &mut pending) {
                         None => break,
                         Some(answer) => match answer.get("result") {
                             Some(result) => {
@@ -210,7 +231,7 @@ fn main() {
             }
             _ => err(&id, -32601, "unknown method"),
         };
-        if send(&mut out, &reply).is_err() {
+        if send(out, &reply).is_err() {
             break;
         }
     }
@@ -248,5 +269,21 @@ mod tests {
         assert_eq!(summarise(&json!({"x": 1}), false).0, "No sessions.");
         let long: Vec<Value> = (0..500).map(|i| json!({"name": format!("session-number-{i}"), "status": "error"})).collect();
         assert!(summarise(&Value::Array(long), true).0.chars().count() <= MESSAGE_CAP);
+    }
+
+    #[test]
+    fn a_call_that_arrives_while_one_waits_is_queued_and_answered() {
+        let call = |id: u64| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": TOOL, "arguments": {}}}).to_string();
+        let answer = |id: u64| json!({"jsonrpc": "2.0", "id": id, "result": {"data": sample()}}).to_string();
+        // The second call lands before the app answers the first call's `csm/call`.
+        let input = [call(1), call(2), answer(1001), answer(1002)];
+        let mut lines = input.into_iter().map(Ok);
+        let mut out = Vec::new();
+        serve(&mut lines, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        let replies: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).filter(|v: &Value| v.get("method").is_none()).collect();
+        let ids: Vec<u64> = replies.iter().filter_map(|r| r["id"].as_u64()).collect();
+        assert_eq!(ids, vec![1, 2], "{text}");
+        assert!(replies.iter().all(|r| r.get("result").is_some()), "{text}");
     }
 }

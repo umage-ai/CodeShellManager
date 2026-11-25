@@ -439,7 +439,14 @@ A call is `csm.submit` + repeated `csm.wait` long polls, so a call may wait out 
 timeout (craft-ipc replies within 60 s otherwise). Remote callers are `Cli` or `External`, never
 `Ui`. **Windows uses craft-ipc's loopback TCP transport**: its named pipe stalls any line over
 about 512 bytes (measured on Windows 11), see `USE_TCP_BY_DEFAULT`. Environment: `CSM_APP` (binary
-for `--start`), `CSM_RUNTIME_DIR` (instance directory, for tests).
+for `--start`), `CSM_RUNTIME_DIR` (instance directory, for tests), `CSM_INSTANCE` (see below).
+
+**Which instance.** The record carries two caps: `clean` (a `--clean` instance) and
+`state.<hash>` (the state file it keeps). `csm` and `csm mcp` skip `--clean` instances and use
+the newest other one, so a scratch window never captures your calls or consent cards.
+`csm --instance <pid>` or `csm --instance <path-to-state.json>` (before the command name; or
+`CSM_INSTANCE`) picks one explicitly, a `--clean` one included. A second launch of the app is
+handed to a running instance only when it is not `--clean` and keeps the same state file.
 
 Register with Claude Code: `claude mcp add codeshell -- csm mcp` (add `--session <id>` when CSM
 launches the Claude session itself).

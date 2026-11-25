@@ -135,3 +135,24 @@ fn help_groups_tools_by_toolset_and_documents_flags() {
     let sub_help = sub.render_long_help().to_string();
     assert!(sub_help.contains("--folder") && sub_help.contains("(required)") && sub_help.contains("local, ssh, wsl"), "{sub_help}");
 }
+
+#[test]
+fn a_version_parameter_is_a_flag_and_instance_is_not_taken_by_the_root() {
+    let t = ToolInfo {
+        id: "addon_enable".into(),
+        title: "Enable".into(),
+        summary: "Enable.".into(),
+        toolset: Toolset::Core,
+        effects: Effects::READ_ONLY,
+        input_schema: json!({"type": "object", "properties": {"id": {"type": "string"}, "version": {"type": "string"}, "instance": {"type": "string"}}}),
+    };
+    let cmd = args::build(std::slice::from_ref(&t), None);
+    let m = cmd.try_get_matches_from(["csm", "addon-enable", "--id", "x", "--version", "abc123", "--instance", "i1"]).unwrap();
+    let (_, sub) = m.subcommand().unwrap();
+    let (p, _) = args::params_from_matches(&t, sub).unwrap();
+    assert_eq!(p, json!({"id": "x", "version": "abc123", "instance": "i1"}));
+    // `--instance` before the command is the root's own.
+    let cmd = args::build(std::slice::from_ref(&t), None);
+    let m = cmd.try_get_matches_from(["csm", "--instance", "123", "addon-enable", "--id", "x"]).unwrap();
+    assert_eq!(m.get_one::<String>("g_instance").map(String::as_str), Some("123"));
+}

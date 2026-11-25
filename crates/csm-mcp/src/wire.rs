@@ -26,6 +26,29 @@ use serde_json::{Value, json};
 /// `csm` only finds a beta app and a stable `csm` only a stable one.
 pub const APP_ID: &str = csm_engine::channel::CURRENT.ipc_app_id();
 
+/// The record cap of an instance started with `--clean` (it keeps no state, so it must never
+/// capture another instance's `csm` calls by default).
+pub const CAP_CLEAN: &str = "clean";
+
+/// The record cap naming the state file an instance keeps: `state.` and 16 hex digits of an FNV-1a
+/// hash of the normalised path (craft-ipc caps are lowercase words, so the path itself cannot be
+/// one). Two spellings of one Windows path (case, slashes) hash alike.
+pub fn state_cap(path: &std::path::Path) -> String {
+    let mut text = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        text = text.replace('\\', "/").to_lowercase();
+        if let Some(rest) = text.strip_prefix("//?/") {
+            text = rest.to_string();
+        }
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("state.{hash:016x}")
+}
+
 /// The app's executable name (without `.exe`), the same on every channel.
 pub const APP_BIN: &str = "codeshell";
 

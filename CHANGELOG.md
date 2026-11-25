@@ -171,6 +171,15 @@ file drop; Claude slash-command menu; `--clean`.
 - **`csm setup` exits non-zero** when a client was blocked or a named one was not written (COR-30), and an update merges into the existing entry, keeping extra arguments and `env` (COR-31).
 - **Beta to final** (COR-36): the stable app's first run offers to import a beta's sessions and groups (*Import from the beta*, tool `state_import_beta`). The beta's first-run copy skips a live database's `-wal`/`-shm` files and retries a partly done copy (COR-37).
 
+### Fixed (runtime)
+
+- **`csm` and `csm mcp` no longer pick the highest pid** (COR-2): a `--clean` or scratch instance is skipped by default, `--instance <pid|state-path>` / `CSM_INSTANCE` select one, and a second launch is handed only to an instance on the same state file.
+- **A relative add-on program** (`./bin/server.exe`) runs from the add-on folder on Windows (COR-27); one that leaves the folder is refused.
+- **`addon-enable --version` and `update-dismiss --version`** work as flags again (COR-29); only names that really collide are reserved.
+- **Stopping a process add-on ends its whole tree** (COR-32), not just the direct child.
+- **Session summary** queues a second call that arrives while it waits for the app instead of dropping it (COR-33).
+- **Overlapping add-on scans** install only the latest result (COR-34).
+
 ### Changed
 - **Restored sessions do not notify** (popups or screen-text alerts) until you have addressed them.
 - **`csm doctor`** reports its channel, the app id it looks for and which apps are published.
