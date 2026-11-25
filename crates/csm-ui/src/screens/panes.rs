@@ -1081,8 +1081,8 @@ pub fn pane(
         let opts = ViewOptions { interactive: !o.mini, request_focus: o.focus, style, edges, font_pt, claude, ..ViewOptions::default() };
         let mut child = ui.new_child(UiBuilder::new().max_rect(body));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
-        let PaneHost { renderer, views, padding, clean_claude_copies, .. } = host;
-        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), clean_copy: claude && *clean_claude_copies, remote: model.remote, ..opts };
+        let PaneHost { renderer, views, padding, clean_claude_copies, shift_enter_newline, .. } = host;
+        let opts = ViewOptions { padding: vec2(*padding, (*padding * 0.75).round()), clean_copy: claude && *clean_claude_copies, shift_enter_newline: *shift_enter_newline, remote: model.remote, ..opts };
         let view = views.entry(view_key.clone()).or_insert_with(|| TerminalView::new(Id::new(("csm-pane", view_key.clone()))));
         let vr = view.show(&mut child, src, renderer, body, &opts);
         clicked = vr.clicked;

@@ -69,6 +69,8 @@ pub struct ViewOptions {
     /// Copies of a selection are cleaned up (`claude_copy::clean`): a Claude Code pane with
     /// `CleanClaudeCopies` on. Alt while copying gives the raw text.
     pub clean_copy: bool,
+    /// `ShiftEnterNewline`: Shift+Enter sends a newline key (`input::encode_key_with`).
+    pub shift_enter_newline: bool,
     /// The pane belongs to a remote window: a pasted image is not passed on (the office's clipboard
     /// is not the laptop's; [`ViewResponse::image_paste`] says so instead).
     pub remote: bool,
@@ -85,6 +87,7 @@ impl Default for ViewOptions {
             font_pt: None,
             claude: false,
             clean_copy: false,
+            shift_enter_newline: true,
             remote: false,
         }
     }
@@ -196,6 +199,7 @@ pub struct TerminalView {
     /// This frame's [`ViewOptions::claude`] and [`ViewOptions::clean_copy`].
     claude: bool,
     clean_copy: bool,
+    shift_enter_newline: bool,
     /// This frame's [`ViewOptions::remote`], and whether an image paste was refused this frame.
     remote: bool,
     image_paste: bool,
@@ -295,6 +299,7 @@ impl TerminalView {
             hover: None,
             claude: false,
             clean_copy: false,
+            shift_enter_newline: true,
             remote: false,
             image_paste: false,
             copy_reply: false,
@@ -388,6 +393,7 @@ impl TerminalView {
         let mut open_link = None;
         self.claude = opts.claude;
         self.clean_copy = opts.clean_copy;
+        self.shift_enter_newline = opts.shift_enter_newline;
         self.copy_reply = false;
         self.remote = opts.remote;
         self.image_paste = false;
@@ -571,7 +577,7 @@ impl TerminalView {
                 }
                 Event::Key { key, pressed: true, modifiers, .. } if focused => {
                     if let Some(k) = map_key(key, modifiers)
-                        && let Some(bytes) = input::encode_key(k, mods(modifiers), mode)
+                        && let Some(bytes) = input::encode_key_with(k, mods(modifiers), mode, self.shift_enter_newline)
                     {
                         source.send_key(&bytes.0);
                         typed = true;

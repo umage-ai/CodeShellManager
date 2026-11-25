@@ -358,6 +358,8 @@ pub struct Prefs {
     pub tray_notice_shown: bool,
     /// `CleanClaudeCopies`: a selection copied from a Claude pane is cleaned up (on by default).
     pub clean_claude_copies: bool,
+    /// `ShiftEnterNewline`: Shift+Enter in a terminal inserts a newline (on by default).
+    pub shift_enter_newline: bool,
     /// The keyboard map: the defaults with the person's overrides (`keymap_*` tools, `csm_core::keymap`).
     pub keymap: csm_core::keymap::Keymap,
 }
@@ -377,6 +379,7 @@ impl Default for Prefs {
             close_action: csm_core::models::CloseAction::Ask,
             tray_notice_shown: false,
             clean_claude_copies: true,
+            shift_enter_newline: true,
             keymap: csm_core::keymap::Keymap::default(),
         }
     }
@@ -668,6 +671,8 @@ pub struct PaneHost {
     pub padding: f32,
     /// `CleanClaudeCopies`: copies from a Claude pane are cleaned up.
     pub clean_claude_copies: bool,
+    /// `ShiftEnterNewline`: Shift+Enter in a pane sends a newline key, not Enter.
+    pub shift_enter_newline: bool,
 }
 
 impl PaneHost {
@@ -749,6 +754,7 @@ impl CsmApp {
                 views: HashMap::new(),
                 padding: theme::space::SM,
                 clean_claude_copies: true,
+                shift_enter_newline: true,
             })),
             ui: UiState::default(),
             model,
@@ -1151,6 +1157,9 @@ impl CsmApp {
         if let Some(b) = s.bool("CleanClaudeCopies") {
             p.clean_claude_copies = b;
         }
+        if let Some(b) = s.bool("ShiftEnterNewline") {
+            p.shift_enter_newline = b;
+        }
         // The keyboard map follows the overrides the engine saved (a damaged entry is left out).
         if let Some(v) = s.values.get("Keymap") {
             p.keymap = csm_core::keymap::Keymap::new(&csm_core::keymap::overrides_from_value(v));
@@ -1293,6 +1302,7 @@ impl CsmApp {
         }
         host.padding = self.prefs.terminal_padding;
         host.clean_claude_copies = self.prefs.clean_claude_copies;
+        host.shift_enter_newline = self.prefs.shift_enter_newline;
         if host.renderer.fonts.coverage != want {
             host.renderer.fonts.coverage = want;
             if let Some(atlas) = host.renderer.atlas.as_mut() {

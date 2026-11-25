@@ -55,8 +55,18 @@ pub enum Key {
     Char(char),
 }
 
-/// Encodes a key press. `None` when the key has no encoding (e.g. F13).
+/// Encodes a key press. `None` when the key has no encoding (e.g. F13). Shift+Enter inserts a
+/// newline (see [`encode_key_with`]).
 pub fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<AppAuthored> {
+    encode_key_with(key, mods, mode, true)
+}
+
+/// [`encode_key`] with the `ShiftEnterNewline` setting. On, Shift+Enter (no Ctrl, no Alt) is a
+/// "newline, don't submit" key: `CSI 13;2 u` when the program turned on the kitty keyboard
+/// protocol (it can tell Shift+Enter apart), otherwise ESC CR (Meta+Enter, what Claude Code's
+/// `/terminal-setup` configures; OpenCode and Copilot CLI read it the same way). Off, it is a
+/// plain Enter. Ctrl+Enter and Alt+Enter are unchanged either way.
+pub fn encode_key_with(key: Key, mods: Mods, mode: TermMode, shift_enter_newline: bool) -> Option<AppAuthored> {
     let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let csi_mod = |final_byte: char| -> Vec<u8> {
         if mods.any() {
@@ -76,6 +86,13 @@ pub fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<AppAuthored> {
         v
     };
     let bytes = match key {
+        Key::Enter if shift_enter_newline && mods.shift && !mods.alt && !mods.ctrl => {
+            if mode.intersects(TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC) {
+                b"\x1b[13;2u".to_vec()
+            } else {
+                vec![0x1b, b'\r']
+            }
+        }
         Key::Enter => alt_prefix(vec![b'\r']),
         Key::Tab if mods.shift => b"\x1b[Z".to_vec(),
         Key::Tab => alt_prefix(vec![b'\t']),
@@ -242,6 +259,41 @@ mod tests {
 
     fn none() -> Mods {
         Mods::default()
+    }
+
+    #[test]
+    fn shift_enter_is_a_newline_not_a_submit() {
+        let shift = Mods { shift: true, ..none() };
+        assert_eq!(encode_key(Key::Enter, none(), TermMode::empty()).unwrap().0, b"\r");
+        assert_eq!(encode_key(Key::Enter, shift, TermMode::empty()).unwrap().0, b"\x1b\r");
+        // Other modes (cursor keys, bracketed paste) do not change it.
+        assert_eq!(encode_key(Key::Enter, shift, TermMode::APP_CURSOR | TermMode::BRACKETED_PASTE).unwrap().0, b"\x1b\r");
+        // A program that enabled the kitty keyboard protocol can tell Shift+Enter apart.
+        assert_eq!(encode_key(Key::Enter, shift, TermMode::DISAMBIGUATE_ESC_CODES).unwrap().0, b"\x1b[13;2u");
+        assert_eq!(encode_key(Key::Enter, shift, TermMode::REPORT_ALL_KEYS_AS_ESC).unwrap().0, b"\x1b[13;2u");
+        // Plain Enter stays CR in kitty mode.
+        assert_eq!(encode_key(Key::Enter, none(), TermMode::DISAMBIGUATE_ESC_CODES).unwrap().0, b"\r");
+    }
+
+    #[test]
+    fn shift_enter_setting_off_is_a_plain_enter() {
+        let shift = Mods { shift: true, ..none() };
+        assert_eq!(encode_key_with(Key::Enter, shift, TermMode::empty(), false).unwrap().0, b"\r");
+        assert_eq!(encode_key_with(Key::Enter, shift, TermMode::DISAMBIGUATE_ESC_CODES, false).unwrap().0, b"\r");
+        let shift_alt = Mods { shift: true, alt: true, ..none() };
+        assert_eq!(encode_key_with(Key::Enter, shift_alt, TermMode::empty(), false).unwrap().0, b"\x1b\r");
+    }
+
+    #[test]
+    fn ctrl_and_alt_enter_are_unchanged() {
+        let ctrl = Mods { ctrl: true, ..none() };
+        let alt = Mods { alt: true, ..none() };
+        let shift_ctrl = Mods { shift: true, ctrl: true, ..none() };
+        for on in [true, false] {
+            assert_eq!(encode_key_with(Key::Enter, ctrl, TermMode::empty(), on).unwrap().0, b"\r");
+            assert_eq!(encode_key_with(Key::Enter, alt, TermMode::empty(), on).unwrap().0, b"\x1b\r");
+            assert_eq!(encode_key_with(Key::Enter, shift_ctrl, TermMode::DISAMBIGUATE_ESC_CODES, on).unwrap().0, b"\r");
+        }
     }
 
     #[test]
