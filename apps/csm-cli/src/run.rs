@@ -26,12 +26,14 @@ pub struct Env {
     pub runtime_dir: Option<PathBuf>,
     /// `CSM_APP`: the app binary `--start` launches.
     pub app: Option<PathBuf>,
+    /// `CSM_INSTANCE`: the instance to use (a pid, or its state file); `--instance` wins.
+    pub instance: Option<String>,
 }
 
 impl Env {
     pub fn from_process() -> Env {
         let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-        Env { runtime_dir: var("CSM_RUNTIME_DIR"), app: var("CSM_APP") }
+        Env { runtime_dir: var("CSM_RUNTIME_DIR"), app: var("CSM_APP"), instance: var("CSM_INSTANCE").map(|p| p.to_string_lossy().into_owned()) }
     }
 }
 
@@ -49,6 +51,7 @@ fn in_process_tools() -> Vec<ToolSpec> {
 struct Pre {
     start: bool,
     app: Option<String>,
+    instance: Option<String>,
     in_process: bool,
     first: Option<String>,
     help: bool,
@@ -63,6 +66,9 @@ fn prescan(argv: &[String]) -> Pre {
             "--in-process" => pre.in_process = true,
             "--help" | "-h" => pre.help = true,
             "--app" => pre.app = it.next().cloned(),
+            // Before the command only: after it, `--instance` may be the tool's own parameter.
+            "--instance" if pre.first.is_none() => pre.instance = it.next().cloned(),
+            s if pre.first.is_none() && s.starts_with("--instance=") => pre.instance = Some(s["--instance=".len()..].to_string()),
             s if s.starts_with("--app=") => pre.app = Some(s["--app=".len()..].to_string()),
             // The value of another option, or its flag: only a bare word can be the command.
             s if s.starts_with('-') => {
@@ -99,6 +105,7 @@ fn make_backend(pre: &Pre, env: &Env) -> Result<(Box<dyn Backend>, Mode), String
         start: pre.start,
         app_path: pre.app.as_ref().map(PathBuf::from).or_else(|| env.app.clone()),
         tcp: None,
+        instance: pre.instance.clone().or_else(|| env.instance.clone()),
         app_args: Vec::new(),
     };
     Ok((Box::new(RemoteBackend::new(options)), Mode::Remote))
@@ -292,6 +299,7 @@ fn run_events(pre: &Pre, env: &Env) -> i32 {
         start: pre.start,
         app_path: pre.app.as_ref().map(PathBuf::from).or_else(|| env.app.clone()),
         tcp: None,
+        instance: pre.instance.clone().or_else(|| env.instance.clone()),
         app_args: Vec::new(),
     });
     let result = remote.watch(|ev| {

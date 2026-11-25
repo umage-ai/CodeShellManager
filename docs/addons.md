@@ -323,10 +323,16 @@ effects = ["writes_filesystem"]     # the most the add-on's tools may use (see b
 calls = ["session_list"]            # core tools it may call without a consent card (see below)
 ```
 
+`argv[0]` is a bare program name (looked up beside the app, then on PATH), an absolute path, or a
+path relative to the add-on folder (`./bin/server.exe`: joined to the folder, never to the app's own
+working folder; one that leaves the folder, like `../x`, is refused).
+
 ### Start and stop
 
 - Enabling it (the same consent as a pack) starts the program. Disabling it, a reload that finds a
   changed `addon.toml`, or quitting the app stops it. Quitting waits at most 3 seconds for it.
+  Stopping ends the **whole process tree** (`taskkill /T /F` on Windows, the process group on
+  Unix), so workers it started (`npx`, `python` children) do not outlive it.
 - It runs with **argv only** (no shell), its **working folder is the add-on folder**, its stdin and
   stdout are pipes, and on Windows it opens **no console window**. It inherits the app's environment.
 - Its stderr is captured into a 2 KiB tail, shown by `plugin_status`. Nothing else is read from it.

@@ -731,7 +731,12 @@ fn main() {
                     csm_ui::notify::show_window(ctx);
                 }
             });
-            match csm_mcp::serve_ipc_with(engine.clone(), csm_mcp::IpcOptions { on_activate: Some(on_activate), ..csm_mcp::IpcOptions::default() }) {
+            match csm_mcp::serve_ipc_with(engine.clone(), csm_mcp::IpcOptions {
+                    on_activate: Some(on_activate),
+                    clean: args.clean,
+                    state_path: persist::state_path(args.config_dir.as_deref()).filter(|_| !args.clean),
+                    ..csm_mcp::IpcOptions::default()
+                }) {
                 Ok(h) => Some(h),
                 Err(e) => {
                     log::warn!("ipc: `csm` and `csm mcp` cannot reach this window: {e}");

@@ -8,8 +8,10 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use csm_mcp::ToolInfo;
 use serde_json::{Map, Value};
 
-/// Flags on every tool command that are not tool params.
-const RESERVED: [&str; 6] = ["json", "help", "version", "start", "app", "in-process"];
+/// Flags on every tool command that are not tool params. `version` is not here: the root command has
+/// no `--version`, so `addon-enable --version 1.2` is a real parameter. `--instance` is a flag of the
+/// root command only (before the tool name), so a tool may have an `instance` parameter too.
+const RESERVED: [&str; 5] = ["json", "help", "start", "app", "in-process"];
 
 /// How a finished call is printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +192,12 @@ pub fn build(tools: &[ToolInfo], note: Option<&str>) -> Command {
         .about("CodeShellManager on the command line: every tool the app has, and its MCP server")
         .after_help(footer)
         .arg(Arg::new("g_start").long("start").global(true).action(ArgAction::SetTrue).help("Start CodeShellManager if it is not running"))
+        .arg(
+            Arg::new("g_instance")
+                .long("instance")
+                .value_name("PID|STATE-PATH")
+                .help("Talk to this running instance: its pid, or the state.json it keeps (default: the newest one that is not --clean; also $CSM_INSTANCE). Put it before the command name"),
+        )
         .arg(Arg::new("g_app").long("app").global(true).value_name("PATH").help("The app to start with --start (default: $CSM_APP)"))
         .arg(
             Arg::new("g_in_process")

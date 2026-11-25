@@ -94,6 +94,9 @@ pub(crate) struct Catalogue {
     pub root: Option<PathBuf>,
     /// A scan is on its way.
     pub scanning: bool,
+    /// The number of the latest scan started. Scans run on workers and may finish out of order; only
+    /// the result of the latest is installed, so an older folder listing never replaces a newer one.
+    pub scan_seq: u64,
     /// Replies of `addon_reload` calls waiting for the scan.
     pub waiters: Vec<ParkedReply>,
     /// Why the folder could not be read at all.
@@ -217,6 +220,8 @@ pub(crate) fn reload(ctx: &mut Ctx<'_>) {
     let root = root_for(ctx.state.options.save_path.as_deref(), ctx.state.options.clean);
     ctx.state.rt.addons.root.clone_from(&root);
     ctx.state.rt.addons.scanning = true;
+    ctx.state.rt.addons.scan_seq += 1;
+    let seq = ctx.state.rt.addons.scan_seq;
     ctx.state.rt.dirty = true;
     let Some(root) = root else {
         install(ctx, Vec::new(), None);
@@ -228,7 +233,7 @@ pub(crate) fn reload(ctx: &mut Ctx<'_>) {
             Ok(found) => (found.into_iter().map(parse_found).collect::<Vec<_>>(), None),
             Err(e) => (Vec::new(), Some(e)),
         };
-        engine.post(Box::new(move |ctx: &mut Ctx<'_>| install(ctx, scanned, err)));
+        engine.post(Box::new(move |ctx: &mut Ctx<'_>| install_scan(ctx, seq, scanned, err)));
     });
     if spawned.is_err() {
         // Install an empty catalogue now, so the waiting `addon_reload` calls are answered too.
@@ -262,6 +267,15 @@ fn read_fonts(dir: &Path, themes: &[csm_core::addons::ThemeSpec]) -> Vec<(String
         }
     }
     seen.into_iter().map(|rel| (rel.to_owned(), csm_services::addons::read_theme_font(dir, rel).map(|b| FontBytes(Arc::new(b))))).collect()
+}
+
+/// Installs the result of scan `seq` unless a newer scan was started meanwhile. The newer scan
+/// answers the waiting `addon_reload` calls (each began before it), so a stale result touches nothing.
+fn install_scan(ctx: &mut Ctx<'_>, seq: u64, scanned: Vec<Scanned>, scan_error: Option<String>) {
+    if ctx.state.rt.addons.scan_seq != seq {
+        return;
+    }
+    install(ctx, scanned, scan_error);
 }
 
 /// Engine thread: replaces the catalogue, derives each add-on's state from the approvals, and
@@ -740,5 +754,26 @@ mod tests {
         assert_eq!(root_for(Some(p), false), Some(PathBuf::from("/x/y").join("addons")));
         assert_eq!(root_for(Some(p), true), None);
         assert_eq!(root_for(None, false), None);
+    }
+
+    #[test]
+    fn only_the_latest_scan_is_installed() {
+        use crate::{Engine, State};
+        let engine = Engine::start(State::default(), vec![]).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        engine.post(Box::new(move |ctx: &mut Ctx<'_>| {
+            ctx.state.rt.addons.scan_seq = 2;
+            ctx.state.rt.addons.scanning = true;
+            // Scan 1 finishes after scan 2 was started: it is dropped, and the scan is still on its way.
+            install_scan(ctx, 1, Vec::new(), Some("old".into()));
+            let after_stale = (ctx.state.rt.addons.scanning, ctx.state.rt.addons.scan_error.clone());
+            install_scan(ctx, 2, Vec::new(), None);
+            let after_latest = (ctx.state.rt.addons.scanning, ctx.state.rt.addons.scan_error.clone());
+            let _ = tx.send((after_stale, after_latest));
+        }));
+        let (stale, latest) = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(stale, (true, None), "a stale scan must not install");
+        assert_eq!(latest, (false, None));
+        engine.shutdown();
     }
 }
