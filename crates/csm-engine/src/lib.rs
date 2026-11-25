@@ -21,6 +21,7 @@ mod launch;
 mod lifecycle;
 mod quit_pool;
 pub mod claude_config;
+pub mod diag;
 /// `From` conversions from the read model and events to the owned wire types (`csm-peer-proto`).
 mod peer_wire;
 pub mod output_tap;
