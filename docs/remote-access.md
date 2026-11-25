@@ -52,6 +52,30 @@ offline until it wakes.
 Pairing is started only from the app's own windows, on either side. It is not possible from the
 command line, from an agent or from another paired device.
 
+## Trusted and untrusted devices
+
+Each paired device is either **trusted** or not. This is the office's decision, kept in the
+office's own device list, and a device cannot change it for itself (`peer_device_trust` is the
+app's own window only).
+
+- **Trusted** devices act without prompts: typing into a session, starting a session or a program,
+  and everything else the Full level allows run at once. Use it for a laptop you sit at.
+- **Untrusted** devices still read, browse and use the remote window, but a call that types into a
+  session (`session_send_text`...) or starts a process (`session_new`, run commands...) waits for
+  you: a card on the **office's** screen says "Paired device *name* wants to ...", and nothing runs
+  until you allow it on the office. An untrusted device cannot see or answer cards, and "always allow" does not
+  exist for it.
+- At pairing, the **Trust this device (no prompts)** box next to **Allow** is off unless you tick
+  it. A device paired before this existed was migrated as trusted, so it keeps working. Pairing the
+  same device again resets it to what you tick then. The **Trusted** box beside each paired device
+  changes it later, at once, even while it is connected.
+- The keystrokes of a remote window or `csm attach` are not tool calls (they go straight to the
+  session's terminal stream, like typing at the office) and never ask. For an untrusted device that
+  is the one input path left open; the cards guard the tools an agent would use to drive the office.
+- Anyone who can use the laptop's user account can use its device key (`peer-client/device.key` is a
+  file readable by that account) and `csm attach`, so a trusted laptop is exactly as safe as its user
+  account. Trust only a machine you would hand the office's keyboard to.
+
 ## Using a remote window
 
 - The window's title starts with the office's name, and a strip under the title bar says
@@ -147,7 +171,7 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 
 - A remote session's links and run URLs open in the laptop's browser; port forwarding is planned.
 - There is one office per window; several offices are shown as several windows.
-- Only the "Full" level exists: a paired laptop can do everything the office's own window can do.
+- Only the "Full" level exists: a paired laptop can do everything the office's own window can do (an untrusted one asks first for typing and launching; see Trusted and untrusted devices).
 - Anything that can run `csm` on this laptop can type into the offices it is paired with (see the trust
   note under `csm attach`).
 

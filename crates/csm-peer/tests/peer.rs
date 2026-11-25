@@ -82,7 +82,7 @@ impl Rig {
         let p = Pairing::start(offer, me.clone(), name);
         let code = p.wait_pending(self);
         assert_eq!(code, p.client_code(), "both screens show the same four digits");
-        self.ui("peer_pair_answer", json!({"allow": true, "check_code": code})).unwrap();
+        self.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "trusted": true})).unwrap();
         (me, p.finish().unwrap())
     }
 }
@@ -533,7 +533,7 @@ fn an_offer_works_once() {
     let offer = rig.open_offer();
     let p = Pairing::start(offer.clone(), Identity::generate().unwrap(), "First");
     let code = p.wait_pending(&rig);
-    rig.ui("peer_pair_answer", json!({"allow": true, "check_code": code})).unwrap();
+    rig.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "trusted": true})).unwrap();
     p.finish().unwrap();
     let r = client::pair(&offer, &Identity::generate().unwrap(), &ClientConfig::new("Second"), &mut |_| {});
     assert!(matches!(r, Err(ClientError::Refused)), "the slot is spent: {r:?}");
@@ -911,7 +911,7 @@ fn two_bad_tries_then_the_real_pairing_still_works_on_the_third() {
     let me = Identity::generate().unwrap();
     let p = Pairing::start(offer, me, "Third try");
     let code = p.wait_pending(&rig);
-    rig.ui("peer_pair_answer", json!({"allow": true, "check_code": code})).unwrap();
+    rig.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "trusted": true})).unwrap();
     assert!(p.finish().is_ok(), "the third handshake is allowed");
     assert_eq!(rig.status()["devices"], 1);
 }

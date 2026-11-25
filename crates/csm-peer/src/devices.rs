@@ -20,6 +20,16 @@ pub struct Device {
     pub paired_at: u64,
     #[serde(default)]
     pub last_seen: Option<u64>,
+    /// The person chose "no prompts" for this device: its calls that type into a session or start
+    /// a process run without a consent card. A record without the field (paired before this
+    /// existed) is trusted, so an existing pairing keeps working; a new pairing is not, unless
+    /// the person ticked the box.
+    #[serde(default = "trusted_by_default")]
+    pub trusted: bool,
+}
+
+fn trusted_by_default() -> bool {
+    true
 }
 
 impl Device {
@@ -96,9 +106,9 @@ impl DeviceStore {
     }
 
     /// Adds a device (or replaces the one with the same key: pairing again renames and renews it).
-    pub fn add(&mut self, name: &str, key: &[u8; KEY_LEN], level: Level, now: u64) -> std::io::Result<Device> {
+    pub fn add(&mut self, name: &str, key: &[u8; KEY_LEN], level: Level, trusted: bool, now: u64) -> std::io::Result<Device> {
         let id = device_id(key);
-        let d = Device { id: id.clone(), name: name.trim().to_owned(), public: b64_encode(key), level, paired_at: now, last_seen: None };
+        let d = Device { id: id.clone(), name: name.trim().to_owned(), public: b64_encode(key), level, paired_at: now, last_seen: None, trusted };
         let mut next = self.devices.clone();
         next.retain(|x| x.id != id);
         if next.len() >= MAX_DEVICES {
@@ -108,6 +118,16 @@ impl DeviceStore {
         self.save_list(&next)?;
         self.devices = next;
         Ok(d)
+    }
+
+    /// Sets whether a device is trusted; `false` if there is no such device.
+    pub fn set_trusted(&mut self, id: &str, trusted: bool) -> std::io::Result<bool> {
+        let mut next = self.devices.clone();
+        let Some(d) = next.iter_mut().find(|d| d.id == id) else { return Ok(false) };
+        d.trusted = trusted;
+        self.save_list(&next)?;
+        self.devices = next;
+        Ok(true)
     }
 
     /// Removes one device; `true` if it was there.
@@ -155,8 +175,8 @@ mod tests {
         let p = d.path().join("devices.json");
         let mut s = DeviceStore::load(&p).unwrap();
         assert!(s.list().is_empty());
-        let a = s.add("Laptop", &[1; 32], Level::Full, 100).unwrap();
-        s.add("Phone", &[2; 32], Level::Full, 101).unwrap();
+        let a = s.add("Laptop", &[1; 32], Level::Full, true, 100).unwrap();
+        s.add("Phone", &[2; 32], Level::Full, true, 101).unwrap();
         assert_eq!(s.find_by_key(&[1; 32]).unwrap().id, a.id);
         s.touch(&a.id, 200);
         let s2 = DeviceStore::load(&p).unwrap();
@@ -171,11 +191,28 @@ mod tests {
     }
 
     #[test]
+    fn a_record_without_the_trusted_field_is_trusted() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("d.json");
+        let key = [7u8; 32];
+        let old = format!(r#"{{"v":1,"devices":[{{"id":"{}","name":"Laptop","public":"{}","level":"full","paired_at":5}}]}}"#, device_id(&key), b64_encode(&key));
+        std::fs::write(&p, old).unwrap();
+        let mut s = DeviceStore::load(&p).unwrap();
+        assert!(s.list()[0].trusted);
+        let id = s.list()[0].id.clone();
+        assert!(s.set_trusted(&id, false).unwrap());
+        assert!(!DeviceStore::load(&p).unwrap().list()[0].trusted);
+        assert!(!s.set_trusted("nope", true).unwrap());
+        let added = s.add("New", &[8; 32], Level::Full, false, 9).unwrap();
+        assert!(!DeviceStore::load(&p).unwrap().find(&added.id).unwrap().trusted);
+    }
+
+    #[test]
     fn pairing_the_same_key_again_replaces_it() {
         let d = tempfile::tempdir().unwrap();
         let mut s = DeviceStore::load(&d.path().join("d.json")).unwrap();
-        s.add("Old", &[1; 32], Level::Full, 1).unwrap();
-        s.add("New", &[1; 32], Level::Full, 2).unwrap();
+        s.add("Old", &[1; 32], Level::Full, true, 1).unwrap();
+        s.add("New", &[1; 32], Level::Full, true, 2).unwrap();
         assert_eq!(s.list().len(), 1);
         assert_eq!(s.list()[0].name, "New");
     }
@@ -184,9 +221,9 @@ mod tests {
     fn a_hand_edited_file_cannot_smuggle_a_bad_entry() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("d.json");
-        let good = Device { id: device_id(&[3; 32]), name: "Good".into(), public: b64_encode(&[3; 32]), level: Level::Full, paired_at: 1, last_seen: None };
-        let wrong_id = Device { id: device_id(&[9; 32]), name: "Liar".into(), public: b64_encode(&[4; 32]), level: Level::Full, paired_at: 1, last_seen: None };
-        let bad_name = Device { id: device_id(&[5; 32]), name: "a\u{202E}b".into(), public: b64_encode(&[5; 32]), level: Level::Full, paired_at: 1, last_seen: None };
+        let good = Device { id: device_id(&[3; 32]), name: "Good".into(), public: b64_encode(&[3; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true };
+        let wrong_id = Device { id: device_id(&[9; 32]), name: "Liar".into(), public: b64_encode(&[4; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true };
+        let bad_name = Device { id: device_id(&[5; 32]), name: "a\u{202E}b".into(), public: b64_encode(&[5; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true };
         let dup = good.clone();
         std::fs::write(&p, serde_json::to_string(&File { v: 1, devices: vec![good.clone(), wrong_id, bad_name, dup] }).unwrap()).unwrap();
         let s = DeviceStore::load(&p).unwrap();
@@ -200,8 +237,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut s = DeviceStore::load(&d.path().join("d.json")).unwrap();
         for i in 0..MAX_DEVICES {
-            s.add("D", &[u8::try_from(i).unwrap(); 32], Level::Full, 1).unwrap();
+            s.add("D", &[u8::try_from(i).unwrap(); 32], Level::Full, true, 1).unwrap();
         }
-        assert!(s.add("One more", &[200; 32], Level::Full, 1).is_err());
+        assert!(s.add("One more", &[200; 32], Level::Full, true, 1).is_err());
     }
 }

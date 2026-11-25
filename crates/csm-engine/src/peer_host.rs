@@ -60,6 +60,8 @@ pub struct DeviceInfo {
     pub paired_at: u64,
     pub last_seen: Option<u64>,
     pub connected: bool,
+    /// Its calls that type into a session or start a process run without a consent card.
+    pub trusted: bool,
 }
 
 /// What `peer_server_enable` asks for. The address was checked by the tool already; a host
@@ -103,6 +105,8 @@ pub struct PairAnswer {
     pub check_code: Option<String>,
     /// `full`; the other levels are not available yet.
     pub level: String,
+    /// The person ticked "Trust this device (no prompts)". Off unless ticked.
+    pub trusted: bool,
 }
 
 /// Which devices to revoke.
@@ -138,6 +142,14 @@ pub trait PeerHost: Send + Sync {
     /// Answer the pending pairing. Only for `Caller::Ui`.
     fn pair_answer(&self, answer: PairAnswer, by: &str) -> Result<PeerStatus, ToolError>;
     fn devices(&self) -> Vec<DeviceInfo>;
+    /// Whether the paired device `id` is trusted (looked up now, so a change applies to a live
+    /// connection at once). A host without a device list says `true`: it has no devices to doubt.
+    fn device_trusted(&self, _id: &str) -> bool {
+        true
+    }
+    /// Trust or distrust one paired device. Only `peer_device_trust` calls this, never for a
+    /// device or an MCP client.
+    fn set_device_trusted(&self, id: &str, trusted: bool, by: &str) -> Result<(), ToolError>;
     /// Delete device keys and close their connections at once; how many were revoked.
     fn revoke(&self, target: Revoke, by: &str) -> Result<usize, ToolError>;
     fn audit(&self, event: AuditEvent);
@@ -187,6 +199,9 @@ impl PeerHost for NoPeerHost {
     }
     fn devices(&self) -> Vec<DeviceInfo> {
         Vec::new()
+    }
+    fn set_device_trusted(&self, _: &str, _: bool, _: &str) -> Result<(), ToolError> {
+        Err(unavailable())
     }
     fn revoke(&self, _: Revoke, _: &str) -> Result<usize, ToolError> {
         Ok(0)

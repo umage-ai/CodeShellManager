@@ -155,6 +155,7 @@ file drop; Claude slash-command menu; `--clean`.
 - **Project docs** are read only from sessions' folders for MCP clients; links and network folders are refused. The Review add-on only works on repositories CSM knows (no network paths, at most 32 per caller).
 - **Add-on pack palette commands** may call only read-only and navigation tools, and a plugin screen button may open only its own add-on's screens.
 - **A terminal can set the clipboard (OSC 52) only while it is the focused session**, and a toast says which session did.
+- **Paired devices are trusted per device** (SEC-9): a device you pair is not trusted unless you tick "Trust this device (no prompts)"; an untrusted device needs your approval on the office screen before it types into a session or starts a process, and cannot answer those approvals itself. Existing pairings were migrated as trusted. `peer_device_trust` (the app only) and a Trusted box per device change it.
 
 ### Changed
 - **Restored sessions do not notify** (popups or screen-text alerts) until you have addressed them.

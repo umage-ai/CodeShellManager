@@ -74,7 +74,7 @@ fn a_console_attaches_through_the_client_folder_to_a_paired_office_and_never_pai
     let link = office.ui("peer_pair_start", json!({})).unwrap().data["link"].as_str().unwrap().to_owned();
     me.call(Caller::Ui, "peer_client_pair", json!({"link": link, "name": "Office"})).unwrap();
     let code = wait_for("the check code on the office", || office.status()["pending_pair"]["check_code"].as_str().map(str::to_owned));
-    office.ui("peer_pair_answer", json!({"allow": true, "check_code": code})).unwrap();
+    office.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "trusted": true})).unwrap();
     let host_id = wait_for("the office in the laptop's list", || {
         let offices = paired_offices(&client_dir).ok()?;
         offices.first().map(|o| o.host_id.clone())
