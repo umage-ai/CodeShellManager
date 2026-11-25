@@ -716,11 +716,14 @@ pub struct EngineTerminal {
     handle: TerminalHandle,
     /// The last grid passed on, so an unchanged size never takes the terminal lock.
     grid: Mutex<Option<GridSize>>,
+    /// Applies resizes off the UI thread once the PTY runs (the terminal lock and the ConPTY call
+    /// can both block); made with the first one.
+    resizer: std::sync::OnceLock<crate::terminal::resize::Coalescer<GridSize>>,
 }
 
 impl EngineTerminal {
     pub fn new(handle: TerminalHandle) -> Self {
-        Self { handle, grid: Mutex::new(None) }
+        Self { handle, grid: Mutex::new(None), resizer: std::sync::OnceLock::new() }
     }
 
     pub fn handle(&self) -> &TerminalHandle {
@@ -749,7 +752,17 @@ impl TerminalSource for EngineTerminal {
         }
         *last = Some(grid);
         drop(last);
-        self.handle.resize(grid);
+        if !self.handle.is_started() {
+            // Before the PTY exists this only records the first size: no call can block.
+            self.handle.resize(grid);
+            return;
+        }
+        let handle = &self.handle;
+        self.resizer.get_or_init(|| {
+            let handle = handle.clone();
+            crate::terminal::resize::Coalescer::spawn("csm-session-resize", move |g: GridSize| handle.resize(g))
+        })
+        .submit(grid);
     }
 
     fn write(&self, bytes: &[u8]) {

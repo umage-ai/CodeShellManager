@@ -45,6 +45,8 @@ pub struct GlyphAtlas {
     /// Set when an insert failed for lack of space; the owner clears and rebuilds.
     pub full: bool,
     pub uploads: u64,
+    /// When the atlas last cleared because it overflowed (see [`GlyphAtlas::overflow_repaint_delay`]).
+    last_overflow: Option<std::time::Instant>,
 }
 
 impl GlyphAtlas {
@@ -56,7 +58,17 @@ impl GlyphAtlas {
             }
         }
         let tex = ctx.load_texture("csm-glyph-atlas", img, TextureOptions::NEAREST);
-        Self { tex, shelves: Vec::new(), next_y: 2 + PAD, map: HashMap::new(), epoch: 0, full: false, uploads: 0 }
+        Self { tex, shelves: Vec::new(), next_y: 2 + PAD, map: HashMap::new(), epoch: 0, full: false, uploads: 0, last_overflow: None }
+    }
+
+    /// Called after an overflow cleared the atlas: how long to wait before repainting so the other
+    /// panes (whose meshes point at glyphs that just left the atlas) rebuild. Immediate the first
+    /// time; throttled when overflows follow each other (panes whose glyphs together do not fit
+    /// would otherwise evict one another at the full frame rate).
+    pub fn overflow_repaint_delay(&mut self, now: std::time::Instant) -> std::time::Duration {
+        let recent = self.last_overflow.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1));
+        self.last_overflow = Some(now);
+        if recent { std::time::Duration::from_millis(500) } else { std::time::Duration::ZERO }
     }
 
     pub fn texture_id(&self) -> egui::TextureId {
@@ -100,6 +112,10 @@ impl GlyphAtlas {
     pub fn get(&mut self, fonts: &mut FontSet, key: GlyphKey) -> Option<AtlasGlyph> {
         if let Some(hit) = self.map.get(&key) {
             return *hit;
+        }
+        if self.full {
+            // Already out of room this build: do not rasterise glyphs that cannot be stored.
+            return None;
         }
         let Some(raster) = fonts.rasterize(key.face, key.gid, key.style, f32::from_bits(key.px_bits)) else {
             self.map.insert(key, None);
