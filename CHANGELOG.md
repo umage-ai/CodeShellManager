@@ -81,6 +81,16 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
   inbox, the add-on screen tabs and the inspector tabs; Space selects a row, Shift+arrows extend the
   selection, F2 renames the focused row or group, Left and Right collapse and expand a group.
   `Ctrl+PgUp`/`Ctrl+PgDn` switch the add-on screen tab (with one open) and `Ctrl+Alt+PgUp`/`Ctrl+Alt+PgDn` the rail tab.
+- **Move between sessions without the mouse**: from anywhere, the terminal included,
+  `Ctrl+Shift+Up`/`Ctrl+Shift+Down` focus the session above or below in the sidebar, across groups;
+  `Ctrl+Shift+PgUp`/`Ctrl+Shift+PgDn` jump to the group above or below (to the session you last
+  used there); `Ctrl+Shift+Left`/`Ctrl+Shift+Right` go back and forward through the sessions you
+  focused, as a browser does. The keyboard stays in the session's terminal, so you can type at once.
+  Sleeping sessions are skipped, never woken. Tools: `session_focus_next`, `session_focus_prev`,
+  `group_focus_next`, `group_focus_prev`, `session_back`, `session_forward`.
+- **Scroll the terminal by keyboard**: `Shift+PgUp`/`Shift+PgDn` page through the scrollback,
+  `Ctrl+Shift+Home`/`Ctrl+Shift+End` jump to its top and bottom. A full-screen program (vim, less)
+  gets the keys.
 - **Layouts per group**: Focus, Side by side (pins), Overview (every live session as a live
   mini-terminal), Board, Grid (presets or custom up to 6×6) and Free (split tree with draggable
   dividers, floating panes, panes torn off into their own window).

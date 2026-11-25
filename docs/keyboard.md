@@ -17,6 +17,9 @@ for one); `docs/design/keyboard.md` has the current list of gaps.
 | `Ctrl+Shift+R` | Restart the active session |
 | `F2` | Rename the active session (or the focused row or group) |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous session in this group |
+| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Session above / below in the sidebar, across groups |
+| `Ctrl+Shift+PgUp` / `Ctrl+Shift+PgDn` | Group above / below (its session you last used) |
+| `Ctrl+Shift+Left` / `Ctrl+Shift+Right` | Back / forward through the sessions you focused |
 | `Ctrl+J` | Next session that needs you |
 | `Ctrl+Shift+E` | Recent sessions (Enter: the previous one) |
 | `Ctrl+1` … `Ctrl+9` | Rail tabs (1 is All) |
@@ -35,12 +38,42 @@ for one); `docs/design/keyboard.md` has the current list of gaps.
 | `Shift+F10` | Menu of the focused item (outside the terminal) |
 | `F6` / `Shift+F6` | Next / previous keyboard region (title bar, rail, sidebar, screen tabs, panes, inspector); the focus goes to the region's shown item |
 | `Esc` | Close a menu, panel or dialog; from a region, back to the terminal |
+| `Shift+PgUp` / `Shift+PgDn`, `Ctrl+Shift+Home` / `Ctrl+Shift+End` | Scroll the terminal a page; its top / bottom (fixed) |
 | `F1`, `Ctrl+/`, `?` | The keyboard list |
 
 Chords that stay fixed: the arrows, Home, End, Enter and Space in lists and menus; Tab and
 Shift+Tab in dialogs and the quick-open; Left and Right on the quick-open command row; Ctrl+Enter
 to start a session and keep the panel open; Ctrl+click on a link; Ctrl+Alt+C to copy a selection
 from a Claude pane as shown.
+
+## Moving between sessions
+
+The session, group and back/forward keys work from anywhere, a focused terminal included, and the
+keyboard stays in (or moves to) the terminal of the session they land on, so you can type at once.
+
+- **Up and down** follow the sidebar as it is drawn: each group in order (worktrees under their
+  repository, live sessions before sleeping ones), then the ungrouped. With group headers, a
+  collapsed group is passed over; with the rail, the rail switches to the group of the session you
+  land on. They stop at the first and the last session rather than wrapping round.
+- **Group up and down** land on the session you last used in that group, else its first one.
+  Groups with no awake session are passed over.
+- **Back and forward** work as in a browser: Back returns to the session you were in before,
+  Forward undoes Back, and focusing a session any other way clears what Forward can reach.
+- Sleeping sessions are skipped and never woken; closed ones drop out of the history.
+- In a text field (Settings, the sidebar filter) these keys stay with the field, which selects
+  words and lines with them.
+- `Ctrl+Tab` keeps its own behaviour: it wraps round the live sessions of the rail's tab.
+
+PowerShell (PSReadLine) selects a word with Ctrl+Shift+Left and Right, and loses that while
+CodeShellManager is in front. Rebind *Back* and *Forward* in Settings › Keyboard if you need it
+(Ctrl+Alt+Home and Ctrl+Alt+End are free, for one).
+
+## Scrolling a terminal
+
+`Shift+PgUp` and `Shift+PgDn` scroll the focused terminal a page (one line stays in view), and
+`Ctrl+Shift+Home` and `Ctrl+Shift+End` jump to the top and the bottom of its scrollback. Typing goes
+back to the bottom. A full-screen program (vim, less, htop) has no scrollback, so it gets these keys
+itself.
 
 ## Menus and lists
 

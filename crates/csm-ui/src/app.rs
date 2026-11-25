@@ -1962,6 +1962,10 @@ impl CsmApp {
         match id {
             "session_new" => return self.run(ctx, Action::OpenQuickOpen { group: None }),
             "session_recent" => return self.run(ctx, Action::OpenRecent),
+            "session_focus_next" => return self.nav_step(ctx, "session_focus_next"),
+            "session_focus_prev" => return self.nav_step(ctx, "session_focus_prev"),
+            "group_focus_next" => return self.nav_step(ctx, "group_focus_next"),
+            "group_focus_prev" => return self.nav_step(ctx, "group_focus_prev"),
             // The look's picker is the Profile row of Edit session.
             "session_edit" | "session_look_set" => {
                 if let Some(a) = active {
@@ -2371,6 +2375,21 @@ impl CsmApp {
         } else if self.bound(ctx, "ui.session_next") {
             self.cycle(1);
         }
+        // Ctrl+Shift+Up / Down: the session above / below in the sidebar, across groups.
+        // Ctrl+Shift+PgUp / PgDn: the group above / below. Ctrl+Shift+Left / Right: back and
+        // forward through the sessions focused. The terminal keeps the keyboard after each.
+        if self.ui.overlay == Overlay::None && self.ui.menu.is_none() && self.ui.inline.is_none() && !Self::text_field_focused(ctx) {
+            for tool in ["session_focus_prev", "session_focus_next", "group_focus_prev", "group_focus_next"] {
+                if self.bound(ctx, tool) {
+                    self.nav_step(ctx, tool);
+                }
+            }
+            for tool in ["session_back", "session_forward"] {
+                if self.bound(ctx, tool) {
+                    self.run(ctx, Action::Tool(tool, json!({})));
+                }
+            }
+        }
         // Ctrl+1…9: the rail's tabs (1 is All).
         for (n, id) in RAIL_TAB_IDS.into_iter().enumerate() {
             if self.bound(ctx, id) {
@@ -2578,6 +2597,53 @@ impl CsmApp {
     fn terminal_focused(&self, ctx: &egui::Context) -> bool {
         let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
         lock(&self.host).views.values().any(|v| v.id() == focused)
+    }
+
+    /// A text field has the keyboard (Settings, the sidebar filter): Ctrl+Shift+arrows select
+    /// words there, so the session keys leave them alone.
+    fn text_field_focused(ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.focused()).is_some_and(|f| egui::text_edit::TextEditState::load(ctx, f).is_some())
+    }
+
+    /// The sessions top to bottom as the sidebar lists them, across groups, for
+    /// `session_focus_next` and the other order-taking steps: each group in order (worktrees
+    /// nested, live before asleep), then the ungrouped. With group headers, a collapsed group's
+    /// sessions are left out, as the list hides them; flat, it is one list.
+    pub(crate) fn nav_order(&self) -> Vec<SessionId> {
+        use crate::model::{GroupMode, SessionView};
+        use screens::sidebar::{SideItem, nest};
+        let ids = |ss: &[&SessionView]| -> Vec<SessionId> {
+            nest(ss)
+                .into_iter()
+                .filter_map(|i| match i {
+                    SideItem::Session { s, .. } => Some(s.id.clone()),
+                    SideItem::Repo { .. } => None,
+                })
+                .collect()
+        };
+        let model = &self.model;
+        if model.group_mode == GroupMode::Flat {
+            return ids(&model.sessions.iter().collect::<Vec<_>>());
+        }
+        let headers = model.group_mode == GroupMode::Headers;
+        let mut out = Vec::new();
+        for g in &model.groups {
+            if headers && g.collapsed {
+                continue;
+            }
+            out.extend(ids(&model.sessions.iter().filter(|s| s.group.as_deref() == Some(g.id.as_str())).collect::<Vec<_>>()));
+        }
+        let ungrouped_collapsed = headers && model.group("ungrouped").is_some_and(|g| g.collapsed);
+        if !ungrouped_collapsed {
+            out.extend(ids(&model.sessions.iter().filter(|s| s.group.as_ref().is_none_or(|g| model.group(g).is_none())).collect::<Vec<_>>()));
+        }
+        out
+    }
+
+    /// Runs one of the steps that take the sidebar's order (`session_focus_next` and the like).
+    fn nav_step(&mut self, ctx: &egui::Context, tool: &'static str) {
+        let order = self.nav_order();
+        self.run(ctx, Action::Tool(tool, json!({"order": order})));
     }
 
     /// Focuses the live session `step` places after (or before) the active one, in the order the

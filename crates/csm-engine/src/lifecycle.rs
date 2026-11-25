@@ -990,6 +990,8 @@ pub(crate) fn forget_session(state: &mut State, id: &str) {
     if state.rt.focused.as_deref() == Some(id) {
         state.rt.focused = None;
     }
+    state.rt.focus_back.retain(|x| x != id);
+    state.rt.focus_forward.retain(|x| x != id);
     state.rt.restarting.remove(id);
     state.rt.inbox_since.remove(id);
     state.rt.last_toast.remove(id);
@@ -1072,6 +1074,23 @@ pub(crate) fn wake_session(ctx: &mut Ctx<'_>, id: &str, then: Option<StartedCb>)
 /// current tab hides it, stamps "last used" (not during the restore loop), and wakes it when
 /// asleep.
 pub(crate) fn focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError> {
+    focus_with(ctx, id, FocusHistory::Record)
+}
+
+/// How a focus changes the back/forward history (`session_back`, `session_forward`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FocusHistory {
+    /// A new focus: the one it leaves goes on the back list, and the forward list is cleared.
+    Record,
+    /// A step back or forward: the tool has moved the lists itself.
+    Keep,
+}
+
+/// Most sessions the back list remembers.
+const FOCUS_HISTORY_MAX: usize = 100;
+
+/// [`focus`], with the history handled as `history` says.
+pub(crate) fn focus_with(ctx: &mut Ctx<'_>, id: &str, history: FocusHistory) -> Result<ToolOutput, ToolError> {
     let Some(i) = session_index(ctx.state, id) else {
         return Err(ToolError::NotFound(format!("no session `{id}`")));
     };
@@ -1081,8 +1100,20 @@ pub(crate) fn focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError
         wake_session(ctx, id, None)?;
         woke = true;
     }
-    ctx.state.rt.focused = Some(id.to_owned());
     let restoring = ctx.state.rt.restore.is_some();
+    let left = ctx.state.rt.focused.replace(id.to_owned());
+    if history == FocusHistory::Record
+        && !restoring
+        && let Some(left) = left.filter(|l| l != id)
+    {
+        let back = &mut ctx.state.rt.focus_back;
+        back.retain(|x| *x != left);
+        back.push(left);
+        if back.len() > FOCUS_HISTORY_MAX {
+            back.remove(0);
+        }
+        ctx.state.rt.focus_forward.clear();
+    }
     let group = ctx.state.app.sessions.get(i).map(|s| s.group_id.clone()).unwrap_or_default();
     // Issue #137: the group's rail tab brings this session back.
     if !group.is_empty() {

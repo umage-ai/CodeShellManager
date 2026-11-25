@@ -85,6 +85,60 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             run: pane_focus_prev,
         },
         ToolSpec {
+            id: "session_focus_next",
+            title: "Next session",
+            summary: "Focus the awake session below the focused one, across groups: `order` when given (the UI passes its sidebar rows as drawn), else each group in order, then the ungrouped. Stops at the last one; sleeping sessions are skipped, never woken.",
+            toolset: Toolset::Core,
+            effects: Effects::UI,
+            input_schema: schema_of::<OrderParams>,
+            run: session_focus_next,
+        },
+        ToolSpec {
+            id: "session_focus_prev",
+            title: "Previous session",
+            summary: "Focus the awake session above the focused one, in the order `session_focus_next` uses. Stops at the first one; sleeping sessions are skipped.",
+            toolset: Toolset::Core,
+            effects: Effects::UI,
+            input_schema: schema_of::<OrderParams>,
+            run: session_focus_prev,
+        },
+        ToolSpec {
+            id: "group_focus_next",
+            title: "Next group",
+            summary: "Focus a session in the next group below the focused session's (the ungrouped come last) that has an awake session: the one last focused there, else its first in `order` (or sidebar order). Stops at the last group.",
+            toolset: Toolset::Core,
+            effects: Effects::UI,
+            input_schema: schema_of::<OrderParams>,
+            run: group_focus_next,
+        },
+        ToolSpec {
+            id: "group_focus_prev",
+            title: "Previous group",
+            summary: "Focus a session in the group above the focused session's that has an awake session, as `group_focus_next` does. Stops at the first group.",
+            toolset: Toolset::Core,
+            effects: Effects::UI,
+            input_schema: schema_of::<OrderParams>,
+            run: group_focus_prev,
+        },
+        ToolSpec {
+            id: "session_back",
+            title: "Back",
+            summary: "Focus the session focused before this one, as a browser's Back does; `session_forward` returns. Closed and sleeping sessions are skipped.",
+            toolset: Toolset::Core,
+            effects: Effects::UI,
+            input_schema: crate::tool::empty_schema,
+            run: session_back,
+        },
+        ToolSpec {
+            id: "session_forward",
+            title: "Forward",
+            summary: "Undo `session_back`: focus the session it left. A new focus (not a step back or forward) clears what Forward can reach.",
+            toolset: Toolset::Core,
+            effects: Effects::UI,
+            input_schema: crate::tool::empty_schema,
+            run: session_forward,
+        },
+        ToolSpec {
             id: "session_rename",
             title: "Rename session…",
             summary: "Give a session a new name.",
@@ -646,6 +700,133 @@ fn pane_focus_step(ctx: &mut Ctx<'_>, forward: bool) -> Reply {
         return Ok(ToolOutput::new("No awake session in this view.", json!({"session_id": null})));
     };
     lifecycle::focus(ctx, &id)
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+#[serde(default, deny_unknown_fields)]
+struct OrderParams {
+    /// Session ids top to bottom, as the sidebar shows them. Unknown and sleeping ids are skipped.
+    /// Default: each group in order (its sessions in sidebar order), then the ungrouped.
+    order: Option<Vec<String>>,
+}
+
+/// The group a session sits in for navigation: its group, or "" (ungrouped) when it has none or
+/// the group no longer exists.
+fn nav_group(state: &crate::state::State, s: &ShellSession) -> String {
+    if state.app.groups.iter().any(|g| g.id == s.group_id) { s.group_id.clone() } else { String::new() }
+}
+
+/// The awake sessions in navigation order: `order` (known, awake ids, first time each), else each
+/// group in order, then the ungrouped.
+fn nav_order(state: &crate::state::State, order: Option<Vec<String>>) -> Vec<String> {
+    let awake = |id: &str| state.app.sessions.iter().any(|s| s.id == id && !s.is_dormant);
+    if let Some(order) = order {
+        let mut seen = std::collections::HashSet::new();
+        return order.into_iter().filter(|id| awake(id) && seen.insert(id.clone())).collect();
+    }
+    let groups = state.app.groups.iter().map(|g| g.id.clone()).chain(std::iter::once(String::new()));
+    groups
+        .flat_map(|g| state.app.sessions.iter().filter(move |s| !s.is_dormant && nav_group(state, s) == g).map(|s| s.id.clone()).collect::<Vec<_>>())
+        .collect()
+}
+
+fn nothing(message: &str) -> Reply {
+    Ok(ToolOutput::new(message, json!({"session_id": null})))
+}
+
+fn session_focus_next(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    session_focus_step(ctx, params, true)
+}
+
+fn session_focus_prev(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    session_focus_step(ctx, params, false)
+}
+
+/// Focuses the awake session after (or before) the focused one in the navigation order. With no
+/// focused one in the order, forward takes the first and back the last. No wrap.
+fn session_focus_step(ctx: &mut Ctx<'_>, params: Value, forward: bool) -> Reply {
+    let p: OrderParams = parse_params(params)?;
+    let order = nav_order(ctx.state, p.order);
+    let at = ctx.state.rt.focused.as_deref().and_then(|f| order.iter().position(|x| x == f));
+    let to = match (at, forward) {
+        _ if order.is_empty() => return nothing("No awake session."),
+        (Some(a), true) => a + 1,
+        (Some(0), false) => return nothing("Already at the first session."),
+        (Some(a), false) => a - 1,
+        (None, true) => 0,
+        (None, false) => order.len() - 1,
+    };
+    match order.get(to) {
+        Some(id) => {
+            let id = id.clone();
+            lifecycle::focus(ctx, &id)
+        }
+        None => nothing("Already at the last session."),
+    }
+}
+
+fn group_focus_next(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    group_focus_step(ctx, params, true)
+}
+
+fn group_focus_prev(ctx: &mut Ctx<'_>, params: Value) -> Reply {
+    group_focus_step(ctx, params, false)
+}
+
+/// Focuses a session in the nearest group after (or before) the focused session's group that has
+/// an awake session: the one last focused there when it is awake, else its first in the order.
+/// With nothing focused, forward takes the first such group and back the last. No wrap.
+fn group_focus_step(ctx: &mut Ctx<'_>, params: Value, forward: bool) -> Reply {
+    let p: OrderParams = parse_params(params)?;
+    let order = nav_order(ctx.state, p.order);
+    let state = &*ctx.state;
+    let group_of = |id: &str| state.app.sessions.iter().find(|s| s.id == id).map(|s| nav_group(state, s));
+    let mut groups: Vec<String> = state.app.groups.iter().map(|g| g.id.clone()).collect();
+    groups.push(String::new());
+    // Only groups with an awake session in the order count.
+    groups.retain(|g| order.iter().any(|id| group_of(id).as_deref() == Some(g.as_str())));
+    let here = state.rt.focused.as_deref().and_then(group_of).and_then(|g| groups.iter().position(|x| *x == g));
+    let to = match (here, forward) {
+        _ if groups.is_empty() => return nothing("No awake session."),
+        (Some(a), true) => a + 1,
+        (Some(0), false) => return nothing("Already in the first group."),
+        (Some(a), false) => a - 1,
+        (None, true) => 0,
+        (None, false) => groups.len() - 1,
+    };
+    let Some(g) = groups.get(to) else { return nothing("Already in the last group.") };
+    let last = state.app.ui.group_focus.get(g).filter(|id| order.contains(id) && group_of(id).as_deref() == Some(g.as_str()));
+    let first = || order.iter().find(|id| group_of(id).as_deref() == Some(g.as_str()));
+    let Some(id) = last.or_else(first).cloned() else { return nothing("No awake session.") };
+    lifecycle::focus(ctx, &id)
+}
+
+fn session_back(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    history_step(ctx, true)
+}
+
+fn session_forward(ctx: &mut Ctx<'_>, _params: Value) -> Reply {
+    history_step(ctx, false)
+}
+
+/// One step back (or forward) through the focus history: the newest entry that still exists and
+/// is awake; the ones passed over are dropped. The session left goes on the other list.
+fn history_step(ctx: &mut Ctx<'_>, back: bool) -> Reply {
+    loop {
+        let rt = &mut ctx.state.rt;
+        let popped = if back { rt.focus_back.pop() } else { rt.focus_forward.pop() };
+        let Some(id) = popped else {
+            return nothing(if back { "Nothing to go back to." } else { "Nothing to go forward to." });
+        };
+        let awake = ctx.state.app.sessions.iter().any(|s| s.id == id && !s.is_dormant);
+        if !awake || ctx.state.rt.focused.as_deref() == Some(id.as_str()) {
+            continue;
+        }
+        if let Some(left) = ctx.state.rt.focused.clone() {
+            if back { ctx.state.rt.focus_forward.push(left) } else { ctx.state.rt.focus_back.push(left) }
+        }
+        return lifecycle::focus_with(ctx, &id, lifecycle::FocusHistory::Keep);
+    }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

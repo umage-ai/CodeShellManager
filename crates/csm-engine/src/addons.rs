@@ -309,7 +309,7 @@ fn install(ctx: &mut Ctx<'_>, scanned: Vec<Scanned>, scan_error: Option<String>)
 /// runs as the person, with no consent card, so it gets only tools that open, show or start something the pack itself
 /// declared: never `settings_set`, `open_with_set`, `state_import` or the like. Everything an MCP
 /// client is refused stays out.
-pub(crate) const PACK_COMMAND_TOOLS: [&str; 14] = [
+pub(crate) const PACK_COMMAND_TOOLS: [&str; 20] = [
     "session_new",
     "session_focus",
     "session_wake",
@@ -324,6 +324,12 @@ pub(crate) const PACK_COMMAND_TOOLS: [&str; 14] = [
     "pane_focus_prev",
     "rail_tab_next",
     "rail_tab_prev",
+    "session_focus_next",
+    "session_focus_prev",
+    "group_focus_next",
+    "group_focus_prev",
+    "session_back",
+    "session_forward",
 ];
 
 fn build_entry(s: Scanned, registry: &Registry) -> Entry {

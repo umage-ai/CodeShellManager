@@ -111,10 +111,29 @@ pub fn modal_id() -> Id {
 
 const PREVIEW_MIN_ZOOM: f32 = 0.66;
 
+/// The scrollback op a key asks for, or `None` when the key goes to the program: Shift+PgUp /
+/// PgDn scroll a page (less one line, so a line of context stays), Ctrl+Shift+Home / End jump to
+/// the top / bottom. On the alternate screen (vim, less, htop) there is no scrollback and the
+/// program gets the key.
+fn scrollback_key(key: egui::Key, m: egui::Modifiers, mode: TermMode, rows: u16) -> Option<Op> {
+    if mode.contains(TermMode::ALT_SCREEN) || !m.shift || m.alt {
+        return None;
+    }
+    let page = i32::from(rows.saturating_sub(1).max(1));
+    match (key, m.ctrl || m.command) {
+        (egui::Key::PageUp, false) => Some(Op::Scroll(page)),
+        (egui::Key::PageDown, false) => Some(Op::Scroll(-page)),
+        (egui::Key::Home, true) => Some(Op::ScrollTop),
+        (egui::Key::End, true) => Some(Op::ScrollBottom),
+        _ => None,
+    }
+}
+
 /// UI → terminal changes, applied when the view next gets the emulator's lock.
 #[derive(Debug, Clone)]
 enum Op {
     Scroll(i32),
+    ScrollTop,
     ScrollBottom,
     SelStart { col: usize, row: usize, right_half: bool, clicks: u8 },
     SelUpdate { col: usize, row: usize, right_half: bool },
@@ -653,7 +672,11 @@ impl TerminalView {
                     }
                 }
                 Event::Key { key, pressed: true, modifiers, .. } if focused => {
-                    if let Some(k) = map_key(key, modifiers)
+                    // Shift+PgUp / PgDn page through the scrollback, Ctrl+Shift+Home / End jump to
+                    // its top / bottom. A full-screen program (vim, less) gets them as keys.
+                    if let Some(op) = scrollback_key(key, modifiers, mode, rows) {
+                        self.ops.push(op);
+                    } else if let Some(k) = map_key(key, modifiers)
                         && let Some(bytes) = input::encode_key_with(k, mods(modifiers), mode, self.shift_enter_newline)
                     {
                         source.send_key(&bytes.0);
@@ -830,6 +853,7 @@ impl TerminalView {
             let point = |col: usize, row: usize| Point::new(Line(row as i32 - offset), Column(col));
             match op {
                 Op::Scroll(n) => t.scroll(n),
+                Op::ScrollTop => t.scroll_to_top(),
                 Op::ScrollBottom => t.scroll_to_bottom(),
                 Op::SelStart { col, row, right_half, clicks } => {
                     let ty = match clicks {
@@ -918,6 +942,23 @@ impl PasteWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_page_keys_scroll_the_scrollback_but_a_full_screen_program_keeps_them() {
+        use egui::{Key as K, Modifiers as M};
+        let ctrl_shift = M { ctrl: true, shift: true, ..M::NONE };
+        let main = TermMode::empty();
+        assert!(matches!(scrollback_key(K::PageUp, M::SHIFT, main, 30), Some(Op::Scroll(29))));
+        assert!(matches!(scrollback_key(K::PageDown, M::SHIFT, main, 30), Some(Op::Scroll(-29))));
+        assert!(matches!(scrollback_key(K::Home, ctrl_shift, main, 30), Some(Op::ScrollTop)));
+        assert!(matches!(scrollback_key(K::End, ctrl_shift, main, 30), Some(Op::ScrollBottom)));
+        assert!(matches!(scrollback_key(K::PageUp, M::SHIFT, main, 1), Some(Op::Scroll(1))), "a page is at least a line");
+        // Shift+Home selects to the line start in a shell; plain PgUp and Alt chords are the program's.
+        assert!(scrollback_key(K::Home, M::SHIFT, main, 30).is_none());
+        assert!(scrollback_key(K::PageUp, M::NONE, main, 30).is_none());
+        assert!(scrollback_key(K::PageUp, M { alt: true, shift: true, ..M::NONE }, main, 30).is_none());
+        assert!(scrollback_key(K::PageUp, M::SHIFT, TermMode::ALT_SCREEN, 30).is_none(), "vim and less get the key");
+    }
 
     fn key(pressed: bool, command: bool) -> Event {
         let modifiers = if command { egui::Modifiers::COMMAND } else { egui::Modifiers::NONE };

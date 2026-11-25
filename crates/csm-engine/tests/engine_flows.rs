@@ -1045,6 +1045,92 @@ fn rail_tab_and_pane_steps_wrap_round_the_tabs_and_the_awake_sessions() {
 }
 
 #[test]
+fn session_and_group_steps_walk_the_sidebar_across_groups_without_wrapping() {
+    let h = H::new();
+    let one = h.ok("group_new", json!({"name": "One"})).data["group_id"].as_str().unwrap().to_owned();
+    let two = h.ok("group_new", json!({"name": "Two"})).data["group_id"].as_str().unwrap().to_owned();
+    let a = h.session("pwsh");
+    let b = h.session("pwsh");
+    let c = h.session("pwsh");
+    let loose = h.session("pwsh");
+    h.ok("session_move_to_group", json!({"session_id": a, "group_id": one}));
+    h.ok("session_move_to_group", json!({"session_id": b, "group_id": one}));
+    h.ok("session_move_to_group", json!({"session_id": c, "group_id": two}));
+    let focused = || h.engine.view().focused.clone();
+    // Default order: One (a, b), Two (c), then the ungrouped.
+    h.ok("session_focus", json!({"session_id": a}));
+    h.ok("session_focus_next", json!({}));
+    assert_eq!(focused().as_deref(), Some(b.as_str()));
+    h.ok("session_focus_next", json!({}));
+    assert_eq!(focused().as_deref(), Some(c.as_str()), "Next crosses into the next group");
+    h.ok("session_focus_next", json!({}));
+    assert_eq!(focused().as_deref(), Some(loose.as_str()), "the ungrouped come last");
+    let out = h.ok("session_focus_next", json!({}));
+    assert_eq!(out.data["session_id"], json!(null), "no wrap at the bottom");
+    assert_eq!(focused().as_deref(), Some(loose.as_str()));
+    // A sleeping session is skipped, never woken.
+    h.ok("session_sleep", json!({"session_id": c}));
+    h.ok("session_focus_prev", json!({}));
+    assert_eq!(focused().as_deref(), Some(b.as_str()), "Previous skips the sleeping one");
+    h.ok("session_wake", json!({"session_id": c}));
+    h.ok("session_focus", json!({"session_id": b}));
+    // The caller's order wins (the UI passes the sidebar as drawn); unknown ids are skipped.
+    h.ok("session_focus_next", json!({"order": [loose, "nope", b, a]}));
+    assert_eq!(focused().as_deref(), Some(a.as_str()));
+    // Groups: from One, Next goes to Two, then to the ungrouped, and stops there.
+    h.ok("group_focus_next", json!({}));
+    assert_eq!(focused().as_deref(), Some(c.as_str()));
+    h.ok("group_focus_next", json!({}));
+    assert_eq!(focused().as_deref(), Some(loose.as_str()));
+    assert_eq!(h.ok("group_focus_next", json!({})).data["session_id"], json!(null), "no wrap at the last group");
+    // Back into One lands on the session last focused there (a), not its first.
+    h.ok("session_focus", json!({"session_id": b}));
+    h.ok("session_focus", json!({"session_id": a}));
+    h.ok("session_focus", json!({"session_id": loose}));
+    h.ok("group_focus_prev", json!({}));
+    assert_eq!(focused().as_deref(), Some(c.as_str()));
+    h.ok("group_focus_prev", json!({}));
+    assert_eq!(focused().as_deref(), Some(a.as_str()), "the group's last-focused session");
+    assert_eq!(h.ok("group_focus_prev", json!({})).data["session_id"], json!(null), "no wrap at the first group");
+    for bad in [json!({"order": "a"}), json!({"other": 1})] {
+        assert!(matches!(h.ui("session_focus_next", bad.clone()), Err(ToolError::InvalidParams(_))), "{bad}");
+    }
+}
+
+#[test]
+fn back_and_forward_walk_the_focus_history_like_a_browser() {
+    let h = H::new();
+    let a = h.session("pwsh");
+    let b = h.session("pwsh");
+    let c = h.session("pwsh");
+    let focused = || h.engine.view().focused.clone();
+    for id in [&a, &b, &c] {
+        h.ok("session_focus", json!({"session_id": id}));
+    }
+    h.ok("session_back", json!({}));
+    assert_eq!(focused().as_deref(), Some(b.as_str()));
+    h.ok("session_back", json!({}));
+    assert_eq!(focused().as_deref(), Some(a.as_str()));
+    h.ok("session_forward", json!({}));
+    assert_eq!(focused().as_deref(), Some(b.as_str()));
+    h.ok("session_forward", json!({}));
+    assert_eq!(focused().as_deref(), Some(c.as_str()));
+    assert_eq!(h.ok("session_forward", json!({})).data["session_id"], json!(null), "nothing further forward");
+    // A new focus after going back clears Forward.
+    h.ok("session_back", json!({}));
+    h.ok("session_focus", json!({"session_id": a}));
+    assert_eq!(h.ok("session_forward", json!({})).data["session_id"], json!(null));
+    // Back skips a closed session and a sleeping one.
+    h.ok("session_focus", json!({"session_id": b}));
+    h.ok("session_focus", json!({"session_id": c}));
+    h.ok("session_close", json!({"session_id": b, "force": true}));
+    h.ok("session_sleep", json!({"session_id": a}));
+    let out = h.ok("session_back", json!({}));
+    assert_eq!(out.data["session_id"], json!(null), "both earlier sessions are gone or asleep");
+    assert_eq!(focused().as_deref(), Some(c.as_str()));
+}
+
+#[test]
 fn quit_claude_concurrency_is_a_setting_with_a_default_and_a_range() {
     let h = H::new();
     assert_eq!(h.ok("settings_get", json!({"key": "QuitClaudeConcurrency"})).data["value"], json!(4));

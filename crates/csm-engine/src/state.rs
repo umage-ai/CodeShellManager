@@ -291,6 +291,10 @@ pub(crate) struct Runtime {
     pub(crate) addons: crate::addons::Catalogue,
     pub sessions: HashMap<String, SessionRt>,
     pub focused: Option<String>,
+    /// The sessions focused before the focused one, newest last (`session_back`).
+    pub(crate) focus_back: Vec<String>,
+    /// The sessions `session_back` left, newest last (`session_forward`); a new focus clears it.
+    pub(crate) focus_forward: Vec<String>,
     /// Sessions being restarted: their old PTY is going, the new one not started yet.
     pub restarting: HashSet<String>,
     /// Restore loop: sessions still to start.

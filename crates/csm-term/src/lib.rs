@@ -429,6 +429,12 @@ impl Terminal {
         self.touch();
     }
 
+    /// Shows the oldest line of the scrollback.
+    pub fn scroll_to_top(&mut self) {
+        self.term.scroll_display(Scroll::Top);
+        self.touch();
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         if self.term.grid().display_offset() != 0 {
             self.term.scroll_display(Scroll::Bottom);
