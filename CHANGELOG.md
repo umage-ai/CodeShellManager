@@ -167,6 +167,7 @@ file drop; Claude slash-command menu; `--clean`.
 
 ### Fixed
 
+- **An older pre-release can no longer silently replace a newer one** (SEC-48): the MSI records a build order (see `docs/release.md`, "Version scheme") and refuses to install an older build over it, with `ALLOWOLDER=1` as the way round it. Dev builds neither check nor record.
 - **A full disk no longer makes saving fail silently** (COR-5): a red strip under the title bar says sessions are not being saved, the save is retried with backoff, and it clears (with a toast) when a save works.
 - **A `state.json` that is locked or unreadable is never replaced** (COR-6): the app retries the read, then starts read-only (nothing saved, nothing moved aside) with a notice, instead of treating it as corrupt and saving an empty state over it. Likewise `tasks.json`, and the Review add-on's threads (COR-28), which also keep memory and disk in step when a save fails.
 - **Quit waits for a restart's old Claude** before it checks `~/.claude.json` (COR-7), and a restart whose worker thread cannot start no longer leaves the session stuck or the restart guard held (COR-8).

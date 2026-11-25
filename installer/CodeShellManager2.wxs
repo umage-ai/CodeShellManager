@@ -21,6 +21,16 @@
     <?define Channel = "beta" ?>
   <?endif?>
 
+  <!-- Build order (SEC-48; docs/release.md, "Version scheme"): an integer the release workflow
+       computes, -d BuildOrder=<n>, with -d BuildOrderGuid=<guid> (unique per build order).
+       0 (the default, and every dev build) means: no check, nothing recorded of its own. -->
+  <?ifndef BuildOrder ?>
+    <?define BuildOrder = "0" ?>
+  <?endif?>
+  <?ifndef BuildOrderGuid ?>
+    <?define BuildOrderGuid = "B2F6E0D4-7C1A-4E58-9A3D-5C8E1F40A7B9" ?>
+  <?endif?>
+
   <!-- The beta's own UpgradeCode. The stable channel removes an install of it (below). -->
   <?define BetaUpgradeCode = "8B16A8B3-05F0-4048-B8DD-40B3AC84FF55" ?>
 
@@ -57,8 +67,27 @@
          product is removed before the new one is installed (the default schedule), so the WPF
          app's files (CodeShellManager.exe, Assets\) leave its folder (C:\Program Files\umage\...,
          not this product's); its data does not. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallValidate"
                   DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Please uninstall it first." />
+
+    <!-- Build-order guard (SEC-48). Windows Installer compares only the first three version
+         fields, so the version alone cannot stop beta.2 replacing beta.5. Each tagged build
+         instead records its BuildOrder under HKLM (component BuildOrderRecord, below); this
+         search reads the value of an install that is already there, before anything is removed,
+         and the launch condition refuses a build whose order is lower.
+         - Installed is true on repair, uninstall and maintenance, so those never trip it.
+         - The same build again: its order is not lower, and it is a repair anyway.
+         - A garbage value (not an integer) compares false, so it never blocks.
+         - ALLOWOLDER=1 on the msiexec command line is the escape hatch (a deliberate downgrade).
+         - BuildOrder 0 (dev builds) has no condition at all. -->
+    <Property Id="CSMBUILDORDER">
+      <RegistrySearch Id="BuildOrderSearch" Root="HKLM" Key="$(var.RegistryKey)" Name="BuildOrder"
+                      Type="raw" Bitness="always64" />
+    </Property>
+    <?if $(var.BuildOrder) != "0" ?>
+    <Launch Condition="Installed OR ALLOWOLDER OR NOT (CSMBUILDORDER &gt; $(var.BuildOrder))"
+            Message="A newer $(var.ProductName) build (build order [CSMBUILDORDER]) is already installed. Uninstall it first to go back to an older build, or run the installer with ALLOWOLDER=1." />
+    <?endif?>
 
     <?if $(var.Channel) = "stable" ?>
     <!-- A CodeShellManager Beta install is removed too, found by its UpgradeCode (never by its
@@ -166,6 +195,30 @@
       <Component Directory="INSTALLFOLDER" Guid="*">
         <File Id="CodeShellExe" Source="$(var.PublishDir)\codeshell.exe" KeyPath="yes" />
       </Component>
+
+      <!-- The recorded build order (see the guard in the Package). The component's GUID is
+           UNIQUE PER BUILD ORDER, on purpose. A GUID shared by every build would make the old
+           and new product co-own one component, and whether the old product's removal deletes
+           the value the new one needs would then depend on re-costing and on where
+           RemoveExistingProducts runs. With distinct GUIDs nothing is shared: the new product's
+           component is plainly "not installed", and the old product (removed entirely before the
+           new one installs, Schedule="afterInstallValidate" above) deletes only its own value
+           before the new one is written. A real uninstall removes the value, so an older build
+           can then be installed fresh.
+           Dev builds (BuildOrder 0) write nothing of their own: they carry over whatever the
+           search found (the replaced product's component takes it away on removal, so without
+           this a dev build would lower the record). -->
+      <?if $(var.BuildOrder) != "0" ?>
+      <Component Id="BuildOrderRecord" Directory="INSTALLFOLDER" Guid="$(var.BuildOrderGuid)">
+        <RegistryValue Root="HKLM" Key="$(var.RegistryKey)" Name="BuildOrder" Type="string"
+                       Value="$(var.BuildOrder)" KeyPath="yes" />
+      </Component>
+      <?else?>
+      <Component Id="BuildOrderRecord" Directory="INSTALLFOLDER" Guid="$(var.BuildOrderGuid)" Condition="CSMBUILDORDER">
+        <RegistryValue Root="HKLM" Key="$(var.RegistryKey)" Name="BuildOrder" Type="string"
+                       Value="[CSMBUILDORDER]" KeyPath="yes" />
+      </Component>
+      <?endif?>
 
       <!-- The pre-umage.ai folders. 0.x and the 2.0 betas installed to
            C:\Program Files\umage\<FolderName>; the major upgrade removes that product (and its

@@ -76,7 +76,7 @@ for the stable channel.
 | MSI UpgradeCode | `3F7A9B1C-2D5E-4F8A-B0C3-6E1D9A4F2B7E` | same | **Must match**: it is how MSI MajorUpgrade, and winget's installed-package correlation, find the WPF app. Changed from the beta's code for the stable channel. |
 | MSI ProductCode | new per build (WiX `*`) | new per build | Must differ per version (major upgrade). OK. |
 | MSI scope | `perMachine` | `perMachine` | **Must match**: a major upgrade only sees products of its own scope. Matches. |
-| MajorUpgrade | default (no same-version upgrade) | `AllowSameVersionUpgrades="yes"` (re-installing the same build repairs it; pre-releases are ordered by the version scheme) | Fine; WiX warns ICE61, expected. The old product is removed before the new one is installed (default schedule). |
+| MajorUpgrade | default (no same-version upgrade) | `AllowSameVersionUpgrades="yes"` (re-installing the same build repairs it; pre-releases are ordered by the build-order guard, see "Version scheme") | Fine; WiX warns ICE61, expected. The old product is removed before the new one is installed (default schedule). |
 | MSI ProductVersion | `0.11.0` (tag version) | final: `2.0.0` (tag version); rc: `2.0.0.(100+N)`; beta: `2.0.0.N`; dev: `2.0.0.0` (see "Version scheme") | 2.x > 0.x, so every v2 build upgrades the WPF app. A final is exactly the tag version, as the WPF app's were, so ARP shows the version winget and Chocolatey publish. |
 | Package version (winget, Chocolatey, tag) | `0.11.0` | `2.0.0` | Decided: version 2 starts at 2.0.0. Higher than 0.11.x for every package manager. |
 | Install folder | `ProgramFiles64\umage\CodeShellManager` | `ProgramFiles64\umage.ai\CodeShellManager` | **Differs on purpose** (the company name reads "umage.ai" everywhere). A clean break: the upgrade removes the WPF app (its files and its folder, when empty) and installs into the new folder. See "The install folder moved". |
@@ -155,21 +155,49 @@ MAJOR >= 2 (the workflows' Versions steps check it again with a strict ASCII reg
 MSI ProductVersion must be numeric `major.minor.build[.revision]`, and Windows Installer compares
 only the first three fields. Pre-releases put their number in the fourth:
 
-| Tag | Channel | MSI ProductVersion | GitHub release |
-|---|---|---|---|
-| (dispatch) `2.0.0-dev.<run>` | input (`beta` default) | `2.0.0.0` | none (workflow artifact) |
-| `v2.0.0-beta.N` | beta | `2.0.0.N` | pre-release |
-| `v2.0.0-rc.N` | stable | `2.0.0.(100+N)` | pre-release |
-| `v2.0.0` | stable | `2.0.0` | release, latest |
+| Tag | Channel | MSI ProductVersion | Build order | GitHub release |
+|---|---|---|---|---|
+| (dispatch) `2.0.0-dev.<run>` | input (`beta` default) | `2.0.0.0` | `0` (no check, no record) | none (workflow artifact) |
+| `v2.0.0-beta.N` | beta | `2.0.0.N` | `20000100 + N` | pre-release |
+| `v2.0.0-rc.N` | stable | `2.0.0.(100+N)` | `20000200 + N` | pre-release |
+| `v2.0.0` | stable | `2.0.0` | `20000300` | release, latest |
 
-`AllowSameVersionUpgrades` is on, so any build of 2.0.0 replaces any other. Every v2 build is above
-the WPF app's `0.x`, so it upgrades it.
+`AllowSameVersionUpgrades` is on, so any build of 2.0.0 replaces any other as far as the version
+goes. Every v2 build is above the WPF app's `0.x`, so it upgrades it.
 
-**Known gap (review finding SEC-48, open):** because the fourth field is ignored, an older
-pre-release can replace a newer one (beta.2 over beta.5) without a warning. Moving the number into
-the first three fields (for example `1.20.N` for beta.N) would fix the order, but every build
-already installed as `2.0.0.x` would then look newer than the next one and block it, so each
-tester would have to uninstall first. That is a decision to make before the first public beta.
+**Build order (review finding SEC-48, fixed).** Because the fourth version field is ignored, the
+version cannot stop an older pre-release (beta.2) from replacing a newer one (beta.5). The release
+workflow therefore computes an integer *build order* for every tagged build and passes it to WiX
+(`-d BuildOrder=<n>`):
+
+```
+order = major*10^7 + minor*10^5 + patch*10^3 + stage*100 + N     stage: beta 1, rc 2, final 3
+```
+
+`N` is 1..99 for beta and rc (0 for a final); major, minor and patch are 0..99. The workflow
+refuses anything outside that. Examples: `2.0.0-beta.5` is 20000105, `2.0.0-rc.1` 20000201,
+`2.0.0` 20000300, `2.0.1-beta.1` 20001101. The largest value is below 10^9, under 2^31-1, because
+Windows Installer conditions compare 32-bit integers (the docs say integers only, no floating
+point; the 32-bit width is the installer's `int`, not stated on the condition-syntax page).
+
+The MSI records its order in `HKLM\Software\umage.ai\CodeShellManager2Beta` (beta) or
+`...\CodeShellManager` (stable), value `BuildOrder`. A search reads the recorded value of an
+installed build before anything is removed, and a launch condition refuses to install when it is
+greater than this build's: "A newer CodeShellManager Beta build (build order N) is already
+installed. Uninstall it first to go back to an older build". It does not fire on repair, uninstall
+or maintenance (`Installed`), nor when the same build is reinstalled. Stable and beta keep separate
+records.
+
+- **Escape hatch:** `msiexec /i CodeShellManager-<ver>-Setup.msi ALLOWOLDER=1` installs the older
+  build anyway (the record then drops to the older build's order).
+- **Dev builds** (order 0) neither check nor record, so they never block a later beta. Installing
+  one over a tagged build carries the recorded order across, so it does not lower it.
+- **Upgrade ordering:** the record's component has a GUID unique per build, so the old and new
+  products share nothing. `MajorUpgrade` is scheduled `afterInstallValidate`, so the old product is
+  removed completely (deleting only its own value) before the new one is installed and writes its
+  own. After a real uninstall the value is gone and an older build installs fresh. Do not move
+  `RemoveExistingProducts` after `InstallFinalize` without revisiting this: the old product's
+  removal would then delete the new value.
 
 **State files.** A `state.json` written by a newer app (its `CsmRsVersion` above what this build
 writes, `persist::STATE_FILE_VERSION`) is not loaded: the app starts empty and read-only, shows a
