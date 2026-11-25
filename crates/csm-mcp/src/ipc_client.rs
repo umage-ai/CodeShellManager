@@ -43,7 +43,13 @@ fn matches_instance(record: &InstanceRecord, selector: &str) -> bool {
     let selector = selector.trim();
     match selector.parse::<u32>() {
         Ok(pid) => record.pid == pid,
-        Err(_) => record.caps().contains(&wire::state_cap(std::path::Path::new(selector))),
+        // A record that names no state file at all comes from a build before the `state.` cap (an
+        // app still running across an upgrade): it may be the one on this file, so it matches,
+        // or a second launch would start another app on the same `state.json`.
+        Err(_) => {
+            let caps = record.caps();
+            caps.contains(&wire::state_cap(std::path::Path::new(selector))) || !caps.iter().any(|c| c.starts_with("state."))
+        }
     }
 }
 

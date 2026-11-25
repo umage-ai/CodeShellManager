@@ -370,3 +370,18 @@ fn instances_are_selected_by_state_file_and_the_handoff_only_reaches_the_same_on
     handle.shutdown().unwrap();
     drop(engine);
 }
+
+#[test]
+fn an_older_instance_that_names_no_state_file_still_receives_the_second_launch() {
+    // An app from before the `state.` cap, still running across an upgrade, must be raised rather
+    // than have a second app started beside it on the same state.json.
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = || RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let engine = common::engine();
+    let handle = serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), ..IpcOptions::default() }).unwrap();
+    let state = dir.path().join("state.json");
+    assert!(csm_mcp::activate_running(RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() }, &state).unwrap());
+    handle.shutdown().unwrap();
+    drop(engine);
+}
