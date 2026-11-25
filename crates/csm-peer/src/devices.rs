@@ -26,6 +26,11 @@ pub struct Device {
     /// the person ticked the box.
     #[serde(default = "trusted_by_default")]
     pub trusted: bool,
+    /// The random routing token this pairing uses on the relay (base64url, 32 bytes). A record
+    /// without one was paired before tokens were random: its token is derived from its key (and
+    /// stays so until it is paired again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_token: Option<String>,
 }
 
 fn trusted_by_default() -> bool {
@@ -37,9 +42,18 @@ impl Device {
         b64_decode_fixed(&self.public)
     }
 
+    /// What the relay's allow list holds for this device: the hash of its random token, or, for an
+    /// older pairing, of the token its key derives.
+    pub fn relay_hash(&self) -> Option<[u8; 32]> {
+        match self.relay_token.as_deref() {
+            Some(t) => b64_decode_fixed::<32>(t).map(|t| csm_remote_proto::ids::token_hash(&t)),
+            None => self.public_key().map(|k| crate::relay_pump::device_relay_hash(&k)),
+        }
+    }
+
     /// An entry that passes every check: a name, a key, and the id the key gives.
     fn sound(&self) -> bool {
-        valid_name(&self.name) && is_valid_id(&self.id) && self.public_key().is_some_and(|k| device_id(&k) == self.id)
+        valid_name(&self.name) && is_valid_id(&self.id) && self.public_key().is_some_and(|k| device_id(&k) == self.id) && self.relay_token.as_deref().is_none_or(|t| b64_decode_fixed::<32>(t).is_some())
     }
 }
 
@@ -106,9 +120,9 @@ impl DeviceStore {
     }
 
     /// Adds a device (or replaces the one with the same key: pairing again renames and renews it).
-    pub fn add(&mut self, name: &str, key: &[u8; KEY_LEN], level: Level, trusted: bool, now: u64) -> std::io::Result<Device> {
+    pub fn add(&mut self, name: &str, key: &[u8; KEY_LEN], level: Level, trusted: bool, relay_token: Option<String>, now: u64) -> std::io::Result<Device> {
         let id = device_id(key);
-        let d = Device { id: id.clone(), name: name.trim().to_owned(), public: b64_encode(key), level, paired_at: now, last_seen: None, trusted };
+        let d = Device { id: id.clone(), name: name.trim().to_owned(), public: b64_encode(key), level, paired_at: now, last_seen: None, trusted, relay_token };
         let mut next = self.devices.clone();
         next.retain(|x| x.id != id);
         if next.len() >= MAX_DEVICES {
@@ -175,8 +189,8 @@ mod tests {
         let p = d.path().join("devices.json");
         let mut s = DeviceStore::load(&p).unwrap();
         assert!(s.list().is_empty());
-        let a = s.add("Laptop", &[1; 32], Level::Full, true, 100).unwrap();
-        s.add("Phone", &[2; 32], Level::Full, true, 101).unwrap();
+        let a = s.add("Laptop", &[1; 32], Level::Full, true, None, 100).unwrap();
+        s.add("Phone", &[2; 32], Level::Full, true, None, 101).unwrap();
         assert_eq!(s.find_by_key(&[1; 32]).unwrap().id, a.id);
         s.touch(&a.id, 200);
         let s2 = DeviceStore::load(&p).unwrap();
@@ -203,7 +217,7 @@ mod tests {
         assert!(s.set_trusted(&id, false).unwrap());
         assert!(!DeviceStore::load(&p).unwrap().list()[0].trusted);
         assert!(!s.set_trusted("nope", true).unwrap());
-        let added = s.add("New", &[8; 32], Level::Full, false, 9).unwrap();
+        let added = s.add("New", &[8; 32], Level::Full, false, None, 9).unwrap();
         assert!(!DeviceStore::load(&p).unwrap().find(&added.id).unwrap().trusted);
     }
 
@@ -211,8 +225,8 @@ mod tests {
     fn pairing_the_same_key_again_replaces_it() {
         let d = tempfile::tempdir().unwrap();
         let mut s = DeviceStore::load(&d.path().join("d.json")).unwrap();
-        s.add("Old", &[1; 32], Level::Full, true, 1).unwrap();
-        s.add("New", &[1; 32], Level::Full, true, 2).unwrap();
+        s.add("Old", &[1; 32], Level::Full, true, None, 1).unwrap();
+        s.add("New", &[1; 32], Level::Full, true, None, 2).unwrap();
         assert_eq!(s.list().len(), 1);
         assert_eq!(s.list()[0].name, "New");
     }
@@ -221,9 +235,9 @@ mod tests {
     fn a_hand_edited_file_cannot_smuggle_a_bad_entry() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("d.json");
-        let good = Device { id: device_id(&[3; 32]), name: "Good".into(), public: b64_encode(&[3; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true };
-        let wrong_id = Device { id: device_id(&[9; 32]), name: "Liar".into(), public: b64_encode(&[4; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true };
-        let bad_name = Device { id: device_id(&[5; 32]), name: "a\u{202E}b".into(), public: b64_encode(&[5; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true };
+        let good = Device { id: device_id(&[3; 32]), name: "Good".into(), public: b64_encode(&[3; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true, relay_token: None };
+        let wrong_id = Device { id: device_id(&[9; 32]), name: "Liar".into(), public: b64_encode(&[4; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true, relay_token: None };
+        let bad_name = Device { id: device_id(&[5; 32]), name: "a\u{202E}b".into(), public: b64_encode(&[5; 32]), level: Level::Full, paired_at: 1, last_seen: None, trusted: true, relay_token: None };
         let dup = good.clone();
         std::fs::write(&p, serde_json::to_string(&File { v: 1, devices: vec![good.clone(), wrong_id, bad_name, dup] }).unwrap()).unwrap();
         let s = DeviceStore::load(&p).unwrap();
@@ -237,8 +251,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut s = DeviceStore::load(&d.path().join("d.json")).unwrap();
         for i in 0..MAX_DEVICES {
-            s.add("D", &[u8::try_from(i).unwrap(); 32], Level::Full, true, 1).unwrap();
+            s.add("D", &[u8::try_from(i).unwrap(); 32], Level::Full, true, None, 1).unwrap();
         }
-        assert!(s.add("One more", &[200; 32], Level::Full, true, 1).is_err());
+        assert!(s.add("One more", &[200; 32], Level::Full, true, None, 1).is_err());
+    }
+
+    #[test]
+    fn a_pairing_with_a_random_token_is_listed_by_that_and_an_older_one_by_its_key() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = DeviceStore::load(&d.path().join("d.json")).unwrap();
+        let token = b64_encode(&[9u8; 32]);
+        let new = s.add("New", &[1; 32], Level::Full, true, Some(token), 1).unwrap();
+        let old = s.add("Old", &[2; 32], Level::Full, true, None, 2).unwrap();
+        assert_eq!(new.relay_hash(), Some(csm_remote_proto::ids::token_hash(&[9u8; 32])), "the random token decides, not the key");
+        assert_ne!(new.relay_hash(), Some(crate::relay_pump::device_relay_hash(&[1; 32])));
+        assert_eq!(old.relay_hash(), Some(crate::relay_pump::device_relay_hash(&[2; 32])), "a pairing from before tokens were random keeps working");
+        // A record on disk without the field is the old kind; one with a damaged token is dropped.
+        let text = std::fs::read_to_string(d.path().join("d.json")).unwrap();
+        assert!(!text.contains("\"Old\"") || text.matches("relay_token").count() == 1, "the field is written only when there is a token");
+        let mut bad = new.clone();
+        bad.relay_token = Some("not a token".into());
+        assert!(!bad.sound());
     }
 }

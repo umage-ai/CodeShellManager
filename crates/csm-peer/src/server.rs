@@ -34,7 +34,7 @@ use csm_peer_proto::addr::{PeerAddr, check_bind};
 use csm_peer_proto::codec::{CodecError, Frame};
 use csm_peer_proto::ids::{PAIRING_ID_LEN, PSK_LEN};
 use csm_peer_proto::msg::{ByeReason, ConsentOutcome, ErrorKind, Level, Msg, Outcome, PROTOCOL_VERSION, UploadKind, UploadRefused, check_term_versions, valid_name};
-use csm_peer_proto::noise::{MAX_PAIR_ATTEMPTS, Route, check_code, route};
+use csm_peer_proto::noise::{Route, check_code, route};
 use csm_peer_proto::pairing::{DenyReason, PairMsg, PeerOffer, SLOT_SECS};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -43,14 +43,14 @@ use crate::audit::{Audit, clean};
 use crate::devices::{Device, DeviceStore, level_name};
 use crate::fsperm;
 use crate::identity::Identity;
-use crate::relay_pump::{AllowList, HostRoute, HostStatus, OnChannel, RelayHost, device_relay_hash};
+use crate::relay_pump::{AllowList, HostRoute, HostStatus, OnChannel, RelayHost};
 use csm_engine::{RelayInfo, RelaySetRequest};
 use csm_remote_proto::ids::{b64_decode_fixed, b64_encode};
 use crate::transport::Stream;
 use crate::uploads::{self, Plan, UploadHub};
 use csm_peer_proto::pairing::RelayRoute;
 use csm_remote_proto::relay::HostToRelay;
-use crate::link::{Established, Io, Link, LinkError, Reader, respond};
+use crate::link::{Established, Io, Link, LinkError, OUTBOX_LEN, Outbox, Reader, respond};
 use crate::serve::{Drivers, Knobs, Serving, Who};
 use crate::{TERM_VERSION, unix_secs};
 
@@ -67,8 +67,17 @@ pub struct ServerConfig {
     pub pending_ttl: Duration,
     /// Time a new connection has to finish its handshake and first message.
     pub handshake_timeout: Duration,
-    /// Connections that have not finished authenticating at once; more are dropped unanswered.
+    /// Direct connections that have not finished authenticating at once. When the pool is full the
+    /// oldest is closed to make room, so a slow or silent one cannot hold the others out.
     pub max_unauthenticated: usize,
+    /// The same for connections that come through the relay (a separate pool: neither can use up
+    /// the other's room).
+    pub max_unauthenticated_relay: usize,
+    /// Unauthenticated direct connections from one address at once; more from it are dropped.
+    pub max_unauthenticated_per_ip: usize,
+    /// Time a new connection has to send its first frame (the selector), shorter than the
+    /// handshake time: a real client sends it at once.
+    pub first_frame_timeout: Duration,
     /// Tool calls from devices running at once.
     pub max_in_flight_calls: usize,
     pub ping_every: Duration,
@@ -99,6 +108,9 @@ impl Default for ServerConfig {
             pending_ttl: Duration::from_secs(120),
             handshake_timeout: Duration::from_secs(10),
             max_unauthenticated: 8,
+            max_unauthenticated_relay: 8,
+            max_unauthenticated_per_ip: 4,
+            first_frame_timeout: Duration::from_secs(3),
             max_in_flight_calls: 16,
             ping_every: Duration::from_secs(15),
             dead_after: Duration::from_secs(45),
@@ -120,6 +132,32 @@ struct Choice {
     address: String,
     port: u16,
     all_interfaces: bool,
+    /// A keyed hash of the fields above, made with a key in the keychain: the app that wrote the
+    /// choice can tell it was not edited since. Absent when no keychain was wired (or on a file
+    /// from an older build).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mac: Option<String>,
+}
+
+const MAC_KEY: &str = "state.mac-key";
+
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    use csm_remote_proto::ids::sha256;
+    let mut block = [0u8; 64];
+    for (d, s) in block.iter_mut().zip(key) {
+        *d = *s;
+    }
+    let mut inner: Vec<u8> = block.iter().map(|b| b ^ 0x36).collect();
+    inner.extend_from_slice(msg);
+    let mut outer: Vec<u8> = block.iter().map(|b| b ^ 0x5c).collect();
+    outer.extend_from_slice(&sha256(&inner));
+    sha256(&outer)
+}
+
+impl Choice {
+    fn canonical(&self) -> String {
+        format!("csm-peer server.json|{}|{}|{}|{}|{}", self.v, self.enabled, self.address, self.port, self.all_interfaces)
+    }
 }
 
 struct Run {
@@ -127,6 +165,10 @@ struct Run {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
+
+/// Failed pairing handshakes (the key not proven) one offer takes before it closes. Generous on
+/// purpose: the offer's id travels in the clear, and the key is 256 random bits.
+const MAX_BAD_PAIRINGS: u8 = 30;
 
 struct Slot {
     id: [u8; PAIRING_ID_LEN],
@@ -142,12 +184,13 @@ impl Slot {
         !self.consumed && Instant::now() < self.expires
     }
     fn usable(&self) -> bool {
-        !self.consumed && self.attempts < MAX_PAIR_ATTEMPTS && Instant::now() < self.expires
+        !self.consumed && self.attempts < MAX_BAD_PAIRINGS && Instant::now() < self.expires
     }
 }
 
 enum Answer {
-    Allow,
+    /// Allowed, at the level the person chose.
+    Allow(Level),
     Deny,
 }
 
@@ -158,13 +201,27 @@ struct Pending {
     since: Instant,
     wrong: u8,
     answer: Sender<Answer>,
+    /// The random relay routing token made for this pairing (base64url), when the device asked for
+    /// one. It is saved with the device and sent in the Accept.
+    relay_token: Option<String>,
 }
 
 struct Conn {
     device_id: String,
     link: Arc<Link>,
     level: Level,
+    /// Set once the Welcome has gone out: nothing is broadcast to a connection before it.
+    ready: bool,
+    /// The queue (and writer thread) broadcasts and replies from the reader thread go through.
+    out: Outbox,
 }
+
+/// Connections one paired device may hold at once (a laptop that reconnects after a Wi-Fi flap
+/// while its old connection is still timing out, a second window). The oldest is replaced beyond it.
+const MAX_CONNS_PER_DEVICE: usize = 4;
+
+/// Consent answers being handled at once, all devices together; more are answered "forbidden".
+const MAX_CONSENT_ANSWERS: usize = 8;
 
 struct St {
     prepared: bool,
@@ -175,6 +232,9 @@ struct St {
     choice: Option<(SocketAddr, bool)>,
     run: Option<Run>,
     waiting: Option<String>,
+    /// The saved "every interface" choice that could not be proven unchanged (`ip:port`): the
+    /// listener runs on loopback until the person turns it on for every interface again.
+    unconfirmed: Option<String>,
     /// Bumped by every enable and disable; a retry or a connection that started under an older
     /// one does nothing.
     generation: u64,
@@ -192,8 +252,11 @@ struct Inner {
     drivers: Drivers,
     dead: AtomicBool,
     next_conn: AtomicU64,
-    unauth: AtomicUsize,
+    /// The connections that have not finished authenticating, in two pools (direct and relay).
+    preauth: Mutex<PreAuth>,
     in_flight: Arc<AtomicUsize>,
+    /// Consent answers being handled right now (at most `MAX_CONSENT_ANSWERS`).
+    consents: Arc<AtomicUsize>,
     /// Uploads open across every link (at most `UPLOAD_ACTIVE_TOTAL`).
     uploads_active: Arc<AtomicUsize>,
     /// The bytes the uploads folder holds, across every link (at most `UPLOAD_FOLDER_QUOTA`).
@@ -231,6 +294,7 @@ impl PeerServer {
             choice: None,
             run: None,
             waiting: None,
+            unconfirmed: None,
             generation: 0,
             slot: None,
             pending: None,
@@ -248,8 +312,9 @@ impl PeerServer {
                 drivers: Drivers::default(),
                 dead: AtomicBool::new(false),
                 next_conn: AtomicU64::new(1),
-                unauth: AtomicUsize::new(0),
+                preauth: Mutex::new(PreAuth::default()),
                 in_flight: Arc::new(AtomicUsize::new(0)),
+                consents: Arc::new(AtomicUsize::new(0)),
                 uploads_active: Arc::new(AtomicUsize::new(0)),
                 upload_quota,
                 housekeeping: Mutex::new(None),
@@ -284,40 +349,54 @@ impl PeerServer {
     /// (it is a file of this server's own, written only by `enable`), so nothing starts.
     /// If the chosen address is missing (a tunnel that is down) it keeps retrying in the
     /// background; it never listens anywhere else.
-    pub fn resume(&self) {
+    ///
+    /// Returns the notice to show the person ("Remote access resumed: ..."), so a host that comes
+    /// back by itself never does so silently. A saved "every interface" choice is honoured only when
+    /// its keyed hash proves this app wrote it; otherwise the host listens on this PC only
+    /// (loopback, the narrowest mode) until the person turns it on for every interface again.
+    pub fn resume(&self) -> Option<String> {
         let path = self.inner.dir.join("server.json");
-        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let text = std::fs::read_to_string(&path).ok()?;
         let Ok(choice) = serde_json::from_str::<Choice>(&text) else {
             log::warn!("remote access: {} is not readable; remote access stays off", path.display());
-            return;
+            return None;
         };
         if choice.v != 1 || !choice.enabled {
-            return;
+            return None;
         }
-        let Ok(ip) = choice.address.parse::<IpAddr>() else { return };
-        let addr = SocketAddr::new(ip, choice.port);
+        let ip = choice.address.parse::<IpAddr>().ok()?;
+        let mut addr = SocketAddr::new(ip, choice.port);
         if check_bind(&addr, choice.all_interfaces).is_err() {
             log::warn!("remote access: the saved address {addr} is not allowed; remote access stays off");
-            return;
+            return None;
+        }
+        let mut all = choice.all_interfaces;
+        let mut unconfirmed = None;
+        if all && !self.inner.choice_verified(&choice) {
+            unconfirmed = Some(addr.to_string());
+            addr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), choice.port);
+            all = false;
         }
         if self.inner.dead.load(Ordering::Acquire) {
-            return;
+            return None;
         }
-        let gen_ = {
+        let (gen_, devices) = {
             let mut st = self.inner.lock();
             if st.run.is_some() || st.choice.is_some() {
-                return;
+                return None;
             }
             // The key and the device list, so connections can be told apart once it listens.
             if let Err(e) = self.inner.prepare(&mut st) {
                 log::warn!("remote access: {e}; remote access stays off");
-                return;
+                return None;
             }
             st.generation += 1;
-            st.choice = Some((addr, choice.all_interfaces));
-            st.generation
+            st.choice = Some((addr, all));
+            st.unconfirmed = unconfirmed.clone();
+            (st.generation, st.devices.as_ref().map_or(0, |d| d.list().len()))
         };
-        self.inner.audit.record("resumed", json!({"address": addr.to_string()}));
+        self.inner.audit.record("resumed", json!({"address": addr.to_string(), "all_interfaces": all, "all_interfaces_unconfirmed": unconfirmed.is_some(), "devices": devices}));
+        let notice = resume_notice(devices, addr, all, unconfirmed.is_some());
         self.restore_relay();
         if let Err(e) = self.inner.try_listen(gen_) {
             self.inner.lock().waiting = Some(e);
@@ -327,6 +406,7 @@ impl PeerServer {
                 log::warn!("remote access: could not start the retry thread: {e}");
             }
         }
+        Some(notice)
     }
 
     /// The remote-access log, newest last (what Settings shows).
@@ -376,9 +456,30 @@ impl Inner {
         Ok(())
     }
 
+    /// The keyed hash of `c`; with `create`, the key is made in the keychain when it is not there yet.
+    fn choice_mac(&self, c: &Choice, create: bool) -> Option<String> {
+        let store = self.secrets.get()?;
+        let key = match store.get(RELAY_SERVICE, MAC_KEY).ok().flatten().and_then(|s| b64_decode_fixed::<32>(&s)) {
+            Some(k) => k,
+            None if create => {
+                let k = crate::random::<32>().ok()?;
+                store.set(RELAY_SERVICE, MAC_KEY, &b64_encode(&k)).ok()?;
+                k
+            }
+            None => return None,
+        };
+        Some(b64_encode(&hmac_sha256(&key, c.canonical().as_bytes())))
+    }
+
+    /// Whether the saved choice is the one this app wrote: its keyed hash matches.
+    fn choice_verified(&self, c: &Choice) -> bool {
+        c.mac.is_some() && self.choice_mac(c, false) == c.mac
+    }
+
     fn save_choice(&self, enabled: bool, addr: Option<SocketAddr>, all: bool) {
         let (address, port) = addr.map_or((String::new(), 0), |a| (a.ip().to_string(), a.port()));
-        let c = Choice { v: 1, enabled, address, port, all_interfaces: all };
+        let mut c = Choice { v: 1, enabled, address, port, all_interfaces: all, mac: None };
+        c.mac = self.choice_mac(&c, true);
         let text = serde_json::to_string_pretty(&c).unwrap_or_default();
         if let Err(e) = fsperm::write_private(&self.dir.join("server.json"), text.as_bytes()) {
             log::warn!("remote access: could not save the choice: {e}");
@@ -441,14 +542,14 @@ impl Inner {
         while !stop.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, peer)) => {
-                    if self.unauth.fetch_add(1, Ordering::AcqRel) >= self.cfg.max_unauthenticated {
-                        self.unauth.fetch_sub(1, Ordering::AcqRel);
+                    let stream = Stream::Tcp(stream);
+                    let Some(ticket) = self.admit(Pool::Direct, Some(peer.ip()), stream.try_clone().ok()) else {
                         continue; // dropped unanswered
-                    }
+                    };
                     let inner = self.clone();
-                    let spawned = std::thread::Builder::new().name("csm-peer-conn".into()).spawn(move || inner.serve(Stream::Tcp(stream), From::Addr(peer), gen_));
+                    let spawned = std::thread::Builder::new().name("csm-peer-conn".into()).spawn(move || inner.serve(stream, From::Addr(peer), gen_, ticket));
                     if spawned.is_err() {
-                        self.unauth.fetch_sub(1, Ordering::AcqRel);
+                        self.leave(ticket);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
@@ -469,6 +570,7 @@ impl Inner {
             st.slot = None;
             self.relay_slot_close();
             st.waiting = None;
+            st.unconfirmed = None;
             (st.run.take(), std::mem::take(&mut st.conns), st.pending.take())
         };
         if let Some(mut run) = run {
@@ -506,14 +608,15 @@ impl Inner {
             devices: st.devices.as_ref().map_or(0, |d| d.list().len()),
             connected: st.conns.len(),
             private_files_restricted: st.restricted,
+            unconfirmed_all_interfaces: st.unconfirmed.clone(),
         }
     }
 
     // ---- one connection ---------------------------------------------------------------------
 
-    fn serve(self: Arc<Self>, stream: Stream, peer: From, gen_: u64) {
+    fn serve(self: Arc<Self>, stream: Stream, peer: From, gen_: u64, ticket: u64) {
         let _ = stream.set_nonblocking(false);
-        let mut guard = Unauth { inner: &self, held: true };
+        let mut guard = Unauth { inner: &self, ticket: Some(ticket) };
         let result = self.serve_inner(stream, peer, gen_, &mut guard);
         drop(guard);
         match result {
@@ -526,22 +629,24 @@ impl Inner {
     fn serve_inner(&self, stream: Stream, peer: From, gen_: u64, guard: &mut Unauth<'_>) -> Result<(), LinkError> {
         let mut io = Io::new(stream).map_err(|e| LinkError::Io(e.to_string()))?;
         let deadline = Instant::now() + self.cfg.handshake_timeout;
-        let pre = io.read_frame_by(deadline)?;
+        // The first frame is due sooner than the rest of the handshake: a real client sends it at once.
+        let pre = io.read_frame_by(Instant::now() + self.cfg.first_frame_timeout.min(self.cfg.handshake_timeout))?;
         if pre.len() > 1 + PAIRING_ID_LEN {
             return Err(LinkError::Refused);
         }
         let (decision, psk, host) = {
-            let mut st = self.lock();
+            let st = self.lock();
             if st.generation != gen_ || st.run.is_none() {
                 return Err(LinkError::Refused);
             }
             let open = st.slot.as_ref().filter(|s| s.usable()).map(|s| s.id);
             let decision = route(&pre, open.as_ref());
             let mut psk = None;
+            // Nothing is counted here: the id is in the clear, so anyone who saw it could use the
+            // slot up. A failed handshake is counted when it fails (`pairing_failed`).
             if decision == Route::Pairing
-                && let Some(slot) = st.slot.as_mut()
+                && let Some(slot) = st.slot.as_ref()
             {
-                slot.attempts += 1;
                 psk = Some(slot.psk);
             }
             (decision, psk, st.host.clone())
@@ -560,18 +665,23 @@ impl Inner {
 
     fn serve_pairing(&self, io: Io, host: &Identity, psk: &[u8; PSK_LEN], arrival: &Arrival, guard: &mut Unauth<'_>) -> Result<(), LinkError> {
         let Arrival { peer, gen_, deadline } = *arrival;
-        let Established { link, mut reader, remote_static, hash } = respond(io, host, Some(psk), &|_| true, deadline)?;
+        let Established { link, mut reader, remote_static, hash } = respond(io, host, Some(psk), &|_| true, deadline).map_err(|e| self.pairing_failed(psk, e))?;
+        // The key is proven only when the first transport message decrypts: a failure before that
+        // is a bad attempt on this slot, and only that kind counts against it.
         let hello = loop {
             if Instant::now() >= deadline {
-                return Err(LinkError::Timeout);
+                return Err(self.pairing_failed(psk, LinkError::Timeout));
             }
-            if let Some(plain) = reader.recv_plain(Duration::from_millis(250))? {
-                break PairMsg::decode(&plain).map_err(|_| LinkError::Protocol("not a pairing hello"))?;
+            match reader.recv_plain(Duration::from_millis(250)) {
+                Ok(Some(plain)) => break PairMsg::decode(&plain).map_err(|_| LinkError::Protocol("not a pairing hello"))?,
+                Ok(None) => {}
+                Err(e) => return Err(self.pairing_failed(psk, e)),
             }
         };
-        let PairMsg::Hello { name, .. } = hello else { return Err(LinkError::Protocol("not a pairing hello")) };
+        let PairMsg::Hello { name, rt, .. } = hello else { return Err(LinkError::Protocol("not a pairing hello")) };
         let (tx, rx) = mpsc::channel::<Answer>();
         let code = check_code(&hash);
+        let relay_token = if rt { Some(b64_encode(&crate::random::<32>().map_err(|e| LinkError::Io(e.to_string()))?)) } else { None };
         {
             let mut st = self.lock();
             let slot_ok = st.generation == gen_ && st.pending.is_none() && st.slot.as_ref().is_some_and(|s| s.open() && s.psk == *psk);
@@ -583,7 +693,7 @@ impl Inner {
                 s.consumed = true;
             }
             st.slot = None;
-            st.pending = Some(Pending { name: clean(&name), check_code: code, key: remote_static, since: Instant::now(), wrong: 0, answer: tx });
+            st.pending = Some(Pending { name: clean(&name), check_code: code, key: remote_static, since: Instant::now(), wrong: 0, answer: tx, relay_token: relay_token.clone() });
         }
         guard.release();
         self.audit.record("pair_requested", json!({"device": clean(&name), "from": peer.to_string()}));
@@ -619,9 +729,9 @@ impl Inner {
             reason = DenyReason::Denied;
         }
         let reply = match answer {
-            Answer::Allow => {
+            Answer::Allow(level) => {
                 let id = csm_peer_proto::ids::device_id(&remote_static);
-                PairMsg::Accept { device_id: id, level: Level::Full }
+                PairMsg::Accept { device_id: id, level, relay_token }
             }
             Answer::Deny => PairMsg::Deny { reason },
         };
@@ -634,6 +744,16 @@ impl Inner {
         std::thread::sleep(Duration::from_millis(50));
         link.close();
         Ok(())
+    }
+
+    /// A pairing handshake that did not prove the key. It counts against the slot, but only a lot
+    /// of them close it (`MAX_BAD_PAIRINGS`): the id is not a secret, so a few must not be enough
+    /// for anyone who saw it to use the slot up.
+    fn pairing_failed(&self, psk: &[u8; PSK_LEN], e: LinkError) -> LinkError {
+        if let Some(slot) = self.lock().slot.as_mut().filter(|s| s.psk == *psk) {
+            slot.attempts = slot.attempts.saturating_add(1);
+        }
+        e
     }
 
     fn clear_pending(&self, key: &[u8; 32]) {
@@ -649,7 +769,9 @@ impl Inner {
         let Established { link, mut reader, remote_static, .. } = match respond(io, host, None, &known, deadline) {
             Ok(e) => e,
             Err(LinkError::Refused) => {
-                self.audit.record("refused", json!({"why": "unknown key", "from": peer.to_string()}));
+                let from = peer.to_string();
+                let host_only = from.rsplit_once(':').map_or(from.as_str(), |(h, _)| h).to_owned();
+                self.audit.record_coalesced("refused", &format!("unknown key|{host_only}"), json!({"why": "unknown key", "from": host_only}));
                 return Err(LinkError::Refused);
             }
             Err(e) => return Err(e),
@@ -677,6 +799,7 @@ impl Inner {
         }
         // Register: the device must still be paired, and this must still be the same listener.
         let conn_id = self.next_conn.fetch_add(1, Ordering::AcqRel);
+        let out = Outbox::new(link.clone(), OUTBOX_LEN).map_err(|e| LinkError::Io(e.to_string()))?;
         let (device, replaced) = {
             let mut st = self.lock();
             if st.generation != gen_ || st.run.is_none() {
@@ -685,9 +808,12 @@ impl Inner {
             let Some(device) = st.devices.as_ref().and_then(|d| d.find_by_key(&remote_static)).cloned() else {
                 return Err(LinkError::Refused);
             };
-            let old: Vec<u64> = st.conns.iter().filter(|(_, c)| c.device_id == device.id).map(|(k, _)| *k).collect();
-            let replaced: Vec<Conn> = old.iter().filter_map(|k| st.conns.remove(k)).collect();
-            st.conns.insert(conn_id, Conn { device_id: device.id.clone(), link: link.clone(), level: device.level });
+            // Up to MAX_CONNS_PER_DEVICE at once: only the oldest beyond that are replaced.
+            let mut old: Vec<u64> = st.conns.iter().filter(|(_, c)| c.device_id == device.id).map(|(k, _)| *k).collect();
+            old.sort_unstable();
+            let excess = (old.len() + 1).saturating_sub(MAX_CONNS_PER_DEVICE);
+            let replaced: Vec<Conn> = old.iter().take(excess).filter_map(|k| st.conns.remove(k)).collect();
+            st.conns.insert(conn_id, Conn { device_id: device.id.clone(), link: link.clone(), level: device.level, ready: false, out: out.clone() });
             if let Some(d) = st.devices.as_mut() {
                 d.touch(&device.id, unix_secs());
             }
@@ -710,6 +836,7 @@ impl Inner {
             self.drop_conn(conn_id);
             return Err(LinkError::Closed);
         }
+        self.set_ready(conn_id);
         self.audit.record("connected", json!({"device_id": device.id, "device": clean(&device.name), "client": clean(&client), "from": peer.to_string()}));
         self.send_waiting_cards(&device, &link);
         let serving = self.engine.get().map(|engine| {
@@ -720,7 +847,7 @@ impl Inner {
                 snapshot_every: self.cfg.snapshot_every,
                 corrupt_next_delta: self.corrupt_knob(),
             };
-            Serving::new(engine.clone(), link.clone(), Who { conn_id, device_id: device.id.clone(), level: device.level }, knobs, self.drivers.clone(), self.audit.clone())
+            Serving::new(engine.clone(), link.clone(), out.clone(), Who { conn_id, device_id: device.id.clone(), level: device.level }, knobs, self.drivers.clone(), self.audit.clone())
         });
         if let Some(s) = &serving
             && s.start().is_err()
@@ -729,7 +856,7 @@ impl Inner {
             self.drop_conn(conn_id);
             return Err(LinkError::Closed);
         }
-        let reason = self.session_loop(&mut reader, &link, &device, serving.as_ref());
+        let reason = self.session_loop(&mut reader, &link, &out, &device, serving.as_ref());
         if let Some(s) = &serving {
             s.stop();
         }
@@ -743,8 +870,15 @@ impl Inner {
         self.lock().conns.remove(&conn_id);
     }
 
+    /// The Welcome is out: broadcasts may reach this connection now.
+    fn set_ready(&self, conn_id: u64) {
+        if let Some(c) = self.lock().conns.get_mut(&conn_id) {
+            c.ready = true;
+        }
+    }
+
     /// Reads frames until the connection ends. The reason is for the log.
-    fn session_loop(&self, reader: &mut Reader, link: &Arc<Link>, device: &Device, serving: Option<&Arc<Serving>>) -> &'static str {
+    fn session_loop(&self, reader: &mut Reader, link: &Arc<Link>, out: &Outbox, device: &Device, serving: Option<&Arc<Serving>>) -> &'static str {
         let mut last_rx = Instant::now();
         let mut last_ping = Instant::now();
         let mut ping_n: u64 = 0;
@@ -759,7 +893,7 @@ impl Inner {
             match reader.recv(tick) {
                 Ok(Some(frame)) => {
                     last_rx = Instant::now();
-                    if let Some(why) = self.handle_frame(frame, link, device, serving, &mut uploads) {
+                    if let Some(why) = self.handle_frame(frame, link, out, device, serving, &mut uploads) {
                         return why;
                     }
                 }
@@ -777,7 +911,7 @@ impl Inner {
             }
             if last_ping.elapsed() >= self.cfg.ping_every {
                 ping_n += 1;
-                if link.send_msg(Msg::Ping { n: ping_n }).is_err() {
+                if !out.send(Msg::Ping { n: ping_n }) {
                     return "closed";
                 }
                 last_ping = Instant::now();
@@ -786,7 +920,7 @@ impl Inner {
     }
 
     /// `Some(reason)` ends the connection.
-    fn handle_frame(&self, frame: Frame, link: &Arc<Link>, device: &Device, serving: Option<&Arc<Serving>>, uploads: &mut UploadHub) -> Option<&'static str> {
+    fn handle_frame(&self, frame: Frame, link: &Arc<Link>, out: &Outbox, device: &Device, serving: Option<&Arc<Serving>>, uploads: &mut UploadHub) -> Option<&'static str> {
         if let Some(s) = serving
             && s.on_frame(&frame)
         {
@@ -794,26 +928,26 @@ impl Inner {
         }
         match frame {
             Frame::Control(Msg::Ping { n }) => {
-                let _ = link.send_msg(Msg::Pong { n });
+                out.send(Msg::Pong { n });
             }
             Frame::Control(Msg::Bye { .. }) => return Some("client left"),
-            Frame::Control(Msg::Call { id, tool, params }) => self.spawn_call(link, device, id, tool, params),
-            Frame::Control(Msg::ConsentAnswer { request_id, allow }) => self.spawn_consent(link, device, request_id, allow),
-            Frame::Control(Msg::UploadBegin { id, session, name, size, kind }) => self.upload_begin(uploads, link, device, id, &session, &name, size, kind),
+            Frame::Control(Msg::Call { id, tool, params }) => self.spawn_call(link, out, device, id, tool, params),
+            Frame::Control(Msg::ConsentAnswer { request_id, allow }) => self.spawn_consent(out, device, request_id, allow),
+            Frame::Control(Msg::UploadBegin { id, session, name, size, kind }) => self.upload_begin(uploads, link, out, device, id, &session, &name, size, kind),
             Frame::Control(Msg::UploadEnd { id, sha256 }) => {
                 if let Err(reason) = uploads.end(id, sha256) {
-                    refuse_upload(link, id, reason);
+                    refuse_upload(out, id, reason);
                 }
             }
             Frame::Control(Msg::UploadCancel { id }) => uploads.cancel(id),
             Frame::UploadChunk { id, offset, bytes } => {
                 if let Err(reason) = uploads.chunk(id, offset, bytes) {
-                    refuse_upload(link, id, reason);
+                    refuse_upload(out, id, reason);
                 }
             }
             // Terminal messages reach here only when no engine is attached: say no, not nothing.
             Frame::Control(Msg::TermSubscribe { stream, .. }) => {
-                let _ = link.send_msg(Msg::TermClosed { stream, reason: csm_peer_proto::msg::TermClosedReason::Forbidden });
+                out.send(Msg::TermClosed { stream, reason: csm_peer_proto::msg::TermClosedReason::Forbidden });
             }
             _ => {}
         }
@@ -823,9 +957,9 @@ impl Inner {
     /// Checks an upload's begin and starts it. Every refusal is logged by reason, never with the
     /// contents, and the link stays up.
     #[allow(clippy::too_many_arguments)]
-    fn upload_begin(&self, uploads: &mut UploadHub, link: &Arc<Link>, device: &Device, id: u64, session: &str, name: &str, size: u64, kind: UploadKind) {
+    fn upload_begin(&self, uploads: &mut UploadHub, link: &Arc<Link>, out: &Outbox, device: &Device, id: u64, session: &str, name: &str, size: u64, kind: UploadKind) {
         let refuse = |reason: UploadRefused| {
-            refuse_upload(link, id, reason);
+            refuse_upload(out, id, reason);
             self.audit.record("upload_refused", json!({"session": clean(session), "device": device.id, "reason": uploads::reason_name(reason)}));
         };
         if !device.level.allows(Level::Full) {
@@ -874,15 +1008,15 @@ impl Inner {
     }
 
     /// A tool call runs on its own thread (it may wait for the engine), so pings keep flowing.
-    fn spawn_call(&self, link: &Arc<Link>, device: &Device, id: u64, tool: String, params: Value) {
+    fn spawn_call(&self, link: &Arc<Link>, out: &Outbox, device: &Device, id: u64, tool: String, params: Value) {
         let Some(engine) = self.engine.get().cloned() else {
-            let _ = link.send_msg(Msg::Reply { id, outcome: err_outcome(ErrorKind::Refused, "this host's engine is not attached yet") });
+            out.send(Msg::Reply { id, outcome: err_outcome(ErrorKind::Refused, "this host's engine is not attached yet") });
             return;
         };
         if self.in_flight.fetch_add(1, Ordering::AcqRel) >= self.cfg.max_in_flight_calls {
             self.in_flight.fetch_sub(1, Ordering::AcqRel);
-            self.audit.record("refused", json!({"why": "too many calls at once", "device_id": device.id, "tool": clean(&tool)}));
-            let _ = link.send_msg(Msg::Reply { id, outcome: err_outcome(ErrorKind::Refused, "too many calls at once; wait for one to finish") });
+            self.audit.record_coalesced("refused", &format!("too many calls|{}", device.id), json!({"why": "too many calls at once", "device_id": device.id, "tool": clean(&tool)}));
+            out.send(Msg::Reply { id, outcome: err_outcome(ErrorKind::Refused, "too many calls at once; wait for one to finish") });
             return;
         }
         let (link, caller) = (link.clone(), Self::caller(device));
@@ -904,13 +1038,17 @@ impl Inner {
         }
     }
 
-    fn spawn_consent(&self, link: &Arc<Link>, device: &Device, request_id: u64, allow: bool) {
+    fn spawn_consent(&self, out: &Outbox, device: &Device, request_id: u64, allow: bool) {
         let Some(engine) = self.engine.get().cloned() else { return };
-        let (link, caller) = (link.clone(), Self::caller(device));
+        // One thread per answer, but not without limit: a device that floods answers gets "forbidden".
+        if self.consents.fetch_add(1, Ordering::AcqRel) >= MAX_CONSENT_ANSWERS {
+            self.consents.fetch_sub(1, Ordering::AcqRel);
+            out.send(Msg::ConsentAck { request_id, outcome: ConsentOutcome::Forbidden });
+            return;
+        }
+        let (out, caller, counter) = (out.clone(), Self::caller(device), InFlight(self.consents.clone()));
         let spawned = std::thread::Builder::new().name("csm-peer-consent".into()).spawn(move || {
-            if link.is_closed() {
-                return;
-            }
+            let _counter = counter;
             let answer = if allow { "allow_once" } else { "deny" };
             let outcome = match engine.call(caller, "consent_answer", json!({"request_id": request_id, "answer": answer})) {
                 Ok(_) => ConsentOutcome::Applied,
@@ -918,7 +1056,7 @@ impl Inner {
                 Err(ToolError::NotFound(_)) => ConsentOutcome::AlreadyResolved,
                 Err(_) => ConsentOutcome::Forbidden,
             };
-            let _ = link.send_msg(Msg::ConsentAck { request_id, outcome });
+            out.send(Msg::ConsentAck { request_id, outcome });
         });
         if let Err(e) = spawned {
             log::warn!("remote access: could not start a consent answer: {e}");
@@ -946,24 +1084,24 @@ impl Inner {
     /// Sends a consent card to the Full devices that are trusted. An untrusted device may not
     /// answer cards (the engine refuses it), so it is not shown other people's requests either.
     fn broadcast_card(&self, msg: &Msg) {
-        let links: Vec<Arc<Link>> = {
+        let outs: Vec<Outbox> = {
             let st = self.lock();
             st.conns
                 .values()
-                .filter(|c| c.level.allows(Level::Full) && st.devices.as_ref().and_then(|d| d.find(&c.device_id)).is_some_and(|d| d.trusted))
-                .map(|c| c.link.clone())
+                .filter(|c| c.ready && c.level.allows(Level::Full) && st.devices.as_ref().and_then(|d| d.find(&c.device_id)).is_some_and(|d| d.trusted))
+                .map(|c| c.out.clone())
                 .collect()
         };
-        for l in links {
-            let _ = l.send_msg(msg.clone());
+        for o in outs {
+            o.send(msg.clone());
         }
     }
 
     /// Sends `msg` to every connected device at `level` or above.
     fn broadcast(&self, level: Level, msg: &Msg) {
-        let links: Vec<Arc<Link>> = self.lock().conns.values().filter(|c| c.level.allows(level)).map(|c| c.link.clone()).collect();
-        for l in links {
-            let _ = l.send_msg(msg.clone());
+        let outs: Vec<Outbox> = self.lock().conns.values().filter(|c| c.ready && c.level.allows(level)).map(|c| c.out.clone()).collect();
+        for o in outs {
+            o.send(msg.clone());
         }
     }
 }
@@ -980,15 +1118,70 @@ struct Arrival {
 /// Counts one unauthenticated connection until it is released (or dropped).
 struct Unauth<'a> {
     inner: &'a Inner,
-    held: bool,
+    ticket: Option<u64>,
 }
 
 impl Unauth<'_> {
     fn release(&mut self) {
-        if self.held {
-            self.held = false;
-            self.inner.unauth.fetch_sub(1, Ordering::AcqRel);
+        if let Some(t) = self.ticket.take() {
+            self.inner.leave(t);
         }
+    }
+}
+
+/// Which pre-authentication pool a connection counts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pool {
+    Direct,
+    Relay,
+}
+
+struct Waiting {
+    pool: Pool,
+    ip: Option<IpAddr>,
+    since: Instant,
+    /// A handle that closes the socket, so the oldest can be sent away when its pool is full.
+    handle: Option<Stream>,
+}
+
+#[derive(Default)]
+struct PreAuth {
+    next: u64,
+    waiting: HashMap<u64, Waiting>,
+}
+
+impl Inner {
+    /// Admits a new connection to its pre-authentication pool: `None` when it must be dropped (too
+    /// many from one address). A full pool makes room by closing its oldest connection.
+    fn admit(&self, pool: Pool, ip: Option<IpAddr>, handle: Option<Stream>) -> Option<u64> {
+        let limit = match pool {
+            Pool::Direct => self.cfg.max_unauthenticated,
+            Pool::Relay => self.cfg.max_unauthenticated_relay,
+        }
+        .max(1);
+        let mut p = self.preauth.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(ip) = ip
+            && p.waiting.values().filter(|w| w.ip == Some(ip)).count() >= self.cfg.max_unauthenticated_per_ip
+        {
+            return None;
+        }
+        let in_pool: Vec<(u64, Instant)> = p.waiting.iter().filter(|(_, w)| w.pool == pool).map(|(k, w)| (*k, w.since)).collect();
+        if in_pool.len() >= limit {
+            let oldest = in_pool.iter().min_by_key(|(_, since)| *since).map(|(k, _)| *k);
+            if let Some(old) = oldest.and_then(|k| p.waiting.remove(&k))
+                && let Some(h) = old.handle
+            {
+                let _ = h.shutdown(std::net::Shutdown::Both);
+            }
+        }
+        p.next += 1;
+        let id = p.next;
+        p.waiting.insert(id, Waiting { pool, ip, since: Instant::now(), handle });
+        Some(id)
+    }
+
+    fn leave(&self, ticket: u64) {
+        self.preauth.lock().unwrap_or_else(PoisonError::into_inner).waiting.remove(&ticket);
     }
 }
 
@@ -1024,8 +1217,8 @@ fn wire_text(s: &str) -> String {
 
 /// Tells the laptop an upload was refused. The link stays up, so a refusal that cannot be sent
 /// is not worth a close.
-fn refuse_upload(link: &Link, id: u64, reason: UploadRefused) {
-    let _ = link.send_msg(Msg::UploadRefused { id, reason });
+fn refuse_upload(out: &Outbox, id: u64, reason: UploadRefused) {
+    out.send(Msg::UploadRefused { id, reason });
 }
 
 fn outcome_of(e: &ToolError) -> Outcome {
@@ -1158,6 +1351,7 @@ impl PeerHost for PeerServer {
 
     fn pair_answer(&self, answer: PairAnswer, by: &str) -> Result<PeerStatus, ToolError> {
         let i = &self.inner;
+        let level = parse_level(&answer.level)?;
         {
             let mut st = i.lock();
             let Some(p) = st.pending.as_mut() else {
@@ -1182,14 +1376,14 @@ impl PeerHost for PeerServer {
                     }
                     return Err(ToolError::Refused("that is not the code on the other screen; compare the four digits again".into()));
                 }
-                let (name, key) = (p.name.clone(), p.key);
+                let (name, key, token) = (p.name.clone(), p.key, p.relay_token.clone());
                 i.load_devices(&mut st)?;
-                let added = st.devices.as_mut().map(|d| d.add(&name, &key, Level::Full, answer.trusted, unix_secs()));
+                let added = st.devices.as_mut().map(|d| d.add(&name, &key, level, answer.trusted, token, unix_secs()));
                 i.relay_resync();
                 match added {
                     Some(Ok(dev)) => {
                         if let Some(done) = st.pending.take() {
-                            let _ = done.answer.send(Answer::Allow);
+                            let _ = done.answer.send(Answer::Allow(level));
                         }
                         drop(st);
                         i.audit.record("paired", json!({"device_id": dev.id, "device": clean(&dev.name), "level": level_name(dev.level), "by": clean(by)}));
@@ -1302,7 +1496,12 @@ impl PeerHost for PeerServer {
     fn audit(&self, event: AuditEvent) {
         let a = &self.inner.audit;
         match event {
-            AuditEvent::Refused { tool, caller } => a.record("refused", json!({"tool": clean(&tool), "caller": clean(&caller)})),
+            AuditEvent::Refused { tool, caller } => a.record_coalesced("refused", &format!("tool|{}|{}", clean(&tool), clean(&caller)), json!({"tool": clean(&tool), "caller": clean(&caller)})),
+            AuditEvent::PeerCall { device_id, device_name, tool, session, effects } if effects.read_only_hint() => a.record_coalesced(
+                "read",
+                &format!("read|{device_id}|{tool}|{}", session.as_deref().unwrap_or_default()),
+                json!({"device_id": device_id, "device": clean(&device_name), "tool": clean(&tool), "session": session.as_deref().map(clean)}),
+            ),
             AuditEvent::PeerCall { device_id, device_name, tool, session, effects } => a.record(
                 "call",
                 json!({"device_id": device_id, "device": clean(&device_name), "tool": clean(&tool), "session": session.as_deref().map(clean), "effects": format!("{effects:?}")}),
@@ -1318,6 +1517,16 @@ impl PeerHost for PeerServer {
     fn shutdown(&self) {
         self.inner.dead.store(true, Ordering::Release);
         self.inner.stop_all(ByeReason::ServerQuit);
+    }
+}
+
+/// The level a pairing answer names: `viewer`, `operator` or `full`.
+fn parse_level(s: &str) -> Result<Level, ToolError> {
+    match s {
+        "viewer" => Ok(Level::Viewer),
+        "operator" => Ok(Level::Operator),
+        "full" => Ok(Level::Full),
+        _ => Err(ToolError::InvalidParams("the level is `viewer`, `operator` or `full`".into())),
     }
 }
 
@@ -1368,7 +1577,7 @@ impl PeerServer {
         let i = &self.inner;
         i.relay_stop();
         let Some(cfg) = cfg else { return Ok(()) };
-        let route = RelayRoute { url: cfg.url.clone(), host_id: csm_remote_proto::ids::host_id(&cfg.host_secret) };
+        let route = RelayRoute { url: cfg.url.clone(), host_id: csm_remote_proto::ids::host_id(&cfg.host_secret), token: None };
         if !route.validate() {
             return Err("the relay address must be wss://, or ws:// to this PC".to_owned());
         }
@@ -1379,6 +1588,12 @@ impl PeerServer {
         let access_set = cfg.access.is_some();
         let host = RelayHost::start(HostRoute { url: cfg.url, host_secret: cfg.host_secret, access: cfg.access }, allow, on_channel).map_err(|e| e.to_string())?;
         *lock_relay(i) = Some(RelayState { host, route, access_set });
+        // A pairing offer that is open now was made before this relay was set up (or before it was
+        // changed): tell the new relay about it, with the time the offer has left.
+        let open = i.lock().slot.as_ref().filter(|s| s.usable()).map(|s| (s.id, s.expires.saturating_duration_since(Instant::now()).as_secs())).filter(|(_, secs)| *secs > 0);
+        if let Some((id, secs)) = open {
+            i.relay_open_slot(&id, secs);
+        }
         log::info!("remote access: also reachable through a relay");
         Ok(())
     }
@@ -1447,21 +1662,20 @@ impl Inner {
     fn relay_allow(&self) -> Vec<[u8; 32]> {
         let mut st = self.lock();
         let _ = self.load_devices(&mut st);
-        st.devices.as_ref().map(|d| d.list().iter().filter_map(Device::public_key).map(|k| device_relay_hash(&k)).collect()).unwrap_or_default()
+        st.devices.as_ref().map(|d| d.list().iter().filter_map(Device::relay_hash).collect()).unwrap_or_default()
     }
 
     /// A relay channel from a paired device (or a pairing): served like a direct connection.
     fn relay_channel(self: &Arc<Self>, stream: Stream) {
-        if self.unauth.fetch_add(1, Ordering::AcqRel) >= self.cfg.max_unauthenticated {
-            self.unauth.fetch_sub(1, Ordering::AcqRel);
+        let Some(ticket) = self.admit(Pool::Relay, None, stream.try_clone().ok()) else {
             let _ = stream.shutdown(std::net::Shutdown::Both);
             return;
-        }
+        };
         let gen_ = self.lock().generation;
         let inner = self.clone();
-        let spawned = std::thread::Builder::new().name("csm-peer-relay-conn".into()).spawn(move || inner.serve(stream, From::Relay, gen_));
+        let spawned = std::thread::Builder::new().name("csm-peer-relay-conn".into()).spawn(move || inner.serve(stream, From::Relay, gen_, ticket));
         if spawned.is_err() {
-            self.unauth.fetch_sub(1, Ordering::AcqRel);
+            self.leave(ticket);
         }
     }
 }
@@ -1470,6 +1684,8 @@ impl Inner {
 const RELAY_SERVICE: &str = "codeshell-peer";
 const RELAY_SECRET_KEY: &str = "relay.host-secret";
 const RELAY_TOKEN_KEY: &str = "relay.enrol-token";
+/// The relay address the saved enrolment token belongs to: the token is only ever sent there.
+const RELAY_TOKEN_URL_KEY: &str = "relay.enrol-token-url";
 /// The relay's address (not secret) in the peer folder; the secrets stay in the keychain.
 const RELAY_FILE: &str = "relay.json";
 
@@ -1481,6 +1697,26 @@ struct RelayFile {
 
 fn read_secret(store: &dyn csm_services::secrets::SecretStore, key: &str) -> Option<String> {
     store.get(RELAY_SERVICE, key).ok().flatten()
+}
+
+/// The enrolment token saved for exactly `url`. A token saved for another address is dropped (and
+/// deleted), so a changed `relay.json` cannot make the app send it somewhere else. A token from
+/// before the address was kept with it is taken to belong to `url` once, and the address is recorded.
+fn token_for(store: &dyn csm_services::secrets::SecretStore, url: &str) -> Option<String> {
+    let token = read_secret(store, RELAY_TOKEN_KEY)?;
+    match read_secret(store, RELAY_TOKEN_URL_KEY) {
+        Some(saved) if saved == url => Some(token),
+        Some(_) => {
+            let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
+            let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_URL_KEY);
+            log::warn!("remote access: the relay address changed since the enrolment token was saved; the token was dropped");
+            None
+        }
+        None => {
+            let _ = store.set(RELAY_SERVICE, RELAY_TOKEN_URL_KEY, url);
+            Some(token)
+        }
+    }
 }
 
 /// The address saved in the peer folder, when that file is there and readable.
@@ -1507,6 +1743,7 @@ impl PeerServer {
             i.relay_stop();
             let _ = std::fs::remove_file(&path);
             let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
+            let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_URL_KEY);
             i.audit.record("relay_off", json!({"by": clean(by)}));
             return Ok(None);
         }
@@ -1530,13 +1767,17 @@ impl PeerServer {
         let token = match req.access.as_deref() {
             Some(t) if !t.trim().is_empty() => Some(t.trim().to_owned()),
             Some(_) => None,
-            None if saved_relay_url(&path).as_deref() == Some(url.as_str()) => read_secret(store.as_ref(), RELAY_TOKEN_KEY),
+            None if saved_relay_url(&path).as_deref() == Some(url.as_str()) => token_for(store.as_ref(), &url),
             None => None,
         };
         match &token {
-            Some(t) => store.set(RELAY_SERVICE, RELAY_TOKEN_KEY, t).map_err(|e| ToolError::Failed(format!("could not keep the enrolment token: {e}")))?,
+            Some(t) => {
+                store.set(RELAY_SERVICE, RELAY_TOKEN_KEY, t).map_err(|e| ToolError::Failed(format!("could not keep the enrolment token: {e}")))?;
+                store.set(RELAY_SERVICE, RELAY_TOKEN_URL_KEY, &url).map_err(|e| ToolError::Failed(format!("could not keep the enrolment token: {e}")))?;
+            }
             None => {
                 let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_KEY);
+                let _ = store.delete(RELAY_SERVICE, RELAY_TOKEN_URL_KEY);
             }
         }
         // The relay runs only while remote access is on: saved now, it starts when it comes on.
@@ -1569,7 +1810,7 @@ impl PeerServer {
             log::warn!("remote access: the relay secret is missing from the keychain; the relay stays off");
             return;
         };
-        let access = read_secret(store.as_ref(), RELAY_TOKEN_KEY);
+        let access = token_for(store.as_ref(), &file.url);
         if let Err(e) = self.set_relay(Some(RelayConfig { url: file.url, host_secret: secret, access })) {
             log::warn!("remote access: the saved relay is not used: {e}");
         }
@@ -1594,7 +1835,7 @@ impl PeerServer {
         let url = saved_relay_url(&i.dir.join(RELAY_FILE))?;
         let store = i.secrets.get()?.clone();
         let secret = read_secret(store.as_ref(), RELAY_SECRET_KEY).and_then(|s| b64_decode_fixed::<32>(&s))?;
-        let access_set = read_secret(store.as_ref(), RELAY_TOKEN_KEY).is_some();
+        let access_set = token_for(store.as_ref(), &url).is_some();
         Some(RelayInfo {
             url,
             host_id: csm_remote_proto::ids::host_id(&secret),
@@ -1602,5 +1843,87 @@ impl PeerServer {
             last_error: Some("remote access is off, so the relay is not running".to_owned()),
             access_set,
         })
+    }
+}
+
+/// What the person is told when remote access comes back by itself at start.
+fn resume_notice(devices: usize, addr: SocketAddr, all: bool, unconfirmed: bool) -> String {
+    let n = if devices == 1 { "1 device".to_owned() } else { format!("{devices} devices") };
+    if unconfirmed {
+        format!("Remote access resumed: {n}, listening on this PC only. The saved every-interface setting could not be checked, so confirm it in Remote access to open it again.")
+    } else if all {
+        format!("Remote access resumed: {n}, listening on all interfaces.")
+    } else {
+        format!("Remote access resumed: {n}, listening on {addr}.")
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn server(cfg: ServerConfig) -> PeerServer {
+        PeerServer::with_config(std::env::temp_dir().join("csm-peer-unit-not-used"), cfg)
+    }
+
+    fn ip(n: u8) -> Option<IpAddr> {
+        Some(IpAddr::from([10, 0, 0, n]))
+    }
+
+    #[test]
+    fn one_address_is_held_to_its_share_of_the_direct_pool() {
+        let s = server(ServerConfig { max_unauthenticated: 8, max_unauthenticated_per_ip: 2, ..ServerConfig::default() });
+        let i = &s.inner;
+        assert!(i.admit(Pool::Direct, ip(1), None).is_some());
+        assert!(i.admit(Pool::Direct, ip(1), None).is_some());
+        assert!(i.admit(Pool::Direct, ip(1), None).is_none(), "a third from one address is dropped");
+        assert!(i.admit(Pool::Direct, ip(2), None).is_some(), "another address is not affected");
+    }
+
+    #[test]
+    fn the_relay_pool_and_the_direct_pool_do_not_use_each_others_room() {
+        let s = server(ServerConfig { max_unauthenticated: 2, max_unauthenticated_relay: 2, max_unauthenticated_per_ip: 100, ..ServerConfig::default() });
+        let i = &s.inner;
+        let direct: Vec<u64> = (0..2).map(|n| i.admit(Pool::Direct, ip(n), None).unwrap()).collect();
+        // The relay pool is empty, whatever the direct one holds.
+        let relay = i.admit(Pool::Relay, None, None).unwrap();
+        let held = i.preauth.lock().unwrap();
+        assert!(direct.iter().all(|t| held.waiting.contains_key(t)), "the relay arrival evicted no direct connection");
+        assert!(held.waiting.contains_key(&relay));
+    }
+
+    #[test]
+    fn a_full_pool_drops_its_oldest_entry_to_admit_a_new_one() {
+        let s = server(ServerConfig { max_unauthenticated: 2, max_unauthenticated_per_ip: 100, ..ServerConfig::default() });
+        let i = &s.inner;
+        let first = i.admit(Pool::Direct, ip(1), None).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let second = i.admit(Pool::Direct, ip(2), None).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let third = i.admit(Pool::Direct, ip(3), None).unwrap();
+        let held = i.preauth.lock().unwrap();
+        assert!(!held.waiting.contains_key(&first), "the oldest was evicted");
+        assert!(held.waiting.contains_key(&second) && held.waiting.contains_key(&third));
+    }
+
+    #[test]
+    fn a_connection_is_not_broadcast_to_before_its_welcome_is_out() {
+        // The flag the broadcast filters on starts false and is only set by `set_ready`.
+        let s = server(ServerConfig::default());
+        assert!(s.inner.lock().conns.is_empty());
+        s.inner.set_ready(12345); // an unknown connection: nothing to set, nothing breaks
+    }
+
+    #[test]
+    fn the_choice_hash_changes_with_every_field() {
+        let a = hmac_sha256(&[1; 32], b"csm-peer server.json|1|true|10.8.0.2|47300|false");
+        assert_eq!(a, hmac_sha256(&[1; 32], b"csm-peer server.json|1|true|10.8.0.2|47300|false"));
+        assert_ne!(a, hmac_sha256(&[2; 32], b"csm-peer server.json|1|true|10.8.0.2|47300|false"), "another key");
+        assert_ne!(a, hmac_sha256(&[1; 32], b"csm-peer server.json|1|true|10.8.0.2|47301|false"), "another port");
+        // A known HMAC-SHA256 vector (RFC 4231, test case 2): key "Jefe".
+        let want = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843";
+        let got: String = hmac_sha256(b"Jefe", b"what do ya want for nothing?").iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(got, want);
     }
 }

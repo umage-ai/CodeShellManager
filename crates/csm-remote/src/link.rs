@@ -265,6 +265,7 @@ impl Worker {
 
     fn run(mut self, p: Params, cmds: &Receiver<Cmd>) {
         let mut attempt = 0u32;
+        let mut silent_closes = 0u32;
         let mut reason = String::new();
         loop {
             let state = if attempt == 0 { LinkState::Connecting } else { LinkState::Reconnecting { attempt, reason: reason.clone() } };
@@ -276,6 +277,7 @@ impl Worker {
             match client::connect_saved(Some(&p.addr), p.relay.as_ref(), &p.host_public, &p.identity, &p.cfg) {
                 Ok(conn) => {
                     attempt = 0;
+                    silent_closes = 0;
                     self.send(Up::State(LinkState::Live { host_name: conn.welcome.host_name.clone(), level: conn.welcome.level }));
                     match self.live(&conn, cmds) {
                         End::Stop => return self.finish(LinkState::Stopped),
@@ -291,8 +293,14 @@ impl Worker {
                     }
                 }
                 Err(e) => match refusal_of_error(&e) {
-                    Some(why) => return self.refuse(why),
-                    None => reason = e.to_string(),
+                    // A silent close during the handshake is also what a Wi-Fi flap or a
+                    // restarting listener looks like: only a streak of them is a refusal.
+                    Some(why) if !matches!(e, ClientError::Refused) || note_silent_close(&mut silent_closes) => return self.refuse(why),
+                    Some(_) => reason = "the office closed the connection during the handshake".into(),
+                    None => {
+                        silent_closes = 0;
+                        reason = e.to_string();
+                    }
                 },
             }
             attempt += 1;
@@ -385,7 +393,8 @@ impl Worker {
     /// Serves one connection until it ends.
     fn live(&mut self, conn: &Connection, cmds: &Receiver<Cmd>) -> End {
         self.mark_streams(STALE, RUNNING);
-        for (stream, s) in &self.streams {
+        for (stream, s) in &mut self.streams {
+            s.follower.new_link();
             if conn.subscribe(*stream, &s.session, s.follower.resume_point()).is_err() {
                 return End::Lost { bye: None, why: "the connection closed while resuming the terminals".into() };
             }
@@ -607,6 +616,18 @@ fn lost_outcome() -> Outcome {
     Outcome::Err { kind: ErrorKind::Failed, message: "the connection to the office ended before the answer came back; the call may have run, so check its result".into() }
 }
 
+/// Silent closes in a row before the office is taken at its word that it does not accept this
+/// device. Each is retried after the usual backoff (1, 2, 5, 10 s), so a Wi-Fi flap or a
+/// listener restart is outlasted before the window gives up for good.
+const SILENT_CLOSES_BEFORE_REFUSAL: u32 = 5;
+
+/// Counts one more silent close during the handshake; `true` when the streak is long enough to
+/// be a refusal.
+fn note_silent_close(streak: &mut u32) -> bool {
+    *streak = streak.saturating_add(1);
+    *streak >= SILENT_CLOSES_BEFORE_REFUSAL
+}
+
 fn backoff(attempt: u32) -> Duration {
     Duration::from_secs(match attempt {
         0 | 1 => 1,
@@ -651,6 +672,15 @@ mod tests {
         junk.extend_from_slice(b"]52;c;aGVsbG8=");
         feed(&mut t, &junk);
         assert!(t.take_events().is_empty(), "the mirror must not keep events nobody reads");
+    }
+
+    #[test]
+    fn a_silent_close_is_a_refusal_only_after_a_streak() {
+        let mut streak = 0;
+        for _ in 1..SILENT_CLOSES_BEFORE_REFUSAL {
+            assert!(!note_silent_close(&mut streak), "one flap must not end the retries");
+        }
+        assert!(note_silent_close(&mut streak));
     }
 
     #[test]

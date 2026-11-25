@@ -244,7 +244,7 @@ fn pairing_decoders_survive_random_text_and_bytes() {
     let mut rng = Rng(0xabad_1dea);
     let addr = PeerAddr::parse("tcp://10.8.0.2:47300").unwrap();
     let link = PeerOffer::new(&addr, &[2; 32], &[3; 16], &[4; 32]).link();
-    let pair = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into() }.encode().unwrap();
+    let pair = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into(), rt: false }.encode().unwrap();
     for _ in 0..ROUNDS {
         let raw = rng.some_bytes(120);
         let _ = PairMsg::decode(&raw);

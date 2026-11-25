@@ -387,7 +387,7 @@ fn a_direct_address_that_answers_is_used_before_the_relay() {
     let (me, host) = pair_through_relay(&office);
     // The relay route here is dead: if the laptop tried the relay first, or only the relay, this
     // would fail. The direct address answers, so it is the route taken.
-    let dead_relay = RelayRoute { url: "ws://127.0.0.1:9".to_owned(), host_id: route(&host).host_id };
+    let dead_relay = RelayRoute { url: "ws://127.0.0.1:9".to_owned(), host_id: route(&host).host_id, token: None };
     let direct = PeerAddr::parse(&format!("tcp://{}", office.server.local_addr().unwrap())).unwrap();
     let conn = client::connect_saved(Some(&direct), Some(&dead_relay), &host.host_public, &me, &ClientConfig::new("Laptop")).expect("the direct route answers");
     assert_eq!(conn.welcome.device_id, host.device_id);

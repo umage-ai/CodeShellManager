@@ -39,6 +39,10 @@ pub struct PeerStatus {
     pub connected: usize,
     /// The key and device files are limited to the current user (mode 0600 / an ACL).
     pub private_files_restricted: bool,
+    /// The saved choice was "every interface" (`ip:port`) but could not be proven unchanged since
+    /// the app wrote it, so the host listens on this PC only until the person turns it on for every
+    /// interface again in the app.
+    pub unconfirmed_all_interfaces: Option<String>,
 }
 
 /// A device that completed the pairing handshake and waits for the person's answer.
@@ -103,7 +107,7 @@ pub struct PairAnswer {
     pub allow: bool,
     /// The check code the person read on both screens. Required to allow; a wrong one is refused.
     pub check_code: Option<String>,
-    /// `full`; the other levels are not available yet.
+    /// `viewer`, `operator` or `full`: what the paired device may do.
     pub level: String,
     /// The person ticked "Trust this device (no prompts)". Off unless ticked.
     pub trusted: bool,

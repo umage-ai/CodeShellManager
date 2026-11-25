@@ -375,3 +375,54 @@ pub(crate) fn initiate(
     let hash = hs.get_handshake_hash().to_vec();
     finish(io, hs.into_transport_mode()?, *host_pub, hash, Side::Client)
 }
+
+/// How many messages one connection's outbox holds before the connection is given up as stalled.
+pub(crate) const OUTBOX_LEN: usize = 512;
+
+/// A per-connection bounded queue with its own writer thread: whoever wants to tell a device
+/// something (the session loop's replies, a broadcast to every device) queues it and moves on. A
+/// device that does not read lets its queue fill, and then only its own connection is closed; no
+/// other device, and not the reader thread, ever waits on a stalled socket.
+#[derive(Clone)]
+pub(crate) struct Outbox {
+    tx: std::sync::mpsc::SyncSender<Msg>,
+    link: Arc<Link>,
+}
+
+impl Outbox {
+    pub(crate) fn new(link: Arc<Link>, cap: usize) -> std::io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Msg>(cap);
+        let writer = link.clone();
+        std::thread::Builder::new().name("csm-peer-out".into()).spawn(move || {
+            loop {
+                match rx.recv_timeout(Duration::from_millis(500)) {
+                    Ok(msg) => {
+                        if writer.send_msg(msg).is_err() {
+                            return;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if writer.is_closed() {
+                            return;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        })?;
+        Ok(Self { tx, link })
+    }
+
+    /// Queues `msg`. `false` when it was not queued: the connection is closed, or its queue was
+    /// full (the device is not reading), in which case the connection is closed here.
+    pub(crate) fn send(&self, msg: Msg) -> bool {
+        match self.tx.try_send(msg) {
+            Ok(()) => true,
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                self.link.close();
+                false
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+        }
+    }
+}

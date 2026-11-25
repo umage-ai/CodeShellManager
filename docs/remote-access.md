@@ -43,8 +43,9 @@ offline until it wakes.
    CodeShellManager…**.
 2. Paste the link from the office (or its text). Give the office a name if you like; it defaults to
    the address.
-3. Both screens show the same four-digit **check code**. Compare them, then click **Allow** on the
-   office. (**Deny** on the office refuses the pairing; a wrong code is refused too.)
+3. Both screens show the same four-digit **check code**. Compare them, choose what the device may do
+   (**Full**, **Operator** or **Viewer**; see *Levels* below) and click **Allow** on the office.
+   (**Deny** on the office refuses the pairing; a wrong code is refused too.)
 4. The laptop lists the office under **Paired offices**. **Connect** opens a remote window for it;
    **Forget** removes it from this laptop, with the office's pinned key. This laptop's own device key stays,
    because other offices may know it.
@@ -76,11 +77,23 @@ app's own window only).
   file readable by that account) and `csm attach`, so a trusted laptop is exactly as safe as its user
   account. Trust only a machine you would hand the office's keyboard to.
 
+## Levels
+
+When you allow a pairing you choose the device's level, and the device is told it in the answer:
+
+- **Full** (the default): everything the office's own window can do; an untrusted device still needs a
+  card for typing and launching (see below). Uploads and consent cards are Full only.
+- **Operator**: watches sessions and types into a session's terminal and resizes it; tool calls that
+  change anything are refused.
+- **Viewer**: only watches; it cannot type, resize or change anything.
+
+The level is the office's decision, kept in its device list. Pair the device again to change it.
+
 ## Using a remote window
 
 - The window's title starts with the office's name, and a strip under the title bar says
   **Connected to OFFICE · address**. It also shows **Connecting to…**, **OFFICE offline · reconnecting**
-  (the link retries after 1, 2, 5, 10 and then every 30 seconds) or **OFFICE refused this laptop**
+  (the link retries after 1, 2, 5, 10 and then every 30 seconds; a silent close during the handshake, which is also what a Wi-Fi flap or a restarting office looks like, is retried five times before the strip says **refused**) or **OFFICE refused this laptop**
   with the reason.
 - Layout, focus, the rail, the inspector, the theme and grids belong to the laptop: they are kept
   per office in the laptop's `peer-client` folder. Sessions, groups, notes, tasks, runs and the inbox
@@ -120,7 +133,7 @@ csm attach --host OFFICE "Build"     when several offices are paired
 
 **Trust.** `csm attach` and the remote window carry the trust of this laptop's device key. Anything
 that can run `csm` on this laptop, or open this laptop's CodeShellManager, can type into the office's
-sessions, with the same level this laptop has there (today: Full). The office cannot tell such a
+sessions, with the same level this laptop has there. The office cannot tell such a
 program from you at the keyboard. Only pair laptops you trust, and forget an office you no longer use.
 
 ## Troubleshooting
@@ -171,9 +184,38 @@ program from you at the keyboard. Only pair laptops you trust, and forget an off
 
 - A remote session's links and run URLs open in the laptop's browser; port forwarding is planned.
 - There is one office per window; several offices are shown as several windows.
-- Only the "Full" level exists: a paired laptop can do everything the office's own window can do (an untrusted one asks first for typing and launching; see Trusted and untrusted devices).
+- At the Full level a paired laptop can do everything the office's own window can do (an untrusted one asks first for typing and launching; see Trusted and untrusted devices). See *Levels* for Operator and Viewer.
 - Anything that can run `csm` on this laptop can type into the offices it is paired with (see the trust
   note under `csm attach`).
+
+## Resuming, connections and limits
+
+- **Resuming.** When the office's app starts with remote access saved as on, it comes back by itself
+  and says so: "Remote access resumed: N devices, listening on ...". Look at the device count.
+- **Every interface.** A choice saved as "every interface" is honoured on a restart only when its
+  keyed hash (the key is in the OS keychain) shows this app wrote it. If it does not (the file was
+  edited, or there is no keychain), the office listens on this PC only (loopback) and **Remote access**
+  shows a button to listen on every interface again; one click confirms it, and the app then saves it
+  signed. A direct connection from another machine does not work in between; a relay still does.
+- **Connections per device.** One device may hold up to four connections at once (a reconnect while
+  the old one is still timing out, a second window). A fifth replaces the oldest.
+- **One slow device.** Every connection has its own bounded send queue and writer. A device that
+  stops reading is closed when its queue fills; it never holds up the others or the thread that reads
+  from it. At most eight consent answers are handled at once, all devices together.
+- **Strangers.** Connections that have not finished the handshake are kept in two pools (direct and
+  relay), at most four from one address; when a pool is full the oldest is closed to make room, and the
+  first frame must arrive within 3 seconds. A pairing offer is not used up by failed handshakes from
+  someone who saw its id (it is closed after 30), only by the device that proves the offer's key.
+- **The log.** `remote-access.log` also records reads of session content (`read`) and terminal
+  subscriptions (`term_subscribe`). Identical entries within 30 seconds (a scanner's refusals, a screen
+  that polls) are written once and followed by a `..._repeated` line with the count. Five older files
+  (`remote-access.log.1` to `.5`) are kept.
+- **Key files.** The keys are created only when the `peer` folder has been limited to your account
+  (Windows: an ACL for your account's SID, read from the process token with `whoami /user`, not from
+  environment variables). If that cannot be done, no key is written and the app says why;
+  `private_files_restricted` in the status says whether an existing folder is limited.
+- **Names.** A host paired without a name is called by its address; if that is too long for a name, a
+  shortened form is used.
 
 ## Through a relay (no VPN)
 
@@ -195,6 +237,14 @@ frame; the session is the same end-to-end session as on the direct address.
 - **Laptop:** pairing and connecting try the direct address first, then the relay. The saved office
   (`hosts.json`) keeps the relay route, so a later connection needs no setting. A laptop paired before
   the office had a relay keeps working directly; pair again to add the route.
+- **Routing token.** Each pairing gets its own random routing token (32 random bytes made by the office
+  and sent to the laptop in the pairing answer; the relay only ever holds its hash), so a token cannot be
+  worked out from a device's public key. A pairing made before this keeps the token derived from the
+  device key until you pair that laptop again, so an existing laptop keeps working; the same fallback
+  applies between an older and a newer build (the new fields are optional and ignored by the older one).
+- **Enrolment token.** The saved enrolment token belongs to the address it was saved with and is dropped
+  if `relay.json` names another address. A pairing link that is open when you set up or change the relay
+  is sent to the new relay (with the time it has left), and an expired link is never sent again.
 - **Trust:** the relay sees who connects, when, and how much, never what is said. Revoking a device
   takes its relay access away at once, as well as its keys.
 - **Limits:** a relay channel carries terminal streams, so its per-channel caps are higher than a

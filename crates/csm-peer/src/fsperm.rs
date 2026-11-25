@@ -24,23 +24,60 @@ fn restrict(dir: &Path) -> std::io::Result<bool> {
 
 #[cfg(windows)]
 fn restrict(dir: &Path) -> std::io::Result<bool> {
-    let Some(user) = std::env::var_os("USERNAME").filter(|u| !u.is_empty()) else { return Ok(false) };
-    let Some(root) = std::env::var_os("SystemRoot").filter(|r| !r.is_empty()) else { return Ok(false) };
-    let icacls = std::path::PathBuf::from(root).join("System32").join("icacls.exe");
-    let mut who = std::ffi::OsString::new();
-    if let Some(domain) = std::env::var_os("USERDOMAIN").filter(|d| !d.is_empty()) {
-        who.push(domain);
-        who.push("\\");
-    }
-    who.push(user);
-    who.push(":(OI)(CI)F");
+    // The grant names the account by the SID of this process's token (what `whoami /user` reports),
+    // never by `USERNAME` / `USERDOMAIN`, which any parent process can set to anything.
+    let Some(sid) = current_user_sid() else { return Ok(false) };
+    let Some(icacls) = system32("icacls.exe") else { return Ok(false) };
+    let who = std::ffi::OsString::from(format!("*{sid}:(OI)(CI)F"));
     let args = [dir.as_os_str().to_owned(), "/inheritance:r".into(), "/grant:r".into(), who];
     Ok(csm_engine::proc::capture(icacls, args, std::time::Duration::from_secs(10)).is_some_and(|c| c.success))
+}
+
+/// A program in `%SystemRoot%\System32`, by its full path (never found through `PATH`).
+#[cfg(windows)]
+fn system32(name: &str) -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("SystemRoot").filter(|r| !r.is_empty())?;
+    Some(std::path::PathBuf::from(root).join("System32").join(name))
+}
+
+/// The SID of the user this process runs as: `whoami /user` (System32 path, no shell), whose CSV
+/// line is `"DOMAIN\name","S-1-5-..."`. This crate forbids `unsafe`, so the token is not read
+/// through the Win32 API directly.
+#[cfg(windows)]
+fn current_user_sid() -> Option<String> {
+    let whoami = system32("whoami.exe")?;
+    let out = csm_engine::proc::capture(whoami, ["/user", "/fo", "csv", "/nh"], std::time::Duration::from_secs(10)).filter(|c| c.success)?;
+    parse_whoami_sid(&out.text())
+}
+
+/// The SID in the output of `whoami /user /fo csv /nh`, if it is one.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_whoami_sid(csv: &str) -> Option<String> {
+    let line = csv.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let sid = line.rsplit(',').next()?.trim().trim_matches('"');
+    let rest = sid.strip_prefix("S-1-")?;
+    let ok = !rest.is_empty() && rest.len() < 180 && rest.chars().all(|c| c.is_ascii_digit() || c == '-') && !rest.starts_with('-') && !rest.ends_with('-');
+    ok.then(|| sid.to_owned())
 }
 
 #[cfg(not(any(unix, windows)))]
 fn restrict(_dir: &Path) -> std::io::Result<bool> {
     Ok(false)
+}
+
+/// Writes a private KEY: as [`write_private`], but only after the folder is confirmed limited to
+/// the current user. If the limit cannot be put in place (no `icacls`, no SID) nothing is written:
+/// a key must not be created where other accounts could read it.
+pub fn write_secret(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && !ensure_private_dir(dir)?
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the folder could not be limited to your user account, so the key was not written",
+        ));
+    }
+    write_private(path, data)
 }
 
 /// Writes `data` to `path` through a temporary file in the same folder, so a crash never leaves a
@@ -87,5 +124,27 @@ mod tests {
         let p = dir.join("host.key");
         write_private(&p, b"x").unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn the_whoami_sid_is_read_from_its_csv_line_and_nothing_else_passes() {
+        assert_eq!(parse_whoami_sid("\"DESKTOP\\allan\",\"S-1-5-21-1004336348-1177238915-682003330-1001\"\r\n").as_deref(), Some("S-1-5-21-1004336348-1177238915-682003330-1001"));
+        for bad in ["", "ERROR: nope", "\"a\",\"not-a-sid\"", "\"a\",\"S-1-\"", "\"a\",\"S-1-5-21-1) (OI)(CI)F /grant Everyone:F\""] {
+            assert_eq!(parse_whoami_sid(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_is_written_when_the_folder_is_private() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("peer").join("host.key");
+        match write_secret(&p, b"k") {
+            Ok(()) => assert_eq!(std::fs::read(&p).unwrap(), b"k"),
+            // A system where the limit cannot be applied: the key must not exist.
+            Err(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(!p.exists(), "no key was written without the limit");
+            }
+        }
     }
 }

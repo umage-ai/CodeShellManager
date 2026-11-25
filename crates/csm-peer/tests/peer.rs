@@ -541,21 +541,19 @@ fn an_offer_works_once() {
 }
 
 #[test]
-fn a_wrong_offer_key_gives_three_tries_and_then_the_slot_is_dead() {
+fn a_wrong_offer_key_does_not_pair_and_does_not_kill_the_offer() {
     let rig = Rig::new();
     rig.enable();
     let offer = rig.open_offer();
-    // Same slot id, wrong secret: the handshake fails, and each try is counted.
+    // Same slot id, wrong secret: the handshake fails.
     let mut forged = offer.clone();
     forged.p = csm_peer_proto::ids::b64_encode(&[7u8; 32]);
     for _ in 0..3 {
         let r = client::pair(&forged, &Identity::generate().unwrap(), &ClientConfig::new("Guesser"), &mut |_| {});
         assert!(matches!(r, Err(ClientError::Refused | ClientError::Link(_))), "{r:?}");
     }
-    let r = client::pair(&offer, &Identity::generate().unwrap(), &ClientConfig::new("Real"), &mut |_| {});
-    assert!(matches!(r, Err(ClientError::Refused)), "the real offer is dead after three bad tries: {r:?}");
     assert_eq!(rig.status()["devices"], 0);
-    // A new offer works.
+    // The real offer still works (the id is in the clear, so bad tries must not use it up).
     rig.pair("Real");
     assert_eq!(rig.status()["devices"], 1);
 }
@@ -659,16 +657,17 @@ fn the_app_closing_says_goodbye() {
 }
 
 #[test]
-fn a_second_connection_of_the_same_device_replaces_the_first() {
+fn a_second_connection_of_the_same_device_is_served_beside_the_first() {
     let rig = Rig::new();
     rig.enable();
     let (me, host) = rig.pair("Laptop");
     let first = connect(&host, &me).unwrap();
     wait_for("connected", || (rig.status()["connected"] == 1).then_some(()));
     let second = connect(&host, &me).unwrap();
-    assert_eq!(wait_closed(&first), Some(ByeReason::Replaced));
-    assert!(matches!(second.call_wait("session_list", json!({}), Duration::from_secs(5)).unwrap(), Outcome::Ok { .. }));
-    assert_eq!(rig.status()["connected"], 1);
+    wait_for("both connected", || (rig.status()["connected"] == 2).then_some(()));
+    for c in [&first, &second] {
+        assert!(matches!(c.call_wait("session_list", json!({}), Duration::from_secs(5)).unwrap(), Outcome::Ok { .. }));
+    }
 }
 
 // ---- the session link -------------------------------------------------------------------
@@ -941,4 +940,246 @@ fn a_refusal_before_remote_access_ever_existed_still_leaves_a_log_line() {
     assert!(matches!(r, Err(csm_engine::ToolError::Refused(_))));
     let log = std::fs::read_to_string(rig.peer_dir.join("remote-access.log")).unwrap();
     assert!(log.contains("\"refused\"") && log.contains("peer_server_enable"), "{log}");
+}
+
+// ---- robustness round (COR-19..26, 50, SEC-33..39) ---------------------------------------------
+
+impl Rig {
+    /// The whole pairing, with the person choosing the level.
+    fn pair_at(&self, name: &str, level: &str) -> (Identity, PairedHost) {
+        let offer = self.open_offer();
+        let me = Identity::generate().unwrap();
+        let p = Pairing::start(offer, me.clone(), name);
+        let code = p.wait_pending(self);
+        self.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "level": level, "trusted": true})).unwrap();
+        (me, p.finish().unwrap())
+    }
+}
+
+#[test]
+fn the_level_the_person_chooses_is_the_level_the_device_gets() {
+    let rig = Rig::new();
+    rig.enable();
+    for (name, level, want) in [("Viewer", "viewer", Level::Viewer), ("Operator", "operator", Level::Operator), ("Full", "full", Level::Full)] {
+        let (me, host) = rig.pair_at(name, level);
+        assert_eq!(host.level, want, "the device is told its level");
+        let conn = connect(&host, &me).unwrap();
+        assert_eq!(conn.welcome.level, want, "and the host serves it at that level");
+        let r = conn.call_wait("group_new", json!({"name": "x"}), Duration::from_secs(5)).unwrap();
+        assert_eq!(matches!(r, Outcome::Err { kind: ErrorKind::Refused, .. }), want != Level::Full, "{level}: {r:?}");
+    }
+    let bad = rig.ui("peer_pair_answer", json!({"allow": true, "check_code": "0000", "level": "root"}));
+    assert!(matches!(bad, Err(csm_engine::ToolError::InvalidParams(_))), "{bad:?}");
+}
+
+#[test]
+fn a_device_may_hold_several_connections_and_only_the_oldest_beyond_four_is_replaced() {
+    let rig = Rig::new();
+    rig.enable();
+    let (me, host) = rig.pair("Laptop");
+    let conns: Vec<_> = (0..4).map(|_| connect(&host, &me).unwrap()).collect();
+    wait_for("four connections", || (rig.status()["connected"] == 4).then_some(()));
+    for c in &conns {
+        assert!(matches!(c.call_wait("session_list", json!({}), Duration::from_secs(5)).unwrap(), Outcome::Ok { .. }), "all four work");
+    }
+    let fifth = connect(&host, &me).unwrap();
+    assert_eq!(wait_closed(&conns[0]), Some(ByeReason::Replaced), "the oldest makes room");
+    assert!(matches!(conns[3].call_wait("session_list", json!({}), Duration::from_secs(5)).unwrap(), Outcome::Ok { .. }), "the newer ones stay");
+    assert!(matches!(fifth.call_wait("session_list", json!({}), Duration::from_secs(5)).unwrap(), Outcome::Ok { .. }));
+    assert_eq!(rig.status()["connected"], 4);
+}
+
+#[test]
+fn garbage_at_the_pairing_door_does_not_burn_the_offer() {
+    let rig = Rig::new();
+    rig.enable();
+    let offer = rig.open_offer();
+    let mut forged = offer.clone();
+    forged.p = csm_peer_proto::ids::b64_encode(&[7u8; 32]);
+    // More bad tries than the old limit of three: anyone who saw the cleartext id could do this.
+    for _ in 0..6 {
+        let r = client::pair(&forged, &Identity::generate().unwrap(), &ClientConfig::new("Guesser"), &mut |_| {});
+        assert!(matches!(r, Err(ClientError::Refused | ClientError::Link(_))), "{r:?}");
+    }
+    let me = Identity::generate().unwrap();
+    let p = Pairing::start(offer, me, "Real");
+    let code = p.wait_pending(&rig);
+    rig.ui("peer_pair_answer", json!({"allow": true, "check_code": code, "trusted": true})).unwrap();
+    assert!(p.finish().is_ok(), "the real device still pairs");
+}
+
+#[test]
+fn a_new_pairing_gets_its_own_random_relay_token_that_the_key_does_not_give() {
+    let rig = Rig::new();
+    rig.enable();
+    let (_, a) = rig.pair("First");
+    let (_, b) = rig.pair("Second");
+    let text = std::fs::read_to_string(rig.peer_dir.join("devices.json")).unwrap();
+    let list: Value = serde_json::from_str(&text).unwrap();
+    let tokens: Vec<&str> = list["devices"].as_array().unwrap().iter().map(|d| d["relay_token"].as_str().expect("a token was made at pairing")).collect();
+    assert_eq!(tokens.len(), 2);
+    assert_ne!(tokens[0], tokens[1], "different per pairing");
+    for (d, key) in list["devices"].as_array().unwrap().iter().zip([&a, &b]) {
+        let derived = csm_peer::relay_pump::device_relay_token(&key.host_public);
+        assert_ne!(d["relay_token"].as_str().unwrap(), csm_peer_proto::ids::b64_encode(&derived));
+    }
+}
+
+fn saved_all_interfaces(rig: &Rig) -> (u16, std::sync::Arc<csm_services::secrets::MemoryStore>) {
+    let store = Arc::new(csm_services::secrets::MemoryStore::default());
+    rig.server.use_secrets(store.clone());
+    rig.ui("peer_server_enable", json!({"address": "0.0.0.0", "port": 0, "all_interfaces": true})).unwrap();
+    let port = rig.server.local_addr().unwrap().port();
+    (port, store)
+}
+
+#[test]
+fn a_saved_every_interface_choice_is_honoured_only_when_the_app_wrote_it() {
+    let first = Rig::new();
+    let (port, store) = saved_all_interfaces(&first);
+    let choice = std::fs::read_to_string(first.peer_dir.join("server.json")).unwrap();
+    assert!(choice.contains("\"mac\""), "the choice carries its keyed hash: {choice}");
+    first.server.shutdown();
+
+    // The same folder and the same keychain: unchanged, so it comes back as it was, with a notice.
+    let again = Rig::new();
+    std::fs::create_dir_all(&again.peer_dir).unwrap();
+    for f in ["host.key", "devices.json", "server.json"] {
+        if first.peer_dir.join(f).exists() {
+            std::fs::copy(first.peer_dir.join(f), again.peer_dir.join(f)).unwrap();
+        }
+    }
+    again.server.use_secrets(store.clone());
+    let notice = again.server.resume().expect("a resume says so");
+    assert!(notice.contains("all interfaces") && notice.starts_with("Remote access resumed: 0 devices"), "{notice}");
+    assert_eq!(again.server.local_addr().unwrap().port(), port);
+    assert!(again.server.local_addr().unwrap().ip().is_unspecified());
+    assert_eq!(again.status()["unconfirmed_all_interfaces"], Value::Null);
+    again.server.shutdown();
+
+    // Edited since (here: the port): the hash no longer fits, so it listens on this PC only.
+    let edited = Rig::new();
+    std::fs::create_dir_all(&edited.peer_dir).unwrap();
+    for f in ["host.key", "devices.json"] {
+        if first.peer_dir.join(f).exists() {
+            std::fs::copy(first.peer_dir.join(f), edited.peer_dir.join(f)).unwrap();
+        }
+    }
+    let other = free_port();
+    std::fs::write(edited.peer_dir.join("server.json"), choice.replace(&port.to_string(), &other.to_string())).unwrap();
+    edited.server.use_secrets(store);
+    let notice = edited.server.resume().unwrap();
+    assert!(notice.contains("this PC only"), "{notice}");
+    let at = edited.server.local_addr().unwrap();
+    assert!(at.ip().is_loopback(), "{at}");
+    assert_eq!(edited.status()["unconfirmed_all_interfaces"], json!(format!("0.0.0.0:{other}")));
+    // Turning it on again on purpose is the confirmation.
+    edited.ui("peer_server_enable", json!({"address": "0.0.0.0", "port": 0, "all_interfaces": true})).unwrap();
+    assert_eq!(edited.status()["unconfirmed_all_interfaces"], Value::Null);
+}
+
+#[test]
+fn without_a_keychain_a_saved_every_interface_choice_stays_on_this_pc_until_confirmed() {
+    let rig = Rig::new();
+    std::fs::create_dir_all(&rig.peer_dir).unwrap();
+    let port = free_port();
+    let choice = json!({"v": 1, "enabled": true, "address": "0.0.0.0", "port": port, "all_interfaces": true});
+    std::fs::write(rig.peer_dir.join("server.json"), choice.to_string()).unwrap();
+    rig.server.resume().unwrap();
+    assert!(rig.server.local_addr().unwrap().ip().is_loopback(), "an unsigned choice never opens every interface");
+}
+
+#[test]
+fn a_resume_tells_the_person_how_many_devices_and_where() {
+    let rig = Rig::new();
+    let addr = rig.enable();
+    rig.pair("Laptop");
+    rig.server.shutdown();
+    let again = Rig::new();
+    std::fs::create_dir_all(&again.peer_dir).unwrap();
+    for f in ["host.key", "devices.json", "server.json"] {
+        std::fs::copy(rig.peer_dir.join(f), again.peer_dir.join(f)).unwrap();
+    }
+    let notice = again.server.resume().unwrap();
+    assert!(notice.starts_with("Remote access resumed: 1 device, listening on 127.0.0.1:"), "{notice}");
+    let _ = addr;
+}
+
+#[test]
+fn an_idle_connection_that_never_sends_the_selector_is_dropped_within_the_first_frame_deadline() {
+    let rig = Rig::with(ServerConfig { first_frame_timeout: Duration::from_millis(300), handshake_timeout: Duration::from_secs(5), ..ServerConfig::default() });
+    let addr = rig.enable();
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let started = Instant::now();
+    let mut buf = [0u8; 16];
+    assert!(matches!(s.read(&mut buf), Ok(0) | Err(_)));
+    assert!(started.elapsed() < Duration::from_millis(1500), "closed after {:?}, not at the 5 s handshake deadline", started.elapsed());
+}
+
+#[test]
+fn one_address_cannot_fill_the_pre_authentication_pool() {
+    let rig = Rig::with(ServerConfig { max_unauthenticated: 4, max_unauthenticated_per_ip: 2, handshake_timeout: Duration::from_secs(5), ..ServerConfig::default() });
+    let addr = rig.enable();
+    // Three silent connections from one address: the third is dropped, the first two wait.
+    let held: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut third = held[2].try_clone().unwrap();
+    third.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    let mut buf = [0u8; 1];
+    assert!(matches!(third.read(&mut buf), Ok(0) | Err(_)), "dropped");
+    let mut first = held[0].try_clone().unwrap();
+    first.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    let err = first.read(&mut buf).unwrap_err();
+    assert!(matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut), "the first is still waiting: {err:?}");
+}
+
+#[test]
+fn a_full_pool_makes_room_by_closing_its_oldest() {
+    let rig = Rig::with(ServerConfig { max_unauthenticated: 2, max_unauthenticated_per_ip: 10, handshake_timeout: Duration::from_secs(5), ..ServerConfig::default() });
+    let addr = rig.enable();
+    let mut oldest = TcpStream::connect(addr).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let _second = TcpStream::connect(addr).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let _third = TcpStream::connect(addr).unwrap();
+    oldest.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut buf = [0u8; 1];
+    assert!(matches!(oldest.read(&mut buf), Ok(0) | Err(_)), "the oldest was closed for the newest");
+}
+
+#[test]
+fn a_flood_of_unknown_keys_is_one_log_line_and_a_count() {
+    let rig = Rig::new();
+    let addr = rig.enable();
+    let (me, host) = rig.pair("Laptop");
+    drop((me, host));
+    for _ in 0..8 {
+        let stranger = Identity::generate().unwrap();
+        let _ = client::connect(&peer_addr(addr), &rig.server_public(), &stranger, &ClientConfig::new("Stranger"));
+    }
+    let refused = rig.server.audit_tail(100).into_iter().filter(|e| e["event"] == "refused" && e["why"] == "unknown key").count();
+    assert_eq!(refused, 1, "the knocking is counted, not logged line by line");
+}
+
+impl Rig {
+    /// The host's public key, as a paired device pins it.
+    fn server_public(&self) -> [u8; 32] {
+        *Identity::load_or_create(&self.peer_dir.join("host.key")).unwrap().public()
+    }
+}
+
+#[test]
+fn a_session_read_and_a_terminal_stream_are_in_the_log() {
+    let rig = Rig::new();
+    rig.enable();
+    let (me, host) = rig.pair("Laptop");
+    let conn = connect(&host, &me).unwrap();
+    let r = conn.call_wait("session_list", json!({}), Duration::from_secs(5)).unwrap();
+    assert!(matches!(r, Outcome::Ok { .. }));
+    // Reading what a session shows is logged; a plain list is not.
+    let _ = conn.call_wait("session_read_screen", json!({"session_id": "none"}), Duration::from_secs(5));
+    let log = rig.server.audit_tail(100);
+    assert!(log.iter().any(|e| e["event"] == "read" && e["tool"] == "session_read_screen"), "{log:?}");
+    assert!(!log.iter().any(|e| e["event"] == "read" && e["tool"] == "session_list"), "{log:?}");
 }

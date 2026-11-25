@@ -608,6 +608,8 @@ fn main() {
     // beside the real app on the same folders, so they leave its log and marker alone.
     let diag_dir = logs.filter(|_| !args.demo && !args.clean && args.remote.is_none());
     let mut crash_notice = None;
+    // Said once on screen when remote access comes back on its own at start (SEC-33).
+    let mut resume_notice: Option<String> = None;
     if let Some(dir) = &diag_dir {
         csm_engine::diag::init_file_logger(dir);
         log::info!("CodeShellManager {} ({} channel) starting", env!("CARGO_PKG_VERSION"), csm_core::channel::CURRENT.id());
@@ -710,7 +712,7 @@ fn main() {
             // may have chosen before: remote access on, at the address they picked. A fresh install,
             // an upgrade or an import has no such choice, so this starts nothing.
             p.attach(engine.clone());
-            p.resume();
+            resume_notice = p.resume();
         }
         if let Some(path) = first_run_import {
             import_wpf_on_first_run(&engine, path);
@@ -789,6 +791,10 @@ fn main() {
             app.monitors = app_monitors;
             app.window_controls = cfg!(windows);
             if let Some(n) = crash_notice.take() {
+                app.toast(&cc.egui_ctx, n);
+            }
+            if let Some(n) = resume_notice.take() {
+                log::info!("{n}");
                 app.toast(&cc.egui_ctx, n);
             }
             let wake_ctx = cc.egui_ctx.clone();

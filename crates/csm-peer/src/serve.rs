@@ -47,7 +47,7 @@ use csm_peer_proto::msg::{Level, Msg, TermClosedReason};
 use serde_json::json;
 
 use crate::audit::{Audit, clean};
-use crate::link::{Link, LinkError};
+use crate::link::{Link, LinkError, Outbox};
 
 /// Which connection drives each session's size.
 pub(crate) type Drivers = Arc<Mutex<HashMap<String, u64>>>;
@@ -104,6 +104,7 @@ struct Meter {
 pub(crate) struct Serving {
     engine: Engine,
     link: Arc<Link>,
+    out: Outbox,
     conn_id: u64,
     device_id: String,
     level: Level,
@@ -129,7 +130,7 @@ enum Start {
 }
 
 impl Serving {
-    pub(crate) fn new(engine: Engine, link: Arc<Link>, who: Who, knobs: Knobs, drivers: Drivers, audit: Arc<Audit>) -> Arc<Self> {
+    pub(crate) fn new(engine: Engine, link: Arc<Link>, out: Outbox, who: Who, knobs: Knobs, drivers: Drivers, audit: Arc<Audit>) -> Arc<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(INPUT_QUEUE);
         let spawned = std::thread::Builder::new().name("csm-peer-input".into()).spawn(move || {
             while let Ok(job) = rx.recv() {
@@ -142,6 +143,7 @@ impl Serving {
         Arc::new(Self {
             engine,
             link,
+            out,
             conn_id: who.conn_id,
             device_id: who.device_id,
             level: who.level,
@@ -224,9 +226,11 @@ impl Serving {
 
     fn closed(&self, stream: u32, reason: TermClosedReason) {
         // Behind whatever the stream's current thread is sending, never in the middle of it.
+        // The reader thread calls this, so it never waits for a lane a stalled socket holds, and
+        // never writes to the socket itself: the message goes through the connection's outbox.
         let chan = self.chan(stream);
-        let _lane = chan.send.lock().unwrap_or_else(PoisonError::into_inner);
-        let _ = self.link.send_msg(Msg::TermClosed { stream, reason });
+        let _lane = chan.send.try_lock().ok();
+        self.out.send(Msg::TermClosed { stream, reason });
     }
 
     fn subscribe(&self, stream: u32, session: &str, resume: Option<(u64, u64)>) {
@@ -250,6 +254,13 @@ impl Serving {
             }
             _ => Start::Attach,
         };
+        // Watching a terminal is reading its content: logged (repeats counted, so a screen that
+        // resumes after every Wi-Fi flap is a line and a count).
+        self.audit.record_coalesced(
+            "term_subscribe",
+            &format!("term_subscribe|{}|{session}", self.device_id),
+            json!({"device_id": self.device_id, "session": clean(session), "resume": resume.is_some()}),
+        );
         self.chan(stream).pending.store(false, Ordering::Release);
         self.begin(stream, session, handle, start);
     }

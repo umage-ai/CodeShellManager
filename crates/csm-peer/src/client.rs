@@ -167,7 +167,7 @@ pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, ca
         link.close();
         return Err(ClientError::Cancelled);
     }
-    let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: cfg.device_name.clone() }.encode().map_err(|_| ClientError::Link("the device name is not allowed".into()))?;
+    let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: cfg.device_name.clone(), rt: true }.encode().map_err(|_| ClientError::Link("the device name is not allowed".into()))?;
     link.send_plains(&[hello]).map_err(link_failed)?;
     let until = Instant::now() + cfg.pair_wait;
     let answer = loop {
@@ -185,7 +185,14 @@ pub fn pair_cancellable(offer: &PeerOffer, me: &Identity, cfg: &ClientConfig, ca
     };
     link.close();
     match answer {
-        PairMsg::Accept { device_id, level } if device_id == me.device_id() => Ok(PairedHost { address: addr, host_id: host_id(&host_pub), host_public: host_pub, device_id, level, relay: offer.r.clone() }),
+        PairMsg::Accept { device_id, level, relay_token } if device_id == me.device_id() => {
+            // The token comes from the host's answer, never from the link: a link cannot choose it.
+            let relay = offer.r.clone().map(|mut r| {
+                r.token = relay_token.filter(|t| csm_peer_proto::ids::b64_decode_fixed::<32>(t).is_some());
+                r
+            });
+            Ok(PairedHost { address: addr, host_id: host_id(&host_pub), host_public: host_pub, device_id, level, relay })
+        }
         PairMsg::Accept { .. } => Err(ClientError::Link("the host named another device id".into())),
         PairMsg::Deny { reason } => Err(ClientError::Denied(reason)),
         PairMsg::Hello { .. } => Err(ClientError::Link("unexpected message".into())),
@@ -235,9 +242,11 @@ pub fn connect(addr: &PeerAddr, host_public: &[u8; KEY_LEN], me: &Identity, cfg:
 }
 
 /// [`connect`] with a route: the direct address first, then the relay (when the host has one).
-/// Through the relay the device presents its routing token, derived from its own key.
+/// Through the relay the device presents its routing token: the random one the host gave at
+/// pairing (kept in `relay.token`), or, for a pairing made before those existed, the one derived
+/// from its own key.
 pub fn connect_saved(direct: Option<&PeerAddr>, relay: Option<&RelayRoute>, host_public: &[u8; KEY_LEN], me: &Identity, cfg: &ClientConfig) -> Result<Connection, ClientError> {
-    let cred = ClientCred::Token(device_relay_token(me.public()));
+    let cred = ClientCred::Token(relay_token_for(relay, me.public()));
     let stream = open_route(direct, relay, cred, cfg.connect_timeout, &AtomicBool::new(false))?;
     let io = Io::new(stream).map_err(|e| ClientError::Connect(e.to_string()))?;
     let deadline = Instant::now() + cfg.connect_timeout;
@@ -456,8 +465,21 @@ impl TermFollower {
     }
 
     /// What to pass to `Connection::subscribe` to continue where this left off.
+    ///
+    /// `None` while the follower is lost (a gap was reported and no attach has come since): the
+    /// bytes it holds are not a screen to continue from, so the next subscribe asks for a fresh
+    /// attach instead of resuming a stream the emulator never followed.
     pub fn resume_point(&self) -> Option<(u64, u64)> {
+        if self.lost {
+            return None;
+        }
         self.instance.zip(self.offset)
+    }
+
+    /// A new connection starts: half an attach from the old one is dropped, so it is never glued
+    /// to the first chunks of the next. Call before subscribing on the new link.
+    pub fn new_link(&mut self) {
+        self.attach.cancel(self.stream);
     }
 
     pub fn on_frame(&mut self, frame: &Frame) -> Result<TermUpdate, csm_peer_proto::codec::CodecError> {
@@ -519,4 +541,25 @@ fn open_route(direct: Option<&PeerAddr>, relay: Option<&RelayRoute>, cred: Clien
         return relay_pump::dial(&r.url, &r.host_id, cred).map_err(|e| ClientError::Connect(e.to_string()));
     }
     Err(direct_err.unwrap_or_else(|| ClientError::Connect("no route to the host".to_owned())))
+}
+
+/// The routing token to present on `relay`: the one saved at pairing, else the legacy derivation.
+fn relay_token_for(relay: Option<&RelayRoute>, device_public: &[u8; KEY_LEN]) -> [u8; csm_remote_proto::ids::TOKEN_LEN] {
+    relay.and_then(|r| r.token.as_deref()).and_then(csm_peer_proto::ids::b64_decode_fixed::<{ csm_remote_proto::ids::TOKEN_LEN }>).unwrap_or_else(|| device_relay_token(device_public))
+}
+
+#[cfg(test)]
+mod relay_token_tests {
+    use super::*;
+
+    #[test]
+    fn the_saved_token_is_used_and_an_older_pairing_falls_back_to_the_derived_one() {
+        let key = [3u8; KEY_LEN];
+        let route = |token: Option<String>| RelayRoute { url: "wss://relay.example".into(), host_id: host_id(&[2; 32]), token };
+        let saved = [8u8; 32];
+        assert_eq!(relay_token_for(Some(&route(Some(csm_peer_proto::ids::b64_encode(&saved)))), &key), saved);
+        assert_eq!(relay_token_for(Some(&route(None)), &key), device_relay_token(&key), "paired before tokens were random");
+        assert_eq!(relay_token_for(None, &key), device_relay_token(&key));
+        assert_eq!(relay_token_for(Some(&route(Some("garbage".into()))), &key), device_relay_token(&key), "a damaged token is not used");
+    }
 }

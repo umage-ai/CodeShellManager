@@ -1161,3 +1161,35 @@ fn an_upload_is_logged_by_name_and_size_and_never_by_its_contents() {
     let leaked: String = data.iter().take(8).map(|b| format!("{b:02x}")).collect();
     assert!(!log.contains(&leaked), "no contents in the log");
 }
+
+// ---- a reconnect starts the follower over (COR-20) ---------------------------------------------
+
+#[test]
+fn a_lost_follower_asks_for_a_fresh_screen_not_a_resume() {
+    let mut f = TermFollower::new(5);
+    let attach = Frame::TermAttach { stream: 5, instance: 9, cols: 80, rows: 24, offset: 100, more: false, vt: b"x".to_vec() };
+    assert!(matches!(f.on_frame(&attach).unwrap(), TermUpdate::Attached(_)));
+    assert_eq!(f.resume_point(), Some((9, 100)));
+    // A hole: the follower is lost, and what it holds is not a screen to continue from.
+    let hole = Frame::TermData { stream: 5, instance: 9, offset: 500, bytes: b"abc".to_vec() };
+    assert_eq!(f.on_frame(&hole).unwrap(), TermUpdate::Gap);
+    assert_eq!(f.resume_point(), None, "no resume while lost: the host sends a whole attach instead");
+    // The attach that follows makes it live again.
+    assert!(matches!(f.on_frame(&attach).unwrap(), TermUpdate::Attached(_)));
+    assert_eq!(f.resume_point(), Some((9, 100)));
+}
+
+#[test]
+fn half_an_attach_from_the_old_link_is_never_glued_to_the_next() {
+    let mut f = TermFollower::new(5);
+    let first = |more: bool, vt: &[u8]| Frame::TermAttach { stream: 5, instance: 9, cols: 80, rows: 24, offset: 100, more, vt: vt.to_vec() };
+    // The first chunk of an attach arrives, and the link drops before the rest.
+    assert_eq!(f.on_frame(&first(true, b"OLD-HALF")).unwrap(), TermUpdate::Ignored);
+    // A new link: the same header again (an idle session), chunk by chunk.
+    f.new_link();
+    assert_eq!(f.on_frame(&first(true, b"new-")).unwrap(), TermUpdate::Ignored);
+    match f.on_frame(&first(false, b"whole")).unwrap() {
+        TermUpdate::Attached(a) => assert_eq!(a.vt, b"new-whole", "only the new link's chunks"),
+        other => panic!("{other:?}"),
+    }
+}
