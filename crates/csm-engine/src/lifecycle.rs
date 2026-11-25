@@ -372,6 +372,7 @@ pub(crate) fn on_exit(state: &mut State) {
     // Remote access closes with the app (the person's choice to have it on stays saved).
     state.options.peer_host.shutdown();
     state.options.peer_client.shutdown();
+    state.options.remote_windows.begin_quit();
     crate::runs::kill_everything(state);
     crate::port_forward::stop_all(&mut state.rt.forwards);
     // Usage stats: what still runs ends now (queued before the index's shutdown, so written).
@@ -1373,6 +1374,8 @@ pub(crate) fn quit(ctx: &mut Ctx<'_>, force: bool, reply: Option<ParkedReply>) {
         ctx.state.rt.quit_force.store(true, std::sync::atomic::Ordering::Release);
     }
     ctx.state.rt.shutting_down = true;
+    // A remote window that ends from here on is not one the person closed (`remote_windows`).
+    ctx.state.options.remote_windows.begin_quit();
     ctx.state.rt.restart_cancel = true;
     let ids: Vec<String> = ctx.state.app.sessions.iter().map(|s| s.id.clone()).collect();
     let mut targets: Vec<(String, Arc<dyn Pty>, bool)> = Vec::new();

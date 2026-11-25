@@ -30,6 +30,7 @@ pub mod output_tap;
 pub mod peer_host;
 /// The seam to the laptop side of the peer link (`csm-peer`'s client): pairing and the host list.
 pub mod peer_client;
+pub mod remote_windows;
 pub mod persist;
 pub mod proc;
 pub mod registry;
@@ -54,6 +55,7 @@ pub use events::{Event, Events};
 pub use index::{INDEX_FILE, IndexSetting, location as index_location, wpf_output_db};
 pub use plugin_screens::{DeclaredScreen, OPEN_TIMEOUT, ScreenInfo, ScreenPhase, ScreenStore};
 pub use peer_client::{ClientPairStatus, HostInfo, NoPeerClient, PairState, PeerClientHost};
+pub use remote_windows::{RemoteWindows, WindowSpawner};
 pub use peer_host::{AuditEvent, DeviceInfo, EnableRequest, NetInterface, NoPeerHost, PairAnswer, PairingStarted, PeerHost, PeerStatus, PendingPair, RelayInfo, RelaySetRequest, Revoke};
 pub use plugins::{PluginRuntime, RemoteView, RunState};
 pub use tools::new_session::{Choice, NewSessionView};

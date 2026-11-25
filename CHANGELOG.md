@@ -136,6 +136,9 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 - **Start at sign-in**, optionally minimized or hidden in the tray (Settings → General →
   Start-up; `app_autostart_set`). Launching the app again shows the running window instead of
   opening a second one on the same sessions.
+- **Remote windows reopen at start.** When the laptop starts, each office whose remote window was
+  open at quit opens again (a window you closed yourself stays closed; an office no longer paired is
+  skipped). Setting **Reopen remote windows at start**, Settings › Remote access, on by default.
 
 ### Kept from 0.x
 

@@ -114,6 +114,10 @@ pub struct StateOptions {
     /// Starts a remote window to a paired host (`remote_window_open`). Default: refused (tests, the
     /// demo, the CLI). Production (`apps/codeshell`) starts this executable as `--remote <host-id>`.
     pub remote_window_launcher: RemoteWindowLauncher,
+    /// Which remote windows are open, remembered for the next start (`ReopenRemoteWindows`). The
+    /// engine tells it when a quit begins. Default: remembers nothing. Production wires the same one
+    /// the launcher opens windows through.
+    pub remote_windows: Arc<crate::remote_windows::RemoteWindows>,
     /// The update check (`update_check`). Default (tests, the demo): no network, no schedule.
     /// Production: GitHub, once a day ([`crate::UpdateOptions::production`]).
     pub update: crate::tools::update::UpdateOptions,
@@ -202,6 +206,7 @@ impl Default for StateOptions {
             peer_host: Arc::new(crate::peer_host::NoPeerHost),
             peer_client: Arc::new(crate::peer_client::NoPeerClient),
             remote_window_launcher: Arc::new(|_| Err("remote windows are not available in this build".into())),
+            remote_windows: crate::remote_windows::RemoteWindows::disabled(),
             url_opener: Arc::new(|url| log::info!("open_url: {url} (this engine opens no browser)")),
             ssh: Arc::new(crate::port_forward::NoSsh),
             update: crate::tools::update::UpdateOptions::default(),

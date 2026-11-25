@@ -475,6 +475,15 @@ pub fn indicator(ui: &Ui, app: &CsmApp, left: f32, right: f32, cy: f32, actions:
 /// The page.
 pub fn settings(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
+    crate::screens::settings::bool_setting(
+        ui,
+        app,
+        "ReopenRemoteWindows",
+        "Reopen remote windows at start",
+        "On this laptop: when CodeShellManager starts, open a remote window again for each office whose window was open when you quit. A window you closed yourself stays closed. Only offices that are still paired; nothing is paired or sent anywhere new.",
+        actions,
+    );
+    ui.add_space(space::SM);
     if !app.ui.remote.status.available {
         caption(ui, "Remote access isn't available in this run: a test or isolated start has no peer server.");
         return;
