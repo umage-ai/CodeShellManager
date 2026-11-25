@@ -166,8 +166,8 @@ fn pairing_vectors() {
         })
         .collect();
     let pair_msgs = [
-        PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into() },
-        PairMsg::Accept { device_id: device_id(&arr::<32>(13)), level: Level::Full },
+        PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into(), rt: false },
+        PairMsg::Accept { device_id: device_id(&arr::<32>(13)), level: Level::Full, relay_token: None },
         PairMsg::Deny { reason: DenyReason::Denied },
         PairMsg::Deny { reason: DenyReason::Expired },
     ];

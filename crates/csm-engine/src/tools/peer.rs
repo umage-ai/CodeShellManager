@@ -150,8 +150,7 @@ pub(super) fn precheck(id: &str, caller: &Caller, host: &dyn PeerHost) -> Option
     ))
 }
 
-/// A peer below Full may only read (levels other than Full are not issued yet; this is the rule
-/// the server enforces when they are).
+/// A peer below Full may only read (the person picks the level when allowing a pairing).
 pub(crate) fn level_gate(caller: &Caller, spec: &ToolSpec) -> Option<ToolError> {
     use csm_peer_proto::msg::Level;
     match caller {
@@ -162,10 +161,12 @@ pub(crate) fn level_gate(caller: &Caller, spec: &ToolSpec) -> Option<ToolError> 
     }
 }
 
-/// Records a paired device's non-read call in the remote-access log.
+/// Records a paired device's call in the remote-access log: every non-read call, and the reads
+/// that return what is on a session's screen or in its history (`READS_SESSION_CONTENT`), which
+/// the log writes as repeats-counted `read` lines. Other reads (a list, a status) are not logged.
 pub(crate) fn audit_peer_call(host: &dyn PeerHost, caller: &Caller, spec: &ToolSpec, params: &Value) {
     if let Caller::Peer { device_id, name, .. } = caller
-        && !spec.effects.read_only_hint()
+        && (!spec.effects.read_only_hint() || spec.effects.contains(crate::tool::Effects::READS_SESSION_CONTENT))
     {
         let session = params.get("session_id").and_then(Value::as_str).map(|s| s.chars().take(64).collect());
         host.audit(AuditEvent::PeerCall { device_id: device_id.clone(), device_name: name.clone(), tool: spec.id.to_owned(), session, effects: spec.effects });
@@ -259,7 +260,7 @@ struct AnswerParams {
     /// The four digits both screens show. Required to allow.
     #[serde(default)]
     check_code: Option<String>,
-    /// `full` (the only level so far).
+    /// The access the device gets: `viewer` (watch), `operator` (watch and type into a terminal) or `full` (the default: every tool).
     #[serde(default)]
     level: Option<String>,
     /// Trust this device: its calls that type into a session or start a process run without a card on this screen. Off unless the person ticks "Trust this device (no prompts)".
@@ -273,8 +274,8 @@ fn peer_pair_answer(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     }
     let p: AnswerParams = parse_params(params)?;
     let level = p.level.unwrap_or_else(|| "full".into());
-    if level != "full" {
-        return Err(ToolError::InvalidParams("only the `full` level is available so far".into()));
+    if !matches!(level.as_str(), "viewer" | "operator" | "full") {
+        return Err(ToolError::InvalidParams("the level is `viewer`, `operator` or `full`".into()));
     }
     let allow = p.allow;
     let by = ctx.caller.describe();

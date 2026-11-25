@@ -74,7 +74,7 @@ impl Identity {
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let id = Self::generate()?;
-                crate::fsperm::write_private(path, id.to_json().as_bytes())?;
+                crate::fsperm::write_secret(path, id.to_json().as_bytes())?;
                 Ok(id)
             }
             Err(e) => Err(e),

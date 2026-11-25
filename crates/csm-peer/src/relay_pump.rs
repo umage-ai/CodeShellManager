@@ -593,8 +593,9 @@ struct HostState {
     on_channel: OnChannel,
     allow: AllowList,
     status: Arc<Mutex<HostStatus>>,
-    /// The pairing slot open now, replayed after a reconnect.
-    slot: Option<HostToRelay>,
+    /// The pairing slot open now and when it runs out, replayed after a reconnect (with the time
+    /// that is left, and not at all once it has expired).
+    slot: Option<(HostToRelay, Instant)>,
     stop: Arc<AtomicBool>,
 }
 
@@ -713,9 +714,27 @@ impl HostState {
         }
     }
 
+    /// The slot to send to a relay that has just connected: only while it is still open, and with
+    /// the seconds that remain, so an expired offer is never revived.
+    fn slot_to_replay(&mut self, now: Instant) -> Option<HostToRelay> {
+        let (msg, until) = self.slot.clone()?;
+        let left = until.saturating_duration_since(now).as_secs();
+        if left == 0 {
+            self.slot = None;
+            return None;
+        }
+        match msg {
+            HostToRelay::PairingOpen { pairing_id, expires_in } => Some(HostToRelay::PairingOpen { pairing_id, expires_in: u32::try_from(left).unwrap_or(expires_in).min(expires_in) }),
+            other => Some(other),
+        }
+    }
+
     fn remember(&mut self, msg: HostToRelay) {
         match msg {
-            HostToRelay::PairingOpen { .. } => self.slot = Some(msg),
+            HostToRelay::PairingOpen { expires_in, .. } => {
+                let until = Instant::now() + Duration::from_secs(u64::from(expires_in));
+                self.slot = Some((msg, until));
+            }
             HostToRelay::PairingClose => self.slot = None,
             _ => {}
         }
@@ -735,7 +754,7 @@ impl HostState {
         lock(&self.status).connected = true;
         lock(&self.status).last_error = None;
         self.send_control(&mut ws, &HostToRelay::Allow { tokens: (self.allow)().iter().map(|h| b64_encode(h)).collect() })?;
-        if let Some(slot) = self.slot.clone() {
+        if let Some(slot) = self.slot_to_replay(Instant::now()) {
             self.send_control(&mut ws, &slot)?;
         }
         let mut last_ping = Instant::now();
@@ -805,6 +824,22 @@ impl HostState {
     /// `stalled`, and the others are not held up behind it.
     fn pump(&mut self, ws: &mut Ws) -> Result<(), RelayErr> {
         let now = Instant::now();
+        // Control (the allow list, a pairing slot, a resync) goes before any data: a channel that waits
+        // for pacing never holds it back.
+        let (control, data): (VecDeque<Cmd>, VecDeque<Cmd>) = std::mem::take(&mut self.pending).into_iter().partition(|c| matches!(c, Cmd::Control(_) | Cmd::Resync));
+        self.pending = data;
+        for cmd in control {
+            match cmd {
+                Cmd::Control(msg) => {
+                    self.remember(msg.clone());
+                    self.send_control(ws, &msg)?;
+                }
+                _ => {
+                    let tokens = (self.allow)().iter().map(|h| b64_encode(h)).collect();
+                    self.send_control(ws, &HostToRelay::Allow { tokens })?;
+                }
+            }
+        }
         self.drain_stalled(ws, now)?;
         while let Some(cmd) = self.pending.pop_front() {
             match cmd {
@@ -938,9 +973,11 @@ struct Bucket {
 }
 
 impl Bucket {
-    fn new(rate: u32, now: Instant) -> Self {
-        let rate = f64::from(rate);
-        let cap = rate * f64::from(BURST_FACTOR);
+    /// `floor` is the least a burst may hold: whatever the relay announced, one whole frame fits,
+    /// so a frame larger than the bucket cannot wait for ever. A zero rate counts as one a second.
+    fn new(rate: u32, floor: f64, now: Instant) -> Self {
+        let rate = f64::from(rate).max(1.0);
+        let cap = (rate * f64::from(BURST_FACTOR)).max(floor);
         Self { tokens: cap, cap, rate, last: now }
     }
 
@@ -950,6 +987,9 @@ impl Bucket {
         self.tokens = (self.tokens + dt * self.rate).min(self.cap);
     }
 }
+
+/// The least a byte bucket holds: one whole relay data frame (a Noise message and its length prefix).
+const MIN_BYTE_BURST: f64 = 65_535.0 + 4.0;
 
 /// A channel's pacing: the relay's per-channel caps (frames and bytes a second). The office uses it
 /// so it never sends faster than the relay lets a channel through; a laptop uses it for its bulk
@@ -966,7 +1006,7 @@ impl Pacer {
     }
 
     pub(crate) fn with_rates(frames: u32, bytes: u32, now: Instant) -> Self {
-        Self { frames: Bucket::new(frames, now), bytes: Bucket::new(bytes, now) }
+        Self { frames: Bucket::new(frames, 1.0, now), bytes: Bucket::new(bytes, MIN_BYTE_BURST, now) }
     }
 
     /// Takes one frame with `len` payload bytes if both caps have room. Takes nothing otherwise.
@@ -1074,17 +1114,17 @@ mod tests {
     #[test]
     fn bulk_waits_for_the_bucket_and_control_is_debited_without_waiting() {
         let t0 = Instant::now();
-        // 100 frames and 1000 bytes a second, with two seconds of burst.
-        let mut p = Pacer::with_rates(100, 1000, t0);
-        assert!(p.take_or_wait(1000, t0).is_ok());
-        assert!(p.take_or_wait(1000, t0).is_ok());
-        assert!(p.take_or_wait(1000, t0).is_err(), "the burst is spent");
+        // 100 frames and 100_000 bytes a second, with two seconds of burst.
+        let mut p = Pacer::with_rates(100, 100_000, t0);
+        assert!(p.take_or_wait(100_000, t0).is_ok());
+        assert!(p.take_or_wait(100_000, t0).is_ok());
+        assert!(p.take_or_wait(100_000, t0).is_err(), "the burst is spent");
         // Control and terminal input go whatever the bucket says, and they count.
         let t1 = t0 + Duration::from_secs(1);
-        p.take_now(500, t1);
-        let wait = p.take_or_wait(1000, t1).unwrap_err();
-        assert!(wait >= Duration::from_millis(490) && wait <= Duration::from_millis(500), "the bulk frame waits for the 500 missing bytes: {wait:?}");
-        assert!(p.take_or_wait(1000, t1 + Duration::from_millis(1500)).is_ok(), "the refill brings the room back");
+        p.take_now(50_000, t1);
+        let wait = p.take_or_wait(100_000, t1).unwrap_err();
+        assert!(wait >= Duration::from_millis(490) && wait <= Duration::from_millis(500), "the bulk frame waits for the 50 000 missing bytes: {wait:?}");
+        assert!(p.take_or_wait(100_000, t1 + Duration::from_millis(1500)).is_ok(), "the refill brings the room back");
     }
 
     #[test]
@@ -1240,5 +1280,37 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2), "the close must not wait for the relay");
         let result = writer.join().unwrap();
         assert!(result.is_err(), "a writer whose channel closed gets an error, not a hang");
+    }
+
+    #[test]
+    fn a_frame_larger_than_the_announced_burst_still_goes() {
+        // A relay that announces a rate whose burst is smaller than one frame (or zero).
+        let t0 = Instant::now();
+        let mut p = Pacer::with_rates(1, 10, t0);
+        assert!(p.try_take(65_535, t0), "one whole frame always fits an empty bucket");
+        assert!(!p.try_take(65_535, t0), "and the next waits for the refill");
+        let mut z = Pacer::with_rates(0, 0, t0);
+        assert!(z.try_take(1000, t0), "a zero rate is a slow rate, not a broken one");
+        // The wait it reports is finite.
+        let wait = z.take_or_wait(65_535, t0).unwrap_err();
+        assert!(wait <= Duration::from_secs(1));
+    }
+
+    fn host_state() -> HostState {
+        let (tx, rx) = mpsc::channel();
+        HostState::new(tx, rx, Box::new(|_, _| {}), Arc::new(Vec::<[u8; 32]>::new), Arc::new(Mutex::new(HostStatus::default())), Arc::new(AtomicBool::new(false)))
+    }
+
+    #[test]
+    fn a_pairing_slot_is_replayed_with_its_remaining_time_and_never_after_it_ran_out() {
+        let mut h = host_state();
+        h.remember(HostToRelay::PairingOpen { pairing_id: "id".into(), expires_in: 600 });
+        let now = Instant::now();
+        match h.slot_to_replay(now + Duration::from_secs(100)) {
+            Some(HostToRelay::PairingOpen { expires_in, .. }) => assert!((498..=500).contains(&expires_in), "{expires_in}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(h.slot_to_replay(now + Duration::from_secs(601)).is_none(), "an expired offer is not revived");
+        assert!(h.slot.is_none(), "and is forgotten");
     }
 }

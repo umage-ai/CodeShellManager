@@ -142,9 +142,24 @@ impl PeerOffer {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum PairMsg {
     /// Client to host, first message after the handshake.
-    Hello { v: u32, name: String },
+    /// `rt` says this client keeps a per-pairing relay token when the host gives one (an older
+    /// client leaves it out, and an older host ignores it).
+    Hello {
+        v: u32,
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rt: bool,
+    },
     /// Host to client: the person allowed it. `device_id` is derived from the client's key.
-    Accept { device_id: String, level: Level },
+    /// `relay_token` is the random routing token for this pairing (base64url, 32 bytes): sent only
+    /// to a client that asked with `rt`. Without it the relay token is derived from the client's
+    /// key, as before.
+    Accept {
+        device_id: String,
+        level: Level,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_token: Option<String>,
+    },
     /// Host to client: refused.
     Deny { reason: DenyReason },
 }
@@ -191,7 +206,7 @@ impl PairMsg {
 
     fn validate(&self) -> Result<(), PairError> {
         match self {
-            Self::Hello { v, name } => {
+            Self::Hello { v, name, .. } => {
                 if *v != PROTOCOL_VERSION {
                     return Err(PairError::Version(*v));
                 }
@@ -257,9 +272,9 @@ mod tests {
 
     #[test]
     fn pair_messages_are_strict() {
-        let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into() };
+        let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into(), rt: false };
         assert_eq!(PairMsg::decode(&hello.encode().unwrap()).unwrap(), hello);
-        let accept = PairMsg::Accept { device_id: crate::ids::device_id(&[1; 32]), level: Level::Full };
+        let accept = PairMsg::Accept { device_id: crate::ids::device_id(&[1; 32]), level: Level::Full, relay_token: None };
         assert_eq!(PairMsg::decode(&accept.encode().unwrap()).unwrap(), accept);
         let deny = PairMsg::Deny { reason: DenyReason::Denied };
         assert_eq!(PairMsg::decode(&deny.encode().unwrap()).unwrap(), deny);
@@ -279,6 +294,10 @@ mod tests {
 pub struct RelayRoute {
     pub url: String,
     pub host_id: String,
+    /// The routing token this device presents on the relay, set at pairing (never part of an
+    /// offer). `None`: the token is derived from the device key, as pairings made before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// Whether a relay address may be used: `wss://`, or `ws://` to loopback only (a relay on this PC).
@@ -327,13 +346,15 @@ fn valid_port(p: &str) -> bool {
 impl RelayRoute {
     /// Checks the address and the relay's host id.
     pub fn validate(&self) -> bool {
-        relay_url_allowed(&self.url) && self.url.len() <= 512 && is_valid_id(&self.host_id)
+        relay_url_allowed(&self.url) && self.url.len() <= 512 && is_valid_id(&self.host_id) && self.token.as_deref().is_none_or(|t| crate::ids::b64_decode_fixed::<32>(t).is_some())
     }
 }
 
 #[cfg(test)]
 mod relay_url_tests {
-    use super::relay_url_allowed;
+    use super::{PairMsg, RelayRoute, relay_url_allowed};
+    use crate::ids::b64_encode;
+    use crate::msg::{Level, PROTOCOL_VERSION};
 
     #[test]
     fn loopback_and_tls_addresses_are_allowed() {
@@ -391,5 +412,32 @@ mod relay_url_tests {
         assert!(!relay_url_allowed(&long));
         assert!(!relay_url_allowed("wss://relay.example\n/"));
         assert!(!relay_url_allowed("wss://relay.example\u{7f}/"));
+    }
+
+    #[test]
+    fn pairing_messages_stay_readable_between_builds() {
+        // An older client's Hello (no `rt`) and an older host's Accept (no token) still decode.
+        let old_hello = format!(r#"{{"t":"hello","v":{PROTOCOL_VERSION},"name":"Laptop"}}"#);
+        assert!(matches!(PairMsg::decode(old_hello.as_bytes()), Ok(PairMsg::Hello { rt: false, .. })));
+        let id = crate::ids::device_id(&[1; 32]);
+        let old_accept = format!(r#"{{"t":"accept","device_id":"{id}","level":"full"}}"#);
+        assert!(matches!(PairMsg::decode(old_accept.as_bytes()), Ok(PairMsg::Accept { relay_token: None, .. })));
+        // A newer message adds fields an older build ignores, and leaves them out when unused.
+        let hello = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into(), rt: true };
+        assert!(String::from_utf8(hello.encode().unwrap()).unwrap().contains("\"rt\":true"));
+        let plain = PairMsg::Hello { v: PROTOCOL_VERSION, name: "Laptop".into(), rt: false };
+        assert!(!String::from_utf8(plain.encode().unwrap()).unwrap().contains("rt"));
+        let accept = PairMsg::Accept { device_id: id, level: Level::Operator, relay_token: Some(b64_encode(&[5; 32])) };
+        assert_eq!(PairMsg::decode(&accept.encode().unwrap()).unwrap(), accept);
+    }
+
+    #[test]
+    fn a_relay_route_token_must_be_a_whole_token() {
+        let mut r = RelayRoute { url: "wss://relay.example".into(), host_id: crate::ids::host_id(&[2; 32]), token: None };
+        assert!(r.validate());
+        r.token = Some(b64_encode(&[5; 32]));
+        assert!(r.validate());
+        r.token = Some("short".into());
+        assert!(!r.validate());
     }
 }

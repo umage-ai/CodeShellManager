@@ -112,6 +112,7 @@ impl DemoPeerHost {
             pending_pair: s.pending.as_ref().map(|(n, c)| PendingPair { device_name: n.clone(), check_code: c.clone(), expires_in_secs: 600 }),
             devices: s.devices.len(),
             connected: s.devices.iter().filter(|d| d.connected).count(),
+            unconfirmed_all_interfaces: None,
             private_files_restricted: true,
         }
     }

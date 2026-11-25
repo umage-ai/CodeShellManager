@@ -133,6 +133,20 @@ impl Inner {
     }
 }
 
+/// The name a host gets when the person gave none: its address, or when that is too long to be a
+/// name (a long DNS name) the address without the scheme, cut to what a name may be. Both are checked,
+/// and "Remote host" stands in when nothing usable is left. Decided before dialling, so a bad name never fails a
+/// pairing after the host has already allowed the device.
+fn default_host_name(addr: &str) -> String {
+    if valid_name(addr) {
+        return addr.trim().to_owned();
+    }
+    let bare = addr.split_once("://").map_or(addr, |(_, rest)| rest);
+    let cleaned: String = bare.chars().filter(|c| !c.is_control()).take(csm_peer_proto::limits::MAX_NAME_CHARS).collect();
+    let cleaned = cleaned.trim().to_owned();
+    if valid_name(&cleaned) { cleaned } else { "Remote host".to_owned() }
+}
+
 impl PeerClientHost for ClientPeer {
     fn status(&self) -> ClientPairStatus {
         self.inner.lock().status.clone()
@@ -144,7 +158,7 @@ impl PeerClientHost for ClientPeer {
         let name = match name {
             Some(n) if valid_name(n) => n.trim().to_owned(),
             Some(_) => return Err(ToolError::InvalidParams("the host's name must be 1 to 64 characters with no control characters".into())),
-            None => addr.clone(),
+            None => default_host_name(&addr),
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let started = {
@@ -193,5 +207,21 @@ impl PeerClientHost for ClientPeer {
         if let Some(c) = &self.inner.lock().running {
             c.store(true, Ordering::Release);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_default_host_name_is_always_a_name_the_list_accepts() {
+        assert_eq!(default_host_name("tcp://10.8.0.2:47300"), "tcp://10.8.0.2:47300");
+        let long = format!("tcp://{}.example.com:47300", "a".repeat(120));
+        let name = default_host_name(&long);
+        assert!(valid_name(&name), "{name}");
+        assert!(name.chars().count() <= csm_peer_proto::limits::MAX_NAME_CHARS);
+        assert_eq!(default_host_name("tcp://\u{7}\u{200B}"), "Remote host");
+        assert_eq!(default_host_name(""), "Remote host");
     }
 }

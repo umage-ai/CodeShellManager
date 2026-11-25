@@ -49,6 +49,9 @@ pub struct StatusView {
     pub devices: usize,
     pub connected: usize,
     pub private_files_restricted: bool,
+    /// `ip:port` that was saved as "every interface" but could not be proven unchanged: the host
+    /// listens on this PC only until the person confirms it.
+    pub unconfirmed_all_interfaces: Option<String>,
 }
 
 /// A device that finished the pairing handshake and waits for Allow or Deny.
@@ -133,6 +136,9 @@ pub struct RemoteState {
     /// The "Trust this device (no prompts)" box on the pairing request. Never kept: it is off
     /// again for the next device.
     pub trust_new: bool,
+    /// The access level chosen on the pairing request: 0 full, 1 operator, 2 viewer. Never kept:
+    /// it is back on full for the next device.
+    pub level_new: usize,
     polled_at: Option<f64>,
 }
 
@@ -249,6 +255,7 @@ pub fn on_reply(app: &mut CsmApp, _ctx: &egui::Context, call: &Call, reply: &csm
             set_status(r, parse(&out.data));
             r.error = None;
             r.trust_new = false;
+            r.level_new = 0;
             app.dispatch.submit("peer_device_list", json!({}));
         }
         "peer_device_trust" => {
@@ -679,6 +686,15 @@ fn status_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                 }
             });
         });
+        if let Some(saved) = s.unconfirmed_all_interfaces.clone() {
+            caption(ui, "Remote access was saved as listening on every interface, but that setting could not be checked against tampering, so it listens on this PC only. Confirm it to open it to the network again.");
+            if widgets::button(ui, ButtonKind::Secondary, Some("check"), "Listen on every interface", None).clicked()
+                && let Some((host, port)) = saved.rsplit_once(':')
+                && let Ok(port) = port.parse::<u16>()
+            {
+                actions.push(Action::Tool("peer_server_enable", json!({"address": host.trim_matches(['[', ']']), "port": port, "all_interfaces": true})));
+            }
+        }
         if !s.private_files_restricted {
             caption(ui, "The key and device files could not be limited to your user account. Keep this machine's profile private.");
         }
@@ -865,7 +881,14 @@ fn pairing_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
                     .color(t.yellow),
             )
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Check code"));
-            caption(ui, "Allow only if the other screen shows the same four digits. A paired device has full access: it can type into your sessions, like an SSH key to this machine.");
+            caption(ui, "Allow only if the other screen shows the same four digits. At Full access a paired device can type into your sessions, like an SSH key to this machine.");
+            const LEVELS: [(&str, &str); 3] = [("Full", "full"), ("Operator", "operator"), ("Viewer", "viewer")];
+            let names: Vec<&str> = LEVELS.iter().map(|l| l.0).collect();
+            if let Some(i) = widgets::segmented(ui, "pair-level", &names, Some(app.ui.remote.level_new.min(2))) {
+                app.ui.remote.level_new = i;
+            }
+            let level = LEVELS.get(app.ui.remote.level_new).map_or("full", |l| l.1);
+            caption(ui, "Viewer: only watches. Operator: watches and types into a session's terminal. Full: also runs the tools that change things (start sessions, upload files, change settings).");
             let mut trust = app.ui.remote.trust_new;
             let tr = ui.checkbox(&mut trust, "Trust this device (no prompts)");
             tr.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, trust, "Trust this device (no prompts)"));
@@ -873,7 +896,7 @@ fn pairing_card(ui: &mut Ui, app: &mut CsmApp, actions: &mut Vec<Action>) {
             caption(ui, "Trusted: it can type into your sessions and start programs without asking you here. Not trusted: each of those waits for your approval on this screen. Anyone who can use that device's user account can use its key.");
             ui.horizontal(|ui| {
                 if widgets::button(ui, ButtonKind::Primary, Some("check"), "Allow", None).clicked() {
-                    actions.push(Action::Tool("peer_pair_answer", json!({"allow": true, "check_code": p.check_code, "level": "full", "trusted": trust})));
+                    actions.push(Action::Tool("peer_pair_answer", json!({"allow": true, "check_code": p.check_code, "level": level, "trusted": trust})));
                 }
                 if widgets::button(ui, ButtonKind::Danger, Some("x"), "Deny", None).clicked() {
                     actions.push(Action::Tool("peer_pair_answer", json!({"allow": false})));

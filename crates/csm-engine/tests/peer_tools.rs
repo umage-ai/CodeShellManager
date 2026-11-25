@@ -158,9 +158,13 @@ fn the_ui_reaches_the_host() {
 }
 
 #[test]
-fn only_the_full_level_exists_so_far() {
+fn the_person_picks_viewer_operator_or_full_and_nothing_else() {
     let (h, _) = rig();
-    let r = h.ui("peer_pair_answer", json!({"allow": true, "check_code": "1", "level": "operator"}));
+    for ok in ["viewer", "operator", "full"] {
+        let r = h.ui("peer_pair_answer", json!({"allow": false, "level": ok}));
+        assert!(r.is_ok(), "{ok}: {r:?}");
+    }
+    let r = h.ui("peer_pair_answer", json!({"allow": true, "check_code": "1", "level": "root"}));
     assert!(matches!(r, Err(ToolError::InvalidParams(_))), "{r:?}");
 }
 
