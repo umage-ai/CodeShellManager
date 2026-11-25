@@ -750,7 +750,19 @@ impl std::fmt::Debug for RemoteHooks {
     }
 }
 
+/// The sessions a quit would cut off, from the displayed statuses: running (not asleep) and
+/// working or waiting mid-task. Only a fallback for backends that cannot tell better.
+pub fn busy_by_status(sessions: &[crate::model::SessionView]) -> Vec<String> {
+    sessions.iter().filter(|s| matches!(s.status, Status::Working | Status::Approval | Status::Question)).map(|s| s.id.clone()).collect()
+}
+
 impl CsmApp {
+    /// Sessions the quit prompt should list: running and really busy, not merely showing a stale
+    /// "needs you". Asked of the backend (it reads the live output clock) at quit time.
+    pub fn busy_session_ids(&self) -> Vec<String> {
+        self.backend.busy_sessions().unwrap_or_else(|| busy_by_status(&self.model.sessions))
+    }
+
     pub fn new(port: Box<dyn ToolPort>, backend: Box<dyn Backend>, renderer: TerminalRenderer) -> Self {
         let model = backend.model();
         let mut app = Self {
@@ -1644,7 +1656,7 @@ impl CsmApp {
                     // Already closing: the board is up.
                     return;
                 }
-                let busy = self.model.sessions.iter().any(|s| matches!(s.status, Status::Working | Status::Approval | Status::Question));
+                let busy = !self.busy_session_ids().is_empty();
                 if busy && self.prefs.warn_on_close_when_busy {
                     self.ui.dont_warn = false;
                     self.ui.overlay = Overlay::Busy;

@@ -124,6 +124,11 @@ pub trait Backend {
     fn tick(&mut self, _ctx: &egui::Context) -> Vec<Notice> {
         Vec::new()
     }
+    /// Ids of the sessions a quit would cut off (running and really busy), when the backend can
+    /// tell. `None` makes the quit prompt fall back to the displayed statuses.
+    fn busy_sessions(&self) -> Option<Vec<String>> {
+        None
+    }
     /// The add-on screens open now (the view strip's tabs). Empty without a screens-capable
     /// backend.
     fn screens(&self) -> Vec<csm_engine::ScreenInfo> {

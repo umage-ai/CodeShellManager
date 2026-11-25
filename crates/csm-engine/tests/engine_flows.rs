@@ -1170,3 +1170,46 @@ fn a_missing_claude_json_is_ignored_by_the_quit() {
     assert!(!dir.join("data").join("claude-config-backups").exists(), "no file before, no backup");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_session_whose_process_ended_is_exited_not_working_and_never_counts_as_busy() {
+    // The quit prompt once counted sessions left in Working/Needs-you by a process that was gone.
+    let h = H::new();
+    let id = h.session("claude");
+    h.pty(0).emit(&osc7501("state=working"));
+    h.wait_status(&id, Status::Working);
+    assert_eq!(h.engine.view().busy_sessions(), vec![id.clone()], "a live working session is busy");
+    h.pty(0).exit(Some(1));
+    let v = h.wait_status(&id, Status::Exited);
+    assert!(v.busy_sessions().is_empty(), "an exited session is not busy");
+
+    // The same for a screen-heuristic alert and a blocked record left behind by a dead process.
+    let id2 = h.session("claude");
+    let n = h.pty_count() - 1;
+    h.pty(n).emit(&osc7501("state=blocked:kind=question"));
+    h.wait_status(&id2, Status::NeedsYouQuestion);
+    assert_eq!(h.engine.view().busy_sessions(), vec![id2.clone()], "blocked mid-turn is busy");
+    h.pty(n).exit(Some(0));
+    let v = h.wait_status(&id2, Status::Exited);
+    assert!(v.busy_sessions().is_empty());
+}
+
+#[test]
+fn a_stale_heuristic_needs_you_and_a_sleeping_session_are_not_busy() {
+    let h = H::new();
+    let id = h.session("claude");
+    h.pty(0).emit(b"Do you want to continue? (y/N) ");
+    h.wait_until("heuristic alert", |v| v.session(&id).is_some_and(|s| s.status.needs_you()));
+    // It still needs you, but it has been quiet: closing the app cuts nothing off.
+    std::thread::sleep(Duration::from_millis(4300));
+    let v = h.engine.view();
+    assert!(v.session(&id).is_some_and(|s| s.status.needs_you()));
+    assert!(v.busy_sessions().is_empty(), "a heuristic question on a quiet screen is not busy");
+
+    let other = h.session("claude");
+    h.pty(h.pty_count() - 1).emit(&osc7501("state=working"));
+    h.wait_status(&other, Status::Working);
+    h.ok("session_sleep", json!({"session_id": other}));
+    let v = h.wait_status(&other, Status::Asleep);
+    assert!(v.busy_sessions().is_empty(), "a sleeping session has no process to cut off");
+}

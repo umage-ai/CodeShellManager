@@ -489,8 +489,8 @@ fn busy_dialog(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>)
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
         actions.push(Action::CloseOverlays);
     }
-    let busy: Vec<_> =
-        app.model.sessions.iter().filter(|s| matches!(s.status, Status::Working | Status::Approval | Status::Question)).cloned().collect();
+    let ids = app.busy_session_ids();
+    let busy: Vec<_> = app.model.sessions.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
     let screen = ctx.content_rect();
     egui::Area::new(Id::new("busy")).order(Order::Foreground).pivot(Align2::CENTER_CENTER).fixed_pos(screen.center()).show(ctx, |ui| {
         widgets::pop_frame(&t).inner_margin(egui::Margin::same((space::LG + space::XS) as i8)).show(ui, |ui| {
