@@ -97,7 +97,8 @@ The level is the office's decision, kept in its device list. Pair the device aga
   with the reason.
 - Layout, focus, the rail, the inspector, the theme and grids belong to the laptop: they are kept
   per office in the laptop's `peer-client` folder. Sessions, groups, notes, tasks, runs and the inbox
-  are the office's.
+  are the office's. Focusing a session or switching a group tab on the laptop does not move the office's
+  own window: the office only wakes the session when it is asleep and marks its results seen.
 - **Consent cards** raised by agents on the office show on the laptop as well. The first answer
   (on either machine) wins, and the card closes everywhere.
 - **Quit** in a remote window disconnects. It never quits the office. To quit the office, use

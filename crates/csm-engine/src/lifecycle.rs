@@ -1112,6 +1112,33 @@ pub(crate) fn focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError
     Ok(ToolOutput::new(message, json!({"session_id": id})))
 }
 
+/// A paired device's focus (`session_focus` from a remote window). The device keeps its own view
+/// state (focus, rail tab, layouts), so the office's is left as it is: no focused session, no rail
+/// tab, no group memory, no reveal and no `FocusRequested`. What the office does is what only it can:
+/// wake the session when asleep, mark its results seen, and stamp "last used".
+pub(crate) fn peer_focus(ctx: &mut Ctx<'_>, id: &str) -> Result<ToolOutput, ToolError> {
+    let Some(i) = session_index(ctx.state, id) else {
+        return Err(ToolError::NotFound(format!("no session `{id}`")));
+    };
+    let name = display_name(ctx.state, id);
+    let mut woke = false;
+    if ctx.state.app.sessions.get(i).is_some_and(|s| s.is_dormant) {
+        wake_session(ctx, id, None)?;
+        woke = true;
+    }
+    if let Some(s) = ctx.state.app.sessions.get_mut(i)
+        && ctx.state.rt.restore.is_none()
+    {
+        s.last_activity_at = Timestamp::from_epoch_ms(now_ms());
+    }
+    if let Some(rt) = ctx.state.rt.sessions.get_mut(id) {
+        rt.acknowledge();
+    }
+    ctx.state.persist();
+    let message = if woke { format!("Waking and focusing {name}.") } else { format!("Focused {name}.") };
+    Ok(ToolOutput::new(message, json!({"session_id": id})))
+}
+
 // ── Restart ──────────────────────────────────────────────────────────────────────────────
 
 /// Why a restart may not start now (the guards live on the entry points, not the core).

@@ -67,9 +67,38 @@ fn a_view_call_stays_on_the_laptop_and_a_focus_reaches_the_office() {
 
     call(&mut b, "session_focus", json!({"session_id": id})).unwrap();
     assert_eq!(b.model().active.as_deref(), Some(id.as_str()));
-    assert_eq!(office.engine.view().focused.as_deref(), Some(id.as_str()), "the focus reached the office");
-    assert!(b.submitted().iter().any(|c| c.id == "session_focus"));
+    // The office hears it (to wake the session and mark it seen); its own focus stays its own
+    // (a_laptops_focus_leaves_the_offices_own_view_as_it_is).
+    assert!(b.submitted().iter().any(|c| c.id == "session_focus"), "the focus reached the office");
     assert!(!b.busy(), "nothing is left waiting");
+}
+
+#[test]
+fn a_laptops_focus_leaves_the_offices_own_view_as_it_is() {
+    let office = Office::new();
+    let (mine, _p1, _h1) = office.session();
+    let (theirs, _p2, _h2) = office.session();
+    let home = office.ui("group_new", json!({"name": "Home"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    let work = office.ui("group_new", json!({"name": "Work"})).unwrap().data["group_id"].as_str().unwrap().to_owned();
+    office.ui("session_move_to_group", json!({"session_id": mine, "group_id": home})).unwrap();
+    office.ui("session_move_to_group", json!({"session_id": theirs, "group_id": work})).unwrap();
+    // The office sits on Home with its own session in front.
+    office.ui("view_set", json!({"rail_tab": home})).unwrap();
+    office.ui("session_focus", json!({"session_id": mine})).unwrap();
+    assert_eq!(office.engine.view().rail_tab.as_deref(), Some(home.as_str()));
+    let (mut b, _me) = connect(&office, None, "Laptop");
+    settle(&mut b, "both sessions in the mirror", |b| live(b) && !b.tools().is_empty() && [&mine, &theirs].iter().all(|id| b.model().sessions.iter().any(|s| &s.id == *id)));
+
+    // The laptop switches to Work (focusing its session there) and then focuses it directly.
+    call(&mut b, "view_set", json!({"rail_tab": work})).unwrap();
+    settle(&mut b, "the focus answered", |b| !b.busy());
+    call(&mut b, "session_focus", json!({"session_id": theirs})).unwrap();
+    settle(&mut b, "the second focus answered", |b| !b.busy());
+    assert_eq!(b.model().rail, csm_ui::model::Scope::Group(work.clone()), "the laptop is on Work");
+    assert_eq!(b.model().active.as_deref(), Some(theirs.as_str()));
+    let view = office.engine.view();
+    assert_eq!(view.rail_tab.as_deref(), Some(home.as_str()), "the office stays on Home");
+    assert_eq!(view.focused.as_deref(), Some(mine.as_str()), "and keeps its own session in front");
 }
 
 #[test]
@@ -96,7 +125,9 @@ fn a_rail_tab_switches_the_laptops_rail_and_the_office_only_hears_the_focus() {
     assert_eq!(office.engine.view().rail_tab, office_rail_before, "the office's rail tab did not follow");
     let sent: Vec<_> = b.submitted()[sent_before..].iter().map(|c| (c.id.clone(), c.params.clone())).collect();
     assert_eq!(sent, vec![("session_focus".to_owned(), json!({"session_id": id}))], "only the focus was sent");
-    settle(&mut b, "the office's focus", |_| office.engine.view().focused.as_deref() == Some(id.as_str()));
+    // The office answers the focus (results seen, last used) but keeps its own session in front.
+    settle(&mut b, "the office's answer", |b| !b.busy());
+    assert_ne!(office.engine.view().focused.as_deref(), Some(id.as_str()), "the office's own focus did not follow");
 
     // Next from the group wraps to All: nothing to focus, so nothing is sent at all.
     let sent_before = b.submitted().len();

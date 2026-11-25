@@ -60,7 +60,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "session_focus",
             title: "Focus session",
-            summary: "Bring a session to the front (switches the rail tab to its group, wakes it when asleep) and mark its results seen.",
+            summary: "Bring a session to the front (switches the rail tab to its group, wakes it when asleep) and mark its results seen. From a paired device: wakes it and marks it seen only; the office's own view does not change.",
             toolset: Toolset::Core,
             effects: Effects::UI.union(Effects::LAUNCHES_PROCESS),
             input_schema: schema_of::<IdParams>,
@@ -610,6 +610,11 @@ pub(crate) fn session_new_owned(ctx: &mut Ctx<'_>, params: Value, owner: Option<
 fn session_focus(ctx: &mut Ctx<'_>, params: Value) -> Reply {
     let p: IdParams = parse_params(params)?;
     find(ctx.state, &p.session_id)?;
+    // A paired device keeps its own view (focus, rail tab, layouts): its focus only wakes the
+    // session, marks its results seen and stamps "last used", and leaves the office's window as it is.
+    if matches!(ctx.caller, Caller::Peer { .. }) {
+        return lifecycle::peer_focus(ctx, &p.session_id);
+    }
     lifecycle::focus(ctx, &p.session_id)
 }
 

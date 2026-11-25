@@ -176,7 +176,7 @@ file drop; Claude slash-command menu; `--clean`.
 - **Quit waits for a restart's old Claude** before it checks `~/.claude.json` (COR-7), and a restart whose worker thread cannot start no longer leaves the session stuck or the restart guard held (COR-8).
 - **`csm setup` exits non-zero** when a client was blocked or a named one was not written (COR-30), and an update merges into the existing entry, keeping extra arguments and `env` (COR-31).
 - **Beta to final** (COR-36): the stable app's first run offers to import a beta's sessions and groups (*Import from the beta*, tool `state_import_beta`). The beta's first-run copy skips a live database's `-wal`/`-shm` files and retries a partly done copy (COR-37).
-- **Switching groups in a remote window** (clicking a group tab, or the next/previous tab keys) now switches the laptop's own window. It used to do nothing there and switch the office's window instead. The office now only hears which session you focused.
+- **Switching groups in a remote window** (clicking a group tab, or the next/previous tab keys) now switches the laptop's own window. It used to do nothing there and switch the office's window instead. Focusing a session from the laptop (a group tab, or a click) no longer moves the office's window either: the office only wakes the session and marks its results seen; its own focused session and group tab stay where you left them.
 
 ### Fixed (runtime)
 
