@@ -132,3 +132,72 @@ fn a_shell_session_never_reports_remote_control() {
     assert_eq!(s.data["session"]["remote_control"], false);
     assert_eq!(s.data["session"]["remote_control_url"], serde_json::Value::Null);
 }
+
+/// Claude's live per-process file, `<config dir>/sessions/<pid>.json`.
+fn sessions_file(root: &Path, pid: u32, cid: &str, started_ms: i64, bridge: Option<&str>) {
+    let dir = root.join("sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut v = json!({"pid": pid, "sessionId": cid, "cwd": "C:/work/shop", "startedAt": started_ms, "version": "2.1.332", "kind": "interactive", "status": "idle"});
+    if let Some(b) = bridge {
+        v["bridgeSessionId"] = json!(b);
+    }
+    std::fs::write(dir.join(format!("{pid}.json")), v.to_string()).unwrap();
+    // Claude keeps other files in the folder; they are not read.
+    std::fs::write(dir.join(format!("{pid}.abc123.key")), "not json").unwrap();
+}
+
+#[test]
+fn a_resumed_session_is_marked_from_claudes_sessions_file() {
+    let root = tempfile::tempdir().unwrap();
+    let h = harness(root.path());
+    let id = h.session("claude");
+    let v = h.wait_until("an id", |v| v.session(&id).is_some_and(|s| s.claude_session_id.is_some() && s.live));
+    let cid = v.session(&id).unwrap().claude_session_id.clone().unwrap();
+    let path = transcript_for(root.path(), &cid);
+    let now = now_ms();
+
+    // The transcript only has the line of an earlier run: not on by the transcript rule.
+    append(&path, &on_line(now - 3_600_000, "https://claude.ai/code/session_old"));
+    append(&path, &marker(now, "m1"));
+    read_through(&h, &id, 1);
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(h.ok("session_get", json!({"session_id": id})).data["session"]["remote_control"], false);
+
+    // The resumed process reconnected silently: its sessions file says so.
+    sessions_file(root.path(), 4242, &cid, now_ms(), Some("session_01RESUMEDabc"));
+    let v = h.wait_until("on from the sessions file", |v| v.session(&id).is_some_and(|s| s.remote_control));
+    assert_eq!(v.session(&id).unwrap().remote_control_url.as_deref(), Some("https://claude.ai/code/session_01RESUMEDabc"));
+
+    // Remote Control turned off: the file loses its bridge id.
+    sessions_file(root.path(), 4242, &cid, now_ms(), None);
+    h.wait_until("off from the sessions file", |v| v.session(&id).is_some_and(|s| !s.remote_control && s.remote_control_url.is_none()));
+
+    // The process ends: off, whatever the file says.
+    sessions_file(root.path(), 4242, &cid, now_ms(), Some("session_01RESUMEDabc"));
+    h.wait_until("on again", |v| v.session(&id).is_some_and(|s| s.remote_control));
+    h.pty_of(&id).exit(Some(0));
+    h.wait_until("off with the process", |v| v.session(&id).is_some_and(|s| !s.remote_control));
+}
+
+#[test]
+fn a_stale_sessions_file_is_ignored_and_the_transcript_rule_applies() {
+    let root = tempfile::tempdir().unwrap();
+    let h = harness(root.path());
+    let id = h.session("claude");
+    let v = h.wait_until("an id", |v| v.session(&id).is_some_and(|s| s.claude_session_id.is_some() && s.live));
+    let cid = v.session(&id).unwrap().claude_session_id.clone().unwrap();
+    let path = transcript_for(root.path(), &cid);
+    let now = now_ms();
+
+    // A file from a process that started an hour ago (a crashed earlier run): not this one.
+    sessions_file(root.path(), 111, &cid, now - 3_600_000, Some("session_01STALEabc"));
+    append(&path, &marker(now, "m1"));
+    read_through(&h, &id, 1);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(h.ok("session_get", json!({"session_id": id})).data["session"]["remote_control"], false);
+
+    // The transcript rule still works beside it.
+    append(&path, &on_line(now_ms() + 10, URL));
+    let v = h.wait_until("on from the transcript", |v| v.session(&id).is_some_and(|s| s.remote_control));
+    assert_eq!(v.session(&id).unwrap().remote_control_url.as_deref(), Some(URL));
+}

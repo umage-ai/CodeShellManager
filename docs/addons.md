@@ -1059,7 +1059,7 @@ Claude Code token and API-equivalent cost accounting from Claude's own transcrip
 | Subagent transcripts | not read (the subagents list still comes from Claude's meta files, without cost) | read and priced |
 | Past transcripts (history import) | never | with `ClaudeUsageHistory` on (default), a few files per pass; never under `--clean` or an isolated run |
 | Context fill on the sidebar chips (`usage_context`) | yes, from the light tail, `cost_usd` null | yes, with cost |
-| Remote Control indicator, subagents, `claude_session_id`, status and titles | unchanged (none of them need the add-on) | unchanged |
+| Remote Control indicator (transcript, plus Claude's `sessions/<pid>.json`), subagents, `claude_session_id`, status and titles | unchanged (none of them need the add-on) | unchanged |
 | `usage_session`, `usage_summary`, `usage_report` | refused: "Claude usage is off — enable it in Settings › Add-ons" (still listed, so a caller learns why) | answer |
 | Usage tab, dashboard, its palette entry, Settings > Usage's cost per project | hidden (Settings > Usage points to Add-ons) | shown |
 

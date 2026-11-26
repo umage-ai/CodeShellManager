@@ -180,6 +180,7 @@ file drop; Claude slash-command menu; `--clean`.
 
 ### Fixed (runtime)
 
+- **Remote Control shows on a resumed session** (for example after a restart restores your sessions). Claude Code reconnects it silently and writes no new line to the transcript, so the badge never appeared. CSM now also reads Claude's own `<config dir>/sessions/<pid>.json` file (`bridgeSessionId` present means on, with its claude.ai link), which decides on or off when it belongs to the running process; with no such file (older Claude) the transcript rule applies as before. Works with the usage add-on on or off.
 - **`csm` and `csm mcp` no longer pick the highest pid** (COR-2): a `--clean` or scratch instance is skipped by default, `--instance <pid|state-path>` / `CSM_INSTANCE` select one, and a second launch is handed only to an instance on the same state file.
 - **A relative add-on program** (`./bin/server.exe`) runs from the add-on folder on Windows (COR-27); one that leaves the folder is refused.
 - **`addon-enable --version` and `update-dismiss --version`** work as flags again (COR-29); only names that really collide are reserved.
