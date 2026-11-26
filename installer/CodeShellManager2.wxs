@@ -43,12 +43,17 @@
     <?define RegistryKey = "Software\umage.ai\CodeShellManager" ?>
     <!-- Must match the codeshell.aumid file the workflow writes into PublishDir. -->
     <?define AppUserModelId = "UmageAI.CodeShellManager" ?>
+    <!-- Explorer right-click entry: the key name and text (csm_services::explorer_menu keeps the same names). -->
+    <?define VerbKey = "CodeShellManager" ?>
+    <?define VerbText = "Open in CodeShellManager" ?>
   <?elseif $(var.Channel) = "beta" ?>
     <?define ProductName = "CodeShellManager Beta" ?>
     <?define UpgradeCode = "$(var.BetaUpgradeCode)" ?>
     <?define FolderName = "CodeShellManager Beta" ?>
     <?define RegistryKey = "Software\umage.ai\CodeShellManager2Beta" ?>
     <?define AppUserModelId = "UmageAI.CodeShellManager.Beta" ?>
+    <?define VerbKey = "CodeShellManagerBeta" ?>
+    <?define VerbText = "Open in CodeShellManager (Beta)" ?>
   <?else?>
     <?error Channel must be "stable" or "beta" ?>
   <?endif?>
@@ -219,6 +224,37 @@
                        Value="[CSMBUILDORDER]" KeyPath="yes" />
       </Component>
       <?endif?>
+
+
+      <!-- Explorer's right-click entry "Open in CodeShellManager" (per machine, so it is the same
+           for every user and the uninstaller removes exactly these values). Three verbs: on a
+           folder (Directory\shell), on the empty space inside an open folder (Directory\Background\shell,
+           where %V is that folder) and on a drive (Drive\shell). The command is
+               "<exe>" open-folder "%V"
+           and codeshell.exe only opens the New session dialog on that folder (nothing starts until
+           the person confirms). The key name is per channel (VerbKey), so a stable and a beta
+           install each keep their own entry, and each has its own text. Hiding it for one user is
+           that user's own choice (Settings > General: a LegacyDisable value under HKCU\Software\Classes
+           on the same key paths, written by the app, never by this MSI). Windows 11 shows classic
+           verbs under "Show more options". %V is not a Windows Installer property syntax: only
+           [..] is, so it is stored as written. -->
+      <Component Id="ExplorerVerb" Directory="INSTALLFOLDER" Guid="*" Bitness="always64">
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\shell\$(var.VerbKey)">
+          <RegistryValue Type="string" Value="$(var.VerbText)" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="&quot;[INSTALLFOLDER]codeshell.exe&quot;" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]codeshell.exe&quot; --open-folder &quot;%V&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\Background\shell\$(var.VerbKey)">
+          <RegistryValue Type="string" Value="$(var.VerbText)" />
+          <RegistryValue Name="Icon" Type="string" Value="&quot;[INSTALLFOLDER]codeshell.exe&quot;" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]codeshell.exe&quot; --open-folder &quot;%V&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\Drive\shell\$(var.VerbKey)">
+          <RegistryValue Type="string" Value="$(var.VerbText)" />
+          <RegistryValue Name="Icon" Type="string" Value="&quot;[INSTALLFOLDER]codeshell.exe&quot;" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]codeshell.exe&quot; --open-folder &quot;%V&quot;" />
+        </RegistryKey>
+      </Component>
 
       <!-- The pre-umage.ai folders. 0.x and the 2.0 betas installed to
            C:\Program Files\umage\<FolderName>; the major upgrade removes that product (and its

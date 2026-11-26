@@ -37,6 +37,18 @@ replaces 0.x: winget and Chocolatey upgrade it like any other release.
 
 ### New
 
+- **"Open in CodeShellManager" in Explorer's right-click menu.** The installer adds an entry on
+  folders, on the empty space inside an open folder and on drives (the classic menu: Windows 11
+  shows it under *Show more options*; the beta says *(Beta)* and has its own entry). It runs
+  `codeshell.exe --open-folder "<folder>"`, which brings the window forward and opens the New
+  session dialog with that folder filled in, in the running app if there is one; you pick the
+  command and confirm, nothing starts by itself. Only an absolute folder that exists is accepted
+  (shell, device and relative paths are refused with a message). Hide it for your user in
+  Settings › General (*Show 'Open in CodeShellManager' in Explorer's right-click menu*, on by default;
+  Windows only). Tools: `session_new_dialog` (shows the dialog; the folder is checked, nothing is
+  started or created), `app_explorer_menu_get` and `app_explorer_menu_set` (the per-user switch;
+  it declares the file-system-write effect, so MCP clients are asked, and it is not a `settings_set`
+  key).
 - **New session offers to create a folder that does not exist.** Type a path such as
   `d:\dev\shapesbyme` on This PC and the folder list gets a row, *Create folder "..." and start
   here*, when the nearest folder above it exists (a drive is never created). Enter or a click asks

@@ -385,3 +385,56 @@ fn an_older_instance_that_names_no_state_file_still_receives_the_second_launch()
     handle.shutdown().unwrap();
     drop(engine);
 }
+
+/// An engine with the real tools that keeps `state` (for `open_folder_in_running`): it never saves
+/// (no session exists), and its events are returned for the checks.
+fn real_engine_on(state: &std::path::Path) -> (Engine, std::sync::mpsc::Receiver<Event>) {
+    let options = csm_engine::StateOptions { save_path: Some(state.to_path_buf()), ..csm_engine::StateOptions::default() };
+    let engine = Engine::start(csm_engine::State::new(Default::default(), options), vec![]).unwrap();
+    let rx = engine.subscribe();
+    (engine, rx)
+}
+
+#[test]
+fn the_explorer_handoff_goes_through_the_dialog_tool_and_starts_nothing() {
+    use csm_mcp::{FolderHandoff, open_folder_in_running};
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = || RuntimeDir::at(dir.path().join("rt")).unwrap();
+    let opts = || RemoteOptions { runtime: Some(runtime()), ..RemoteOptions::default() };
+    let state = dir.path().join("state.json");
+    let folder = dir.path().join("project");
+    std::fs::create_dir(&folder).unwrap();
+    let folder_text = folder.display().to_string();
+
+    // Nothing runs: the launch starts the app itself.
+    assert_eq!(open_folder_in_running(opts(), &state, &folder_text).unwrap(), FolderHandoff::NotRunning);
+
+    let (engine, events) = real_engine_on(&state);
+    let handle = serve_ipc_with(engine.clone(), IpcOptions { runtime: Some(runtime()), state_path: Some(state.clone()), ..IpcOptions::default() }).unwrap();
+
+    // Another state file is another app: not handed anything.
+    let elsewhere = dir.path().join("other").join("state.json");
+    assert_eq!(open_folder_in_running(opts(), &elsewhere, &folder_text).unwrap(), FolderHandoff::NotRunning);
+    assert!(events.try_iter().all(|e| !matches!(e, Event::NewSessionRequested { .. })));
+
+    // The running app opens its New session dialog on the folder, through `session_new_dialog`.
+    let got = open_folder_in_running(opts(), &state, &folder_text).unwrap();
+    assert!(matches!(&got, FolderHandoff::Opened(m) if m.contains("New session dialog")), "{got:?}");
+    let seen: Vec<Event> = events.try_iter().collect();
+    assert!(seen.iter().any(|e| matches!(e, Event::NewSessionRequested { folder: Some(f) } if std::path::Path::new(f) == folder)), "{seen:?}");
+    assert!(engine.view().sessions.is_empty(), "the dialog only shows; no session was started");
+
+    // A hostile or vanished folder is refused (the window gets a toast), and no dialog opens.
+    for bad in ["shell:Downloads", r"\?\C:\Windows", "relative", &dir.path().join("gone").display().to_string()] {
+        let got = open_folder_in_running(opts(), &state, bad).unwrap();
+        assert!(matches!(got, FolderHandoff::Refused(_)), "{bad}: {got:?}");
+    }
+    thread::sleep(Duration::from_millis(100));
+    let seen: Vec<Event> = events.try_iter().collect();
+    assert!(!seen.iter().any(|e| matches!(e, Event::NewSessionRequested { .. })), "{seen:?}");
+    assert!(seen.iter().filter(|e| matches!(e, Event::Toast { .. })).count() >= 4, "{seen:?}");
+    assert!(engine.view().sessions.is_empty());
+    handle.shutdown().unwrap();
+    drop(engine);
+}

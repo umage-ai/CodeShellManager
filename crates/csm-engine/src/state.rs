@@ -104,6 +104,10 @@ pub struct StateOptions {
     /// Starting the app at sign-in (`app_autostart_get` / `app_autostart_set`). Default (tests, the
     /// demo): an entry in memory, so nothing real changes. Production: the current user's own.
     pub autostart: Autostart,
+    /// The per-user switch for Explorer's "Open in CodeShellManager" entry (`app_explorer_menu_get` /
+    /// `app_explorer_menu_set`). Default (tests, the demo, `--clean`): a registry in memory, so nothing
+    /// real changes. Production: the current user's classes.
+    pub explorer_menu: ExplorerMenu,
     /// The peer server (remote access from another CodeShellManager). Default: none, so a run
     /// that wires nothing (tests, `--clean`, the demo) can never listen. Production wires
     /// `csm-peer`'s host, which is itself off until the person turns it on.
@@ -166,6 +170,31 @@ impl Autostart {
     }
 }
 
+/// Where the Explorer menu switch lives (see `csm_services::explorer_menu`).
+#[derive(Clone)]
+pub struct ExplorerMenu {
+    /// `None`: no Explorer menu to manage here (not Windows, or a run that must not touch it).
+    pub store: Option<Arc<dyn csm_services::explorer_menu::Store>>,
+}
+
+impl Default for ExplorerMenu {
+    fn default() -> Self {
+        ExplorerMenu { store: Some(Arc::new(csm_services::explorer_menu::MemoryStore::default())) }
+    }
+}
+
+impl ExplorerMenu {
+    /// The current user's real classes registry (Windows only).
+    pub fn system() -> Self {
+        ExplorerMenu { store: csm_services::explorer_menu::system().map(Arc::from) }
+    }
+
+    /// Nothing to manage: the tools say it is not available and write nothing.
+    pub fn none() -> Self {
+        ExplorerMenu { store: None }
+    }
+}
+
 /// The Windows Terminal settings the profile tools read.
 #[derive(Debug, Clone, Default)]
 pub enum TerminalProfiles {
@@ -203,6 +232,7 @@ impl Default for StateOptions {
             samples_dir: None,
             secrets: Arc::new(csm_services::secrets::MemoryStore::default()),
             autostart: Autostart::default(),
+            explorer_menu: ExplorerMenu::default(),
             peer_host: Arc::new(crate::peer_host::NoPeerHost),
             peer_client: Arc::new(crate::peer_client::NoPeerClient),
             remote_window_launcher: Arc::new(|_| Err("remote windows are not available in this build".into())),
@@ -240,6 +270,7 @@ impl StateOptions {
             samples_dir: bundled_samples_dir(),
             secrets: Arc::new(csm_services::secrets::KeyringStore),
             autostart: Autostart::system(),
+            explorer_menu: ExplorerMenu::system(),
             update: crate::tools::update::UpdateOptions::production(),
             ..Self::default()
         }

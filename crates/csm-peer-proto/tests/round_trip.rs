@@ -183,6 +183,7 @@ fn every_event_reads_the_engine_tag_and_fields() {
         ),
         (json!({"event": "quit_ready"}), Event::QuitReady),
         (json!({"event": "setting_changed", "key": "ui_zoom", "value": 1.1}), Event::SettingChanged { key: "ui_zoom".into(), value: json!(1.1) }),
+        (json!({"event": "new_session_requested", "folder": "/work"}), Event::NewSessionRequested { folder: Some("/work".into()) }),
         (json!({"event": "screen_focus_requested", "instance": "i-1"}), Event::ScreenFocusRequested { instance: "i-1".into() }),
     ];
     for (text, expected) in cases {

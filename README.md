@@ -325,8 +325,19 @@ See [CONTRIBUTING](.github/CONTRIBUTING.md) for the tests and checks.
 |---|---|
 | `--clean` | Start with no sessions and save nothing for the run. Your real state is left alone. |
 | `--config-dir <dir>` | Keep `state.json` and the rest in `<dir>`. The `CSM_CONFIG_DIR` environment variable does the same. |
+| `--open-folder <dir>` | Open the New session dialog with `<dir>` filled in (what Explorer's right-click *Open in CodeShellManager* runs). A running app shows its window with the dialog; otherwise the app starts and shows it. Nothing starts until you confirm in the dialog. Only an absolute folder that exists is accepted: relative, shell (`shell:`, `::{...}`), device (`\\?\`) and non-existent paths are refused with a message. |
 
 A file named `portable` next to `codeshell.exe` keeps all data in a `data` folder beside it.
+
+### Explorer right-click entry
+
+The installer adds *Open in CodeShellManager* (*Open in CodeShellManager (Beta)* for the beta) to
+Explorer's right-click menu on folders, on the empty space inside an open folder, and on drives.
+It runs `codeshell.exe --open-folder "<folder>"`. Windows 11 shows it under *Show more options*
+(the classic menu). Hide it for your user in Settings › General › *Show 'Open in CodeShellManager' in
+Explorer's right-click menu*, or with the tool `app_explorer_menu_set`; a copy that was not installed
+with the installer (the portable zip) has no entry. The registry keys are listed in
+[docs/release.md](docs/release.md).
 
 ## Keyboard shortcuts
 

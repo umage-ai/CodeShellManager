@@ -17,6 +17,8 @@ use crate::widgets;
 
 /// The pseudo-setting key the engine announces a change under (`app_autostart_set`).
 pub const STATUS_KEY: &str = "StartAtSignIn";
+/// The pseudo-setting key of the Explorer menu switch (`app_explorer_menu_set`).
+pub const EXPLORER_KEY: &str = "ExplorerMenu";
 
 fn flag(v: &Value, key: &str) -> bool {
     v.get(key).and_then(Value::as_bool).unwrap_or(false)
@@ -52,6 +54,7 @@ pub fn show(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
             actions.push(Action::Tool("app_autostart_set", json!({"enabled": !on})));
         }
     }
+    explorer_menu(ui, app, actions);
     let minimized = app.ui.settings.bool("StartMinimized").unwrap_or(false);
     let hint = "The window opens minimized on every start, at sign-in too; sessions restore as usual.";
     if widgets::toggle(ui, minimized, "Start minimized", Some(hint)).clicked() {
@@ -69,10 +72,34 @@ pub fn show(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
     }
 }
 
+/// Settings → General → Start-up: the Explorer right-click entry's own switch, where there is an
+/// Explorer (Windows). It shows what the registry says (`app_explorer_menu_get`).
+fn explorer_menu(ui: &mut Ui, app: &CsmApp, actions: &mut Vec<Action>) {
+    let status = &app.ui.settings.explorer_menu;
+    if status.is_null() || !flag(status, "supported") {
+        return;
+    }
+    let shown = flag(status, "shown");
+    if widgets::toggle(ui, shown, "Show 'Open in CodeShellManager' in Explorer's right-click menu", Some(&explorer_hint(status))).clicked() {
+        actions.push(Action::Tool("app_explorer_menu_set", json!({"shown": !shown})));
+    }
+}
+
+/// The explanation under the Explorer switch.
+pub fn explorer_hint(status: &Value) -> String {
+    if !flag(status, "installed") {
+        return "This copy was not installed with the installer, so Explorer has no entry to show.".into();
+    }
+    "Your user only. Windows 11 shows it under Show more options.".into()
+}
+
 /// Replies this module follows (called for every finished call).
 pub(crate) fn on_reply(app: &mut CsmApp, call: &Call, reply: &csm_engine::Reply) {
     if let ("app_autostart_get" | "app_autostart_set", Ok(o)) = (call.id.as_str(), reply) {
         app.ui.settings.autostart = o.data.clone();
+    }
+    if let ("app_explorer_menu_get" | "app_explorer_menu_set", Ok(o)) = (call.id.as_str(), reply) {
+        app.ui.settings.explorer_menu = o.data.clone();
     }
 }
 
@@ -82,6 +109,10 @@ pub(crate) fn on_event(app: &mut CsmApp, e: &csm_engine::Event) {
         && key == STATUS_KEY
     {
         app.ui.settings.autostart = value.clone();
+    } else if let csm_engine::Event::SettingChanged { key, value } = e
+        && key == EXPLORER_KEY
+    {
+        app.ui.settings.explorer_menu = value.clone();
     }
 }
 

@@ -67,4 +67,8 @@ pub enum Event {
         key: String,
         value: Value,
     },
+    /// The host's window should open the New session dialog (`session_new_dialog`).
+    NewSessionRequested {
+        folder: Option<String>,
+    },
 }

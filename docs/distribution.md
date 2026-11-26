@@ -268,6 +268,9 @@ the repository root. Two small ones are fixed on this branch: marked *fixed*.
     file (found through its IPC record and `app_info`, `--clean` excluded) to show its window
     (`app.activate`) and exits (`csm_mcp::activate_running`). Two launches at the very same
     moment can still both start; nothing locks the state file.
+    `codeshell --open-folder <dir>` (Explorer's right-click entry) takes the same path, but hands the
+    folder to the running app through the `session_new_dialog` tool (`csm_mcp::open_folder_in_running`)
+    instead of `app.activate`; the app opens the New session dialog on it and starts nothing.
 11. **PowerShell run mode on Unix.** `crates/csm-engine/src/runs/mod.rs:239-243` and `:339` spawn
     `pwsh`. Hide the mode, or fall back to `$SHELL -lc`.
 12. **Wayland: no app id.** `apps/codeshell/src/main.rs:383-388` sets no `with_app_id`, and the

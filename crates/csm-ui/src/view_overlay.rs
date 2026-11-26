@@ -860,6 +860,8 @@ mod tests {
         "session_status_clear",
         "window_show",
         "notification_test",
+        // Opens the New session dialog in the app's own window.
+        "session_new_dialog",
         // Hides the engine's update badge (runtime state, the same for every client).
         "update_dismiss",
         "session_annotate",
