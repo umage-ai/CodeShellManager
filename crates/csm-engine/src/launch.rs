@@ -211,11 +211,20 @@ pub fn resolve(s: &ShellSession, resume: bool, mcp: Option<&McpOffer>) -> Result
     resolve_with(s, resume, true, mcp)
 }
 
+/// Why a session of this kind cannot start on this OS, if it cannot: WSL exists only on Windows
+/// (a session restored from a Windows state file or backup shows this instead of trying `wsl.exe`).
+fn wsl_unavailable(kind: SessionKind, windows: bool) -> Option<&'static str> {
+    (kind == SessionKind::Wsl && !windows).then_some("WSL sessions run on Windows only. This session was made on Windows; edit it to run locally or over SSH.")
+}
+
 /// [`plan_with`] plus its I/O: the Claude conversation lookup, the PowerShell to wrap with, and a
 /// folder that no longer exists falling back to home (the WPF rule). `sole_in_folder`: no other
 /// CSM Claude session works in this folder (false: a resume never adopts a newer transcript of
 /// the folder). Blocking; worker threads only.
 pub fn resolve_with(s: &ShellSession, resume: bool, sole_in_folder: bool, mcp: Option<&McpOffer>) -> Result<Plan, String> {
+    if let Some(why) = wsl_unavailable(s.kind, cfg!(windows)) {
+        return Err(why.to_owned());
+    }
     // "Offer CodeShellManager's tools to Claude sessions" (Settings → MCP, off by default): a local
     // Claude session gets `--mcp-config <file>` pointing at `csm mcp --session <id>`, so its calls
     // carry the session id and the consent card can say "Claude in <name> wants to…".
@@ -504,6 +513,14 @@ mod tests {
 
     /// What `wsl_session` does to a folder that needs no probe.
     #[cfg(windows)]
+    #[test]
+    fn wsl_sessions_refuse_to_start_off_windows() {
+        assert!(wsl_unavailable(SessionKind::Wsl, false).is_some());
+        assert!(wsl_unavailable(SessionKind::Wsl, true).is_none());
+        assert!(wsl_unavailable(SessionKind::Local, false).is_none());
+        assert!(wsl_unavailable(SessionKind::Ssh, false).is_none());
+    }
+
     fn wsl_session_no_probe(folder: &str) -> ShellSession {
         wsl_session(&wsl(folder)).unwrap()
     }

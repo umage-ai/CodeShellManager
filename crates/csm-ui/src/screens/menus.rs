@@ -5,6 +5,7 @@
 use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 use serde_json::json;
 
+use csm_core::models::Os;
 use csm_core::keymap::Keymap;
 use csm_core::session_sort::SortField;
 
@@ -279,9 +280,33 @@ fn demo_status(session: &str) -> Entry {
     }
 }
 
+/// The shell "Open a shell here" starts, and the name shown beside it.
+struct ShellHere {
+    command: String,
+    hint: String,
+}
+
+/// `pwsh` on Windows; elsewhere the user's login shell (`$SHELL` if absolute, else `/bin/sh`,
+/// as the launcher does). Pure: the caller passes the OS and the environment value.
+fn shell_for(os: Os, shell_env: Option<&str>) -> ShellHere {
+    if os == Os::Windows {
+        return ShellHere { command: "pwsh".into(), hint: "pwsh".into() };
+    }
+    let command = shell_env.filter(|v| v.starts_with('/')).unwrap_or("/bin/sh").to_owned();
+    let hint = command.rsplit('/').find(|p| !p.is_empty()).unwrap_or("sh").to_owned();
+    ShellHere { command, hint }
+}
+
+/// [`shell_for`] for this machine, resolved once (the environment is not read per menu).
+fn shell_here() -> &'static ShellHere {
+    static SHELL: std::sync::OnceLock<ShellHere> = std::sync::OnceLock::new();
+    SHELL.get_or_init(|| shell_for(Os::current(), std::env::var("SHELL").ok().as_deref()))
+}
+
 pub fn pane_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
     let Some(s) = model.session(id) else { return vec![] };
     let sid = json!({"session_id": id});
+    let shell = shell_here();
     let scope = model.pane_scope().key();
     let insp = |tab: &str| tool("inspector_show", json!({"tab": tab}));
     let mut v = vec![
@@ -297,7 +322,7 @@ pub fn pane_menu(model: &UiModel, id: &str, keys: &Keymap) -> Vec<Entry> {
         v.extend([
             item("folder", "Open folder", tool("open_folder", sid.clone())),
             open_with(s),
-            hinted("terminal", "Open a shell here", "pwsh", tool("session_new", json!({"folder": s.folder, "command": "pwsh", "group": s.group}))),
+            hinted("terminal", "Open a shell here", &shell.hint, tool("session_new", json!({"folder": s.folder, "command": shell.command.as_str(), "group": s.group}))),
             item("copy", "Copy path", Action::CopyText(s.folder.clone())),
         ]);
     } else {
@@ -1448,5 +1473,19 @@ mod key_tests {
         assert!(!left.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Backspace, .. })));
         assert!(left.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Escape, .. })), "Escape goes on");
         assert!(left.iter().any(|e| matches!(e, egui::Event::Key { key: Key::F5, .. })), "a chord carrying the command key goes on");
+    }
+
+    #[test]
+    fn the_shell_here_follows_the_os_and_login_shell() {
+        let w = shell_for(Os::Windows, Some("/bin/zsh"));
+        assert_eq!((w.command.as_str(), w.hint.as_str()), ("pwsh", "pwsh"));
+        let z = shell_for(Os::MacOs, Some("/bin/zsh"));
+        assert_eq!((z.command.as_str(), z.hint.as_str()), ("/bin/zsh", "zsh"));
+        let b = shell_for(Os::Linux, Some("/usr/bin/fish"));
+        assert_eq!((b.command.as_str(), b.hint.as_str()), ("/usr/bin/fish", "fish"));
+        for env in [None, Some("zsh"), Some("")] {
+            let d = shell_for(Os::Linux, env);
+            assert_eq!((d.command.as_str(), d.hint.as_str()), ("/bin/sh", "sh"));
+        }
     }
 }

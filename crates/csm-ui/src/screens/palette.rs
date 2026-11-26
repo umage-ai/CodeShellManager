@@ -7,6 +7,7 @@ use egui::{Align2, CornerRadius, Id, Key, Modifiers, Order, Rect, Sense, Stroke,
 use serde_json::json;
 
 use csm_core::keymap::Keymap;
+use csm_core::models::Os;
 
 use crate::app::{Action, CsmApp, Menu, Overlay, ProfilePick, PromptKind, QuickOpenState, RemoteKind};
 use crate::backend::{ToolInfo, ToolPort};
@@ -1424,7 +1425,15 @@ fn place_of(q: &QuickOpenState) -> usize {
     }
 }
 
-fn set_place(q: &mut QuickOpenState, place: usize) {
+/// How many places the dialog offers: this PC and SSH, plus WSL where it exists.
+fn place_count(os: Os) -> usize {
+    if os.has_wsl() { 3 } else { 2 }
+}
+
+fn set_place(q: &mut QuickOpenState, place: usize, os: Os) {
+    if place >= place_count(os) {
+        return;
+    }
     q.remote = place != 0;
     match place {
         1 => q.rkind = RemoteKind::Ssh,
@@ -1683,8 +1692,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
         select_tab(&mut app.ui.quick, &new_forms, i, actions);
     }
     if alt_run {
-        let next = (place_of(&app.ui.quick) + 1) % 3;
-        set_place(&mut app.ui.quick, next);
+        let next = (place_of(&app.ui.quick) + 1) % place_count(Os::current());
+        set_place(&mut app.ui.quick, next, Os::current());
     }
     if n > 0 && down {
         // The first arrow from a typed path lands on the first row, not the second.
@@ -1811,8 +1820,8 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                     let max = size::NEW_SESSION_CHIP_MAX_W;
                     ui.spacing_mut().item_spacing.x = space::XS + space::XXS;
                     // Drawn right to left; Tab reads left to right (This PC, SSH, WSL).
-                    let first = quick_reserve(ui.ctx(), 3, false, "where");
-                    for (i, l, tip) in [(2, "WSL", "A Linux distribution under WSL (Alt+R cycles)"), (1, "SSH", "A host over SSH (Alt+R cycles)"), (0, "This PC", "A local folder (Alt+R cycles)")] {
+                    let first = quick_reserve(ui.ctx(), place_count(Os::current()), false, "where");
+                    for (i, l, tip) in [(2, "WSL", "A Linux distribution under WSL (Alt+R cycles)"), (1, "SSH", "A host over SSH (Alt+R cycles)"), (0, "This PC", "A local folder (Alt+R cycles)")].into_iter().filter(|(i, ..)| *i < place_count(Os::current())) {
                         let r = chip(ui, l, false, cur == i, max, tip);
                         let label = format!("Run on: {l}");
                         r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, cur == i, label.clone()));
@@ -1991,7 +2000,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
                                     if q.distros.is_none() {
                                         // Asked once, off the engine thread (`wsl.exe` can boot a VM).
                                         q.distros = Some(Vec::new());
-                                        ask_distros = true;
+                                        ask_distros = Os::current().has_wsl();
                                     }
                                     conn_field(ui, "Distro", &mut q.distro, "Ubuntu", size::NEW_SESSION_FIELD_W);
                                     conn_field(ui, "User", &mut q.wsl_user, "default", size::GRID_TILE_W);
@@ -2186,7 +2195,7 @@ fn quick_open(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) 
     }
     actions.extend(form_actions);
     if let Some(i) = place_pick {
-        set_place(&mut q, i);
+        set_place(&mut q, i, Os::current());
     }
     if let Some((addon, remote_id)) = picked_remote {
         app.ui.quick = q;
@@ -2506,8 +2515,28 @@ mod new_session_layout_tests {
     fn the_place_selector_round_trips() {
         let mut q = QuickOpenState::default();
         for p in [0, 1, 2, 0] {
-            set_place(&mut q, p);
+            set_place(&mut q, p, Os::Windows);
             assert_eq!(place_of(&q), p);
+        }
+    }
+
+    #[test]
+    fn wsl_is_not_a_place_off_windows() {
+        assert_eq!((place_count(Os::Windows), place_count(Os::Linux), place_count(Os::MacOs)), (3, 2, 2));
+        for os in [Os::Linux, Os::MacOs] {
+            let mut q = QuickOpenState::default();
+            set_place(&mut q, 2, os);
+            assert_eq!(place_of(&q), 0, "WSL is refused");
+            set_place(&mut q, 1, os);
+            assert_eq!(place_of(&q), 1);
+            // Alt+R cycles through the two places only.
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                let next = (place_of(&q) + 1) % place_count(os);
+                set_place(&mut q, next, os);
+                seen.push(place_of(&q));
+            }
+            assert_eq!(seen, [0, 1, 0, 1]);
         }
     }
 }

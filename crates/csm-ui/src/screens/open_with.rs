@@ -6,6 +6,8 @@
 use egui::{Id, Vec2};
 use serde_json::json;
 
+use csm_core::models::Os;
+
 use crate::app::{Action, CsmApp};
 use crate::model::OpenWithEntryView;
 use crate::theme::{self, Tokens, size, space, text};
@@ -83,7 +85,7 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new("Editors the session's folder can be opened in. Placeholders: local {folder}; WSL {folder} {distro} {linuxPath}; SSH {user} {host} {userAtHost} {port} {remoteFolder}; add :uri to percent-encode. A blank template hides the entry for that kind.")
+                egui::RichText::new(help_text(Os::current()))
                     .font(theme::regular(text::CAPTION))
                     .color(t.muted),
             );
@@ -124,9 +126,11 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
                             k(ui, "Local");
                             changed |= text_opt(ui, &mut r.local_args, "{folder}", Id::new(("ow-local", i)));
                             ui.end_row();
-                            k(ui, "WSL");
-                            changed |= text_opt(ui, &mut r.wsl_args, "--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}", Id::new(("ow-wsl", i)));
-                            ui.end_row();
+                            if Os::current().has_wsl() {
+                                k(ui, "WSL");
+                                changed |= text_opt(ui, &mut r.wsl_args, "--folder-uri vscode-remote://wsl+{distro:uri}{linuxPath:uri}", Id::new(("ow-wsl", i)));
+                                ui.end_row();
+                            }
                             k(ui, "SSH");
                             changed |= text_opt(ui, &mut r.ssh_args, "--folder-uri vscode-remote://ssh-remote+{userAtHost:uri}{remoteFolder:uri}", Id::new(("ow-ssh", i)));
                             ui.end_row();
@@ -186,6 +190,12 @@ pub fn show(ctx: &egui::Context, app: &mut CsmApp, actions: &mut Vec<Action>) {
     });
 }
 
+/// The placeholder help above the editor list; WSL is mentioned only where it exists.
+fn help_text(os: Os) -> String {
+    let wsl = if os.has_wsl() { "WSL {folder} {distro} {linuxPath}; " } else { "" };
+    format!("Editors the session's folder can be opened in. Placeholders: local {{folder}}; {wsl}SSH {{user}} {{host}} {{userAtHost}} {{port}} {{remoteFolder}}; add :uri to percent-encode. A blank template hides the entry for that kind.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +216,12 @@ mod tests {
             p,
             json!({"entries": [{"id": "a", "label": "Zed", "executable": r"C:\Zed\Zed.exe", "local_args": "{folder}", "is_default": true}]})
         );
+    }
+
+    #[test]
+    fn the_help_names_wsl_only_where_it_exists() {
+        assert!(help_text(Os::Windows).contains("WSL"));
+        assert!(!help_text(Os::Linux).contains("WSL"));
+        assert!(!help_text(Os::MacOs).contains("WSL"));
     }
 }
