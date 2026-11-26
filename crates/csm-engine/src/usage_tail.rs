@@ -133,6 +133,9 @@ pub(crate) struct Shared {
     pub map: HashMap<String, SubagentsReport>,
     /// The last Remote Control line of each followed session's main transcript.
     pub remote: HashMap<String, csm_core::remote_control::RemoteControlMark>,
+    /// What Claude's own `sessions/<pid>.json` file says about each followed session's
+    /// conversation (the newest one; the engine judges its freshness against the process).
+    pub records: HashMap<String, csm_core::remote_control::SessionRecord>,
     /// Where reading the history (every transcript, not only followed sessions) is.
     pub history: HistoryStatus,
     /// Each followed session's context while the add-on is off (empty while it is on: the index
@@ -190,6 +193,11 @@ const HISTORY_MAX_FILES: usize = 20_000;
 const HISTORY_READS_PER_PASS: usize = 8;
 /// History files merely checked (stat, unchanged) per pass.
 const HISTORY_CHECKS_PER_PASS: usize = 400;
+/// How often Claude's `sessions/` folders are read (at most; never faster than the poll).
+const SESSIONS_EVERY: Duration = Duration::from_secs(2);
+/// Directory entries looked at per sessions folder, and files read from it, per pass.
+const SESSIONS_MAX_ENTRIES: usize = 2000;
+const SESSIONS_MAX_FILES: usize = 512;
 
 impl UsageTail {
     /// Starts the thread when the run has an index and transcript roots.
@@ -327,6 +335,10 @@ struct Tailer {
     history_at: Option<Instant>,
     history_every: Duration,
     history_files: usize,
+    /// The newest sessions-file record of each conversation (by Claude id), and when the folders
+    /// were last read ([`SESSIONS_EVERY`]).
+    records: HashMap<String, csm_core::remote_control::SessionRecord>,
+    records_at: Option<Instant>,
     /// The light tail's positions (the add-on off), by path.
     light: HashMap<String, LightFile>,
 }
@@ -388,6 +400,8 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
         history_at: None,
         history_every: poll.saturating_mul(HISTORY_POLLS),
         history_files: 0,
+        records: HashMap::new(),
+        records_at: None,
         light: HashMap::new(),
     };
     let mut roots_at = Instant::now();
@@ -431,6 +445,7 @@ fn run(rx: Receiver<Msg>, index: Index, roots: ClaudeRoots, override_path: Optio
             more |= if mode.usage { t.pass(link) } else { t.light_pass(link) };
         }
         t.prune_reports(&links);
+        t.sessions_pass(&links, poll);
         if mode.history {
             more |= t.history_pass();
         }
@@ -471,6 +486,42 @@ impl Tailer {
             self.history_files = 0;
             let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
             sh.history = HistoryStatus::default();
+        }
+    }
+
+    /// Reads Claude's `<root>/sessions/<pid>.json` files (capped) and publishes, per followed
+    /// session, what the newest one for its conversation says about Remote Control. Works with
+    /// the add-on on or off. Runs at most every [`SESSIONS_EVERY`] (or the poll, when that is
+    /// shorter), and only while a session is followed.
+    fn sessions_pass(&mut self, links: &[Link], poll: Duration) {
+        if links.is_empty() {
+            self.records.clear();
+            return;
+        }
+        if self.records_at.is_some_and(|t| t.elapsed() < SESSIONS_EVERY.min(poll)) {
+            return;
+        }
+        self.records_at = Some(Instant::now());
+        self.records = read_session_records(&self.roots);
+        let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut changed = false;
+        for link in links {
+            let sid = link.claude_sid.clone().or_else(|| {
+                let stem = sh.transcripts.get(&link.csm_session)?.file_stem()?.to_str()?;
+                Some(stem.to_owned())
+            });
+            let rec = sid.and_then(|s| self.records.get(&s));
+            match rec {
+                Some(r) if sh.records.get(&link.csm_session) != Some(r) => {
+                    sh.records.insert(link.csm_session.clone(), r.clone());
+                    changed = true;
+                }
+                None if sh.records.remove(&link.csm_session).is_some() => changed = true,
+                _ => {}
+            }
+        }
+        if changed {
+            sh.generation += 1;
         }
     }
 
@@ -740,12 +791,13 @@ impl Tailer {
     /// Drops the reports of sessions no longer followed.
     fn prune_reports(&mut self, links: &[Link]) {
         let mut sh = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = sh.map.len() + sh.remote.len() + sh.context.len() + sh.transcripts.len();
+        let before = sh.map.len() + sh.remote.len() + sh.records.len() + sh.context.len() + sh.transcripts.len();
         sh.map.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
         sh.remote.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
+        sh.records.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
         sh.context.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
         sh.transcripts.retain(|k, _| links.iter().any(|l| &l.csm_session == k));
-        if sh.map.len() + sh.remote.len() + sh.context.len() + sh.transcripts.len() != before {
+        if sh.map.len() + sh.remote.len() + sh.records.len() + sh.context.len() + sh.transcripts.len() != before {
             sh.generation += 1;
         }
     }
@@ -885,6 +937,7 @@ fn take_subagents(state: &mut State) {
     u.seen_gen = sh.generation;
     let map: HashMap<String, Arc<SubagentsReport>> = sh.map.iter().map(|(k, v)| (k.clone(), Arc::new(v.clone()))).collect();
     let remote = sh.remote.clone();
+    let records = sh.records.clone();
     let context = sh.context.clone();
     let transcripts = sh.transcripts.clone();
     drop(sh);
@@ -892,7 +945,7 @@ fn take_subagents(state: &mut State) {
     state.rt.live_context = context;
     adopt_conversations(state, &transcripts);
     state.rt.claude_transcripts = transcripts;
-    apply_remote_control(state, &remote);
+    apply_remote_control(state, &remote, &records);
     state.rt.dirty = true;
 }
 
@@ -914,15 +967,62 @@ pub(crate) fn adopt_conversations(state: &mut State, transcripts: &HashMap<Strin
     }
 }
 
-/// Folds each session's last Remote Control line into its runtime: only into a running process,
-/// and only a line written since that process started (`csm_core::remote_control::apply`).
-pub(crate) fn apply_remote_control(state: &mut State, marks: &HashMap<String, csm_core::remote_control::RemoteControlMark>) {
-    for (id, mark) in marks {
-        let Some(rt) = state.rt.sessions.get_mut(id) else { continue };
+/// The newest sessions-file record of each conversation under `roots`' `sessions/` folders.
+/// Reads only `*.json` files of at most [`csm_core::remote_control::MAX_SESSION_FILE`] bytes,
+/// and at most [`SESSIONS_MAX_ENTRIES`] entries / [`SESSIONS_MAX_FILES`] files per folder; anything
+/// unreadable or malformed is skipped.
+fn read_session_records(roots: &[PathBuf]) -> HashMap<String, csm_core::remote_control::SessionRecord> {
+    use std::io::Read;
+    let mut out: HashMap<String, csm_core::remote_control::SessionRecord> = HashMap::new();
+    let cap = csm_core::remote_control::MAX_SESSION_FILE as u64;
+    for root in roots {
+        let Ok(rd) = std::fs::read_dir(root.join("sessions")) else { continue };
+        let mut read = 0;
+        for entry in rd.take(SESSIONS_MAX_ENTRIES).filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if read >= SESSIONS_MAX_FILES {
+                break;
+            }
+            read += 1;
+            let mut text = String::new();
+            let Ok(f) = std::fs::File::open(&path) else { continue };
+            // One byte past the cap tells the parser the file is too big.
+            if f.take(cap + 1).read_to_string(&mut text).is_err() {
+                continue;
+            }
+            let Some(rec) = csm_core::remote_control::parse_session_file(&text) else { continue };
+            if out.get(&rec.session_id).is_none_or(|old| old.started_ms < rec.started_ms) {
+                out.insert(rec.session_id.clone(), rec);
+            }
+        }
+    }
+    out
+}
+
+/// Folds each session's Remote Control evidence into its runtime, for running processes only:
+/// the transcript's last line, written since that process started
+/// (`csm_core::remote_control::apply`), then Claude's own sessions file when a fresh one exists
+/// (`csm_core::remote_control::resolve`: it decides on or off; a resumed conversation writes no
+/// transcript line when it reconnects).
+pub(crate) fn apply_remote_control(
+    state: &mut State,
+    marks: &HashMap<String, csm_core::remote_control::RemoteControlMark>,
+    records: &HashMap<String, csm_core::remote_control::SessionRecord>,
+) {
+    let ids: Vec<String> = state.rt.sessions.keys().filter(|id| marks.contains_key(*id) || records.contains_key(*id)).cloned().collect();
+    for id in ids {
+        let Some(rt) = state.rt.sessions.get_mut(&id) else { continue };
         if rt.phase != crate::session::Phase::Live {
             continue;
         }
-        let next = csm_core::remote_control::apply(rt.remote_control.clone(), mark, rt.started_ms);
+        let from_transcript = match marks.get(&id) {
+            Some(mark) => csm_core::remote_control::apply(rt.remote_control.clone(), mark, rt.started_ms),
+            None => rt.remote_control.clone(),
+        };
+        let next = csm_core::remote_control::resolve(from_transcript, records.get(&id), rt.started_ms);
         if next != rt.remote_control {
             rt.remote_control = next;
             state.rt.dirty = true;

@@ -15,6 +15,11 @@
 //!   connection words it as a warning). The process ending turns it off too (the engine's job).
 //!
 //! `Remote Control connecting…` is neither: the connection is not up yet.
+//!
+//! A resumed conversation reconnects Remote Control silently (no new `bridge_status` line), so the
+//! transcript alone misses it. Claude also keeps a live per-process file,
+//! `<config dir>/sessions/<pid>.json`, whose `bridgeSessionId` is present exactly while Remote
+//! Control is on; [`parse_session_file`] reads it and [`resolve`] lets a fresh one decide.
 
 /// Longest session link kept, in bytes.
 const MAX_URL: usize = 512;
@@ -103,6 +108,67 @@ pub fn apply(current: Option<RemoteControl>, mark: &RemoteControlMark, started_m
     }
 }
 
+/// Most bytes of a `sessions/<pid>.json` file that are looked at; a larger file is ignored.
+pub const MAX_SESSION_FILE: usize = 64 * 1024;
+/// Longest `bridgeSessionId` accepted.
+const MAX_BRIDGE_ID: usize = 128;
+/// A sessions file counts as written by this process when its `startedAt` is at least the
+/// process start minus this much: Claude starts after CSM spawns the PTY, but clocks and
+/// rounding differ a little.
+pub const RECORD_SLACK_MS: i64 = 5_000;
+
+/// What one `sessions/<pid>.json` file says (Claude Code 2.1.x; not a documented contract).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecord {
+    /// The Claude conversation id (the transcript's file stem).
+    pub session_id: String,
+    /// When that Claude process started (epoch ms).
+    pub started_ms: i64,
+    /// Its Remote Control link, present exactly while Remote Control is on.
+    pub link: Option<String>,
+    /// Whether `bridgeSessionId` was present (and valid): Remote Control is on.
+    pub bridge: bool,
+}
+
+/// Parses the text of one sessions file. Lenient: anything malformed is `None`; an unusable
+/// `bridgeSessionId` (not letters, digits and `_`, or of silly length) counts as absent.
+pub fn parse_session_file(text: &str) -> Option<SessionRecord> {
+    if text.len() > MAX_SESSION_FILE {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let session_id = v.get("sessionId")?.as_str()?.trim();
+    if session_id.is_empty() || session_id.len() > 64 || !session_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    let started_ms = v.get("startedAt")?.as_i64().filter(|t| *t > 0)?;
+    let bridge_id = v
+        .get("bridgeSessionId")
+        .and_then(|b| b.as_str())
+        .map(str::trim)
+        .filter(|b| !b.is_empty() && b.len() <= MAX_BRIDGE_ID && b.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'));
+    let link = bridge_id.and_then(|b| session_url(&format!("https://claude.ai/code/{b}")));
+    Some(SessionRecord { session_id: session_id.to_owned(), started_ms, bridge: link.is_some(), link })
+}
+
+/// Whether a sessions file belongs to a process started at `process_started_ms` (not a stale file
+/// of an earlier or crashed process of the same conversation).
+pub fn record_is_fresh(record: &SessionRecord, process_started_ms: i64) -> bool {
+    record.started_ms >= process_started_ms.saturating_sub(RECORD_SLACK_MS)
+}
+
+/// The state to show: a fresh sessions file is authoritative (`bridgeSessionId` present: on, with
+/// its link, since the transcript's `bridge_status` time when `transcript` has one, else the
+/// file's `startedAt`; absent: off). Without one, the transcript's state stands. `transcript` is
+/// what the transcript rule ([`apply`]) says.
+pub fn resolve(transcript: Option<RemoteControl>, record: Option<&SessionRecord>, process_started_ms: i64) -> Option<RemoteControl> {
+    match record.filter(|r| record_is_fresh(r, process_started_ms)) {
+        None => transcript,
+        Some(r) if !r.bridge => None,
+        Some(r) => Some(RemoteControl { url: r.link.clone(), since_ms: transcript.and_then(|t| t.since_ms).or(Some(r.started_ms)) }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +243,68 @@ mod tests {
         assert_eq!(apply(now_on.clone(), &mark(RemoteControlEvent::Off, None), started), None);
         // A stale on mark leaves the current state alone.
         assert_eq!(apply(now_on.clone(), &mark(on_ev, Some(1)), started), now_on);
+    }
+
+    const LINE: &str = r#"{"pid":75612,"sessionId":"e5376029-51fe-49f7-8f33-b7042c8d643d","cwd":"C:\\x","startedAt":1795601554115,"version":"2.1.332","status":"busy","bridgeSessionId":"session_01W5FasiVSwTVCABQ9n9zXTw"}"#;
+
+    #[test]
+    fn a_sessions_file_with_a_bridge_id_is_on_with_its_link() {
+        let r = parse_session_file(LINE).unwrap();
+        assert_eq!(r.session_id, "e5376029-51fe-49f7-8f33-b7042c8d643d");
+        assert_eq!(r.started_ms, 1_795_601_554_115);
+        assert!(r.bridge);
+        assert_eq!(r.link.as_deref(), Some("https://claude.ai/code/session_01W5FasiVSwTVCABQ9n9zXTw"));
+    }
+
+    #[test]
+    fn a_sessions_file_without_one_is_off_and_junk_is_nothing() {
+        let r = parse_session_file(r#"{"sessionId":"abc-1","startedAt":5}"#).unwrap();
+        assert!(!r.bridge && r.link.is_none());
+        let junk = [
+            "",
+            "{",
+            "[]",
+            "null",
+            "42",
+            r#"{"sessionId":"abc"}"#,
+            r#"{"startedAt":5}"#,
+            r#"{"sessionId":"a/b","startedAt":5}"#,
+            r#"{"sessionId":"abc","startedAt":"5"}"#,
+            r#"{"sessionId":"abc","startedAt":-1}"#,
+            r#"{"sessionId":"","startedAt":5}"#,
+            "\u{0}",
+        ];
+        for j in junk {
+            assert_eq!(parse_session_file(j), None, "{j}");
+        }
+    }
+
+    #[test]
+    fn hostile_values_are_ignored_not_trusted() {
+        for bad in ["a b", "x/../y", "a\"b", "<script>", "a?b=c", "", &"a".repeat(129)] {
+            let t = format!(r#"{{"sessionId":"abc","startedAt":5,"bridgeSessionId":{}}}"#, serde_json::Value::String(bad.to_owned()));
+            let r = parse_session_file(&t).unwrap();
+            assert!(!r.bridge && r.link.is_none(), "{bad}");
+        }
+        assert!(!parse_session_file(r#"{"sessionId":"abc","startedAt":5,"bridgeSessionId":42}"#).unwrap().bridge);
+        let huge = format!(r#"{{"sessionId":"abc","startedAt":5,"pad":"{}"}}"#, "x".repeat(MAX_SESSION_FILE));
+        assert_eq!(parse_session_file(&huge), None);
+        assert_eq!(parse_session_file(r#"{"sessionId":"abc","startedAt":1e400}"#), None);
+        assert_eq!(parse_session_file(r#"{"sessionId":"abc","startedAt":99999999999999999999999}"#), None);
+    }
+
+    #[test]
+    fn a_fresh_record_decides_and_a_stale_one_is_ignored() {
+        let rec = |bridge: bool, started_ms| SessionRecord { session_id: "abc".into(), started_ms, link: bridge.then(|| URL.to_owned()), bridge };
+        let from_transcript = Some(RemoteControl { url: Some("https://x.test/t".into()), since_ms: Some(9_000) });
+        let got = resolve(None, Some(&rec(true, 10_000)), 10_000);
+        assert_eq!(got, Some(RemoteControl { url: Some(URL.into()), since_ms: Some(10_000) }));
+        let got = resolve(from_transcript.clone(), Some(&rec(true, 10_000)), 10_000);
+        assert_eq!(got, Some(RemoteControl { url: Some(URL.into()), since_ms: Some(9_000) }));
+        assert_eq!(resolve(from_transcript.clone(), Some(&rec(false, 10_000)), 10_000), None);
+        assert!(resolve(None, Some(&rec(true, 10_000 - RECORD_SLACK_MS)), 10_000).is_some());
+        assert_eq!(resolve(None, Some(&rec(true, 10_000 - RECORD_SLACK_MS - 1)), 10_000), None);
+        assert_eq!(resolve(from_transcript.clone(), Some(&rec(false, 1)), 10_000), from_transcript);
+        assert_eq!(resolve(from_transcript.clone(), None, 10_000), from_transcript);
     }
 }
