@@ -77,6 +77,12 @@ pub enum Event {
         key: String,
         value: Value,
     },
+    /// The UI should open the New session dialog, with this folder filled in when there is one
+    /// (`session_new_dialog`: Explorer's "Open in CodeShellManager"). The dialog only shows; the
+    /// person starts the session.
+    NewSessionRequested {
+        folder: Option<String>,
+    },
 }
 
 /// Fan-out to any number of subscribers; a dropped receiver is pruned on the next emit.

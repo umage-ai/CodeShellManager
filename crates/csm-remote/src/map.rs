@@ -489,6 +489,7 @@ mod tests {
             WireEvent::QuitReady,
             WireEvent::ClipboardOffered { session_id: "s".into() },
             WireEvent::SettingChanged { key: "ZoomPercent".into(), value: serde_json::json!(150) },
+            WireEvent::NewSessionRequested { folder: Some("/work".into()) },
         ] {
             assert_eq!(event(&e), None, "{e:?} is not applied to a remote window");
         }

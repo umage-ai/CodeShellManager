@@ -326,6 +326,8 @@ pub struct SettingsState {
     pub keymap_capture: Option<String>,
     /// Settings → General → Start-up: what `app_autostart_get` last said (`Null` until it answers).
     pub autostart: Value,
+    /// Settings → General → Explorer: what `app_explorer_menu_get` last said (`Null` until it answers).
+    pub explorer_menu: Value,
 }
 
 impl SettingsState {
@@ -1301,6 +1303,16 @@ impl CsmApp {
                     self.shown();
                 }
                 csm_engine::Event::NotificationTestRequested => self.test_notification(),
+                // Explorer's "Open in CodeShellManager" (`session_new_dialog`): the window comes forward
+                // and the dialog opens with the folder typed in. Nothing starts until the person confirms.
+                csm_engine::Event::NewSessionRequested { folder } => {
+                    crate::notify::show_window(ctx);
+                    self.shown();
+                    self.run(ctx, Action::OpenQuickOpen { group: None });
+                    if let Some(f) = folder {
+                        self.ui.quick.query = f.clone();
+                    }
+                }
                 // A setting changed by the CLI or an MCP client: follow it as if set here.
                 csm_engine::Event::SettingChanged { key, value } => {
                     self.ui.settings.values.insert(key.clone(), value.clone());
@@ -1775,7 +1787,7 @@ impl CsmApp {
                 self.ui.overlay = Overlay::None;
                 self.ui.settings.open = true;
                 self.ui.usage_page.open = false;
-                for (id, p) in [("settings_get", json!({})), ("app_info", json!({})), ("grant_list", json!({})), ("app_autostart_get", json!({}))] {
+                for (id, p) in [("settings_get", json!({})), ("app_info", json!({})), ("grant_list", json!({})), ("app_autostart_get", json!({})), ("app_explorer_menu_get", json!({}))] {
                     self.dispatch.submit(id, p);
                 }
             }
@@ -1960,7 +1972,7 @@ impl CsmApp {
             Scope::All => active.as_deref().and_then(|a| self.model.session(a)).and_then(|s| s.group.clone()),
         };
         match id {
-            "session_new" => return self.run(ctx, Action::OpenQuickOpen { group: None }),
+            "session_new" | "session_new_dialog" => return self.run(ctx, Action::OpenQuickOpen { group: None }),
             "session_recent" => return self.run(ctx, Action::OpenRecent),
             // The look's picker is the Profile row of Edit session.
             "session_edit" | "session_look_set" => {
@@ -1970,7 +1982,7 @@ impl CsmApp {
                 return;
             }
             "settings_get" | "settings_set" | "app_info" | "grant_list" | "grant_revoke" => return self.run(ctx, Action::OpenSettings),
-            "app_autostart_get" | "app_autostart_set" => return self.run(ctx, Action::OpenSettings),
+            "app_autostart_get" | "app_autostart_set" | "app_explorer_menu_get" | "app_explorer_menu_set" => return self.run(ctx, Action::OpenSettings),
             // Turning remote access on, pairing, revoking and the relay (its fields are on the page) are on their page.
             // Turning it off is one click and needs nothing else, so it runs as it is.
             "peer_server_enable" | "peer_pair_start" | "peer_pair_answer" | "peer_device_revoke" | "peer_interfaces" | "peer_status" | "peer_device_list" | "peer_relay_set" => {

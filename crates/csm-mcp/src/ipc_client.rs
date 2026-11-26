@@ -236,17 +236,53 @@ pub fn published_apps(runtime: Option<&RuntimeDir>) -> Result<Vec<(String, u32)>
 /// over the same `state.json`. False when none is running or the running one keeps its state
 /// elsewhere: start normally.
 pub fn activate_running(options: RemoteOptions, state_path: &std::path::Path) -> Result<bool, BridgeError> {
-    let mut b = RemoteBackend::new(RemoteOptions { start: false, instance: Some(state_path.display().to_string()), ..options });
-    let dir = b.runtime()?;
-    // Only a real instance that keeps this very state file: a `--clean` one or one on another
-    // file is not the app this launch would share `state.json` with.
-    let found: Vec<InstanceRecord> =
-        Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().filter(|r| r.app == APP_ID && !is_clean(r)).collect();
-    if pick_instance(found, b.options.instance.as_deref()).is_none() {
-        return Ok(false);
-    }
+    let Some(mut b) = running_on(options, state_path)? else { return Ok(false) };
     b.with(|c| c.call("app.activate", json!({"from_pid": std::process::id()})))?;
     Ok(true)
+}
+
+/// A backend for the real app that keeps `state_path`, when one runs: not a `--clean` one, not one
+/// on another file (a second launch would share `state.json` with the app it finds, no other).
+fn running_on(options: RemoteOptions, state_path: &std::path::Path) -> Result<Option<RemoteBackend>, BridgeError> {
+    let b = RemoteBackend::new(RemoteOptions { start: false, instance: Some(state_path.display().to_string()), ..options });
+    let dir = b.runtime()?;
+    let found: Vec<InstanceRecord> =
+        Discovery::scan(&dir).map_err(|e| unreachable("could not look for CodeShellManager", &e))?.into_iter().filter(|r| r.app == APP_ID && !is_clean(r)).collect();
+    Ok(pick_instance(found, b.options.instance.as_deref()).map(|_| b))
+}
+
+/// What became of a folder handed to the running app (`codeshell --open-folder`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderHandoff {
+    /// No app runs on this state file: start one normally and open the dialog there.
+    NotRunning,
+    /// The running app took it: its window is in front with the New session dialog open (nothing
+    /// is started; the person confirms in the dialog). The text is the app's own words.
+    Opened(String),
+    /// The running app refused the folder (not a folder, a virtual or device path, gone); it said
+    /// so on its window. The text is why.
+    Refused(String),
+    /// The running app is an older build without the `session_new_dialog` tool: it was asked to
+    /// show its window instead (`app.activate`).
+    OnlyShown,
+}
+
+/// The Explorer entry's second launch: when this user's app already runs on `state_path`, hand it
+/// `folder` through the `session_new_dialog` tool (the same tool path the palette and the CLI use,
+/// called as `csm` would: `Caller::Cli`), so it opens the New session dialog with the folder
+/// filled in. The tool only shows the dialog; it can start nothing. `folder` is the cleaned text
+/// (`csm_core::open_folder::clean`): the tool checks it again.
+pub fn open_folder_in_running(options: RemoteOptions, state_path: &std::path::Path, folder: &str) -> Result<FolderHandoff, BridgeError> {
+    let Some(mut b) = running_on(options, state_path)? else { return Ok(FolderHandoff::NotRunning) };
+    match b.call(&Caller::Cli, "session_new_dialog", json!({"folder": folder})) {
+        Ok(out) => Ok(FolderHandoff::Opened(out.message)),
+        Err(BridgeError::Tool(ToolError::UnknownTool(_))) => {
+            b.with(|c| c.call("app.activate", json!({"from_pid": std::process::id()})))?;
+            Ok(FolderHandoff::OnlyShown)
+        }
+        Err(BridgeError::Tool(e)) => Ok(FolderHandoff::Refused(e.to_string())),
+        Err(e) => Err(e),
+    }
 }
 
 impl Backend for RemoteBackend {

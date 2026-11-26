@@ -16,6 +16,7 @@
 //! codeshell [--clean] [--config-dir DIR] [--autostart] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! codeshell --demo [--static] [--restore] [--latte] [--font PATH] [--font-size PT] [--inbox]
 //! codeshell --autostart-refresh | --autostart-remove     (the installer's hooks; exit at once)
+//! codeshell --open-folder <path>      (Explorer's "Open in CodeShellManager": the New session dialog, in the running app if any)
 //! codeshell --remote <host-id> [--config-dir DIR] [--latte]   (a window onto a paired office)
 //! ```
 //!
@@ -68,6 +69,7 @@ codeshell --remote <host-id> [--config-dir DIR] [--latte]
   --font PATH       terminal font (default: embedded JetBrains Mono)
   --font-size PT    terminal font size (default 12)
   --inbox           prefer the inbox ConPTY over the bundled one
+  --open-folder DIR open the New session dialog in DIR (Explorer's right-click entry; shows the running app, nothing starts)
   --autostart-refresh  (installer) point the sign-in entry, if any, at this exe; then exit
   --autostart-remove   (installer) remove the sign-in entry if it starts this exe; then exit";
 
@@ -87,6 +89,9 @@ struct Args {
     installer: Option<InstallerHook>,
     /// A remote window onto this paired host (`--remote <host-id>`): no local engine.
     remote: Option<String>,
+    /// Explorer's "Open in CodeShellManager" (`--open-folder <path>`): the raw value, cleaned by
+    /// [`folder_to_forward`] when it is used.
+    open_folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +103,12 @@ enum InstallerHook {
 }
 
 fn parse_args() -> Args {
-    let mut args = std::env::args_os().skip(1);
+    parse_args_from(std::env::args_os().skip(1))
+}
+
+/// The arguments after the program name. A missing value or an unknown argument exits with code 2.
+fn parse_args_from(args: impl IntoIterator<Item = OsString>) -> Args {
+    let mut args = args.into_iter();
     let mut a = Args { live: true, ..Args::default() };
     while let Some(x) = args.next() {
         let s = x.to_string_lossy().into_owned();
@@ -123,6 +133,7 @@ fn parse_args() -> Args {
             "--autostart-refresh" => a.installer = Some(InstallerHook::Refresh),
             "--autostart-remove" => a.installer = Some(InstallerHook::Remove),
             "--remote" => a.remote = Some(value("--remote").to_string_lossy().into_owned()),
+            "--open-folder" => a.open_folder = Some(value("--open-folder").to_string_lossy().into_owned()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -143,6 +154,18 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+/// What `--open-folder` passes on: the cleaned folder, or, when it can't be cleaned, the value
+/// with its outer quotes off (the `session_new_dialog` tool refuses it with the reason). Pure.
+fn folder_to_forward(raw: &str) -> String {
+    csm_core::open_folder::clean(raw).unwrap_or_else(|_| raw.trim().trim_matches('"').to_string())
+}
+
+/// Whether this run may touch the person's real Explorer menu switch (HKCU): not a `--clean` run,
+/// not one on another config folder (tests, a second profile).
+fn explorer_menu_allowed(args: &Args, env_config_dir: bool) -> bool {
+    !args.clean && !args.demo && args.remote.is_none() && args.config_dir.is_none() && !env_config_dir
 }
 
 struct App {
@@ -652,6 +675,14 @@ fn main() {
     if args.autostart {
         log::info!("started at sign-in (--autostart)");
     }
+    // Explorer's "Open in CodeShellManager": the folder to show in the New session dialog. Cleaned
+    // when it can be; a value that can't be is passed on as it is, so the tool that opens the
+    // dialog refuses it on the window with a toast (never a panic, never a started session).
+    let mut open_folder = args.open_folder.as_deref().map(folder_to_forward);
+    if open_folder.is_some() && (args.demo || args.remote.is_some()) {
+        log::warn!("--open-folder is for the real app: ignored with --demo and --remote");
+        open_folder = None;
+    }
     // One app per state file: launched again (the Start menu, a second sign-in entry), ask the
     // running one to show its window and leave. Not for `--clean`, which never shares a state.
     // A remote window is a window of its own: it never shows the laptop's running app instead.
@@ -660,7 +691,30 @@ fn main() {
         && args.remote.is_none()
         && let Some(path) = persist::state_path(args.config_dir.as_deref())
     {
-        match csm_mcp::activate_running(csm_mcp::RemoteOptions::default(), &path) {
+        let options = csm_mcp::RemoteOptions::default();
+        let handed = match &open_folder {
+            // The folder goes through the `session_new_dialog` tool of the running app, which opens
+            // the dialog on its own window: nothing starts there until the person confirms.
+            Some(folder) => csm_mcp::open_folder_in_running(options, &path, folder).map(|h| match h {
+                csm_mcp::FolderHandoff::NotRunning => false,
+                csm_mcp::FolderHandoff::Opened(m) => {
+                    log::info!("CodeShellManager already runs on {}: {m}", path.display());
+                    true
+                }
+                csm_mcp::FolderHandoff::Refused(why) => {
+                    // The running window shows the reason as a toast; the log and stderr keep it too.
+                    log::warn!("--open-folder refused by the running app: {why}");
+                    eprintln!("{why}");
+                    true
+                }
+                csm_mcp::FolderHandoff::OnlyShown => {
+                    log::info!("the running CodeShellManager is older and has no New session dialog tool: showed its window");
+                    true
+                }
+            }),
+            None => csm_mcp::activate_running(options, &path),
+        };
+        match handed {
             Ok(true) => {
                 log::info!("CodeShellManager already runs on {}: showed its window", path.display());
                 return;
@@ -751,6 +805,9 @@ fn main() {
         };
         let reopen_client = peer_client.clone();
         let options = StateOptions { save_path, clean: args.clean, peer_host, peer_client, remote_window_launcher, remote_windows: remote_windows.clone(), ..StateOptions::production() };
+        // The Explorer menu switch is the person's own registry: a test run (`--clean`, another config
+        // folder) never reads or writes it.
+        let options = if explorer_menu_allowed(&args, std::env::var_os("CSM_CONFIG_DIR").is_some()) { options } else { StateOptions { explorer_menu: csm_engine::ExplorerMenu::none(), ..options } };
         let options_autostart = options.autostart.clone();
         let budget = options.shutdown_budget.as_secs_f32();
         let (state, report) = State::load(options);
@@ -889,6 +946,11 @@ fn main() {
                 log::info!("{n}");
                 app.toast(&cc.egui_ctx, n);
             }
+            // Explorer's "Open in CodeShellManager" on a first start: the same tool the running app is
+            // handed the folder through. It shows the New session dialog; the person starts the session.
+            if let Some(folder) = open_folder.take().filter(|_| real) {
+                app.run(&cc.egui_ctx, Action::Tool("session_new_dialog", json!({"folder": folder})));
+            }
             let wake_ctx = cc.egui_ctx.clone();
             let dialogs = craft_dialogs::Dialogs::new(Arc::new(move || wake_ctx.request_repaint()));
             // The main window is up: the remote windows the last run left open come back (off the UI thread).
@@ -964,5 +1026,51 @@ mod reopen_rules {
         assert!(!reopen_allowed(&Args { clean: true, ..Args::default() }));
         assert!(!reopen_allowed(&Args { demo: true, ..Args::default() }));
         assert!(!reopen_allowed(&Args { remote: Some("abc".into()), ..Args::default() }));
+    }
+}
+
+#[cfg(test)]
+mod open_folder_args {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Args {
+        parse_args_from(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn open_folder_takes_its_value_and_leaves_the_rest_alone() {
+        let a = parse(&["--clean", "--open-folder", r"C:\Users\me\code"]);
+        assert_eq!(a.open_folder.as_deref(), Some(r"C:\Users\me\code"));
+        assert!(a.clean);
+        assert!(parse(&["--autostart"]).open_folder.is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_root_through_argv_parsing_is_cleaned_to_the_root() {
+        // `"%V"` for C:\ is `"C:\"`, which argv parsing reads as `C:"`.
+        let a = parse(&["--open-folder", "C:\""]);
+        assert_eq!(folder_to_forward(a.open_folder.as_deref().unwrap_or("")), r"C:\");
+        assert_eq!(folder_to_forward("C:"), r"C:\");
+        assert_eq!(folder_to_forward(r"D:\My Projects\x\"), r"D:\My Projects\x");
+    }
+
+    #[test]
+    fn a_hostile_value_is_passed_on_uncleaned_for_the_tool_to_refuse() {
+        for raw in ["shell:Downloads", "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", r"\?\C:\Windows", "relative", ""] {
+            let forwarded = folder_to_forward(raw);
+            assert!(csm_core::open_folder::clean(&forwarded).is_err(), "{raw:?} must still be refused downstream");
+        }
+        assert_eq!(folder_to_forward("\"shell:Downloads\""), "shell:Downloads");
+    }
+
+    #[test]
+    fn only_the_real_app_touches_the_explorer_menu_switch() {
+        assert!(explorer_menu_allowed(&Args::default(), false));
+        assert!(!explorer_menu_allowed(&Args { clean: true, ..Args::default() }, false));
+        assert!(!explorer_menu_allowed(&Args { demo: true, ..Args::default() }, false));
+        assert!(!explorer_menu_allowed(&Args { remote: Some("h".into()), ..Args::default() }, false));
+        assert!(!explorer_menu_allowed(&Args { config_dir: Some("x".into()), ..Args::default() }, false));
+        assert!(!explorer_menu_allowed(&Args::default(), true));
     }
 }

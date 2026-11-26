@@ -26,6 +26,7 @@ pub mod keymap;
 pub mod look;
 pub mod models;
 pub mod notify_rules;
+pub mod open_folder;
 pub mod probe_gate;
 pub mod qr;
 pub mod program_status_payload;

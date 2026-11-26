@@ -206,6 +206,7 @@ impl From<&Event> for wire::Event {
             Event::ScreenChanged { instance } => wire::Event::ScreenChanged { instance: instance.clone() },
             Event::ScreenFocusRequested { instance } => wire::Event::ScreenFocusRequested { instance: instance.clone() },
             Event::SettingChanged { key, value } => wire::Event::SettingChanged { key: key.clone(), value: value.clone() },
+            Event::NewSessionRequested { folder } => wire::Event::NewSessionRequested { folder: folder.clone() },
         }
     }
 }
@@ -265,6 +266,8 @@ mod tests {
             Event::ScreenChanged { instance: "screen-1".into() },
             Event::ScreenFocusRequested { instance: "screen-1".into() },
             Event::SettingChanged { key: "ui_zoom".into(), value: json!(1.25) },
+            Event::NewSessionRequested { folder: Some("/work".into()) },
+            Event::NewSessionRequested { folder: None },
         ];
         for e in &events {
             let engine: Value = serde_json::to_value(e).unwrap();
