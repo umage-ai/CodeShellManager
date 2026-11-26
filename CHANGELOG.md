@@ -182,6 +182,8 @@ file drop; Claude slash-command menu; `--clean`.
 
 ### Fixed
 
+- **Suggestions fit the OS on Linux and macOS.** A fresh install's launch-command list offers `bash` on Linux and `zsh`, `bash` on macOS instead of `pwsh` and `cmd` (a saved list is never rewritten), and *Open a shell here* starts your login shell (`$SHELL`) rather than `pwsh`. WSL, which exists only on Windows, is gone from the new-session dialog (the *Where* row and Alt+R) and from the Open with settings; a WSL session restored from a Windows backup says it cannot start there instead of trying.
+
 - **An older pre-release can no longer silently replace a newer one** (SEC-48): the MSI records a build order (see `docs/release.md`, "Version scheme") and refuses to install an older build over it, with `ALLOWOLDER=1` as the way round it. Dev builds neither check nor record.
 - **A full disk no longer makes saving fail silently** (COR-5): a red strip under the title bar says sessions are not being saved, the save is retried with backoff, and it clears (with a toast) when a save works.
 - **A `state.json` that is locked or unreadable is never replaced** (COR-6): the app retries the read, then starts read-only (nothing saved, nothing moved aside) with a notice, instead of treating it as corrupt and saving an empty state over it. Likewise `tasks.json`, and the Review add-on's threads (COR-28), which also keep memory and disk in step when a save fails.

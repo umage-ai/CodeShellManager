@@ -322,3 +322,9 @@ the repository root. Two small ones are fixed on this branch: marked *fixed*.
    announcing macOS; 12 and 14 before announcing Linux.
 7. **The maintainer email** for the .deb, AUR and Homebrew metadata.
 8. **aarch64 Linux:** keep it if the repository is public (free arm runners). Drop it otherwise.
+
+## Platform differences in the UI
+
+- Launch-command defaults: Windows `pwsh`, `cmd`; Linux `bash`; macOS `zsh`, `bash` (plus the agent entries everywhere). Only a fresh settings object gets them; a saved list is kept as is.
+- *Open a shell here* starts `pwsh` on Windows and the login shell (`$SHELL`, else `/bin/sh`) elsewhere.
+- WSL is offered only on Windows. On Linux and macOS the new-session dialog and Open with settings omit it, and `session_new` with `kind: wsl` and a restored WSL session refuse with "WSL sessions run on Windows only". The `wsl_distros` tool stays registered (so the tool list is the same everywhere) and returns an empty list.

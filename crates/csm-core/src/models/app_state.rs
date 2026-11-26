@@ -84,20 +84,49 @@ fn default_padding() -> i32 {
 fn default_line_height() -> f64 {
     1.0
 }
+/// The operating systems whose defaults differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    Linux,
+    MacOs,
+}
+
+impl Os {
+    /// The OS this binary was built for. The only `cfg!` here; everything else takes an `Os`.
+    pub const fn current() -> Os {
+        if cfg!(windows) {
+            Os::Windows
+        } else if cfg!(target_os = "macos") {
+            Os::MacOs
+        } else {
+            Os::Linux
+        }
+    }
+
+    /// WSL exists only on Windows: elsewhere nothing may offer it.
+    pub const fn has_wsl(self) -> bool {
+        matches!(self, Os::Windows)
+    }
+}
+
 fn default_launch_commands() -> Vec<String> {
-    [
-        "claude",
-        "claude --continue",
-        "claude --model claude-opus-4-6",
-        "claude --dangerously-skip-permissions",
-        "codex",
-        "gh copilot suggest",
-        "pwsh",
-        "cmd",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect()
+    default_launch_commands_for(Os::current())
+}
+
+/// The launch-command presets for a fresh settings object: the agents everywhere, then only the
+/// shells that are basically always installed on that OS.
+pub fn default_launch_commands_for(os: Os) -> Vec<String> {
+    let shells: &[&str] = match os {
+        Os::Windows => &["pwsh", "cmd"],
+        Os::Linux => &["bash"],
+        Os::MacOs => &["zsh", "bash"],
+    };
+    ["claude", "claude --continue", "claude --model claude-opus-4-6", "claude --dangerously-skip-permissions", "codex", "gh copilot suggest"]
+        .iter()
+        .chain(shells)
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 
 /// User settings, persisted inside `state.json`. Every field has the C# default, so an old or
@@ -630,7 +659,7 @@ mod tests {
         assert_eq!(s.group_display_mode, GroupDisplayMode::FilterStrip);
         assert_eq!(s.sidebar_action_icons_mode, SidebarActionIconsMode::OnHover);
         assert_eq!((s.terminal_font_size, s.terminal_line_height), (14, 1.0));
-        assert_eq!(s.launch_commands.len(), 8);
+        assert_eq!(s.launch_commands, default_launch_commands_for(Os::current()));
         assert!(!s.open_with_seeded && s.use_bundled_con_pty);
         let st: AppState = serde_json::from_str("{}").unwrap();
         assert_eq!(st.last_layout, "Single");
@@ -638,5 +667,17 @@ mod tests {
         let st: AppState = serde_json::from_str(r#"{"Ui": {"Layouts": 7}, "Sessions": [{"Id": "a"}]}"#).unwrap();
         assert_eq!(st.sessions.len(), 1);
         assert!(st.ui.layouts.is_empty());
+    }
+
+    #[test]
+    fn launch_command_defaults_follow_the_os() {
+        let tail = |os| default_launch_commands_for(os)[6..].to_vec();
+        assert_eq!(default_launch_commands_for(Os::Windows).len(), 8);
+        assert_eq!(tail(Os::Windows), ["pwsh", "cmd"]);
+        assert_eq!(tail(Os::Linux), ["bash"]);
+        assert_eq!(tail(Os::MacOs), ["zsh", "bash"]);
+        for os in [Os::Windows, Os::Linux, Os::MacOs] {
+            assert_eq!(default_launch_commands_for(os)[0], "claude");
+        }
     }
 }
