@@ -180,7 +180,7 @@ jobs:
       # Pinned to an exact version and built from source with its lockfile (not a prebuilt binary
       # fetched by a third-party action).
       - name: Install cargo-about
-        run: cargo install cargo-about --locked --version 0.9.3
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
 
       - name: Third-party licences
         shell: pwsh
